@@ -566,8 +566,65 @@ impl TonkState {
         let space: Did = space
             .parse()
             .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
-        let kernel = Asset::stored(hash.into(), size);
+        let kernel = Asset::stored(hash, size);
         space_worker::found(self, &space, kernel).await?;
+        self.reactor.run_scheduled_polls(&self.operator).await;
+        Ok(())
+    }
+
+    /// What the space's own worker is to create `space`'s content from, as
+    /// JSON, or `None` when there is nothing left to hand over: the seed this
+    /// persona kept as it created the space.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn pending_seed(
+        &self,
+        space: &str,
+    ) -> Result<Option<String>, crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        crate::router::repository::pending_seed(self, &space)
+            .await?
+            .map(|seed| {
+                serde_json::to_string(&seed)
+                    .map_err(|e| crate::TonkWorkerError::Internal(e.to_string()))
+            })
+            .transpose()
+    }
+
+    /// The space's own worker created `space`'s content from its seed:
+    /// there is nothing left to hand over.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn settle_seed(&self, space: &str) -> Result<(), crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        crate::router::repository::settle_seed(self, &space).await
+    }
+
+    /// Create the content of `space`, which this worker holds, from `seed`
+    /// (JSON, as [`pending_seed`] gives it), and record the kernel it runs,
+    /// the asset `kernel` (its BLAKE3 `hash` and `size`) on top. Nothing is
+    /// written over a `main` that has content.
+    ///
+    /// [`pending_seed`]: Self::pending_seed
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn seed_space(
+        &self,
+        space: &str,
+        seed: &str,
+        hash: [u8; 32],
+        size: u64,
+    ) -> Result<(), crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        let seed: crate::router::repository::SpaceSeed = serde_json::from_str(seed)
+            .map_err(|e| crate::TonkWorkerError::Router(format!("seed: {e}")))?;
+        crate::router::repository::create_content(self, &space, &seed)
+            .await
+            .map_err(|e| crate::TonkWorkerError::Internal(e.to_string()))?;
+        space_worker::pin(self, &space, Asset::stored(hash, size)).await?;
         self.reactor.run_scheduled_polls(&self.operator).await;
         Ok(())
     }

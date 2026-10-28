@@ -1,14 +1,19 @@
-//! What a worker asks of another worker, through its embedder, and the
-//! answers that come back.
+//! What a worker asks of another worker, or of its embedder, and the answers
+//! that come back.
 //!
-//! A request goes out with `application.send` as a message naming the
-//! worker it is for, by the DID of the space that worker serves, and an id.
-//! The embedder delivers it and hands the answer back with `channel.receive`,
-//! under the same id. Both are JSON:
+//! A request goes out with `application.send` as a message with an id. The
+//! embedder answers it with `channel.receive`, under the same id. Both are
+//! JSON:
 //!
-//! - asked: `{ "ask": id, "to": did, "method", "path", "body": text or null }`
+//! - asked of the worker of a space, by the space's DID: `{ "ask": id, "to":
+//!   did, "method", "path", "body": text or null }`
+//! - asked of the embedder, to read a public text such as a seed: `{ "ask":
+//!   id, "read": url }`
+//! - asked of the person's persona, by a space's worker, for what its space
+//!   is to be created from: `{ "ask": id, "seed": true }`, and that it has
+//!   been: `{ "ask": id, "seeded": true }`
 //! - answered: `{ "answer": id, "status", "body": text }`, or
-//!   `{ "answer": id, "error": text }` when it could not be delivered.
+//!   `{ "answer": id, "error": text }` when it could not be answered.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
@@ -43,6 +48,39 @@ fn pending<R>(touch: impl FnOnce(&mut Pending) -> R) -> R {
 /// Ask the worker of the space `to` what `method` on `path` answers, with
 /// `body`.
 pub async fn ask(to: &str, method: &str, path: &str, body: Option<&str>) -> Result<Answer, Error> {
+    send(|id| json!({ "ask": id, "to": to, "method": method, "path": path, "body": body })).await
+}
+
+/// Ask the embedder for the text at `url`, which anyone may read: no
+/// credentials go with it, and a redirect fails it.
+pub async fn read(url: &str) -> Result<Answer, Error> {
+    send(|id| json!({ "ask": id, "read": url })).await
+}
+
+/// Ask the person's persona what this worker's space is to be created from:
+/// the seed it kept as it created the space, as JSON, or `None` when there
+/// is nothing to create it from.
+pub async fn seed() -> Result<Option<String>, Error> {
+    let answer = send(|id| json!({ "ask": id, "seed": true })).await?;
+    if !(200..300).contains(&answer.status) {
+        return Err(Error::Unavailable(answer.body));
+    }
+    Ok(Some(answer.body).filter(|seed| !seed.is_empty() && seed != "null"))
+}
+
+/// Tell the person's persona this worker created its space's content from
+/// the seed.
+pub async fn seeded() -> Result<(), Error> {
+    let answer = send(|id| json!({ "ask": id, "seeded": true })).await?;
+    if !(200..300).contains(&answer.status) {
+        return Err(Error::Unavailable(answer.body));
+    }
+    Ok(())
+}
+
+/// Send the message `asked` makes of its id, and answer what comes back
+/// under it.
+async fn send(asked: impl FnOnce(u64) -> Value) -> Result<Answer, Error> {
     let (answered, answer) = oneshot::channel();
     let id = pending(|pending| {
         let id = pending.next;
@@ -50,7 +88,7 @@ pub async fn ask(to: &str, method: &str, path: &str, body: Option<&str>) -> Resu
         pending.waiting.insert(id, answered);
         id
     });
-    let message = json!({ "ask": id, "to": to, "method": method, "path": path, "body": body });
+    let message = asked(id);
     if let Err(error) = application::send(message.to_string().into_bytes()).await {
         pending(|pending| pending.waiting.remove(&id));
         return Err(error);

@@ -1,6 +1,10 @@
 //! What a kernel's origin answers beside the worker's API: how the kernel
-//! says it is, and the space's assets, which a page of the space stores with
-//! `PUT /` and reads at `/asset:{hash}`, whole or in part.
+//! says it is; the space's assets, which a page of the space stores with
+//! `PUT /` and reads at `/asset:{hash}`, whole or in part; and at any other
+//! address, the content the space's routes keep there. A persona also
+//! answers its host, at `/_kernel/seed/{space}`, what a space it created is to
+//! be created from, and takes `POST /_kernel/seed/{space}/settled` once the
+//! space's own kernel did.
 
 use axum::body::Body;
 use axum::http::{HeaderValue, Method, Request, Response, StatusCode, header};
@@ -23,6 +27,10 @@ pub enum Routed {
     Store(Request<Body>),
     /// To the worker, whose answer is the answer.
     Pass(Request<Body>),
+    /// What the space, by its DID, is to be created from.
+    Seed(String),
+    /// The space, by its DID, was created from its seed.
+    Settle(String),
 }
 
 /// The headers an asset's request keeps as it reaches the worker.
@@ -38,6 +46,13 @@ pub fn route(request: Request<Body>, site: &Site) -> Routed {
         return Routed::Answer(health(site));
     }
     let Some(space) = &site.space else {
+        if let Some(rest) = path.strip_prefix("/_kernel/seed/") {
+            match (rest.strip_suffix("/settled"), method) {
+                (Some(space), Method::POST) => return Routed::Settle(space.to_owned()),
+                (None, Method::GET) => return Routed::Seed(rest.to_owned()),
+                _ => {}
+            }
+        }
         return Routed::Pass(request);
     };
     if path == "/" && method == Method::PUT {
@@ -49,6 +64,10 @@ pub fn route(request: Request<Body>, site: &Site) -> Routed {
     {
         let target = format!("/api/repository/{space}/branch/main/blob/asset:{hash}");
         return Routed::Pass(retarget(request, method, &target, &READ_HEADERS));
+    }
+    if reads && !path.starts_with("/api/") {
+        let target = format!("/api/repository/{space}/branch/main/http{path}");
+        return Routed::Pass(retarget(request, method, &target, &[]));
     }
     Routed::Pass(request)
 }
@@ -85,7 +104,7 @@ fn health(site: &Site) -> Response<Body> {
     answer(StatusCode::OK, &said)
 }
 
-fn answer(status: StatusCode, body: &Value) -> Response<Body> {
+pub fn answer(status: StatusCode, body: &Value) -> Response<Body> {
     let mut response = Response::new(Body::from(body.to_string()));
     *response.status_mut() = status;
     response.headers_mut().insert(

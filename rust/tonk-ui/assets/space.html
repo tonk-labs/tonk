@@ -441,13 +441,13 @@
                     var booting = location.hash.indexOf("#boot=") === 0
                         ? decodeURIComponent(location.hash.slice(6)) || "/"
                         : null;
-                    // A space that runs a kernel brings nothing of the app's
-                    // up here: its worker answers every address with the
-                    // kernel's page, which carries the host's broker. Its
-                    // worker now in control, this frame goes to the address it
-                    // was asked for. Only a first visit comes this way: the
-                    // worker never answers with this shell.
-                    if (await KERNEL) {
+                    // A space that runs a kernel starts its worker from here
+                    // the first time, with the server's copy of this shell:
+                    // its first start asks the person's profile which space
+                    // it is. Its worker now in control, this frame goes to the
+                    // address it was asked for, which the worker answers with
+                    // its own copy of this shell.
+                    if ((await KERNEL) && !servedByWorker()) {
                         // Its first start asks the person's profile which
                         // space it is, over the port this shell hands it.
                         broker();

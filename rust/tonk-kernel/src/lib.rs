@@ -50,7 +50,11 @@ mod site;
 use std::sync::{Mutex, PoisonError};
 
 use axum::Router;
+use axum::http::StatusCode;
 use http_body_util::BodyExt as _;
+#[cfg(feature = "persona")]
+use serde_json::Value;
+use serde_json::json;
 use site::{Routed, Site};
 use tonk_kernel_world::boot;
 use tonk_kernel_world::guest::HandleLayer;
@@ -145,23 +149,27 @@ impl lifecycle::Guest for Kernel {
         // no space up.
         let space = space.filter(|_| STANDING == tonk_worker::Standing::Site);
         let state = TonkState::open_kernel().await.map_err(invalid)?;
-        // The space, taken up with the delegation its session claims, or as
-        // it was taken up before, with the delegation claimed anew alongside:
-        // put back what a restart lost about it, and give it its first commit
-        // if it went without.
-        let renewing = match &space {
-            Some(space) if state.acts().await.unwrap_or(false) => Some(space.clone()),
+        // The space, taken up with the delegation its session asks for, or
+        // as it was taken up before, with the delegation asked for anew
+        // alongside: put back what a restart lost about it, and give it its
+        // first commit if it went without. A space taken up for the first
+        // time is created from what the person's persona kept for it, once
+        // the kernel serves, since the persona answers through the host.
+        let (renewing, fresh) = match &space {
+            Some(space) if state.acts().await.unwrap_or(false) => (Some(space.clone()), None),
             Some(space) => {
                 take_up(&state, space).await;
-                None
+                (None, Some(space.clone()))
             }
-            None => None,
+            None => (None, None),
         };
         if let Some(space) = &space {
             if let Err(error) = state.resume_space(&space.subject).await {
                 eprintln!("tonk-kernel: {} was not resumed: {error}", space.subject);
             }
-            if let Err(error) = found(&state, space).await {
+            if fresh.is_none()
+                && let Err(error) = found(&state, space).await
+            {
                 eprintln!("tonk-kernel: {} was not founded: {error}", space.subject);
             }
         }
@@ -177,6 +185,8 @@ impl lifecycle::Guest for Kernel {
         });
         if let Some(space) = renewing {
             wit_bindgen::spawn_local(async move { renew(&state, &space).await });
+        } else if let Some(space) = fresh {
+            wit_bindgen::spawn_local(async move { create(&state, &space).await });
         }
         let took = world::wasi::clocks::monotonic_clock::now() - started;
         tonk_common::log!("tonk-kernel: opened the worker in {}us", took / 1000);
@@ -246,6 +256,8 @@ impl handler::Guest for Kernel {
                 let Ok(answer) = router.oneshot(request).await;
                 site::stored(answer).await
             }
+            Routed::Seed(space) => seed_of(&space).await,
+            Routed::Settle(space) => settle(&space).await,
         };
         let (parts, mut body) = answer.into_parts();
         let headers = parts
@@ -324,13 +336,71 @@ async fn adopt(state: &TonkState, space: &Space, chains: &[Vec<u8>]) {
 /// pins, as an asset the space's layer already holds, and the pin to it. A
 /// space whose layer holds no boot cell pins nothing, and is left alone.
 async fn found(state: &TonkState, space: &Space) -> Result<(), String> {
+    let Some((hash, size)) = pinned(space).await? else {
+        return Ok(());
+    };
+    state
+        .found_space(&space.subject, hash, size)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Create the space taken up for the first time: its content from what the
+/// person's persona kept for it, or, when it kept nothing, as for a space
+/// joined, only its first commit.
+async fn create(state: &AppState, space: &Space) {
+    let seeded = match seed(state, space).await {
+        Ok(seeded) => seeded,
+        Err(error) => {
+            tonk_common::log!("tonk-kernel: {} was not seeded: {error}", space.subject);
+            false
+        }
+    };
+    if !seeded && let Err(error) = found(&*state.read().await, space).await {
+        tonk_common::log!("tonk-kernel: {} was not founded: {error}", space.subject);
+    }
+}
+
+/// Create the space's content from what the person's persona kept for it as
+/// it created the space, with the kernel its boot cell pins recorded on top,
+/// and tell the persona it was. Whether the persona kept anything. Nothing is
+/// locked while the host asks the persona.
+async fn seed(state: &AppState, space: &Space) -> Result<bool, String> {
+    let Some((hash, size)) = pinned(space).await? else {
+        return Ok(false);
+    };
+    let Some(seed) = tonk_kernel_world::application::seed()
+        .await
+        .map_err(|error| format!("the persona was not asked: {error:?}"))?
+    else {
+        tonk_common::log!(
+            "tonk-kernel: the persona kept nothing to create {} from",
+            space.subject
+        );
+        return Ok(false);
+    };
+    state
+        .read()
+        .await
+        .seed_space(&space.subject, &seed, hash, size)
+        .await
+        .map_err(|error| error.to_string())?;
+    tonk_kernel_world::application::seeded()
+        .await
+        .map_err(|error| format!("the persona was not told: {error:?}"))?;
+    Ok(true)
+}
+
+/// The kernel the space's boot cell pins, as its BLAKE3 hash and size, which
+/// the space's layer holds whole. `None` for a space with no boot cell.
+async fn pinned(space: &Space) -> Result<Option<([u8; 32], u64)>, String> {
     let cell = space
         .layer
         .resolve(boot::NAMESPACE, boot::CELL)
         .await
         .map_err(|error| format!("the boot cell: {error:?}"))?;
     let Some(cell) = cell else {
-        return Ok(());
+        return Ok(None);
     };
     let id = boot::read_cell(&cell.content)?;
     let hash = boot::digest(&id)?;
@@ -340,10 +410,60 @@ async fn found(state: &TonkState, space: &Space) -> Result<(), String> {
         .await
         .map_err(|error| format!("the kernel {id}: {error:?}"))?
         .ok_or_else(|| format!("the space does not hold the kernel {id} whole"))?;
-    state
-        .found_space(&space.subject, hash, size)
-        .await
-        .map_err(|error| error.to_string())
+    Ok(Some((hash, size)))
+}
+
+/// What the space `space` is to be created from: the seed this persona kept
+/// as it created it, or `null`.
+#[cfg(feature = "persona")]
+async fn seed_of(space: &str) -> axum::http::Response<axum::body::Body> {
+    let Some(state) = state() else {
+        return site::answer(StatusCode::SERVICE_UNAVAILABLE, &json!("booting"));
+    };
+    let pending = state.read().await.pending_seed(space).await;
+    match pending {
+        Ok(Some(seed)) => match serde_json::from_str(&seed) {
+            Ok(seed) => site::answer(StatusCode::OK, &seed),
+            Err(error) => {
+                site::answer(StatusCode::INTERNAL_SERVER_ERROR, &json!(error.to_string()))
+            }
+        },
+        Ok(None) => {
+            eprintln!("tonk-kernel: no seed is kept for {space}");
+            site::answer(StatusCode::OK, &Value::Null)
+        }
+        Err(error) => site::answer(StatusCode::INTERNAL_SERVER_ERROR, &json!(error.to_string())),
+    }
+}
+
+/// The space `space` was created from its seed.
+#[cfg(feature = "persona")]
+async fn settle(space: &str) -> axum::http::Response<axum::body::Body> {
+    let Some(state) = state() else {
+        return site::answer(StatusCode::SERVICE_UNAVAILABLE, &json!("booting"));
+    };
+    let settled = state.read().await.settle_seed(space).await;
+    match settled {
+        Ok(()) => site::answer(StatusCode::OK, &Value::Null),
+        Err(error) => site::answer(StatusCode::INTERNAL_SERVER_ERROR, &json!(error.to_string())),
+    }
+}
+
+/// A space's kernel keeps no seeds.
+#[cfg(not(feature = "persona"))]
+async fn seed_of(_space: &str) -> axum::http::Response<axum::body::Body> {
+    site::answer(
+        StatusCode::NOT_FOUND,
+        &json!("a space's kernel keeps no seeds"),
+    )
+}
+
+#[cfg(not(feature = "persona"))]
+async fn settle(_space: &str) -> axum::http::Response<axum::body::Body> {
+    site::answer(
+        StatusCode::NOT_FOUND,
+        &json!("a space's kernel keeps no seeds"),
+    )
 }
 
 #[cfg(feature = "persona")]

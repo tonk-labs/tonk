@@ -302,7 +302,7 @@ pub async fn put_repository(
     let branches: Vec<String> = configuration.branch.keys().cloned().collect();
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     spawn_seed(state, display_name, key, subject, branches);
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     seed_and_initialize(&state, &display_name, None, &key, &subject, &branches).await?;
 
     Ok((StatusCode::CREATED, Json(info)))
@@ -6611,7 +6611,7 @@ const PENDING_SEED_SITE_PREFIX: &str = "tonk-space-seed:";
 /// branch: the worker of the space's origin holds that, and there is to be
 /// one copy of it. That worker writes what creating a space writes (the
 /// standard library, the space's name, the founder's membership) from this.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpaceSeed {
     /// The space's display name.
@@ -6736,7 +6736,7 @@ pub(crate) async fn carry_pending_seed(
 
 /// What `subject`'s own worker is to create its content from, or `None` when
 /// this worker created that content itself or the seed has been settled.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn pending_seed(
     tonk: &TonkState,
     subject: &Did,
@@ -6777,7 +6777,7 @@ pub(crate) async fn pending_seed(
 
 /// The space's own worker has created its content: there is nothing left to
 /// hand over.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn settle_seed(tonk: &TonkState, subject: &Did) -> Result<(), TonkWorkerError> {
     save_pending_seed(tonk, subject, Vec::new())
         .await
@@ -6803,7 +6803,7 @@ pub(crate) async fn settle_seed(tonk: &TonkState, subject: &Did) -> Result<(), T
 /// standard library and the space's name on a `main` with nothing on it yet,
 /// and the founder's membership. Each is safe to repeat, so a worker stopped
 /// part-way picks it up when it is asked again.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn create_content(
     tonk: &TonkState,
     subject: &Did,
@@ -6816,7 +6816,7 @@ pub(crate) async fn create_content(
 }
 
 /// [`create_content`], with the standard library's text in hand.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 async fn create_content_with(
     tonk: &TonkState,
     subject: &Did,
@@ -6933,7 +6933,7 @@ pub(crate) async fn create_copy(
 }
 
 /// Fetch `definitions` and add them to `key`'s content.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 async fn add_definitions(
     tonk: &TonkState,
     key: &str,

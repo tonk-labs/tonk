@@ -32,12 +32,13 @@
 //   kernel and the pin to it.
 // - Keeps the host's own files it serves, so a space that started once
 //   starts again offline.
-// - Boots the kernel the space pins and hands it every request of this
-//   origin but the host's own files. Each page it answers with carries the
-//   host's relay (`kernel/relay.js`), which carries the port up to the
-//   person's profile; a page load the kernel answers with no page gets one of
-//   the host's that says what the kernel answered. A space nothing has been
-//   installed into answers every page with a 404.
+// - Answers every page load with the site's shell, the deployment's, which
+//   brings the space up from this origin's static files, and answers those
+//   files itself. Boots the kernel the space pins and hands it every other
+//   request of this origin, and the loads the shell asks to be answered with
+//   the content at their address. Each page the kernel answers with carries
+//   the host's relay (`kernel/relay.js`); a page load the kernel answers with
+//   nothing gets one of the host's that says what the kernel answered.
 
 importScripts("/_host/embedder.js");
 
@@ -176,10 +177,6 @@ async function standing() {
 // keeps what it is delegated.
 async function delegateSession(session) {
     const answer = await askHost({ delegate: session.did, access: FIRST_ACCESS });
-    // A space that runs a kernel starts blank: nothing of what the profile
-    // would seed it with is taken. Saying it holds the space lets the
-    // profile stop waiting for it to.
-    await askHost({ seeded: true, from: "kernel" }).catch(error => log("the profile was not told:", error));
     await keepStanding(answer);
     return { space: answer.space, handed: new Uint8Array(answer.chain) };
 }
@@ -249,7 +246,10 @@ async function start() {
     // own authority, so it asks for nothing.
     let space = PROFILE ? session.did : await wasm_bindgen.heldSpace();
     let handed = null;
-    if (!space) ({ space, handed } = await delegateSession(session));
+    if (!space) {
+        ({ space, handed } = await delegateSession(session));
+        awaitCreation();
+    }
     // A space with no kernel of its own yet is one being created, and a
     // profile with none a new one: install the one its worker was registered
     // for.
@@ -286,6 +286,20 @@ function run() {
     });
 }
 let booting;
+// Whether the space taken up for the first time has been created: its kernel
+// creates it from what the person's profile kept for it once it serves, and
+// the shell goes to its address only after. Resolved at once for any other
+// boot, and after a while however the creation went, so no page waits on it
+// for good.
+let created = Promise.resolve();
+let settleCreation = () => {};
+const CREATION_WAIT_MS = 30_000;
+function awaitCreation() {
+    created = new Promise(resolve => {
+        settleCreation = resolve;
+        setTimeout(resolve, CREATION_WAIT_MS);
+    });
+}
 // The profile's DID, on the profile's origin: its session's, which
 // represents the persona and is it, until the person makes themselves known.
 let profileDid = null;
@@ -374,17 +388,18 @@ function hostPage(status) {
     );
 }
 
-// What the kernel answers a page load with, for a frame: its page with the
-// relay in it, or the host's page.
-function framed(reply) {
+// What the kernel answers a page load with, the content at an address, for
+// a frame: its page with the relay in it and the site's policy on it, an
+// asset as it is with the policy on it, or the host's page.
+async function framed(reply) {
     const type = reply.headers.get("content-type") ?? "";
-    if (!/^text\/html/i.test(type) || !reply.body) {
-        reply.body?.cancel();
-        return hostPage(reply.status);
+    const headers = await withPolicy(new Headers(reply.headers));
+    if (/^text\/html/i.test(type) && reply.body) {
+        return new Response(withRelay(reply.body), { status: reply.status, headers });
     }
-    const headers = new Headers(reply.headers);
-    headers.delete("content-length");
-    return new Response(withRelay(reply.body), { status: reply.status, headers });
+    if (reply.ok && reply.body) return new Response(reply.body, { status: reply.status, headers });
+    reply.body?.cancel();
+    return hostPage(reply.status);
 }
 
 async function serveKernel(event) {
@@ -432,18 +447,25 @@ function cancelCall(call) {
     calls.delete(call);
 }
 
-// ---- The profile -------------------------------------------------------
+// ---- The site's pages ---------------------------------------------------
 //
-// The profile's pages are the deployment's: every page load gets the
-// profile's shell, which brings up the hub from this origin's static files
-// and asks the kernel through `/api/`. A space's host reaches the profile
-// over a port a page of the space's origin hands up, bound to that space.
+// A site's pages are the deployment's: every page load gets the site's
+// shell, the profile's or a space's, which brings up the hub or the space
+// from this origin's static files and asks the kernel through `/api/`. On a
+// space's origin, a load the shell asked to be answered with content, and
+// an asset opened as a page, are the kernel's to answer. A space's host
+// reaches the profile over a port a page of the space's origin hands up,
+// bound to that space.
 
-const SHELL_PATH = "/profile.html";
+const SHELL_PATH = PROFILE ? "/profile.html" : "/space.html";
 // What the shell this worker serves carries and the server's copy does not.
 const SHELL_MARK = '<meta name="tonk-shell" content="worker" />';
 // The app's static files, which the shell loads from this origin.
 const STATIC_PREFIXES = ["/guest/", "/styles-", "/images/", "/fonts/", "/tonk-code/", "/tonk-prose/", "/tonk-table/"];
+// The icons `<wa-icon>` reads, which the app ships.
+const ICON_PATH = /^\/webawesome\/icons\/[a-z0-9-]+\/[a-z0-9-]+\.svg$/;
+// An asset of a space, opened as a page.
+const ASSET_PATH = /^\/asset:[1-9A-HJ-NP-Za-km-z]+$/;
 // No document on a site's origin may use the app's passkeys.
 const NO_PASSKEYS = "publickey-credentials-get=(), publickey-credentials-create=()";
 
@@ -457,15 +479,16 @@ async function siteOrigins() {
     }
 }
 
-// The profile's policy: framed by the app, and framing itself and the
-// spaces. It renders the app's own hub, which reads the template catalog
-// from where it is published.
-function profilePolicy(sites) {
+// The site's policy: framed by the app, by the profile, and by the site
+// itself, and framing the sites. The profile renders the app's own hub,
+// which reads the template catalog from where it is published. A space gets
+// no network at all: its code is its author's.
+function sitePolicy(sites) {
     const scheme = sites ? new URL(sites.app).protocol : null;
     const profile = sites ? `${scheme}//profile${sites.suffix ?? ""}.${sites.host}` : null;
     const ancestors = sites ? `'self' ${sites.app} ${profile}` : "'none'";
     const framed = sites ? ` ${scheme}//*.${sites.host}` : "";
-    const published = " https: http://localhost:* http://127.0.0.1:*";
+    const published = PROFILE ? " https: http://localhost:* http://127.0.0.1:*" : "";
     return [
         "default-src 'none'",
         "script-src 'self' blob: 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'",
@@ -482,26 +505,51 @@ function profilePolicy(sites) {
     ].join("; ");
 }
 
-async function serveShell() {
-    const response = await hostFile(new Request(new URL(SHELL_PATH, self.location.href), { cache: "no-cache" }));
-    const headers = new Headers(response.headers);
-    headers.set("content-security-policy", profilePolicy(await siteOrigins()));
+// `headers`, with what every page of the site carries.
+async function withPolicy(headers) {
+    headers.set("content-security-policy", sitePolicy(await siteOrigins()));
     headers.set("permissions-policy", NO_PASSKEYS);
     headers.set("x-content-type-options", "nosniff");
     headers.delete("content-length");
-    // Marked as this worker's: the shell renders the hub only in a document
+    return headers;
+}
+
+// Addresses whose next load is answered with their content, and until when.
+// A shell that lands in a frame inside a page of this origin asks for the
+// content at its address here, and loads it once more.
+const admitted = new Map();
+const ADMIT_MS = 5_000;
+
+function admit(url) {
+    const now = Date.now();
+    for (const [held, until] of admitted) if (until <= now) admitted.delete(held);
+    admitted.set(url, now + ADMIT_MS);
+}
+
+// Whether the load of `url` is one a shell asked to be answered with
+// content. Asking uses it up.
+function takeAdmission(url) {
+    const until = admitted.get(url);
+    admitted.delete(url);
+    return until !== undefined && until > Date.now();
+}
+
+async function serveShell() {
+    const response = await hostFile(new Request(new URL(SHELL_PATH, self.location.href), { cache: "no-cache" }));
+    const headers = await withPolicy(new Headers(response.headers));
+    // Marked as this worker's: the shell renders the site only in a document
     // that carries the policy above, and reads the mark to know it does.
     const shell = (await response.text()).replace("<head>", `<head>\n        ${SHELL_MARK}`);
     return new Response(shell, { status: response.status, headers });
 }
 
-// ---- What the kernel asks of other kernels -------------------------------
+// ---- What the kernel asks of other kernels, and of its host --------------
 //
 // The kernel sends a message with `application.send`: `{ ask, to, method,
-// path, body }` asks the kernel of the space `to`, and its answer goes back
-// with `receive` as `{ answer, status, body }`, or `{ answer, error }`.
-// Only the persona asks other kernels: a space's host answers anything else
-// with an error.
+// path, body }` asks the kernel of the space `to`, and `{ ask, read }` asks
+// this host for the text at the address `read`, which anyone may read, such
+// as a seed. The answer goes back with `receive` as `{ answer, status, body
+// }`, or `{ answer, error }`. Only the persona asks other kernels.
 async function kernelSent(bytes) {
     let message;
     try {
@@ -513,11 +561,7 @@ async function kernelSent(bytes) {
     if (typeof message?.ask !== "number") return;
     let answer;
     try {
-        if (!PROFILE) throw new Error("a space's kernel asks no other kernel");
-        const body = message.body == null ? null : new TextEncoder().encode(message.body).buffer;
-        const headers = body ? [["content-type", "application/json"]] : [];
-        const reply = await callSpace(message.to, { method: message.method, path: message.path, headers, body });
-        answer = { answer: message.ask, status: reply.status, body: new TextDecoder().decode(reply.body) };
+        answer = { answer: message.ask, ...(await answerOf(message)) };
     } catch (error) {
         answer = { answer: message.ask, error: String(error?.message ?? error) };
     }
@@ -526,6 +570,36 @@ async function kernelSent(bytes) {
     } catch (error) {
         log("the kernel did not take an answer:", error);
     }
+}
+
+// What answers `message`: `{ status, body }`.
+async function answerOf(message) {
+    if (typeof message.read === "string") return readPublic(message.read);
+    // What the space is to be created from, which the person's profile kept
+    // as it created it, and that it has been.
+    if (message.seed === true && !PROFILE) {
+        const answer = await askHost({ seed: true });
+        log(answer.fresh ? "the profile kept a seed for the space" : "the profile kept no seed for the space");
+        if (!answer.fresh) settleCreation();
+        return { status: 200, body: answer.fresh ?? "null" };
+    }
+    if (message.seeded === true && !PROFILE) {
+        settleCreation();
+        await askHost({ seeded: true, from: "seed" });
+        return { status: 200, body: "" };
+    }
+    if (!PROFILE) throw new Error("a space's kernel asks no other kernel");
+    const body = message.body == null ? null : new TextEncoder().encode(message.body).buffer;
+    const headers = body ? [["content-type", "application/json"]] : [];
+    const reply = await callSpace(message.to, { method: message.method, path: message.path, headers, body });
+    return { status: reply.status, body: new TextDecoder().decode(reply.body) };
+}
+
+// The text at `url`, read as anyone would read it: no credentials, no
+// redirects, nothing kept.
+async function readPublic(url) {
+    const response = await fetch(url, { mode: "cors", credentials: "omit", redirect: "error", cache: "no-store" });
+    return { status: response.status, body: await response.text() };
 }
 
 // The port to each space's host, by the space's DID, as the profile's pages
@@ -645,9 +719,17 @@ function bindSpacePort(port, { repo }) {
                 port.postMessage({ id, bytes }, [bytes]);
                 return;
             }
-            // A space that runs a kernel starts blank, so there is nothing
-            // of it here to settle.
+            // What the space is to be created from, which the persona kept as
+            // it created it, and that it has been.
+            if (data.seed === true) {
+                const reply = await askPersona("GET", `/_kernel/seed/${repo}`);
+                if (reply.status !== 200) throw new Error(reply.text);
+                port.postMessage({ id, fresh: reply.text === "null" ? null : reply.text });
+                return;
+            }
             if (data.seeded === true) {
+                const reply = await askPersona("POST", `/_kernel/seed/${repo}/settled`);
+                if (reply.status !== 200) throw new Error(reply.text);
                 port.postMessage({ id, settled: true });
                 return;
             }
@@ -658,13 +740,24 @@ function bindSpacePort(port, { repo }) {
     };
 }
 
-// What the profile's origin answers itself, never the kernel: its shell for
-// every page load, and the app's static files.
-function serveProfile(event, url) {
-    if (event.request.mode === "navigate") return serveShell();
-    if (event.request.method === "GET" && STATIC_PREFIXES.some(prefix => url.pathname.startsWith(prefix))) {
-        return hostFile(event.request);
+// Ask the persona's kernel, as a page of this origin would: `{ status, text
+// }`, the body whole.
+async function askPersona(method, path) {
+    const reply = await (await booting).handle(method, path, [], new Uint8Array());
+    const pieces = [];
+    for (let piece; (piece = await reply.body.next()); ) pieces.push(piece);
+    return { status: reply.status, text: await new Blob(pieces).text() };
+}
+
+// What a site's origin answers itself, never the kernel: its shell for
+// every page load but a space's content, and the app's static files.
+function serveSite(event, url) {
+    if (event.request.mode === "navigate") {
+        if (!PROFILE && (ASSET_PATH.test(url.pathname) || takeAdmission(url.href))) return null;
+        return serveShell();
     }
+    const shipped = STATIC_PREFIXES.some(prefix => url.pathname.startsWith(prefix)) || ICON_PATH.test(url.pathname);
+    if (event.request.method === "GET" && shipped) return hostFile(event.request);
     return null;
 }
 
@@ -680,7 +773,7 @@ self.addEventListener("message", event => {
     else if (type === "booted") {
         const reply = event.ports[0];
         event.waitUntil(
-            booting.then(
+            booting.then(() => created).then(
                 () => reply?.postMessage({ booted: true }),
                 error => reply?.postMessage({ error: String(error?.message ?? error) }),
             ),
@@ -693,8 +786,13 @@ self.addEventListener("message", event => {
     // The page of the app hands the profile one end of a port to a space's
     // host.
     else if (type === "space-port" && PROFILE) bindSpacePort(event.ports[0], event.data);
-    // A shell asks for the content at its address: the profile keeps none.
-    else if (type === "content") event.ports[0]?.postMessage({ admitted: true });
+    // A shell that loaded inside a page of this origin asks to be replaced
+    // by the content at its address: the next load of that address is the
+    // kernel's to answer, once. The profile keeps no content.
+    else if (type === "content") {
+        if (!PROFILE && typeof event.data.url === "string") admit(event.data.url);
+        event.ports[0]?.postMessage({ admitted: true });
+    }
 });
 
 self.addEventListener("fetch", event => {
@@ -704,9 +802,9 @@ self.addEventListener("fetch", event => {
         event.respondWith(hostFile(event.request));
         return;
     }
-    const profiled = PROFILE && serveProfile(event, url);
-    if (profiled) {
-        event.respondWith(profiled);
+    const served = serveSite(event, url);
+    if (served) {
+        event.respondWith(served);
         return;
     }
     event.respondWith(

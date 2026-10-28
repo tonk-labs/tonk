@@ -325,6 +325,18 @@ pub(crate) async fn found(
     if !blank {
         return Ok(());
     }
+    pin(tonk, space, kernel).await
+}
+
+/// Record on `space`'s `main` the kernel it runs, the asset `kernel`, and the
+/// pin to it.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub(crate) async fn pin(
+    tonk: &TonkState,
+    space: &Did,
+    kernel: Asset,
+) -> Result<(), TonkWorkerError> {
+    let key = space.repo_key();
     let asset = kernel
         .entity()
         .map_err(|e| TonkWorkerError::Internal(format!("the kernel's asset: {e}")))?;
