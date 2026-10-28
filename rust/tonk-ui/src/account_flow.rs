@@ -5938,6 +5938,17 @@ pub(crate) mod tests {
             .find(|key| !before.contains(key))
             .ok_or_else(|| anyhow!("a replica landed but no new key is listed"))?;
 
+        // Open the space, as the hub does once the creation's receipt
+        // says it was created: the profile's worker moves no page itself.
+        driver.enter_default_frame().await?;
+        let mut address = driver.current_url().await?;
+        if !address.path().starts_with(&format!("/space/{key}")) {
+            address.set_path(&format!("/space/{key}"));
+            address.set_query(None);
+            address.set_fragment(None);
+            goto(driver, address.as_str()).await?;
+        }
+
         // The handler navigates the client and attaches the remote
         // AFTER, so the navigation does not wait on the network. The
         // space appearing is therefore not the attach having landed —

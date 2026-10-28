@@ -43,11 +43,13 @@ pub mod world {
 }
 
 mod http;
+mod site;
 
 use std::sync::{Mutex, PoisonError};
 
 use axum::Router;
 use http_body_util::BodyExt as _;
+use site::{Routed, Site};
 use tonk_kernel_world::boot;
 use tonk_kernel_world::guest::HandleLayer;
 use tonk_kernel_world::layer::{SharedLayer, share};
@@ -66,6 +68,7 @@ static ROUTER: Mutex<Option<Held>> = Mutex::new(None);
 /// The router holds Dialog DB's state, which is not `Send`.
 struct Held {
     router: Router,
+    site: Site,
     #[cfg(feature = "persona")]
     state: AppState,
 }
@@ -90,12 +93,12 @@ struct Space {
 // reached from another.
 unsafe impl Send for Held {}
 
-fn router() -> Option<Router> {
+fn router() -> Option<(Router, Site)> {
     ROUTER
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .as_ref()
-        .map(|held| held.router.clone())
+        .map(|held| (held.router.clone(), held.site.clone()))
 }
 
 #[cfg(feature = "persona")]
@@ -161,8 +164,12 @@ impl lifecycle::Guest for Kernel {
             }
         }
         let (router, state, _) = tonk_worker::api_router_with_state(state);
+        let site = Site {
+            space: space.as_ref().map(|space| space.subject.clone()),
+        };
         *ROUTER.lock().unwrap_or_else(PoisonError::into_inner) = Some(Held {
             router,
+            site,
             #[cfg(feature = "persona")]
             state: state.clone(),
         });
@@ -223,11 +230,21 @@ async fn incoming(request: Request) -> Result<axum::http::Request<axum::body::Bo
 
 impl handler::Guest for Kernel {
     async fn handle(request: Request) -> Result<Response, ErrorCode> {
-        let Some(router) = router() else {
+        let Some((router, site)) = router() else {
             return Ok(http::respond(503, Some("text/plain"), b"booting".to_vec()));
         };
         let request = incoming(request).await?;
-        let Ok(answer) = router.oneshot(request).await;
+        let answer = match site::route(request, &site) {
+            Routed::Answer(answer) => answer,
+            Routed::Pass(request) => {
+                let Ok(answer) = router.oneshot(request).await;
+                answer
+            }
+            Routed::Store(request) => {
+                let Ok(answer) = router.oneshot(request).await;
+                site::stored(answer).await
+            }
+        };
         let (parts, mut body) = answer.into_parts();
         let headers = parts
             .headers

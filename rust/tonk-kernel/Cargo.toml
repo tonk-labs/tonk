@@ -11,7 +11,8 @@ crate-type = ["cdylib"]
 
 [features]
 # The kernel for the world `sapling:kernel/persona`: the person's own worker,
-# which serves their profile and grants their other workers what they claim.
+# which serves their profile and delegates to their other workers what their
+# hosts ask for.
 # Without it, a space's own worker, for `sapling:kernel/kernel`.
 persona = []
 
@@ -19,6 +20,7 @@ persona = []
 [target.'cfg(all(target_arch = "wasm32", not(target_os = "unknown")))'.dependencies]
 axum = { workspace = true }
 http-body-util = { workspace = true }
+serde_json = { workspace = true }
 tonk-common = { workspace = true }
 tonk-kernel-world = { workspace = true }
 tonk-worker = { workspace = true }
