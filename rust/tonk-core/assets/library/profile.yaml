@@ -3095,16 +3095,18 @@ view!:
                     </dd></div>
                   </dl>
                   <p class="expl agent-warning" data-agent-warning hidden></p>
-                  <label class="agent-field"><span>agent name</span>
+                  <label class="agent-field" data-agent-choice hidden><span>agent</span>
+                    <select class="agent-input" data-agent-pick aria-label="Agent"></select></label>
+                  <label class="agent-field" data-agent-name-field><span>agent name</span>
                     <input class="agent-input" type="text" data-agent-name maxlength="80" autocomplete="off" aria-label="Agent name"></label>
                   <div class="agent-spaces" role="group" aria-label="what it can reach">
                     <div class="agent-spaces-head">what it can reach</div>
                     <div data-agent-spaces><p class="expl">loading your spaces…</p></div>
                   </div>
                   <p class="expl">
-                    the agent gets a space of its own, named as above, and can always read and
-                    write there. read lets it see a space; read and write lets it change it too.
-                    access to your spaces lasts 90 days.
+                    the agent has a space of its own, and can always read and write there. read
+                    lets it see a space; read and write lets it change it too. access to your
+                    spaces lasts 90 days. an agent you connect again keeps what it could reach.
                   </p>
                   <p class="expl agent-error" data-agent-error role="alert" hidden></p>
                   <div class="link-foot">
@@ -5709,6 +5711,7 @@ element!: &account-settings
           self.text('[data-agent-host]', host);
           const name = self.querySelector('[data-agent-name]');
           if (name && !name.value) name.value = client;
+          self.agentChoices(described?.agents ?? [], client);
           const loopback = host === 'localhost' || host === '[::1]' || /^127\./.test(host);
           const warning = self.querySelector('[data-agent-warning]');
           if (warning) {
@@ -5725,6 +5728,33 @@ element!: &account-settings
             : `this request can't be answered: ${self.agentReason(error)}`);
         });
         return true;
+      }
+    # This account's agents the app may connect again: only ones made for
+    # the same provider's apps, so Claude and ChatGPT never share one. The
+    # first is chosen; a new agent is always on offer too.
+    agent-choices: |
+      (self, agents, client) => {
+        const choice = self.querySelector('[data-agent-choice]');
+        const pick = self.querySelector('[data-agent-pick]');
+        if (!choice || !pick) return;
+        pick.replaceChildren();
+        for (const agent of agents) {
+          const option = document.createElement('option');
+          option.value = agent.key;
+          option.textContent = agent.name || 'Unnamed agent';
+          pick.append(option);
+        }
+        const fresh = document.createElement('option');
+        fresh.value = '';
+        fresh.textContent = `a new agent for ${client}`;
+        pick.append(fresh);
+        choice.hidden = agents.length === 0;
+        const named = () => {
+          const field = self.querySelector('[data-agent-name-field]');
+          if (field) field.hidden = pick.value !== '';
+        };
+        pick.onchange = named;
+        named();
       }
     # One row per space, a select per row: synced spaces only, since a
     # hosted agent reaches a space through its sync remote.
@@ -5792,8 +5822,9 @@ element!: &account-settings
         const request = self.agentRequest();
         const field = self.querySelector('[data-agent-name]');
         const name = (field?.value ?? '').trim();
+        const agent = self.querySelector('[data-agent-choice]')?.hidden ? '' : (self.querySelector('[data-agent-pick]')?.value ?? '');
         if (!request) return;
-        if (!name) { field?.focus(); self.agentError('give the agent a name.'); return; }
+        if (!agent && !name) { field?.focus(); self.agentError('give the agent a name.'); return; }
         const spaces = [...self.querySelectorAll('select.agent-access')]
           .filter((select) => !select.disabled && (select.value === 'read' || select.value === 'write'))
           .map((select) => ({ key: select.dataset.key, access: select.value }));
@@ -5802,7 +5833,8 @@ element!: &account-settings
         // The worker asks this page's top document for the passkey; the
         // ceremony row reports how it goes, and the top page goes on to
         // the app's callback when it is done.
-        self.api('/api/agent/session', { name, spaces, request }).catch((error) => {
+        const ask = agent ? { agent, spaces, request } : { name, spaces, request };
+        self.api('/api/agent/session', ask).catch((error) => {
           self.agentBusy(false, '');
           self.agentError(self.agentReason(error));
         });

@@ -128,6 +128,10 @@ pub struct AgentAuthorization {
     pub request: String,
     /// The agent's name.
     pub name: String,
+    /// The routing key of an existing agent space to connect again, when
+    /// the page chose one rather than a new agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     /// Which LLM provider the requesting app belongs to (`claude`,
     /// `chatgpt`), when it could be told; an agent is only ever offered
     /// again to an app of the same provider.
