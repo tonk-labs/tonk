@@ -244,10 +244,50 @@ needs a lock, and origins grow with isolate churn); one writer per session for
 all spaces (needlessly serializes unrelated spaces). Each MCP reconnect still
 mints a new origin; that growth is accepted.
 
-Memory: a Durable Object has the same 128 MB as an isolate, shared by the
-caches, the peer and the query working set. The dialog node cache must be given
-an explicit budget (`HeldCaches::with_budget`, 24 to 32 MiB to start); the other
-caches are not configurable yet (dialog-db/dialog-db#706).
+### Memory
+
+A Durable Object has the same 128 MB as an isolate, shared by the bundle, the
+caches, the peer and the query working set. Wasm linear memory never shrinks, so
+a long-lived space writer sits at the high-water mark of everything it has
+served. Only the node cache is configurable today (dialog-db/dialog-db#706), so
+stage 2 makes an out-of-memory unlikely with the dials that exist, not
+impossible:
+
+| Share | Budget | Dial |
+| --- | --- | --- |
+| Idle isolate (bundle, runtime) | ~2 MiB measured | none |
+| Tree node cache | 24 MiB | `HeldCaches::with_budget` |
+| Spilled values | 8 MiB per open repository; a space writer opens one space, so 8 to 16 MiB | fixed, keep repositories per writer to one or two |
+| Entry caches (causal verdicts, contexts, records, rules, plans) | unmeasured, estimated under 8 MiB | fixed at 2048 entries each |
+| Query working set | what is left, about 70 MiB | read caps |
+| Margin | ~10 MiB | |
+
+The dials stage 2 uses:
+
+- **Answer caps** in rows and bytes, with paging. Not enough alone: a filter that
+  matches 400 of 20k records peaked at 57.8 MiB in the spike with a small answer,
+  because the working set is the scan, not the answer.
+- **Route big reads away.** A read whose plan scans a whole concept in a space
+  above a size threshold goes to a stateless isolate, which starts fresh and is
+  thrown away, instead of raising the writer's high-water mark.
+- **Recycle on high water.** After each request the writer reads
+  `memory.size`; above 96 MiB, and with no write holding the lock, it drops its
+  peer and resets itself (`ctx.abort()`), so the next request starts cold
+  instead of near the limit.
+
+Remaining risk:
+
+- A read the planner did not see as big still runs in the writer and can push it
+  over. The writer is then reset by the runtime: in-flight requests fail with an
+  error, and a write that had not pushed is lost but was never acknowledged, so
+  the client sees a failure, not silent loss. A retried write follows the
+  stage 3b retry rule.
+- Contexts are per-origin watermarks, and every MCP reconnect mints an origin, so
+  a cached context grows with the space's writer history while the cache count
+  stays at 2048. Stage 2 measures the entry caches on a space with many origins;
+  if they grow past a few MiB, #706 becomes a blocker rather than a nicety.
+- The numbers above come from the spike's 20k-record space. A larger space moves
+  the threshold for routing reads away, not the cache budgets.
 
 ## Views in MCP Apps (later)
 
