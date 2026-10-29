@@ -526,9 +526,10 @@ concept!: &mcp-note
         let (spaces, error) = writer.call("tonk_list_spaces", json!({})).await;
         assert!(!error, "{spaces}");
         let listed = spaces["spaces"].as_array().unwrap();
-        assert!(listed.iter().any(
-            |entry| entry["subject"] == json!(subject) && entry["access"] == json!("read-write")
-        ));
+        assert!(
+            listed.iter().any(|entry| entry["subject"] == json!(subject)
+                && entry["access"] == json!("read-write"))
+        );
         for document in [SCHEMA.to_owned(), note.clone()] {
             let (result, error) = writer
                 .call(

@@ -400,7 +400,11 @@ impl<W: Writers> McpEndpoint<'_, W> {
                     "id": id,
                     "result": {
                         "protocolVersion": version,
-                        "capabilities": { "tools": { "listChanged": false } },
+                        "capabilities": {
+                            "tools": { "listChanged": false },
+                            "resources": {},
+                            "extensions": { "io.modelcontextprotocol/ui": {} },
+                        },
                         "serverInfo": {
                             "name": "tonk",
                             "title": "Tonk",
@@ -430,7 +434,18 @@ impl<W: Writers> McpEndpoint<'_, W> {
         };
         let result = match method.as_str() {
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({ "tools": tools() })),
+            "tools/list" => {
+                let mut tools = tools();
+                tools.extend(super::view::tools());
+                Ok(json!({ "tools": tools }))
+            }
+            "resources/list" => Ok(json!({ "resources": super::view::resources() })),
+            "resources/read" => {
+                let uri = message["params"]["uri"].as_str().unwrap_or_default();
+                super::view::read_resource(uri, self.origin).ok_or_else(
+                    || json!({ "code": -32602, "message": format!("no resource {uri}") }),
+                )
+            }
             "tools/call" => Ok(self
                 .call_tool(&verified, &bearer, &session, &message["params"])
                 .await),
@@ -519,7 +534,12 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 };
                 tool_result(body, !status.is_success())
             }
-            _ => tool_result(json!("Tool unavailable."), true),
+            _ => match super::view::call(name, arguments, verified, bearer, session, self.origin)
+                .await
+            {
+                Some(result) => result,
+                None => tool_result(json!("Tool unavailable."), true),
+            },
         }
     }
 
