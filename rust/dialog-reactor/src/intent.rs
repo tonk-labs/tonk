@@ -18,14 +18,19 @@
 //!   the input and the selection, and the readings are those of its
 //!   intents, with the values rules derived onto each intent filling the
 //!   command's fields.
+//! - `memory` — what was run from the palette, kept on another branch (the
+//!   profile's), as JSON `{ "choices": [row…], "picks": [row…] }`; read
+//!   along with this branch's own.
 //!
 //! Each row is one reading, best first: `rank`, `score`, `command` (the
 //! command entity), `text` (the reading as plain text), `display` (its
 //! segments as JSON), `nouns` (role → kind of thing, as JSON), `input`
 //! (the words the reading took for its verb, when it took any),
-//! `completion` (the input extended by this reading, when it extends it)
-//! and, once nothing is missing, `claim` (the transact request that runs
-//! it, as JSON). Every row's `this` names the query, not an entity: a
+//! `completion` (the input extended by this reading, when it extends it),
+//! `listed` (whether it is one of the values listed for an argument nothing
+//! was typed for), `entities` (the entities its arguments are filled with,
+//! as JSON) and, once nothing is missing, `claim` (the transact request
+//! that runs it, as JSON). Every row's `this` names the query, not an entity: a
 //! reading is not a fact about anything.
 //!
 //! The shape is the contract, not where it is answered. The rows are what
@@ -56,7 +61,16 @@ pub async fn suggest<Env: SelectProvider>(
     let this = text_term(query, "this");
     let now = number_term(query, "now");
     let max = number_term(query, "max").map_or(5, |max| max.max(1.0) as usize);
-    let (mut source, memory) = load(branch, env).await?;
+    let (mut source, mut memory, mut picks) = load(branch, env).await?;
+    if let Some(remembered) = text_term(query, "memory") {
+        let remembered: Remembered =
+            serde_json::from_str(&remembered).map_err(|e| FormulaError::BadInput {
+                formula: NAME.into(),
+                reason: format!("memory: {e}"),
+            })?;
+        memory.extend(remembered.choices);
+        picks.extend(remembered.picks);
+    }
 
     // An interpreted expression (`intent/interpret` recorded it, with an
     // intent per command it could mean) supplies the input and selection,
@@ -123,6 +137,7 @@ pub async fn suggest<Env: SelectProvider>(
         shown,
         sources: vec![source],
         memory,
+        picks,
         now,
     };
     let proposals = if input.is_empty() {
@@ -162,7 +177,7 @@ pub async fn interpret<Env: SelectProvider>(
     input: &str,
     site: Option<&str>,
 ) -> Result<Interpretation, FormulaError> {
-    let (mut source, memory) = load(branch, env).await?;
+    let (mut source, memory, picks) = load(branch, env).await?;
     // Which commands, not what fills them: rules derive an entity field's
     // candidates onto the intent this records, so none exist yet. Read any
     // text there ("install notebook") as possibly naming one; `suggest`
@@ -200,6 +215,7 @@ pub async fn interpret<Env: SelectProvider>(
             shown: Vec::new(),
             sources: vec![source],
             memory,
+            picks,
             now: None,
         };
         for proposal in tonk_intent::propose(&request) {
@@ -212,11 +228,22 @@ pub async fn interpret<Env: SelectProvider>(
     })
 }
 
-/// Everything `branch` says about its commands, and the parser's memory.
+/// What the palette ran before, as the `memory` term carries it from the
+/// branch that keeps it.
+#[derive(Debug, Default, serde::Deserialize)]
+struct Remembered {
+    #[serde(default)]
+    choices: Vec<Row>,
+    #[serde(default)]
+    picks: Vec<Row>,
+}
+
+/// Everything `branch` says about its commands, and the parser's memory:
+/// the commands run and the entities they were given.
 async fn load<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
-) -> Result<(Source, Vec<Row>), FormulaError> {
+) -> Result<(Source, Vec<Row>, Vec<Row>), FormulaError> {
     let mut source = Source {
         branch: String::new(),
         ..Source::default()
@@ -225,7 +252,8 @@ async fn load<Env: SelectProvider>(
     source.attributes = rows(branch, env, attributes()).await?;
     source.arguments = arguments(branch, env).await?;
     let memory = rows(branch, env, choices()).await?;
-    Ok((source, memory))
+    let picks = rows(branch, env, picks()).await?;
+    Ok((source, memory, picks))
 }
 
 /// The input recorded for `expression`.
@@ -451,6 +479,17 @@ fn row(rank: usize, proposal: Proposal) -> Conclusion {
     if let Some(claim) = &proposal.claim {
         fields.insert("claim".into(), Ipld::String(claim.to_string()));
     }
+    fields.insert("listed".into(), Ipld::Bool(proposal.listed));
+    let entities: Vec<&str> = proposal
+        .parse
+        .arguments
+        .iter()
+        .filter_map(|filled| match &filled.value {
+            Some(tonk_lingo::Value::Entity(entity)) => Some(entity.as_str()),
+            _ => None,
+        })
+        .collect();
+    fields.insert("entities".into(), json_text(&entities));
     Conclusion {
         this: format!("db:{NAME}"),
         fields,
@@ -649,6 +688,22 @@ fn choices() -> Json {
         } },
         "terms": {
             "this": var("this"), "command": var("command"), "input": var("input"),
+            "time": var("time")
+        }
+    })
+}
+
+/// `intent/pick`: the entities commands run before were given, for ranking
+/// the values listed for an argument.
+fn picks() -> Json {
+    json!({
+        "predicate": { "with": {
+            "command": entity("tonk.dialog.intent.pick/command", false),
+            "value": entity("tonk.dialog.intent.pick/value", false),
+            "time": { "the": "tonk.dialog.intent.pick/time", "as": "Float", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": var("this"), "command": var("command"), "value": var("value"),
             "time": var("time")
         }
     })
