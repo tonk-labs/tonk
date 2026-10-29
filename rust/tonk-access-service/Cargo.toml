@@ -40,6 +40,7 @@ tonk-invite = { workspace = true }
 tonk-worker-api = { workspace = true }
 
 # Cryptography
+aes-gcm = { workspace = true }
 blake3 = { workspace = true }
 bs58 = { workspace = true }
 ed25519-dalek = { workspace = true }

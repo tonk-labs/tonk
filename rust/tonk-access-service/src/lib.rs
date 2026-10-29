@@ -15,6 +15,8 @@
 //!   [`shortcut`] module)
 //! - `GET /@/{hash}` - Permanent relative redirect to the stored target, with
 //!   allowlisted public referral tags forwarded
+//! - `/.well-known/oauth-*`, `/register`, `/authorize`, `/token` - The
+//!   OAuth authorization server for `/mcp` (see the [`oauth`] module)
 //!
 //! ## Request Format
 //!
@@ -58,6 +60,7 @@ pub mod invitation;
 pub mod live;
 pub mod lookup;
 pub mod metering;
+pub mod oauth;
 #[cfg(target_arch = "wasm32")]
 pub mod objects;
 pub mod observability;
@@ -98,6 +101,12 @@ async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
             .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
     {
         return live::connect(req, &env).await;
+    }
+    // The OAuth authorization server for `/mcp`, matched by path so
+    // every method reaches it and it answers preflights itself.
+    #[cfg(target_arch = "wasm32")]
+    if let Some(endpoint) = oauth::Endpoint::of(&req.path()) {
+        return handlers::oauth::serve(req, env, endpoint).await;
     }
     let router = Router::new();
 
