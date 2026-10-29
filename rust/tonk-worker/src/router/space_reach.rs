@@ -31,47 +31,9 @@ pub(crate) async fn ask(
     path: &str,
     body: Option<&serde_json::Value>,
 ) -> Result<serde_json::Value, TonkWorkerError> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        use js_sys::{Function, Promise, Reflect};
-        use wasm_bindgen::{JsCast, JsValue};
-        use wasm_bindgen_futures::JsFuture;
-
-        let unreachable =
-            |why: String| TonkWorkerError::Internal(format!("could not ask {space}: {why}"));
-        let global = js_sys::global();
-        let hook: Function = Reflect::get(&global, &"tonkAskSpace".into())
-            .ok()
-            .and_then(|hook| hook.dyn_into().ok())
-            .ok_or_else(|| unreachable("this worker reaches no space's worker".into()))?;
-        let body = body.map_or(JsValue::NULL, |body| JsValue::from_str(&body.to_string()));
-        let asked: Promise = hook
-            .apply(
-                &global,
-                &js_sys::Array::of4(&space.into(), &method.into(), &path.into(), &body),
-            )
-            .ok()
-            .and_then(|asked| asked.dyn_into().ok())
-            .ok_or_else(|| unreachable("the hook did not answer with a promise".into()))?;
-        let answer = JsFuture::from(asked)
-            .await
-            .map_err(|error| unreachable(format!("{error:?}")))?;
-        let status = Reflect::get(&answer, &"status".into())
-            .ok()
-            .and_then(|status| status.as_f64())
-            .unwrap_or_default();
-        let text = Reflect::get(&answer, &"body".into())
-            .ok()
-            .and_then(|text| text.as_string())
-            .unwrap_or_default();
-        if !(200.0..300.0).contains(&status) {
-            return Err(unreachable(format!("it answered {status}: {text}")));
-        }
-        Ok(serde_json::from_str(&text).unwrap_or(serde_json::Value::Null))
-    }
     // A kernel asks through its embedder, which delivers the request to the
     // space's kernel.
-    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    #[cfg(target_arch = "wasm32")]
     {
         let unreachable =
             |why: String| TonkWorkerError::Internal(format!("could not ask {space}: {why}"));
@@ -232,59 +194,9 @@ async fn subscribe(
     path: &str,
     body: &serde_json::Value,
 ) -> Result<PeerFrames, PeerError> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        use futures_util::{StreamExt as _, stream};
-        use js_sys::{Function, Promise, Reflect, Uint8Array};
-        use wasm_bindgen::{JsCast, JsValue};
-        use wasm_bindgen_futures::JsFuture;
-        use wasm_streams::ReadableStream;
-
-        let unreachable = |why: String| PeerError::Unreachable(format!("{space}: {why}"));
-        let global = js_sys::global();
-        let hook: Function = Reflect::get(&global, &"tonkSubscribeSpace".into())
-            .ok()
-            .and_then(|hook| hook.dyn_into().ok())
-            .ok_or_else(|| unreachable("this worker reaches no space's worker".into()))?;
-        let asked: Promise = hook
-            .call3(
-                &global,
-                &space.into(),
-                &path.into(),
-                &JsValue::from_str(&body.to_string()),
-            )
-            .ok()
-            .and_then(|asked| asked.dyn_into().ok())
-            .ok_or_else(|| unreachable("the hook did not answer with a promise".into()))?;
-        let answer = JsFuture::from(asked)
-            .await
-            .map_err(|error| unreachable(format!("{error:?}")))?;
-        let status = Reflect::get(&answer, &"status".into())
-            .ok()
-            .and_then(|status| status.as_f64())
-            .unwrap_or_default();
-        if !(200.0..300.0).contains(&status) {
-            return Err(PeerError::Refused(format!("{space} answered {status}")));
-        }
-        let stream: web_sys::ReadableStream = Reflect::get(&answer, &"body".into())
-            .ok()
-            .and_then(|stream| stream.dyn_into().ok())
-            .ok_or_else(|| malformed("the subscription has no stream"))?;
-        let mut events = Events::default();
-        let frames = ReadableStream::from_raw(stream)
-            .into_stream()
-            .flat_map(move |chunk| {
-                stream::iter(match chunk.map(|bytes| bytes.dyn_into::<Uint8Array>()) {
-                    Ok(Ok(bytes)) => events.read(&bytes.to_vec()),
-                    Ok(Err(other)) => vec![Err(malformed(format!("{other:?}")))],
-                    Err(error) => vec![Err(PeerError::Unreachable(format!("{error:?}")))],
-                })
-            });
-        Ok(Box::pin(frames))
-    }
     // A kernel subscribes through its embedder, which delivers the
     // subscription's answer piece by piece.
-    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    #[cfg(target_arch = "wasm32")]
     {
         use futures_util::{StreamExt as _, stream};
 
@@ -390,22 +302,8 @@ const PROFILE_BRANCH: &str = "main";
 /// A worker that is not running learns of it when it next starts. Nothing to
 /// tell on a host with one database.
 pub(crate) fn changed(space: Option<&str>) {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        use js_sys::{Function, Reflect};
-        use wasm_bindgen::{JsCast, JsValue};
-
-        let global = js_sys::global();
-        if let Some(hook) = Reflect::get(&global, &"tonkSpaceChanged".into())
-            .ok()
-            .and_then(|hook| hook.dyn_into::<Function>().ok())
-        {
-            let space = space.map_or(JsValue::NULL, JsValue::from_str);
-            let _ = hook.call1(&global, &space);
-        }
-    }
     // A kernel tells its embedder, which signals the space's host.
-    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    #[cfg(target_arch = "wasm32")]
     {
         let space = space.map(str::to_owned);
         crate::detach(async move {
@@ -426,30 +324,6 @@ pub(crate) fn changed(space: Option<&str>) {
 /// local storage it stands in for: a worker that cannot be reached leaves
 /// bytes nothing shows, on an origin nothing opens.
 pub(crate) async fn forget(space: &str) {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        use js_sys::{Function, Promise, Reflect};
-        use wasm_bindgen::{JsCast, JsValue};
-        use wasm_bindgen_futures::JsFuture;
-
-        let global = js_sys::global();
-        let Some(hook) = Reflect::get(&global, &"tonkForgetSpace".into())
-            .ok()
-            .and_then(|hook| hook.dyn_into::<Function>().ok())
-        else {
-            return;
-        };
-        let forgotten = hook
-            .call1(&global, &JsValue::from_str(space))
-            .ok()
-            .and_then(|forgotten| forgotten.dyn_into::<Promise>().ok());
-        if let Some(forgotten) = forgotten
-            && let Err(error) = JsFuture::from(forgotten).await
-        {
-            tonk_common::log!("{space} was not forgotten by its own worker: {error:?}");
-        }
-    }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
         let _ = space;
     }
@@ -464,39 +338,9 @@ pub(crate) async fn forget(space: &str) {
 pub(crate) async fn ask_profile(
     request: &serde_json::Value,
 ) -> Result<serde_json::Value, TonkWorkerError> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        use js_sys::{Function, Promise, Reflect};
-        use wasm_bindgen::JsCast;
-        use wasm_bindgen_futures::JsFuture;
-
-        let unreachable =
-            |why: String| TonkWorkerError::Internal(format!("could not ask the profile: {why}"));
-        let global = js_sys::global();
-        let hook: Function = Reflect::get(&global, &"tonkAskProfile".into())
-            .ok()
-            .and_then(|hook| hook.dyn_into().ok())
-            .ok_or_else(|| unreachable("this worker answers to no profile".into()))?;
-        let request = js_sys::JSON::parse(&request.to_string())
-            .map_err(|error| unreachable(format!("{error:?}")))?;
-        let asked: Promise = hook
-            .call1(&global, &request)
-            .ok()
-            .and_then(|asked| asked.dyn_into().ok())
-            .ok_or_else(|| unreachable("the hook did not answer with a promise".into()))?;
-        let answer = JsFuture::from(asked)
-            .await
-            .map_err(|error| unreachable(format!("{error:?}")))?;
-        // What the profile answered with, when it answered with anything.
-        Ok(js_sys::JSON::stringify(&answer)
-            .ok()
-            .and_then(|text| text.as_string())
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or(serde_json::Value::Null))
-    }
     // A kernel asks through its embedder, which passes the ask up to the
     // person's persona.
-    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    #[cfg(target_arch = "wasm32")]
     {
         tonk_kernel_world::application::ask_profile(request)
             .await
@@ -515,7 +359,7 @@ pub(crate) async fn ask_profile(
 
 /// A stand-in for the workers on the spaces' own origins, for a test of
 /// what a profile's worker asks of them. A host with one database has none.
-#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+#[cfg(test)]
 pub(crate) mod stand_in {
     use std::cell::RefCell;
 
@@ -572,7 +416,7 @@ pub(crate) mod stand_in {
     }
 }
 
-#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+#[cfg(test)]
 mod tests {
     use futures_util::StreamExt as _;
     use serde_json::json;

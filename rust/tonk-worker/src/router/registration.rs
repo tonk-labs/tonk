@@ -322,26 +322,6 @@ pub(crate) fn settled(
     }
 }
 
-/// The ceremony a custody hand-off ran, when it is one the panel asked
-/// for.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) fn kind_of(intent: &tonk_worker_api::CustodyIntent) -> Option<&'static str> {
-    match intent {
-        tonk_worker_api::CustodyIntent::CreateAccount(_) => Some(kind::CREATE),
-        tonk_worker_api::CustodyIntent::Login(_) => Some(kind::LOG_IN),
-        _ => None,
-    }
-}
-
-/// The ceremony a custody hand-off's `data` asks for, when it is one the
-/// panel asked for.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) fn kind_in(data: &wasm_bindgen::JsValue) -> Option<&'static str> {
-    let request = js_sys::Reflect::get(data, &"request".into()).ok()?;
-    let intent: tonk_worker_api::CustodyIntent = serde_wasm_bindgen::from_value(request).ok()?;
-    kind_of(&intent)
-}
-
 /// Whether the account this profile holds is served, as the service says
 /// now: right after a login the account's own facts have not synced here
 /// yet, so they cannot say.
@@ -482,7 +462,7 @@ async fn ask(
         kind,
         message: message.to_owned(),
     };
-    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    #[cfg(target_arch = "wasm32")]
     let asked = {
         let name = match intent {
             tonk_worker_api::CustodyIntent::CreateAccount(creation) => creation.display_name,
@@ -490,7 +470,7 @@ async fn ask(
         };
         super::merge::ask(kind, address, name)
     };
-    #[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+    #[cfg(not(target_arch = "wasm32"))]
     let asked = {
         let _ = address;
         ask_page(env, intent).await
@@ -503,7 +483,7 @@ async fn ask(
 
 /// Ask the page that asserted `env`'s command for the passkey ceremony
 /// `intent`. An error, for the person, when it could not be asked.
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+#[cfg(not(target_arch = "wasm32"))]
 async fn ask_page(
     env: &crate::router::CommandEnv,
     intent: tonk_worker_api::CustodyIntent,
@@ -779,82 +759,6 @@ mod tests {
     #[dialog_common::test]
     fn it_words_a_closed_passkey_prompt_as_one_to_try_again() {
         assert!(refused("NotAllowedError").contains("Try again"));
-    }
-}
-
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod waiting_tests {
-    use super::{Stage, confirming, record};
-    use crate::router::customer::{record_activation, record_customer_status};
-    use tonk_account::customer::CustomerStatus;
-    use tonk_schema::registration::kind;
-
-    /// The sweep that learns from a sync that the account is served is one
-    /// of the ways the emailed link is heard of: the panel waiting for the
-    /// link is put away by it.
-    #[dialog_common::test]
-    async fn it_puts_the_waiting_panel_away_when_activation_is_recorded() {
-        let tonk = crate::router::tests::test_state().await;
-        record_customer_status(
-            &tonk,
-            CustomerStatus::Registered,
-            "waiting@example.com",
-            None,
-        )
-        .await
-        .expect("the registration is recorded");
-        record(&tonk, Some(Stage::Confirming { kind: kind::CREATE })).await;
-        assert!(confirming(&tonk).await);
-
-        record_activation(&tonk).await;
-
-        assert!(!confirming(&tonk).await);
-    }
-
-    /// A refusal reaches the worker as a message from the page, with no
-    /// command after it: the panel showing the wait for a passkey still
-    /// hears that it failed.
-    #[dialog_common::test]
-    async fn it_tells_the_panel_of_a_ceremony_the_page_refused() {
-        use dialog_query::{ConceptQuery, Query, Term};
-
-        let tonk = crate::router::tests::test_state().await;
-        record(&tonk, Some(Stage::Ceremony { kind: kind::CREATE })).await;
-        let this: dialog_artifacts::Entity = super::ENTITY.parse().unwrap();
-        let session = tonk
-            .reactor
-            .profile_repository()
-            .branch(&tonk.active_branch)
-            .acquire(&tonk.operator)
-            .await
-            .expect("the profile branch opens");
-        let mut failed = session
-            .subscribe(
-                ConceptQuery::from(Query::<super::RegistrationFailed> {
-                    this: Term::from(this),
-                    kind: Term::var("kind"),
-                    message: Term::var("message"),
-                }),
-                None,
-                0,
-            )
-            .expect("the panel subscribes");
-        tonk.reactor
-            .schedule_poll(std::sync::Arc::clone(&session.state));
-        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
-        while failed.receiver.try_recv().is_ok() {}
-
-        super::ceremony_refused(&tonk, kind::CREATE, "NotAllowedError").await;
-
-        let mut heard = Vec::new();
-        while let Ok(bytes) = failed.receiver.try_recv() {
-            heard.extend_from_slice(&bytes);
-        }
-        let heard = String::from_utf8_lossy(&heard);
-        assert!(
-            heard.contains("asserted") && heard.contains(kind::CREATE),
-            "the panel hears of the failure: {heard:?}"
-        );
     }
 }
 

@@ -500,11 +500,6 @@ fn is_absence(err: &ReactorError) -> bool {
 mod tests {
     use super::*;
 
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    wasm_bindgen_test_configure!(run_in_service_worker);
-
     /// A repository or branch this device has not replicated is an
     /// ABSENCE, not a failure. Classifying it as one is what lets the
     /// query paths answer with the empty set and park the subscription
@@ -563,7 +558,6 @@ mod tests {
     /// Native only: it needs a whole worker state, which the native test
     /// fixture builds. The upgrade itself is target-agnostic dialog code,
     /// covered on wasm by dialog-repository's `transaction::migration` tests.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[dialog_common::test]
     async fn the_first_read_of_a_branch_re_installs_rules_stored_the_earlier_way() {
         use dialog_artifacts::{ArtifactSelector, Entity, Pick, Value};

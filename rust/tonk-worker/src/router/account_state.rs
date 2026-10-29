@@ -102,10 +102,6 @@ pub(crate) async fn account_remote(tonk: &TonkState) -> Result<String, TonkWorke
     }
     // What the email lookup resolved, before enrollment has recorded
     // anything: the account's own document naming where it syncs.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if let Some(address) = super::email_status::resolved_service() {
-        return Ok(address);
-    }
     // What the link named, which is where the linking party was
     // actually talking to the service.
     if let Some(remote) = super::account::attachment(tonk)
@@ -763,16 +759,6 @@ pub(crate) enum Publish {
 /// link with a remote check see what the browser will have seen a
 /// moment later.
 pub(crate) async fn push_after_answer(app: crate::router::AppState) {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        wasm_bindgen_futures::spawn_local(async move {
-            let tonk = app.read().await;
-            if let Err(error) = push_account_main(&tonk).await {
-                log!("push behind the login's answer did not land: {error}");
-            }
-        });
-    }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
         let tonk = app.read().await;
         if let Err(error) = push_account_main(&tonk).await {
@@ -924,14 +910,6 @@ async fn sweep_account_state(
     // that database around until this runs. Once per worker life; the
     // deletion shim never rejects, and everything the repository held
     // is recoverable from the same remote profile main now follows.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        static LEGACY_DISCARDED: AtomicBool = AtomicBool::new(false);
-        if !LEGACY_DISCARDED.swap(true, Ordering::Relaxed) {
-            super::repository::delete_legacy_storage(&key).await;
-        }
-    }
 
     match trusted_marker(tonk).await {
         Ok(marker) if marker_matches(marker.as_deref(), &root.root_did) => {
@@ -1227,13 +1205,7 @@ pub(crate) async fn retain_space_delegation(tonk: &TonkState, chain: &Delegation
         .await
     {
         Ok(wrote) => {
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            if wrote {
-                tonk.sync_queue
-                    .mark_dirty(&ready.key, super::sync::now_millis());
-            }
             // The routing key only feeds the wasm dirty-marking above.
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             let _ = &ready;
             wrote
         }
@@ -1359,9 +1331,6 @@ pub(crate) async fn seed_sealed_inbox(tonk: &TonkState) -> bool {
         log!("commit account encryption key: {error}");
         return false;
     }
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue
-        .mark_dirty(&ready.key, super::sync::now_millis());
     true
 }
 
@@ -1405,11 +1374,6 @@ pub(crate) async fn custody_seed(
     }
     // Custody lands on profile main, which syncs with the account: nudge it
     // out rather than waiting for the next sweep.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if let Ok(ready) = require_ready_account_state(tonk).await {
-        tonk.sync_queue
-            .mark_dirty(&ready.key, super::sync::now_millis());
-    }
     true
 }
 
@@ -1569,9 +1533,6 @@ async fn adopt_account_display_name(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("commit account display name: {error}"))
         })?;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue
-        .mark_dirty(&ready.key, super::sync::now_millis());
     // The rename's own fan-out: every space this device can reach gets
     // the name now and is queued for sync; the sweep catches up the rest.
     converge_account_state(tonk).await?;
@@ -1663,11 +1624,6 @@ pub(crate) async fn rename_display_name(
 
     // Keyed the way the membership rows were written: on the persisted
     // root when there is one, else on the device.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        let member = super::account::member_did(tonk).await?;
-        project_member_names(tonk, &member, name, true).await;
-    }
 
     // Roster upkeep: the switcher row shows the new name.
     super::profiles::upsert_active_entry(tonk, None).await;
@@ -1684,193 +1640,7 @@ pub(crate) mod tests {
     //
     // Wasm-only: `router::tests::test_state` builds a worker state the
     // native target does not compile.
-    ///
-    /// The replica row this writes alongside is what the sync drain
-    /// routes by; this is the same link as the DATA model describes it,
-    /// so a view can read which account is current without asking the
-    /// worker.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[dialog_common::test]
-    async fn it_records_the_account_as_the_active_branch() {
-        use dialog_credentials::Ed25519Signer;
-        use dialog_varsig::Principal as _;
-
-        let state = crate::router::tests::test_state().await;
-        let account = Ed25519Signer::import(&[94; 32]).await.unwrap().did();
-
-        super::record_account_branch(&state, &account, &probe_address()).await;
-
-        let resolved = crate::router::profile::active_account(&state)
-            .await
-            .expect("an account");
-        assert_eq!(
-            resolved,
-            account.this(),
-            "linking makes the account's branch the active one",
-        );
-    }
-
-    /// A link pass that started before the profile left the account does
-    /// not bring it back.
-    ///
-    /// The account catch-up runs detached and holds the state it started
-    /// with, so it can reach this write after a sign-out, or an added
-    /// account, already moved the profile to a branch that follows
-    /// nothing. Re-asserting its own branch as the active one there
-    /// undoes the move: the next page reads the account's branch off
-    /// `meta` and renders signed in. Only a profile with no active
-    /// branch on record takes one from a link.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[dialog_common::test]
-    async fn it_leaves_the_active_branch_where_the_profile_moved_it() {
-        use dialog_credentials::Ed25519Signer;
-        use dialog_varsig::Principal as _;
-
-        let state = crate::router::tests::test_state().await;
-        let account = Ed25519Signer::import(&[98; 32]).await.unwrap().did();
-        super::record_account_branch(&state, &account, &probe_address()).await;
-
-        crate::router::profile::leave_account(&state).await;
-        let landed =
-            crate::router::profile::active_branch_name(&state.reactor, &state.operator).await;
-        assert_ne!(
-            landed.as_deref(),
-            Some(state.active_branch.as_str()),
-            "leaving moves the profile off the account's branch",
-        );
-
-        // The pass that was still running when the profile left.
-        super::record_account_branch(&state, &account, &probe_address()).await;
-
-        assert_eq!(
-            crate::router::profile::active_branch_name(&state.reactor, &state.operator).await,
-            landed,
-            "a late link pass leaves the active branch where the profile moved it",
-        );
-        assert_eq!(
-            crate::router::profile::active_account(&state).await,
-            None,
-            "the profile stays signed out",
-        );
-    }
-
-    /// An address a test can recognize when it reads it back.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    fn probe_address() -> dialog_repository::SiteAddress {
-        dialog_repository::SiteAddress::from(UcanAddress::new("https://probe.example/sync"))
-    }
-
-    /// Linking records where the serving peer is reachable, keyed by
-    /// the `did:web` its endpoint names.
-    ///
-    /// The address is what turns "which peer" into a peer something can
-    /// dial, so the branch rows are only half a link without it. Keyed
-    /// on the SERVICE rather than the account: the query below asks for
-    /// `did:web:probe.example` without ever naming the account, which
-    /// is what makes a second account on the same service share the row
-    /// instead of writing another.
-    ///
-    /// Read back through `decode` rather than compared as bytes — what
-    /// has to survive the round trip is the `SiteAddress`.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[dialog_common::test]
-    async fn it_records_where_the_serving_peer_is_reachable() {
-        use dialog_query::{Query, Term};
-        use dialog_varsig::Principal as _;
-        use tonk_schema::PeerAddress;
-
-        let state = crate::router::tests::test_state().await;
-        let account = Ed25519Signer::import(&[95; 32]).await.unwrap().did();
-
-        super::record_account_branch(&state, &account, &probe_address()).await;
-
-        let peer: dialog_artifacts::Entity = "did:web:probe.example"
-            .parse()
-            .expect("the derived peer DID is an entity");
-        let session = state
-            .reactor
-            .profile_repository()
-            .branch(crate::router::repository::META_BRANCH)
-            .acquire(&state.operator)
-            .await
-            .expect("the meta branch");
-        let rows: Vec<PeerAddress> = session
-            .handle()
-            .query()
-            .select(Query::<PeerAddress> {
-                this: Term::from(peer),
-                address: Term::var("address"),
-            })
-            .perform(&state.operator)
-            .try_vec()
-            .await
-            .expect("the query runs");
-
-        let recorded = rows.first().expect("the serving peer has an address");
-        assert_eq!(
-            recorded.address.decode().expect("the address decodes"),
-            probe_address(),
-            "the address a link was made through is the one recorded for the peer",
-        );
-    }
-
-    /// Two accounts on one service share that service's address row.
-    ///
-    /// The reason to derive the peer from the endpoint rather than key
-    /// on the account: a changed service address is then one update,
-    /// not one per account linked through it.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[dialog_common::test]
-    async fn it_keeps_one_address_for_a_service_serving_two_accounts() {
-        use dialog_query::{Query, Term};
-        use dialog_varsig::Principal as _;
-        use tonk_schema::PeerAddress;
-
-        let state = crate::router::tests::test_state().await;
-        let first = Ed25519Signer::import(&[96; 32]).await.unwrap().did();
-        let second = Ed25519Signer::import(&[97; 32]).await.unwrap().did();
-
-        super::record_account_branch(&state, &first, &probe_address()).await;
-        super::record_account_branch(&state, &second, &probe_address()).await;
-
-        let session = state
-            .reactor
-            .profile_repository()
-            .branch(crate::router::repository::META_BRANCH)
-            .acquire(&state.operator)
-            .await
-            .expect("the meta branch");
-        let rows: Vec<PeerAddress> = session
-            .handle()
-            .query()
-            .select(Query::<PeerAddress> {
-                this: Term::from(
-                    "did:web:probe.example"
-                        .parse::<dialog_artifacts::Entity>()
-                        .expect("the derived peer DID is an entity"),
-                ),
-                address: Term::var("address"),
-            })
-            .perform(&state.operator)
-            .try_vec()
-            .await
-            .expect("the query runs");
-
-        assert_eq!(
-            rows.len(),
-            1,
-            "one service is one peer however many accounts it serves",
-        );
-        assert_eq!(
-            rows[0].address.decode().expect("the address decodes"),
-            probe_address(),
-        );
-    }
     use dialog_credentials::Ed25519Signer;
-    #[cfg(target_arch = "wasm32")]
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_test_configure!(run_in_service_worker);
 
     #[cfg(not(target_arch = "wasm32"))]
     use dialog_common::helpers::Provisionable as _;
@@ -1891,199 +1661,6 @@ pub(crate) mod tests {
         assert!(marker_matches(Some(subject.as_str().as_bytes()), &subject));
         assert!(!marker_matches(None, &subject));
         assert!(!marker_matches(Some(other.as_str().as_bytes()), &subject));
-    }
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[dialog_common::test]
-    async fn it_projects_the_name_to_each_space_and_catches_up_the_ones_it_could_not_reach() {
-        use dialog_varsig::Principal as _;
-        use tonk_schema::prelude::DidExt as _;
-
-        let state = crate::router::tests::test_state().await;
-        // This test is about PROJECTING a name into each space, so it
-        // needs one to exist. Nothing writes a name at bootstrap any
-        // more (a derived placeholder was indistinguishable from a name
-        // the person chose), so the test stamps its own.
-        {
-            use tonk_schema::prelude::DidExt as _;
-            let profile_entity = state.profile.did().this();
-            state
-                .reactor
-                .profile_repository()
-                .branch(&state.active_branch)
-                .transaction()
-                .assert(tonk_schema::ProfileName::new(
-                    profile_entity,
-                    tonk_schema::petname(&state.profile.did()),
-                ))
-                .commit()
-                .perform(&state.operator)
-                .await
-                .unwrap();
-        }
-        let (app, state, _lsp) = crate::router::api_router_with_state(state);
-        let key_a = crate::router::tests::put_repo(&app, "account-project-a").await;
-        let key_c = crate::router::tests::put_repo(&app, "account-project-c").await;
-
-        // The descriptor must be signed by the root `test_state` persisted:
-        // linking now attaches a provider to that exact local root.
-        let seed = {
-            let tonk = state.read().await;
-            crate::router::tests::test_root_seed(&tonk.profile_name)
-        };
-        let root = Ed25519Signer::import(&seed).await.unwrap();
-        let missing = Ed25519Signer::import(&[77; 32]).await.unwrap().did();
-        let missing_key = missing.repo_key().to_owned();
-        {
-            let tonk = state.read().await;
-            let matching = crate::router::account::tests_matching_request(&tonk).await;
-            crate::router::account::persist_link(&tonk, &matching)
-                .await
-                .unwrap();
-            tonk.profile
-                .secrets()
-                .site(
-                    crate::credential::branch_site(
-                        tonk_account::TRUSTED_BASE_CREDENTIAL_SITE,
-                        &tonk.active_branch,
-                    )
-                    .as_str(),
-                )
-                .save(root.did().as_str().as_bytes().to_vec())
-                .perform(&tonk.profile)
-                .await
-                .unwrap();
-            tonk.reactor
-                .profile_repository()
-                .branch(&tonk.active_branch)
-                .transaction()
-                .assert(Replica::new(tonk.profile.did(), missing.clone()))
-                .commit()
-                .perform(&tonk.operator)
-                .await
-                .unwrap();
-            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
-            assert_eq!(ensure_account_state(&tonk).await, AccountStateStatus::Ready);
-
-            let response = rename_display_name(&tonk, "shared-name")
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(response.name, "shared-name");
-        }
-        // The rename projected to the spaces it could reach, and the one
-        // it could not is left for the sweep rather than failing the rest.
-        let member_name = |names: Vec<tonk_schema::MemberName>| {
-            names
-                .into_iter()
-                .map(|row| row.name.0)
-                .find(|name| name == "shared-name")
-        };
-        for key in [&key_a, &key_c] {
-            assert_eq!(
-                member_name(crate::router::tests::content_member_names(&state, key).await)
-                    .as_deref(),
-                Some("shared-name"),
-                "the rename projects to a mounted space"
-            );
-        }
-
-        let (before_a, before_c) = {
-            let tonk = state.read().await;
-            let a = tonk
-                .reactor
-                .repository(&key_a)
-                .branch(tonk_account::MAIN_BRANCH)
-                .acquire(&tonk.operator)
-                .await
-                .unwrap()
-                .handle()
-                .revision();
-            let c = tonk
-                .reactor
-                .repository(&key_c)
-                .branch(tonk_account::MAIN_BRANCH)
-                .acquire(&tonk.operator)
-                .await
-                .unwrap()
-                .handle()
-                .revision();
-            (a, c)
-        };
-
-        {
-            let tonk = state.read().await;
-            let credential = tonk_account::peer::mount_verifier(
-                tonk.profile.storage(),
-                tonk.registry.space_location(&missing_key),
-                &missing,
-            )
-            .await
-            .unwrap();
-            let repository = Repository::from(credential);
-            repository
-                .branch(tonk_account::MAIN_BRANCH)
-                .open()
-                .perform(&tonk.operator)
-                .await
-                .unwrap();
-
-            // The sweep's catch-up reaches the space the rename could not.
-            converge_account_state(&tonk).await.unwrap();
-            let caught_up = tonk
-                .reactor
-                .repository(&missing_key)
-                .branch(tonk_account::MAIN_BRANCH)
-                .acquire(&tonk.operator)
-                .await
-                .unwrap()
-                .handle()
-                .revision();
-            assert!(
-                caught_up.is_some(),
-                "the catch-up writes the name into the space it reached"
-            );
-
-            // Idempotent: a second pass finds nothing stale and writes nothing.
-            converge_account_state(&tonk).await.unwrap();
-            let settled = tonk
-                .reactor
-                .repository(&missing_key)
-                .branch(tonk_account::MAIN_BRANCH)
-                .acquire(&tonk.operator)
-                .await
-                .unwrap()
-                .handle()
-                .revision();
-            assert_eq!(caught_up, settled, "a converged space receives no write");
-
-            let after_a = tonk
-                .reactor
-                .repository(&key_a)
-                .branch(tonk_account::MAIN_BRANCH)
-                .acquire(&tonk.operator)
-                .await
-                .unwrap()
-                .handle()
-                .revision();
-            let after_c = tonk
-                .reactor
-                .repository(&key_c)
-                .branch(tonk_account::MAIN_BRANCH)
-                .acquire(&tonk.operator)
-                .await
-                .unwrap()
-                .handle()
-                .revision();
-            assert_eq!(
-                before_a, after_a,
-                "correct target A receives no retry write"
-            );
-            assert_eq!(
-                before_c, after_c,
-                "correct target C receives no retry write"
-            );
-        }
     }
 
     /// A native `TonkState` on a randomized profile, plus the local root and

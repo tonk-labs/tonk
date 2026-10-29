@@ -18,8 +18,6 @@ use dialog_storage::provider::storage::Storage;
 use dialog_varsig::{Did, Principal as _};
 use tonk_common::log;
 use tonk_schema::DeviceProfile;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tonk_schema::prelude::DidExt as _;
 
 use crate::TonkWorkerError;
 use crate::worker::{DefaultOperator, DefaultProfile, DefaultSpace};
@@ -119,10 +117,7 @@ pub(crate) fn space_location(name: &str) -> Location {
 
 /// Open the profile `name` in `directory`, and the storage it is mounted
 /// in: a profile that does not exist yet is created.
-#[cfg(any(
-    test,
-    all(feature = "helpers", target_arch = "wasm32", target_os = "unknown")
-))]
+#[cfg(test)]
 pub(crate) async fn open_profile_at(
     name: &str,
     directory: Directory,
@@ -175,20 +170,20 @@ pub fn set_standing(standing: Standing) {
 }
 
 /// The app a kernel's deployment serves, as its host said.
-#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+#[cfg(target_arch = "wasm32")]
 static APP_ORIGIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// Say which app this kernel's deployment serves, such as
 /// `https://tonk.foundation`: the origin a link made for the person opens
 /// on, and where the deployment's access service answers. A kernel serves
 /// an origin of its own, which is not it, and its host knows it.
-#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+#[cfg(target_arch = "wasm32")]
 pub fn set_app_origin(origin: String) {
     let _ = APP_ORIGIN.set(origin);
 }
 
 /// The app this kernel's deployment serves, once its host said.
-#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) fn app_origin() -> Option<String> {
     APP_ORIGIN.get().cloned()
 }
@@ -242,7 +237,7 @@ impl Registry {
 
     /// The storage every profile in this registry's directory is
     /// mounted in, owned by the system tonk runs as there.
-    #[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn storage(&self) -> Result<Storage<DefaultSpace>, TonkWorkerError> {
         let (_, system) = tonk_account::peer::open_system::<DefaultSpace>(self.directory.clone())
             .await
@@ -254,14 +249,14 @@ impl Registry {
 
     /// The storage of a kernel: its host's layers, which its session owns.
     /// The host keeps them; there is no system to own them.
-    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    #[cfg(target_arch = "wasm32")]
     pub(crate) async fn storage(&self) -> Result<Storage<DefaultSpace>, TonkWorkerError> {
         Ok(Storage::<DefaultSpace>::new().owned_by(session()?.did()))
     }
 
     /// Open the profile `name` in this registry's directory over
     /// `storage`: load it, or, with `create`, make one when none is there.
-    #[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn open(
         &self,
         storage: &Storage<DefaultSpace>,
@@ -307,7 +302,7 @@ impl Registry {
     /// for no account until the person signs in: a person's under its own
     /// authority, a space's own worker's under the delegations its session
     /// claims.
-    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    #[cfg(target_arch = "wasm32")]
     async fn open(
         &self,
         storage: &Storage<DefaultSpace>,
@@ -328,7 +323,7 @@ impl Registry {
     /// Open the profile `name` as it acts on its account branch `branch`:
     /// the same key, its records kept in that branch, so the account the
     /// branch belongs to is the one it acts for.
-    #[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn open_on(
         &self,
         storage: &Storage<DefaultSpace>,
@@ -360,7 +355,7 @@ impl Registry {
 
     /// [`Registry::open_on`], in a kernel: the session's key, as
     /// [`Registry::open`] opens it there, its records kept in `branch`.
-    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    #[cfg(target_arch = "wasm32")]
     pub(crate) async fn open_on(
         &self,
         storage: &Storage<DefaultSpace>,
@@ -646,43 +641,6 @@ impl Registry {
             })
     }
 
-    /// Forget `profile`: drop its roster entry so the switcher stops
-    /// listing it. Its storage is left alone.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) async fn remove_roster(
-        &self,
-        storage: &Storage<DefaultSpace>,
-        operator: &DefaultOperator,
-        profile: &Did,
-    ) -> Result<(), TonkWorkerError> {
-        let branch = self.roster_branch(storage, operator).await?;
-        let entries: Vec<DeviceProfile> = branch
-            .query()
-            .select(Query::<DeviceProfile> {
-                this: Term::from(profile.this()),
-                name: Term::var("name"),
-            })
-            .perform(operator)
-            .try_vec()
-            .await
-            .map_err(|error| {
-                TonkWorkerError::Internal(format!("failed to read the profile roster: {error:?}"))
-            })?;
-        for entry in entries {
-            branch
-                .transaction()
-                .retract(entry)
-                .commit()
-                .publish()
-                .perform(operator)
-                .await
-                .map_err(|error| {
-                    TonkWorkerError::Internal(format!("failed to forget the profile: {error}"))
-                })?;
-        }
-        Ok(())
-    }
-
     /// Generate a fresh profile without changing the active pointer.
     pub(crate) async fn create_profile(
         &self,
@@ -736,7 +694,7 @@ pub async fn create_profile(
 }
 
 /// The key a kernel's session acts under, which its host holds.
-#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+#[cfg(target_arch = "wasm32")]
 fn session() -> Result<dialog_credentials::SignerCredential, TonkWorkerError> {
     tonk_kernel_world::credentials::signer(tonk_kernel_world::session::credential())
         .map_err(|error| TonkWorkerError::Internal(error.to_string()))
@@ -744,7 +702,7 @@ fn session() -> Result<dialog_credentials::SignerCredential, TonkWorkerError> {
 
 /// `profile`, with the site secrets an older worker kept by name moved
 /// into it.
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+#[cfg(not(target_arch = "wasm32"))]
 async fn migrated(
     profile: DefaultProfile,
     location: &Location,
@@ -762,11 +720,6 @@ async fn migrated(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    wasm_bindgen_test_configure!(run_in_service_worker);
 
     /// A registry under its own name in a scratch directory, so tests
     /// neither collide with each other nor touch the real profile store.

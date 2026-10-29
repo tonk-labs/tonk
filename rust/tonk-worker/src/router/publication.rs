@@ -481,7 +481,7 @@ impl dialog_capability::Provider<tonk_schema::command::UnpublishSpace>
     }
 }
 
-#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+#[cfg(test)]
 mod tests {
     use dialog_repository::RepositoryExt as _;
     use dialog_ucan_core::DelegationChain;

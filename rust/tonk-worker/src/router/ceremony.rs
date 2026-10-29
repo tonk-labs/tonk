@@ -122,7 +122,7 @@ pub(crate) async fn ask_for_passkey(
 }
 
 /// Ask `client`, the page, for the passkey `intent` needs.
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+#[cfg(not(target_arch = "wasm32"))]
 async fn ask_page(
     env: &crate::router::CommandEnv,
     client: &crate::router::ClientId,
@@ -155,7 +155,7 @@ async fn ask_page(
 
 /// On a kernel, the embedder asks the page: the permanent persona is asked
 /// to authorize what `intent` needs.
-#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+#[cfg(target_arch = "wasm32")]
 async fn ask_page(
     _env: &crate::router::CommandEnv,
     client: &crate::router::ClientId,
@@ -282,78 +282,6 @@ impl dialog_capability::Provider<AuthorizeDeviceRequest> for crate::router::Comm
     }
 }
 
-/// Mint the `account -> device` grant with the root the passkey
-/// recovered, register the device in the account space, and answer
-/// with the callback URL the page must go to. The page navigates: the
-/// custody reply is what it is waiting on, and the status row carries
-/// the same target for the guest that asked.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn authorize_device(
-    state: &crate::router::AppState,
-    custodian: &tonk_identity::custodian::Custodian,
-    authorization: tonk_worker_api::DeviceAuthorization,
-) -> Result<String, String> {
-    let mut timing = super::link_timing::LinkTiming::new("approval", "authorize");
-    let outcome = authorize_device_inner(state, custodian, &authorization).await;
-    timing.next("status-lock");
-    let tonk = state.read().await;
-    timing.next("publish-status");
-    match &outcome {
-        Ok(target) => {
-            report_authorization(&tonk, &authorization, ceremony_state::DONE, target).await
-        }
-        Err(error) => {
-            report_authorization(&tonk, &authorization, ceremony_state::FAILED, error).await
-        }
-    }
-    timing.next("reply");
-    outcome
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn authorize_device_inner(
-    state: &crate::router::AppState,
-    custodian: &tonk_identity::custodian::Custodian,
-    authorization: &tonk_worker_api::DeviceAuthorization,
-) -> Result<String, String> {
-    use dialog_varsig::Principal as _;
-
-    let mut timing = super::link_timing::LinkTiming::new("approval-work", "start-status");
-
-    {
-        let tonk = state.read().await;
-        report_authorization(&tonk, authorization, ceremony_state::WORKING, "").await;
-    }
-    timing.next("custody-read");
-    let account = super::custody::held_account(custodian).await?;
-    timing.next("derive-signer");
-    let dialog_credentials::Signer::Ed25519(root) = account
-        .signer()
-        .await
-        .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
-    timing.next("local-root");
-    approvable(state, authorization, &root.did()).await?;
-    let audience: dialog_varsig::Did = authorization
-        .audience
-        .parse()
-        .map_err(|error| format!("the device DID is invalid: {error:?}"))?;
-    timing.next("provider");
-    let remote = grant_remote(state).await?;
-    timing.next("sign-grant");
-    let authorized = tonk_identity::ceremony::authorize_device(root, audience, &remote)
-        .await
-        .map_err(|error| format!("the device grant did not sign: {error:#}"))?;
-    timing.next("register-device");
-    delivered(
-        state,
-        authorization,
-        &authorized.delegation_hex,
-        &authorized.root_did,
-        &remote,
-    )
-    .await
-}
-
 /// Refuse to approve `authorization` with the account `root` unless it is
 /// the account this profile is signed in to, and the one the handoff asks
 /// for, if it asks for one.
@@ -457,47 +385,6 @@ mod authorization_tests {
 
     // WEB-10: progress from the custody message path must reach the page
     // without a later HTTP request, sync heartbeat, or visibility event.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[dialog_common::test]
-    async fn approval_reports_reach_subscribers_without_a_dispatcher_turn() {
-        use dialog_query::{ConceptQuery, Query};
-        use tonk_schema::{CeremonyStatus, ceremony_state};
-
-        let tonk = crate::router::tests::test_state().await;
-        let request = tonk_worker_api::DeviceAuthorization {
-            audience: "did:key:test".into(),
-            callback: "http://127.0.0.1:1234/".into(),
-            name: "test connection".into(),
-            expected_account: None,
-        };
-        let mut subscription = tonk
-            .reactor
-            .profile_repository()
-            .branch(&tonk.active_branch)
-            .subscribe(ConceptQuery::from(Query::<CeremonyStatus>::default()))
-            .perform(&tonk.operator)
-            .await
-            .unwrap();
-        while subscription.receiver.try_recv().is_ok() {}
-        for state in [
-            ceremony_state::PENDING_CEREMONY,
-            ceremony_state::WORKING,
-            ceremony_state::DONE,
-            ceremony_state::FAILED,
-        ] {
-            super::report_authorization(&tonk, &request, state, "").await;
-            let frame = subscription
-                .receiver
-                .try_recv()
-                .expect("a ceremony report must broadcast before returning");
-            let frame = String::from_utf8_lossy(&frame);
-            assert!(frame.contains(state), "missing {state}: {frame}");
-            assert!(
-                frame.contains(&super::authorization_entity(&request)),
-                "{frame}"
-            );
-        }
-    }
 
     #[test]
     fn approval_progress_is_scoped_to_the_request() {

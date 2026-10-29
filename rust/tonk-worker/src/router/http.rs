@@ -96,12 +96,10 @@ pub(crate) async fn post_json(endpoint: &Url, body: &[u8]) -> Result<HttpRespons
     post(endpoint, body, "application/json").await
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 async fn post(endpoint: &Url, body: &[u8], media_type: &str) -> Result<HttpResponse, HttpError> {
     post_with_timeout(endpoint, body, media_type, TIMEOUT).await
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 async fn post_with_timeout(
     endpoint: &Url,
     body: &[u8],
@@ -112,19 +110,28 @@ async fn post_with_timeout(
 }
 
 /// A kernel on WASI has no HTTP client: its embedder delivers the request,
-/// such as an invocation the kernel signed, and hands back the answer. The
-/// embedder keeps its own time.
-#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+/// such as an invocation the kernel signed, and hands back the answer, or
+/// none within `timeout`.
+#[cfg(target_arch = "wasm32")]
 async fn request_with_timeout(
     method: &str,
     endpoint: &Url,
     body: Option<&[u8]>,
     media_type: Option<&str>,
-    _timeout: Duration,
+    timeout: Duration,
 ) -> Result<HttpResponse, HttpError> {
-    let answer = tonk_kernel_world::application::fetch(method, endpoint.as_str(), media_type, body)
-        .await
-        .map_err(|error| HttpError::Transport(format!("{error:?}")))?;
+    use futures_util::future::{Either, select};
+
+    let delivered =
+        tonk_kernel_world::application::fetch(method, endpoint.as_str(), media_type, body);
+    let waited = crate::r#async::sleep(timeout);
+    futures_util::pin_mut!(delivered, waited);
+    let answer = match select(delivered, waited).await {
+        Either::Left((answer, _)) => {
+            answer.map_err(|error| HttpError::Transport(format!("{error:?}")))?
+        }
+        Either::Right(_) => return Err(HttpError::Timeout),
+    };
     if !(200..300).contains(&answer.status) {
         return Err(HttpError::Upstream(failure(answer.status, &answer.body)));
     }
@@ -175,122 +182,6 @@ async fn request_with_timeout(
     })
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn post(endpoint: &Url, body: &[u8], media_type: &str) -> Result<HttpResponse, HttpError> {
-    post_with_timeout(endpoint, body, media_type, TIMEOUT).await
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn post_with_timeout(
-    endpoint: &Url,
-    body: &[u8],
-    media_type: &str,
-    timeout: Duration,
-) -> Result<HttpResponse, HttpError> {
-    request_with_timeout("POST", endpoint, Some(body), Some(media_type), timeout).await
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn request_with_timeout(
-    method: &str,
-    endpoint: &Url,
-    body: Option<&[u8]>,
-    media_type: Option<&str>,
-    timeout: Duration,
-) -> Result<HttpResponse, HttpError> {
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
-    use wasm_bindgen_futures::JsFuture;
-    use web_sys::{AbortController, Request, RequestInit, Response};
-
-    let controller = AbortController::new()
-        .map_err(|_| HttpError::Transport("could not create abort controller".to_string()))?;
-    let init = RequestInit::new();
-    init.set_method(method);
-    if let Some(body) = body {
-        init.set_body(&js_sys::Uint8Array::from(body).into());
-    }
-    init.set_signal(Some(&controller.signal()));
-    let request = Request::new_with_str_and_init(endpoint.as_str(), &init)
-        .map_err(|_| HttpError::Transport("could not construct upstream request".to_string()))?;
-    if let Some(media_type) = media_type {
-        request
-            .headers()
-            .set("content-type", media_type)
-            .map_err(|_| HttpError::Transport("could not set content type".to_string()))?;
-    }
-
-    // Call the worker-global timer and fetch functions dynamically. This keeps
-    // the request path testable in a browser harness while using the same
-    // `globalThis` functions in production's service-worker scope.
-    let global = js_sys::global();
-    let set_timeout: js_sys::Function = js_sys::Reflect::get(&global, &"setTimeout".into())
-        .ok()
-        .and_then(|value| value.dyn_into().ok())
-        .ok_or_else(|| HttpError::Transport("worker timer is unavailable".to_string()))?;
-    let clear_timeout: js_sys::Function = js_sys::Reflect::get(&global, &"clearTimeout".into())
-        .ok()
-        .and_then(|value| value.dyn_into().ok())
-        .ok_or_else(|| HttpError::Transport("worker timer is unavailable".to_string()))?;
-    let fetch: js_sys::Function = js_sys::Reflect::get(&global, &"fetch".into())
-        .ok()
-        .and_then(|value| value.dyn_into().ok())
-        .ok_or_else(|| HttpError::Transport("worker fetch is unavailable".to_string()))?;
-    let timed_out = Rc::new(Cell::new(false));
-    let timeout_flag = Rc::clone(&timed_out);
-    let timeout_controller = controller.clone();
-    let abort = Closure::<dyn FnMut()>::new(move || {
-        timeout_flag.set(true);
-        timeout_controller.abort();
-    });
-    let timer = set_timeout
-        .call2(
-            &global,
-            abort.as_ref().unchecked_ref(),
-            &JsValue::from_f64(timeout.as_millis() as f64),
-        )
-        .ok()
-        .and_then(|value| value.as_f64())
-        .ok_or_else(|| HttpError::Transport("could not schedule request timeout".to_string()))?;
-    let fetched = fetch
-        .call1(&global, &request)
-        .ok()
-        .and_then(|value| value.dyn_into::<js_sys::Promise>().ok())
-        .ok_or_else(|| HttpError::Transport("worker fetch did not return a promise".to_string()))
-        .map(JsFuture::from);
-    let fetched = match fetched {
-        Ok(future) => future.await,
-        Err(error) => Err(JsValue::from_str(&error.to_string())),
-    };
-    let _ = clear_timeout.call1(&global, &JsValue::from_f64(timer));
-    drop(abort);
-    let response: Response = fetched.and_then(|value| value.dyn_into()).map_err(|_| {
-        if timed_out.get() {
-            HttpError::Timeout
-        } else {
-            HttpError::Transport("upstream fetch failed".to_string())
-        }
-    })?;
-    let status = response.status();
-    let buffer = JsFuture::from(
-        response
-            .array_buffer()
-            .map_err(|_| HttpError::Transport("could not read upstream body".to_string()))?,
-    )
-    .await
-    .map_err(|_| HttpError::Transport("could not read upstream body".to_string()))?;
-    let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
-    if !(200..300).contains(&status) {
-        return Err(HttpError::Upstream(failure(status, &bytes)));
-    }
-    Ok(HttpResponse {
-        status,
-        body: bytes,
-    })
-}
-
 impl From<HttpError> for crate::TonkWorkerError {
     fn from(error: HttpError) -> Self {
         match error {
@@ -317,8 +208,6 @@ impl From<HttpError> for crate::TonkWorkerError {
 mod tests {
     use super::*;
 
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    use wasm_bindgen::JsValue;
     #[test]
     fn it_preserves_structured_errors_and_bounds_untrusted_bodies() {
         let parsed = failure(
@@ -349,7 +238,6 @@ mod tests {
         assert_eq!(empty.message, "upstream service rejected the request");
     }
 
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     fn server(response: &'static [u8]) -> (Url, std::sync::mpsc::Receiver<Vec<u8>>) {
         use std::io::{Read as _, Write as _};
         use std::net::TcpListener;
@@ -393,7 +281,6 @@ mod tests {
         )
     }
 
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[dialog_common::test]
     async fn it_posts_json_with_an_explicit_media_type() {
         let (endpoint, request) =
@@ -410,7 +297,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[dialog_common::test]
     async fn it_posts_cbor_and_preserves_the_upstream_status_and_code() {
         let response = b"HTTP/1.1 403 Forbidden\r\ncontent-length: 70\r\nconnection: close\r\n\r\n{\"error\":{\"code\":\"CREDENTIAL_REVOKED\",\"message\":\"credential revoked\"}}";
@@ -432,108 +318,5 @@ mod tests {
                 .contains("content-type: application/cbor")
         );
         assert!(request.ends_with(&[0xd9, 0xd9, 0xf7]));
-    }
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    fn install_fake_fetch(body: &str) -> crate::router::tests::GlobalPropertyGuard {
-        let fetch = js_sys::Function::new_with_args("request", body);
-        crate::router::tests::GlobalPropertyGuard::replace("fetch", fetch.as_ref())
-    }
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[dialog_common::test]
-    async fn it_preserves_request_and_response_contracts_in_wasm() {
-        let global = js_sys::global();
-        let _capture = crate::router::tests::GlobalPropertyGuard::replace(
-            "__tonkHttpCapture",
-            &JsValue::UNDEFINED,
-        );
-        {
-            let _fetch = install_fake_fetch(
-                r#"
-                return request.arrayBuffer().then(buffer => {
-                    globalThis.__tonkHttpCapture = {
-                        method: request.method,
-                        contentType: request.headers.get("content-type"),
-                        body: Array.from(new Uint8Array(buffer))
-                    };
-                    if (request.url.includes("/reject")) {
-                        return new Response(
-                            JSON.stringify({ error: {
-                                code: "CREDENTIAL_REVOKED",
-                                message: "credential revoked"
-                            } }),
-                            { status: 403, headers: { "content-type": "application/json" } }
-                        );
-                    }
-                    return new Response(new Uint8Array([7, 8, 9]), {
-                        status: 201,
-                        headers: { "X-Test-Echo": "v1" }
-                    });
-                });
-                "#,
-            );
-
-            let endpoint = Url::parse("https://service.example.test/ok").unwrap();
-            let response = post_cbor(&endpoint, &[0xd9, 0xd9, 0xf7]).await.unwrap();
-            assert_eq!(response.status, 201);
-            assert_eq!(response.body, [7, 8, 9]);
-
-            let capture = js_sys::Reflect::get(&global, &"__tonkHttpCapture".into()).unwrap();
-            assert_eq!(
-                js_sys::Reflect::get(&capture, &"method".into())
-                    .unwrap()
-                    .as_string()
-                    .as_deref(),
-                Some("POST")
-            );
-            assert_eq!(
-                js_sys::Reflect::get(&capture, &"contentType".into())
-                    .unwrap()
-                    .as_string()
-                    .as_deref(),
-                Some("application/cbor")
-            );
-            let captured_body =
-                js_sys::Array::from(&js_sys::Reflect::get(&capture, &"body".into()).unwrap());
-            assert_eq!(
-                captured_body
-                    .iter()
-                    .map(|value| value.as_f64().unwrap() as u8)
-                    .collect::<Vec<_>>(),
-                [0xd9, 0xd9, 0xf7]
-            );
-
-            let endpoint = Url::parse("https://service.example.test/reject").unwrap();
-            let error = post_json(&endpoint, br#"{"request":true}"#)
-                .await
-                .unwrap_err();
-            let HttpError::Upstream(error) = error else {
-                panic!("expected structured upstream failure");
-            };
-            assert_eq!(error.status, 403);
-            assert_eq!(error.code.as_deref(), Some("CREDENTIAL_REVOKED"));
-            assert_eq!(error.message, "credential revoked");
-        }
-
-        let _fetch = install_fake_fetch(
-            r#"
-            return new Promise((_resolve, reject) => {
-                request.signal.addEventListener("abort", () => {
-                    reject(new DOMException("aborted", "AbortError"));
-                });
-            });
-            "#,
-        );
-        let endpoint = Url::parse("https://service.example.test/slow").unwrap();
-        let error = post_with_timeout(
-            &endpoint,
-            &[1],
-            "application/cbor",
-            Duration::from_millis(1),
-        )
-        .await
-        .unwrap_err();
-        assert!(matches!(error, HttpError::Timeout));
     }
 }

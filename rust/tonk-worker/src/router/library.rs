@@ -32,16 +32,7 @@ use crate::TonkWorkerError;
 /// origin to serve from. A document parsed without a location still
 /// seeds; it just cannot include.
 pub(super) fn location() -> Option<Url> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        // The directory the service worker serves the library from.
-        let origin = super::repository::worker_origin()?;
-        Url::parse(&format!("{origin}/library/")).ok()
-    }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    {
-        Url::parse(tonk_library::ROOT).ok()
-    }
+    { Url::parse(tonk_library::ROOT).ok() }
 }
 
 /// Loads what a library document includes, from the library directory
@@ -72,14 +63,6 @@ impl Load for Library {
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn read(uri: &Url) -> Result<Vec<u8>, String> {
-    super::repository::fetch_library_bytes(uri.path())
-        .await
-        .map_err(|error| error.to_string())
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
     tonk_library::Bundled.load(uri).await
 }
@@ -184,9 +167,6 @@ impl dialog_capability::Provider<tonk_schema::command::InstallComponent>
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_service_worker);
 
     fn library() -> Library {
         Library::new(Url::parse("https://tonk.test/library/").unwrap())

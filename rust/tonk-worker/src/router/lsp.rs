@@ -297,11 +297,6 @@ fn retry_later(reason: &str) -> Response {
 mod tests {
     use super::*;
 
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    wasm_bindgen_test_configure!(run_in_service_worker);
-
     /// `shutdown` must be TERMINAL. It used to install a fresh sender,
     /// so a client that redialed moments later got a working stream on
     /// a worker that was trying to retire — and an SSE body is a fetch

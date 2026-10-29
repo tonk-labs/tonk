@@ -15,28 +15,25 @@
 //! The space worker stores it and publishes that revision ([`seed`]), so the
 //! replica holds the same history the host did, and syncs on from there.
 
-#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+#[cfg(target_arch = "wasm32")]
 use dialog_artifacts::Asset;
 use dialog_capability::Subject;
 use dialog_common::Blake3Hash;
 use dialog_credentials::DidKeyResolver;
 use dialog_effects::{Use, method};
-use dialog_repository::{RepositoryExt as _, Revision, Upstream, codec};
+use dialog_repository::{RepositoryExt as _, Upstream, codec};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::{
     Delegation, DelegationChain,
     time::{TimeRange, Timestamp},
 };
 use dialog_varsig::Did;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use dialog_varsig::Principal as _;
 use dialog_varsig::signature::AnySignature;
-use futures_util::stream;
 use ipld_core::ipld::Ipld;
 use std::collections::BTreeMap;
 use tonk_common::log;
 use tonk_invite::{HOME_ADDRESS, home_address_meta};
-#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+#[cfg(target_arch = "wasm32")]
 use tonk_schema::SpaceKernel;
 use tonk_schema::prelude::DidExt as _;
 use url::Url;
@@ -47,8 +44,6 @@ use super::create_invite::{
     ConfiguredRemoteRequirement, resolve_configured_remote_url, resolve_configured_remote_url_with,
 };
 use super::join::mount_replica;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use super::profile_name::project_member_name;
 use super::profile_name::resolve_display_name;
 use super::repository::{CONTENT_BRANCH, record_initialized_replica_in_profile};
 use super::sync::publish_session_account;
@@ -63,8 +58,6 @@ pub(crate) const DELEGATION_TTL_SECONDS: u64 = 12 * 60 * 60;
 pub(crate) struct Grant {
     /// The encoded chain, from the space down to the space worker's profile.
     pub(crate) chain: Vec<u8>,
-    /// When the leaf lapses, in unix seconds.
-    pub(crate) expires: u64,
 }
 
 /// Issue the worker whose profile is `audience` a delegation to use `space`,
@@ -120,7 +113,7 @@ pub(crate) async fn delegate(
         .into_chain()
         .to_bytes()
         .map_err(|e| TonkWorkerError::Internal(format!("failed to encode delegation: {e}")))?;
-    Ok(Grant { chain, expires })
+    Ok(Grant { chain })
 }
 
 /// What a space's worker is told with its delegation, and has to take up
@@ -330,7 +323,7 @@ pub(crate) async fn adopt(
 /// already holds, and the space's pin to it. Nothing is written over a `main`
 /// that has a revision. The space then holds what it needs to start wherever
 /// it syncs.
-#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn found(
     tonk: &TonkState,
     space: &Did,
@@ -369,7 +362,7 @@ pub(crate) async fn found(
 
 /// Record on `space`'s `main` the kernel it runs, the asset `kernel`, and the
 /// pin to it.
-#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn pin(
     tonk: &TonkState,
     space: &Did,
@@ -403,43 +396,6 @@ pub(crate) async fn resume(tonk: &TonkState, space: &Did) -> Result<(), TonkWork
         return Ok(());
     }
     publish_session_account(tonk, space.repo_key(), CONTENT_BRANCH).await
-}
-
-/// Put `name` on the roster entry of the account this worker acts for: the
-/// name the person goes by, as their profile's delegation says it. Written
-/// here because this worker holds the space. Each start asks, and writes only
-/// a name the roster does not show yet. A space with nothing on `main` is
-/// left alone: it is still to be filled, and a write would stand in the way.
-///
-/// Answers whether anything was written.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn name_member(
-    tonk: &TonkState,
-    space: &Did,
-    name: &str,
-) -> Result<bool, TonkWorkerError> {
-    let Some(account) = acts_for(tonk).await? else {
-        return Ok(false);
-    };
-    let key = space.repo_key();
-    let filled = tonk
-        .reactor
-        .repository(key)
-        .branch(CONTENT_BRANCH)
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::NotFound(format!("{space} main: {e}")))?
-        .handle()
-        .revision()
-        .is_some();
-    if !filled {
-        return Ok(false);
-    }
-    let named = project_member_name(tonk, key, &account, name).await?;
-    if named {
-        tonk.sync_queue.mark_dirty(key, super::sync::now_millis());
-    }
-    Ok(named)
 }
 
 /// A space's `main` as the host holds it: the snapshot of everything its
@@ -485,53 +441,8 @@ pub(crate) async fn snapshot(
     Ok(Some(Snapshot { content, revision }))
 }
 
-/// Seed the freshly mounted replica of `space` from the host's snapshot: store
-/// its content, then publish its revision on `main`. A replica that already
-/// has a revision is left alone, so a repeated seed never rewinds it.
-pub(crate) async fn seed(
-    tonk: &TonkState,
-    space: &Did,
-    content: &[u8],
-    revision: &[u8],
-) -> Result<(), TonkWorkerError> {
-    let repository = tonk
-        .profile
-        .space(space.as_str())
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::NotFound(format!("space {space}: {e}")))?;
-    let branch = repository
-        .branch("main")
-        .open()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::NotFound(format!("{space} main: {e}")))?;
-    if branch.revision().is_some() {
-        return Ok(());
-    }
-    let revision: Revision = serde_json::from_slice(revision)
-        .map_err(|e| TonkWorkerError::Router(format!("malformed revision: {e}")))?;
-    let items = codec::decode(content)
-        .map_err(|e| TonkWorkerError::Router(format!("malformed snapshot: {e}")))?;
-    let imported = repository
-        .import(stream::iter(items))
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to store {space}: {e}")))?;
-    branch
-        .reset(revision)
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to publish {space}: {e}")))?;
-    log!("space worker: seeded {space} ({imported:?})");
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    wasm_bindgen_test_configure!(run_in_service_worker);
 
     use ::axum::body::Body;
     use ::axum::http::{Request, StatusCode};

@@ -106,7 +106,7 @@ pub(crate) async fn signer(state: &TonkState) -> Result<Option<Ed25519Signer>, T
 ///
 /// Each branch's peer keeps that branch's envelope, so another branch's
 /// is read through the peer opened on it.
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn account_on(
     state: &TonkState,
     branch: &str,
@@ -413,20 +413,7 @@ async fn existing_grant(state: &TonkState, account: &Did) -> Option<DelegationCh
 /// `platform` or touch-point count, so the label is coarser than the
 /// page's — browser and OS families still come out of the user agent.
 pub(crate) fn device_title() -> String {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        use wasm_bindgen::JsCast as _;
-        let agent = js_sys::global()
-            .dyn_into::<web_sys::WorkerGlobalScope>()
-            .ok()
-            .and_then(|scope| scope.navigator().user_agent().ok())
-            .unwrap_or_default();
-        tonk_common::device_label::from_navigator(&agent, "", 0)
-    }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    {
-        tonk_common::device_label::from_navigator("", "", 0)
-    }
+    { tonk_common::device_label::from_navigator("", "", 0) }
 }
 
 /// Describe a device link as facts on the delegation's own entity.
@@ -897,141 +884,6 @@ async fn save(at: &Place<'_>, site: &str, bytes: Vec<u8>) -> Result<(), TonkWork
 mod tests {
     use super::*;
 
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    wasm_bindgen_test_configure!(run_in_browser);
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[dialog_common::test]
-    // Storybook LIFE-30: current device authority survives repeated sign-in.
-    async fn it_retracts_a_device_grant_added_after_the_branch_was_cached() {
-        use dialog_varsig::Principal as _;
-        let state = crate::router::tests::test_state_without_root().await;
-        let branch = state
-            .reactor
-            .profile_repository()
-            .branch(&state.active_branch)
-            .acquire(&state.operator)
-            .await
-            .unwrap();
-        let root = dialog_credentials::Ed25519Signer::import(&[73; 32])
-            .await
-            .unwrap();
-        let root_did = root.did();
-        let grant = tonk_identity::delegation::mint_device_delegation(root, &state.profile.did())
-            .await
-            .unwrap();
-        state
-            .profile
-            .access()
-            .save(UcanDelegation(grant.clone()))
-            .perform(&state.operator)
-            .await
-            .unwrap();
-        retract_device_delegation(&state, &branch, &grant)
-            .await
-            .unwrap();
-        branch.handle().refresh(&state.operator).await.unwrap();
-        let retained = branch
-            .handle()
-            .delegations()
-            .issued_by(root_did)
-            .perform(&state.operator)
-            .await
-            .unwrap();
-        assert!(
-            retained.is_empty(),
-            "a successful sign-out retraction must remove the grant from storage"
-        );
-    }
-
-    /// Granting a device describes the link as facts, so a device list
-    /// renders without asking the account service.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[dialog_common::test]
-    async fn it_describes_the_device_link() {
-        use dialog_query::{Output as _, Query, Term};
-
-        // The pre-root state is where `grant_device` runs for real: with a
-        // root persisted, its grant is a second powerline to this profile
-        // and would be described as well.
-        let tonk = crate::router::tests::test_state_without_root().await;
-
-        grant_device(&tonk).await.expect("the grant mints");
-
-        let branch = tonk
-            .reactor
-            .profile_repository()
-            .branch(&tonk.active_branch)
-            .acquire(&tonk.operator)
-            .await
-            .expect("profile branch opens");
-        let rows: Vec<tonk_schema::DeviceLink> = branch
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::DeviceLink> {
-                this: Term::var("this"),
-                created_at: Term::var("created_at"),
-                title: Term::var("title"),
-                reason: Term::var("reason"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .expect("device-link query runs");
-
-        assert_eq!(rows.len(), 1, "exactly one device link described");
-        assert_eq!(rows[0].reason, tonk_schema::device_link_reason());
-        assert!(!rows[0].title.0.is_empty(), "a device carries a label");
-        assert!(rows[0].created_at.0 > 0, "a real timestamp");
-    }
-
-    /// Granting again reuses the grant already retained. Minting is not
-    /// repeatable — a fresh nonce means a fresh delegation — so without
-    /// the proof check every space creation would add another grant and
-    /// another device row for the same device.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[dialog_common::test]
-    async fn it_grants_the_device_once() {
-        use dialog_query::{Output as _, Query, Term};
-
-        // The pre-root state is where `grant_device` runs for real: with a
-        // root persisted, its grant is a second powerline to this profile
-        // and would be described as well.
-        let tonk = crate::router::tests::test_state_without_root().await;
-
-        let first = grant_device(&tonk).await.expect("the grant mints");
-        let second = grant_device(&tonk).await.expect("the grant re-proves");
-        assert_eq!(
-            first.proof_cids(),
-            second.proof_cids(),
-            "a second grant is the first one, proven rather than re-minted"
-        );
-
-        let branch = tonk
-            .reactor
-            .profile_repository()
-            .branch(&tonk.active_branch)
-            .acquire(&tonk.operator)
-            .await
-            .expect("profile branch opens");
-        let rows: Vec<tonk_schema::DeviceLink> = branch
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::DeviceLink> {
-                this: Term::var("this"),
-                created_at: Term::var("created_at"),
-                title: Term::var("title"),
-                reason: Term::var("reason"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .expect("device-link query runs");
-        assert_eq!(rows.len(), 1, "one device, one row");
-    }
-
     /// The legacy method rests on Ed25519 signatures being deterministic
     /// (RFC 8032): the KEK is never stored, so a second signature over
     /// the same context has to reproduce it exactly. True natively and in
@@ -1146,7 +998,6 @@ mod tests {
 
     /// Native signing is RFC 8032 deterministic; the probe must say so,
     /// or every legacy envelope would read as replaceable.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[dialog_common::test]
     async fn it_finds_native_signing_deterministic() {
         let custodian = Ed25519Signer::generate().await.unwrap();
@@ -1154,81 +1005,5 @@ mod tests {
             probe_signing(&custodian).await.unwrap(),
             Signing::Deterministic
         );
-    }
-
-    /// The account minted on first call is the one read back after.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[dialog_common::test]
-    async fn it_reads_back_the_account_it_minted() {
-        use dialog_varsig::Principal as _;
-
-        let tonk = crate::router::tests::test_state_without_root().await;
-        let minted = account(&tonk).await.expect("the account mints");
-        let read_back = read(&tonk, &Place::active(&tonk))
-            .await
-            .expect("the stored account reads")
-            .expect("an account is stored");
-        assert_eq!(
-            minted.signer().await.unwrap().did(),
-            read_back.signer().await.unwrap().did(),
-        );
-        let stored = load(&Place::active(&tonk), ONBOARDING_ENVELOPE_SITE)
-            .await
-            .unwrap()
-            .expect("an envelope is stored");
-        assert_eq!(
-            Envelope::<Recovery>::decode(&stored).unwrap().method,
-            KekMethod::Custodian
-        );
-    }
-
-    /// A device that onboarded under the signature-derived KEK keeps its
-    /// account, and its next boot no longer depends on how it signs.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[dialog_common::test]
-    async fn a_legacy_onboarding_account_is_resealed_on_open() {
-        use dialog_varsig::Principal as _;
-
-        let tonk = crate::router::tests::test_state_without_root().await;
-        let custodian = kept_custodian(&Place::active(&tonk), true)
-            .await
-            .unwrap()
-            .unwrap();
-        let secret = AccountSecret::generate().unwrap();
-        let envelope = derive_kek(&custodian)
-            .await
-            .unwrap()
-            .seal(&secret, KekMethod::Local)
-            .unwrap();
-        save(
-            &Place::active(&tonk),
-            ONBOARDING_ENVELOPE_SITE,
-            envelope.encode(),
-        )
-        .await
-        .unwrap();
-        let expected = secret.signer().await.unwrap().did();
-
-        let opened = account(&tonk).await.expect("the legacy envelope opens");
-        assert_eq!(opened.signer().await.unwrap().did(), expected);
-
-        let stored = load(&Place::active(&tonk), ONBOARDING_ENVELOPE_SITE)
-            .await
-            .unwrap()
-            .expect("an envelope is stored");
-        assert_eq!(
-            Envelope::<Recovery>::decode(&stored).unwrap().method,
-            KekMethod::Custodian,
-            "the first open reseals under the sealed KEK"
-        );
-        assert!(
-            load(&Place::active(&tonk), ONBOARDING_KEK_SITE)
-                .await
-                .unwrap()
-                .is_some()
-        );
-
-        let again = account(&tonk).await.expect("the resealed envelope opens");
-        assert_eq!(again.signer().await.unwrap().did(), expected);
     }
 }

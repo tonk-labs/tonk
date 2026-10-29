@@ -158,4 +158,6 @@ Approving with the account's key, done the same way:
 1. Sign-up, sign-in and the account flows, on `merge` and `authorize`. Done.
 2. The remote: sync, sharing, joining, and a second device. Done.
 3. Kernels sites pin, in place of upgrades. Done.
-4. Delete the browser-only paths of `tonk-worker`, and the old workers.
+4. Delete the browser-only paths of `tonk-worker`, and the old workers. Done:
+   the deployment ships only the kernel, and `tonk-worker` builds natively and
+   for `wasm32-wasip3` only. What comes next is `plan/site-essentials.md`.
