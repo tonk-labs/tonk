@@ -157,6 +157,27 @@ async fn the_manuals_it_names_are_resources_it_serves() {
 }
 
 #[dialog_common::test]
+async fn a_worker_answer_reads_as_notation_with_its_next_page() {
+    let body = json!({
+        "revision_before": null,
+        "revision_after": null,
+        "matches_before": [],
+        "matches_after": [{
+            "label": "person",
+            "results": [{ "this": "did:key:zHj", "fields": { "name": "Alice" }, "transient": false }],
+        }],
+        "commits": { "claims": 0, "entities": {} },
+        "page": { "rows": 1, "next": "abc" },
+    })
+    .to_string();
+    let text = notation(body.as_bytes()).unwrap();
+    assert!(text.contains("Alice"), "{text}");
+    assert!(!text.trim_start().starts_with('{'), "{text}");
+    assert!(text.ends_with("cursor: \"abc\"\n"), "{text}");
+    assert!(notation(b"not json").is_none());
+}
+
+#[dialog_common::test]
 async fn a_missing_or_malformed_token_is_unauthorized() {
     let key = SessionKey::derive("test");
     let endpoint = McpEndpoint {

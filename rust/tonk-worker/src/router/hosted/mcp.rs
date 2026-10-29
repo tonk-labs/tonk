@@ -51,6 +51,10 @@ use tonk_identity::agent::{AgentSessionToken, decode_agent_session_token};
 
 use super::WriterSession;
 
+#[path = "../../../../tonk-cli/src/output.rs"]
+#[allow(dead_code)]
+mod output;
+
 #[path = "../../../../tonk-cli/src/guide.rs"]
 #[allow(dead_code)]
 mod guide;
@@ -549,9 +553,8 @@ impl<W: Writers> McpEndpoint<'_, W> {
                     // A page of a large read: the writer caps reads and
                     // answers the next cursor.
                     let mut page = url::form_urlencoded::Serializer::new(String::new());
-                    if let Some(limit) = arguments["limit"].as_u64() {
-                        page.append_pair("limit", &limit.to_string());
-                    }
+                    let limit = arguments["limit"].as_u64().unwrap_or(DEFAULT_LIMIT);
+                    page.append_pair("limit", &limit.to_string());
                     if let Some(cursor) = arguments["cursor"].as_str() {
                         page.append_pair("cursor", cursor);
                     }
@@ -579,11 +582,21 @@ impl<W: Writers> McpEndpoint<'_, W> {
                     .await
                     .map(|body| body.to_bytes())
                     .unwrap_or_default();
+                let text = if status.is_success() {
+                    notation(&body)
+                } else {
+                    None
+                };
                 let body = match serde_json::from_slice::<Value>(&body) {
                     Ok(value) => value,
                     Err(_) => json!(String::from_utf8_lossy(&body)),
                 };
-                tool_result(without_revisions(body), !status.is_success())
+                let mut answer = tool_result(without_revisions(body), !status.is_success());
+                // The model reads notation; programs read the JSON beside it.
+                if let Some(text) = text {
+                    answer["content"] = json!([{ "type": "text", "text": text }]);
+                }
+                answer
             }
             _ => match super::view::call(
                 name,
@@ -700,6 +713,28 @@ const HOSTED: &str = include_str!("mcp/guide-hosted.md");
 /// The server instructions: the hosted manual, naming where Tonk is open.
 fn instructions(origin: &str) -> String {
     HOSTED.replace("{origin}", origin.trim_end_matches('/'))
+}
+
+/// Rows a query answers when the model names no `limit`; the answer says
+/// how to read the next page.
+const DEFAULT_LIMIT: u64 = 100;
+
+/// A worker answer in Tonk notation, as `tonk eval` prints it: the
+/// envelope, then each expression's matches as re-submittable notation,
+/// then how to read the next page if there is one.
+fn notation(body: &[u8]) -> Option<String> {
+    let response: output::EvaluateResponse = serde_json::from_slice(body).ok()?;
+    let mut answer = output::render(&response, output::Format::Notation, false).ok()?;
+    let page: Value = serde_json::from_slice(body).ok()?;
+    if let Some(next) = page["page"]["next"].as_str() {
+        if !answer.ends_with('\n') {
+            answer.push('\n');
+        }
+        answer.push_str(&format!(
+            "# More rows: call tonk_query again with cursor: \"{next}\"\n"
+        ));
+    }
+    Some(answer)
 }
 
 /// `answer` without the raw revision bytes the worker reports, which tell
