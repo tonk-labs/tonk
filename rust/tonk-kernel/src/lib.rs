@@ -214,10 +214,10 @@ impl lifecycle::Guest for Kernel {
 
     /// The person signed in: the permanent persona delegates everything it
     /// has to the representative, which links this device to it, and the
-    /// worker records the account. What the provisional persona held stays
-    /// where it is for now.
+    /// worker records the account and carries the provisional persona's
+    /// spaces over to it.
     async fn merge(
-        _provisional: &PersonaAuthority,
+        provisional: &PersonaAuthority,
         permanent: &PersonaAuthority,
     ) -> Result<(), Error> {
         let state =
@@ -230,7 +230,7 @@ impl lifecycle::Guest for Kernel {
             reason: "to link this device to your account".to_owned(),
         };
         let link = permanent.delegate(representative, access).await?;
-        tonk_worker::merged(&state, link)
+        tonk_worker::merged(&state, link, provisional, permanent)
             .await
             .map_err(|error| Error::Unavailable(error.to_string()))
     }

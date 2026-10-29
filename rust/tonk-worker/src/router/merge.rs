@@ -11,23 +11,28 @@
 //! This worker records it all as a passkey's hand-off to the browser's worker
 //! recorded it.
 
+use std::rc::Rc;
 use std::sync::{Mutex, PoisonError};
 
+use dialog_repository::{Repository, secrets};
 use dialog_ucan_core::DelegationChain;
+use dialog_varsig::Did;
 use serde::Deserialize;
 use tonk_account::customer::Receipt;
 use tonk_common::log;
 use tonk_kernel_world::application;
+use tonk_kernel_world::credentials;
 use tonk_kernel_world::session;
-use tonk_kernel_world::world::sapling::kernel::credential::Persona;
+use tonk_kernel_world::world::sapling::kernel::credential::{Custodian, Persona, PersonaAuthority};
 use tonk_schema::AccountDisplayName;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::registration::kind;
 use tonk_worker_api::{AccountLinkRequest, PasskeyMetadata, SaveRootRequest};
 
 use super::registration;
-use super::{account, customer, identity};
+use super::{account, customer, identity, rotation};
 use crate::router::AppState;
+use crate::worker::TonkState;
 use crate::{TonkWorkerError, detach};
 
 /// What the panel asked to sign in to, while the embedder runs the
@@ -79,10 +84,16 @@ struct Ceremony {
     sealed_hex: Option<String>,
 }
 
-/// The provisional persona merged into the permanent one that delegated
-/// `link` to the representative: record the account, and where the panel
-/// is now.
-pub async fn merged(state: &AppState, link: Vec<u8>) -> Result<(), TonkWorkerError> {
+/// The provisional persona merged into the permanent one, lent as
+/// `permanent`, which delegated `link` to the representative: record the
+/// account, carry the provisional persona's spaces over to it, and say
+/// where the panel is now.
+pub async fn merged(
+    state: &AppState,
+    link: Vec<u8>,
+    provisional: &PersonaAuthority,
+    permanent: &PersonaAuthority,
+) -> Result<(), TonkWorkerError> {
     let pending = PENDING
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -160,6 +171,7 @@ pub async fn merged(state: &AppState, link: Vec<u8>) -> Result<(), TonkWorkerErr
         })?;
         customer::enrolled(&tonk, &receipt, address).await?;
     }
+    carry_spaces(&tonk, provisional, permanent, &root).await;
     drop(tonk);
     registration::settle(state, kind, Ok(())).await;
     if !created {
@@ -172,6 +184,82 @@ pub async fn merged(state: &AppState, link: Vec<u8>) -> Result<(), TonkWorkerErr
         });
     }
     Ok(())
+}
+
+/// Bring every space the provisional persona holds under the account, the
+/// permanent persona: each space's key is backed up to the permanent persona
+/// too, and the space delegates to the account, in place of the
+/// provisional persona. Best effort per space: one that fails is logged and
+/// left under the provisional persona.
+async fn carry_spaces(
+    tonk: &TonkState,
+    provisional: &PersonaAuthority,
+    permanent: &PersonaAuthority,
+    account: &Did,
+) {
+    let previous: Did = match provisional.did().parse() {
+        Ok(previous) => previous,
+        Err(error) => {
+            log!("merge: the provisional persona names no DID: {error:?}");
+            return;
+        }
+    };
+    let held =
+        match secrets::keys_for(tonk.profile.state(), &tonk.profile.did(), &tonk.profile).await {
+            Ok(held) => held,
+            Err(error) => {
+                log!("merge: the spaces held here were not read: {error}");
+                return;
+            }
+        };
+    for (space, backup) in held {
+        match carry_space(tonk, permanent, &previous, account, &space, backup).await {
+            Ok(()) => log!("merge: {space} is the account's"),
+            Err(error) => log!("merge: {space} stays the provisional persona's: {error}"),
+        }
+    }
+}
+
+async fn carry_space(
+    tonk: &TonkState,
+    permanent: &PersonaAuthority,
+    previous: &Did,
+    account: &Did,
+    space: &Did,
+    backup: Vec<u8>,
+) -> Result<(), TonkWorkerError> {
+    let failed = |what: &str, error: &dyn std::fmt::Debug| {
+        TonkWorkerError::Internal(format!("{what}: {error:?}"))
+    };
+    let key = session::credential()
+        .restore(session::backup_to_credential(backup))
+        .await
+        .map_err(|error| failed("the space's key was not restored", &error))?;
+    let resealed = key
+        .backup(Custodian::Persona(permanent))
+        .await
+        .map_err(|error| failed("the space's key was not backed up to the account", &error))?;
+    secrets::grant(
+        tonk.profile.state(),
+        space,
+        account,
+        resealed.secret,
+        &tonk.profile,
+    )
+    .await
+    .map_err(|error| failed("the account's copy of the key was not kept", &error))?;
+    let signer = credentials::signer(Rc::new(key))
+        .map_err(|error| failed("the space's key is not a signer", &error))?;
+    let minter = Repository::from(signer);
+    let chain = minter
+        .access()
+        .claim(&minter)
+        .delegate(account.clone())
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| failed("the space did not delegate to the account", &error))?
+        .into_chain();
+    rotation::settle_reissued_space(tonk, account, previous, space, &chain).await
 }
 
 /// The person refused the passkey ceremony `kind` a merge asked for, as the

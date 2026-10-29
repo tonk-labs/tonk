@@ -464,10 +464,23 @@ async fn settle_space(
             "{subject}: no direct delegation to {root}; the handover did not reach it"
         )));
     }
-    install_prefix(tonk, subject, &chain).await?;
-    migrate_membership_rows(tonk, subject, onboarding, root).await?;
-    super::account_state::retain_space_delegation(tonk, &chain).await;
-    if let Err(error) = super::customer::provision_or_defer(tonk, subject, &chain, None).await {
+    settle_reissued_space(tonk, root, onboarding, subject, &chain).await
+}
+
+/// Settle a space re-issued as `chain`, `space -> root`, in place of its
+/// delegation to `previous`: the persisted prefix, the roster, retention
+/// into the account, and consumer provisioning.
+pub(crate) async fn settle_reissued_space(
+    tonk: &TonkState,
+    root: &Did,
+    previous: &Did,
+    subject: &Did,
+    chain: &DelegationChain,
+) -> Result<(), TonkWorkerError> {
+    install_prefix(tonk, subject, chain).await?;
+    migrate_membership_rows(tonk, subject, previous, root).await?;
+    super::account_state::retain_space_delegation(tonk, chain).await;
+    if let Err(error) = super::customer::provision_or_defer(tonk, subject, chain, None).await {
         log!("{subject}: provisioning skipped: {error}");
     }
     Ok(())
