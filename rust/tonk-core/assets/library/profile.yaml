@@ -5732,8 +5732,11 @@ element!: &account-settings
       async (self) => {
         const list = self.querySelector('[data-agent-spaces]');
         const profile = await self.api('/api/profile');
+        // Agents' own spaces are contacts, not spaces to grant.
+        const agents = new Set(((await self.api('/api/agents').catch(() => [])) ?? []).map((agent) => agent.key));
         const rows = [];
         for (const { key } of profile?.space ?? []) {
+          if (agents.has(key)) continue;
           let label = key, synced = false;
           try {
             const info = await self.api(`/api/repository/${encodeURIComponent(key)}`);
@@ -5795,12 +5798,11 @@ element!: &account-settings
           .filter((select) => !select.disabled && (select.value === 'read' || select.value === 'write'))
           .map((select) => ({ key: select.dataset.key, access: select.value }));
         self.agentError('');
-        self.agentBusy(true, 'creating the agent and its access…');
-        self.api('/api/agent/session', { name, spaces, request }).then((response) => {
-          if (!response?.redirect) throw new Error('the authorization server gave no callback');
-          self.status(`sending you back to ${self._agentClient ?? 'the app'}…`);
-          window.tonk?.navigate?.(response.redirect);
-        }).catch((error) => {
+        self.agentBusy(true, 'Waiting for passkey…');
+        // The worker asks this page's top document for the passkey; the
+        // ceremony row reports how it goes, and the top page goes on to
+        // the app's callback when it is done.
+        self.api('/api/agent/session', { name, spaces, request }).catch((error) => {
           self.agentBusy(false, '');
           self.agentError(self.agentReason(error));
         });
@@ -6032,12 +6034,14 @@ element!: &account-settings
           'authorize-device': 'Approving the connection',
           'add-passkey': 'Adding the passkey',
           'sign-in-via': 'Signing in',
+          'authorize-agent': 'Approving the agent',
         }[which];
         if (!subject) return;
         const done = {
           'delete-account': 'Account deleted.',
           'authorize-device': 'Approved. Completing the connection…',
           'sign-in-via': 'Signed in.',
+          'authorize-agent': 'Approved. Returning to the app…',
         }[which] ?? 'Done.';
         const text = {
           'pending-ceremony': `${subject}: waiting for passkey…`,
@@ -6054,6 +6058,9 @@ element!: &account-settings
           if (asking !== self.hasAttribute('data-passkey-requested')) {
             if (asking) self.setAttribute('data-passkey-requested', ''); else self.removeAttribute('data-passkey-requested');
           }
+        }
+        if (which === 'authorize-agent' && (state === 'refused' || state === 'failed')) {
+          for (const button of self.querySelectorAll('[data-agent-approve], [data-agent-deny]')) button.disabled = false;
         }
         self.status(text);
       }

@@ -94,7 +94,7 @@ async fn spaces(tonk: &TonkState) -> Result<Vec<Did>, TonkWorkerError> {
 }
 
 /// Whether the space at `did` carries the agent-space mark.
-async fn is_agent(tonk: &TonkState, did: &Did) -> bool {
+pub(super) async fn is_agent(tonk: &TonkState, did: &Did) -> bool {
     let Ok(session) = tonk
         .reactor
         .repository(did.repo_key())
@@ -433,7 +433,14 @@ mod tests {
                     .did();
                 chains.extend(
                     super::super::agent_session::grant(
-                        &tonk, &agent, &subject, access, &remote, now, expires,
+                        &tonk,
+                        &tonk.profile.credential().signer().clone(),
+                        &agent,
+                        &subject,
+                        access,
+                        &remote,
+                        now,
+                        expires,
                     )
                     .await?,
                 );
