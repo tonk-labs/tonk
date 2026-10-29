@@ -344,6 +344,13 @@ impl SpaceWriter {
         status(&self.peer(), &self.base).await
     }
 
+    /// Whether the lock is held: a write is in flight, or a read is
+    /// pulling under it. A writer that holds it must not be dropped, since
+    /// a write between its commit and its push would be lost.
+    pub fn holds_write(&self) -> bool {
+        self.lock.try_lock().is_err()
+    }
+
     /// Release the peer. Waits for a write in flight to finish.
     pub async fn close(self) {
         drop(self.lock.lock().await);
