@@ -216,6 +216,7 @@ pub async fn encode_agent_session_token_with_grants(
 
 /// An agent session token, decoded and checked.
 pub struct AgentSessionToken {
+    seed: Zeroizing<[u8; 32]>,
     session: Ed25519Signer,
     powerline: DelegationChain,
     home: Url,
@@ -223,6 +224,12 @@ pub struct AgentSessionToken {
 }
 
 impl AgentSessionToken {
+    /// The session key's seed. A host derives keys from it, such as the
+    /// writer key of each MCP session; it never leaves the host.
+    pub fn seed(&self) -> &Zeroizing<[u8; 32]> {
+        &self.seed
+    }
+
     /// The session key, derived from the token's seed.
     pub fn session(&self) -> &Ed25519Signer {
         &self.session
@@ -358,6 +365,7 @@ pub async fn decode_agent_session_token(token: &str) -> Result<AgentSessionToken
     let powerline = DelegationChain::new(powerline.clone());
     let home = home_address(&powerline)?.context("the token's powerline names no home")?;
     Ok(AgentSessionToken {
+        seed,
         session,
         powerline,
         home,
