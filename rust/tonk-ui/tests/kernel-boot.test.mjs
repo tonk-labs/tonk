@@ -27,12 +27,14 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, 
   const booted = [];
   const handled = [];
   const sentHeaders = [];
+  // What the host handed the kernel with `receive`.
+  const received = [];
   const imported = [];
   const fetched = [];
   const pages = [{ postMessage: (message) => void told.push(message) }];
   const embedder = {
     timings: {},
-    receive() {},
+    receive: async (bytes) => void received.push(JSON.parse(new TextDecoder().decode(bytes))),
     handle: async (method, path, headers = []) => {
       handled.push(`${method} ${path}`);
       sentHeaders.push(headers);
@@ -74,8 +76,8 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, 
       if (!holds) queueMicrotask(() => sent(new TextEncoder().encode(JSON.stringify({ ask: 1, seeded: true }))));
       return embedder;
     },
-    bootPersona: async (subject, session) => {
-      booted.push({ subject, session: session.did });
+    bootPersona: async (subject, session, sent) => {
+      booted.push({ subject, session: session.did, sent });
       return embedder;
     },
   });
@@ -103,7 +105,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, 
     performance,
     crypto,
     URL, Request, Response, Headers, TextEncoder, TextDecoder, Uint8Array, Promise, ReadableStream, TransformStream,
-    setTimeout, clearTimeout, queueMicrotask,
+    setTimeout, clearTimeout, queueMicrotask, btoa, atob,
     // The host's files this worker keeps; for a space that holds its
     // kernel, who it acts for, as its first start kept.
     caches: (() => {
@@ -185,7 +187,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, 
     new Promise((resolve) =>
       listeners.message({ data: { type: "booted" }, ports: [{ postMessage: resolve }], waitUntil() {} }),
     );
-  return { sentHeaders, listeners, imported, fetched, booted, handled, asked, told, kept, opened, handPort, passDown, request, message, goOffline, started };
+  return { received, sentHeaders, listeners, imported, fetched, booted, handled, asked, told, kept, opened, handPort, passDown, request, message, goOffline, started };
 }
 
 test("the bootloader loads the host's embedder", () => {
@@ -389,4 +391,33 @@ test("the profile passes what a page asks about a space's content to that space'
     "the space's kernel is asked, not the persona",
   );
   assert.ok(!profile.handled.includes(`POST ${path}`), "the persona is not asked about the space");
+});
+
+test("the persona's subscription to a space's kernel reaches it in pieces, and stops when the persona stops reading", async () => {
+  const profile = space({ origin: "https://profile.tonk.test" });
+  const asked = [];
+  const host = {
+    postMessage: (message) => {
+      asked.push(message);
+      if (!message.request) return;
+      const { call } = message;
+      queueMicrotask(() => {
+        host.onmessage({ data: { call, head: { status: 200, headers: [] } } });
+        host.onmessage({ data: { call, chunk: new TextEncoder().encode("data: 1\n\n").buffer } });
+      });
+    },
+  };
+  profile.listeners.message({ data: { type: "space-port", repo: SPACE }, ports: [host], waitUntil() {} });
+  await profile.request("/api/identify");
+  const ask = { ask: 9, to: SPACE, method: "POST", path: "/api/repository/x/branch/main/query", body: "{}", stream: true };
+  await profile.booted[0].sent(new TextEncoder().encode(JSON.stringify(ask)));
+  for (let i = 0; i < 50 && profile.received.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(JSON.parse(JSON.stringify(profile.received.slice(0, 2))), [
+    { answer: 9, status: 200 },
+    { piece: 9, body64: btoa("data: 1\n\n") },
+  ]);
+  assert.equal(asked[0].request.path, ask.path, "the space's kernel is asked");
+
+  await profile.booted[0].sent(new TextEncoder().encode(JSON.stringify({ tell: "cancel", ask: 9 })));
+  assert.deepEqual(JSON.parse(JSON.stringify(asked.at(-1))), { cancel: asked[0].call }, "the call to the space is cancelled");
 });
