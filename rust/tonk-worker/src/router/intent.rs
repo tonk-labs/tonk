@@ -891,6 +891,47 @@ async fn it_evaluates_many_rows() {
 /// install under the component's source.
 #[dialog_common::test]
 async fn it_installs_a_component_from_the_palette() {
+    installs_from_the_palette(
+        "install note",
+        "install [notebook]",
+        "/library/notebook.yaml",
+    )
+    .await;
+}
+
+/// "install <URL>" names a component published at that URL, which no row
+/// of the space offers yet, and running it installs it from there.
+#[cfg(not(target_arch = "wasm32"))]
+#[dialog_common::test]
+async fn it_installs_a_component_from_a_url_typed_in_the_palette() {
+    use std::io::{BufRead as _, BufReader, Write as _};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/kanban.yaml", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        let body = "attribute!: &kanban/lane\n  description: A lane.\n  the: xyz.example.kanban/lane\n  as: text\n";
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
+                line.clear();
+            }
+            let mut stream = stream;
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    installs_from_the_palette(&format!("install {url}"), &format!("install [{url}]"), &url).await;
+}
+
+/// Type `input` in a fresh space's palette, check the top reading shows as
+/// `reads`, run it, and wait for an install recorded under `source`.
+async fn installs_from_the_palette(input: &str, reads: &str, source: &str) {
     let (app, _state, _lsp) = api_router_with_state(test_state().await);
     let created = send(
         &app,
@@ -914,12 +955,12 @@ async fn it_installs_a_component_from_the_palette() {
 
     let page = "site:6f0d2c8e-4b1a-4c3d-9e2f-1a2b3c4d5e6f";
     let expression = "intent:test-install";
-    interpreted(&app, &space, expression, "install note", page, 1.0).await;
+    interpreted(&app, &space, expression, input, page, 1.0).await;
     let rows = readings(&app, &space, expression, &subject).await;
     let top = rows
         .first()
         .unwrap_or_else(|| panic!("install is suggested: {rows:?}"));
-    assert_eq!(field(top, "text"), "install [notebook]", "{rows:?}");
+    assert_eq!(field(top, "text"), reads, "{rows:?}");
     let claim = field(top, "claim")
         .as_str()
         .unwrap_or_else(|| panic!("the reading runs as it is: {top:?}"))
@@ -953,13 +994,13 @@ async fn it_installs_a_component_from_the_palette() {
             .to_string(),
         )
         .await;
-        if sources.as_array().is_some_and(|rows| {
-            rows.iter()
-                .any(|row| row["fields"]["source"] == "/library/notebook.yaml")
-        }) {
+        if sources
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["fields"]["source"] == source))
+        {
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    panic!("the notebook component was never installed: {sources}");
+    panic!("{source} was never installed: {sources}");
 }

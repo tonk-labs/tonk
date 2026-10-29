@@ -129,7 +129,7 @@ test('generic MCP client authors and queries the ordinary native worker', async 
     });
     assert.equal(renamed.matches_after[0].results[0].fields.name, 'Workflow renamed');
     await backend.call('tonk_evaluate', {
-      document: 'library/install!:\n  component: tonk:library/notebook\n  time: 1.0\n',
+      document: 'library/install!:\n  component: https://tonk.foundation/library/notebook.yaml\n  time: 1.0\n',
     });
     const library = await backend.call('tonk_query', {
       document: 'concept:\n  name: "notebook/named"\n',

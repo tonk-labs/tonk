@@ -2776,7 +2776,7 @@ mod native_host_tests {
             String::from_utf8_lossy(&bytes)
         );
         for document in [
-            "library/install!:\n  component: tonk:library/notebook\n  time: 1.0\n",
+            "library/install!:\n  component: https://tonk.foundation/library/notebook.yaml\n  time: 1.0\n",
             "notebook/named!:\n  this: urn:host:notebook\n  title: General commands\nblock/edit!:\n  subject: urn:host:block\n  notebook: urn:host:notebook\n  source: Written through the shared worker\n",
         ] {
             let response = router

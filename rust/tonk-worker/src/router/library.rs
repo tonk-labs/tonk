@@ -130,11 +130,11 @@ fn parsed(parsed: tonk_notation::Parsed) -> Result<Syntax, TonkWorkerError> {
         .ok_or_else(|| TonkWorkerError::Internal("library is empty".to_owned()))
 }
 
-/// The library's components a space can install from the palette
-/// (`library/install`): every library document but the two each branch is
-/// seeded with, `core.yaml` (every space) and `profile.yaml` (the profile
-/// branch). Only these: a component names a library file by its name, so
-/// the list is what keeps an install to the library.
+/// The components this release ships (`library/install`): every library
+/// document but the two each branch is seeded with, `core.yaml` (every
+/// space) and `profile.yaml` (the profile branch). They are served beside
+/// the library and compiled into native builds, so installing one reads
+/// no network.
 pub(super) const COMPONENTS: [&str; 6] = [
     "issue",
     "meta",
@@ -144,25 +144,70 @@ pub(super) const COMPONENTS: [&str; 6] = [
     "version-control",
 ];
 
-/// Whether `source` is a component's library file (`/library/<name>.yaml`).
+/// Where the shipped components are published. A component is named by
+/// its URL, and one under this directory naming a shipped component is
+/// read from the copy this release ships rather than fetched: every
+/// deployment serves the same files at its own `/library/`.
+pub(super) const PUBLISHED: &str = "https://tonk.foundation/library/";
+
+/// Whether `source`, an install's recorded source, is a component's: a
+/// shipped one's library file (`/library/<name>.yaml`) or a published
+/// document's URL (see [`remote`]).
 pub(super) fn is_component_url(source: &str) -> bool {
+    shipped(source).is_some() || remote(source).is_some()
+}
+
+/// The shipped component `/library/<name>.yaml` names, if it is one.
+fn shipped(source: &str) -> Option<&str> {
     source
         .strip_prefix("/library/")
         .and_then(|file| file.strip_suffix(".yaml"))
-        .is_some_and(|name| COMPONENTS.contains(&name))
+        .filter(|name| COMPONENTS.contains(name))
 }
 
-/// The library file a component entity (`tonk:library/<name>`) names, when
-/// it is one of [`COMPONENTS`].
+/// `source` as the URL of a component published somewhere: an absolute
+/// `http(s)` URL. Whether it may be fetched is the fetch's to decide.
+pub(super) fn remote(source: &str) -> Option<Url> {
+    let url = Url::parse(source).ok()?;
+    matches!(url.scheme(), "https" | "http").then_some(url)
+}
+
+/// Where to read the component a `library/install` names, which is its
+/// URL. A URL under [`PUBLISHED`] naming a shipped component, or the
+/// `tonk:library/<name>` a release before named one by, reads the shipped
+/// copy (`/library/<name>.yaml`); any other `http(s)` URL is read from
+/// where it points.
 pub(super) fn component_url(component: &str) -> Option<String> {
-    let name = component.strip_prefix("tonk:library/")?;
-    COMPONENTS
-        .contains(&name)
-        .then(|| format!("/library/{name}.yaml"))
+    let local = |name: &str| {
+        COMPONENTS
+            .contains(&name)
+            .then(|| format!("/library/{name}.yaml"))
+    };
+    if let Some(name) = component.strip_prefix("tonk:library/") {
+        return local(name);
+    }
+    if let Some(file) = component.strip_prefix(PUBLISHED)
+        && let Some(found) = file.strip_suffix(".yaml").and_then(local)
+    {
+        return Some(found);
+    }
+    remote(component).map(|url| url.to_string())
 }
 
-/// Install a library component into the space it was asked in, or bring
-/// the installed one up to the shipped version. Like the space's seed, a
+/// Parse a component's document where it was read from: a shipped one in
+/// the library directory, as [`parse`] does, and a published one at its
+/// URL, so it includes from beside itself and nowhere else.
+pub(super) async fn parse_component(source: &str, text: &str) -> Result<Syntax, TonkWorkerError> {
+    match remote(source) {
+        Some(url) => super::seed::parse_source(url, text)
+            .await
+            .map_err(TonkWorkerError::Internal),
+        None => parse(text).await,
+    }
+}
+
+/// Install the component at a URL into the space it was asked in, or bring
+/// the installed one up to the version that URL now serves. Like the space's seed, a
 /// component is recorded and upgraded on mount; unlike it, a space can have
 /// several (see `repository::install_component`).
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -173,7 +218,7 @@ impl dialog_capability::Provider<tonk_schema::command::InstallComponent>
     async fn execute(&self, command: tonk_schema::command::InstallComponent) {
         let component = command.component.0.to_string();
         let Some(source) = component_url(&component) else {
-            tonk_common::log!("library/install: '{component}' is not a library component");
+            tonk_common::log!("library/install: '{component}' is not a component's URL");
             return;
         };
         let (repo, branch) = (self.origin().repo.clone(), self.origin().branch.clone());
@@ -222,6 +267,45 @@ mod tests {
                 "{reference} must not load"
             );
         }
+    }
+
+    /// A component is named by its URL. One the release ships, under the
+    /// published directory or by the name a release before used, reads the
+    /// shipped copy; any other `http(s)` URL is read from where it points.
+    #[dialog_common::test]
+    fn it_reads_a_component_from_its_url() {
+        for named in [
+            "https://tonk.foundation/library/notebook.yaml",
+            "tonk:library/notebook",
+        ] {
+            assert_eq!(
+                component_url(named).as_deref(),
+                Some("/library/notebook.yaml"),
+                "{named}"
+            );
+        }
+        for published in [
+            "https://example.test/library/notebook.yaml",
+            "https://tonk.foundation/library/elsewhere.yaml",
+            "http://localhost:8080/kanban.yaml",
+        ] {
+            assert_eq!(
+                component_url(published).as_deref(),
+                Some(published),
+                "{published}"
+            );
+            assert!(is_component_url(published));
+        }
+        for refused in [
+            "tonk:library/core",
+            "tonk:library/elsewhere",
+            "file:///etc/passwd",
+            "notebook",
+        ] {
+            assert_eq!(component_url(refused), None, "{refused}");
+        }
+        assert!(is_component_url("/library/table.yaml"));
+        assert!(!is_component_url("/library/core.yaml"));
     }
 
     /// Natively the library is the bundled copy: a library body parses

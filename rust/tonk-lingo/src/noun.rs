@@ -84,11 +84,29 @@ pub(crate) fn detect(
                     })
                 })
                 .collect();
+            // An entity is also named by its URL, typed whole: what a
+            // concept with no row for it yet (a component to install from
+            // where it is published) can only be named by.
+            if is_url(text) && !matches.iter().any(|found| found.text == text) {
+                matches.push(Suggestion {
+                    text: text.to_owned(),
+                    value: Some(Value::Entity(text.to_owned())),
+                    score: 1.0,
+                });
+            }
             matches.sort_by(|a, b| b.score.total_cmp(&a.score));
             matches.truncate(MAX_CANDIDATES);
             matches
         }
     }
+}
+
+/// Whether `text` is one `http(s)` URL: a scheme, a host and no spaces.
+fn is_url(text: &str) -> bool {
+    ["https://", "http://"].iter().any(|scheme| {
+        text.strip_prefix(scheme)
+            .is_some_and(|rest| !rest.is_empty() && !rest.starts_with('/'))
+    }) && !text.chars().any(char::is_whitespace)
 }
 
 /// The default for an empty argument: the entity the page shows, when
@@ -153,6 +171,32 @@ mod tests {
 
         let shown = default(&registry, &notebook, Some("nb:a"));
         assert_eq!(shown.value, Some(Value::Entity("nb:a".to_owned())));
+    }
+
+    #[test]
+    fn it_reads_a_typed_url_as_the_entity_it_names() {
+        let mut registry = Registry::default();
+        let component = Noun::Concept("component".to_owned());
+        registry.candidates.insert(
+            "component".to_owned(),
+            vec![candidate(
+                "https://tonk.foundation/library/prose.yaml",
+                "prose",
+            )],
+        );
+        let url = "https://example.test/library/kanban.yaml";
+        let found = detect(&registry, &component, url, None);
+        assert_eq!(found[0].value, Some(Value::Entity(url.to_owned())));
+        assert_eq!(found[0].score, 1.0);
+
+        for text in ["kanban", "https://", "https:///x", "https://a b"] {
+            assert!(
+                !detect(&registry, &component, text, None)
+                    .iter()
+                    .any(|found| found.value == Some(Value::Entity(text.to_owned()))),
+                "{text}"
+            );
+        }
     }
 
     #[test]

@@ -37,7 +37,9 @@ pub(super) async fn prepare(reference: &str, core: &Syntax) -> Result<Syntax, St
     Ok(syntax)
 }
 
-async fn parse_source(url: Url, text: &str) -> Result<Syntax, String> {
+/// Parse `text`, read from `url`, there: its includes are fetched from
+/// under its own directory and inlined.
+pub(super) async fn parse_source(url: Url, text: &str) -> Result<Syntax, String> {
     let parsed = parse_at(url.clone(), text);
     if let Some(first) = parsed.diagnostics.first() {
         return Err(format!(
@@ -182,6 +184,14 @@ name!:
   entity: space:home
 "#
     )
+}
+
+/// Fetch the notation document at `url` the way a seed is fetched: what a
+/// published library component is read from.
+pub(super) async fn fetch_text(url: &Url) -> Result<String, String> {
+    admit(url)?;
+    let bytes = fetch(url).await?;
+    String::from_utf8(bytes).map_err(|_| format!("{url} is not UTF-8 text"))
 }
 
 /// Whether a seed may be fetched from `url` at all.

@@ -484,3 +484,60 @@ fn it_scales_with_candidates() {
         }
     }
 }
+
+#[test]
+fn it_installs_a_component_named_by_its_url() {
+    // `library/install` as core declares it: the component its object, the
+    // moment its nonce, and the shipped components derived as candidates.
+    let mut source = space();
+    source
+        .verbs
+        .push(row("concept:install", json!({ "name": "install" })));
+    source.arguments.push(row(
+        "",
+        json!({ "command": "concept:install", "field": "the:install-component", "role": "object" }),
+    ));
+    source.arguments.push(row(
+        "",
+        json!({ "command": "concept:install", "field": "the:install-time", "role": "now" }),
+    ));
+    source.attributes.push(row(
+        "the:install-component",
+        json!({ "id": "xyz.tonk.command.install-component/component", "type": "Entity" }),
+    ));
+    source.attributes.push(row(
+        "the:install-time",
+        json!({ "id": "xyz.tonk.command.install-component/time", "type": "Float" }),
+    ));
+    source.fragments.extend(derived(
+        "concept:install",
+        "the:install-component",
+        &["https://tonk.foundation/library/prose.yaml"],
+    ));
+    source.concepts.insert(
+        "concept:component".into(),
+        ConceptRows {
+            label: Some("{name}".into()),
+            rows: vec![row(
+                "https://tonk.foundation/library/prose.yaml",
+                json!({ "name": "prose" }),
+            )],
+        },
+    );
+    let component = |input: &str| {
+        let mut asked = request(input);
+        asked.sources = vec![source.clone()];
+        propose(&asked)
+            .into_iter()
+            .find_map(|proposal| proposal.claim)
+            .map(|claim| claim["claims"][0]["application"]["parameters"]["component"].clone())
+    };
+
+    // A shipped one by its name, and any one by its URL.
+    assert_eq!(
+        component("install prose"),
+        Some(json!("https://tonk.foundation/library/prose.yaml"))
+    );
+    let url = "https://tonk.foundation/library/version-control.yaml";
+    assert_eq!(component(&format!("install {url}")), Some(json!(url)));
+}

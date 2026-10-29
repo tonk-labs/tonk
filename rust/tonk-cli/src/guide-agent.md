@@ -45,7 +45,8 @@ as `this:`. For renames, use the tested worker-command recipe in the spaces
 guide so the account-directory label updates too. Query back the name and check
 the host picker; a successful write alone does not prove its catalog refreshed.
 Library components can be installed through
-`library/install!:` with their discovered `component:` URI and `time:` value;
+`library/install!:` with `component:` the URL of the component's document
+(a discovered `library/component` or any `https` URL) and a `time:` value;
 query the installed concepts before using them. Creating or switching the
 attached space remains a host action.
 

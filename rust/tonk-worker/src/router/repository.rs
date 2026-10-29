@@ -4628,9 +4628,14 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
     Ok(upgrade_components(tonk, &key, &session).await? | upgraded)
 }
 
-/// Bring every component space `key` installed up to its shipped version,
-/// each from its own source, as [`upgrade_seed`] does after the seed.
-/// Whether any of them changed.
+/// Bring every shipped component space `key` installed up to its shipped
+/// version, each from its own source, as [`upgrade_seed`] does after the
+/// seed. Whether any of them changed.
+///
+/// A component published elsewhere is not followed here: mounting a space
+/// would otherwise fetch every one, fail offline, and take whatever its
+/// publisher serves today without anybody asking. Installing it again
+/// updates it.
 async fn upgrade_components(
     tonk: &TonkState,
     key: &str,
@@ -4641,6 +4646,7 @@ async fn upgrade_components(
         .map_err(|e| RepositoryError::Internal(format!("read seed record: {e}")))?
         .into_iter()
         .filter(|seed| lineage(&seed.source) != "main")
+        .filter(|seed| super::library::remote(&seed.source).is_none())
         .collect();
     let mut upgraded = false;
     for component in components {
@@ -5540,13 +5546,25 @@ async fn fetch_profile_library() -> Result<String, TonkWorkerError> {
 /// needs, so they read the checked-in bytes, as [`fetch_profile_library`]
 /// does.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown", test))]
-async fn fetch_library_document(url: &str) -> Result<String, TonkWorkerError> {
+async fn fetch_shipped_document(url: &str) -> Result<String, TonkWorkerError> {
     embedded_standard_library(url)
 }
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown", test)))]
-async fn fetch_library_document(url: &str) -> Result<String, TonkWorkerError> {
+async fn fetch_shipped_document(url: &str) -> Result<String, TonkWorkerError> {
     fetch_standard_library(url).await
+}
+
+/// The library document an install's source names: a shipped one (see
+/// [`fetch_shipped_document`]), or a component published at an `http(s)`
+/// URL, fetched as a seed is (see [`super::seed`]).
+async fn fetch_library_document(url: &str) -> Result<String, TonkWorkerError> {
+    match super::library::remote(url) {
+        Some(remote) => super::seed::fetch_text(&remote)
+            .await
+            .map_err(TonkWorkerError::Internal),
+        None => fetch_shipped_document(url).await,
+    }
 }
 
 /// The native sibling of the fetch above: the same documents the
@@ -6843,17 +6861,17 @@ async fn library_claims_after(
     use dialog_query::{Parameters, Term};
     use tonk_schema::transact::{ApplicationPlan, Planner as _, Statement};
 
-    let parse = |text| async move {
-        super::library::parse(text)
-            .await
-            .map_err(|error| RepositoryError::Internal(format!("{what}: {error}")))
-    };
+    let failed = |error| RepositoryError::Internal(format!("{what}: {error}"));
     let (syntax, first) = match prelude {
-        None => (parse(library).await?, 0),
+        None => (super::library::parse(library).await.map_err(failed)?, 0),
         Some(prelude) => {
-            let mut joined = parse(prelude).await?;
+            let mut joined = super::library::parse(prelude).await.map_err(failed)?;
             let first = joined.expressions.len();
-            joined.expressions.extend(parse(library).await?.expressions);
+            // A component, parsed where it was read from (`what`).
+            let component = super::library::parse_component(what, library)
+                .await
+                .map_err(failed)?;
+            joined.expressions.extend(component.expressions);
             (joined, first)
         }
     };
@@ -15722,6 +15740,124 @@ concept!: &writer-app
                 .await
                 .expect("the components' upgrade runs"),
             "a mount finds the component current"
+        );
+    }
+
+    /// Serve the files in `files` (path → body) over plain HTTP/1.1 on a
+    /// loopback port, answering anything else 404, and return the base URL.
+    /// The bodies can change while it serves.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn serve(files: std::sync::Arc<std::sync::Mutex<Vec<(&'static str, String)>>>) -> String {
+        use std::io::{BufRead as _, BufReader, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                let _ = reader.read_line(&mut request);
+                let path = request.split_whitespace().nth(1).unwrap_or("").to_owned();
+                let mut line = String::new();
+                while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
+                    line.clear();
+                }
+                let body = files
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|(file, _)| *file == path)
+                    .map(|(_, body)| body.clone());
+                let response = match body {
+                    Some(body) => format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    ),
+                    None => {
+                        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_owned()
+                    }
+                };
+                let mut stream = stream;
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        base
+    }
+
+    /// A component published at a URL installs from there, with what it
+    /// includes read from beside it. A mount leaves it at the version it
+    /// installed, whatever the URL serves since; installing it again takes
+    /// what the URL serves now.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn a_published_component_updates_only_when_installed_again() {
+        let files = std::sync::Arc::new(std::sync::Mutex::new(vec![
+            (
+                "/components/probe.yaml",
+                "attribute!: &probe/published\n  description: !include ./probe/description.txt\n  the: xyz.example.probe/published\n  as: text\n"
+                    .to_owned(),
+            ),
+            ("/components/probe/description.txt", "First served".to_owned()),
+        ]));
+        let source = format!("{}/components/probe.yaml", serve(files.clone()));
+        let says = |claims: std::collections::HashSet<Triple>, text: &str| {
+            claims.iter().any(|claim| claim.2.contains(text))
+        };
+
+        let tonk = test_state().await;
+        let (key, _) = new_space(&tonk, CORE, "Garden").await;
+        assert!(
+            install_component(&tonk, &key, CONTENT_BRANCH, &source)
+                .await
+                .expect("the published component installs")
+        );
+        let installed = component(&tonk, &key, &source)
+            .await
+            .expect("the install is recorded under its URL");
+        assert_eq!(installed.source, source);
+        assert!(says(
+            install_claims(&tonk, &key, &installed).await,
+            "First served"
+        ));
+
+        // An install's version is its document's text, so the document
+        // changes, not only what it includes.
+        {
+            let mut files = files.lock().unwrap();
+            files[0].1 = files[0]
+                .1
+                .replace("probe/description.txt", "probe/later.txt");
+            files.push(("/components/probe/later.txt", "Served later".to_owned()));
+        }
+        let session = content(&tonk, &key).await;
+        assert!(
+            !upgrade_components(&tonk, &key, &session)
+                .await
+                .expect("the components' upgrade runs"),
+            "a mount does not follow a published component"
+        );
+        assert_eq!(
+            component(&tonk, &key, &source).await.unwrap().seed,
+            installed.seed
+        );
+
+        assert!(
+            install_component(&tonk, &key, CONTENT_BRANCH, &source)
+                .await
+                .expect("installing again reads the URL"),
+            "installing again takes what it serves now"
+        );
+        let updated = component(&tonk, &key, &source).await.unwrap();
+        assert_ne!(updated.seed, installed.seed);
+        assert!(says(
+            install_claims(&tonk, &key, &updated).await,
+            "Served later"
+        ));
+        assert_eq!(
+            running(&tonk, &key).await.source,
+            STANDARD_LIBRARY_URL,
+            "the space's seed stays its own"
         );
     }
 

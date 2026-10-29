@@ -2703,14 +2703,19 @@ view!:
     label: |
       {name}
 
-# The library's components a space can install, each beside the others
-# and beside the space's seed: issue, meta, notebook, prose, table,
-# version-control (every library file but `core.yaml`, which every space
-# runs, and `profile.yaml`, the profile's). An install is recorded like the seed's and brought up to
-# date the same way when the space mounts; installing one already there
+# Library components: documents of definitions a space can install, each
+# beside the others and beside the space's seed. A component is named by
+# its URL, and any `https` URL serving one installs it: `install <URL>` in
+# the palette, or `library/install!:` with `component:` the URL. The ones
+# below ship with tonk (every library file but `core.yaml`, which every
+# space runs, and `profile.yaml`, the profile's); a deployment reads those
+# from its own copy rather than the network. An install is recorded like
+# the seed's. A shipped component is brought up to date when the space
+# mounts; one published elsewhere only when it is installed again, so its
+# publisher cannot change the space unasked. Installing one already there
 # updates it, or does nothing when it is current.
 concept!: &library/component
-  description: A library component a space can install.
+  description: A library component a space can install, named by its URL.
   with:
     name:
       description: The component's name, the file it is in without `.yaml`.
@@ -2724,31 +2729,31 @@ view!:
       {name}
 
 library/component!:
-  this: tonk:library/issue
+  this: https://tonk.foundation/library/issue.yaml
   name: "issue"
 
 library/component!:
-  this: tonk:library/meta
+  this: https://tonk.foundation/library/meta.yaml
   name: "meta"
 
 library/component!:
-  this: tonk:library/notebook
+  this: https://tonk.foundation/library/notebook.yaml
   name: "notebook"
 
 library/component!:
-  this: tonk:library/prose
+  this: https://tonk.foundation/library/prose.yaml
   name: "prose"
 
 library/component!:
-  this: tonk:library/table
+  this: https://tonk.foundation/library/table.yaml
   name: "table"
 
 library/component!:
-  this: tonk:library/version-control
+  this: https://tonk.foundation/library/version-control.yaml
   name: "version-control"
 
 attribute!: &install-component/component
-  description: Which component to install, `tonk:library/<name>`.
+  description: Which component to install, by the URL of its document.
   the: xyz.tonk.command.install-component/component
   as: entity
   role: :object

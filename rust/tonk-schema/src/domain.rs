@@ -1488,7 +1488,7 @@ pub mod command {
             use dialog_artifacts::Entity;
             use dialog_query::Attribute;
 
-            /// The component (`tonk:library/<name>`): which library file.
+            /// The component, by the URL of its document.
             #[derive(Attribute, Clone, PartialEq, PartialOrd)]
             #[domain("xyz.tonk.command.install-component")]
             pub struct Component(pub Entity);
