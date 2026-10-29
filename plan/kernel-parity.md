@@ -37,33 +37,32 @@ lifecycle). In the kernel build:
 | Public reads (seeds, the deployment's configuration) | works | `{ ask, read }` on the channel, answered by the host |
 | The access service (lookups, signed invocations, ticket claims) | works for the persona | `{ ask, fetch }` on the channel, delivered by the persona's host; a space's host delivers nothing |
 | Sign up, sign in | works | `provisional-persona.merge` and the lifecycle's `merge` (see below) |
-| Add a passkey, approve a device or a connection, delete the account | absent | `permanent-persona.authorize` and the lifecycle's `authorize`; needs a WIT addition (see below) |
+| Approve a device or a connection, promote a member, delete the account | works | the command asks `permanent-persona.authorize` with the custody intent the old worker asked a page for as the context; the host asks the page for the passkey, opens the account and lends it for the lifecycle's `authorize` (see below) |
+| Add a passkey | absent | needs `persona-authority.add-recovery` in the host; no test covers it |
 | Sync with a remote | works | Dialog's UCAN site hands each operation to a relay (dialog `feat/ucan-relay`), which opens the subject's replica through `network.open` and `peer.open`; the host signs with the key the chain names and runs the UCAN site against the service. The kernel syncs after each write |
 | A space's content, asked of the profile | works | the profile's host passes requests under a space's branches to its kernel, streaming answers that come in pieces |
 | An account's spaces left local, once it is active | works | the account's convergence runs on the kernel; the persona tells the host what a space's kernel takes up changed, `{ tell: "changed" }`, and the space's kernel asks for its delegation again |
 | A space asking the persona (invites, authority, revocation) | works | `{ ask, profile }` on the channel, up the space's port, answered on the persona's `/_kernel/space/{space}/…` |
 | Telling a page to navigate | works | `{ tell: "navigate", client, href }` on the channel, the client named by the host in `x-tonk-client-id` |
-| A second account on a device | absent | needs a decision (see below) |
-| Upgrades | absent | the bootloader's, not the old worker's generations; needs a decision (see below) |
+| A second account on a device | works | a branch of the profile per account, as before; the kernel asks its host to act for the account the branch is signed in to, or for its provisional persona, `{ ask, standing }` |
+| Publishing a space | works | the persona mints the publication and has the service keep its ticket; the space's kernel records it (`RecordPublication`), as it records an invite |
+| A space and a profile on the kernel they pin | works | `kernel_pins.rs`: a deployment that ships another kernel leaves each space, and each account's spaces, on the kernel they were made with |
 
 ## What the suite says
 
-The whole suite on the kernel build (2026-10-29): 99 tests, 71 pass, 28
-fail. Since then an asset uploaded while a sync moved the space's line no
-longer fails (dialog's blob write retries its commit).
+The whole suite on the kernel build (2026-10-29): 90 tests, 87 pass. The
+old worker's upgrade tests are gone (`service_worker_upgrade.rs`, and
+`profile_library_repairs_claims_from_an_old_account_writer`); `kernel_pins.rs`
+checks in their place that a space, and each account's spaces, stay on the
+kernel they were made with when the deployment ships another.
 
-What fails, and why:
+Of the three that failed:
 
-| Count | Why |
+| Test | Why |
 |---|---|
-| 11 | the old worker's upgrade generations (`service_worker_upgrade.rs`, and `profile_library_repairs_claims_from_an_old_account_writer`) |
-| 8 | approving with the account's key: signing in through another deployment (4), a waiting CLI, the wrong account for a handoff, promoting a member, deleting the account |
-| 3 | a second account on a device: "no profile key named tonk" |
-| 1 | publishing a space: `space/publish` runs where the space is held, and the profile holds none; this predates the kernel |
-| 1 | the sign-up journey's analytics: no account event reaches the page |
-| 1 | signing out: the page is not reloaded |
-| 1 | a third device confirming: the first tab stays "confirming" |
-| 1 | the harness's own test |
+| `it_lands_on_the_account_when_signing_back_in_through_another_deployment` | passes on a rerun: the sign-out button was not yet interactable |
+| `it_removes_the_test_workspace_after_orderly_shutdown` | passes without `TONK_E2E_KEEP_WORKSPACE`, which keeps the workspace on purpose |
+| `it_reaps_browsers_that_outlive_their_driver` | the harness's own `pkill` does not reach its stand-in here; nothing it touches changed |
 
 ## Sign-up on the world
 
@@ -112,19 +111,23 @@ Done as above, with these differences:
   permanent persona too, delegates to the account, and is settled as the
   old worker's rotation settled it.
 
-Open, for a decision:
+Approving with the account's key, done the same way:
 
-- **Approving with the account's key.** A device's grant carries the
-  account's sync address in its signed `meta`, which `access` cannot say.
-  Proposed: `access` gains `meta: list<argument>`, and approving runs as
-  `permanent-persona.authorize(reason, context)` with the pending approval as
-  `context`, done in the lifecycle's `authorize`.
-- **A second account on a device.** The old worker kept a profile per
-  account and switched between them. On the world one persona merges into
-  one account; a second account is a second persona on the device.
-- **Upgrades.** The tests check the old worker's generations of a whole
-  deployment. On the world the host's files follow the deployment and each
-  space pins its kernel; the tests need re-specifying for that.
+- A command that needs the account's key asks `permanent-persona.authorize`
+  with the custody intent (`CustodyIntent`, as the old worker sent the page)
+  as the context. The host posts that intent to the page as the ceremony's
+  `WebAuthnRequest`, opens the account with what the passkey derived, refuses
+  one that is not the account the kernel acts for, and lends it for the
+  lifecycle's `authorize`. A refusal reaches the kernel as
+  `{ tell: "unauthorized" }`.
+- `access` gains `meta`, `not-before` and `expiration` (WIT change): a
+  device's grant carries where the account syncs in its meta, and a purge is
+  delegated to the session for five minutes and invoked by it.
+- A page's own ask for a delegation (the bar promoting a member) runs its
+  ceremony first: the host keeps the hand-off, tells the kernel
+  `{ tell: "delegate" }`, lends the account for the authorization the kernel
+  then asks for, and answers the page with the chain the kernel tells it,
+  `{ tell: "delegated" }`.
 
 ## Decisions
 
@@ -141,10 +144,18 @@ Open, for a decision:
    its port as a page's request.
 3. **The remote.** `network.open(peer, routes)` and `peer.open(subject,
    chain)`, a replica that reads and writes as a layer does.
+4. **Approving with the account's key.** `permanent-persona.authorize` and
+   the lifecycle's `authorize`, with `access` carrying `meta`, `not-before`
+   and `expiration`, as a UCAN does.
+5. **A second account.** A branch of the profile per account, as Tonk has
+   it; the host acts for whichever the kernel says it is on.
+6. **Upgrades.** The old worker's generation tests are gone; what replaces
+   them checks that sites stay on the kernel they pin, across spaces and
+   accounts (`kernel_pins.rs`).
 
 ## Order
 
-1. Sign-up, sign-in and the account flows, on `merge` and `authorize`.
-2. The remote: sync, sharing, joining, and a second device.
-3. Upgrades (`service_worker_upgrade.rs`) on the bootloader.
+1. Sign-up, sign-in and the account flows, on `merge` and `authorize`. Done.
+2. The remote: sync, sharing, joining, and a second device. Done.
+3. Kernels sites pin, in place of upgrades. Done.
 4. Delete the browser-only paths of `tonk-worker`, and the old workers.
