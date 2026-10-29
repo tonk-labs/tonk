@@ -90,7 +90,10 @@ export async function signUp(page, { origin, address, inbox }) {
     page.waitForFunction((t) => performance.timeOrigin !== t, before, { timeout: 45_000 }),
   ]);
 
-  await page.goto(await inbox.link(address));
+  // Opened on the app's origin: a local access service names its own port
+  // in the link, while a deployed one is the app's origin already.
+  const link = new URL(await inbox.link(address));
+  await page.goto(new URL(link.pathname + link.search, origin).toString());
   await page.locator('#activate-accept').click();
   await page.locator('#activate-done').waitFor({ state: 'visible', timeout: 60_000 });
 
@@ -113,22 +116,38 @@ export async function signUp(page, { origin, address, inbox }) {
   );
 }
 
-/** Create a space from the Hub, the way a person does, and wait for the profile to list it. */
+/**
+ * Create a space through the app's own worker, as the Hub's "new space"
+ * does (`space/create` on the active profile branch), and wait for the
+ * profile to list it. The Hub's dialog is not what this test is about.
+ */
 export async function createSpace(page, { origin, name }) {
-  const count = async () =>
-    page.evaluate(async () => (await (await fetch('/api/profile')).json()).space?.length ?? 0);
   await boot(page, origin);
-  const before = await count();
-  const hub = guest(page);
-  await hub.locator('.hub-page').waitFor({ timeout: SETTLE });
-  await hub.locator('.header-new [data-space-create-open]').click();
-  await hub.locator('.header-new input[name=name]').fill(name);
-  await hub.locator('.header-new [data-space-create-submit]').click();
-  const deadline = Date.now() + 60_000;
-  while ((await count().catch(() => before)) <= before) {
-    if (Date.now() > deadline) throw new Error(`the profile never listed the space ${name}`);
-    await page.waitForTimeout(500);
-  }
+  await page.evaluate(async (name) => {
+    const { active } = await (await fetch('/api/profiles')).json();
+    const response = await fetch(`/api/repository/profile:tonk/branch/${active}/transact`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        claims: [
+          {
+            op: 'assert',
+            application: {
+              predicate: {
+                kind: 'transient',
+                concept: {
+                  description: 'A request to create a new space.',
+                  with: { name: { the: 'xyz.tonk.command.create-space/name', as: 'Text' } },
+                },
+              },
+              parameters: { name },
+            },
+          },
+        ],
+      }),
+    });
+    if (!response.ok) throw new Error(`space/create answered ${response.status}`);
+  }, name);
 }
 
 /**

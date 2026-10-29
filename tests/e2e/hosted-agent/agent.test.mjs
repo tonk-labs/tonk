@@ -4,7 +4,6 @@
 //   TONK_E2E_ORIGIN           the provider origin, e.g. a PR preview's workers.dev URL
 //   TONK_E2E_RESEND_API_KEY   reads the activation email back (deployed origins)
 //   TONK_E2E_CAPTURED_EMAILS  or: a local access service that captures it
-//   TONK_E2E_GRANT_SPACE      the space granted read and write (default "Welcome")
 //   TONK_E2E_HEADED=1         watch the browser
 //   TONK_E2E_TRACE            where to write a Playwright trace when a step fails
 //
@@ -27,9 +26,8 @@ const endpoint = new URL('/mcp', origin);
 const run = process.env.GITHUB_RUN_ID
   ? `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`
   : randomBytes(4).toString('hex');
-// The onboarding space, granted read and write; and one the test makes,
-// granted read.
-const writableName = process.env.TONK_E2E_GRANT_SPACE ?? 'Welcome';
+// Two spaces the test makes: one granted read and write, one read.
+const writableName = `e2e write ${run}`;
 const readableName = `e2e read ${run}`;
 const agent = `e2e ${run}`;
 // Writes per session, sent all at once.
@@ -78,13 +76,14 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
 
     // Subjects by name, of the spaces the person grants.
     let granted;
-    await t.test('a fresh person signs up, confirms their email and makes a space', async () => {
+    await t.test('a fresh person signs up, confirms their email and makes two spaces', async () => {
       const mail = inbox({
         run,
         resendKey: process.env.TONK_E2E_RESEND_API_KEY,
         captured: process.env.TONK_E2E_CAPTURED_EMAILS,
       });
       await signUp(person.page, { origin, address: mail.address, inbox: mail });
+      await createSpace(person.page, { origin, name: writableName });
       await createSpace(person.page, { origin, name: readableName });
       granted = await syncedSpaces(person.page, [writableName, readableName]);
     });
@@ -112,7 +111,8 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       });
       const answer = await callback.answered;
       assert.ok(answer.get('code'), `the callback carried no code: ${answer}`);
-      await transport.finishAuth(answer.get('code'));
+      // The whole callback, so the SDK checks `iss` (RFC 9207) too.
+      await transport.finishAuth(answer);
       token = auth.tokens()?.access_token;
       assert.ok(token, 'no access token after the code was redeemed');
     });

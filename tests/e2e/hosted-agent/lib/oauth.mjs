@@ -3,6 +3,7 @@
 
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { randomBytes } from 'node:crypto';
 
 /** A callback listener on 127.0.0.1 that resolves with the first query it sees. */
 export async function loopback() {
@@ -31,7 +32,7 @@ export async function loopback() {
  * which plays the person's browser.
  */
 export function provider({ redirectUrl, name, navigate }) {
-  let client, tokens, verifier;
+  let client, tokens, verifier, discovery;
   return {
     get redirectUrl() {
       return redirectUrl;
@@ -45,6 +46,8 @@ export function provider({ redirectUrl, name, navigate }) {
         token_endpoint_auth_method: 'none',
       };
     },
+    // Claude and ChatGPT send one; the SDK sends none unless asked.
+    state: () => randomBytes(16).toString('base64url'),
     clientInformation: () => client,
     saveClientInformation: (information) => (client = information),
     tokens: () => tokens,
@@ -52,5 +55,7 @@ export function provider({ redirectUrl, name, navigate }) {
     redirectToAuthorization: (url) => navigate(url),
     saveCodeVerifier: (saved) => (verifier = saved),
     codeVerifier: () => verifier,
+    saveDiscoveryState: (state) => (discovery = state),
+    discoveryState: () => discovery,
   };
 }
