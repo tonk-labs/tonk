@@ -1,6 +1,11 @@
 # ===========================================================================
-# prose — a <tonk-prose> markdown document, edited live and persisted.
+# prose-editor — a markdown document, edited live in <prose-editor> and
+# persisted.
 # ===========================================================================
+# <prose-editor> is defined below as branch data (`element!:`), so the
+# component carries its own editor: installing it into a space needs
+# nothing from the host.
+#
 # The editor fires a debounced `change` event on every idle edit; a command
 # reads the new content off the event and a rule writes it back onto the
 # document entity. Reading the versioned `content` envelope (markdown + HLC)
@@ -14,7 +19,7 @@
 
 attribute!: &prose/content
   description: |
-    The document's content as the <tonk-prose> `content` envelope: a
+    The document's content as the <prose-editor> `content` envelope: a
     versioned wrapper (Tonk-Prose-Version header + HLC ETag) around the
     markdown body. Stored verbatim and fed back into the editor's `content`
     attribute, so the element drops its own echo by the version.
@@ -27,7 +32,7 @@ attribute!: &prose/content
 
 concept!: &prose
   this: tonk:prose
-  description: A prose document edited with <tonk-prose>.
+  description: A prose document edited with <prose-editor>.
   with:
     content:
       description: The document content (the versioned `content` envelope).
@@ -36,12 +41,12 @@ concept!: &prose
 
 # ---------------------------------------------------------------------------
 # Command — one per idle edit.
-# The <tonk-prose> `change` event carries the versioned envelope on
+# The <prose-editor> `change` event carries the versioned envelope on
 # `event.detail.content`; `subject` carries the document's identity off the
 # element's `data-subject` so the rule knows which document to write.
 # ---------------------------------------------------------------------------
 
-# How `<tonk-prose>`'s change event fills the command. The element's
+# How `<prose-editor>`'s change event fills the command. The element's
 # own payload key is `content`; the subject needs no `data-*` attribute
 # because `{this}` is the entity the view is rendering.
 event!: &on/prose-change
@@ -78,6 +83,72 @@ rule!:
         content: ?content
 
 # ---------------------------------------------------------------------------
+# Element — the editor, as branch data rather than a host bundle.
+#
+# <tonk-prose> ported to an `element!`: the methods in `prose-editor/` are its
+# custom-element class (text channel, versioned envelope, debounced
+# `change`, deferred teardown, switcher events), and `core` is its
+# ProseMirror editor core, built by `rust/tonk-prose/scripts/build.mjs`
+# into an expression that returns `createEditor`. So the component
+# carries the same editor as the host and installs into a space with
+# nothing from it. Rebuild `core.js` after changing
+# `rust/tonk-prose/src-js/editor`: `npm run build` there.
+#
+# Not `tonk-prose`: the host owns that name (and the runtime leaves
+# `tonk-` tags to the host), so a page can have both. The interface is
+# the same, and so is the stored envelope.
+# ---------------------------------------------------------------------------
+
+element!: &prose-editor
+  description: A ProseMirror markdown editor whose text content is the document; `change` carries the edit as a versioned envelope.
+  method:
+    connected: !include/text ./prose-editor/connected.js
+    disconnected: !include/text ./prose-editor/disconnected.js
+    attribute-changed: !include/text ./prose-editor/attribute-changed.js
+    mount: !include/text ./prose-editor/mount.js
+    adopt: !include/text ./prose-editor/adopt.js
+    schedule: !include/text ./prose-editor/schedule.js
+    flush: !include/text ./prose-editor/flush.js
+    emit: !include/text ./prose-editor/emit.js
+    decode: !include/text ./prose-editor/decode.js
+    encode: !include/text ./prose-editor/encode.js
+    tick: !include/text ./prose-editor/tick.js
+    observe: !include/text ./prose-editor/observe.js
+    stylesheet: !include/text ./prose-editor/stylesheet.js
+    core: !include/text ./prose-editor/core.js
+  getter:
+    # The document as bare markdown.
+    value: |
+      (self) => {
+        const state = self.__prose;
+        if (state?.editor) return state.editor.getMarkdown();
+        if (state?.buffered != null) return state.buffered;
+        const light = self.textContent ?? '';
+        const raw = light !== '' ? light : (self.getAttribute('content') ?? self.getAttribute('value'));
+        return raw === null ? '' : self.decode(raw).value;
+      }
+    # The document as the versioned envelope, for a lossless round trip.
+    content: |
+      (self) => self.encode(self.__prose?.known ?? 0n, self.value)
+    # The last version issued or adopted, as a decimal string.
+    version: |
+      (self) => String(self.__prose?.known ?? 0n)
+    # The live ProseMirror handle, once mounted.
+    editor: |
+      (self) => self.__prose?.editor ?? null
+    # Documents the heading switcher offers, set by the host.
+    candidates: |
+      (self) => self.__candidates ?? []
+  setter:
+    # Before the editor mounts, a write goes to the text it mounts from.
+    value: |
+      (self, next) => { if (self.__prose) self.adopt(String(next ?? '')); else self.textContent = String(next ?? ''); }
+    content: |
+      (self, next) => { if (self.__prose) self.adopt(String(next ?? '')); else self.textContent = String(next ?? ''); }
+    candidates: |
+      (self, next) => { self.__candidates = next; }
+
+# ---------------------------------------------------------------------------
 # View — render the document as an editor. The content is bound as the
 # element's TEXT (between the tags), the way a <textarea> carries its value:
 # the store's `content` envelope is written via set_text_content, which is
@@ -91,12 +162,12 @@ view!:
   this: prose
   show:
     ui: |
-      <tonk-prose
+      <prose-editor
         on:prose-change=prose/edit
         placeholder="Write something…"
         auto-focus
         style="display: block; min-height: 12rem;"
-      >{content}</tonk-prose>
+      >{content}</prose-editor>
 
 # ---------------------------------------------------------------------------
 # A directory view so `tonk render prose` (list of documents) resolves. One

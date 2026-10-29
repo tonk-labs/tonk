@@ -139,7 +139,7 @@ pub(super) const COMPONENTS: [&str; 6] = [
     "issue",
     "meta",
     "notebook",
-    "prose",
+    "prose-editor",
     "table",
     "version-control",
 ];
