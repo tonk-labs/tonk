@@ -117,7 +117,7 @@ fn main() {
             "cargo built no component at {}",
             built.display()
         );
-        let bytes = std::fs::read(&built).expect("the component reads");
+        let bytes = without_names(&std::fs::read(&built).expect("the component reads"));
         let path = out_dir.join(format!("{}.wasm", constant.to_lowercase()));
         std::fs::write(&path, &bytes).expect("OUT_DIR is writable");
         writeln!(
@@ -129,6 +129,83 @@ fn main() {
         .expect("a write to a string does not fail");
     }
     std::fs::write(out_dir.join("components.rs"), generated).expect("OUT_DIR is writable");
+}
+
+/// A component's section that holds a core module, and one that holds a
+/// nested component.
+const CORE_MODULE: u8 = 1;
+const COMPONENT: u8 = 4;
+/// A module's custom section.
+const CUSTOM: u8 = 0;
+
+/// `component` without the `name` custom section of the modules it holds: the
+/// names of its functions, a fifth of a kernel's size, which only a debugger
+/// reads. Debug info is stripped by the build; this section is kept by it
+/// with the rest, `target_features` among them, which the polyfill reads.
+fn without_names(component: &[u8]) -> Vec<u8> {
+    rewrite(component, &mut |id, body| match id {
+        CORE_MODULE => Some(rewrite(body, &mut |id, body| {
+            (id != CUSTOM || custom_name(body) != b"name").then(|| body.to_vec())
+        })),
+        COMPONENT => Some(without_names(body)),
+        _ => Some(body.to_vec()),
+    })
+}
+
+/// What becomes of a section, given its id and body: the body it has
+/// instead, or none to leave it out.
+type Section<'a> = dyn FnMut(u8, &[u8]) -> Option<Vec<u8>> + 'a;
+
+/// The module or component `bytes` with each section as `each` makes it.
+fn rewrite(bytes: &[u8], each: &mut Section<'_>) -> Vec<u8> {
+    // The preamble: the magic number, the version and the layer.
+    let mut out = bytes[..8].to_vec();
+    let mut at = 8;
+    while at < bytes.len() {
+        let id = bytes[at];
+        let (size, start) = leb128(bytes, at + 1);
+        let end = start + size;
+        if let Some(body) = each(id, &bytes[start..end]) {
+            out.push(id);
+            write_leb128(&mut out, body.len());
+            out.extend_from_slice(&body);
+        }
+        at = end;
+    }
+    out
+}
+
+/// The name of the custom section whose body is `body`.
+fn custom_name(body: &[u8]) -> &[u8] {
+    let (length, start) = leb128(body, 0);
+    &body[start..start + length]
+}
+
+/// The unsigned LEB128 number at `at` in `bytes`, and where what follows it
+/// starts.
+fn leb128(bytes: &[u8], mut at: usize) -> (usize, usize) {
+    let (mut value, mut shift) = (0usize, 0);
+    loop {
+        let byte = bytes[at];
+        at += 1;
+        value |= usize::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return (value, at);
+        }
+        shift += 7;
+    }
+}
+
+fn write_leb128(out: &mut Vec<u8>, mut value: usize) {
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
 }
 
 /// The content identifier of `bytes`: CIDv1, the raw codec, BLAKE3, in the
