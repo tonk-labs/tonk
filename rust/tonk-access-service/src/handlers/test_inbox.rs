@@ -15,6 +15,7 @@
 use worker::{Request, Response, RouteContext};
 
 /// The KV binding whose presence turns the inbox on.
+#[cfg(target_arch = "wasm32")]
 pub const BINDING: &str = "TEST_INBOX";
 
 /// How long a recorded link is kept, in seconds. A run reads it within
@@ -23,6 +24,7 @@ pub const BINDING: &str = "TEST_INBOX";
 const TTL: u64 = 60 * 60;
 
 /// Whether mail to `email` is recorded rather than sent.
+#[cfg(any(test, target_arch = "wasm32"))]
 pub fn reserved(email: &str) -> bool {
     email
         .rsplit_once('@')
