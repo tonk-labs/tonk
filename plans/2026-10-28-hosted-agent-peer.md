@@ -217,7 +217,11 @@ never are any:
   `initialize`, bound by MAC to the token hash so a client cannot pick or reuse
   one. The Host Worker derives the writer key from the session seed and that id,
   and the session delegates to it (the Host Worker holds the seed, so no user is
-  needed). Each connection's revisions carry their own origin.
+  needed). The delegation is minted in memory when the writer opens and is never
+  stored; it hangs off the agent space to session powerline, so revoking the
+  session cuts every writer under it. Revisions are signed by the operator
+  tonk-worker derives from the writer key, so attribution reads the operator DID.
+  Each connection's revisions carry their own origin.
 - **One space writer per (space, MCP session)**, a Durable Object, signs every
   revision for that pair. Parallel tool calls in one session are normal (a model
   emits several tool calls in a turn, subagents share a connection, clients
@@ -231,10 +235,16 @@ never are any:
   subject, so one writer key in two space writers never collides.
 - **Reads go to the space writer by default**, where dialog's caches stay warm
   (the spike paid 60 to 80 ms per request rebuilding the peer and pulling). They
-  do not take the write lock and interleave with writes at I/O waits. CPU does
+  never wait for a write and interleave with writes at I/O waits. The one place
+  they touch the lock is their pull: a pull between a write's commit and its push
+  would merge into that commit and mint a revision, so a read pulls only when it
+  can take the lock without waiting (otherwise it answers from the current
+  head), and reads arriving during another read's pull share it. CPU does
   not overlap in one Durable Object, so reads are capped in rows and bytes; a
   read over the cap is refused or answered by a stateless isolate instead.
 - **A write is answered after its push lands**, so a later read anywhere sees it.
+  A write whose push fails is rolled back to the pre-write head under the lock,
+  so a write answered as failed never lands later with the next push.
 - **The space writer feeds SSE** from the space's `live.rs` socket and fans
   changes out to subscribers.
 
@@ -257,7 +267,7 @@ impossible:
 | --- | --- | --- |
 | Idle isolate (bundle, runtime) | ~2 MiB measured | none |
 | Tree node cache | 24 MiB | `HeldCaches::with_budget` |
-| Spilled values | 8 MiB per open repository; a space writer opens one space, so 8 to 16 MiB | fixed, keep repositories per writer to one or two |
+| Spilled values | 8 MiB per open repository; a space writer opens two (the space and its local profile), so 16 MiB | fixed |
 | Entry caches (causal verdicts, contexts, records, rules, plans) | unmeasured, estimated under 8 MiB | fixed at 2048 entries each |
 | Query working set | what is left, about 70 MiB | read caps |
 | Margin | ~10 MiB | |
@@ -494,6 +504,15 @@ for the agent space key, which dialog-peer does not hand out.
 **M2:** locally (`wrangler dev`), with a CLI token and `curl`: list the agent's
 spaces, subscribe to a query over SSE, write from a second shell and see the
 event, store and range-read an asset.
+
+Stage 2a is in review as #1207 (on #1205): the space writer core in
+`tonk-worker` (`router/hosted/writer.rs`) and a Durable Object shell in
+`rust/tonk-host-worker`. Under `wrangler dev`, 10 parallel writes through one
+session all land, where the spike kept 1 of 5. Still to do in stage 2: the token
+front (needs #1202 to expose the session seed, or a `writer_key(mcp_session)`
+accessor), SSE, assets with `Range`, read caps and routing, recycling, skipping
+the profile bootstrap (still about 0.8 s on open), agent-level reads, and
+measuring entry caches on a space with many origins.
 
 ### Stage 3: authorization server
 
