@@ -453,6 +453,11 @@ async fn perform(
                 super::ceremony::authorize_device(&state, &custodian, authorization).await?;
             navigate_reply(&target)
         }
+        tonk_worker_api::CustodyIntent::AuthorizeAgent(authorization) => {
+            let target =
+                super::agent_session::authorize(&state, &custodian, authorization).await?;
+            navigate_reply(&target)
+        }
     }
 }
 
