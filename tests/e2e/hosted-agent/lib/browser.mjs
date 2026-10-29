@@ -113,6 +113,24 @@ export async function signUp(page, { origin, address, inbox }) {
   );
 }
 
+/** Create a space from the Hub, the way a person does, and wait for the profile to list it. */
+export async function createSpace(page, { origin, name }) {
+  const count = async () =>
+    page.evaluate(async () => (await (await fetch('/api/profile')).json()).space?.length ?? 0);
+  await boot(page, origin);
+  const before = await count();
+  const hub = guest(page);
+  await hub.locator('.hub-page').waitFor({ timeout: SETTLE });
+  await hub.locator('.header-new [data-space-create-open]').click();
+  await hub.locator('.header-new input[name=name]').fill(name);
+  await hub.locator('.header-new [data-space-create-submit]').click();
+  const deadline = Date.now() + 60_000;
+  while ((await count().catch(() => before)) <= before) {
+    if (Date.now() > deadline) throw new Error(`the profile never listed the space ${name}`);
+    await page.waitForTimeout(500);
+  }
+}
+
 /**
  * Approve the agent on the page `/authorize` sent the browser to, granting
  * `grants` (space name to "Read" or "Read and write"). The page then sends
@@ -126,7 +144,9 @@ export async function approve(page, { authorizationUrl, agent, grants }) {
   const name = root.getByRole('textbox', { name: /agent name/i });
   if (await name.count()) await name.fill(agent);
   for (const [space, access] of Object.entries(grants)) {
-    await root.getByRole('combobox', { name: space }).selectOption({ label: access });
+    await root
+      .getByRole('combobox', { name: space })
+      .selectOption({ label: access }, { timeout: 120_000 });
   }
   await root.getByRole('button', { name: 'Approve' }).click();
 }

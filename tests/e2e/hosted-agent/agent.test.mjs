@@ -4,7 +4,7 @@
 //   TONK_E2E_ORIGIN           the provider origin, e.g. a PR preview's workers.dev URL
 //   TONK_E2E_RESEND_API_KEY   reads the activation email back (deployed origins)
 //   TONK_E2E_CAPTURED_EMAILS  or: a local access service that captures it
-//   TONK_E2E_GRANT_SPACE      the space granted read-only (default "Welcome")
+//   TONK_E2E_GRANT_SPACE      the space granted read and write (default "Welcome")
 //   TONK_E2E_HEADED=1         watch the browser
 //   TONK_E2E_TRACE            where to write a Playwright trace when a step fails
 //
@@ -20,14 +20,17 @@ import {
 } from '@modelcontextprotocol/client';
 import { loopback, provider } from './lib/oauth.mjs';
 import { inbox } from './lib/inbox.mjs';
-import { launch, signUp, approve } from './lib/browser.mjs';
+import { launch, signUp, createSpace, approve } from './lib/browser.mjs';
 
 const origin = new URL(process.env.TONK_E2E_ORIGIN ?? 'http://localhost:8787').origin;
 const endpoint = new URL('/mcp', origin);
 const run = process.env.GITHUB_RUN_ID
   ? `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`
   : randomBytes(4).toString('hex');
-const granted = process.env.TONK_E2E_GRANT_SPACE ?? 'Welcome';
+// The onboarding space, granted read and write; and one the test makes,
+// granted read.
+const writableName = process.env.TONK_E2E_GRANT_SPACE ?? 'Welcome';
+const readableName = `e2e read ${run}`;
 const agent = `e2e ${run}`;
 // Writes per session, sent all at once.
 const WRITES = 8;
@@ -73,13 +76,14 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       }
     });
 
-    await t.test('a fresh person signs up and confirms their email', async () => {
+    await t.test('a fresh person signs up, confirms their email and makes a space', async () => {
       const mail = inbox({
         run,
         resendKey: process.env.TONK_E2E_RESEND_API_KEY,
         captured: process.env.TONK_E2E_CAPTURED_EMAILS,
       });
       await signUp(person.page, { origin, address: mail.address, inbox: mail });
+      await createSpace(person.page, { origin, name: readableName });
     });
 
     let token;
@@ -98,7 +102,11 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       assert.ok(authorizationUrl, 'the client was never sent to /authorize');
       assert.equal(new URL(authorizationUrl).origin, origin);
 
-      await approve(person.page, { authorizationUrl, agent, grants: { [granted]: 'Read' } });
+      await approve(person.page, {
+        authorizationUrl,
+        agent,
+        grants: { [writableName]: 'Read and write', [readableName]: 'Read' },
+      });
       const answer = await callback.answered;
       assert.ok(answer.get('code'), `the callback carried no code: ${answer}`);
       await transport.finishAuth(answer.get('code'));
@@ -122,11 +130,10 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       return result;
     };
 
-    // The token carries grant chains, not names, so the listed spaces are
-    // told apart by what they allow: the space granted "Read" refuses a
-    // write, and the agent's own space takes it.
+    // The agent sees exactly the spaces it was granted. The token carries
+    // grant chains, not names, so they are told apart by what they allow.
     let spaces;
-    await t.test('the agent reads its grants and cannot write a read-only one', async () => {
+    await t.test('the agent lists its grants, reads both and writes only one', async () => {
       const client = await connect();
       const tools = (await client.listTools()).tools.map((tool) => tool.name);
       for (const name of ['tonk_list_spaces', 'tonk_query', 'tonk_evaluate', 'tonk_guide']) {
@@ -144,9 +151,10 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
         (written.isError ? readOnly : writable).push(subject);
       }
       const seen = JSON.stringify(listed);
-      assert.equal(readOnly.length, 1, `expected one read-only space (${granted}): ${seen}`);
-      assert.equal(writable.length, 1, `expected one writable space, the agent's: ${seen}`);
-      spaces = { granted: readOnly[0], agent: writable[0] };
+      assert.equal(listed.length, 2, `expected the two granted spaces: ${seen}`);
+      assert.equal(readOnly.length, 1, `expected ${readableName} to refuse a write: ${seen}`);
+      assert.equal(writable.length, 1, `expected ${writableName} to take a write: ${seen}`);
+      spaces = { readable: readOnly[0], writable: writable[0] };
     });
 
     const labels = [];
@@ -157,7 +165,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
         Array.from({ length: WRITES }, (_, index) => {
           const label = `${run} ${session} ${index}`;
           labels.push(label);
-          return call(client, 'tonk_evaluate', { space: spaces.agent, document: note(label) });
+          return call(client, 'tonk_evaluate', { space: spaces.writable, document: note(label) });
         }),
       );
       await Promise.all(writes);
@@ -168,7 +176,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       // from the memory of the sessions that wrote.
       const reader = await connect();
       const read = JSON.stringify(
-        (await call(reader, 'tonk_query', { space: spaces.agent, document: NOTES }))
+        (await call(reader, 'tonk_query', { space: spaces.writable, document: NOTES }))
           .structuredContent,
       );
       const lost = labels.filter((label) => !read.includes(label));
