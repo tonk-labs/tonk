@@ -741,19 +741,21 @@ What it checks, in order:
 
 1. `POST /mcp` without a token answers 401 with `resource_metadata`; a garbage
    Bearer answers 401 too.
-2. A fresh profile signs up and activates, so it can host spaces.
-3. OAuth runs to a token; the approval creates the agent space and grants the
-   onboarding space read-only.
-4. `tools/list` names the tools; a read of the granted space succeeds; a write
-   to it is a tool error (read-only grant), not a 401.
-5. Writes to the agent space: 8 concurrent `evaluate` calls on one MCP session,
-   and 8 more on a second session with the same token (a second writer DID).
+2. A fresh profile signs up, activates, and makes a second space.
+3. OAuth runs to a token. The approval grants the onboarding space read and
+   write and the made space read.
+4. `tools/list` names the tools; `tonk_list_spaces` lists exactly the two
+   granted spaces; both read; the read-only one refuses `tonk_evaluate` (a
+   tool error, not a 401) and the other takes it.
+5. Writes to the writable space: 8 concurrent `evaluate` calls on one MCP
+   session, and 8 more on a second session with the same token (a second
+   writer DID).
 6. A third, fresh MCP session (a new space writer, so nothing is served from
    memory) reads all 16 back. This is the dialog-db#705 check: a lost write
    is a missing record here.
 
 Isolation and cleanup: every run is a fresh browser profile, a fresh passkey,
-a fresh account and a fresh agent space, so no two runs share a DID and none
+a fresh account and fresh spaces, so no two runs share a DID and none
 needs cleaning up. A PR's preview has its own D1 and KV, deleted with the
 worker when the PR closes. Objects land in the shared `tonk-spaces-preview`
 bucket under DIDs no other run will name; a lifecycle rule on that bucket is
