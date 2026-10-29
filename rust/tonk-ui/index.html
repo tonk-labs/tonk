@@ -28,11 +28,18 @@
         </script>
         <script>
             globalThis.tonkDoctorRoute = ["/doctor", "/doctor/"].includes(location.pathname);
+            // The OAuth approval page mounts without the shell, like Doctor,
+            // and uses the worker an earlier visit installed.
+            globalThis.tonkAgentRoute = location.pathname === "/settings/agent";
+            globalThis.tonkStandaloneRoute = globalThis.tonkDoctorRoute || globalThis.tonkAgentRoute;
         </script>
         <script type="module">
             if (globalThis.tonkDoctorRoute) {
                 const { mountDoctor } = await import("/doctor.mjs");
                 mountDoctor();
+            } else if (globalThis.tonkAgentRoute) {
+                const { mountAgent } = await import("/agent.mjs");
+                mountAgent();
             }
         </script>
         <!-- Tell the browser to render native chrome (scrollbars, form
@@ -310,7 +317,7 @@
          the shell awaits it before issuing any /api/* fetch. -->
         <script type="module">
             // Doctor observes the existing registration without starting or updating it.
-            if (!globalThis.tonkDoctorRoute) {
+            if (!globalThis.tonkStandaloneRoute) {
             const serviceWorkersSupported = "serviceWorker" in navigator;
 
             // Poke the worker to re-check connectivity. Sent BEFORE the app's
@@ -899,7 +906,7 @@
          the idempotent terminal state without even the first reload. -->
         <script>
             (() => {
-                if (globalThis.tonkDoctorRoute || !("serviceWorker" in navigator)) return;
+                if (globalThis.tonkStandaloneRoute || !("serviceWorker" in navigator)) return;
                 const RETRIES = "tonk:boot-retries";
                 const STALL_MS = 30_000;
                 let lastLife = Date.now();
@@ -1036,6 +1043,7 @@
         />
         <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
         <link data-trunk rel="copy-file" href="./assets/doctor.mjs" />
+        <link data-trunk rel="copy-file" href="./assets/agent.mjs" />
         <link
             data-trunk
             rel="copy-file"

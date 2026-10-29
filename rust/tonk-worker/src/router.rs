@@ -93,7 +93,7 @@ mod join;
 pub use agent_link::AgentLinkWorker;
 #[cfg(feature = "volatile-storage")]
 pub use hosted::{
-    HostedPeer, NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, mcp, writer_seed,
+    HostedPeer, NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, mcp, view, writer_seed,
 };
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 mod local_peer;
@@ -110,6 +110,7 @@ mod create_invite;
 pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
 pub(crate) mod agent_connections;
+mod agent_session;
 mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
@@ -418,6 +419,8 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         .route("/api/repository/{repo}/invites", get(revoke_invite::list))
         .route("/api/account/connections", get(agent_connections::list))
+        // A new agent and its first session, for the OAuth approval page.
+        .route("/api/agent/session", post(agent_session::create))
         .route(
             "/api/account/connections/{id}/revoke",
             post(agent_connections::revoke),

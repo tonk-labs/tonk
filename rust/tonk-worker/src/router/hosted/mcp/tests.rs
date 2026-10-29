@@ -132,6 +132,7 @@ async fn a_missing_or_malformed_token_is_unauthorized() {
     let endpoint = McpEndpoint {
         origin: ORIGIN,
         key: &key,
+        tickets: &crate::router::hosted::view::TicketKey::derive("test"),
         writers: &Unreachable,
     };
     assert_unauthorized(&endpoint, None).await;
@@ -183,6 +184,7 @@ async fn a_token_whose_powerline_is_addressed_elsewhere_is_unauthorized() {
     let endpoint = McpEndpoint {
         origin: ORIGIN,
         key: &key,
+        tickets: &crate::router::hosted::view::TicketKey::derive("test"),
         writers: &Unreachable,
     };
     assert_unauthorized(&endpoint, Some(&forged)).await;
@@ -213,6 +215,7 @@ async fn a_grant_not_issued_by_its_space_is_unauthorized() {
     let endpoint = McpEndpoint {
         origin: ORIGIN,
         key: &key,
+        tickets: &crate::router::hosted::view::TicketKey::derive("test"),
         writers: &Unreachable,
     };
     assert_unauthorized(&endpoint, Some(&token)).await;
@@ -272,6 +275,7 @@ async fn a_session_id_of_another_token_is_refused() {
     let endpoint = McpEndpoint {
         origin: ORIGIN,
         key: &key,
+        tickets: &crate::router::hosted::view::TicketKey::derive("test"),
         writers: &Unreachable,
     };
     let response = endpoint
@@ -291,19 +295,21 @@ async fn a_session_id_of_another_token_is_refused() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let names: Vec<&str> = body["result"]["tools"]
+    // In catalog order, which is not this list's.
+    let mut names: Vec<&str> = body["result"]["tools"]
         .as_array()
         .unwrap()
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
+    names.sort_unstable();
     assert_eq!(
         names,
         [
-            "tonk_list_spaces",
-            "tonk_query",
             "tonk_evaluate",
-            "tonk_guide"
+            "tonk_guide",
+            "tonk_list_spaces",
+            "tonk_query"
         ]
     );
 
@@ -327,6 +333,7 @@ async fn evaluate_on_a_read_grant_is_refused_before_any_writer() {
     let endpoint = McpEndpoint {
         origin: ORIGIN,
         key: &key,
+        tickets: &crate::router::hosted::view::TicketKey::derive("test"),
         writers: &Unreachable,
     };
     let response = endpoint
@@ -514,6 +521,7 @@ concept!: &mcp-note
         let endpoint = McpEndpoint {
             origin: ORIGIN,
             key: &key,
+            tickets: &crate::router::hosted::view::TicketKey::derive("test"),
             writers: &writers,
         };
         let subject = space.did().to_string();
@@ -526,9 +534,10 @@ concept!: &mcp-note
         let (spaces, error) = writer.call("tonk_list_spaces", json!({})).await;
         assert!(!error, "{spaces}");
         let listed = spaces["spaces"].as_array().unwrap();
-        assert!(listed.iter().any(
-            |entry| entry["subject"] == json!(subject) && entry["access"] == json!("read-write")
-        ));
+        assert!(
+            listed.iter().any(|entry| entry["subject"] == json!(subject)
+                && entry["access"] == json!("read-write"))
+        );
         for document in [SCHEMA.to_owned(), note.clone()] {
             let (result, error) = writer
                 .call(

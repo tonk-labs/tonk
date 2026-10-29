@@ -3544,7 +3544,7 @@ fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError
 ///
 /// Shared by both creation paths so they cannot disagree about where a
 /// space syncs.
-async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
+pub(super) async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
     super::account_state::account_remote(tonk).await.ok()
 }
 
@@ -3562,6 +3562,19 @@ pub(super) async fn create_space_inner(
     name: &str,
     description: Option<&str>,
 ) -> Result<String, RepositoryError> {
+    let mut seed = Zeroizing::new([0u8; 32]);
+    getrandom::fill(seed.as_mut())
+        .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
+    create_space_from_seed(state, name, description, seed).await
+}
+
+/// [`create_space_inner`] on a key the caller drew.
+pub(super) async fn create_space_from_seed(
+    state: &AppState,
+    name: &str,
+    description: Option<&str>,
+    seed: Zeroizing<[u8; 32]>,
+) -> Result<String, RepositoryError> {
     // A local-only `main`-branch space (the same config the button asks
     // for); a remote is attached afterwards by the handler.
     let configuration =
@@ -3572,7 +3585,7 @@ pub(super) async fn create_space_inner(
 
         // Create the repository (records the replica with status:blank).
         // `name` is the display label; the identity is freshly minted.
-        let repository = create_repository(&tonk, name, &configuration).await?;
+        let repository = create_repository_from_seed(&tonk, name, &configuration, seed).await?;
         let subject = repository.did();
         let key = subject.repo_key().to_owned();
         let branches: Vec<String> = configuration.branch.keys().cloned().collect();
@@ -5664,6 +5677,21 @@ pub async fn create_repository(
     display_name: &str,
     configuration: &RepositoryConfiguration,
 ) -> Result<Repository, RepositoryError> {
+    let mut seed = Zeroizing::new([0u8; 32]);
+    getrandom::fill(seed.as_mut())
+        .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
+    create_repository_from_seed(tonk, display_name, configuration, seed).await
+}
+
+/// [`create_repository`] for a space whose key the caller drew: an
+/// agent space signs its first session with the same seed before it is
+/// sealed to the account here.
+pub(super) async fn create_repository_from_seed(
+    tonk: &TonkState,
+    display_name: &str,
+    configuration: &RepositoryConfiguration,
+    seed: Zeroizing<[u8; 32]>,
+) -> Result<Repository, RepositoryError> {
     // A space always delegates to an ACCOUNT: the passkey-derived root
     // once one is persisted, else this device's onboarding account,
     // which is a real account custodied locally rather than by WebAuthn
@@ -5713,13 +5741,10 @@ pub async fn create_repository(
     // repository's own `tonk/repository` concept. Generating the signer
     // first (rather than letting `.create()` mint one) is what lets the
     // name derive from the DID instead of the other way around.
-    // The seed is drawn here rather than inside `generate`, so it can be
-    // sealed to the account below; the signer imports from it the same
-    // way an account root does (non-extractable on the web target), so
+    // The seed is drawn by the caller rather than inside `generate`, so it
+    // can be sealed to the account below; the signer imports from it the
+    // same way an account root does (non-extractable on the web target), so
     // the credential the repository stores is the shape it always was.
-    let mut seed = Zeroizing::new([0u8; 32]);
-    getrandom::fill(seed.as_mut())
-        .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
     let signer = Ed25519Signer::import(&*seed)
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
