@@ -1082,6 +1082,18 @@ concept!: &tonk/agent-provider
       the: xyz.tonk.agent-space/provider
       as: text
 
+# The agent's seed, sealed to the account that provisioned it, on the agent
+# space's subject DID. Only a ceremony that opens the account opens it, to
+# have the agent sign a new session when it is reconnected.
+concept!: &tonk/agent-key
+  this: tonk:agent-key
+  description: An agent space's key, sealed to its account.
+  with:
+    sealed-key:
+      description: The sealed seed.
+      the: xyz.tonk.agent-space/sealed-key
+      as: bytes
+
 # One session of an agent: the authorization one session key holds to
 # act for the agent space, and what a session list renders.
 #

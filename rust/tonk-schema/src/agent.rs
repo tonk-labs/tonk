@@ -3,7 +3,8 @@
 //! as a session list presents it.
 //!
 //! Both live on the agent space's own content branch. The account that
-//! provisioned the agent keeps its key; nothing here records it.
+//! provisioned the agent keeps its key, and [`AgentKey`] keeps a copy
+//! sealed to that account for reconnecting the agent.
 
 // The `#[derive(Concept)]` macro generates helper types without doc
 // comments; suppress `missing_docs` like the sibling concept modules.
@@ -64,14 +65,6 @@ impl AgentSpace {
     }
 }
 
-/// One session of an agent: the label and creation time of an
-/// `agent space -> session` powerline.
-///
-/// Shaped like [`DeviceLink`](crate::DeviceLink) and for the same
-/// reason: the entity is the delegation itself, as dialog keyed it when
-/// the chain was retained, so the row cannot disagree with the proof and
-/// revoking the powerline takes the row with it. The session's DID is
-/// the delegation's own audience.
 /// Which LLM provider's apps an agent space is for, on the agent
 /// space's subject DID like [`AgentSpace`].
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -92,6 +85,37 @@ impl AgentProvider {
     }
 }
 
+/// The agent's key, sealed to the account that provisioned it, on the
+/// agent space's subject DID like [`AgentSpace`]. Only a ceremony that
+/// opens the account opens it: what reconnecting an agent needs to
+/// have the agent sign a new session.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AgentKey {
+    /// The agent space's subject DID.
+    pub this: Entity,
+    /// A `tonk_identity::sealed::Sealed` envelope of the agent's seed.
+    pub sealed_key: crate::domain::agent_space::SealedKey,
+}
+
+impl AgentKey {
+    /// Keep `sealed`, the agent space `space`'s seed sealed to its
+    /// account.
+    pub fn new(space: Entity, sealed: Vec<u8>) -> Self {
+        Self {
+            this: space,
+            sealed_key: crate::domain::agent_space::SealedKey(sealed),
+        }
+    }
+}
+
+/// One session of an agent: the label and creation time of an
+/// `agent space -> session` powerline.
+///
+/// Shaped like [`DeviceLink`](crate::DeviceLink) and for the same
+/// reason: the entity is the delegation itself, as dialog keyed it when
+/// the chain was retained, so the row cannot disagree with the proof and
+/// revoking the powerline takes the row with it. The session's DID is
+/// the delegation's own audience.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AgentSession {
     /// The delegation's entity — its blob hash, as dialog keyed it.

@@ -2012,14 +2012,6 @@ pub mod repo {
     pub struct Kind(pub Entity);
 }
 
-/// Attributes for the `agent/session` concept — one session key's
-/// authorization to act for an agent space.
-///
-/// The fields of [`device`] under their own namespace: a concept's
-/// identity is the attributes it reads, so sharing `xyz.tonk.device`
-/// would make every session row a device link and the reverse.
-///
-/// [`AgentSession`]: crate::AgentSession
 /// Attributes on an agent space beyond its mark.
 pub mod agent_space {
     use super::Attribute;
@@ -2030,8 +2022,26 @@ pub mod agent_space {
     #[domain("xyz.tonk.agent-space")]
     #[pick(last)]
     pub struct Provider(pub String);
+
+    /// The agent space's seed, sealed to the account's encryption key
+    /// for the agent's DID (`tonk_identity::sealed`): what reconnecting
+    /// the agent opens with the passkey, so the agent can sign a new
+    /// session's powerline. Dialog keeps its own sealed copy of the key
+    /// but does not hand it back.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-space")]
+    #[pick(last)]
+    pub struct SealedKey(pub Vec<u8>);
 }
 
+/// Attributes for the `agent/session` concept — one session key's
+/// authorization to act for an agent space.
+///
+/// The fields of [`device`] under their own namespace: a concept's
+/// identity is the attributes it reads, so sharing `xyz.tonk.device`
+/// would make every session row a device link and the reverse.
+///
+/// [`AgentSession`]: crate::AgentSession
 pub mod agent_session {
     use super::{Attribute, Entity};
 

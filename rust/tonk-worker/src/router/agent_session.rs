@@ -11,6 +11,12 @@
 //! and a directory entry per space are kept in the agent space. The token
 //! is the session alone; the worker hands it to the authorization server
 //! and the page only ever sees where to go next.
+//!
+//! An app may instead connect an agent it made before, when the agent is
+//! for the same provider's apps. The agent's seed is kept sealed to the
+//! account in its space ([`tonk_schema::agent::AgentKey`]), so the same
+//! passkey that opens the account opens it, and the agent signs the new
+//! session as it did the first.
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -45,8 +51,14 @@ const MAX_NAME: usize = 80;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentSessionRequest {
-    /// The agent's name: the agent space's label.
+    /// The agent's name: the agent space's label. Unused when `agent`
+    /// names one already made.
+    #[serde(default)]
     name: String,
+    /// The routing key of an agent of this account to connect again,
+    /// rather than making a new one.
+    #[serde(default)]
+    agent: Option<String>,
     /// The spaces the agent may reach, by routing key.
     #[serde(default)]
     spaces: Vec<AgentSpaceChoice>,
@@ -111,10 +123,10 @@ struct Target {
 /// space behind.
 async fn targets(
     state: &AppState,
-    name: &str,
+    name: Option<&str>,
     spaces: &[AgentSpaceChoice],
 ) -> Result<Vec<Target>, TonkWorkerError> {
-    if name.trim().is_empty() || name.trim().chars().count() > MAX_NAME {
+    if name.is_some_and(|name| name.trim().is_empty() || name.trim().chars().count() > MAX_NAME) {
         return Err(TonkWorkerError::Router(format!(
             "an agent needs a name of 1 to {MAX_NAME} characters"
         )));
@@ -170,6 +182,78 @@ async fn targets(
     Ok(targets)
 }
 
+/// An agent of this account that an app may connect again.
+struct Reusable {
+    did: Did,
+    key: String,
+    name: Option<String>,
+    /// Its seed, sealed to the account.
+    sealed: Vec<u8>,
+}
+
+/// The agents an app of `provider` may connect again: those made for the
+/// same provider's apps, so Claude and ChatGPT never share one, whose
+/// seed the account keeps sealed. Agents made before the seed was kept
+/// cannot sign a session again and are left out.
+async fn reusable(
+    tonk: &crate::TonkState,
+    provider: &str,
+) -> Result<Vec<Reusable>, TonkWorkerError> {
+    use dialog_query::{Output as _, Query, Term};
+    let mut agents = Vec::new();
+    for did in super::agents::spaces(tonk).await? {
+        if !super::agents::is_agent(tonk, &did).await {
+            continue;
+        }
+        let key = tonk_schema::prelude::DidExt::repo_key(&did).to_owned();
+        let Ok(session) = tonk
+            .reactor
+            .repository(&key)
+            .branch(super::repository::CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+        else {
+            continue;
+        };
+        let this: dialog_artifacts::Entity = did.to_string().parse().map_err(failure)?;
+        let providers = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::agent::AgentProvider> {
+                this: Term::from(this.clone()),
+                provider: Term::var("provider"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .map_err(failure)?;
+        if !providers.iter().any(|row| row.provider.0 == provider) {
+            continue;
+        }
+        let keys = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::agent::AgentKey> {
+                this: Term::from(this),
+                sealed_key: Term::var("sealed_key"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .map_err(failure)?;
+        let Some(sealed) = keys.into_iter().next() else {
+            continue;
+        };
+        agents.push(Reusable {
+            name: super::agents::name(tonk, &did).await,
+            did,
+            key,
+            sealed: sealed.sealed_key.0,
+        });
+    }
+    Ok(agents)
+}
+
 /// `POST /api/agent/session`: check the ask and have the page that made
 /// it ask for the passkey; the work happens in [`authorize`]. Answers
 /// `{"pending": true}`; how it goes is the `authorize-agent` ceremony
@@ -183,17 +267,32 @@ pub async fn create(
 ) -> Result<Json<serde_json::Value>, TonkWorkerError> {
     // A lapsed request fails before the passkey is asked for.
     let described = describe_request(&origin, &request.request).await?;
-    targets(&state, &request.name, &request.spaces).await?;
+    let text = |key: &str| described.get(key).and_then(|v| v.as_str()).unwrap_or("");
+    let provider = provider(text("redirect_uri"), text("client_name"));
+    if let Some(agent) = &request.agent {
+        let tonk = state.read().await;
+        let offered = match provider {
+            Some(provider) => reusable(&tonk, provider).await?,
+            None => Vec::new(),
+        };
+        if !offered.iter().any(|offered| &offered.key == agent) {
+            return Err(TonkWorkerError::Forbidden(
+                "that agent cannot be connected to this app; make a new one".into(),
+            ));
+        }
+    }
+    let name = request.agent.is_none().then_some(request.name.as_str());
+    targets(&state, name, &request.spaces).await?;
     let Some(Extension(client)) = client else {
         return Err(TonkWorkerError::Conflict(
             "no page asked for this, so no passkey can be asked for".into(),
         ));
     };
-    let text = |key: &str| described.get(key).and_then(|v| v.as_str()).unwrap_or("");
     let intent = AgentAuthorization {
         request: request.request.clone(),
         name: request.name.trim().to_owned(),
-        provider: provider(text("redirect_uri"), text("client_name")).map(str::to_owned),
+        agent: request.agent,
+        provider: provider.map(str::to_owned),
         spaces: request.spaces,
     };
     pending()
@@ -293,34 +392,19 @@ async fn authorize_inner(
     if root.did() != linked {
         return Err("this passkey belongs to a different account".into());
     }
-    let targets = targets(state, &authorization.name, &authorization.spaces)
+    let name = authorization
+        .agent
+        .is_none()
+        .then_some(authorization.name.as_str());
+    let targets = targets(state, name, &authorization.spaces)
         .await
         .map_err(said)?;
 
-    // The agent space's key: signs the session's powerline, then is
-    // sealed to the account by creating the space with it.
-    let mut seed = Zeroizing::new([0u8; 32]);
-    getrandom::fill(seed.as_mut()).map_err(|error| error.to_string())?;
-    let agent = Ed25519Signer::import(&*seed)
-        .await
-        .map_err(|error| format!("{error:?}"))?;
+    let (agent, key) = match &authorization.agent {
+        Some(key) => reopen(state, &account, authorization, key).await?,
+        None => create_agent(state, &account, authorization).await?,
+    };
     let agent_did = agent.did();
-    let key = super::repository::create_space_from_seed(
-        state,
-        authorization.name.trim(),
-        Some("An agent's own space."),
-        seed,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    let remote = {
-        let tonk = state.read().await;
-        super::repository::account_sync_remote(&tonk).await
-    }
-    .ok_or("this account has no sync endpoint")?;
-    super::repository::enable_sync_inner(state, &key, &remote)
-        .await
-        .map_err(|error| error.to_string())?;
 
     let tonk = state.read().await;
     let repository = tonk
@@ -334,9 +418,6 @@ async fn authorize_inner(
         RemoteRequirement::Ready(remote) => remote.access_url,
         RemoteRequirement::Refused(_) => return Err("the agent space could not be synced".into()),
     };
-    mark(&tonk, &key, &agent_did, authorization.provider.as_deref())
-        .await
-        .map_err(said)?;
 
     let now = Timestamp::now();
     let expires = Timestamp::try_from((now.to_unix() + DEFAULT_GRANT_TTL_SECONDS) as i128)
@@ -372,7 +453,12 @@ async fn authorize_inner(
         .map_err(|error| error.to_string())?;
     drop(tonk);
     tonk_common::log!(
-        "agent {agent_did} created with {} space grant(s)",
+        "agent {agent_did} {} with {} new space grant(s)",
+        if authorization.agent.is_some() {
+            "reconnected"
+        } else {
+            "created"
+        },
         granted.len()
     );
     answer(
@@ -384,12 +470,106 @@ async fn authorize_inner(
     .map_err(said)
 }
 
-/// Mark the agent space as one, and note which provider's apps it is for.
+/// Make a new agent space for `authorization`, with the account the
+/// passkey opened: its key drawn here, kept sealed to the account in the
+/// space, the space created with it and synced. Returns the agent's key
+/// and the space's routing key.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn create_agent(
+    state: &AppState,
+    account: &tonk_identity::account::Account,
+    authorization: &AgentAuthorization,
+) -> Result<(Ed25519Signer, String), String> {
+    let said = |error: TonkWorkerError| error.to_string();
+    // The agent space's key: signs the session's powerline, then is
+    // sealed to the account by creating the space with it.
+    let mut seed = Zeroizing::new([0u8; 32]);
+    getrandom::fill(seed.as_mut()).map_err(|error| error.to_string())?;
+    let agent = Ed25519Signer::import(&*seed)
+        .await
+        .map_err(|error| format!("{error:?}"))?;
+    let agent_did = agent.did();
+    // Dialog seals its own copy when the space is created, but does not
+    // hand the key back; this one is what reconnecting the agent opens.
+    let sealed = account
+        .secret()
+        .conceal(&seed, &agent_did)
+        .map_err(|error| format!("the agent's key did not seal: {error:#}"))?
+        .encode();
+    let key = super::repository::create_space_from_seed(
+        state,
+        authorization.name.trim(),
+        Some("An agent's own space."),
+        seed,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let remote = {
+        let tonk = state.read().await;
+        super::repository::account_sync_remote(&tonk).await
+    }
+    .ok_or("this account has no sync endpoint")?;
+    super::repository::enable_sync_inner(state, &key, &remote)
+        .await
+        .map_err(|error| error.to_string())?;
+    let tonk = state.read().await;
+    mark(
+        &tonk,
+        &key,
+        &agent_did,
+        authorization.provider.as_deref(),
+        sealed,
+    )
+    .await
+    .map_err(said)?;
+    Ok((agent, key))
+}
+
+/// Open the key of the agent at `key`, which the page chose to connect
+/// again, with the account the passkey opened. Checked again here: the
+/// agent is this account's, for the requesting app's provider.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn reopen(
+    state: &AppState,
+    account: &tonk_identity::account::Account,
+    authorization: &AgentAuthorization,
+    key: &str,
+) -> Result<(Ed25519Signer, String), String> {
+    let provider = authorization
+        .provider
+        .as_deref()
+        .ok_or("this app's agents cannot be told apart, so none is connected again")?;
+    let tonk = state.read().await;
+    let agent = reusable(&tonk, provider)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|agent| agent.key == key)
+        .ok_or("that agent cannot be connected to this app")?;
+    let sealed = tonk_identity::sealed::Sealed::decode(&agent.sealed)
+        .map_err(|error| format!("the agent's sealed key is unreadable: {error}"))?;
+    let seed = account
+        .secret()
+        .reveal(&sealed, &agent.did)
+        .map_err(|_| "the agent's key did not open with this account".to_string())?;
+    let signer = Ed25519Signer::import(&*seed)
+        .await
+        .map_err(|error| format!("{error:?}"))?;
+    if signer.did() != agent.did {
+        return Err("the agent's sealed key is not its own".into());
+    }
+    Ok((signer, agent.key))
+}
+
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+/// Mark the agent space as one, note which provider's apps it is for,
+/// and keep its seed `sealed` to the account.
 async fn mark(
     tonk: &crate::TonkState,
     key: &str,
     agent: &Did,
     provider: Option<&str>,
+    sealed: Vec<u8>,
 ) -> Result<(), TonkWorkerError> {
     let this: dialog_artifacts::Entity = agent.to_string().parse().map_err(failure)?;
     let mut transaction = tonk
@@ -397,7 +577,8 @@ async fn mark(
         .repository(key)
         .branch(super::repository::CONTENT_BRANCH)
         .transaction()
-        .assert(tonk_schema::agent::AgentSpace::new(this.clone()));
+        .assert(tonk_schema::agent::AgentSpace::new(this.clone()))
+        .assert(tonk_schema::agent::AgentKey::new(this.clone(), sealed));
     if let Some(provider) = provider {
         transaction = transaction.assert(tonk_schema::agent::AgentProvider::new(this, provider));
     }
@@ -538,13 +719,34 @@ async fn answer(
 }
 
 /// `GET /api/agent/request/{handle}`: who is asking, for the approval
-/// page, which cannot reach the authorization server from its frame.
+/// page, which cannot reach the authorization server from its frame,
+/// with `agents`, the agents of this account that app may connect again
+/// (`{key, name}` each).
 #[wasm_compat]
 pub async fn request(
+    State(state): State<AppState>,
     Extension(origin): Extension<RequestOrigin>,
     Path(handle): Path<String>,
 ) -> Result<Json<serde_json::Value>, TonkWorkerError> {
-    Ok(Json(describe_request(&origin, &handle).await?))
+    let mut described = describe_request(&origin, &handle).await?;
+    let text = |key: &str| described.get(key).and_then(|v| v.as_str()).unwrap_or("");
+    let agents = match provider(text("redirect_uri"), text("client_name")) {
+        Some(provider) => {
+            let tonk = state.read().await;
+            reusable(&tonk, provider).await?
+        }
+        None => Vec::new(),
+    };
+    if let Some(object) = described.as_object_mut() {
+        object.insert(
+            "agents".into(),
+            agents
+                .into_iter()
+                .map(|agent| serde_json::json!({ "key": agent.key, "name": agent.name }))
+                .collect(),
+        );
+    }
+    Ok(Json(described))
 }
 
 #[derive(Deserialize)]
@@ -872,5 +1074,83 @@ mod tests {
         ] {
             assert_eq!(provider(uri, name), expected, "{uri} {name}");
         }
+    }
+
+    /// An app is offered again only the agents made for its provider
+    /// whose seed the account keeps, and that seed opens with the
+    /// account to the agent's own key.
+    #[dialog_common::test]
+    async fn it_offers_agents_of_the_same_provider_again() -> anyhow::Result<()> {
+        let directory =
+            std::env::temp_dir().join(format!("tonk-agent-reuse-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&directory)?;
+        let location = Directory::At(directory.to_string_lossy().into_owned());
+        let (storage, profile) =
+            crate::device::open_profile_at("agent-reuse", location.clone()).await?;
+        let registry = crate::device::Registry::new("agent-reuse".into(), location);
+        let tonk =
+            crate::worker::boot_state(storage, "agent-reuse".into(), profile, registry).await?;
+        let state: AppState = Arc::new(RwLock::new(tonk));
+        let account = tonk_identity::envelope::AccountSecret::generate()?;
+
+        let mut agents = Vec::new();
+        for (name, byte) in [("Claude", 71u8), ("ChatGPT", 72), ("Old Claude", 73)] {
+            let seed = Zeroizing::new([byte; 32]);
+            let did = Ed25519Signer::import(&*seed).await?.did();
+            let sealed = account.secret().conceal(&seed, &did)?.encode();
+            let key =
+                super::super::repository::create_space_from_seed(&state, name, None, seed).await?;
+            agents.push((did, key, sealed));
+        }
+        {
+            let tonk = state.read().await;
+            let (claude, chatgpt, old) = (&agents[0], &agents[1], &agents[2]);
+            mark(
+                &tonk,
+                &claude.1,
+                &claude.0,
+                Some("claude"),
+                claude.2.clone(),
+            )
+            .await?;
+            mark(
+                &tonk,
+                &chatgpt.1,
+                &chatgpt.0,
+                Some("chatgpt"),
+                chatgpt.2.clone(),
+            )
+            .await?;
+            // An agent from before its seed was kept: marked, but keyless.
+            let this: dialog_artifacts::Entity = old.0.to_string().parse()?;
+            tonk.reactor
+                .repository(&old.1)
+                .branch(super::super::repository::CONTENT_BRANCH)
+                .transaction()
+                .assert(tonk_schema::agent::AgentSpace::new(this.clone()))
+                .assert(tonk_schema::agent::AgentProvider::new(this, "claude"))
+                .commit()
+                .perform(&tonk.operator)
+                .await?;
+        }
+
+        let tonk = state.read().await;
+        let offered = reusable(&tonk, "claude").await?;
+        assert_eq!(
+            offered.iter().map(|agent| &agent.key).collect::<Vec<_>>(),
+            vec![&agents[0].1]
+        );
+        assert_eq!(offered[0].name.as_deref(), Some("Claude"));
+        let sealed = tonk_identity::sealed::Sealed::decode(&offered[0].sealed)?;
+        let seed = account.secret().reveal(&sealed, &offered[0].did)?;
+        assert_eq!(Ed25519Signer::import(&*seed).await?.did(), agents[0].0);
+
+        let offered = reusable(&tonk, "chatgpt").await?;
+        assert_eq!(
+            offered.iter().map(|agent| &agent.key).collect::<Vec<_>>(),
+            vec![&agents[1].1]
+        );
+        assert!(reusable(&tonk, "other").await?.is_empty());
+        Ok(())
     }
 }
