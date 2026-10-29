@@ -1,4 +1,4 @@
-//! The account's agents, for the hub's "your contacts" tab.
+//! The account's agents, for the hub's "your agents" tab.
 //!
 //! An agent is a space marked [`AgentSpace`]; what it can reach is the
 //! grants this profile issued to that space's DID, as retained in the

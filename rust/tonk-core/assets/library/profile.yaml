@@ -2540,7 +2540,7 @@ element!: &hub-discover
           if (!self.isConnected || !Array.isArray(agents)) return;
           self.agentsRender(agents);
         } catch (error) {
-          if (status && self.getAttribute('collection') === 'contacts') status.textContent = 'Couldn’t load your contacts. Switch tabs to try again.';
+          if (status && self.getAttribute('collection') === 'contacts') status.textContent = 'Couldn’t load your agents. Switch tabs to try again.';
         } finally { self.__agentsLoading = false; }
       }
     agents-render: |
@@ -2985,7 +2985,7 @@ view!:
           <nav class="collection-tabs chrome" aria-label="space collections">
             <button type="button" data-collection="spaces" aria-pressed="true"><span class="collection-square" aria-hidden="true"></span>your spaces</button>
             <button type="button" data-collection="discover" aria-pressed="false"><svg class="collection-compass" viewBox="0 0 18 18" fill="none" aria-hidden="true"><circle cx="9" cy="9" r="6.5" stroke="currentColor" stroke-width="1.2"/><path d="m11.8 6.2-1.6 4-4 1.6 1.6-4z" fill="currentColor"/></svg>discover</button>
-            <button type="button" data-collection="contacts" aria-pressed="false" data-contacts-tab hidden><span class="collection-square collection-square--round" aria-hidden="true"></span>your contacts</button>
+            <button type="button" data-collection="contacts" aria-pressed="false" data-contacts-tab hidden><span class="collection-square collection-square--round" aria-hidden="true"></span>your agents</button>
           </nav>
           <!-- One page for `/` and `/settings`: the stack and the panel
                are both here, and the bar's `path` picks the one that
@@ -3001,7 +3001,7 @@ view!:
           </section>
           <!-- The agents this account approved, each with the spaces it
                can reach. The tab shows only once there is one. -->
-          <section class="contacts-collection" aria-label="your contacts">
+          <section class="contacts-collection" aria-label="your agents">
             <p class="space-create-help" data-contacts-status role="status" aria-live="polite"></p>
             <div class="contact-list" data-contacts-list></div>
           </section>
