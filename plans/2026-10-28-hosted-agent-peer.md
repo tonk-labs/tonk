@@ -646,7 +646,7 @@ per render, without guessing:
 1. Take route A only when the host's `ui/initialize` result lists the provider
    origin in `hostCapabilities.sandbox.csp.frameDomains` (Claude returns `[]`
    today; ChatGPT echoes the declared list).
-2. Frame the space page and wait for its hello within a timeout, listening for a
+2. Frame the space page and wait for its hello within about 5 s, listening for a
    `securitypolicyviolation` on `frame-src` at the same time.
 3. On any of those failing, fall back to route B in the same render.
 
