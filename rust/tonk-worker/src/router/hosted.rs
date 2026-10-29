@@ -25,9 +25,7 @@ use crate::TonkWorkerError;
 pub mod mcp;
 pub mod view;
 mod writer;
-pub use writer::{
-    NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, is_narrow_read, writer_seed,
-};
+pub use writer::{NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, writer_seed};
 
 /// The ordinary worker router over a peer that exists for one request.
 pub struct HostedPeer {
