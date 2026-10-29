@@ -51,6 +51,14 @@ flowchart LR
   as `mint_addressed_device_delegation`. Valid until revoked.
 - **Access to other spaces** is by invite to the agent space DID. Invites expire
   and are renewed like any other invite.
+- **Grants live in the agent space**, the way an account's space delegations
+  live in the account space (`tonk_account::delegations`). Each chain to the
+  agent space is retained on the agent space's `main`, and each granted space
+  gets a directory entry there (`xyz.tonk.space/name`, `xyz.tonk.space/home-address`),
+  as the account's space list does. The token carries none of them. The Host
+  Worker finds a session's access by pulling the agent space, so a grant added
+  later reaches an existing session without a new token. The agent finds what
+  it can reach by querying its own space, or through `tonk_list_spaces`.
 - **Space creation** (opt-in at authorization): a delegation from the account
   letting the agent provision spaces on the user's behalf. Created spaces are
   owned by the user and sealed under the account.
