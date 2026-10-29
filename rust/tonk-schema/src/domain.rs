@@ -2020,6 +2020,18 @@ pub mod repo {
 /// would make every session row a device link and the reverse.
 ///
 /// [`AgentSession`]: crate::AgentSession
+/// Attributes on an agent space beyond its mark.
+pub mod agent_space {
+    use super::Attribute;
+
+    /// Which LLM provider's apps the agent is for (`claude`, `chatgpt`):
+    /// an agent is only offered again to an app of the same provider.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-space")]
+    #[pick(last)]
+    pub struct Provider(pub String);
+}
+
 pub mod agent_session {
     use super::{Attribute, Entity};
 

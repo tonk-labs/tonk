@@ -2540,7 +2540,7 @@ element!: &hub-discover
           if (!self.isConnected || !Array.isArray(agents)) return;
           self.agentsRender(agents);
         } catch (error) {
-          if (status && self.getAttribute('collection') === 'contacts') status.textContent = 'Couldn’t load your contacts. Switch tabs to try again.';
+          if (status && self.getAttribute('collection') === 'contacts') status.textContent = 'Couldn’t load your agents. Switch tabs to try again.';
         } finally { self.__agentsLoading = false; }
       }
     agents-render: |
@@ -2613,7 +2613,7 @@ element!: &hub-discover
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ space: button.dataset.agentSpace }),
           });
-          if (!response.ok) throw new Error(await response.text());
+          if (!response.ok) { const error = new Error(await response.text()); error.status = response.status; throw error; }
           if (status) status.textContent = 'Access revoked. Enforcement may take a moment; anything already read stays read.';
           await self.agents();
         } catch (error) {
@@ -2983,7 +2983,7 @@ view!:
           <nav class="collection-tabs chrome" aria-label="space collections">
             <button type="button" data-collection="spaces" aria-pressed="true"><span class="collection-square" aria-hidden="true"></span>your spaces</button>
             <button type="button" data-collection="discover" aria-pressed="false"><svg class="collection-compass" viewBox="0 0 18 18" fill="none" aria-hidden="true"><circle cx="9" cy="9" r="6.5" stroke="currentColor" stroke-width="1.2"/><path d="m11.8 6.2-1.6 4-4 1.6 1.6-4z" fill="currentColor"/></svg>discover</button>
-            <button type="button" data-collection="contacts" aria-pressed="false" data-contacts-tab hidden><span class="collection-square collection-square--round" aria-hidden="true"></span>your contacts</button>
+            <button type="button" data-collection="contacts" aria-pressed="false" data-contacts-tab hidden><span class="collection-square collection-square--round" aria-hidden="true"></span>your agents</button>
           </nav>
           <!-- One page for `/` and `/settings`: the stack and the panel
                are both here, and the bar's `path` picks the one that
@@ -2999,7 +2999,7 @@ view!:
           </section>
           <!-- The agents this account approved, each with the spaces it
                can reach. The tab shows only once there is one. -->
-          <section class="contacts-collection" aria-label="your contacts">
+          <section class="contacts-collection" aria-label="your agents">
             <p class="space-create-help" data-contacts-status role="status" aria-live="polite"></p>
             <div class="contact-list" data-contacts-list></div>
           </section>
@@ -5732,8 +5732,11 @@ element!: &account-settings
       async (self) => {
         const list = self.querySelector('[data-agent-spaces]');
         const profile = await self.api('/api/profile');
+        // Agents' own spaces are contacts, not spaces to grant.
+        const agents = new Set(((await self.api('/api/agents').catch(() => [])) ?? []).map((agent) => agent.key));
         const rows = [];
         for (const { key } of profile?.space ?? []) {
+          if (agents.has(key)) continue;
           let label = key, synced = false;
           try {
             const info = await self.api(`/api/repository/${encodeURIComponent(key)}`);
@@ -5795,12 +5798,11 @@ element!: &account-settings
           .filter((select) => !select.disabled && (select.value === 'read' || select.value === 'write'))
           .map((select) => ({ key: select.dataset.key, access: select.value }));
         self.agentError('');
-        self.agentBusy(true, 'creating the agent and its access…');
-        self.api('/api/agent/session', { name, spaces, request }).then((response) => {
-          if (!response?.redirect) throw new Error('the authorization server gave no callback');
-          self.status(`sending you back to ${self._agentClient ?? 'the app'}…`);
-          window.tonk?.navigate?.(response.redirect);
-        }).catch((error) => {
+        self.agentBusy(true, 'Waiting for passkey…');
+        // The worker asks this page's top document for the passkey; the
+        // ceremony row reports how it goes, and the top page goes on to
+        // the app's callback when it is done.
+        self.api('/api/agent/session', { name, spaces, request }).catch((error) => {
           self.agentBusy(false, '');
           self.agentError(self.agentReason(error));
         });
@@ -6032,12 +6034,14 @@ element!: &account-settings
           'authorize-device': 'Approving the connection',
           'add-passkey': 'Adding the passkey',
           'sign-in-via': 'Signing in',
+          'authorize-agent': 'Approving the agent',
         }[which];
         if (!subject) return;
         const done = {
           'delete-account': 'Account deleted.',
           'authorize-device': 'Approved. Completing the connection…',
           'sign-in-via': 'Signed in.',
+          'authorize-agent': 'Approved. Returning to the app…',
         }[which] ?? 'Done.';
         const text = {
           'pending-ceremony': `${subject}: waiting for passkey…`,
@@ -6054,6 +6058,9 @@ element!: &account-settings
           if (asking !== self.hasAttribute('data-passkey-requested')) {
             if (asking) self.setAttribute('data-passkey-requested', ''); else self.removeAttribute('data-passkey-requested');
           }
+        }
+        if (which === 'authorize-agent' && (state === 'refused' || state === 'failed')) {
+          for (const button of self.querySelectorAll('[data-agent-approve], [data-agent-deny]')) button.disabled = false;
         }
         self.status(text);
       }

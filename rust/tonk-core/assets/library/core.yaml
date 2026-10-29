@@ -1070,6 +1070,18 @@ concept!: &tonk/agent-space
       the: xyz.tonk.repo/kind
       as: entity
 
+# Which LLM provider's apps an agent space is for (`claude`, `chatgpt`),
+# on the same subject DID as the mark. An agent is only offered again to
+# an app of the same provider, so Claude and ChatGPT never share one.
+concept!: &tonk/agent-provider
+  this: tonk:agent-provider
+  description: Which LLM provider's apps an agent space is for.
+  with:
+    provider:
+      description: The provider, `claude` or `chatgpt`.
+      the: xyz.tonk.agent-space/provider
+      as: text
+
 # One session of an agent: the authorization one session key holds to
 # act for the agent space, and what a session list renders.
 #

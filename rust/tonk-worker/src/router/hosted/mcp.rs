@@ -51,6 +51,10 @@ use tonk_identity::agent::{AgentSessionToken, decode_agent_session_token};
 use super::WriterSession;
 pub use super::access::{AgentAccess, SpaceAccess};
 
+#[path = "../../../../tonk-cli/src/output.rs"]
+#[allow(dead_code)]
+mod output;
+
 #[path = "../../../../tonk-cli/src/guide.rs"]
 #[allow(dead_code)]
 mod guide;
@@ -383,6 +387,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 resources.extend(super::view::resources());
                 Ok(json!({ "resources": resources }))
             }
+            "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
             "resources/read" => {
                 let uri = message["params"]["uri"].as_str().unwrap_or_default();
                 read_guide(uri)
@@ -421,8 +426,8 @@ impl<W: Writers> McpEndpoint<'_, W> {
             },
             "tonk_guide" => {
                 let topic = arguments["topic"].as_str().unwrap_or("");
-                let body = if topic == "context" {
-                    Some(guide::AGENT)
+                let body = if topic == "context" || topic == "agent" {
+                    Some(HOSTED)
                 } else {
                     guide::topic(topic)
                 };
@@ -475,9 +480,8 @@ impl<W: Writers> McpEndpoint<'_, W> {
                     // A page of a large read: the writer caps reads and
                     // answers the next cursor.
                     let mut page = url::form_urlencoded::Serializer::new(String::new());
-                    if let Some(limit) = arguments["limit"].as_u64() {
-                        page.append_pair("limit", &limit.to_string());
-                    }
+                    let limit = arguments["limit"].as_u64().unwrap_or(DEFAULT_LIMIT);
+                    page.append_pair("limit", &limit.to_string());
                     if let Some(cursor) = arguments["cursor"].as_str() {
                         page.append_pair("cursor", cursor);
                     }
@@ -512,11 +516,21 @@ impl<W: Writers> McpEndpoint<'_, W> {
                     .await
                     .map(|body| body.to_bytes())
                     .unwrap_or_default();
+                let text = if status.is_success() {
+                    notation(&body)
+                } else {
+                    None
+                };
                 let body = match serde_json::from_slice::<Value>(&body) {
                     Ok(value) => value,
                     Err(_) => json!(String::from_utf8_lossy(&body)),
                 };
-                tool_result(body, !status.is_success())
+                let mut answer = tool_result(without_revisions(body), !status.is_success());
+                // The model reads notation; programs read the JSON beside it.
+                if let Some(text) = text {
+                    answer["content"] = json!([{ "type": "text", "text": text }]);
+                }
+                answer
             }
             _ => match super::view::call(
                 name,
@@ -588,16 +602,13 @@ impl<W: Writers> McpEndpoint<'_, W> {
 fn refusal(access: Option<&SpaceAccess>, space: &Did, write: bool) -> Option<String> {
     let Some(access) = access else {
         return Some(format!(
-            "This connection has no access to {space}. Use a subject from tonk_list_spaces; \
-             the user grants more spaces by reconnecting."
+            "This connection has no access to {space}. Use a subject from tonk_list_spaces, \
+             or ask the person to grant you this space."
         ));
     };
     if !access.read {
         return Some(if access.lapsed > 0 {
-            format!(
-                "Access to {space} has lapsed. Ask the user to renew it for this agent, then \
-                 reconnect."
-            )
+            format!("Access to {space} has lapsed. Ask the person to grant it to you again.")
         } else {
             format!("This connection cannot read {space}.")
         });
@@ -644,37 +655,45 @@ fn list_spaces(access: &AgentAccess) -> Vec<Value> {
         .collect()
 }
 
-/// What this connection is, ahead of the shared agent manual, which is
-/// written for hosts that can render views.
-const HOSTED: &str = "\
-# This connection
+/// The manual for this connection, in place of the shared agent manual,
+/// which is written for a single attached space and hosts that render views.
+const HOSTED: &str = include_str!("mcp/guide-hosted.md");
 
-You are a Tonk agent with a space of your own, your home. Start with \
-`tonk_list_spaces`: it returns your home (`home: true`) and the spaces the \
-person granted you, each with its `name`, its `access` (`read` or \
-`read-write`) and when the grant `expires`. Pass the exact `subject` as \
-`space` to `tonk_query` and `tonk_evaluate`; never guess one.
-
-Keep your own notes, drafts and anything you want to remember across \
-conversations in your home. Change a granted space only when the person asks. \
-A write to a `read` space is refused: ask the person to grant read and write \
-rather than retrying or writing elsewhere.
-
-This connection cannot render views, for you or for the person. You can \
-author views with notation, but you cannot see them: say so, and ask the \
-person to open the space in Tonk at {origin} to check. Where the manual below \
-mentions the host's UI facilities, this connection has none. The manuals are \
-also resources, `tonk://guide/<topic>`.
-
-";
-
-/// The server instructions: this connection, then the shared manual.
+/// The server instructions: the hosted manual, naming where Tonk is open.
 fn instructions(origin: &str) -> String {
-    format!(
-        "{}{}",
-        HOSTED.replace("{origin}", origin.trim_end_matches('/')),
-        guide::AGENT
-    )
+    HOSTED.replace("{origin}", origin.trim_end_matches('/'))
+}
+
+/// Rows a query answers when the model names no `limit`; the answer says
+/// how to read the next page.
+const DEFAULT_LIMIT: u64 = 100;
+
+/// A worker answer in Tonk notation, as `tonk eval` prints it: the
+/// envelope, then each expression's matches as re-submittable notation,
+/// then how to read the next page if there is one.
+fn notation(body: &[u8]) -> Option<String> {
+    let response: output::EvaluateResponse = serde_json::from_slice(body).ok()?;
+    let mut answer = output::render(&response, output::Format::Notation, false).ok()?;
+    let page: Value = serde_json::from_slice(body).ok()?;
+    if let Some(next) = page["page"]["next"].as_str() {
+        if !answer.ends_with('\n') {
+            answer.push('\n');
+        }
+        answer.push_str(&format!(
+            "# More rows: call tonk_query again with cursor: \"{next}\"\n"
+        ));
+    }
+    Some(answer)
+}
+
+/// `answer` without the raw revision bytes the worker reports, which tell
+/// the model nothing and cost it about 1.5 KB a call.
+fn without_revisions(mut answer: Value) -> Value {
+    if let Some(fields) = answer.as_object_mut() {
+        fields.remove("revision_before");
+        fields.remove("revision_after");
+    }
+    answer
 }
 
 /// The manuals as `tonk://guide/<topic>` resources.
@@ -694,7 +713,10 @@ fn guide_resources() -> Vec<Value> {
 
 /// The manual a `tonk://guide/<topic>` resource names.
 fn read_guide(uri: &str) -> Option<Value> {
-    let body = guide::topic(uri.strip_prefix("tonk://guide/")?)?;
+    let body = match uri.strip_prefix("tonk://guide/")? {
+        "agent" => HOSTED,
+        topic => guide::topic(topic)?,
+    };
     Some(json!({
         "contents": [{ "uri": uri, "mimeType": "text/markdown", "text": body }],
     }))
@@ -719,6 +741,23 @@ pub fn tools() -> Vec<Value> {
         .map(|tool| {
             let mut tool = tool.clone();
             let name = tool["name"].as_str().unwrap_or_default().to_owned();
+            if name == "tonk_query" {
+                tool["description"] = json!(
+                    "Read a space with inline Tonk notation; never changes anything. Name the \
+                     space by its exact subject from tonk_list_spaces. Query concept: for \
+                     schema and read tonk_guide for notation. Select the fields you need and \
+                     use exact saved entity URIs."
+                );
+            }
+            if name == "tonk_evaluate" {
+                tool["description"] = json!(
+                    "Write to a space with inline Tonk notation: assertions and commands, run \
+                     once, answered after the write is saved. Needs read-write access to the \
+                     space (see tonk_list_spaces). Read tonk_guide (notation, views, events) \
+                     before authoring unfamiliar schemas or views. If a response is lost, query \
+                     before trying again; never replay automatically."
+                );
+            }
             if name == "tonk_list_spaces" {
                 tool["description"] = json!(
                     "List the spaces you can use. The first, marked home, is your own space: \

@@ -72,6 +72,26 @@ impl AgentSpace {
 /// the chain was retained, so the row cannot disagree with the proof and
 /// revoking the powerline takes the row with it. The session's DID is
 /// the delegation's own audience.
+/// Which LLM provider's apps an agent space is for, on the agent
+/// space's subject DID like [`AgentSpace`].
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AgentProvider {
+    /// The agent space's subject DID.
+    pub this: Entity,
+    /// `claude` or `chatgpt`.
+    pub provider: crate::domain::agent_space::Provider,
+}
+
+impl AgentProvider {
+    /// Note that the agent space `space` is for `provider`'s apps.
+    pub fn new(space: Entity, provider: impl Into<String>) -> Self {
+        Self {
+            this: space,
+            provider: crate::domain::agent_space::Provider(provider.into()),
+        }
+    }
+}
+
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AgentSession {
     /// The delegation's entity — its blob hash, as dialog keyed it.

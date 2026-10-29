@@ -38,6 +38,9 @@ use zeroize::Zeroizing;
 use super::HostedPeer;
 use crate::TonkWorkerError;
 
+mod caps;
+pub use caps::ReadCaps;
+
 /// The bytes of tree nodes a writer's peer keeps, for every repository it
 /// opens together.
 ///
@@ -207,6 +210,8 @@ pub struct SpaceWriter {
     reads: AtomicU64,
     /// Reads numbered below this began before a pull that has landed.
     pulled_for: AtomicU64,
+    /// The most one read answers.
+    caps: ReadCaps,
     /// Fail the next push before it is sent, as a refusing remote would.
     #[cfg(test)]
     refuse_push: AtomicBool,
@@ -250,9 +255,16 @@ impl SpaceWriter {
             pulls: Mutex::new(()),
             reads: AtomicU64::new(0),
             pulled_for: AtomicU64::new(0),
+            caps: ReadCaps::default(),
             #[cfg(test)]
             refuse_push: AtomicBool::new(false),
         })
+    }
+
+    /// This writer, answering reads up to `caps`.
+    pub fn with_read_caps(mut self, caps: ReadCaps) -> Self {
+        self.caps = caps;
+        self
     }
 
     /// The space this writer writes.
@@ -335,7 +347,20 @@ impl SpaceWriter {
     /// `query`, and an `evaluate` with `transact=false`. Anything else is
     /// refused with `405`, since a commit here would skip the lock and the
     /// push.
+    ///
+    /// A `query` or `evaluate` answers at most the writer's [`ReadCaps`],
+    /// and is refused over them unless it asks for a page with `limit`
+    /// and `cursor` (see [`caps`]).
     pub async fn read(&self, request: Request<Body>) -> Response<Body> {
+        let (mut parts, body) = request.into_parts();
+        let page = match caps::Page::take(&parts.uri) {
+            Ok((page, uri)) => {
+                parts.uri = uri;
+                page
+            }
+            Err(error) => return failure(StatusCode::BAD_REQUEST, "BAD_PAGE", &error),
+        };
+        let request = Request::from_parts(parts, body);
         if !is_read(request.method(), request.uri()) {
             return failure(
                 StatusCode::METHOD_NOT_ALLOWED,
@@ -346,7 +371,13 @@ impl SpaceWriter {
         if let Err(error) = self.refresh().await {
             return failure(StatusCode::BAD_GATEWAY, "PULL_FAILED", &error);
         }
-        self.peer().call(self.on_branch(request)).await
+        let capped = request.method() == Method::POST;
+        let response = self.peer().call(self.on_branch(request)).await;
+        if capped {
+            caps::cap(response, self.caps, &page).await
+        } else {
+            response
+        }
     }
 
     /// The spaces the agent space reaches, read from it after a pull (a

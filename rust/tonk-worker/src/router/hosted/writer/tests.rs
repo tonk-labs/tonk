@@ -93,6 +93,21 @@ fn only_routes_that_cannot_commit_are_reads() {
     assert!(!read(Method::POST, "/sync/push"));
 }
 
+#[dialog_common::test]
+fn a_page_is_taken_off_the_route() {
+    let take = |uri: &str| caps::Page::take(&uri.parse::<Uri>().unwrap());
+    let (page, uri) = take("/evaluate?transact=false&limit=3&cursor=6.abc").unwrap();
+    assert_eq!(uri, "/evaluate?transact=false");
+    assert_ne!(page, caps::Page::default());
+    let (page, uri) = take("/evaluate?transact=false").unwrap();
+    assert_eq!(uri, "/evaluate?transact=false");
+    assert_eq!(page, caps::Page::default());
+    let (_, uri) = take("/query?limit=2").unwrap();
+    assert_eq!(uri, "/query");
+    assert!(take("/query?limit=0").is_err());
+    assert!(take("/query?limit=many").is_err());
+}
+
 #[cfg(all(feature = "integration-tests", not(target_arch = "wasm32")))]
 mod against_a_service {
     //! These need the native access service, so they run natively only.
@@ -668,6 +683,184 @@ concept!: &writer-note
         own.close().await;
         writer.close().await;
         refused.close().await;
+        fixture.stop().await;
+    }
+
+    /// Write the notes `labels` through `writer`, one write each.
+    async fn write_notes(fixture: &Fixture, writer: &SpaceWriter, labels: &[String]) {
+        for label in labels {
+            let (status, body) = evaluate(writer, fixture.note(label)).await;
+            assert!(status.is_success(), "write: {status}: {body}");
+        }
+    }
+
+    fn notes_of(run: u64) -> String {
+        format!("writer.note:\n  this: ?n\n  tag: \"{run}\"\n")
+    }
+
+    async fn page(
+        writer: &SpaceWriter,
+        document: &str,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let cursor = cursor.map(|cursor| format!("&cursor={cursor}"));
+        let uri = format!(
+            "/evaluate?transact=false&limit={limit}{}",
+            cursor.unwrap_or_default()
+        );
+        json(
+            writer
+                .read(request(Method::POST, &uri, document.to_owned()))
+                .await,
+        )
+        .await
+    }
+
+    #[dialog_common::test]
+    async fn a_read_over_the_cap_is_refused() {
+        let fixture = Fixture::start().await;
+        let writer = fixture.writer("mcp-1").await;
+        let written: Vec<String> = (0..4).map(|i| format!("capped-{i}")).collect();
+        write_notes(&fixture, &writer, &written).await;
+        let document = notes_of(fixture.run);
+
+        let rows = writer.with_read_caps(ReadCaps {
+            rows: 3,
+            bytes: caps::MAX_READ_BYTES,
+        });
+        let (status, body) = query(&rows, &document).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+        assert_eq!(body["code"], "READ_TOO_LARGE");
+        assert!(
+            body["error"].as_str().unwrap().contains("4 rows"),
+            "the refusal says how big the read was: {body}"
+        );
+        // Asked for more than the cap in one page, too.
+        let (status, body) = page(&rows, &document, 4, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "LIMIT_TOO_LARGE");
+        rows.close().await;
+
+        let writer = fixture.writer("mcp-2").await.with_read_caps(ReadCaps {
+            rows: caps::MAX_READ_ROWS,
+            bytes: 256,
+        });
+        let (status, body) = query(&writer, &document).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+        assert_eq!(body["code"], "READ_TOO_LARGE");
+        writer.close().await;
+
+        // Under the caps, a read is answered as the branch answers it.
+        let writer = fixture.writer("mcp-3").await;
+        assert_eq!(
+            notes(&writer, fixture.run).await,
+            labels(fixture.run, &written)
+        );
+        writer.close().await;
+        fixture.stop().await;
+    }
+
+    #[dialog_common::test]
+    async fn a_paged_read_returns_every_row_and_publishes_nothing() {
+        let fixture = Fixture::start().await;
+        let writer = fixture.writer("mcp-1").await;
+        let written: Vec<String> = (0..7).map(|i| format!("paged-{i}")).collect();
+        write_notes(&fixture, &writer, &written).await;
+        writer.close().await;
+        let reader = fixture.writer("mcp-reader").await.with_read_caps(ReadCaps {
+            rows: 3,
+            bytes: caps::MAX_READ_BYTES,
+        });
+        let document = notes_of(fixture.run);
+        // The reader's first read pulls the space's head.
+        let (status, body) = page(&reader, &document, 1, None).await;
+        assert!(status.is_success(), "page: {status}: {body}");
+        let before = reader.status().await.unwrap();
+        assert!(before.local.is_some());
+        assert_eq!(before.local, before.remote);
+
+        let mut seen = BTreeSet::new();
+        let mut pages = 0;
+        let mut cursor: Option<String> = None;
+        loop {
+            let (status, body) = page(&reader, &document, 3, cursor.as_deref()).await;
+            assert!(status.is_success(), "page: {status}: {body}");
+            assert_eq!(body["page"]["rows"], 7);
+            assert_eq!(body["matches_before"], body["matches_after"]);
+            let rows = entities(
+                &body["matches_before"],
+                &format!("urn:writer:{}:", fixture.run),
+            );
+            assert!(rows.len() <= 3, "a page holds at most `limit` rows");
+            assert!(rows.is_disjoint(&seen), "no row is answered twice");
+            seen.extend(rows);
+            pages += 1;
+            match body["page"]["next"].as_str() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => break,
+            }
+        }
+        assert_eq!(pages, 3);
+        assert_eq!(seen, labels(fixture.run, &written), "every row, once");
+
+        let after = reader.status().await.unwrap();
+        assert_eq!(after.local, before.local, "no read minted a revision");
+        assert_eq!(after.remote, before.remote, "no read published one");
+
+        // A cursor from before the space changed is refused, not followed.
+        let (_, first) = page(&reader, &document, 3, None).await;
+        let stale = first["page"]["next"].as_str().unwrap().to_owned();
+        let other = fixture.writer("mcp-other").await;
+        write_notes(&fixture, &other, &["paged-late".into()]).await;
+        let (status, body) = page(&reader, &document, 3, Some(&stale)).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["code"], "PAGE_STALE");
+        let (status, body) = page(&reader, &document, 3, Some("nonsense")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "BAD_CURSOR");
+
+        reader.close().await;
+        other.close().await;
+        fixture.stop().await;
+    }
+
+    /// Schema discovery, the first read an agent makes, pages like any other.
+    #[dialog_common::test]
+    async fn a_concept_read_pages() {
+        let fixture = Fixture::start().await;
+        let reader = fixture.writer("mcp-reader").await;
+        let (status, whole) = query(&reader, "concept:\n").await;
+        assert!(status.is_success(), "{status}: {whole}");
+        let total: usize = whole["matches_before"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["results"].as_array().unwrap().len())
+            .sum();
+        assert!(total > 1, "the space has concepts: {whole}");
+
+        let mut seen = 0;
+        let mut cursor: Option<String> = None;
+        loop {
+            let (status, body) = page(&reader, "concept:\n", 1, cursor.as_deref()).await;
+            assert!(status.is_success(), "{status}: {body}");
+            assert_eq!(body["page"]["rows"], total);
+            let rows: usize = body["matches_before"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|block| block["results"].as_array().unwrap().len())
+                .sum();
+            assert_eq!(rows, 1, "a page of one concept: {body}");
+            seen += rows;
+            match body["page"]["next"].as_str() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => break,
+            }
+        }
+        assert_eq!(seen, total, "every concept, one page each");
+        reader.close().await;
         fixture.stop().await;
     }
 }

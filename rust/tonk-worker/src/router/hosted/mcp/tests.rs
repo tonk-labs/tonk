@@ -244,9 +244,34 @@ async fn the_manuals_it_names_are_resources_it_serves() {
     }
     assert!(read_guide("tonk://guide/missing").is_none());
     let said = instructions("https://tonk.example/");
-    assert!(said.starts_with("# This connection"));
+    assert!(said.starts_with("# Working with Tonk"));
     assert!(said.contains("Tonk at https://tonk.example to check"));
-    assert!(said.contains(guide::AGENT));
+    assert!(!said.contains("{origin}"));
+    let agent = read_guide("tonk://guide/agent").unwrap();
+    assert_eq!(agent["contents"][0]["text"], HOSTED);
+    let answer = json!({ "revision_before": [1, 2], "revision_after": [3], "matches": [] });
+    assert_eq!(without_revisions(answer), json!({ "matches": [] }));
+}
+
+#[dialog_common::test]
+async fn a_worker_answer_reads_as_notation_with_its_next_page() {
+    let body = json!({
+        "revision_before": null,
+        "revision_after": null,
+        "matches_before": [],
+        "matches_after": [{
+            "label": "person",
+            "results": [{ "this": "did:key:zHj", "fields": { "name": "Alice" }, "transient": false }],
+        }],
+        "commits": { "claims": 0, "entities": {} },
+        "page": { "rows": 1, "next": "abc" },
+    })
+    .to_string();
+    let text = notation(body.as_bytes()).unwrap();
+    assert!(text.contains("Alice"), "{text}");
+    assert!(!text.trim_start().starts_with('{'), "{text}");
+    assert!(text.ends_with("cursor: \"abc\"\n"), "{text}");
+    assert!(notation(b"not json").is_none());
 }
 
 #[dialog_common::test]

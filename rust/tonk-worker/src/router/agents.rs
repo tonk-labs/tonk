@@ -1,4 +1,4 @@
-//! The account's agents, for the hub's "your contacts" tab.
+//! The account's agents, for the hub's "your agents" tab.
 //!
 //! An agent is a space marked [`AgentSpace`]; what it can reach is the
 //! grants this profile issued to that space's DID, as retained in the
@@ -94,7 +94,7 @@ async fn spaces(tonk: &TonkState) -> Result<Vec<Did>, TonkWorkerError> {
 }
 
 /// Whether the space at `did` carries the agent-space mark.
-async fn is_agent(tonk: &TonkState, did: &Did) -> bool {
+pub(super) async fn is_agent(tonk: &TonkState, did: &Did) -> bool {
     let Ok(session) = tonk
         .reactor
         .repository(did.repo_key())
@@ -177,13 +177,18 @@ async fn grants(
     agent: &Did,
 ) -> Result<Vec<(DelegationChain, Held)>, TonkWorkerError> {
     let now = Timestamp::now().to_unix();
-    let profile = tonk.profile.did();
+    // The approval page issues from the profile today; the agreed design
+    // issues from the account root, behind a passkey.
+    let mut issuers = vec![tonk.profile.did()];
+    if let Ok(root) = super::identity::local_root(tonk).await {
+        issuers.push(root.root_did.clone());
+    }
     let mut seen = std::collections::BTreeSet::new();
     let mut found = Vec::new();
     for held in [Held::AgentSpace, Held::Profile] {
         for delegation in retained(tonk, agent, held).await? {
             let chain = delegation.0;
-            if chain.issuer() != &profile
+            if !issuers.contains(chain.issuer())
                 || chain.subject().is_none_or(|subject| subject == agent)
                 || chain.expiration().is_some_and(|at| at.to_unix() <= now)
                 || !seen.insert(*chain.proof_cids().last().unwrap())
@@ -348,15 +353,28 @@ async fn ancestor(
         .perform(&tonk.operator)
         .await
         .map_err(failure)?;
-    let mut certificates = proof.proofs.into_iter();
+    // The profile's proof runs space → … → account root → profile. A leaf
+    // the root issued hangs off the root, so the path stops there; the
+    // profile then withdraws it under the root's delegation to it, the
+    // way `publish_target` withdraws a sibling device's grant.
+    let issuer = leaf.issuer();
+    let mut certificates: Vec<_> = proof.proofs.into_iter().map(|proof| proof.0).collect();
+    if let Some(at) = certificates
+        .iter()
+        .position(|certificate| certificate.audience() == issuer)
+    {
+        certificates.truncate(at + 1);
+    } else {
+        return Err(failure("no path from the space to the grant's issuer"));
+    }
+    let mut certificates = certificates.into_iter();
     let mut chain = DelegationChain::new(
         certificates
             .next()
-            .ok_or_else(|| failure("issuer proof is empty"))?
-            .0,
+            .ok_or_else(|| failure("issuer proof is empty"))?,
     );
     for certificate in certificates {
-        chain = chain.push(certificate.0).map_err(failure)?;
+        chain = chain.push(certificate).map_err(failure)?;
     }
     Ok(chain)
 }
@@ -415,7 +433,14 @@ mod tests {
                     .did();
                 chains.extend(
                     super::super::agent_session::grant(
-                        &tonk, &agent, &subject, access, &remote, now, expires,
+                        &tonk,
+                        &tonk.profile.credential().signer().clone(),
+                        &agent,
+                        &subject,
+                        access,
+                        &remote,
+                        now,
+                        expires,
                     )
                     .await?,
                 );
@@ -446,6 +471,19 @@ mod tests {
             access,
             vec![("Notes".into(), "read"), ("Plans".into(), "write")]
         );
+
+        // A revocation's witness path is the issuer's proof for the space
+        // with the grant on its end.
+        let tonk = state.read().await;
+        let profile = tonk.profile.did();
+        for (leaf, _) in grants(&tonk, &agent).await? {
+            let subject = leaf.subject().unwrap().clone();
+            let path = ancestor(&tonk, &profile, &subject, &leaf).await?;
+            assert_eq!(path.audience(), leaf.issuer());
+            let path = path.push(leaf.proofs().last().unwrap().clone())?;
+            assert_eq!(path.subject(), Some(&subject));
+            assert_eq!(path.audience(), &agent);
+        }
         Ok(())
     }
 }
