@@ -88,6 +88,7 @@ const styles = `
     background: transparent; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); cursor: pointer; }
 #tonk-agent button.primary { background: var(--wa-color-text-normal, light-dark(#38182a, #e2dfdd));
     color: var(--wa-color-surface-default, light-dark(#fff, #161313)); }
+#tonk-agent .tools a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 6px; color: inherit; }
 #tonk-agent button:disabled { opacity: .5; cursor: wait; }
 #tonk-agent :focus-visible { outline: 2px solid currentColor; outline-offset: 4px; }
 #tonk-agent .meta { font-size: .85rem; opacity: .75; overflow-wrap: anywhere; }
@@ -153,7 +154,7 @@ export async function mountAgent() {
     try {
         request = await call(`/authorize/${encodeURIComponent(handle)}`);
     } catch (error) {
-        return fail(`This request can't be answered: ${error.message}. Start again from the app.`);
+        return fail(`This request can't be answered: ${error.message}`);
     }
     const client = request.client_name || "An app";
     const host = request.redirect_host || request.redirect_uri;
@@ -184,7 +185,14 @@ export async function mountAgent() {
 
     status.textContent = "Loading your spaces…";
     if (!(await controlled())) {
-        return fail("Tonk isn't running in this browser yet. Open Tonk here, sign in, then come back to this page.");
+        fail("Tonk isn't running in this browser yet. Open Tonk in another tab, sign in, then reload this page.");
+        tools.append(
+            element("a", { href: "/", target: "_blank", rel: "opener", textContent: "Open Tonk" }),
+            element("button", { type: "button", textContent: "Reload", onclick: () => {
+                sessionStorage.removeItem("tonk:agent-reload");
+                location.reload();
+            } }));
+        return;
     }
     let account;
     let spaces;
