@@ -165,6 +165,94 @@ async fn it_answers_while_a_subscription_is_open() {
     }
 }
 
+/// A kernel answers a page load of its site: with its page, where its routes
+/// keep nothing, which renders the site's view; with an asset, opened as a
+/// page; and with a page saying what it answered, for an address it cannot
+/// answer with either. A request that is not a page load is answered as
+/// before.
+#[tokio::test(flavor = "current_thread")]
+async fn it_answers_page_loads_with_its_page() {
+    let engine = engine();
+    let mut kernel = Kernel::load(
+        &engine,
+        tonk_components::TONK_KERNEL_BYTES,
+        scratch("page-loads"),
+    )
+    .await
+    .unwrap();
+    kernel
+        .init(
+            &space(),
+            Standing::handed([7; 32], Some(space_to_session().await)),
+        )
+        .await
+        .unwrap();
+    let (served, driver) = kernel.serve();
+    let page = vec![("accept".to_owned(), b"text/html,*/*;q=0.8".to_vec())];
+
+    let asked = async {
+        let load = |path: &'static str, headers: Vec<(String, Vec<u8>)>| {
+            let served = &served;
+            async move {
+                let answer = served.request("GET", path, headers, b"").await.unwrap();
+                let status = answer.status;
+                let kind = answer
+                    .headers
+                    .iter()
+                    .find(|(name, _)| name == "content-type")
+                    .map(|(_, value)| String::from_utf8_lossy(value).into_owned());
+                let body: Vec<Vec<u8>> = answer.body.collect().await;
+                (status, kind, String::from_utf8(body.concat()).unwrap())
+            }
+        };
+
+        let (status, kind, body) = load("/notes", page.clone()).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(kind.as_deref(), Some("text/html; charset=utf-8"));
+        assert!(
+            body.contains("tonk-display"),
+            "the page renders the view: {body}"
+        );
+
+        let stored = served
+            .request(
+                "PUT",
+                "/",
+                vec![("content-type".to_owned(), b"text/plain".to_vec())],
+                b"an asset",
+            )
+            .await
+            .unwrap();
+        assert_eq!(stored.status, 201);
+        let at = stored
+            .headers
+            .iter()
+            .find(|(name, _)| name == "location")
+            .map(|(_, value)| String::from_utf8_lossy(value).into_owned())
+            .expect("the asset's address");
+        let opened = served.request("GET", &at, page.clone(), b"").await.unwrap();
+        assert_eq!(opened.status, 200, "an asset opened as a page is the asset");
+        let body: Vec<Vec<u8>> = opened.body.collect().await;
+        assert_eq!(body.concat(), b"an asset");
+
+        let (status, kind, body) = load("/asset:3mJr7AoUXx2Wqd", page.clone()).await;
+        assert_eq!(status, 400, "{body}");
+        assert_eq!(kind.as_deref(), Some("text/html; charset=utf-8"));
+        assert!(
+            body.contains("This space answered 400."),
+            "a page says what it answered: {body}"
+        );
+
+        let (status, _, body) = load("/notes", Vec::new()).await;
+        assert_eq!(status, 404, "a request for content finds none: {body}");
+    };
+    let asked = tokio::time::timeout(std::time::Duration::from_secs(60), asked);
+    tokio::select! {
+        answered = asked => answered.expect("the kernel answered within a minute"),
+        stopped = driver => panic!("the kernel stopped while asked: {stopped:?}"),
+    }
+}
+
 /// A kernel's peer is its session: it acts with the key its host hands it.
 #[tokio::test(flavor = "current_thread")]
 async fn it_acts_as_its_session() {

@@ -24,19 +24,17 @@
 // On the profile's origin (`profile.{host}`) the space is the person's
 // profile: the session's own, so it needs no one's delegation, and its
 // kernel is the persona it pins. Until the person makes themselves known,
-// the session's key represents the persona and is it. There this worker answers every page load
-// with the profile's shell, and serves the ports a space's host asks the
-// profile over.
+// the session's key represents the persona and is it. There this worker
+// serves the ports a space's host asks the profile over.
 //   From then on the kernel comes from the space's store, not from anywhere
 //   else. The kernel founds the space on it: its first commit records the
 //   kernel and the pin to it.
 // - Keeps the host's own files it serves, so a space that started once
 //   starts again offline.
-// - Answers every page load with the site's shell, the deployment's, which
-//   brings the space up from this origin's static files, and answers those
-//   files itself. Boots the kernel the space pins and hands it every other
-//   request of this origin, and the loads the shell asks to be answered with
-//   the content at their address. Each page the kernel answers with carries
+// - Boots the kernel the space pins and hands it every request of this
+//   origin, page loads included, but for the app's static files, which the
+//   kernel's page loads and this worker answers itself. Each page the kernel
+//   answers with carries
 //   the host's relay (`kernel/relay.js`); a page load the kernel answers with
 //   nothing gets one of the host's that says what the kernel answered.
 
@@ -372,34 +370,23 @@ function withRelay(page) {
     );
 }
 
-// The host's page for a page load the kernel answered with something other
-// than a page: what it answered, with the relay, so the space is still
-// reached.
+// The host's page for a page load the kernel could not answer.
 function hostPage(status) {
-    const said =
-        status === 404 ? "Nothing is installed here yet."
-        : status >= 500 ? "This space could not answer."
-        : `This space answered ${status}.`;
     return new Response(
         `<!doctype html><html><head>${RELAY}<meta charset="utf-8"><title>${status}</title>` +
         `<style>body{font:14px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;` +
-        `min-height:100vh;opacity:.7}</style></head><body><p>${said}</p></body></html>`,
+        `min-height:100vh;opacity:.7}</style></head><body><p>This space could not answer.</p></body></html>`,
         { status, headers: { "content-type": "text/html; charset=utf-8" } },
     );
 }
 
-// What the kernel answers a page load with, the content at an address, for
-// a frame: its page with the relay in it and the site's policy on it, an
-// asset as it is with the policy on it, or the host's page.
+// What the kernel answers a page load with, for a frame: its page with the
+// relay in it, or what it answered as it is, with the site's policy on it.
 async function framed(reply) {
     const type = reply.headers.get("content-type") ?? "";
     const headers = await withPolicy(new Headers(reply.headers));
-    if (/^text\/html/i.test(type) && reply.body) {
-        return new Response(withRelay(reply.body), { status: reply.status, headers });
-    }
-    if (reply.ok && reply.body) return new Response(reply.body, { status: reply.status, headers });
-    reply.body?.cancel();
-    return hostPage(reply.status);
+    const body = /^text\/html/i.test(type) && reply.body ? withRelay(reply.body) : reply.body;
+    return new Response(body, { status: reply.status, headers });
 }
 
 async function serveKernel(event) {
@@ -449,23 +436,16 @@ function cancelCall(call) {
 
 // ---- The site's pages ---------------------------------------------------
 //
-// A site's pages are the deployment's: every page load gets the site's
-// shell, the profile's or a space's, which brings up the hub or the space
-// from this origin's static files and asks the kernel through `/api/`. On a
-// space's origin, a load the shell asked to be answered with content, and
-// an asset opened as a page, are the kernel's to answer. A space's host
-// reaches the profile over a port a page of the space's origin hands up,
-// bound to that space.
+// A site's pages are its kernel's: it answers a page load with the content
+// its routes keep at the address, or with its page, which brings up the hub
+// or the space from the app's static files this worker serves, and asks the
+// kernel through `/api/`. A space's host reaches the profile over a port a
+// page of the space's origin hands up, bound to that space.
 
-const SHELL_PATH = PROFILE ? "/profile.html" : "/space.html";
-// What the shell this worker serves carries and the server's copy does not.
-const SHELL_MARK = '<meta name="tonk-shell" content="worker" />';
 // The app's static files, which the shell loads from this origin.
 const STATIC_PREFIXES = ["/guest/", "/styles-", "/images/", "/fonts/", "/tonk-code/", "/tonk-prose/", "/tonk-table/"];
 // The icons `<wa-icon>` reads, which the app ships.
 const ICON_PATH = /^\/webawesome\/icons\/[a-z0-9-]+\/[a-z0-9-]+\.svg$/;
-// An asset of a space, opened as a page.
-const ASSET_PATH = /^\/asset:[1-9A-HJ-NP-Za-km-z]+$/;
 // No document on a site's origin may use the app's passkeys.
 const NO_PASSKEYS = "publickey-credentials-get=(), publickey-credentials-create=()";
 
@@ -512,35 +492,6 @@ async function withPolicy(headers) {
     headers.set("x-content-type-options", "nosniff");
     headers.delete("content-length");
     return headers;
-}
-
-// Addresses whose next load is answered with their content, and until when.
-// A shell that lands in a frame inside a page of this origin asks for the
-// content at its address here, and loads it once more.
-const admitted = new Map();
-const ADMIT_MS = 5_000;
-
-function admit(url) {
-    const now = Date.now();
-    for (const [held, until] of admitted) if (until <= now) admitted.delete(held);
-    admitted.set(url, now + ADMIT_MS);
-}
-
-// Whether the load of `url` is one a shell asked to be answered with
-// content. Asking uses it up.
-function takeAdmission(url) {
-    const until = admitted.get(url);
-    admitted.delete(url);
-    return until !== undefined && until > Date.now();
-}
-
-async function serveShell() {
-    const response = await hostFile(new Request(new URL(SHELL_PATH, self.location.href), { cache: "no-cache" }));
-    const headers = await withPolicy(new Headers(response.headers));
-    // Marked as this worker's: the shell renders the site only in a document
-    // that carries the policy above, and reads the mark to know it does.
-    const shell = (await response.text()).replace("<head>", `<head>\n        ${SHELL_MARK}`);
-    return new Response(shell, { status: response.status, headers });
 }
 
 // ---- What the kernel asks of other kernels, and of its host --------------
@@ -795,13 +746,9 @@ async function askPersona(method, path) {
     return { status: reply.status, text: await new Blob(pieces).text() };
 }
 
-// What a site's origin answers itself, never the kernel: its shell for
-// every page load but a space's content, and the app's static files.
+// What a site's origin answers itself, never the kernel: the app's static
+// files.
 function serveSite(event, url) {
-    if (event.request.mode === "navigate") {
-        if (!PROFILE && (ASSET_PATH.test(url.pathname) || takeAdmission(url.href))) return null;
-        return serveShell();
-    }
     const shipped = STATIC_PREFIXES.some(prefix => url.pathname.startsWith(prefix)) || ICON_PATH.test(url.pathname);
     if (event.request.method === "GET" && shipped) return hostFile(event.request);
     return null;
@@ -832,13 +779,6 @@ self.addEventListener("message", event => {
     // The page of the app hands the profile one end of a port to a space's
     // host.
     else if (type === "space-port" && PROFILE) bindSpacePort(event.ports[0], event.data);
-    // A shell that loaded inside a page of this origin asks to be replaced
-    // by the content at its address: the next load of that address is the
-    // kernel's to answer, once. The profile keeps no content.
-    else if (type === "content") {
-        if (!PROFILE && typeof event.data.url === "string") admit(event.data.url);
-        event.ports[0]?.postMessage({ admitted: true });
-    }
 });
 
 self.addEventListener("fetch", event => {

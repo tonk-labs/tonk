@@ -12,8 +12,10 @@ const ORIGIN = "https://bspace.tonk.test";
 const SPACE = "did:key:zSpace";
 const KERNEL = "bafkr4ikernel";
 const SESSION = "did:key:zSession";
-// What a kernel claims of its space.
-const CLAIM = { subject: SPACE, command: "/", arguments: [], reason: "serve the space" };
+const REPRESENTATIVE = "did:key:zDevice";
+const PERSONA = "did:key:zPersona";
+// What a kernel asks its representative to delegate.
+const ACCESS = { subject: SPACE, command: "/", arguments: [], reason: "serve the space" };
 
 // Run the kernel bootloader as the worker of a space pinning `pinned`,
 // against stand-ins for a service worker's globals and for the embedder.
@@ -29,6 +31,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
   const pages = [{ postMessage: (message) => void told.push(message) }];
   const embedder = {
     timings: {},
+    receive() {},
     handle: async (method, path) => {
       handled.push(`${method} ${path}`);
       const [status, text, type = "text/plain"] =
@@ -63,8 +66,14 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
       return id;
     },
     pinned: async (subject) => kept.pins.get(subject),
-    boot: async (subject, session, claim) => {
-      booted.push({ subject, session: session.did, claim });
+    // A kernel creates a space it takes up for the first time, and says so.
+    bootSpace: async (subject, session, representative, persona, delegate, sent) => {
+      booted.push({ subject, session: session.did, representative, persona, delegate });
+      if (!holds) queueMicrotask(() => sent(new TextEncoder().encode(JSON.stringify({ ask: 1, seeded: true }))));
+      return embedder;
+    },
+    bootPersona: async (subject, session) => {
+      booted.push({ subject, session: session.did });
       return embedder;
     },
   });
@@ -93,9 +102,14 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     crypto,
     URL, Request, Response, Headers, TextEncoder, TextDecoder, Uint8Array, Promise, ReadableStream, TransformStream,
     setTimeout, queueMicrotask,
-    // The host's files this worker keeps.
+    // The host's files this worker keeps; for a space that holds its
+    // kernel, who it acts for, as its first start kept.
     caches: (() => {
-      const kept = new Map();
+      const kept = new Map(
+        holds
+          ? [[new URL("/_host/standing.json", ORIGIN).href, Response.json({ representative: REPRESENTATIVE, persona: PERSONA })]]
+          : [],
+      );
       const key = (request) => (typeof request === "string" ? request : request.url);
       const cache = {
         match: async (request) => kept.get(key(request))?.clone(),
@@ -112,12 +126,14 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
   const port = {
     postMessage: (message) => {
       asked.push(message);
-      const delegated = { space: SPACE, chains: [new ArrayBuffer(1)] };
+      const standing = { representative: REPRESENTATIVE, persona: PERSONA };
       const answer = message.delegate
-        ? { id: message.id, ...delegated }
-        : message.kernel
+        ? { id: message.id, space: SPACE, chain: new ArrayBuffer(1), ...standing }
+        : message.standing
+          ? { id: message.id, ...standing }
+          : message.kernel
           ? { id: message.id, bytes: new TextEncoder().encode(shipped[message.kernel] ?? "").buffer }
-          : { id: message.id, settled: true };
+            : { id: message.id, settled: true };
       queueMicrotask(() => port.onmessage({ data: answer }));
     },
   };
@@ -194,15 +210,22 @@ test("the relay runs before a script a page puts ahead of its head", async () =>
   );
 });
 
-test("a page load the kernel answers with no page gets the host's, with the relay", async () => {
+test("a page load is the kernel's to answer, with the site's policy on what it answers", async () => {
   const site = space();
   site.handPort();
   const response = await site.request("/", { mode: "navigate" });
   assert.equal(response.status, 404);
-  assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
-  const page = await response.text();
-  assert.match(page, /^<!doctype html><html><head><script src="\/kernel\/relay.js"><\/script>/);
-  assert.match(page, /Nothing is installed here yet/);
+  assert.equal(await response.text(), "not found", "what the kernel answered, as it is");
+  assert.match(response.headers.get("content-security-policy"), /default-src 'none'/);
+  assert.deepEqual(site.handled.slice(-1), ["GET /"]);
+});
+
+test("a page load the kernel cannot answer gets the host's page, with the relay", async () => {
+  const site = space({ pinned: "bafkr4iother", holds: KERNEL });
+  site.handPort();
+  const response = await site.request("/", { mode: "navigate" });
+  assert.equal(response.status, 502);
+  assert.match(await response.text(), /^<!doctype html><html><head><script src="\/kernel\/relay.js"><\/script>/);
 });
 
 test("a request that is not a page load is answered as the kernel answers it", async () => {
@@ -220,11 +243,11 @@ test("a space with no kernel of its own installs the one its worker names, and b
   assert.equal(response.status, 404);
   assert.deepEqual(
     site.asked.map((asked) => Object.keys(asked).filter((key) => key !== "id")),
-    [["delegate", "claim"], ["seeded", "from"], ["kernel"]],
-    "it claims the space for its session, says it holds the space, and takes its kernel",
+    [["delegate", "access"], ["kernel"], ["seeded", "from"]],
+    "it asks for the space for its session, takes its kernel, and says it created the space",
   );
   assert.equal(site.asked[0].delegate, SESSION, "the space is delegated to the key made here");
-  assert.equal(site.asked[2].kernel, KERNEL);
+  assert.equal(site.asked.find((asked) => asked.kernel)?.kernel, KERNEL);
   assert.ok(!site.fetched.some((path) => path.startsWith("/_host/kernel/")), "nothing of the kernel is fetched");
   assert.deepEqual(
     site.booted.map(({ subject, session }) => ({ subject, session })),
@@ -233,14 +256,19 @@ test("a space with no kernel of its own installs the one its worker names, and b
   assert.deepEqual(site.handled, ["GET /api/anything"], "the kernel takes its space up as it boots");
 });
 
-test("the kernel's first claim is answered with the delegation handed over with its session", async () => {
+test("the kernel's first request to its representative is answered with the delegation handed over with its session", async () => {
   const site = space();
   site.handPort();
   await site.started();
   const asked = site.asked.length;
-  const claimed = await site.booted[0].claim(CLAIM);
-  assert.equal(claimed.length, 1);
+  const chain = await site.booted[0].delegate(SESSION, ACCESS);
+  assert.equal(chain.length, 1);
   assert.equal(site.asked.length, asked, "the profile is not asked again");
+  assert.deepEqual(
+    [site.booted[0].representative, site.booted[0].persona],
+    [REPRESENTATIVE, PERSONA],
+    "the kernel acts through the representative, for the persona, the profile named",
+  );
 });
 
 test("the session's key is the one Dialog DB's credential store keeps under the profile's name", async () => {
@@ -268,11 +296,11 @@ test("a space that holds its kernel boots it from where it is kept, with no port
   );
 });
 
-test("a kernel that boots on what it kept has its claim answered by the profile once a port is up", async () => {
+test("a kernel that boots on what it kept has its request answered by the profile once a port is up", async () => {
   const site = space({ holds: KERNEL, shipped: {} });
   await site.started();
   let claimed;
-  site.booted[0].claim(CLAIM).then((chains) => (claimed = chains));
+  site.booted[0].delegate(SESSION, ACCESS).then((chain) => (claimed = chain));
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(claimed, undefined, "nothing answers before a port is up");
   site.handPort();

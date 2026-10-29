@@ -20,8 +20,8 @@ function target() {
 
 // Run the relay as the first script of a page: framed by the app's page
 // (`"app"`), by a page of the space's own origin (`"space"`), or opened on its
-// own (`"alone"`).
-function page({ framed = "app" } = {}) {
+// own (`"alone"`), on a space's origin or the profile's (`origin`).
+function page({ framed = "app", origin = "https://bspace.tonk.test" } = {}) {
   const told = [];
   const toWorker = [];
   const script = { removed: false, remove() { this.removed = true; } };
@@ -46,7 +46,7 @@ function page({ framed = "app" } = {}) {
     document,
     parent,
     navigator: { serviceWorker: worker },
-    location: { origin: "https://bspace.tonk.test" },
+    location: new URL(origin),
   }));
   return { told, toWorker, script, window, document, worker, parent };
 }
@@ -59,10 +59,11 @@ test("the relay takes its own script out of the page", () => {
 
 test("the relay says the space is here and hands the port the frame above opens to the worker", () => {
   const it = page();
+  it.document.dispatch("DOMContentLoaded", {});
   assert.deepEqual(
     it.told.map((message) => message.__tonkOrigin),
     ["shell", "need-port", "status"],
-    "it says the space is here, asks for a port, and says it is ready",
+    "it says the space is here, asks for a port, and says it is ready once the page loads",
   );
 
   let stopped = false;
@@ -92,4 +93,25 @@ test("a frame inside the space's own page leaves the port to the page around it"
   const it = page({ framed: "space" });
   assert.equal(it.window.count("message"), 0);
   assert.equal(it.worker.count("message"), 0);
+});
+
+test("a page that says when it is ready leaves it to the page", () => {
+  const it = page();
+  it.window.tonkSaysReady = true;
+  it.document.dispatch("DOMContentLoaded", {});
+  assert.deepEqual(it.told.map((message) => message.__tonkOrigin), ["shell", "need-port"]);
+});
+
+test("on the profile's origin, what the worker tells the page goes up to the app", () => {
+  const profile = page({ origin: "https://profile.tonk.test" });
+  profile.worker.dispatch("message", { data: { type: "webauthn" } });
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(profile.told.at(-1))),
+    { __tonkOrigin: "worker-message", message: { type: "webauthn" } },
+  );
+
+  const space = page();
+  const before = space.told.length;
+  space.worker.dispatch("message", { data: { type: "webauthn" } });
+  assert.equal(space.told.length, before, "a space's worker says nothing else up");
 });

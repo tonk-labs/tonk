@@ -2,10 +2,11 @@
 //
 // The space's worker puts this at the top of each page the kernel answers a
 // page load with (see `kernel_boot.js`), so it runs before anything of the
-// page's own. It does for that page what the shell does for a site: says to
-// the frame above that the space is here, hands down to the worker the port
-// the frame above opens to the person's profile, and tells the worker when the
-// page is about to go, so it saves what it holds first.
+// page's own. It says to the frame above that the site is here, hands down to
+// the worker the port the frame above opens to the person's profile, and tells
+// the worker when the page is about to go, so it saves what it holds first. On
+// the profile's origin, it passes up what the profile's worker tells the page
+// that asked it something, such as to run a passkey ceremony.
 //
 // The page's own code runs in this document too. The port is not for it:
 // this script hears the port before anything else can, and keeps it from
@@ -52,14 +53,21 @@
         if (document.visibilityState === "hidden") flush();
     });
     // The worker asks for a port as it starts, and again after every restart;
-    // it says what it is busy with while the page waits on it.
+    // it says what it is busy with while the page waits on it. Only the
+    // profile's worker says anything else: a space's page holds author code.
+    var profile = location.hostname.split(".")[0].indexOf("profile") === 0;
     sw.addEventListener("message", function (e) {
         if (e.data && e.data.type === "need-port") ask();
         else if (e.data && e.data.type === "status") {
             tell({ __tonkOrigin: "status", stage: e.data.stage }, "*");
+        } else if (profile) {
+            tell({ __tonkOrigin: "worker-message", message: e.data }, "*");
         }
     });
     sw.startMessages();
     ask();
-    tell({ __tonkOrigin: "status", stage: "ready" }, "*");
+    // A page is ready as it loads, unless it says when it is itself.
+    document.addEventListener("DOMContentLoaded", function () {
+        if (!window.tonkSaysReady) tell({ __tonkOrigin: "status", stage: "ready" }, "*");
+    });
 })();

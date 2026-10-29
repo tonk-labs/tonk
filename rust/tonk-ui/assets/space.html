@@ -445,8 +445,7 @@
                     // the first time, with the server's copy of this shell:
                     // its first start asks the person's profile which space
                     // it is. Its worker now in control, this frame goes to the
-                    // address it was asked for, which the worker answers with
-                    // its own copy of this shell.
+                    // address it was asked for, which the kernel answers.
                     if ((await KERNEL) && !servedByWorker()) {
                         // Its first start asks the person's profile which
                         // space it is, over the port this shell hands it.

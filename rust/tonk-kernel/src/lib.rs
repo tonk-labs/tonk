@@ -265,6 +265,10 @@ impl handler::Guest for Kernel {
                 let Ok(answer) = router.oneshot(request).await;
                 answer
             }
+            Routed::Visit { request, viewed } => {
+                let Ok(answer) = router.oneshot(request).await;
+                site::visited(answer, viewed)
+            }
             Routed::Store(request) => {
                 let Ok(answer) = router.oneshot(request).await;
                 site::stored(answer).await

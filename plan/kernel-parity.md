@@ -31,7 +31,7 @@ lifecycle). In the kernel build:
 | Area | Now | How |
 |---|---|---|
 | A space's delegation | works | `representative.delegate`, answered by the persona's `guest.delegate` through the hosts |
-| A space's pages | works | the host answers page loads with the site's shell, as the profile's does; the kernel answers the content its routes keep, `/api/health`, `PUT /` and `/asset:{hash}` |
+| A site's pages | works | the kernel answers every page load: with the content its routes keep at the address, an asset opened as a page, or its page, which renders the site's view with the renderer the host serves under `/guest/`; and with a page saying what it answered otherwise. The host keeps a page of its own only for a kernel that cannot answer, and the deployment's `space.html` and `profile.html` only to start a site's worker |
 | The profile reaching a space: names, copies | works | `space_reach` sends its request with `application.send`; the persona's host passes it over the port the profile's page opens; the answer comes back with `channel.receive` |
 | A space's seed and copy | works | the space's kernel asks for the seed it was made from on its first boot, and the persona's host hands along the source's snapshot for a copy; requests wait until it is created |
 | Public reads (seeds, the deployment's configuration) | works | `{ ask, read }` on the channel, answered by the host |
@@ -74,40 +74,41 @@ kernel, which keeps the records:
    by whether the address is registered), and takes the custody hand-off the
    page posts (`{ type: "custody", key, kek, request }`).
 3. The host does the custody work with `tonk-identity`: for a new account,
-   it makes the account's secret and writes its custody record at the access
-   service; for a sign-in, it reads and opens it. It drops the PRF.
-4. The host calls the lifecycle's `merge(provisional, permanent)`. The
-   kernel has the account delegate to the representative (the link), records
-   the root, names the account, and enrolls it, all with the lent
-   `persona-authority`, then returns, and the account's key is gone.
+   it makes the account's secret, writes its custody record and enrolls the
+   account at the access service; for a sign-in, it reads and opens the
+   record. It drops the PRF.
+4. The host calls the lifecycle's `merge(provisional, permanent)`. With the
+   lent persona-authorities, the kernel has the account delegate to the
+   representative (the link), reseals the spaces' keys from the provisional
+   persona to the permanent one, makes the permanent one the profile's
+   upstream, and names the account, then returns, and the account's key is
+   gone.
+
+Settled:
+
+- `merge(id: string)` stays: the kernel passes the email, and the host looks
+  it up to know whether this is a sign-up or a sign-in, as it does today.
+  The passkey's name and label are the host's to choose.
+- The host writes the custody record and enrolls the account at the access
+  service, as the one that holds the passkey. The lifecycle's `merge` lends
+  both persona-authorities, so the kernel reseals the spaces' keys to the
+  permanent persona and makes it the profile's upstream.
 
 Open:
 
-- `merge(id: string)` is too thin for the panel: making the passkey needs
-  the name and the label it shows (the email and the display name), which
-  is the `recovery` record `add-recovery` takes. Proposed:
-  `merge: func(recovery: recovery)`. The host knows the rest: the device's
-  name, the deployment's service, and, by looking the address up, whether
-  this is a sign-up or a sign-in.
-- The lifecycle's `merge` carries nothing the host signed with the passkey
-  (the custody consent, the cell's write). So either the host enrolls the
-  account at the access service itself, as the one that holds the passkey,
-  or the lifecycle's `merge` takes that material too. Proposed: the host
-  enrolls, and the kernel learns the customer from the access service.
 - The old worker switched to a profile of the account's own
   (`profiles::for_account`, then a reload). On the world the provisional
   persona merges into the permanent one instead: the profile goes on.
-- `persona-authority` has no `sign`. Enrolling signs an invocation as the
-  account today; it would be signed by the session, under the account's
-  delegation, or `sign` comes back for the lent authority.
 - Which of add-a-passkey, approve-a-device and delete-the-account become
   `authorize` with a `context` the kernel reads back.
 
 ## Decisions
 
 1. **Pages.** No notices so far: the hub opens a space from the creation's
-   receipt, and the e2e helper does the same. The host serves each site's
-   shell, so a space renders as before.
+   receipt, and the e2e helper does the same. The kernel answers a site's
+   page loads, its 404s included; the host serves only the renderer's
+   bundles. Later, the renderer (`tonk-display`) becomes a library the host
+   installs into a space, the profile included.
 2. **The access service and other workers.** Through the channel
    (`application.send`, `channel.receive`): the persona's host delivers the
    invocations the kernel signs, and reads what anyone may read; it passes a

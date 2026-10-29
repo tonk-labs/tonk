@@ -1,7 +1,8 @@
 //! What a kernel's origin answers beside the worker's API: how the kernel
 //! says it is; the space's assets, which a page of the space stores with
-//! `PUT /` and reads at `/asset:{hash}`, whole or in part; and at any other
-//! address, the content the space's routes keep there. A persona also
+//! `PUT /` and reads at `/asset:{hash}`, whole or in part; at any other
+//! address, the content the space's routes keep there; and a page load of an
+//! address they keep none at, with the site's page. A persona also
 //! answers its host, at `/_kernel/seed/{space}`, what a space it created is to
 //! be created from, and takes `POST /_kernel/seed/{space}/settled` once the
 //! space's own kernel did. A space's kernel answers `/_kernel/snapshot` with
@@ -30,6 +31,13 @@ pub enum Routed {
     Store(Request<Body>),
     /// To the worker, whose answer is the answer.
     Pass(Request<Body>),
+    /// A page load, to the worker: its answer if it has what is asked for,
+    /// otherwise the site's page where `viewed`, or a page saying what it
+    /// answered.
+    Visit {
+        request: Request<Body>,
+        viewed: bool,
+    },
     /// What the space, by its DID, is to be created from.
     Seed(String),
     /// The space, by its DID, was created from its seed.
@@ -50,7 +58,12 @@ pub fn route(request: Request<Body>, site: &Site) -> Routed {
     if path == "/api/health" && reads {
         return Routed::Answer(health(site));
     }
+    let visits = method == Method::GET && !path.starts_with("/api/") && accepts_page(&request);
     let Some(space) = &site.space else {
+        // The profile keeps no content: every page load is its page.
+        if visits {
+            return Routed::Answer(page());
+        }
         if let Some(rest) = path.strip_prefix("/_kernel/seed/") {
             match (rest.strip_suffix("/settled"), method) {
                 (Some(space), Method::POST) => return Routed::Settle(space.to_owned()),
@@ -71,13 +84,75 @@ pub fn route(request: Request<Body>, site: &Site) -> Routed {
         && reads
     {
         let target = format!("/api/repository/{space}/branch/main/blob/asset:{hash}");
-        return Routed::Pass(retarget(request, method, &target, &READ_HEADERS));
+        let request = retarget(request, method, &target, &READ_HEADERS);
+        return reached(request, visits, false);
     }
     if reads && !path.starts_with("/api/") {
         let target = format!("/api/repository/{space}/branch/main/http{path}");
-        return Routed::Pass(retarget(request, method, &target, &[]));
+        let request = retarget(request, method, &target, &[]);
+        return reached(request, visits, true);
     }
     Routed::Pass(request)
+}
+
+/// `request` to the worker, as a page load where `visits`.
+fn reached(request: Request<Body>, visits: bool, viewed: bool) -> Routed {
+    if visits {
+        Routed::Visit { request, viewed }
+    } else {
+        Routed::Pass(request)
+    }
+}
+
+/// Whether `request` asks for a page, as a page load does.
+fn accepts_page(request: &Request<Body>) -> bool {
+    request
+        .headers()
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/html"))
+}
+
+/// The site's page, which renders its view.
+pub fn page() -> Response<Body> {
+    html(StatusCode::OK, PAGE.to_owned())
+}
+
+const PAGE: &str = include_str!("../assets/page.html");
+
+/// What a page load is answered with, from the worker's `reply`: the reply,
+/// if it has what was asked for; the site's page, where `viewed` and the
+/// worker keeps nothing there; or else a page that says what it answered.
+pub fn visited(reply: Response<Body>, viewed: bool) -> Response<Body> {
+    let status = reply.status();
+    if status.is_success() {
+        return reply;
+    }
+    if viewed && status == StatusCode::NOT_FOUND {
+        return page();
+    }
+    let said = match status {
+        StatusCode::NOT_FOUND => "Nothing is here.".to_owned(),
+        status if status.is_server_error() => "This space could not answer.".to_owned(),
+        status => format!("This space answered {}.", status.as_u16()),
+    };
+    html(
+        status,
+        format!(
+            r#"<!doctype html><html><head><meta charset="utf-8"><title>{code}</title><style>body{{font:14px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;opacity:.7}}</style></head><body><p>{said}</p></body></html>"#,
+            code = status.as_u16(),
+        ),
+    )
+}
+
+fn html(status: StatusCode, body: String) -> Response<Body> {
+    let mut response = Response::new(Body::from(body));
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    response
 }
 
 /// The hash `path` names an asset by, `/asset:{hash}` in base58.
