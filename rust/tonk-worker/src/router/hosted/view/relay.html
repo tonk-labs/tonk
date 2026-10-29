@@ -145,7 +145,7 @@
         // Load the guest inline, not as a frame of our origin: Claude does
         // not frame origins outside its own list, while fetching the
         // document only needs a connect domain.
-        const guestPage = await fetch(origin + '/worker-guest.html', {
+        const guestPage = await fetch(origin + '/worker-guest', {
           credentials: 'omit',
           signal: controller.signal,
         });
@@ -334,6 +334,19 @@
           send({ __tonkRuntime: 'inject-code', code: pack.code });
         if (m?.__tonkRuntime === 'error') showError('Tonk runtime could not load.');
       });
+      // The writer pulls before every read, and its subscriptions answer
+      // again whenever its branch moves, so a cheap read every few seconds
+      // brings other writers' changes (a CLI, another chat) into the view.
+      // Only while it is shown; a view coming back reads at once.
+      const FOLLOW_MS = 10000;
+      const follow = () => {
+        if (document.hidden || !route?.site || !ticket) return;
+        request(base() + '/sync/status')
+          .then((response) => response.body?.cancel())
+          .catch(() => {});
+      };
+      setInterval(follow, FOLLOW_MS);
+      document.addEventListener('visibilitychange', follow);
       // Answer the host first: it waits on this handshake to show the app,
       // and the runtime is a large download that may be slow or blocked.
       const initialized = rpc('ui/initialize', {
