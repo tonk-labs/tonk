@@ -8,6 +8,7 @@
 //! provider. The guest's requests reach it through [`ViewPeer::fetch`],
 //! the same conversion the service worker's fetch handler uses.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use dialog_credentials::Ed25519Signer;
@@ -19,8 +20,11 @@ use js_sys::Promise;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
-use tonk_worker::HostedPeer;
 use tonk_worker::axum::{RequestConversion, ResponseConversion};
+use tonk_worker::{ClientId, HostedPeer};
+
+/// How often a watch of the space that ended is begun again.
+const REWATCH: web_time::Duration = web_time::Duration::from_secs(10);
 
 /// A view's key: generated in this worker, never exported.
 #[wasm_bindgen]
@@ -49,6 +53,11 @@ impl ViewKey {
 #[wasm_bindgen]
 pub struct ViewPeer {
     peer: Rc<HostedPeer>,
+    /// The one guest document this peer serves, named as the service
+    /// worker names a client, so `/site` can bind it.
+    client: ClientId,
+    /// Set once the view is gone, which ends the peer's watches and loops.
+    stopped: Rc<Cell<bool>>,
 }
 
 #[wasm_bindgen]
@@ -76,7 +85,7 @@ impl ViewPeer {
         let space: Did = space.parse().map_err(|e| error(&e))?;
         let remote = url::Url::parse(&remote).map_err(|e| error(&e))?;
         let peer = HostedPeer::open_as(
-            Directory::At(directory),
+            Directory::At(directory.clone()),
             key.signer.clone(),
             &proofs,
             HeldCaches::new(),
@@ -86,6 +95,8 @@ impl ViewPeer {
         peer.mount(&space, &remote).await.map_err(|e| error(&e))?;
         Ok(Self {
             peer: Rc::new(peer),
+            client: ClientId(directory),
+            stopped: Rc::new(Cell::new(false)),
         })
     }
 
@@ -93,17 +104,34 @@ impl ViewPeer {
     /// answers one. A subscription's response stays a stream.
     pub fn fetch(&self, request: web_sys::Request) -> Promise {
         let peer = self.peer.clone();
+        let client = self.client.clone();
         future_to_promise(async move {
-            let request = RequestConversion::from(request)
+            let mut request = RequestConversion::from(request)
                 .into_axum_request()
                 .await
                 .map_err(JsValue::from)?;
+            request.extensions_mut().insert(client);
             let method = request.method().clone();
             let response = peer.call(request).await;
             web_sys::Response::try_from(ResponseConversion::new(method, response))
                 .map(JsValue::from)
                 .map_err(JsValue::from)
         })
+    }
+
+    /// Keep the space live from here on: follow it through the
+    /// provider's `live.rs`, pull what lands, repaint the views over it,
+    /// and push what the view commits. Called once the first pull has
+    /// opened the space, since only an open space is watched.
+    pub fn follow(&self) {
+        let stopped = self.stopped.clone();
+        self.peer.follow(REWATCH, Rc::new(move || stopped.get()));
+    }
+
+    /// Stop following the space and release the peer.
+    pub async fn close(&self) {
+        self.stopped.set(true);
+        self.peer.shut_down().await;
     }
 
     /// The DID the peer acts as.

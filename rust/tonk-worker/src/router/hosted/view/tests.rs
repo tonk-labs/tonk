@@ -181,6 +181,20 @@ async fn opening_a_space_names_the_relay_and_the_remote() {
     assert_eq!(tools()[1]["_meta"]["ui"]["visibility"][0], "app");
 }
 
+#[test]
+fn the_relay_is_filled_with_the_origin_it_was_reached_on() {
+    let read = read_resource(RELAY_URI, "https://tonk.example/").unwrap();
+    let text = read["contents"][0]["text"].as_str().unwrap();
+    assert!(text.contains("const origin = \"https://tonk.example\""));
+    assert!(!text.contains("__TONK_MCP_ORIGIN__"));
+    assert_eq!(
+        read["contents"][0]["_meta"]["ui"]["csp"]["connectDomains"][0],
+        "https://tonk.example"
+    );
+    assert_eq!(resources()[0]["uri"], RELAY_URI);
+    assert!(read_resource("ui://tonk/other.html", ORIGIN).is_none());
+}
+
 #[cfg(all(feature = "integration-tests", not(target_arch = "wasm32")))]
 mod against_a_service {
     //! A view's peer, acting as the view's own key with the delegations

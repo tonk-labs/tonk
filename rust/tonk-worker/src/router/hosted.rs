@@ -128,6 +128,25 @@ impl HostedPeer {
         Ok(())
     }
 
+    /// Keep the mounted spaces live until `stopped`, as the service worker
+    /// keeps its open spaces: each space's upstream is watched (through
+    /// the provider's `live.rs`), a head it delivers is pulled and the
+    /// views over it repainted, and what this peer commits is pushed.
+    ///
+    /// A watch that ends is begun again on the next of the ticks every
+    /// `rewatch`; the ticks pull nothing themselves.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub fn follow(&self, rewatch: web_time::Duration, stopped: std::rc::Rc<dyn Fn() -> bool>) {
+        wasm_bindgen_futures::spawn_local(super::push_loops(self.state.clone(), stopped.clone()));
+        let state = self.state.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            while !stopped() {
+                super::watch_open_repos(&state).await;
+                let _ = crate::sleep(rewatch).await;
+            }
+        });
+    }
+
     /// The DID this peer signs as.
     pub async fn did(&self) -> Did {
         self.state.read().await.profile.did()

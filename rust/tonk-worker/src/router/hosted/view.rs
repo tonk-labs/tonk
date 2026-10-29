@@ -121,15 +121,52 @@ pub fn tools() -> Vec<Value> {
     ]
 }
 
+/// The MIME type MCP Apps hosts render.
+const RELAY_MIME: &str = "text/html;profile=mcp-app";
+
+/// The relay page, with its origin left to fill in.
+const RELAY: &str = include_str!("view/relay.html");
+
 /// Resources served by `resources/list`.
 pub fn resources() -> Vec<Value> {
-    Vec::new()
+    vec![json!({
+        "uri": RELAY_URI,
+        "name": "tonk-space-view",
+        "title": "Tonk space",
+        "mimeType": RELAY_MIME,
+    })]
 }
 
 /// The `resources/read` result for `uri`, or `None` when there is no such
-/// resource.
-pub fn read_resource(_uri: &str, _origin: &str) -> Option<Value> {
-    None
+/// resource: the relay page for `origin`, the provider the host reached,
+/// which the page loads the view peer and the guest runtime from and
+/// whose `/ucan/` the peer syncs with.
+pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
+    if uri != RELAY_URI {
+        return None;
+    }
+    let origin = origin.trim_end_matches('/');
+    let html = RELAY.replace("__TONK_MCP_ORIGIN__", &json!(origin).to_string());
+    Some(json!({
+        "contents": [{
+            "uri": RELAY_URI,
+            "mimeType": RELAY_MIME,
+            "text": html,
+            "_meta": {
+                "ui": {
+                    "csp": {
+                        "connectDomains": [origin],
+                        "resourceDomains": [origin],
+                    },
+                    "prefersBorder": true,
+                },
+                "openai/widgetCSP": {
+                    "connect_domains": [origin],
+                    "resource_domains": [origin],
+                },
+            },
+        }],
+    }))
 }
 
 /// The result of the view tool `name`, or `None` when it is not one.

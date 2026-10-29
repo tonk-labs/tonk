@@ -329,6 +329,37 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+      # What the hosted agent's inline views load from this origin: the
+      # view peer (rust/tonk-view-peer) a view runs in a Web Worker, and
+      # the guest runtime and document its sandboxed page renders with.
+      # MCP hosts load them from their own view origins, so they carry
+      # CORS. Served from a copy of the app's assets, which the preview's
+      # config is pointed at.
+      - name: Build inline view assets
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          config="${{ steps.access-database.outputs.config }}"
+          assets="$PWD/preview-assets"
+          rm -rf "$assets"
+          cp -rL result/tonk-ui "$assets"
+          chmod -R u+w "$assets"
+          cp mcp/hosted/public/space-runtime.json mcp/hosted/public/worker-guest.html "$assets/"
+          nix --accept-flake-config develop .#ci --command bash -c '
+            set -euo pipefail
+            cd rust/tonk-view-peer
+            cargo build --release --target wasm32-unknown-unknown
+            "$WASM_BINDGEN_BIN" --target web --out-dir "$0/view-peer" \
+              target/wasm32-unknown-unknown/release/tonk_view_peer.wasm
+          ' "$assets"
+          {
+            for path in /space-runtime.json /worker-guest.html /worker-guest /view-peer/*; do
+              printf '\n%s\n  Access-Control-Allow-Origin: *\n' "$path"
+            done
+          } >> "$assets/_headers"
+          sed -i "s#^directory = \"./result/tonk-ui\"#directory = \"$assets\"#" "$config"
+          grep -Fq "directory = \"$assets\"" "$config"
+
       - name: Deploy access preview
         if: github.event_name == 'pull_request'
         id: deploy-preview
