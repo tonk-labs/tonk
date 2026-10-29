@@ -23,7 +23,12 @@ use dialog_ucan_core::{Container, DelegationBuilder, DelegationChain, Tag};
 use dialog_varsig::Did;
 use serde_json::{Value, json};
 
-use super::mcp::{SpaceAccess, Verified};
+use axum::body::Body;
+use axum::http::{Method, Request, Response};
+use http_body_util::BodyExt as _;
+
+use super::access::reaches;
+use super::mcp::{ACCESS_ROUTE, AgentAccess, SpaceAccess, Verified, Writers, mount_address};
 
 /// The key view tickets are bound under, derived from the host's secret
 /// under its own context, apart from the session id MAC. Unused by the
@@ -169,13 +174,42 @@ pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
     }))
 }
 
+/// The agent space writer's route answering the grants in force for one
+/// space (`?space=<did>`), as [`chains_answer`] encodes them.
+pub const CHAINS_ROUTE: &str = "/api/access/chains";
+
+/// The [`CHAINS_ROUTE`] answer for `chains`: `{"chains": [...]}`, each a
+/// base64url container.
+pub fn chains_answer(chains: &[DelegationChain]) -> Result<Value, String> {
+    Ok(json!({ "chains": encode(chains)? }))
+}
+
+fn encode(chains: &[DelegationChain]) -> Result<Vec<String>, String> {
+    chains
+        .iter()
+        .map(|chain| {
+            let encoded = Container::from(chain)
+                .encode(Tag::Base64Url)
+                .map_err(|error| error.to_string())?;
+            String::from_utf8(encoded).map_err(|error| error.to_string())
+        })
+        .collect()
+}
+
 /// The result of the view tool `name`, or `None` when it is not one.
-pub async fn call(
+///
+/// What a space is open to is the agent space's to say, so both tools ask
+/// its writer through `writers`: [`ACCESS_ROUTE`] for whether the space
+/// may be read or edited, and [`CHAINS_ROUTE`] for the grants a view's
+/// delegation of a granted space extends.
+#[allow(clippy::too_many_arguments)]
+pub async fn call<W: Writers>(
     name: &str,
     arguments: &Value,
     verified: &Verified,
-    _bearer: &str,
-    _mcp_session: &str,
+    writers: &W,
+    bearer: &str,
+    mcp_session: &str,
     origin: &str,
     _tickets: &TicketKey,
 ) -> Option<Value> {
@@ -190,8 +224,24 @@ pub async fn call(
             ));
         }
     };
-    let Some(access) = verified.spaces().get(&space) else {
-        return Some(error("This connection does not reach that space."));
+    let agent = verified.agent().clone();
+    let ask = |request: Request<Body>| writers.call(verified, bearer, mcp_session, &agent, request);
+    let access = if space == agent {
+        SpaceAccess {
+            agent: true,
+            read: true,
+            write: true,
+            ..SpaceAccess::default()
+        }
+    } else {
+        let access: AgentAccess = match answer(ask(get(ACCESS_ROUTE)).await).await {
+            Ok(access) => access,
+            Err(message) => return Some(error(&message)),
+        };
+        match access.get(&space) {
+            Some(access) => access.clone(),
+            None => return Some(error("This connection does not reach that space.")),
+        }
     };
     if !access.agent && !access.read {
         return Some(error(
@@ -204,7 +254,10 @@ pub async fn call(
             "This connection may only read that space, so its view cannot edit.",
         ));
     }
-    let remote = format!("{}/ucan/", origin.trim_end_matches('/'));
+    let remote = mount_address(
+        access.address.as_deref(),
+        &format!("{}/ucan/", origin.trim_end_matches('/')),
+    );
     if name == OPEN {
         let path = arguments["path"].as_str().unwrap_or("/");
         if !path.starts_with('/')
@@ -231,8 +284,45 @@ pub async fn call(
         Some(Ok(audience)) => audience,
         _ => return Some(error("Provide the view key's did:key.")),
     };
+    let grants = if access.agent {
+        Vec::new()
+    } else {
+        let uri = format!("{CHAINS_ROUTE}?space={space}");
+        let chains: Value = match answer(ask(get(&uri)).await).await {
+            Ok(chains) => chains,
+            Err(message) => return Some(error(&message)),
+        };
+        let decoded = chains["chains"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|encoded| {
+                let container = Container::decode(encoded.as_bytes()).map_err(|e| e.to_string())?;
+                DelegationChain::try_from(container).map_err(|e| e.to_string())
+            })
+            .collect::<Result<Vec<_>, String>>();
+        match decoded {
+            Ok(grants) => grants,
+            Err(message) => {
+                return Some(error(&format!(
+                    "The agent space answered an unreadable grant: {message}"
+                )));
+            }
+        }
+    };
     let expires = Timestamp::now().to_unix() + ACCESS_LIFETIME;
-    match delegate(verified, &space, access, &audience, edit, expires).await {
+    match delegate(
+        verified,
+        &space,
+        access.agent,
+        &grants,
+        &audience,
+        edit,
+        expires,
+    )
+    .await
+    {
         Ok(chains) => Some(json!({
             "content": [{ "type": "text", "text": "Delegated." }],
             "structuredContent": {
@@ -249,18 +339,48 @@ pub async fn call(
     }
 }
 
+fn get(uri: &str) -> Request<Body> {
+    Request::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .body(Body::empty())
+        .expect("a static request")
+}
+
+/// The JSON a writer answered, or why there is none.
+async fn answer<T: serde::de::DeserializeOwned>(response: Response<Body>) -> Result<T, String> {
+    let status = response.status();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .map(|body| body.to_bytes())
+        .unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!(
+            "Could not read this agent's grants from its own space ({status}): {}. Try again; \
+             if it persists, ask the user to reconnect.",
+            String::from_utf8_lossy(&body)
+        ));
+    }
+    serde_json::from_slice(&body)
+        .map_err(|error| format!("The agent space answered unreadable grants: {error}"))
+}
+
 /// The session's delegations of `space` to `audience`, each a chain from
 /// the space to the audience, encoded as base64url containers.
 ///
-/// For a granted space: each grant in force that reaches what the view
-/// may do, extended by the powerline and a last hop from the session to
-/// the audience. For the agent space: the powerline and that hop. The last
+/// For a granted space: each of `grants` (the agent space's grants in
+/// force for it, `space -> ... -> agent`) that reaches what the view may
+/// do, extended by the powerline and a last hop from the session to the
+/// audience. For the agent space: the powerline and that hop. The last
 /// hop names the space and, for a read-only view, narrows the command to
 /// `/use/get`, so the view can sync and read and never publish.
 async fn delegate(
     verified: &Verified,
     space: &Did,
-    access: &SpaceAccess,
+    agent: bool,
+    grants: &[DelegationChain],
     audience: &Did,
     edit: bool,
     expires: u64,
@@ -271,11 +391,11 @@ async fn delegate(
         .map_err(|error| format!("bad session key: {error}"))?;
     let powerline = token.powerline();
     let mut bases = Vec::new();
-    if access.agent {
+    if agent {
         let command = if edit { vec!["use".into()] } else { read() };
         bases.push((command, powerline.clone()));
     } else {
-        for grant in &access.grants {
+        for grant in grants {
             let command = command_of(grant);
             let command = match (edit, reaches(&command, "get")) {
                 (true, _) => command,
@@ -309,13 +429,9 @@ async fn delegate(
             .try_build()
             .await
             .map_err(|error| format!("could not sign the view's delegation: {error}"))?;
-        let chain = base.push(leaf).map_err(|error| error.to_string())?;
-        let encoded = Container::from(&chain)
-            .encode(Tag::Base64Url)
-            .map_err(|error| error.to_string())?;
-        chains.push(String::from_utf8(encoded).map_err(|error| error.to_string())?);
+        chains.push(base.push(leaf).map_err(|error| error.to_string())?);
     }
-    Ok(chains)
+    encode(&chains)
 }
 
 fn read() -> Vec<String> {
@@ -330,14 +446,6 @@ fn command_of(chain: &DelegationChain) -> Vec<String> {
         .filter(|segment| !segment.is_empty())
         .map(str::to_owned)
         .collect()
-}
-
-/// Whether `command` covers some `/use/{verb}/...` invocation.
-fn reaches(command: &[String], verb: &str) -> bool {
-    command
-        .iter()
-        .zip(["use", verb])
-        .all(|(segment, wanted)| segment == wanted)
 }
 
 fn error(message: &str) -> Value {

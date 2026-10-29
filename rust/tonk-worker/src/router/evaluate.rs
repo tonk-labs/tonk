@@ -769,12 +769,20 @@ async fn evaluate_on_branch_with<'a>(
         let eval_ms = t_eval.elapsed().as_millis();
         // Post-evaluation matches: the txn's overlay already reflects every
         // mutation and induce-pass derivation, so this is the same answer a
-        // post-commit branch query would give.
+        // post-commit branch query would give. A document the dry-run arm
+        // below answers commits nothing, and answers its matches before
+        // for after, so they are not computed a second time.
         let t_matches = web_time::Instant::now();
-        let matches_after = evaluated
-            .matches_after(&tonk_state.operator)
-            .await
-            .map_err(map_evaluate_error)?;
+        let answered_as_read = mode == EvaluationMode::Interactive
+            && !(query.transact && evaluated.analysis.analysis.has_statements());
+        let matches_after = if answered_as_read {
+            Vec::new()
+        } else {
+            evaluated
+                .matches_after(&tonk_state.operator)
+                .await
+                .map_err(map_evaluate_error)?
+        };
         let matches_ms = t_matches.elapsed().as_millis();
         Ok::<_, TonkWorkerError>((
             evaluated,
