@@ -5748,7 +5748,7 @@ element!: &account-settings
         if (!rows.length) {
           const empty = document.createElement('p');
           empty.className = 'expl';
-          empty.textContent = 'you have no spaces yet.';
+          empty.textContent = 'there are no spaces to choose from.';
           list.append(empty);
         }
         for (const row of rows) {
