@@ -297,9 +297,13 @@ Remaining risk:
   stage 3b retry rule.
 - Contexts are per-origin watermarks, and every MCP reconnect mints an origin, so
   a cached context grows with the space's writer history while the cache count
-  stays at 2048. Measured (below): past a few MiB once the cache is full, so
-  #706 is a blocker for long-lived writers on spaces past a few thousand
-  origins, not for the demo.
+  stays at 2048. Measured (below): the 8 MiB budget holds up to about 2k
+  origins in a space's history, and a full cache adds about 1.7 MiB per 1000
+  origins beyond that. One MCP reconnect is one origin, so 2k origins is about
+  2k reconnects per space over its whole life. A client that reconnects often
+  (every tab reload, every chat) gets there in weeks, and every writer of that
+  space gives up the difference from its query working set. #706 does not
+  block the demo, but it blocks long-lived writers past that point.
 
 #### Entry caches on a space with many origins
 
@@ -335,9 +339,11 @@ What the numbers say:
   rekey.
 - **Rules and plans are keyed by content**, so origins do not grow them; not
   measured here.
-- **The node cache default is 128 MiB** (`NODE_CACHE_BUDGET`), and it filled to
-  that in every run. The space writer must set `HeldCaches::with_budget`; the
-  default alone exceeds the Durable Object.
+- **The node cache fills to whatever budget it is given.** dialog's default
+  is 128 MiB, and the harness filled it on every run. The space writer already
+  budgets it to 24 MiB (`NODE_CACHE_BUDGET` in `router/hosted/writer.rs`), so
+  only a path that opens caches without that budget would exceed the Durable
+  Object.
 
 For the budget: keep 8 MiB for entry caches while a space has under about 2k
 origins. Above that, until #706 lets the context cache be sized, the recycle at
