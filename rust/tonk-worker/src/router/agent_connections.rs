@@ -635,9 +635,9 @@ pub async fn list(
 // The ordinary invitation publisher requires `/` over the space. A member
 // holding `/use` can withdraw their own issued leaf without gaining that right:
 // sign as its issuer, or delegate the account's withdrawal of its witnessed path.
-async fn publish_target(
+pub(super) async fn publish_target(
     tonk: &TonkState,
-    group: &PublicGroup,
+    remote: &url::Url,
     path: &DelegationChain,
     target: &ipld_core::cid::Cid,
 ) -> Result<tonk_account::customer::RevokeReceipt, TonkWorkerError> {
@@ -664,8 +664,7 @@ async fn publish_target(
     tonk_identity::revocation::verify(&artifact)
         .await
         .map_err(failure)?;
-    let response =
-        super::http::post_cbor(&group.remote.parse().map_err(failure)?, &artifact).await?;
+    let response = super::http::post_cbor(remote, &artifact).await?;
     let receipt: tonk_account::customer::RevokeReceipt =
         serde_json::from_slice(&response.body).map_err(failure)?;
     let expected = tonk_identity::revocation::verify(&artifact)
@@ -706,7 +705,10 @@ pub async fn revoke(
     let result = revoke_group(&tonk, &group, |chain, cid| {
         let tonk = &*tonk;
         let group = &group;
-        async move { publish_target(tonk, group, &chain, &cid).await }
+        async move {
+            let remote = group.remote.parse().map_err(failure)?;
+            publish_target(tonk, &remote, &chain, &cid).await
+        }
     })
     .await?;
     Ok(Json(result))
