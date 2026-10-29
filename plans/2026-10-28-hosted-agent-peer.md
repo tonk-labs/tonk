@@ -288,7 +288,10 @@ sequenceDiagram
   fragment secrets, no sealing to an x25519 key (that works too, but delegating
   to the frame's own key moves nothing secret at all).
 - **Minted per load.** A reopened conversation reloads the view, which asks again
-  for a fresh frame key.
+  for a fresh frame key. The probe shows the view origin is stable per surface,
+  so one stored key per surface would also work, but that key is shared by every
+  conversation and space on the surface, so each delegation to it reaches all of
+  them. Keep per-load keys unless re-delegation cost shows up.
 
 ### Route A: framed page with its service worker
 
@@ -559,25 +562,31 @@ Both
   not queued behind the model;
 - for the last resort only: a 20 s tool call survives.
 
-**Probe results so far** (probe at `sw-probe.irakli-1ed.workers.dev`, raw reports
-under `/reports`):
+**Probe results** (2026-10-29, custom connector, probe at
+`sw-probe.irakli-1ed.workers.dev`, raw reports under `/reports`):
 
-- Claude web, custom connector: route A is out. The host returns the approved
-  CSP with `frameDomains: []`, so `frame-src` blocks the provider origin.
-- Claude web: route B passes every check. The view runs at a stable origin per
-  server, `https://{hash}.claudemcpcontent.com`, with sandbox
-  `allow-scripts allow-same-origin allow-forms`. IndexedDB and localStorage
-  work. A blob Web Worker is a secure context, makes a non-extractable Ed25519
-  key, and reaches the provider over `fetch` and `wss` (`connectDomains` is
-  honoured). View-initiated tool calls work, about 480 ms each.
-- Since the view origin is stable, the relay can keep one key per server in
-  IndexedDB instead of minting a key per load, so `tonk_view_access` does not
-  have to delegate on every render.
-- Claude desktop and ChatGPT: pending.
+| Check | Claude web | Claude desktop | ChatGPT web |
+| --- | --- | --- | --- |
+| `frameDomains` honoured | no (`[]`, `frame-src` blocked) | no | yes |
+| Route A frame: real origin, SW controls page, IndexedDB key, `fetch` + WebSocket | not reached | not reached | pass (SW partitioned under `chatgpt.com`) |
+| Route A `<video>` through SW, 206 + seek | not reached | not reached | pass |
+| Route B blob Web Worker, secure context, non-extractable Ed25519 | pass | pass | pass |
+| `fetch` + `wss` to provider (`connectDomains`) | pass | pass | pass |
+| View-initiated app-only tool calls | pass, ~450 ms, no prompt | pass, ~450 ms | pass, ~690 ms |
 
-Unless desktop or ChatGPT honour `frameDomains`, route B is the route. That
-drops video seeking through a service worker, so M7's video check needs another
-way to serve ranged assets to the view, or is dropped.
+- Route B is the only route that covers Claude today; route A works only in
+  ChatGPT. Unknown whether reviewed or directory connectors get `frameDomains`.
+- The view origin is real and stable per surface (`{hash}.claudemcpcontent.com`,
+  a different hash on web and desktop), with working IndexedDB. The relay can
+  keep one key per surface instead of minting one per load (see "Minted per load").
+- No approval prompt for view-initiated calls in Claude, so `tonk_view_access`
+  does not nag.
+- Not covered yet: the 20 s tool call, key persistence across reloads, VS Code,
+  Goose, mobile and ChatGPT desktop.
+
+Build route B first. Route A is a ChatGPT-only extra, and it is the only route
+that plays and seeks video through a service worker, so M7's video check
+applies to ChatGPT only unless route B finds another way to serve ranged assets.
 
 **Then:**
 
