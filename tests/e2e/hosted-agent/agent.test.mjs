@@ -52,10 +52,21 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
     headed: !!process.env.TONK_E2E_HEADED,
     trace: process.env.TONK_E2E_TRACE,
   });
-  let failed = true;
+  // Each step needs the one before it, so the first failure skips the rest
+  // rather than burying its cause under theirs.
+  let failed = false;
+  const step = (name, run) =>
+    t.test(name, { skip: failed && 'an earlier step failed' }, async () => {
+      try {
+        await run();
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
+    });
   const sessions = [];
   try {
-    await t.test('/mcp refuses a request without a valid token', async () => {
+    await step('/mcp refuses a request without a valid token', async () => {
       for (const authorization of [undefined, 'Bearer not-a-token']) {
         const response = await fetch(endpoint, {
           method: 'POST',
@@ -76,7 +87,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
 
     // Subjects by name, of the spaces the person grants.
     let granted;
-    await t.test('a fresh person signs up, confirms their email and makes two spaces', async () => {
+    await step('a fresh person signs up, confirms their email and makes two spaces', async () => {
       const mail = inbox({
         run,
         resendKey: process.env.TONK_E2E_RESEND_API_KEY,
@@ -89,7 +100,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
     });
 
     let token;
-    await t.test('OAuth runs to a token, approved on /settings/agent', async () => {
+    await step('OAuth runs to a token, approved on /settings/agent', async () => {
       let authorizationUrl;
       const auth = provider({
         redirectUrl: callback.url,
@@ -136,7 +147,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
     // The agent sees exactly the spaces it was granted, and each allows
     // what it was granted.
     const spaces = {};
-    await t.test('the agent lists its grants, reads both and writes only one', async () => {
+    await step('the agent lists its grants, reads both and writes only one', async () => {
       spaces.writable = granted[writableName];
       spaces.readable = granted[readableName];
       const client = await connect();
@@ -162,7 +173,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
     });
 
     const labels = [];
-    await t.test('concurrent writes from two sessions on one token all land', async () => {
+    await step('concurrent writes from two sessions on one token all land', async () => {
       const [first] = sessions;
       const second = await connect();
       const writes = [first, second].flatMap((client, session) =>
@@ -175,7 +186,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       await Promise.all(writes);
     });
 
-    await t.test('a fresh session reads every write back (dialog-db#705)', async () => {
+    await step('a fresh session reads every write back (dialog-db#705)', async () => {
       // A new MCP session is a new space writer: nothing it reads can come
       // from the memory of the sessions that wrote.
       const reader = await connect();
@@ -186,7 +197,6 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       const lost = labels.filter((label) => !read.includes(label));
       assert.deepEqual(lost, [], `${lost.length} of ${labels.length} writes were lost`);
     });
-    failed = false;
   } finally {
     await Promise.allSettled(sessions.map((client) => client.close()));
     await callback.close();
