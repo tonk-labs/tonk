@@ -2022,16 +2022,6 @@ pub mod agent_space {
     #[domain("xyz.tonk.agent-space")]
     #[pick(last)]
     pub struct Provider(pub String);
-
-    /// The agent space's seed, sealed to the account's encryption key
-    /// for the agent's DID (`tonk_identity::sealed`): what reconnecting
-    /// the agent opens with the passkey, so the agent can sign a new
-    /// session's powerline. Dialog keeps its own sealed copy of the key
-    /// but does not hand it back.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.agent-space")]
-    #[pick(last)]
-    pub struct SealedKey(pub Vec<u8>);
 }
 
 /// Attributes for the `agent/session` concept — one session key's

@@ -3,8 +3,7 @@
 //! as a session list presents it.
 //!
 //! Both live on the agent space's own content branch. The account that
-//! provisioned the agent keeps its key, and [`AgentKey`] keeps a copy
-//! sealed to that account for reconnecting the agent.
+//! provisioned the agent keeps its key; nothing here records it.
 
 // The `#[derive(Concept)]` macro generates helper types without doc
 // comments; suppress `missing_docs` like the sibling concept modules.
@@ -81,29 +80,6 @@ impl AgentProvider {
         Self {
             this: space,
             provider: crate::domain::agent_space::Provider(provider.into()),
-        }
-    }
-}
-
-/// The agent's key, sealed to the account that provisioned it, on the
-/// agent space's subject DID like [`AgentSpace`]. Only a ceremony that
-/// opens the account opens it: what reconnecting an agent needs to
-/// have the agent sign a new session.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct AgentKey {
-    /// The agent space's subject DID.
-    pub this: Entity,
-    /// A `tonk_identity::sealed::Sealed` envelope of the agent's seed.
-    pub sealed_key: crate::domain::agent_space::SealedKey,
-}
-
-impl AgentKey {
-    /// Keep `sealed`, the agent space `space`'s seed sealed to its
-    /// account.
-    pub fn new(space: Entity, sealed: Vec<u8>) -> Self {
-        Self {
-            this: space,
-            sealed_key: crate::domain::agent_space::SealedKey(sealed),
         }
     }
 }
