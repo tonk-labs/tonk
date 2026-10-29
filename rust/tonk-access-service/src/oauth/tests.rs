@@ -342,6 +342,53 @@ async fn it_hands_the_finished_token_to_the_client_once() {
     );
 }
 
+/// SDK clients that rely on PKCE alone send no `state`; the callback then
+/// carries none rather than an empty one.
+#[dialog_common::test]
+async fn it_authorizes_a_client_that_sends_no_state() {
+    let fixture = Fixture::new();
+    let client_id = fixture.register().await;
+    let query: Vec<_> = request(&client_id)
+        .into_iter()
+        .filter(|(name, _)| *name != "state")
+        .collect();
+    let answer = fixture.authorize(&query).await;
+    assert_eq!(answer.status, 303, "{}", text(&answer));
+    let location = Url::parse(header(&answer, "Location").unwrap()).unwrap();
+    assert_eq!(location.path(), APPROVAL_PAGE);
+    let handle = location
+        .query_pairs()
+        .find(|(key, _)| key == "request")
+        .unwrap()
+        .1
+        .into_owned();
+    let cookie = header(&answer, "Set-Cookie")
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let started = Started { handle, cookie };
+
+    let answer = fixture
+        .answer_with(fixture.now, &started, json!({ "token": TOKEN }))
+        .await;
+    assert_eq!(answer.status, 200, "{}", text(&answer));
+    let redirect: serde_json::Value = serde_json::from_slice(&answer.body).unwrap();
+    let redirect = Url::parse(redirect["redirect"].as_str().unwrap()).unwrap();
+    assert!(redirect.query_pairs().all(|(key, _)| key != "state"));
+    let code = redirect
+        .query_pairs()
+        .find(|(key, _)| key == "code")
+        .unwrap()
+        .1
+        .into_owned();
+    let answer = fixture
+        .exchange(fixture.now, &redemption(&client_id, &code))
+        .await;
+    assert_eq!(answer.status, 200, "{}", text(&answer));
+}
+
 #[dialog_common::test]
 async fn it_refuses_a_replayed_code() {
     let fixture = Fixture::new();
