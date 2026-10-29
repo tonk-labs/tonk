@@ -9,6 +9,9 @@ export function agentLinkBackend({
   linkOrigin = new URL(remote).origin,
   run = invoke,
   checkpoint,
+  // Called before each checkpoint save, to close anything else holding the
+  // directory open.
+  beforeCheckpoint = async () => {},
   maxPending = 32,
 }) {
   // One adapter owns this directory. Serialize subprocesses so workers never
@@ -29,7 +32,7 @@ export function agentLinkBackend({
       await pending;
     },
     // Run `task` in this directory's queue, between subprocesses, without a
-    // checkpoint: for reading the directory while nothing writes it.
+    // checkpoint: for opening the directory while nothing else has it open.
     exclusive(task) {
       if (closed || failed || queued >= maxPending)
         throw new TonkToolError('Agent worker unavailable or busy.');
@@ -70,6 +73,7 @@ export function agentLinkBackend({
         } finally {
           if (checkpoint && input.tool !== 'agent_identity') {
             try {
+              await beforeCheckpoint();
               await checkpoint.save();
             } catch {
               failed = true;
@@ -168,6 +172,7 @@ export function agentLinkBackend({
         } finally {
           if (checkpoint) {
             try {
+              await beforeCheckpoint();
               await checkpoint.save();
             } catch {
               failed = true;

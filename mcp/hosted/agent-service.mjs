@@ -30,6 +30,7 @@ export async function createAgentService({
     directory,
     endpoint: 'http://checkpoint.internal/agent-state',
   });
+  let views;
   const backend = agentLinkBackend({
     binary,
     dataDirectory: directory,
@@ -37,9 +38,10 @@ export async function createAgentService({
     linkOrigin: provider,
     checkpoint,
     run,
+    beforeCheckpoint: () => views.stopAll(),
   });
   const handler = createTonkHTTP(async () => backend);
-  const views = createAgentViews({
+  views = createAgentViews({
     binary,
     directory,
     remote: provider + '/ucan/',

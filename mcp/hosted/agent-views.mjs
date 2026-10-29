@@ -2,23 +2,23 @@
 //
 // A view needs a worker that stays up: the runtime in the app subscribes to
 // queries and expects them to stream. Each open agent runs one
-// `tonk-agent-worker serve` process over a copy of its directory. The copy
-// keeps the agent store's checkpoint away from storage a process has open.
-// While an agent is open, every tool call for it goes to that process, so two
-// processes never act as the same agent at once. Views write as the agent.
+// `tonk-agent-worker serve` process over the agent's own directory, holding
+// its lock. While an agent is open, every tool call for it goes to that
+// process, so two processes never act as the same agent at once. Views write
+// as the agent. The agent store's checkpoint closes every open agent first
+// (`stopAll`), so it never reads storage a process has open; a view reopens
+// on its next request.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
-import { cp, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { TonkToolError } from '../errors.mjs';
 
 const AGENT = /^[0-9a-f]{32}$/;
 const uncertain = 'Evaluation could not be confirmed. Do not repeat it; query the space first.';
 
-// `exclusive(task)` runs `task` in the agent store's queue, so the copy is
-// never taken while another process writes the agent's directory.
+// `exclusive(task)` runs `task` in the agent store's queue, so an agent is
+// never opened while a one-shot process has its directory.
 export function createAgentViews({
   binary,
   directory,
@@ -62,18 +62,8 @@ export function createAgentViews({
     if (open.size >= capacity) throw new TonkToolError('Too many open views. Try again shortly.');
     const entry = { active: 0, used: now(), ready: false };
     entry.started = exclusive(async () => {
-      const live = await mkdtemp(join(tmpdir(), 'tonk-agent-view-'));
-      try {
-        await cp(join(directory, 'agents', agent), live, {
-          recursive: true,
-          filter: (source) => basename(source) !== 'peer.lock',
-        });
-        const served = await start({ binary, directory: live, remote });
-        return withUse(entry, served, live);
-      } catch (error) {
-        await rm(live, { recursive: true, force: true });
-        throw error;
-      }
+      const served = await start({ binary, directory: join(directory, 'agents', agent), remote });
+      return withUse(entry, served);
     });
     entry.started.then(
       () => {
@@ -89,7 +79,7 @@ export function createAgentViews({
 
   // Count in-flight requests and open streams, so an agent with a view still
   // streaming is never closed as idle.
-  function withUse(entry, served, live) {
+  function withUse(entry, served) {
     const begin = () => {
       entry.active++;
       entry.used = now();
@@ -145,10 +135,7 @@ export function createAgentViews({
         });
         return new Response(body, { status: response.status, headers: response.headers });
       },
-      async close() {
-        await served.close();
-        await rm(live, { recursive: true, force: true });
-      },
+      close: () => served.close(),
     };
   }
 
@@ -161,6 +148,14 @@ export function createAgentViews({
       return entry ? entry.started : undefined;
     },
     stop,
+    // Close every open agent, letting calls in progress finish. It runs in
+    // the queue, so it leaves agents still waiting there to open: they open
+    // after the task that called it, and waiting on them would deadlock.
+    async stopAll() {
+      await Promise.allSettled(
+        [...open].filter(([, entry]) => entry.ready).map(([agent]) => stop(agent)),
+      );
+    },
     // Close agents with no view in use for `idle`; runs on a timer.
     sweepIdle,
     async close() {
@@ -206,7 +201,8 @@ export async function startServedAgent({ binary, directory, remote }) {
   const pending = new Map();
   let next = 0,
     buffer = '',
-    exited = false;
+    exited = false,
+    closing = false;
   const stopped = once(child, 'exit').then(() => {
     exited = true;
     for (const { reject } of pending.values()) reject(Error('Served agent stopped'));
@@ -255,7 +251,9 @@ export async function startServedAgent({ binary, directory, remote }) {
   const origin = 'http://' + address;
   return {
     call(call, args = {}) {
-      if (exited) return Promise.reject(new TonkToolError('The agent is restarting. Retry.'));
+      // Nothing was sent, so a retry cannot repeat a write.
+      if (exited || closing)
+        return Promise.reject(new TonkToolError('The agent is restarting. Retry.'));
       const id = ++next;
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -296,7 +294,9 @@ export async function startServedAgent({ binary, directory, remote }) {
       headers.set('authorization', 'Bearer ' + token);
       return fetch(url, { ...options, headers, redirect: 'error' });
     },
+    // Closing stdin lets the call in progress finish and answer first.
     async close() {
+      closing = true;
       if (!exited) {
         child.stdin.end();
         const timer = setTimeout(() => child.kill(), 10_000);

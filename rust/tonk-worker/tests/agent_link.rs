@@ -780,7 +780,9 @@ async fn hosted_agent_creates_a_space_its_sponsor_owns() -> anyhow::Result<()> {
 
 /// A sponsored agent outlines the views its space nests: the to-do list
 /// inside a trip is a node of its own, with a route to show it alone.
-#[tokio::test]
+// Multi-threaded, as the agent worker runs: the outline runs on a blocking
+// thread driven by the runtime handle.
+#[tokio::test(flavor = "multi_thread")]
 async fn hosted_agent_outlines_the_views_its_space_nests() -> anyhow::Result<()> {
     let SponsoredSpace {
         service: _service,
@@ -853,7 +855,7 @@ todo!:
     Ok(())
 }
 
-/// Serve mode holds a copy of a sponsored agent's directory open: it serves
+/// Serve mode holds a sponsored agent's directory open: it serves
 /// the agent's worker on loopback only to a request carrying the host token,
 /// and runs the agent's tool calls from stdin, on the same peer, so a write
 /// through the served worker is what the next call reads.
@@ -864,15 +866,14 @@ async fn a_served_agent_shares_one_peer_between_its_views_and_its_calls() -> any
     let SponsoredSpace {
         service: _service,
         root,
+        agents,
         agent,
         space_did,
         ..
     } = sponsored_space("Groceries").await?;
     let space = space_did.to_string();
 
-    // The host serves a copy, without the copied lock file.
-    let live = std::env::temp_dir().join(format!("tonk-served-agent-{}", rand::random::<u64>()));
-    copy_directory(&root.join("agents").join(&agent), &live)?;
+    let live = root.join("agents").join(&agent);
     let token = "t".repeat(43);
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_tonk-agent-worker"))
         .arg(&live)
@@ -932,6 +933,12 @@ async fn a_served_agent_shares_one_peer_between_its_views_and_its_calls() -> any
     assert_eq!(reply["id"], 7);
     assert!(reply["result"].to_string().contains("Milk"), "{reply}");
 
+    // The served agent holds its directory: no one-shot process opens it.
+    let busy = agents
+        .call_peer(&agent, "tonk_list_spaces", &serde_json::json!({}))
+        .await;
+    assert_eq!(busy.unwrap_err(), "The agent is busy.");
+
     // A call outside the agent's space tools is refused.
     let refused = serde_json::json!({ "id": 8, "call": "agent_create" });
     stdin.write_all(format!("{refused}\n").as_bytes()).await?;
@@ -943,24 +950,5 @@ async fn a_served_agent_shares_one_peer_between_its_views_and_its_calls() -> any
     // Closing stdin stops the server.
     drop(stdin);
     assert!(child.wait().await?.success());
-    Ok(())
-}
-
-fn copy_directory(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::create_dir_all(to)?;
-    std::fs::set_permissions(to, std::fs::Permissions::from_mode(0o700))?;
-    for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
-        let target = to.join(entry.file_name());
-        if entry.file_name() == "peer.lock" {
-            continue;
-        }
-        if entry.file_type()?.is_dir() {
-            copy_directory(&entry.path(), &target)?;
-        } else {
-            std::fs::copy(entry.path(), &target)?;
-        }
-    }
     Ok(())
 }

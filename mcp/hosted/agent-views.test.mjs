@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readdir, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAgentViews } from './agent-views.mjs';
@@ -12,7 +12,6 @@ const agent = 'a'.repeat(32);
 function fakeServe(log) {
   return async ({ directory }) => {
     log.started = directory;
-    log.files = await readdir(directory);
     return {
       async call(call, args) {
         log.calls.push([call, args]);
@@ -63,12 +62,12 @@ async function setup(t, options = {}) {
   return { views, log, tick: (ms) => (clock += ms) };
 }
 
-test('an open agent runs on a copy of its directory, without the lock', async (t) => {
+test('an open agent runs on its own directory, opened in the agent store queue', async (t) => {
   const { views, log } = await setup(t);
   assert.equal(views.running(agent), undefined);
   const served = await views.open(agent);
-  assert.equal(log.exclusive, 1, 'the copy is taken in the agent store queue');
-  assert.deepEqual(log.files.sort(), ['peer', 'sponsor.json']);
+  assert.equal(log.exclusive, 1, 'the agent opens in the agent store queue');
+  assert.match(log.started, new RegExp(`/agents/${agent}$`));
   assert.equal(await views.running(agent), served);
   assert.equal(await views.open(agent), served, 'a second view reuses the process');
   assert.equal(log.exclusive, 1);
@@ -77,7 +76,32 @@ test('an open agent runs on a copy of its directory, without the lock', async (t
   await views.stop(agent);
   assert.equal(log.closed, 1);
   assert.equal(views.running(agent), undefined);
-  await assert.rejects(stat(log.started), 'the copy is removed');
+});
+
+test('a checkpoint closes open agents first, but not one waiting in the queue to open', async (t) => {
+  let release;
+  const queued = new Promise((resolve) => (release = resolve));
+  let first = true;
+  const { views, log } = await setup(t, {
+    // The second open waits in the queue behind the checkpointing task.
+    exclusive: async (task) => {
+      if (first) {
+        first = false;
+        return task();
+      }
+      await queued;
+      return task();
+    },
+  });
+  await views.open(agent);
+  const other = 'b'.repeat(32);
+  const waiting = views.open(other);
+  await views.stopAll();
+  assert.equal(log.closed, 1, 'the open agent closed');
+  assert.equal(views.running(agent), undefined);
+  assert.ok(views.running(other), 'the waiting agent is left to open');
+  release();
+  await waiting;
 });
 
 test('a write from a view is pushed at once, and an unconfirmed push is reported', async (t) => {

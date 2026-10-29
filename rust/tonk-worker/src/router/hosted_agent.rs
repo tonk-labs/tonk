@@ -415,17 +415,17 @@ const PEER_CALLS: [&str; 4] = [
 
 /// A sponsored agent's peer, held open while its views are shown.
 ///
-/// The host opens a copy of the agent's directory, so a checkpoint of the
-/// agent store never reads storage this process has open. While it runs,
-/// every call for the agent comes here: two processes never act as the
-/// same agent at once.
+/// It holds the agent's directory lock for as long as it is open. While it
+/// runs, every call for the agent comes here: two processes never act as the
+/// same agent at once. The host closes it before checkpointing the agent
+/// store, so a checkpoint never reads storage it has open.
 pub struct ServedAgent {
     peer: LocalPeer,
     _lock: std::fs::File,
 }
 
 impl ServedAgent {
-    /// Open a copy of a sponsored agent's directory.
+    /// Open a sponsored agent's directory.
     pub async fn open(directory: PathBuf) -> Result<Self, String> {
         let lock = lock(&directory)?;
         if read_record(&directory)?.is_none() {
