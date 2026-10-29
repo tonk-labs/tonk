@@ -1,14 +1,22 @@
-import { mkdtemp } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agentLinkBackend } from '../agent-link-backend.mjs';
 import { createTonkHTTP } from '../http.mjs';
 import { createCheckpoint } from './checkpoint.mjs';
 
+// The native store records each space by the absolute path of its storage, so
+// a restored checkpoint must land at the same path in every container. A fresh
+// temporary name per start would leave every space pointing at the last one.
+export const agentStore = join(tmpdir(), 'tonk-agent-store');
+
 // One bounded, serialized worker owner. Checkpoint only after the child closes,
 // including failure paths; a failed checkpoint freezes subsequent calls.
 export async function createAgentService({ issuer, provider, binary, directory, checkpoint, run }) {
-  directory ??= await mkdtemp(join(tmpdir(), 'tonk-agent-workers-'));
+  if (!directory) {
+    directory = agentStore;
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+  }
   checkpoint ??= await createCheckpoint({
     directory,
     endpoint: 'http://checkpoint.internal/agent-state',
@@ -23,10 +31,26 @@ export async function createAgentService({ issuer, provider, binary, directory, 
   });
   const handler = createTonkHTTP(async () => backend);
   return {
+    // Persistent hosted agents, under the same root and checkpoint.
+    agents: {
+      create: () => backend.agent({ tool: 'agent_create' }),
+      identity: (agent) => backend.agent({ tool: 'agent_identity', agent }),
+      sponsor: ({ agent, sponsorshipHex, recipient }) =>
+        backend.agent({
+          tool: 'agent_sponsor',
+          agent,
+          sponsorship_hex: sponsorshipHex,
+          recipient,
+        }),
+      createSpace: ({ agent, name, agentName }) =>
+        backend.agent({ tool: 'agent_create_space', agent, name, agent_name: agentName }),
+      call: ({ agent, call, space, document }) =>
+        backend.agent({ tool: 'agent_call', agent, call, space, document }),
+    },
     async fetch(request) {
       const url = new URL(request.url);
       if (url.origin !== issuer) return new Response(null, { status: 421 });
-      if (url.pathname !== '/mcp' || url.search) return new Response(null, { status: 404 });
+      if (url.pathname !== '/mcp/link' || url.search) return new Response(null, { status: 404 });
       if (request.headers.has('origin')) return new Response(null, { status: 403 });
       if (request.method !== 'POST') return new Response(null, { status: 405 });
       return handler.fetch(request);

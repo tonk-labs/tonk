@@ -23,6 +23,24 @@ export class TonkRuntime extends Container {
 }
 TonkRuntime.outbound = outbound;
 
+// Paths the container serves: both MCP endpoints, OAuth discovery and the
+// authorization server.
+const containerPaths = new Set([
+  '/mcp',
+  '/mcp/link',
+  '/build.json',
+  '/.well-known/oauth-protected-resource/mcp',
+  '/.well-known/oauth-authorization-server',
+  '/oauth/authorize',
+  '/oauth/continue',
+  '/oauth/callback',
+  '/oauth/token',
+  '/oauth/revoke',
+  '/oauth/register',
+]);
+export const containerPath = (path) =>
+  containerPaths.has(path) || /^\/oauth\/register\/[A-Za-z0-9_-]{1,64}$/.test(path);
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -34,9 +52,7 @@ export default {
       return guestAsset(request, env.ASSETS);
     }
     if (!env.TONK_PROVIDER_ORIGIN) return new Response(null, { status: 503 });
-    if (!['/mcp', '/build.json'].includes(url.pathname)) {
-      return new Response(null, { status: 404 });
-    }
+    if (!containerPath(url.pathname)) return new Response(null, { status: 404 });
     // Separate instance and checkpoint namespace from the former OAuth service.
     return env.RUNTIME.getByName('agent-link-v1').fetch(request);
   },

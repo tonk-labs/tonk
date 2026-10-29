@@ -21,6 +21,18 @@ const json = (body, status = 200, headers = {}) =>
   });
 const error = (name, status = 400) => json({ error: name }, status);
 const validOpaque = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value);
+// What this browser last connected for a client, so a reconnect can reuse it.
+// Opaque to this module; the provisioner decides what it names. Keyed by the
+// redirect URI, which stays the same when a platform registers again.
+const hintCookie = (redirect) => `__Host-tonk-hint-${hash(redirect).slice(0, 16)}`;
+const validHint = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value);
+function readCookie(request, name) {
+  const parts = (request.headers.get('cookie') ?? '')
+    .split(';')
+    .map((part) => part.trim())
+    .filter((part) => part.startsWith(`${name}=`));
+  return parts.length === 1 ? parts[0].slice(name.length + 1) : undefined;
+}
 
 // Fragment grants never enter an HTTP URL or a page interpolation. The callback
 // posts only to this origin; cookie + request ID bind it to the browser ceremony.
@@ -29,13 +41,14 @@ const fields = new URLSearchParams(location.hash.slice(1));
 history.replaceState(null, '', location.pathname + location.search);
 const request = new URLSearchParams(location.search).get('request');
 const status = document.getElementById('status');
-if (!request || fields.has('authorize') === fields.has('deny')) {
+const grant = fields.get('authorize') ?? fields.get('sponsor');
+if (!request || (grant !== null) === fields.has('deny')) {
   status.textContent = 'This authorization link is incomplete. Start again from your client.';
 } else {
   fetch('/oauth/callback', {
     method: 'POST', credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ request, authorize: fields.get('authorize'), deny: fields.get('deny') })
+    body: JSON.stringify({ request, authorize: grant, deny: fields.get('deny') })
   }).then(async response => {
     const result = await response.json();
     if (!response.ok && !result.failure) throw new Error();
@@ -94,6 +107,11 @@ export function createTonkOAuth({
   redirectUris,
   clients,
   dynamicRegistration = false,
+  registrationLifetime,
+  // How long one approval lasts before the client must ask again.
+  connectionLifetime = 8 * 60 * 60_000,
+  // The approval page's query parameter naming the key to authorize.
+  approvalParameter = 'audience',
   provisionAccount,
   linkPage = 'https://tonk.network/settings/link',
   now = Date.now,
@@ -121,7 +139,11 @@ export function createTonkOAuth({
       },
     ],
   );
-  const registrations = createRegistrations({ now, saved: saved?.registrations });
+  const registrations = createRegistrations({
+    now,
+    saved: saved?.registrations,
+    ...(registrationLifetime ? { lifetime: registrationLifetime } : {}),
+  });
   const registry = {
     get(id) {
       return configured.get(id) ?? (dynamicRegistration ? registrations.get(id) : undefined);
@@ -167,6 +189,7 @@ export function createTonkOAuth({
   const credentials = createCredentials({
     now,
     capacity,
+    maxLifetime: connectionLifetime,
     onRevoke,
     saved: saved?.credentials?.map((item) => ({
       ...item,
@@ -255,7 +278,8 @@ export function createTonkOAuth({
         if (
           p.response_type !== 'code' ||
           p.resource !== resource ||
-          p.scope !== scope ||
+          // A client may omit scope; this server has exactly one.
+          (p.scope !== undefined && p.scope !== scope) ||
           p.code_challenge_method !== 'S256' ||
           !validOpaque(p.code_challenge)
         ) {
@@ -343,7 +367,11 @@ export function createTonkOAuth({
             if (entry.started) return error('invalid_request');
             entry.started = true;
             // The adapter closes the native process after reading its identity.
-            const account = await provisionAccount();
+            const hint = readCookie(request, hintCookie(entry.redirect));
+            const account = await provisionAccount({
+              clientId: entry.clientId,
+              hint: validHint(hint) ? hint : undefined,
+            });
             if (
               typeof account.tenantId !== 'string' ||
               !account.tenantId ||
@@ -355,7 +383,7 @@ export function createTonkOAuth({
             if (closed || !pending.has(id) || entry.expires <= now())
               return error('invalid_request');
             const approval = new URL(approvalPage);
-            approval.searchParams.set('audience', account.deviceDid);
+            approval.searchParams.set(approvalParameter, account.deviceDid);
             approval.searchParams.set('callback', `${origin}/oauth/callback?request=${id}`);
             approval.searchParams.set(
               'name',
@@ -425,7 +453,14 @@ export function createTonkOAuth({
           const failure = stages.includes(cause?.authorizationStage)
             ? cause.authorizationStage
             : 'account-activation';
-          return json({ failure }, 200, clearCookie);
+          // Forget a remembered connection that could not be completed.
+          const headers = new Headers(secureHeaders);
+          headers.append('set-cookie', clearCookie['set-cookie']);
+          headers.append(
+            'set-cookie',
+            `${hintCookie(entry.redirect)}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`,
+          );
+          return Response.json({ failure }, { status: 200, headers });
         }
         if (
           closed ||
@@ -447,7 +482,14 @@ export function createTonkOAuth({
             rootDid: identity.rootDid,
           },
         });
-        return json({ redirect: redirectFor(entry, { code }) }, 200, clearCookie);
+        const headers = new Headers(secureHeaders);
+        headers.append('set-cookie', clearCookie['set-cookie']);
+        if (validHint(identity.hint))
+          headers.append(
+            'set-cookie',
+            `${hintCookie(entry.redirect)}=${identity.hint}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=31536000`,
+          );
+        return Response.json({ redirect: redirectFor(entry, { code }) }, { status: 200, headers });
       }
       if (url.pathname === '/oauth/revoke' && request.method === 'POST') {
         if (
@@ -535,7 +577,7 @@ export function createTonkOAuth({
           clientId: entry.clientId,
           resource,
           redirect: entry.redirect,
-          connectionExpiresAt: now() + 8 * 60 * 60_000,
+          connectionExpiresAt: now() + connectionLifetime,
         });
         spent.set(hash(p.code), {
           clientId: entry.clientId,
@@ -604,6 +646,8 @@ export function createTonkOAuth({
       credentials.revokeWhere((value) => value.rootDid === rootDid);
     },
     challenge: () => json({ error: 'invalid_token' }, 401, { 'www-authenticate': challenge }),
+    // The name a client registered under, for labelling what it does.
+    clientName: (id) => registry.get(id)?.displayName,
     close() {
       closed = true;
       pending.clear();

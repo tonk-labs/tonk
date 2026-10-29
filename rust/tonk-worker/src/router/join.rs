@@ -567,15 +567,91 @@ pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutco
     // remote), so a slow join in the field can be attributed to the
     // network or to local work without reproducing it.
     let started = web_time::Instant::now();
+    // An agent's claim link carries the space key sealed to this account
+    // as `#seed=`; the invite itself is the link without it.
+    let (url, sealed) = split_sealed_seed(url);
+    let url = url.as_str();
     let prepared = prepare_join(tonk, url).await?;
     let prepared_at = web_time::Instant::now();
     let outcome = perform_join(tonk, prepared).await?;
+    if let Some(sealed) = sealed
+        && let Err(error) = adopt(tonk, url, sealed).await
+    {
+        log!("join: the space was joined but not adopted into the account: {error}");
+    }
     log!(
         "join: prepared {}ms, performed {}ms",
         prepared_at.duration_since(started).as_millis(),
         prepared_at.elapsed().as_millis()
     );
     Ok(outcome)
+}
+
+/// Split an agent's claim link into the invite and the space key sealed to
+/// this account in its `#seed=` fragment. An open invite's fragment is a
+/// bare base58 seed, never `seed=`, so it is left where it is.
+pub(super) fn split_sealed_seed(url: &str) -> (String, Option<Vec<u8>>) {
+    let Some((link, fragment)) = url.split_once('#') else {
+        return (url.to_owned(), None);
+    };
+    let Some(encoded) = fragment.strip_prefix("seed=") else {
+        return (url.to_owned(), None);
+    };
+    match bs58::decode(encoded).into_vec() {
+        Ok(sealed) => (link.to_owned(), Some(sealed)),
+        Err(_) => (url.to_owned(), None),
+    }
+}
+
+/// Adopt a space someone else made for this account: an agent's claim link
+/// is a Scoped invite carrying `space -> account` with `/`, and the space
+/// key sealed to the account. The join has already mounted and pulled it;
+/// this keeps the chain on the account branch, so every device of the
+/// account sees the space, and records the sealed key as custody rows, which
+/// the next passkey ceremony takes into custody (`rotation::migrate_custody`).
+/// Best effort: a failure here leaves the join as it was.
+pub(super) async fn adopt(tonk: &TonkState, url: &str, sealed: Vec<u8>) -> Result<(), String> {
+    let root = super::identity::local_root(tonk)
+        .await
+        .map_err(|error| format!("no account on this device: {error}"))?;
+    let invite = tonk_invite::Invite::parse_url(url)
+        .await
+        .map_err(|error| format!("the claim link did not parse: {error}"))?;
+    let chain = &invite.chain;
+    let space = chain.issuer().clone();
+    if chain.proofs().count() != 1
+        || chain.audience() != &root.root_did
+        || chain.subject() != Some(&space)
+    {
+        return Err("the claim link is not this account's space".into());
+    }
+    tonk_identity::sealed::Sealed::decode(&sealed)
+        .map_err(|error| format!("the sealed space key is malformed: {error}"))?;
+    let recipient = match root.encryption_key.clone() {
+        Some(recipient) => recipient,
+        None => super::account_state::published_sealed_inbox(tonk, &root.root_did)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("this account has no encryption key yet")?,
+    };
+
+    if !super::account_state::retain_space_delegation(tonk, chain).await {
+        log!("join: the space delegation was not kept on the account branch yet");
+    }
+    let message = tonk_schema::SecretMessage::new(&recipient, sealed);
+    let principal =
+        tonk_schema::SecretPrincipal::new(&space, tonk_schema::SeedKind::Space, message.this());
+    tonk.reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .transaction()
+        .assert(message)
+        .assert(principal)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("record the sealed space key: {error}"))
 }
 
 /// Open a space this device holds no replica of from its bare address,

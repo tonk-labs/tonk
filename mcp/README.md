@@ -3,8 +3,12 @@
 Tonk's general agent API is `tonk_query` and `tonk_evaluate`. Both send inline
 notation unchanged to the ordinary worker. Hosts supply authority and transport;
 the core has no ChatGPT UI, hosted login service or Desktop dependency.
-The hosted `/mcp` endpoint uses [per-call agent links](AGENT-LINKS.md), with no
-account OAuth. The same backend supports local stdio coding agents.
+The hosted service has two endpoints. `/mcp` is an OAuth endpoint where a person
+sponsors an agent connection: the agent gets its own persistent identity, and the
+person's device grants it `/provider/add` on their account (see
+`hosted/sponsor-service.mjs` and `plans/2026-10-28-hosted-agent-accounts.md`).
+`/mcp/link` takes [per-call agent links](AGENT-LINKS.md), with no OAuth. The same
+agent-link backend supports local stdio coding agents.
 
 ## Source map
 

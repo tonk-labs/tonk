@@ -852,6 +852,7 @@ view!:
       .account-email-notice[data-account-status="case:registered"] { display:flex; }
       .hub-page:has(hub-bar[path="/account"]) .account-email-notice,
       .hub-page:has(hub-bar[path="/settings/link"]) .account-email-notice { display:none; }
+      .hub-page:has(hub-bar[path="/settings/agent"]) .account-email-notice { display:none; }
       .account-email-notice button { min-height:44px; padding:10px 12px; color:inherit;
         font:600 15px/1.15 var(--cond); text-decoration:underline;
         text-underline-offset:3px; white-space:nowrap; }
@@ -1861,6 +1862,39 @@ command!: &device/authorize
       description: The account the terminal expects, when it named one.
       the: xyz.tonk.authorize-device/expected-account
       as: entity
+
+# An agent's host (a hosted MCP server) asks to be sponsored
+# (`/settings/agent?agent=…&callback=…&name=…`); the element copies the
+# request onto the approve control so the click can assert it.
+event!: &on/sponsor-agent
+  type: "click"
+  prevent-default: true
+  where:
+    agent: ".currentTarget.dataset.agent"
+    callback: ".currentTarget.dataset.callback"
+    name: ".currentTarget.dataset.name"
+
+command!: &agent/sponsor
+  this: tonk:sponsor-agent
+  description: >
+    Sponsor an agent's key: let it provision spaces billed to this account,
+    and nothing else. The agent's host receives the grant, the account and
+    the account's encryption key.
+  with:
+    agent:
+      description: The agent's DID.
+      the: xyz.tonk.sponsor-agent/agent
+      as: entity
+    callback:
+      description: >
+        Where the agent's host listens, base58 over the URL: a bare URL
+        carries a `:` and would decode as an entity.
+      the: xyz.tonk.sponsor-agent/callback
+      as: text
+    name:
+      description: What the agent's host calls the agent, such as ChatGPT.
+      the: xyz.tonk.sponsor-agent/name
+      as: text
 
 # Signing this browser in through another deployment, the browser's
 # `tonk account login --via`. `/settings/link?via=<origin>` shows the ask;
@@ -2904,6 +2938,29 @@ view!:
                       data-audience="" data-callback="" data-name="" data-expected-account="">approve with passkey</button>
                   </div>
                 </div>
+                <div class="pane" data-pane="agent" hidden data-agent-approval>
+                  <h2 class="link-heading">sponsor an agent</h2>
+                  <dl class="link-details">
+                    <div><dt>agent</dt><dd data-agent-name></dd></div>
+                    <div><dt>account</dt><dd>
+                      <tonk-display model="tonk:account/registered" view="link-email">
+                        <span slot="loading">loading account…</span>
+                        <span slot="no-entity">account email unavailable</span>
+                      </tonk-display>
+                    </dd></div>
+                  </dl>
+                  <p class="expl">
+                    approving gives this agent its own identity, sponsored by you. it can make
+                    new spaces that you own, billed to this account. it gets no access to your
+                    existing spaces, and you can revoke it. only approve if you started this
+                    connection yourself.
+                  </p>
+                  <div class="link-foot">
+                    <button class="m-cancel" type="button" data-agent-decline>decline</button>
+                    <button class="m-go" type="button" data-agent-approve on:sponsor-agent=tonk:sponsor-agent
+                      data-agent="" data-callback="" data-name="">approve</button>
+                  </div>
+                </div>
                 <div class="pane" data-pane="local-link" hidden data-local-link-approval>
                   <div class="sect">attach a local space to this account</div>
                   <div class="srowd"><span>space</span><b data-local-link-name></b></div>
@@ -2981,6 +3038,14 @@ route!: &route/settings
 route!: &route/settings/link
   this: id:tonk:route/settings/link
   path: "/settings/link"
+  concept: tonk:hub
+
+# `/settings/agent` is the same page: an agent's host (a hosted MCP
+# server) opened it to ask to be sponsored, and the settings panel reads the
+# request off the location.
+route!: &route/settings/agent
+  this: id:tonk:route/settings/agent
+  path: "/settings/agent"
   concept: tonk:hub
 
 # The /join route: redeem an invite. The shell's top-level `<tonk-site>`
@@ -5368,12 +5433,29 @@ element!: &account-settings
         const name = (params.get('name') ?? '').trim() || 'Tonk connection';
         return { audience, callback, name, expectedAccount: params.get('expectedAccount') };
       }
+    # An agent's host asking to be sponsored: `/settings/agent?agent=…`.
+    agent-request: |
+      (self) => {
+        const at = self.context();
+        if (at.path !== '/settings/agent') return null;
+        const params = new URLSearchParams(at.search);
+        const agent = params.get('agent');
+        const callback = params.get('callback');
+        if (!agent || !callback) return null;
+        const name = (params.get('name') ?? '').trim() || 'an agent';
+        return { agent, callback, name };
+      }
+    # Must match router/sponsor_agent.rs sponsorship_entity.
+    sponsorship-entity: |
+      (self, request) => `urn:tonk:sponsorship:${self.base58(JSON.stringify([request.agent, request.callback]))}`
     # Must match router/ceremony.rs authorization_entity. Request-scoped rows
     # survive remounts without treating an older connection as this approval.
     approval-entity: |
       (self, request) => `urn:tonk:approval:${self.base58(JSON.stringify([request.audience, request.callback]))}`
     ceremony-target: |
       (self) => {
+        const agent = self.agentRequest();
+        if (agent) return self.sponsorshipEntity(agent);
         const request = self.linkRequest();
         return request ? self.approvalEntity(request) : 'state:ceremony';
       }
@@ -5502,6 +5584,18 @@ element!: &account-settings
         }
         if (self.localLinkShow()) return;
         if (self.viaShow()) return;
+        const sponsorship = self.agentRequest();
+        if (sponsorship) {
+          self.text('[data-agent-name]', sponsorship.name);
+          const approve = self.querySelector('[data-agent-approve]');
+          if (approve) {
+            approve.dataset.agent = sponsorship.agent;
+            approve.dataset.callback = self.base58(sponsorship.callback);
+            approve.dataset.name = sponsorship.name;
+          }
+          self.pane('agent');
+          return;
+        }
         const request = self.linkRequest();
         if (!request) {
           self.pane('account');
@@ -5697,12 +5791,14 @@ element!: &account-settings
           'authorize-device': 'Approving the connection',
           'add-passkey': 'Adding the passkey',
           'sign-in-via': 'Signing in',
+          'sponsor-agent': 'Sponsoring the agent',
         }[which];
         if (!subject) return;
         const done = {
           'delete-account': 'Account deleted.',
           'authorize-device': 'Approved. Completing the connection…',
           'sign-in-via': 'Signed in.',
+          'sponsor-agent': 'Approved. Returning to the agent…',
         }[which] ?? 'Done.';
         const text = {
           'pending-ceremony': `${subject}: waiting for passkey…`,
@@ -5727,7 +5823,7 @@ element!: &account-settings
     # loopback address nor an https page gets nothing.
     decline: |
       (self) => {
-        const request = self.linkRequest();
+        const request = self.agentRequest() ?? self.linkRequest();
         if (!request) return;
         let target;
         try { target = new URL(request.callback); } catch { self.status('the authorization callback address is invalid'); return; }
@@ -5851,6 +5947,10 @@ element!: &account-settings
             self.setAttribute('data-passkey-requested', '');
             self.status('Waiting for passkey…');
           } else if (hit('[data-link-decline]')) {
+            self.decline();
+          } else if (hit('[data-agent-approve]')) {
+            self.status('Sponsoring the agent…');
+          } else if (hit('[data-agent-decline]')) {
             self.decline();
           }
         });

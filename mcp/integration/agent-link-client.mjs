@@ -78,7 +78,7 @@ const service = await createAgentService({
 const hosted = new Client({ name: 'hosted-agent-integration', version: '1' });
 try {
   await hosted.connect(
-    new StreamableHTTPClientTransport(new URL('https://mcp.example/mcp'), {
+    new StreamableHTTPClientTransport(new URL('https://mcp.example/mcp/link'), {
       fetch: (url, init) => service.fetch(new Request(url, init)),
     }),
   );
@@ -125,7 +125,7 @@ const restored = await createAgentService({
 const afterRestart = new Client({ name: 'restored-agent-integration', version: '1' });
 try {
   await afterRestart.connect(
-    new StreamableHTTPClientTransport(new URL('https://mcp.example/mcp'), {
+    new StreamableHTTPClientTransport(new URL('https://mcp.example/mcp/link'), {
       fetch: (url, init) => restored.fetch(new Request(url, init)),
     }),
   );

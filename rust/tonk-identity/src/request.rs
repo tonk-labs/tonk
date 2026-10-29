@@ -23,9 +23,11 @@ use dialog_varsig::Did;
 
 /// Build a device-signed account-service invocation container.
 ///
-/// `link` is the stored `root → device` delegation: its issuer is the
-/// account root (the invocation subject and audience), and its single
-/// proof is attached so the service can bind the device to the account.
+/// `link` proves the invoker acts for the account: its issuer is the account
+/// root (the invocation subject and audience) and its final audience is the
+/// invoker. For a device that is the stored one-hop `root -> device` grant;
+/// for a sponsored agent it is `root -> device -> agent`. Every hop is
+/// attached, root first, so the service can walk the whole chain.
 pub async fn build_device_invocation(
     device: impl Into<Signer>,
     link: &DelegationChain,
@@ -33,16 +35,15 @@ pub async fn build_device_invocation(
     arguments: BTreeMap<String, Promised>,
 ) -> Result<Vec<u8>> {
     let root_did = link.issuer().clone();
-    debug_assert!(
-        link.proofs().count() == 1,
-        "build_device_invocation expects a single-hop root -> device link"
+    let delegations: Vec<_> = link.proofs().cloned().collect();
+    anyhow::ensure!(
+        !delegations.is_empty(),
+        "account link carries no delegation to prove the device"
     );
-    let delegation = link
-        .proofs()
-        .last()
-        .context("account link carries no delegation to prove the device")?
-        .clone();
-    let cid = delegation.to_cid();
+    let cids: Vec<_> = delegations
+        .iter()
+        .map(|delegation| delegation.to_cid())
+        .collect();
 
     let invocation = InvocationBuilder::new()
         .issuer(device.into())
@@ -50,14 +51,16 @@ pub async fn build_device_invocation(
         .subject(&root_did)
         .command(command)
         .arguments(arguments)
-        .proofs(vec![cid])
+        .proofs(cids.clone())
         .expiration(Timestamp::five_minutes_from_now())
         .try_build()
         .await
         .context("failed to sign the device invocation")?;
 
-    let mut proofs = HashMap::new();
-    proofs.insert(cid, Arc::new(delegation));
+    let proofs: HashMap<_, _> = cids
+        .into_iter()
+        .zip(delegations.into_iter().map(Arc::new))
+        .collect();
     InvocationChain::new(invocation, proofs)
         .to_bytes()
         .context("failed to serialize the device invocation")

@@ -5,7 +5,8 @@ const key = (token) =>
     : undefined;
 const random = () => randomBytes(32).toString('base64url');
 // Fixed family lifetime; rotation never extends the original authorization.
-// Retain bounded spent hashes to revoke a family if a refresh token is replayed.
+// Retain the most recent spent hashes, bounded, to revoke a family if one of
+// them is replayed. An older token is simply unknown.
 export function createCredentials({
   now = Date.now,
   lifetime = 600_000,
@@ -28,11 +29,18 @@ export function createCredentials({
   function prune() {
     for (const family of families) if (family.until <= now()) revoke(family);
   }
-  function rotate(family) {
-    if (family.refreshes.size >= 256) {
-      revoke(family);
-      return;
+  // Forget the oldest spent hashes beyond the window; a long-lived
+  // connection refreshes far more often than the window holds.
+  function trim(hashes, index) {
+    while (hashes.size >= 256) {
+      const oldest = hashes.values().next().value;
+      hashes.delete(oldest);
+      index.delete(oldest);
     }
+  }
+  function rotate(family) {
+    trim(family.refreshes, refresh);
+    trim(family.accesses, access);
     const token = random(),
       refreshToken = random();
     family.access = key(token);

@@ -14,11 +14,24 @@ async function check() {
   const build = await get('/build.json');
   assert.equal(build.status, 200);
   assert.equal((await build.json()).commit, commit);
-  const retired = await get('/.well-known/oauth-authorization-server');
-  assert.equal(retired.status, 404);
+  // `/mcp` is the OAuth endpoint: discovery, then a challenge without a token.
+  const authorization = await get('/.well-known/oauth-authorization-server');
+  assert.equal(authorization.status, 200);
+  assert.equal((await authorization.json()).issuer, issuer);
+  const resource = await get('/.well-known/oauth-protected-resource/mcp');
+  assert.equal(resource.status, 200);
+  assert.equal((await resource.json()).resource, `${issuer}/mcp`);
+  const challenge = await fetch(`${issuer}/mcp`, {
+    method: 'POST',
+    redirect: 'error',
+    signal: AbortSignal.timeout(30000),
+  });
+  assert.equal(challenge.status, 401);
+  assert.match(challenge.headers.get('www-authenticate') ?? '', /resource_metadata=/);
+  // `/mcp/link` takes an agent link on every call.
   const client = new Client({ name: 'deployment-smoke', version: '1' });
   try {
-    await client.connect(new StreamableHTTPClientTransport(new URL(`${issuer}/mcp`)));
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${issuer}/mcp/link`)));
     const tools = (await client.listTools()).tools;
     assert.deepEqual(tools.map((tool) => tool.name).sort(), ['tonk_evaluate', 'tonk_query']);
     for (const tool of tools) assert.ok(tool.inputSchema.required.includes('agent_link'));
@@ -41,7 +54,7 @@ async function check() {
 for (let attempt = 1; ; attempt++) {
   try {
     await check();
-    console.log(`Deployed MCP checks passed: ${issuer}/mcp (${commit})`);
+    console.log(`Deployed MCP checks passed: ${issuer}/mcp and /mcp/link (${commit})`);
     break;
   } catch (error) {
     if (attempt === 20) throw error;

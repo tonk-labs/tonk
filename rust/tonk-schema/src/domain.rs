@@ -976,6 +976,33 @@ pub mod command {
         pub struct Name(pub String);
     }
 
+    /// Attributes the `tonk:sponsor-agent` command carries: an agent's
+    /// host (a hosted MCP server) asked the person to sponsor its key, and
+    /// the person approved.
+    pub mod sponsor_agent {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The agent's DID, the audience of the sponsorship. The derived
+        /// attribute is `xyz.tonk.sponsor-agent/agent`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.sponsor-agent")]
+        pub struct Agent(pub Entity);
+
+        /// Where the agent's host listens, base58 over the URL: a bare URL
+        /// string carries a `:` and would decode as an entity. The derived
+        /// attribute is `xyz.tonk.sponsor-agent/callback`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.sponsor-agent")]
+        pub struct Callback(pub String);
+
+        /// The name the agent's host gave the agent, such as "ChatGPT".
+        /// The derived attribute is `xyz.tonk.sponsor-agent/name`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.sponsor-agent")]
+        pub struct Name(pub String);
+    }
+
     /// Attributes the `tonk:add-passkey` command carries.
     pub mod add_passkey {
         use super::super::Entity;

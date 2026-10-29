@@ -1041,6 +1041,11 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(panel.contains("on:sign-out=tonk:sign-out"));
     assert!(PROFILE_LIBRARY.contains("on:add-passkey=tonk:add-passkey"));
     assert!(panel.contains("on:authorize-device=tonk:authorize-device"));
+    // An agent's host asking to be sponsored has its own pane and command.
+    assert!(panel.contains("data-pane=\"agent\""));
+    assert!(panel.contains("on:sponsor-agent=tonk:sponsor-agent"));
+    assert!(PROFILE_LIBRARY.contains("path: \"/settings/agent\""));
+    assert!(PROFILE_LIBRARY.contains("this: tonk:sponsor-agent"));
     assert!(!panel.contains("/api/"));
     assert!(panel.contains("data-delete-account-open"));
     assert!(panel.contains("data-sign-out-open"));

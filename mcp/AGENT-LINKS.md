@@ -2,7 +2,7 @@
 
 `tonk_query` and `tonk_evaluate` require `{ agent_link, document }` on every call.
 Copy the complete agent link from the desired Tonk space, including its private
-fragment. The hosted `/mcp` endpoint no longer uses account OAuth. Existing
+fragment. The hosted agent-link endpoint is `/mcp/link` and uses no OAuth. Existing
 Desktop signed-in tools and the optional account adapter retain their contracts.
 
 ## Local coding agents
@@ -31,7 +31,8 @@ do not put it in shell history, diagnostics, or committed configuration.
 
 ## Hosted clients
 
-Use the existing deployed `/mcp` Streamable HTTP URL with no OAuth configuration.
+Use the deployed `/mcp/link` Streamable HTTP URL with no OAuth configuration.
+(`/mcp` on the same host is the OAuth endpoint for sponsored agents.)
 Discovery is public. Every invocation validates the link's signature, recipient
 key, exact scope set, expiry and pinned remote, then obtains fresh remote access.
 Missing links or revoked read authority never fall back to an account or cached data.

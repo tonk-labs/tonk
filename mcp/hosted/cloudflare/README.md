@@ -19,10 +19,12 @@ are served only from their `tonk.host` custom domain (one-level names; the zone
 has no nested subdomains), with workers.dev disabled because the Worker answers
 only its issuer origin. PR previews stay on workers.dev so they leave no DNS
 records behind. Custom domains need the deploy token to hold Workers Routes and
-DNS edit permissions on the `tonk.host` zone. Configure
-clients for Streamable HTTP without OAuth; every query/evaluation supplies an
-agent link. CI smoke checks the deployed commit, public tool discovery, required
-link fields and rejection of missing links. It does not exercise real user data.
+DNS edit permissions on the `tonk.host` zone. Each host serves two endpoints:
+the MCP URL above (`/mcp`) is OAuth for sponsored agents, with dynamic client
+registration; `/mcp/link` takes an agent link on every query/evaluation, with no
+OAuth. CI smoke checks the deployed commit, OAuth discovery and the `/mcp`
+challenge, agent-link tool discovery on `/mcp/link`, required link fields and
+rejection of missing links. It does not sign in or exercise real user data.
 
 Preview checkpoints are retained. Closing a PR does not discard unpublished data.
 See [agent-link lifecycle and recovery](../../AGENT-LINKS.md) before operating it.
@@ -47,13 +49,15 @@ npx --no-install wrangler deploy --dry-run --containers-rollout=none --config wr
 The dry run validates the Worker bundle, not the container or public deployment.
 The image runs `tonk-agent-worker` and `hosted/server.mjs`. Its entrypoint installs
 the Cloudflare interception CA. Configure `TONK_MCP_ISSUER` and the trusted
-`TONK_PROVIDER_ORIGIN`; OAuth client registrations are no longer required.
+`TONK_PROVIDER_ORIGIN`. OAuth clients register dynamically (or use the
+pre-registered `tonk-chatgpt` / `tonk-claude` IDs); no client secret exists.
 
 ## Storage and network
 
 The public Worker selects the `agent-link-v1` container. Egress is restricted to
 the pinned provider and internal checkpoint proxy. Agent replicas use a separate
-`agent-state-v1.json` conditional object; old OAuth state is retained unused.
+`agent-state-v1.json` conditional object. Sponsor OAuth state (registrations and
+token families, hashed) is `credentials-v1.json` in the same container namespace.
 Checkpoint limits are 64 MiB compressed, 256 MiB expanded and 4096 files. The
 native worker has lower admission limits to leave checkpoint headroom. Calls
 are serialized and closed workers checkpoint before acknowledgment, including

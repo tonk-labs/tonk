@@ -23,20 +23,44 @@ test('enrollment quota and rate survive restart; expiration frees bounded capaci
   time += 120000;
   assert.ok(restored.register(metadata).client);
 });
-test('registration rejects secret auth, unsupported metadata, and unsafe redirects', () => {
+test('registration rejects secret auth, unsupported grants, and unsafe redirects', () => {
   const registry = createRegistrations();
   for (const patch of [
     { token_endpoint_auth_method: 'client_secret_basic' },
-    { client_name: '' },
+    { client_name: 42 },
     { redirect_uris: ['http://192.168.0.1/callback'] },
     { redirect_uris: ['http://localhost/callback'], application_type: 'native' },
     { redirect_uris: ['https://client.example/callback#secret'] },
     { redirect_uris: ['https://user:secret@client.example/callback'] },
-    { client_uri: 'http://169.254.169.254/' },
-    { scope: 'admin' },
     { grant_types: ['client_credentials'] },
+    { grant_types: ['refresh_token'] },
+    { grant_types: ['authorization_code', 'implicit'] },
     { response_types: ['token'] },
   ])
     assert.equal(registry.register({ ...metadata, ...patch }).status, 400);
   assert.equal(registry.snapshot().entries.length, 0);
+});
+
+// Real clients send metadata this server never reads. It is ignored, never
+// fetched, so a URL in it cannot reach anything.
+test('registration ignores metadata it does not use', () => {
+  const registry = createRegistrations();
+  const { client } = registry.register({
+    redirect_uris: metadata.redirect_uris,
+    client_uri: 'http://169.254.169.254/',
+    logo_uri: 'https://client.example/logo.png',
+    contacts: ['ops@client.example'],
+    scope: 'openid profile',
+    grant_types: ['authorization_code'],
+  });
+  assert.ok(client, 'a client with extra metadata registers');
+  assert.equal(client.displayName, 'MCP client');
+  assert.deepEqual(Object.keys(client).sort(), [
+    'applicationType',
+    'clientId',
+    'displayName',
+    'enabled',
+    'redirectUris',
+    'type',
+  ]);
 });

@@ -225,6 +225,7 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::SendEmailInvitation>()
         .command::<tonk_schema::command::ClaimEmailInvitation>()
         .command::<super::ceremony::AuthorizeDeviceRequest>()
+        .command::<super::sponsor_agent::SponsorAgentRequest>()
         // Signing in through another deployment is new, so neither half
         // has a legacy shape to migrate.
         .command::<tonk_schema::command::SignInVia>()

@@ -3199,21 +3199,28 @@ fn is_link_destination(value: &str) -> bool {
     value.starts_with('/')
         && !value.starts_with("//")
         && url.origin().ascii_serialization() == "https://tonk.local"
-        && url.path() == "/settings/link"
         && url.fragment().is_none()
         && {
             let parameter = |name: &str| {
                 url.query_pairs()
                     .find(|(key, _)| key == name)
-                    .map(|(_, value)| value)
+                    .is_some_and(|(_, value)| !value.is_empty())
             };
-            let local_space = parameter("intent").as_deref() == Some("local-space-link")
-                && parameter("request").is_some_and(|value| !value.is_empty());
             // Return to the approval page, never directly to its callback.
-            // The existing approval flow validates the request and asks for consent.
-            let device = parameter("audience").is_some_and(|value| !value.is_empty())
-                && parameter("callback").is_some_and(|value| !value.is_empty());
-            local_space || device
+            // The approval flow validates the request and asks for consent.
+            match url.path() {
+                "/settings/link" => {
+                    let local_space = url
+                        .query_pairs()
+                        .any(|(key, value)| key == "intent" && value == "local-space-link")
+                        && parameter("request");
+                    let device = parameter("audience") && parameter("callback");
+                    local_space || device
+                }
+                // An agent's host asking to be sponsored.
+                "/settings/agent" => parameter("agent") && parameter("callback"),
+                _ => false,
+            }
         }
 }
 
@@ -3580,6 +3587,31 @@ mod tests {
         history
             .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&original))
             .unwrap();
+    }
+
+    #[dialog_common::test]
+    fn it_returns_to_a_pending_agent_sponsorship_after_sign_in() {
+        assert!(super::is_link_destination(
+            "/settings/agent?agent=did%3Akey%3Aagent&callback=https%3A%2F%2Fmcp.example%2Foauth%2Fcallback%3Frequest%3Dabc&name=ChatGPT"
+        ));
+        assert!(!super::is_link_destination(
+            "/settings/agent?agent=did%3Akey%3Aagent"
+        ));
+        assert!(!super::is_link_destination(
+            "/settings/agent?callback=https%3A%2F%2Fx"
+        ));
+        assert!(!super::is_link_destination(
+            "/settings/agent?agent=a&callback=b#sponsor=x"
+        ));
+        assert!(super::is_link_destination(
+            "/settings/link?audience=did%3Akey%3Atest&callback=http%3A%2F%2F127.0.0.1%3A1%2F"
+        ));
+        assert!(super::is_link_destination(
+            "/settings/link?intent=local-space-link&request=abc"
+        ));
+        assert!(!super::is_link_destination(
+            "/settings/other?agent=a&callback=b"
+        ));
     }
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
