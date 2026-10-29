@@ -315,12 +315,7 @@ impl handler::Guest for Kernel {
             created().changed(0).await;
         }
         let request = incoming(request).await?;
-        // A write, or a page's poke, is followed by a sync with the remote,
-        // as the browser's worker drains its queue after each request.
         let method = request.method().clone();
-        if method != axum::http::Method::GET && method != axum::http::Method::HEAD {
-            drain_soon();
-        }
         let answer = match site::route(request, &site) {
             Routed::Answer(answer) => answer,
             Routed::Pass(request) => {
@@ -339,6 +334,12 @@ impl handler::Guest for Kernel {
             Routed::Settle(space) => settle(&space).await,
             Routed::Snapshot(space) => snapshot(&space).await,
         };
+        // A write, or a page's poke, is followed by a sync with the remote,
+        // as the browser's worker drains its queue after each request: once
+        // the write is done, so the sync does not move the branch under it.
+        if method != axum::http::Method::GET && method != axum::http::Method::HEAD {
+            drain_soon();
+        }
         let (parts, mut body) = answer.into_parts();
         let headers = parts
             .headers
