@@ -392,9 +392,13 @@ where
         if params.get("resource") != Some(resource.as_str()) {
             return refuse("invalid_target", "resource must be this server's /mcp");
         }
-        let Some(state) = state.filter(|s| !s.is_empty() && s.len() <= MAX_STATE) else {
-            return refuse("invalid_request", "state is required");
-        };
+        // OAuth 2.1 leaves `state` optional when PKCE carries the CSRF
+        // protection, and SDK clients omit it; an absent one is kept as
+        // empty and left off the callback.
+        let state = state.unwrap_or_default();
+        if state.len() > MAX_STATE {
+            return refuse("invalid_request", "state is too long");
+        }
 
         let handle = random();
         let browser = random();
@@ -535,7 +539,7 @@ where
                 callback(
                     &row.redirect_uri,
                     self.origin,
-                    Some(&row.state),
+                    Some(row.state.as_str()).filter(|state| !state.is_empty()),
                     &[("code", URL_SAFE_NO_PAD.encode(code).as_str())],
                 )
             }
@@ -555,7 +559,7 @@ where
                 callback(
                     &row.redirect_uri,
                     self.origin,
-                    Some(&row.state),
+                    Some(row.state.as_str()).filter(|state| !state.is_empty()),
                     &[
                         ("error", "access_denied"),
                         ("error_description", "the user refused"),
