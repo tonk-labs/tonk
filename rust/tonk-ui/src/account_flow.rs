@@ -589,7 +589,7 @@ pub(crate) mod tests {
     /// Enter the opaque Hub frame after first restoring the top browsing
     /// context. Callers that navigate or inspect top-document account UI must
     /// call `enter_default_frame` again first.
-    async fn enter_hub(driver: &WebDriver) -> Result<()> {
+    pub(crate) async fn enter_hub(driver: &WebDriver) -> Result<()> {
         enter_guest(driver).await?;
         element(driver, ".hub-page").await?;
         // Dressed, not merely present: the chrome's stylesheet is minted
@@ -4680,172 +4680,6 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// Wait for the Hub the historical profile library renders. Where it
-    /// does not come, say which library the profile's origin serves and
-    /// what its worker did: that tells a Hub rendered from another
-    /// generation's library apart from one that never took the historical
-    /// one.
-    #[cfg(feature = "integration-tests")]
-    async fn await_historical_hub(driver: &WebDriver) -> Result<()> {
-        let Err(error) = wait_for_text_containing(driver, "body", "no spaces yet").await else {
-            return Ok(());
-        };
-        let served = driver
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                fetch("/library/profile.yaml", { cache: "no-store" })
-                    .then((response) => response.text())
-                    .then((text) => done(text.includes("no spaces yet")))
-                    .catch((error) => done(String(error)));
-                "#,
-                Vec::new(),
-            )
-            .await
-            .map(|value| value.json().clone())
-            .unwrap_or(serde_json::Value::Null);
-        let log = crate::service_worker_upgrade::tests::worker_log(driver).await;
-        Err(error.context(format!(
-            "the profile's origin serves the historical library: {served}\nprofile worker log:\n{log}"
-        )))
-    }
-
-    #[cfg(feature = "integration-tests")]
-    #[dialog_common::test]
-    async fn profile_library_repairs_claims_from_an_old_account_writer(
-        env: TestEnvironment,
-    ) -> Result<()> {
-        const EMAIL: &str = "profile-library-upgrade@example.com";
-        const NAME: &str = "Profile Library Owner";
-        const SPACE: &str = "Profile Library Sentinel";
-
-        let (generation_a, generation_b) =
-            crate::service_worker_upgrade::tests::prepare_profile_library_generations(&env)?;
-        let (owner, authenticator) = driver_with_prf_authenticator(&env).await?;
-        crate::service_worker_upgrade::tests::wait_for_complete_generation(
-            &owner,
-            &generation_a,
-            None,
-            None,
-        )
-        .await?;
-        sign_up(&owner, &env, EMAIL).await?;
-        successful_body(
-            "name the account",
-            &post_json(
-                &owner,
-                "/api/account/display-name",
-                serde_json::json!({ "name": NAME }),
-            )
-            .await?,
-        );
-        let _space = create_space(&owner, SPACE).await?;
-        successful_body(
-            "publish the populated historical profile",
-            &post_json(&owner, "/api/sync", serde_json::json!({})).await?,
-        );
-        goto(&owner, env.tonk_web.as_str()).await?;
-        enter_hub(&owner)
-            .await
-            .context("old-writer scenario: mount owner Hub")?;
-        await_historical_hub(&owner).await?;
-        wait_for_text_containing(&owner, "body", SPACE).await?;
-        owner.enter_default_frame().await?;
-
-        let (old_writer, _old_authenticator) =
-            second_device_with_same_passkey(&env, &owner, &authenticator).await?;
-        crate::service_worker_upgrade::tests::wait_for_complete_generation(
-            &old_writer,
-            &generation_a,
-            None,
-            None,
-        )
-        .await?;
-        // This scenario needs a genuinely historical writer even after the
-        // other device upgrades. Pin only this browser's deployment assets,
-        // on the app's origin and on the profile's, whose worker is the
-        // writer; account traffic and the real worker lifecycle remain
-        // untouched.
-        old_writer.enter_default_frame().await?;
-        old_writer
-            .add_cookie(Cookie::new("tonk-test-generation", "a"))
-            .await?;
-        // The profile's origin is framed by the app's, so a cookie there
-        // is a third party's: one set from outside is not sent with what
-        // the frame and its worker ask for. Set from inside the frame and
-        // partitioned to the page that frames it, it is.
-        enter_profile(&old_writer).await?;
-        old_writer
-            .execute(
-                r#"document.cookie = "tonk-test-generation=a; Path=/; Secure; SameSite=None; Partitioned";"#,
-                Vec::new(),
-            )
-            .await?;
-        old_writer.enter_default_frame().await?;
-        raise_cluster_from_hub(&old_writer, &env).await?;
-        run_cluster_login(&old_writer, EMAIL).await?;
-        crate::service_worker_upgrade::tests::wait_for_site_generation(&old_writer, &generation_a)
-            .await
-            .context("the competing writer did not remain on generation A")?;
-
-        crate::service_worker_upgrade::tests::promote_second_generation(&env)?;
-        owner.enter_default_frame().await?;
-        owner.refresh().await?;
-        crate::service_worker_upgrade::tests::wait_for_complete_generation(
-            &owner,
-            &generation_b,
-            None,
-            Some(&generation_a.build),
-        )
-        .await?;
-        goto(&owner, env.tonk_web.as_str()).await?;
-        enter_hub(&owner)
-            .await
-            .context("old-writer scenario: mount owner Hub")?;
-        wait_for_text_without(&owner, "body", "no spaces yet").await?;
-        wait_for_text_containing(&owner, "body", SPACE).await?;
-        owner.enter_default_frame().await?;
-
-        successful_body(
-            "publish stale profile claims from generation A",
-            &post_json(&old_writer, "/api/sync", serde_json::json!({})).await?,
-        );
-        crate::service_worker_upgrade::tests::wait_for_site_generation(&old_writer, &generation_a)
-            .await
-            .context("the competing writer left generation A after the deploy")?;
-        goto(&old_writer, env.tonk_web.as_str()).await?;
-        enter_hub(&old_writer)
-            .await
-            .context("old-writer scenario: mount historical writer Hub after current deployment")?;
-        await_historical_hub(&old_writer).await?;
-        wait_for_text_containing(&old_writer, "body", SPACE).await?;
-        old_writer.enter_default_frame().await?;
-        successful_body(
-            "repair stale profile claims on generation B",
-            &post_json(&owner, "/api/sync", serde_json::json!({})).await?,
-        );
-        goto(&owner, env.tonk_web.as_str()).await?;
-        enter_hub(&owner)
-            .await
-            .context("old-writer scenario: mount owner Hub")?;
-        wait_for_text_without(&owner, "body", "no spaces yet").await?;
-        wait_for_text_containing(&owner, "body", SPACE).await?;
-        owner.enter_default_frame().await?;
-        await_account_name(&owner, NAME).await?;
-
-        old_writer.quit().await?;
-        successful_body(
-            "settle the first unchanged current sweep",
-            &post_json(&owner, "/api/sync", serde_json::json!({})).await?,
-        );
-        successful_body(
-            "settle the second unchanged current sweep",
-            &post_json(&owner, "/api/sync", serde_json::json!({})).await?,
-        );
-        owner.quit().await?;
-        Ok(())
-    }
-
     /// The tap-bound assertion hands clone-safe PRF bytes to the worker,
     /// never `CryptoKey` handles. Keep the real virtual-authenticator
     /// ceremony and intercept only the final service-worker post.
@@ -5734,7 +5568,7 @@ pub(crate) mod tests {
     /// The panel is the profile's: the Hub and a space's bar both render
     /// in the guest, and the top page only runs the passkey ceremony the
     /// worker asks it for. Returns with the driver in the guest.
-    async fn await_register_dialog(driver: &WebDriver) -> Result<()> {
+    pub(crate) async fn await_register_dialog(driver: &WebDriver) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             enter_guest(driver).await?;
@@ -5992,7 +5826,7 @@ pub(crate) mod tests {
             .unwrap_or_default())
     }
 
-    async fn post_json(
+    pub(crate) async fn post_json(
         driver: &WebDriver,
         path: &str,
         body: serde_json::Value,
@@ -6157,7 +5991,7 @@ pub(crate) mod tests {
         }))
     }
 
-    async fn get_json(driver: &WebDriver, path: &str) -> Result<serde_json::Value> {
+    pub(crate) async fn get_json(driver: &WebDriver, path: &str) -> Result<serde_json::Value> {
         // The API is the profile's worker's, on the profile's own origin:
         // ask from the profile's frame.
         enter_profile(driver).await?;
@@ -6259,7 +6093,7 @@ pub(crate) mod tests {
         }))
     }
 
-    fn successful_body<'a>(
+    pub(crate) fn successful_body<'a>(
         operation: &str,
         result: &'a serde_json::Value,
     ) -> &'a serde_json::Value {

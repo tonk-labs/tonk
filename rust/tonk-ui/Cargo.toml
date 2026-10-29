@@ -81,6 +81,9 @@ dialog-ucan-core = { workspace = true }
 port_check = { workspace = true }
 thirtyfour = { workspace = true }
 tonk-access-service = { workspace = true, features = ["helpers"] }
+# The id a deployment ships a kernel under, for the tests of the kernels
+# sites pin.
+tonk-kernel-world = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "process"] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
