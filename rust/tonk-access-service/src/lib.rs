@@ -17,6 +17,8 @@
 //!   allowlisted public referral tags forwarded
 //! - `/.well-known/oauth-*`, `/register`, `/authorize`, `/token` - The
 //!   OAuth authorization server for `/mcp` (see the [`oauth`] module)
+//! - `/mcp` - The hosted agent's MCP endpoint, forwarded to the Host
+//!   Worker over the `HOST_WORKER` service binding
 //!
 //! ## Request Format
 //!
@@ -107,6 +109,16 @@ async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
     #[cfg(target_arch = "wasm32")]
     if let Some(endpoint) = oauth::Endpoint::of(&req.path()) {
         return handlers::oauth::serve(req, env, endpoint).await;
+    }
+    // `/mcp` is the hosted agent's MCP endpoint, served by the Host
+    // Worker over the `HOST_WORKER` service binding. It is answered on
+    // this origin because this origin is the OAuth resource the
+    // authorization server issues tokens for.
+    if req.path() == "/mcp" || req.path().starts_with("/mcp/") {
+        return match env.service("HOST_WORKER") {
+            Ok(host) => host.fetch_request(req).await,
+            Err(_) => Response::error("this deployment serves no /mcp", 404),
+        };
     }
     let router = Router::new();
 
