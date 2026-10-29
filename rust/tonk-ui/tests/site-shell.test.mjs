@@ -30,14 +30,16 @@ const settle = async () => { for (let i = 0; i < 20; i++) await turn(); };
 //   that does not say a worker served it.
 // - `active`: whether the origin's worker is running already, whoever it
 //   controls.
-// - `pin`: the release the space pins, as its worker wrote it down.
-// - `persona`: the persona the profile pins, as its shell wrote it down.
-// - `runs`: the release the worker in control was registered for.
+// - `record`: what the site's boot record holds, as its worker or shell
+//   wrote it down: by default, a space pins a kernel and a profile nothing.
+// - `runs`: the kernel the worker in control was registered for: by default,
+//   the one the record pins.
 function boot(
   name,
   {
     address = "/", controlled = true, served = true, framed = "site", content = [], store = new Map(),
-    answers = {}, marked = false, active = false, pin = null, runs = null, persona = null,
+    answers = {}, marked = false, active = false,
+    record = name === "space" ? { v: 2, kernel: "bafkr4ispace" } : null, runs = record?.kernel ?? null,
   } = {},
 ) {
   const host = name === "profile" ? "profile.tonk.test" : "bspace.tonk.test";
@@ -62,14 +64,15 @@ function boot(
   }
   // What became of the worker's registration.
   const registration = { unregistered: false, unregister: async () => void (registration.unregistered = true) };
-  // What the shell keeps of what it boots: the persona a profile pins.
-  const booted = { record: persona ? { v: 2, kernel: persona } : null };
+  // What the shell keeps of what it boots: the kernel the site pins.
+  const booted = { record };
   const worker = {
-    scriptURL: `${origin}/boot.js${runs ? `?pin=${encodeURIComponent(runs)}` : ""}`,
+    scriptURL: `${origin}/kernel_boot.js${runs ? `?kernel=${encodeURIComponent(runs)}` : ""}`,
     postMessage(message, transfer) {
       toWorker.push(message);
       if (message.type === "protocol") transfer[0].postMessage({ protocol: 2 });
       if (message.type === "content") transfer[0].postMessage({ admitted: true });
+      if (message.type === "booted") transfer[0].postMessage({ booted: true });
     },
   };
   const container = {
@@ -160,10 +163,7 @@ function boot(
     },
     caches: {
       open: async () => ({
-        match: async () =>
-          booted.record ? new Response(JSON.stringify(booted.record))
-          : pin ? new Response(JSON.stringify({ v: 1, pin }))
-          : undefined,
+        match: async () => (booted.record ? new Response(JSON.stringify(booted.record)) : undefined),
         put: async (_key, response) => void (booted.record = await response.json()),
       }),
     },
@@ -195,10 +195,14 @@ function boot(
 }
 
 // What a deployment ships: a profile with no persona of its own runs the one
-// named here, and a space reads no kernel in it.
-const SHIPS = { "/_host/kernel.json": { persona: "bafkr4ipersona" } };
-const SCRIPTS = { space: "/boot.js", profile: "/kernel_boot.js?kernel=bafkr4ipersona" };
+// named here, and a space that pins its own kernel reads none in it.
+const SHIPS = { "/_host/kernel.json": { kernel: "bafkr4ikernel", persona: "bafkr4ipersona" } };
+const SCRIPTS = { space: "/kernel_boot.js?kernel=bafkr4ispace", profile: "/kernel_boot.js?kernel=bafkr4ipersona" };
 const STARTING = { space: ["installing its worker"], profile: ["installing its worker", "waiting for its worker"] };
+// Where the shell the server served goes once its worker is in control: a
+// space's kernel starts, and the frame goes to the address the kernel answers;
+// a profile loads once more, for the worker to serve it.
+const UNDER_WORKER = { space: [["replace", "/"]], profile: [["reload"]] };
 
 for (const name of ["space", "profile"]) {
   test(`${name}: the shell brings the site up from its own origin and shows the route`, async () => {
@@ -219,7 +223,7 @@ for (const name of ["space", "profile"]) {
     const asked = site.asked.length;
 
     // A new build of the same worker takes control.
-    site.takenBy("/boot.js");
+    site.takenBy(SCRIPTS[name]);
     await settle();
     assert.deepEqual(site.went, [], "the page stays as it is");
     assert.deepEqual(site.ran, ran, "and nothing of the site runs again");
@@ -278,9 +282,9 @@ for (const name of ["space", "profile"]) {
 
     site.takenBy(script);
     await settle();
-    // The server, not the worker, served this document: it loads once more,
-    // for the worker to serve it.
-    assert.deepEqual(site.went, [["reload"]]);
+    // The server, not the worker, served this document: the worker serves
+    // what comes after it.
+    assert.deepEqual(site.went, UNDER_WORKER[name]);
     assert.deepEqual(site.ran, [], "nothing of the site runs before its worker serves the shell");
   });
 
@@ -292,7 +296,7 @@ for (const name of ["space", "profile"]) {
 
     site.takenBy(SCRIPTS[name]);
     await settle();
-    assert.deepEqual(site.went, [["reload"]], "and loads once more, for the worker to serve it");
+    assert.deepEqual(site.went, UNDER_WORKER[name], "and goes on under the worker");
   });
 
   test(`${name}: it asks nothing of a worker that is not running yet`, async () => {
@@ -469,37 +473,53 @@ test("the app's page stays put on the app's own origin", () => {
   assert.equal(app.site, false);
 });
 
-const PIN = "https://tonk.network/releases/bafkreib7f5smq4ggn5xwqas57gchvhvfry6ym7jbw5h3w4zg7wtwk33l2i/worker.js";
-const OTHER = "https://tonk.network/releases/bafkreiebnz2m3oin767zzlo5idwbljwfe6oakn7nihb2umtqj3c6q4bncm/worker.js";
-
-test("a space registers the bootloader for the release it pins", async () => {
-  const site = boot("space", { controlled: false, served: false, pin: PIN });
+test("a space registers the worker of the kernel it pins", async () => {
+  const site = boot("space", { controlled: false, served: false, answers: SHIPS });
   await settle();
-  assert.equal(site.container.registered[0][0], `/boot.js?pin=${encodeURIComponent(PIN)}`);
+  assert.equal(site.container.registered[0][0], "/kernel_boot.js?kernel=bafkr4ispace");
 });
 
-test("a space under the worker of the release it pins is brought up", async () => {
-  const site = boot("space", { pin: PIN, runs: PIN });
+test("a space under the worker of the kernel it pins is brought up", async () => {
+  const site = boot("space");
   await settle();
   assert.equal(site.registration.unregistered, false);
+  assert.deepEqual(site.container.registered, []);
   assert.deepEqual(site.went, []);
   assert.match(site.body.innerHTML, /tonk-display/);
 });
 
-for (const [what, options, script] of [
-  ["a space that pinned a release since", { pin: PIN, runs: null }, `/boot.js?pin=${encodeURIComponent(PIN)}`],
-  ["a space that pins another release now", { pin: OTHER, runs: PIN }, `/boot.js?pin=${encodeURIComponent(OTHER)}`],
-  ["a space that pins none any more", { pin: null, runs: PIN }, "/boot.js"],
+test("a space that pins no kernel runs the one its deployment ships, and pins it", async () => {
+  // A release pinned before kernels, which no worker runs any more.
+  const release = { v: 1, pin: "https://tonk.network/releases/bafkreib7f5smq4ggn5xwqas57gchvhvfry6ym7jbw5h3w4zg7wtwk33l2i/worker.js" };
+  for (const record of [null, release]) {
+    const site = boot("space", { controlled: false, served: false, record, answers: SHIPS });
+    await settle();
+    assert.equal(site.container.registered[0][0], "/kernel_boot.js?kernel=bafkr4ikernel");
+    assert.deepEqual(site.booted.record, { v: 2, kernel: "bafkr4ikernel" });
+  }
+});
+
+test("a space with no kernel to run starts no worker and says why", async () => {
+  const site = boot("space", { controlled: false, served: false, record: null });
+  await settle();
+  assert.deepEqual(site.container.registered, []);
+  assert.match(site.failed.join(" "), /pins no kernel/);
+});
+
+for (const [what, options] of [
+  ["a space under the bootloader of a release", { runs: null }],
+  ["a space under another kernel's worker", { runs: "bafkr4iother" }],
 ]) {
-  test(`${what} registers the worker of its release in place and is brought up under it`, async () => {
+  test(`${what} registers the worker of its kernel in place and is brought up under it`, async () => {
+    const script = SCRIPTS.space;
     const site = boot("space", options);
     await settle();
     assert.deepEqual(site.container.registered.map(([registered]) => registered), [script]);
     assert.equal(site.registration.unregistered, false, "the worker it has is not withdrawn");
     assert.equal(site.said.at(-1), "switching its worker");
-    assert.deepEqual(site.ran, [], "nothing of the site runs under the other release");
+    assert.deepEqual(site.ran, [], "nothing of the site runs under the other worker");
 
-    // The browser says the controller changed, with the other release still
+    // The browser says the controller changed, with the other worker still
     // in control.
     site.workerListeners.controllerchange();
     await settle();
@@ -528,7 +548,7 @@ test("a profile runs the persona it pins, whatever its deployment ships", async 
   const site = boot("profile", {
     controlled: false,
     served: false,
-    persona: "bafkr4ipinned",
+    record: { v: 2, kernel: "bafkr4ipinned" },
     answers: { "/_host/kernel.json": { kernel: "bafkr4ikernel", persona: "bafkr4inewer" } },
   });
   await settle();

@@ -6,7 +6,6 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -33,11 +32,6 @@ function fixtureDist() {
     join(UI, "assets", "service_worker.js"),
     join(dist, "service_worker.js"),
   );
-  writeFileSync(
-    join(dist, "worker.js"),
-    "export default async function init() {}\nexport function activate() {}\n",
-  );
-  writeFileSync(join(dist, "worker_bg.wasm"), "worker-wasm-fixture\n");
   writeFileSync(join(dist, "ui-a1b2c3.js"), "export const ui = 1;\n");
   writeFileSync(join(dist, "ui-a1b2c3.js.map"), "source map fixture");
   mkdirSync(join(dist, "agent"));
@@ -112,11 +106,13 @@ test("the page build tracks top-level document resources and ignores guest code"
   const stamp = (mutate) => {
     const dist = fixtureDist();
     try {
-      // What a site's own origin runs: its worker, stamped with the hash
-      // of the wasm it boots, and its shells.
-      for (const name of ["release.js", "boot.js", "space.html", "profile.html"]) {
+      // What a site's own origin runs: its worker, the kernel it hosts,
+      // and its shells.
+      for (const name of ["kernel_boot.js", "space.html", "profile.html"]) {
         copyFileSync(join(UI, "assets", name), join(dist, name));
       }
+      mkdirSync(join(dist, "_host", "kernel"), { recursive: true });
+      writeFileSync(join(dist, "_host", "kernel", "bafkr4ikernel.wasm"), "kernel A\n");
       mutate(dist);
       const result = spawnSync("sh", [STAMP, dist], { encoding: "utf8" });
       assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -138,8 +134,8 @@ test("the page build tracks top-level document resources and ignores guest code"
     writeFileSync(join(dist, "guest", "guest_bg-a1b2c3.wasm"), "guest wasm B\n");
     writeFileSync(join(dist, "tonk-prose", "tonk-prose-editor.js"), "editor B\n");
   });
-  const worker = stamp((dist) => {
-    writeFileSync(join(dist, "worker_bg.wasm"), "worker-wasm B\n");
+  const kernel = stamp((dist) => {
+    writeFileSync(join(dist, "_host", "kernel", "bafkr4ikernel.wasm"), "kernel B\n");
   });
   const page = stamp((dist) => {
     writeFileSync(join(dist, "ui-a1b2c3.js"), "export const ui = 2;\n");
@@ -147,150 +143,14 @@ test("the page build tracks top-level document resources and ignores guest code"
 
   assert.notEqual(guest.build, base.build);
   assert.equal(guest.page, base.page, "guest and editor code do not change the page");
-  assert.notEqual(worker.build, base.build);
-  assert.equal(worker.page, base.page, "worker code does not change the page");
+  assert.notEqual(kernel.build, base.build);
+  assert.equal(kernel.page, base.page, "the kernel a site runs does not change the page");
   const shell = stamp((dist) => {
     writeFileSync(join(dist, "profile.html"), "<!doctype html><title>another shell</title>\n");
   });
   assert.notEqual(shell.build, base.build);
   assert.equal(shell.page, base.page, "what a site's origin runs does not change the page");
   assert.notEqual(page.page, base.page, "top-level code changes the page");
-});
-
-// The content identifier that names a release: a CIDv1 with the raw codec
-// and the SHA-256 of the file, in base32.
-function cid(path) {
-  const bytes = Buffer.concat([
-    Buffer.from([0x01, 0x55, 0x12, 0x20]),
-    createHash("sha256").update(readFileSync(path)).digest(),
-  ]);
-  const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
-  let bits = "";
-  for (const byte of bytes) bits += byte.toString(2).padStart(8, "0");
-  let out = "b";
-  for (let at = 0; at < bits.length; at += 5) {
-    out += alphabet[parseInt(bits.slice(at, at + 5).padEnd(5, "0"), 2)];
-  }
-  return out;
-}
-
-test("the publisher builds the release a site's worker loads, and names it by its content", () => {
-  const stamp = (mutate = () => {}) => {
-    const dist = fixtureDist();
-    for (const name of ["release.js", "boot.js"]) {
-      copyFileSync(join(UI, "assets", name), join(dist, name));
-    }
-    mutate(dist);
-    const run = () => {
-      const result = spawnSync("sh", [STAMP, dist], { encoding: "utf8" });
-      assert.equal(result.status, 0, result.stderr || result.stdout);
-      const releases = readdirSync(join(dist, "_release"));
-      assert.equal(releases.length, 1, "one release is published with a build");
-      return releases[0];
-    };
-    return { dist, run };
-  };
-
-  const { dist, run } = stamp();
-  try {
-    const release = run();
-    const script = join(dist, "_release", release, "worker.js");
-    assert.equal(release, cid(script), "a release is named by the content of its worker.js");
-
-    const source = readFileSync(script, "utf8");
-    assert.doesNotMatch(source, /^\s*(import|export)\s/m, "worker.js is one classic script");
-    assert.match(source, /self\.release = \{/, "worker.js says what release it is");
-    assert.doesNotMatch(
-      source,
-      /self\.addEventListener\(/,
-      "a release adds no listener to the worker",
-    );
-    assert.deepEqual(
-      readFileSync(join(dist, "_release", release, "worker_bg.wasm")),
-      readFileSync(join(dist, "worker_bg.wasm")),
-      "a release's wasm sits beside its script",
-    );
-
-    assert.match(
-      readFileSync(join(dist, "boot.js"), "utf8"),
-      new RegExp(`^const CURRENT_RELEASE = "/_release/${release}/worker\\.js";$`, "m"),
-      "the bootloader is stamped with the release built alongside it",
-    );
-    const manifest = JSON.parse(readFileSync(join(dist, "asset-manifest.json"), "utf8"));
-    assert.ok(manifest.assets["/boot.js"], "the bootloader is part of the build's identity");
-    assert.deepEqual(
-      Object.keys(manifest.assets).filter((path) => path.startsWith("/_release/")),
-      [],
-      "a release is no resource of a page",
-    );
-
-    assert.equal(run(), release, "publishing again names the same release");
-  } finally {
-    rmSync(dist, { recursive: true, force: true });
-  }
-
-  const other = stamp((dist) => writeFileSync(join(dist, "worker_bg.wasm"), "worker-wasm B\n"));
-  try {
-    const { dist: first, run: again } = stamp();
-    try {
-      assert.notEqual(other.run(), again(), "another wasm is another release");
-    } finally {
-      rmSync(first, { recursive: true, force: true });
-    }
-  } finally {
-    rmSync(other.dist, { recursive: true, force: true });
-  }
-});
-
-test("a store of releases keeps the newest few, and a build serves all it keeps", () => {
-  const store = mkdtempSync(join(tmpdir(), "tonk-release-store-"));
-  const publish = (wasm) => {
-    const dist = fixtureDist();
-    try {
-      for (const name of ["release.js", "boot.js"]) {
-        copyFileSync(join(UI, "assets", name), join(dist, name));
-      }
-      writeFileSync(join(dist, "worker_bg.wasm"), wasm);
-      const result = spawnSync("sh", [STAMP, dist], {
-        encoding: "utf8",
-        env: { ...process.env, TONK_RELEASE_STORE: store, TONK_RELEASE_KEEP: "2" },
-      });
-      assert.equal(result.status, 0, result.stderr || result.stdout);
-      const current = /^const CURRENT_RELEASE = "\/_release\/([a-z2-7]+)\/worker\.js";$/m.exec(
-        readFileSync(join(dist, "boot.js"), "utf8"),
-      )[1];
-      const served = readdirSync(join(dist, "_release")).sort();
-      for (const release of served) {
-        assert.equal(
-          release,
-          cid(join(dist, "_release", release, "worker.js")),
-          "a release served again is the one that was published",
-        );
-      }
-      return { current, served };
-    } finally {
-      rmSync(dist, { recursive: true, force: true });
-    }
-  };
-  try {
-    const first = publish("wasm one\n");
-    assert.deepEqual(first.served, [first.current]);
-
-    const second = publish("wasm two\n");
-    assert.deepEqual(second.served, [first.current, second.current].sort(), "the release before is still served");
-
-    const third = publish("wasm three\n");
-    assert.deepEqual(
-      third.served,
-      [second.current, third.current].sort(),
-      "the store holds its newest two, and the oldest is gone",
-    );
-
-    const again = publish("wasm three\n");
-    assert.deepEqual(again.served, third.served, "publishing a release again changes nothing");
-  } finally {
-    rmSync(store, { recursive: true, force: true });
-  }
 });
 
 test("trunk's unordered module preloads do not change the build identity", () => {
@@ -373,7 +233,7 @@ test("tonk-code source identity changes when its TypeScript configuration change
   }
 });
 
-test("the built document and worker carry the same immutable build id", () => {
+test("the app's worker carries the build id the version names", () => {
   const dist = fixtureDist();
   try {
     const result = spawnSync("sh", [STAMP, dist], { encoding: "utf8" });
@@ -381,21 +241,12 @@ test("the built document and worker carry the same immutable build id", () => {
 
     const version = JSON.parse(readFileSync(join(dist, "version.json"), "utf8"));
     const worker = readFileSync(join(dist, "service_worker.js"), "utf8");
-    const document = readFileSync(join(dist, "index.html"), "utf8");
     assert.match(version.build, /^[0-9a-f]{16}$/);
     assert.match(version.serviceWorker, /^[0-9a-f]{16}$/);
-    assert.match(version.workerWasm, /^[0-9a-f]{16}$/);
     assert.match(version.assetManifest, /^[0-9a-f]{64}$/);
     assert.match(
       worker,
       new RegExp(`^const BUILD_ID = "${version.build}";$`, "m"),
-    );
-    assert.match(
-      document,
-      new RegExp(
-        `<meta\\s+name="tonk-worker-build"\\s+content="${version.build}"\\s*/?>`,
-      ),
-      "index.html must embed the worker build it was emitted alongside; a live version probe is not document provenance",
     );
 
     const originalBuild = version.build;
@@ -447,7 +298,7 @@ test("a catchable publish failure restores the complete previous generation", ()
       paths.map((path) => [path, readFileSync(join(dist, path), "utf8")]),
     );
 
-    writeFileSync(join(dist, "worker.js"), "export const worker = 2;\n");
+    writeFileSync(join(dist, "ui-a1b2c3.js"), "export const ui = 2;\n");
 
     const shimDir = join(dist, "shim-bin");
     mkdirSync(shimDir);

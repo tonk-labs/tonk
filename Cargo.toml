@@ -267,8 +267,3 @@ strip = "debuginfo"
 inherits = "release"
 opt-level = "z"
 lto = "fat"
-
-[profile.wasm-worker-release]
-inherits = "release"
-opt-level = "s"
-lto = "fat"
