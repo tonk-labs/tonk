@@ -41,6 +41,10 @@ run_worker_first = [
   "/connection/*",
   "/ucan",
   "/ucan/*",
+  # The OAuth authorization server for `/mcp`.
+  "/.well-known/oauth-protected-resource/*",
+  "/.well-known/oauth-authorization-server",
+  "/register",
 ]
 
 # Every space's objects. `/ucan/` never presigns this bucket's S3

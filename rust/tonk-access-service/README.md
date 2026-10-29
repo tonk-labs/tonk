@@ -17,6 +17,11 @@ The Worker (`src/lib.rs`) routes:
 - `GET /.well-known/tonk`: same-origin browser deployment configuration.
 - `GET /`: service info as JSON (`service`, `version`).
 - `GET /health`: liveness check (`OK`).
+- `GET /.well-known/oauth-protected-resource/mcp`, `GET /.well-known/oauth-authorization-server`, `POST /register`: the OAuth authorization server for `/mcp` (`src/oauth.rs`).
+
+### OAuth for `/mcp`
+
+This origin is both the resource (`<origin>/mcp`) and its authorization server. Clients are public and identify themselves by a Client ID Metadata Document (an HTTPS `client_id`) or by dynamic registration, whose `client_id` carries the registered metadata signed by the service, so registration stores nothing. Callbacks are HTTPS on a public name, or `http://localhost`, `127.0.0.1` or `[::1]` on any port.
 
 `GET /.well-known/tonk` returns canonical camelCase JSON:
 
