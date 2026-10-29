@@ -495,7 +495,7 @@ impl crate::layer::BlobChunks for HandleChunks {
 const CHUNK: usize = 1024 * 1024;
 
 /// The bytes of `stream`, read to its end.
-async fn read_all(mut stream: wit_bindgen::StreamReader<u8>) -> Vec<u8> {
+pub(crate) async fn read_all(mut stream: wit_bindgen::StreamReader<u8>) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut chunk = Vec::with_capacity(64 * 1024);
     loop {

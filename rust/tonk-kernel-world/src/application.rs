@@ -23,6 +23,12 @@
 //!   delegation to the representative, `{ "ask": id, "ceremony": link64 }`;
 //!   and, for an account the ceremony created, to enroll it at the access
 //!   service, `{ "ask": id, "enroll": true }`, answered with the receipt
+//! - asked of the worker of a space, by the space's DID, for an answer that
+//!   comes in pieces, such as a subscription's: `{ "ask": id, "to": did,
+//!   "method", "path", "body", "stream": true }`, answered with its status
+//!   first, `{ "answer": id, "status" }`, then each piece, `{ "piece": id,
+//!   "body64" }`, then that it ended, `{ "end": id }`; this worker tells the
+//!   embedder when it stops reading, `{ "tell": "cancel", "ask": id }`
 //! - answered: `{ "answer": id, "status", "body": text }`, or
 //!   `{ "answer": id, "error": text }` when it could not be answered.
 //!
@@ -40,7 +46,11 @@ use std::sync::{Mutex, PoisonError};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use futures::channel::oneshot;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use futures::Stream;
+use futures::channel::{mpsc, oneshot};
 use serde_json::{Value, json};
 
 use crate::world::sapling::kernel::application;
@@ -61,6 +71,73 @@ pub struct Delivered {
 struct Pending {
     next: u64,
     waiting: HashMap<u64, oneshot::Sender<Result<Answer, Error>>>,
+    /// The answers that come in pieces, by the id they were asked under:
+    /// what their status goes to, until it comes, and their pieces.
+    streams: HashMap<u64, Streaming>,
+}
+
+struct Streaming {
+    status: Option<oneshot::Sender<Result<u16, Error>>>,
+    pieces: mpsc::UnboundedSender<Vec<u8>>,
+}
+
+/// The pieces of an answer of another worker, as they come. Dropping it
+/// tells the embedder this worker stopped reading.
+pub struct Pieces {
+    id: u64,
+    pieces: mpsc::UnboundedReceiver<Vec<u8>>,
+}
+
+impl Stream for Pieces {
+    type Item = Vec<u8>;
+
+    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Vec<u8>>> {
+        Pin::new(&mut self.pieces).poll_next(context)
+    }
+}
+
+impl Drop for Pieces {
+    fn drop(&mut self) {
+        let id = self.id;
+        if pending(|pending| pending.streams.remove(&id)).is_none() {
+            return;
+        }
+        wit_bindgen::spawn_local(async move {
+            let cancel = json!({ "tell": "cancel", "ask": id });
+            let _ = application::send(cancel.to_string().into_bytes()).await;
+        });
+    }
+}
+
+/// Ask the worker of the space `to` for what `method` on `path` answers,
+/// with `body`, in pieces as it writes them: its status, and the pieces.
+pub async fn ask_streaming(
+    to: &str,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> Result<(u16, Pieces), Error> {
+    let (status, answered) = oneshot::channel();
+    let (sender, pieces) = mpsc::unbounded();
+    let id = pending(|pending| {
+        let id = pending.next;
+        pending.next += 1;
+        pending.streams.insert(
+            id,
+            Streaming {
+                status: Some(status),
+                pieces: sender,
+            },
+        );
+        id
+    });
+    let pieces = Pieces { id, pieces };
+    let message = json!({ "ask": id, "to": to, "method": method, "path": path, "body": body, "stream": true });
+    application::send(message.to_string().into_bytes()).await?;
+    let status = answered
+        .await
+        .unwrap_or_else(|_| Err(Error::BrokeOff("the embedder dropped the request".into())))?;
+    Ok((status, pieces))
 }
 
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
@@ -70,6 +147,7 @@ fn pending<R>(touch: impl FnOnce(&mut Pending) -> R) -> R {
     touch(held.get_or_insert_with(|| Pending {
         next: 1,
         waiting: HashMap::new(),
+        streams: HashMap::new(),
     }))
 }
 
@@ -256,9 +334,47 @@ pub fn received(message: &[u8]) -> Result<Option<Told>, Error> {
         }
         _ => {}
     }
+    if let Some(id) = message.get("piece").and_then(Value::as_u64) {
+        let piece = message
+            .get("body64")
+            .and_then(Value::as_str)
+            .and_then(|body| BASE64.decode(body).ok())
+            .unwrap_or_default();
+        pending(|pending| {
+            if let Some(streaming) = pending.streams.get(&id) {
+                let _ = streaming.pieces.unbounded_send(piece);
+            }
+        });
+        return Ok(None);
+    }
+    if let Some(id) = message.get("end").and_then(Value::as_u64) {
+        pending(|pending| pending.streams.remove(&id));
+        return Ok(None);
+    }
     let Some(id) = message.get("answer").and_then(Value::as_u64) else {
         return Err(Error::Invalid("the message answers nothing asked".into()));
     };
+    let status = pending(|pending| {
+        pending
+            .streams
+            .get_mut(&id)
+            .and_then(|streaming| streaming.status.take())
+    });
+    if let Some(status) = status {
+        let answered = match message.get("error").and_then(Value::as_str) {
+            Some(error) => {
+                pending(|pending| pending.streams.remove(&id));
+                Err(Error::Unavailable(error.to_owned()))
+            }
+            None => Ok(message
+                .get("status")
+                .and_then(Value::as_u64)
+                .and_then(|status| u16::try_from(status).ok())
+                .unwrap_or(502)),
+        };
+        let _ = status.send(answered);
+        return Ok(None);
+    }
     let Some(answered) = pending(|pending| pending.waiting.remove(&id)) else {
         return Ok(None);
     };

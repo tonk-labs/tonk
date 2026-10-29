@@ -208,6 +208,16 @@ async fn run(
     let mut kernel = Kernel::load(&engine, &bytes, layers)
         .await
         .map_err(|error| JsError::new(&error))?;
+    // The kernel serves this worker's origin.
+    let location = Reflect::get(&js_sys::global(), &"location".into()).unwrap_or_default();
+    let part = |name: &str| {
+        Reflect::get(&location, &name.into())
+            .ok()
+            .and_then(|value| value.as_string())
+    };
+    if let (Some(protocol), Some(host)) = (part("protocol"), part("host")) {
+        kernel.serve_at(protocol.trim_end_matches(':'), &host);
+    }
     let mut messages = kernel.messages();
     wasm_bindgen_futures::spawn_local(async move {
         while let Some(sent) = messages.next().await {

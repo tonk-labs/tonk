@@ -21,7 +21,7 @@ const ACCESS = { subject: SPACE, command: "/", arguments: [], reason: "serve the
 // against stand-ins for a service worker's globals and for the embedder.
 // `holds` is the kernel the space already holds, if any; `shipped` is what
 // the deployment serves under `/_host/kernel/`.
-function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } } = {}) {
+function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, origin = ORIGIN } = {}) {
   const listeners = {};
   const told = [];
   const booted = [];
@@ -82,7 +82,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
   let offline = false;
   const network = async (address) => {
     if (offline) throw new TypeError("Failed to fetch");
-    const path = new URL(typeof address === "string" ? address : address.url, ORIGIN).pathname;
+    const path = new URL(typeof address === "string" ? address : address.url, origin).pathname;
     fetched.push(path);
     if (path === "/space.html") return new Response("<head></head>SHELL");
     const id = /^\/_host\/kernel\/(.+)\.wasm$/.exec(path)?.[1];
@@ -90,7 +90,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     return new Response("", { status: 404 });
   };
   const self = {
-    location: new URL(`/kernel_boot.js?kernel=${pinned}`, ORIGIN),
+    location: new URL(`/kernel_boot.js?kernel=${pinned}`, origin),
     addEventListener: (type, listener) => void (listeners[type] = listener),
     skipWaiting: async () => {},
     clients: { claim: async () => {}, matchAll: async () => pages, get: async (id) => (id === "page-1" ? pages[0] : undefined) },
@@ -103,13 +103,13 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     performance,
     crypto,
     URL, Request, Response, Headers, TextEncoder, TextDecoder, Uint8Array, Promise, ReadableStream, TransformStream,
-    setTimeout, queueMicrotask,
+    setTimeout, clearTimeout, queueMicrotask,
     // The host's files this worker keeps; for a space that holds its
     // kernel, who it acts for, as its first start kept.
     caches: (() => {
       const kept = new Map(
         holds
-          ? [[new URL("/_host/standing.json", ORIGIN).href, Response.json({ representative: REPRESENTATIVE, persona: PERSONA })]]
+          ? [[new URL("/_host/standing.json", origin).href, Response.json({ representative: REPRESENTATIVE, persona: PERSONA })]]
           : [],
       );
       const key = (request) => (typeof request === "string" ? request : request.url);
@@ -149,7 +149,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     const waits = [];
     listeners.fetch({
       request: {
-        url: new URL(path, ORIGIN).href,
+        url: new URL(path, origin).href,
         method,
         mode,
         headers: new Headers(),
@@ -363,4 +363,30 @@ test("the kernel sends the page that asked somewhere, through its host", async (
   );
   await site.booted[0].sent(new TextEncoder().encode(JSON.stringify({ tell: "navigate", client: "page-1", href: "/" })));
   assert.deepEqual(JSON.parse(JSON.stringify(site.told.at(-1))), { type: "navigate", href: "/" });
+});
+
+test("the profile passes what a page asks about a space's content to that space's kernel, as it answers", async () => {
+  const profile = space({ origin: "https://profile.tonk.test" });
+  const asked = [];
+  const host = {
+    postMessage: ({ call, request }) => {
+      asked.push(request);
+      queueMicrotask(() => {
+        host.onmessage({ data: { call, head: { status: 200, headers: [["content-type", "text/event-stream"]] } } });
+        host.onmessage({ data: { call, chunk: new TextEncoder().encode("data: 1\n\n").buffer } });
+        host.onmessage({ data: { call, end: true } });
+      });
+    },
+  };
+  profile.listeners.message({ data: { type: "space-port", repo: SPACE }, ports: [host], waitUntil() {} });
+  const path = `/api/repository/${SPACE}/branch/main/query`;
+  const response = await profile.request(path, { method: "POST" });
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "data: 1\n\n");
+  assert.deepEqual(
+    asked.map(({ method, path }) => ({ method, path })),
+    [{ method: "POST", path }],
+    "the space's kernel is asked, not the persona",
+  );
+  assert.ok(!profile.handled.includes(`POST ${path}`), "the persona is not asked about the space");
 });

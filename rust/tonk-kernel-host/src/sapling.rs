@@ -7,6 +7,9 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 use std::collections::HashMap;
 
+use dialog_credentials::Signer;
+use dialog_ucan_core::DelegationChain;
+use dialog_varsig::Did;
 use ed25519_dalek::SigningKey;
 use futures::channel::mpsc::UnboundedSender;
 use wcmp::{
@@ -17,12 +20,15 @@ use crate::bindings::sapling::kernel::{application, network, storage, types};
 use crate::credentials::{Held, Key, Representation, Standing};
 use crate::http_types::{HttpHost, HttpTable};
 use crate::layers::{self, LayerSpace, Layers};
+use crate::remote::Replica;
 use storage::{BlobRead, ByteRange, Edition, Encoding, Layer};
 use types::Error;
 
 /// The host data of a store that runs a guest kernel.
-#[derive(Default)]
 pub struct KernelHost {
+    /// The origin the guest kernel's requests are made to, by its scheme
+    /// and its authority: the origin of the site it serves.
+    pub origin: (String, String),
     pub http: HttpTable,
     /// Where the layers are kept.
     pub layers: Layers,
@@ -43,6 +49,10 @@ pub struct KernelHost {
     pub sent: Vec<Vec<u8>>,
     /// What takes the messages the guest kernel sends, as it sends them.
     pub outbox: Option<UnboundedSender<Vec<u8>>>,
+    /// Each peer a handle names: its DID, and the address it is reached at.
+    pub(crate) peers: Vec<(String, String)>,
+    /// Each replica a handle names.
+    pub(crate) replicas: Vec<Replica>,
     /// What takes the address a provisional persona asks to merge into, as
     /// it asks.
     pub merges: Option<UnboundedSender<String>>,
@@ -60,7 +70,31 @@ impl KernelHost {
             ..Self::default()
         }
     }
+}
 
+impl Default for KernelHost {
+    fn default() -> Self {
+        Self {
+            origin: ("https".to_owned(), "space.localhost".to_owned()),
+            http: HttpTable::default(),
+            layers: Layers::default(),
+            names: Vec::new(),
+            opened: HashMap::new(),
+            keys: Vec::new(),
+            representatives: Vec::new(),
+            personas: Vec::new(),
+            sessions: Vec::new(),
+            sent: Vec::new(),
+            outbox: None,
+            peers: Vec::new(),
+            replicas: Vec::new(),
+            merges: None,
+            linked: None,
+        }
+    }
+}
+
+impl KernelHost {
     /// A handle on the layer of `subject`, for the boot or for `open`.
     pub fn layer(&mut self, subject: &str) -> Resource<Layer> {
         self.names.push(subject.to_owned());
@@ -340,14 +374,9 @@ impl<T: 'static> application::HostWithStore<T> for Sapling {
 
 impl network::Host for KernelHost {}
 
-/// What every call on a peer answers until this host reaches the network.
-fn offline() -> Error {
-    Error::Unavailable("this host has no network".into())
-}
-
 impl network::HostPeer for KernelHost {
-    fn did(&mut self, _peer: Resource<network::Peer>) -> String {
-        String::new()
+    fn did(&mut self, peer: Resource<network::Peer>) -> String {
+        self.peers[peer.rep() as usize].0.clone()
     }
 
     fn drop(&mut self, _peer: Resource<network::Peer>) -> wcmp::Result<()> {
@@ -356,8 +385,8 @@ impl network::HostPeer for KernelHost {
 }
 
 impl network::HostReplica for KernelHost {
-    fn subject(&mut self, _replica: Resource<network::Replica>) -> String {
-        String::new()
+    fn subject(&mut self, replica: Resource<network::Replica>) -> String {
+        self.replicas[replica.rep() as usize].subject().to_string()
     }
 
     fn drop(&mut self, _replica: Resource<network::Replica>) -> wcmp::Result<()> {
@@ -366,126 +395,214 @@ impl network::HostReplica for KernelHost {
 }
 
 impl<T: 'static> network::HostWithStore<T> for Sapling {
+    /// A peer is reached at the first of its routes that is an address of
+    /// the web, as an access service is.
     async fn open(
-        _accessor: &Accessor<T, Self>,
-        _peer: String,
-        _routes: Vec<String>,
+        accessor: &Accessor<T, Self>,
+        peer: String,
+        routes: Vec<String>,
     ) -> Result<Resource<network::Peer>, Error> {
         trace("network.open");
-        Err(offline())
+        let endpoint = routes
+            .into_iter()
+            .find(|route| route.starts_with("https://") || route.starts_with("http://"))
+            .ok_or_else(|| Error::Unreachable(format!("{peer} names no route this host dials")))?;
+        Ok(accessor.with(|mut access| {
+            let host = access.get();
+            host.peers.push((peer, endpoint));
+            Resource::new_own((host.peers.len() - 1) as u32)
+        }))
     }
 
     async fn home(_accessor: &Accessor<T, Self>) -> Result<String, Error> {
         trace("network.home");
-        Err(offline())
+        Err(Error::Unavailable(
+            "this host names no peer of its deployment yet".into(),
+        ))
     }
 }
 
 impl<T: 'static> network::HostPeerWithStore<T> for Sapling {
+    /// The replica of `subject` on the peer, acted on under `chain`, whose
+    /// last audience is a key this host holds for the guest kernel: the
+    /// key that signs each of its operations.
     async fn open(
-        _accessor: &Accessor<T, Self>,
-        _peer: Resource<network::Peer>,
-        _subject: String,
-        _chain: Vec<u8>,
+        accessor: &Accessor<T, Self>,
+        peer: Resource<network::Peer>,
+        subject: String,
+        chain: Vec<u8>,
     ) -> Result<Resource<network::Replica>, Error> {
         trace("peer.open");
-        Err(offline())
+        let chain = DelegationChain::try_from(chain.as_slice())
+            .map_err(|error| Error::Invalid(format!("the chain is unreadable: {error}")))?;
+        let subject: Did = subject
+            .parse()
+            .map_err(|_| Error::Invalid(format!("{subject} is not a DID")))?;
+        let audience = chain.audience().to_string();
+        let (endpoint, key) = accessor.with(|mut access| {
+            let host = access.get();
+            let endpoint = host.peers[peer.rep() as usize].1.clone();
+            let key = host.keys.iter().find(|key| key.did() == audience).cloned();
+            (endpoint, key)
+        });
+        let key = key.ok_or_else(|| {
+            Error::Denied(format!(
+                "the chain is delegated to {audience}, a key this host does not hold"
+            ))
+        })?;
+        let signer = Signer::from(key.signer().await?);
+        let replica = Replica::new(subject, chain, signer, &endpoint);
+        Ok(accessor.with(|mut access| {
+            let host = access.get();
+            host.replicas.push(replica);
+            Resource::new_own((host.replicas.len() - 1) as u32)
+        }))
     }
+}
+
+/// The replica a handle names.
+fn replica<T: 'static>(
+    accessor: &Accessor<T, Sapling>,
+    replica: &Resource<network::Replica>,
+) -> Replica {
+    accessor.with(|mut access| access.get().replicas[replica.rep() as usize].clone())
 }
 
 impl<T: 'static> network::HostReplicaWithStore<T> for Sapling {
     async fn get(
-        _accessor: &Accessor<T, Self>,
-        _replica: Resource<network::Replica>,
-        _catalog: String,
-        _key: Vec<u8>,
+        accessor: &Accessor<T, Self>,
+        handle: Resource<network::Replica>,
+        catalog: String,
+        key: Vec<u8>,
     ) -> Result<Option<Vec<u8>>, Error> {
-        Err(offline())
+        trace("replica.get");
+        replica(accessor, &handle).get(&catalog, &key).await
     }
 
     async fn get_many(
-        _accessor: &Accessor<T, Self>,
-        _replica: Resource<network::Replica>,
-        _catalog: String,
-        _keys: Vec<Vec<u8>>,
+        accessor: &Accessor<T, Self>,
+        handle: Resource<network::Replica>,
+        catalog: String,
+        keys: Vec<Vec<u8>>,
     ) -> Result<Vec<Option<Vec<u8>>>, Error> {
-        Err(offline())
+        trace("replica.get_many");
+        let replica = replica(accessor, &handle);
+        futures::future::try_join_all(keys.iter().map(|key| replica.get(&catalog, key))).await
     }
 
     async fn put(
-        _accessor: &Accessor<T, Self>,
-        _replica: Resource<network::Replica>,
-        _catalog: String,
-        _key: Vec<u8>,
-        _bytes: Vec<u8>,
+        accessor: &Accessor<T, Self>,
+        handle: Resource<network::Replica>,
+        catalog: String,
+        key: Vec<u8>,
+        bytes: Vec<u8>,
     ) -> Result<(), Error> {
-        Err(offline())
+        trace("replica.put");
+        replica(accessor, &handle).put(&catalog, &key, bytes).await
     }
 
     async fn resolve(
-        _accessor: &Accessor<T, Self>,
-        _replica: Resource<network::Replica>,
-        _namespace: String,
-        _cell: String,
+        accessor: &Accessor<T, Self>,
+        handle: Resource<network::Replica>,
+        namespace: String,
+        cell: String,
     ) -> Result<Option<Edition>, Error> {
-        Err(offline())
+        trace("replica.resolve");
+        replica(accessor, &handle).resolve(&namespace, &cell).await
     }
 
     async fn publish(
-        _accessor: &Accessor<T, Self>,
-        _replica: Resource<network::Replica>,
-        _namespace: String,
-        _cell: String,
-        _content: Vec<u8>,
-        _when: Option<Vec<u8>>,
+        accessor: &Accessor<T, Self>,
+        handle: Resource<network::Replica>,
+        namespace: String,
+        cell: String,
+        content: Vec<u8>,
+        when: Option<Vec<u8>>,
     ) -> Result<Vec<u8>, Error> {
-        Err(offline())
+        trace("replica.publish");
+        replica(accessor, &handle)
+            .publish(&namespace, &cell, content, when)
+            .await
     }
 
     async fn retract(
-        _accessor: &Accessor<T, Self>,
-        _replica: Resource<network::Replica>,
-        _namespace: String,
-        _cell: String,
-        _when: Vec<u8>,
+        accessor: &Accessor<T, Self>,
+        handle: Resource<network::Replica>,
+        namespace: String,
+        cell: String,
+        when: Vec<u8>,
     ) -> Result<(), Error> {
-        Err(offline())
+        trace("replica.retract");
+        replica(accessor, &handle)
+            .retract(&namespace, &cell, when)
+            .await
     }
 
+    /// An access service lists no cells: nothing that syncs asks it to.
     async fn list(
         _accessor: &Accessor<T, Self>,
-        _replica: Resource<network::Replica>,
+        _handle: Resource<network::Replica>,
         _namespace: String,
     ) -> Result<Vec<String>, Error> {
-        Err(offline())
+        Err(Error::Invalid("an access service lists no cells".into()))
     }
 
+    /// An access service says no blob's size: nothing that syncs asks it to.
     async fn size(
         _accessor: &Accessor<T, Self>,
-        _replica: Resource<network::Replica>,
+        _handle: Resource<network::Replica>,
         _key: Vec<u8>,
     ) -> Result<Option<u64>, Error> {
-        Err(offline())
+        Err(Error::Invalid(
+            "an access service says no blob's size".into(),
+        ))
     }
 
     async fn read(
-        _accessor: &Accessor<T, Self>,
-        _replica: Resource<network::Replica>,
-        _key: Vec<u8>,
-        _range: ByteRange,
+        accessor: &Accessor<T, Self>,
+        handle: Resource<network::Replica>,
+        key: Vec<u8>,
+        range: ByteRange,
         _size: Option<u64>,
         _encoding: Encoding,
         _proof: bool,
     ) -> Result<BlobRead, Error> {
-        Err(offline())
+        trace("replica.read");
+        let bytes = replica(accessor, &handle)
+            .read(&key, range.start, range.end)
+            .await?;
+        accessor.with(|mut access| {
+            let body = StreamReader::new(access.store(), bytes)
+                .map_err(|error| Error::Unavailable(error.to_string()))?;
+            Ok(BlobRead {
+                proof: Vec::new(),
+                body,
+            })
+        })
     }
 
     async fn write(
-        _accessor: &Accessor<T, Self>,
-        _replica: Resource<network::Replica>,
-        _bytes: StreamReader<u8>,
+        accessor: &Accessor<T, Self>,
+        handle: Resource<network::Replica>,
+        bytes: StreamReader<u8>,
     ) -> Result<Vec<u8>, Error> {
-        Err(offline())
+        trace("replica.write");
+        let (collected, done) = futures::channel::oneshot::channel();
+        accessor
+            .with(|mut access| {
+                bytes.pipe(
+                    access.store(),
+                    Collect {
+                        bytes: Vec::new(),
+                        done: Some(collected),
+                    },
+                )
+            })
+            .map_err(|error| Error::Unavailable(error.to_string()))?;
+        let blob = done
+            .await
+            .map_err(|_| Error::BrokeOff("the stream was dropped".into()))?;
+        replica(accessor, &handle).write(&blob).await
     }
 }
 

@@ -79,6 +79,16 @@ impl Key {
         }
     }
 
+    /// The key, as a signer of Dialog DB.
+    pub(crate) async fn signer(&self) -> Result<Ed25519Signer, Error> {
+        match self {
+            Self::Seed { seed, .. } => Ed25519Signer::import(&**seed)
+                .await
+                .map_err(|error| Error::Invalid(error.to_string())),
+            Self::Sealed(signer) => Ok((**signer).clone()),
+        }
+    }
+
     /// Whether the guest kernel knew this key's seed.
     pub(crate) fn imported(&self) -> bool {
         matches!(self, Self::Seed { imported: true, .. })
@@ -328,12 +338,7 @@ async fn delegation(key: &Key, audience: &str, access: &Access) -> Result<Vec<u8
         .filter(|segment| !segment.is_empty())
         .map(str::to_owned)
         .collect();
-    let signer = match key {
-        Key::Seed { seed, .. } => Ed25519Signer::import(&**seed)
-            .await
-            .map_err(|error| Error::Invalid(error.to_string()))?,
-        Key::Sealed(signer) => (**signer).clone(),
-    };
+    let signer = key.signer().await?;
     let delegation = DelegationBuilder::new()
         .issuer(dialog_credentials::Signer::from(signer))
         .audience(&audience)

@@ -1290,16 +1290,19 @@ pub async fn sync(
     }
 }
 
-/// A millisecond wall-clock stamp for sync-queue activity priority.
-/// `Date.now()` in the SW event context; native has no clock dependency
-/// (the stamp only orders sweeps, it never gates correctness), so 0 —
-/// which also keeps native tests deterministic.
+/// A millisecond wall-clock stamp for sync-queue activity priority: the
+/// worker's clock in a browser and on WASI. Native has no clock dependency
+/// (the stamp only orders sweeps, it never gates correctness), so 0, which
+/// also keeps native tests deterministic.
 pub(crate) fn now_millis() -> f64 {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(target_arch = "wasm32")]
     {
-        js_sys::Date::now()
+        web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs_f64() * 1000.0)
+            .unwrap_or_default()
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         0.0
     }

@@ -10,7 +10,7 @@ use tonk_schema::claim::SourceClaim;
 
 use super::repository::CONTENT_BRANCH;
 use crate::TonkWorkerError;
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(any(test, target_arch = "wasm32"))]
 use crate::reactor::Frame;
 use crate::reactor::{
     Conclusion, PeerBranchReference, PeerError, PeerFrames, PeerProvider, PeerRepositoryReference,
@@ -193,13 +193,13 @@ impl PeerProvider for SpacePeer<'_> {
 /// The frames a subscription's answer carries: one per `data:` event. An
 /// event that is no frame (the worker telling a page it is being replaced)
 /// is passed over.
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(any(test, target_arch = "wasm32"))]
 #[derive(Default)]
 struct Events {
     unread: Vec<u8>,
 }
 
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(any(test, target_arch = "wasm32"))]
 impl Events {
     /// Take in the next bytes of the answer, and give the frames they
     /// complete.
@@ -282,7 +282,26 @@ async fn subscribe(
             });
         Ok(Box::pin(frames))
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    // A kernel subscribes through its embedder, which delivers the
+    // subscription's answer piece by piece.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    {
+        use futures_util::{StreamExt as _, stream};
+
+        let unreachable = |why: String| PeerError::Unreachable(format!("{space}: {why}"));
+        let body = body.to_string();
+        let (status, pieces) =
+            tonk_kernel_world::application::ask_streaming(space, "POST", path, Some(&body))
+                .await
+                .map_err(|error| unreachable(format!("{error:?}")))?;
+        if !(200..300).contains(&status) {
+            return Err(PeerError::Refused(format!("{space} answered {status}")));
+        }
+        let mut events = Events::default();
+        let frames = pieces.flat_map(move |piece| stream::iter(events.read(&piece)));
+        Ok(Box::pin(frames))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     {
         #[cfg(test)]
         if let Some(answer) = stand_in::answer(space, "SUBSCRIBE", path, Some(body)) {

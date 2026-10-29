@@ -47,6 +47,8 @@ pub mod layer;
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod mount;
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub mod replica;
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod session;
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod signal;

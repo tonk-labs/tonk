@@ -20,7 +20,9 @@ dialog-artifacts = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 dialog-credentials = { workspace = true }
+dialog-remote-ucan = { workspace = true }
 dialog-storage = { workspace = true }
+dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }

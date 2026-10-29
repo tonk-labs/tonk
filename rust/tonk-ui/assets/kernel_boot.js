@@ -518,7 +518,9 @@ async function kernelSent(bytes) {
         return;
     }
     if (message?.tell === "navigate") return navigatePage(message);
+    if (message?.tell === "cancel") return cancelStream(message.ask);
     if (typeof message?.ask !== "number") return;
+    if (message.stream === true) return streamToKernel(message);
     let answer;
     try {
         answer = { answer: message.ask, ...(await answerOf(message)) };
@@ -530,6 +532,53 @@ async function kernelSent(bytes) {
     } catch (error) {
         log("the kernel did not take an answer:", error);
     }
+}
+
+// What the persona asked a space's kernel for in pieces, by its ask: the
+// port the call went over, and the call.
+const kernelStreams = new Map();
+
+// Ask the kernel of the space `to` what `message` asks, and hand the persona
+// the answer as it comes: its status, each piece, and its end.
+async function streamToKernel(message) {
+    const tell = async answer => {
+        try {
+            await (await booting).receive(new TextEncoder().encode(JSON.stringify(answer)));
+        } catch (error) {
+            log("the kernel did not take a piece:", error);
+        }
+    };
+    const id = message.ask;
+    try {
+        if (!PROFILE) throw new Error("a space's kernel asks no other kernel");
+        const held = await spacePort(message.to);
+        if (!held) throw new Error(`the host of ${message.to} could not be reached`);
+        const call = nextSpaceCall++;
+        kernelStreams.set(id, { held, call });
+        held.calls.set(call, async data => {
+            if (data.head) await tell({ answer: id, status: data.head.status });
+            else if (data.chunk) await tell({ piece: id, body64: toBase64(new Uint8Array(data.chunk)) });
+            else if (data.end || data.error) {
+                held.calls.delete(call);
+                kernelStreams.delete(id);
+                await tell(data.error ? { answer: id, error: data.error } : { end: id });
+            }
+        });
+        const body = message.body == null ? null : new TextEncoder().encode(message.body).buffer;
+        const headers = body ? [["content-type", "application/json"], ["accept", "text/event-stream"]] : [["accept", "text/event-stream"]];
+        held.port.postMessage({ call, request: { method: message.method, path: message.path, headers, body } }, body ? [body] : []);
+    } catch (error) {
+        await tell({ answer: id, error: String(error?.message ?? error) });
+    }
+}
+
+// The persona stopped reading what it asked in pieces.
+function cancelStream(id) {
+    const streaming = kernelStreams.get(id);
+    if (!streaming) return;
+    kernelStreams.delete(id);
+    streaming.held.calls.delete(streaming.call);
+    streaming.held.port.postMessage({ cancel: streaming.call });
 }
 
 // Send the page `client` to `href`, as the kernel told: its `<tonk-host>`
@@ -795,6 +844,69 @@ async function callSpace(repo, request) {
     });
 }
 
+// What a page of the profile asks about a space's content is that space's
+// kernel's to answer: everything under one of its branches, its remotes,
+// and what the inspector reads of it. The profile's own repository is
+// reached by the same routes, by its DID, and that one is the persona's.
+const SPACE_PATH =
+    /^\/api\/(?:inspect\/)?repository\/((?:did:key:)?z[1-9A-HJ-NP-Za-km-z]+)\/(?:branch|remote|archive)\//;
+
+// The space whose kernel answers `url`, or `null` for the persona.
+function spaceAsked(url) {
+    const named = SPACE_PATH.exec(url.pathname)?.[1];
+    if (!named) return null;
+    const space = named.startsWith("did:key:") ? named : `did:key:${named}`;
+    return space === profileDid ? null : space;
+}
+
+// Pass `event`'s request to the kernel of `repo`, over the port to its host,
+// and answer as it answers, as it writes: a subscription goes on flowing
+// until the page stops reading it.
+async function passToSpace(event, repo) {
+    const held = await spacePort(repo);
+    if (!held) return new Response(`the host of ${repo} could not be reached`, { status: 502 });
+    const url = new URL(event.request.url);
+    const method = event.request.method;
+    const body = method === "GET" || method === "HEAD" ? null : await event.request.arrayBuffer();
+    const request = { method, path: url.pathname + url.search, headers: [...event.request.headers], body };
+    const call = nextSpaceCall++;
+    return new Promise((resolve, reject) => {
+        let writing = null;
+        let answered = false;
+        const timer = setTimeout(() => {
+            if (answered) return;
+            held.calls.delete(call);
+            reject(new Error(`the kernel of ${repo} did not answer`));
+        }, SPACE_ANSWER_WAIT_MS);
+        const stream = new ReadableStream({
+            start(controller) {
+                writing = controller;
+            },
+            cancel() {
+                held.calls.delete(call);
+                held.port.postMessage({ cancel: call });
+            },
+        });
+        held.calls.set(call, data => {
+            if (data.head) {
+                answered = true;
+                clearTimeout(timer);
+                resolve(new Response(stream, { status: data.head.status, headers: data.head.headers }));
+            } else if (data.chunk) writing.enqueue(new Uint8Array(data.chunk));
+            else if (data.end) {
+                held.calls.delete(call);
+                writing.close();
+            } else if (data.error) {
+                held.calls.delete(call);
+                clearTimeout(timer);
+                if (answered) writing.error(new Error(data.error));
+                else reject(new Error(data.error));
+            }
+        });
+        held.port.postMessage({ call, request }, body ? [body] : []);
+    });
+}
+
 // Serve the host of the space `repo` over `port`. What it asks is for the
 // space the port is bound to, never another, and is acknowledged before it
 // is answered, so the host can tell a restarted worker from a slow one. The
@@ -802,9 +914,11 @@ async function callSpace(repo, request) {
 function bindSpacePort(port, { repo }) {
     if (!port || typeof repo !== "string") return;
     const held = { port, calls: new Map() };
-    // A port replaces the last: the space's host restarted, and whatever it
-    // was still answering will never finish.
-    for (const answered of spacePorts.get(repo)?.calls.values() ?? []) answered({ error: "the space's host restarted" });
+    // A port replaces the last for what is asked from now on. What was asked
+    // over the last is answered over it, if its host is still there: a
+    // space's page hands a port as it loads and again when the host asks
+    // for one, and a host that did restart is never heard from again, which
+    // the calls on its port wait out.
     spacePorts.set(repo, held);
     for (const resolve of spacePortWaiters.get(repo) ?? []) resolve(held);
     spacePortWaiters.delete(repo);
@@ -939,6 +1053,13 @@ self.addEventListener("fetch", event => {
     const served = serveSite(event, url);
     if (served) {
         event.respondWith(served);
+        return;
+    }
+    const space = PROFILE ? spaceAsked(url) : null;
+    if (space) {
+        event.respondWith(
+            passToSpace(event, space).catch(error => new Response(String(error?.message ?? error), { status: 502 })),
+        );
         return;
     }
     event.respondWith(

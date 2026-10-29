@@ -23,6 +23,7 @@ pub mod world {
         with: {
             "sapling:kernel/types@0.1.0": tonk_kernel_world::world::sapling::kernel::types,
             "sapling:kernel/storage@0.1.0": tonk_kernel_world::world::sapling::kernel::storage,
+            "sapling:kernel/network@0.1.0": tonk_kernel_world::world::sapling::kernel::network,
             "sapling:kernel/credential@0.1.0": tonk_kernel_world::world::sapling::kernel::credential,
             "sapling:kernel/session@0.1.0": tonk_kernel_world::world::sapling::kernel::session,
             "sapling:kernel/application@0.1.0": tonk_kernel_world::world::sapling::kernel::application,
@@ -36,6 +37,7 @@ pub mod world {
         with: {
             "sapling:kernel/types@0.1.0": tonk_kernel_world::world::sapling::kernel::types,
             "sapling:kernel/storage@0.1.0": tonk_kernel_world::world::sapling::kernel::storage,
+            "sapling:kernel/network@0.1.0": tonk_kernel_world::world::sapling::kernel::network,
             "sapling:kernel/credential@0.1.0": tonk_kernel_world::world::sapling::kernel::credential,
             "sapling:kernel/session@0.1.0": tonk_kernel_world::world::sapling::kernel::session,
             "sapling:kernel/application@0.1.0": tonk_kernel_world::world::sapling::kernel::application,
@@ -49,6 +51,7 @@ mod site;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::Duration;
 
 use axum::Router;
 use axum::http::StatusCode;
@@ -62,11 +65,12 @@ use tonk_kernel_world::layer::{SharedLayer, share};
 use tonk_kernel_world::signal::Signal;
 use tonk_kernel_world::world::sapling::kernel::credential::{Access, PersonaAuthority};
 use tonk_kernel_world::world::sapling::kernel::types::Error;
+use tonk_worker::axum::RequestOrigin;
 use tonk_worker::{AppState, ClientId, TonkState};
 use tower::ServiceExt as _;
 use world::exports::sapling::kernel::{channel, lifecycle};
 use world::exports::wasi::http::handler;
-use world::wasi::http::types::{ErrorCode, Request, Response};
+use world::wasi::http::types::{ErrorCode, Request, Response, Scheme};
 
 /// The worker's router and state, once `init` opened them. A `static`, not
 /// a thread-local: on `wasm32-wasip3` each export call is a task of its own.
@@ -258,15 +262,26 @@ impl channel::Guest for Kernel {
     }
 }
 
-/// `request`, as the worker's router takes one, with the page that sent it,
-/// which its host names in `x-tonk-client-id`, so a command can send that
-/// page somewhere.
+/// `request`, as the worker's router takes one, with the origin it was made
+/// to, and the page that sent it, which its host names in
+/// `x-tonk-client-id`, so a command can send that page somewhere.
 async fn incoming(request: Request) -> Result<axum::http::Request<axum::body::Body>, ErrorCode> {
     let method = request.get_method();
     let target = request
         .get_path_with_query()
         .unwrap_or_else(|| "/".to_owned());
     let headers = request.get_headers().copy_all();
+    let origin = match (request.get_scheme(), request.get_authority()) {
+        (Some(scheme), Some(authority)) => {
+            let scheme = match scheme {
+                Scheme::Http => "http".to_owned(),
+                Scheme::Https => "https".to_owned(),
+                Scheme::Other(other) => other,
+            };
+            RequestOrigin::parse(&format!("{scheme}://{authority}/")).ok()
+        }
+        _ => None,
+    };
     let body = http::read_body(request).await?;
     let mut built = axum::http::Request::builder()
         .method(http::method(&method))
@@ -285,6 +300,9 @@ async fn incoming(request: Request) -> Result<axum::http::Request<axum::body::Bo
     {
         request.extensions_mut().insert(ClientId(client));
     }
+    if let Some(origin) = origin {
+        request.extensions_mut().insert(origin);
+    }
     Ok(request)
 }
 
@@ -297,6 +315,12 @@ impl handler::Guest for Kernel {
             created().changed(0).await;
         }
         let request = incoming(request).await?;
+        // A write, or a page's poke, is followed by a sync with the remote,
+        // as the browser's worker drains its queue after each request.
+        let method = request.method().clone();
+        if method != axum::http::Method::GET && method != axum::http::Method::HEAD {
+            drain_soon();
+        }
         let answer = match site::route(request, &site) {
             Routed::Answer(answer) => answer,
             Routed::Pass(request) => {
@@ -337,6 +361,25 @@ impl handler::Guest for Kernel {
         Ok(response)
     }
 }
+
+/// Sync with the remote shortly: after a moment, so a burst of writes is
+/// one sync, and never two at once (see [`tonk_worker::drain_sync`]).
+fn drain_soon() {
+    static PENDING: AtomicBool = AtomicBool::new(false);
+    if PENDING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    wit_bindgen::spawn_local(async {
+        let _ = tonk_worker::sleep(Duration::from_millis(DRAIN_AFTER_MS)).await;
+        PENDING.store(false, Ordering::Release);
+        if let Some(state) = state() {
+            tonk_worker::drain_sync(&state).await;
+        }
+    });
+}
+
+/// How long a sync waits after the write that asks for it.
+const DRAIN_AFTER_MS: u64 = 500;
 
 /// Ask for the delegation of `space` to this kernel's session, and take up
 /// what the representative hands over.

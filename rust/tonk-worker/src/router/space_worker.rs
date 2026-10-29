@@ -398,7 +398,7 @@ pub(crate) async fn name_member(
     }
     let named = project_member_name(tonk, key, &account, name).await?;
     if named {
-        tonk.sync_queue.mark_dirty(key, js_sys::Date::now());
+        tonk.sync_queue.mark_dirty(key, super::sync::now_millis());
     }
     Ok(named)
 }

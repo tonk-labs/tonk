@@ -213,10 +213,11 @@ async fn answer(
     body: Vec<u8>,
 ) -> Result<Head, String> {
     let request = accessor.with(|mut access| {
+        let (scheme, authority) = access.data_mut().origin.clone();
         let rep = access.data_mut().http().insert_request(Request {
             method,
-            scheme: Some("https".to_owned()),
-            authority: Some("space.localhost".to_owned()),
+            scheme: Some(scheme),
+            authority: Some(authority),
             path_with_query: Some(path),
             headers: Fields {
                 entries: headers,
@@ -394,6 +395,12 @@ impl Kernel {
         })
     }
 
+    /// Hand the guest kernel requests as made to the origin `authority`, by
+    /// `scheme`: the origin of the site it serves.
+    pub fn serve_at(&mut self, scheme: &str, authority: &str) {
+        self.store.data_mut().origin = (scheme.to_owned(), authority.to_owned());
+    }
+
     /// The addresses the guest kernel's provisional persona asks to merge
     /// into, from now on, as it asks.
     pub fn merges(&mut self) -> mpsc::UnboundedReceiver<String> {
@@ -473,10 +480,11 @@ impl Kernel {
         path: &str,
         body: &[u8],
     ) -> Result<Answer, String> {
+        let (scheme, authority) = self.store.data_mut().origin.clone();
         let rep = self.store.data_mut().http().insert_request(Request {
             method: method.to_owned(),
-            scheme: Some("https".to_owned()),
-            authority: Some("space.localhost".to_owned()),
+            scheme: Some(scheme),
+            authority: Some(authority),
             path_with_query: Some(path.to_owned()),
             headers: Fields {
                 entries: Vec::new(),

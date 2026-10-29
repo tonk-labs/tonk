@@ -206,25 +206,26 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-identity = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-identity = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-network = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
 
 [profile.dev]
 opt-level = 1

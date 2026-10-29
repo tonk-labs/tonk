@@ -10,6 +10,8 @@ use dialog_common::ConditionalSync;
 use dialog_credentials::{Credential, SignerCredential};
 use dialog_effects::credential::{self as credential_fx, CredentialError, prelude::*};
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt as _};
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+use dialog_network::Network;
 use dialog_peer::{Allowance, OpenCredential, Peer, PeerError, PeerSpace, SpaceVaultExt as _};
 use dialog_repository::{
     ACCESS_BRANCH, AddAddressError, Branch, ConnectError, ConnectedBranch, ConnectedReplica,
@@ -21,6 +23,8 @@ use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Principal as _;
 use std::fmt::Display;
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+use tonk_kernel_world::replica::KernelRelay;
 
 /// The name the key of the system tonk runs as is kept under, in the
 /// credential store of the profile directory. The system owns the storage
@@ -264,14 +268,15 @@ where
 {
     record_location(&credential.did(), &location);
     let home = home(&location, &base, &credential.did(), &storage).await?;
-    Peer::new(credential.clone())
+    let peer = Peer::new(credential.clone())
         .at(home)
         .base(base)
         .space(Repository::from(credential.did()).branch(branch))
-        .with(storage)
-        .grant(Allowance::storage(system))
-        .build()
-        .await
+        .with(storage);
+    // A kernel on WASI reaches the network through its embedder.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    let peer = peer.with(Network::default().with_ucan(KernelRelay::site()));
+    peer.grant(Allowance::storage(system)).build().await
 }
 
 /// Where the home space of the profile `profile` is: among the spaces it

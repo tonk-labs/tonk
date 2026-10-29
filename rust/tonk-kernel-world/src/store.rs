@@ -121,7 +121,7 @@ fn decision(error: &LayerError) -> Option<AuthorizeError> {
     }
 }
 
-fn archive_error(error: LayerError) -> ArchiveError {
+pub(crate) fn archive_error(error: LayerError) -> ArchiveError {
     if let Some(decision) = decision(&error) {
         return ArchiveError::Authorization(decision);
     }
@@ -133,7 +133,7 @@ fn archive_error(error: LayerError) -> ArchiveError {
     }
 }
 
-fn memory_error(error: LayerError, when: Option<&Version>) -> MemoryError {
+pub(crate) fn memory_error(error: LayerError, when: Option<&Version>) -> MemoryError {
     if let Some(decision) = decision(&error) {
         return MemoryError::Authorization(decision);
     }
@@ -149,7 +149,7 @@ fn memory_error(error: LayerError, when: Option<&Version>) -> MemoryError {
     }
 }
 
-fn blob_error(error: LayerError) -> BlobError {
+pub(crate) fn blob_error(error: LayerError) -> BlobError {
     if let Some(decision) = decision(&error) {
         return BlobError::Authorization(decision);
     }
