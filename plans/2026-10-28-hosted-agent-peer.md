@@ -365,6 +365,11 @@ flowchart LR
 ```
 
 - The key is generated in the Web Worker instead of the frame; same tool call.
+- The space page loads as a `blob:` or `srcdoc` frame, the only frame sources
+  Claude's view CSP allows. Give it `sandbox="allow-scripts"` without
+  `allow-same-origin` so it does not share the relay's origin and storage. The
+  probe loaded unsandboxed blob and `srcdoc` frames; the sandboxed variant in a
+  host is untested.
 - Live updates still come over the `live.rs` socket.
 - Media: blob URLs or Media Source Extensions from the worker. Large video is a
   follow-up on this route.
@@ -619,7 +624,8 @@ Both
   ChatGPT. Claude sends `frame-src` in two cases only: a directory connector
   whose listing declares `frameDomains` (bare https origins) and whose installed
   URL matches the listing exactly, or a custom connector behind rollout flags,
-  never in the Code tab. So route A in Claude waits on directory review.
+  never in the Code tab. So route A in Claude waits on directory review; ask
+  Anthropic (mcp-apps@anthropic.com) whether a listing can carry our origin.
 - `frame-src` is hashed into the view's origin, so granting `frameDomains` later
   changes the origin and orphans anything the view stored.
 - The view's CSP allows `frame-src blob: data:`; blob and `srcdoc` frames load
@@ -717,7 +723,9 @@ resolves with the embedded-key check enforced.
 7. **Framed page URL.** The per-space origin (`{hash}.tonk.foundation`, #1054)
    or `tonk.foundation/space/{did}/{route}` extended to accept a delegation. The
    per-space origin keeps space content off the origin that holds passkeys.
-   Needed by stage 7.
+   Needed by stage 7. Route A in Claude constrains this: a directory listing's
+   `frameDomains` are bare https origins, so one fixed origin per channel fits,
+   while per-space origins would need a wildcard that Claude may refuse.
 8. **View delegation scope.** Read-only by default; do any views need to write?
    Lifetime matters less because the private key never leaves the frame.
 9. **Signing as the agent space key.** Minting the session powerline needs the
