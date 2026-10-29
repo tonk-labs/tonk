@@ -404,7 +404,17 @@ pub(crate) fn changed(space: Option<&str>) {
             let _ = hook.call1(&global, &space);
         }
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    // A kernel tells its embedder, which signals the space's host.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    {
+        let space = space.map(str::to_owned);
+        crate::detach(async move {
+            if let Err(error) = tonk_kernel_world::application::changed(space.as_deref()).await {
+                tonk_common::log!("space change was not told: {error:?}");
+            }
+        });
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let _ = space;
     }

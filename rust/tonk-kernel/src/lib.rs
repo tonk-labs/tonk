@@ -199,7 +199,7 @@ impl lifecycle::Guest for Kernel {
         }
         wit_bindgen::spawn_local(configure());
         if let Some(space) = renewing {
-            wit_bindgen::spawn_local(async move { renew(&state, &space).await });
+            wit_bindgen::spawn_local(async move { renew(&state, &space.subject).await });
         } else if let Some(space) = fresh {
             wit_bindgen::spawn_local(async move { create(&state, &space).await });
         }
@@ -251,6 +251,11 @@ impl channel::Guest for Kernel {
             return Ok(());
         };
         match told {
+            Told::Renew => {
+                if let Some(subject) = served_space() {
+                    wit_bindgen::spawn_local(async move { renew(&state, &subject).await });
+                }
+            }
             Told::Refused { kind, name } => tonk_worker::refused(&state, &kind, &name).await,
             Told::Failed {
                 kind,
@@ -427,8 +432,8 @@ const DRAIN_AFTER_MS: u64 = 500;
 /// Ask for the delegation of `space` to this kernel's session, and take up
 /// what the representative hands over.
 async fn take_up(state: &TonkState, space: &Space) {
-    let chains = delegated(space, "to serve the space").await;
-    adopt(state, space, &chains).await;
+    let chains = delegated(&space.subject, "to serve the space").await;
+    adopt(state, &space.subject, &chains).await;
 }
 
 /// Learn from the deployment's configuration, which the host reads, which
@@ -453,16 +458,25 @@ async fn configure() {
 /// Ask for the delegation of `space` anew, as the kernel serves what it took
 /// up before, so a delegation running out is replaced. Nothing is locked
 /// while the host asks the person's profile.
-async fn renew(state: &AppState, space: &Space) {
+async fn renew(state: &AppState, space: &str) {
     let chains = delegated(space, "to keep serving the space").await;
     adopt(&*state.read().await, space, &chains).await;
 }
 
+/// The space this kernel serves, if it serves one.
+fn served_space() -> Option<String> {
+    ROUTER
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .and_then(|held| held.site.space.clone())
+}
+
 /// The delegation of `space` to this kernel's session, as its representative
 /// answers: none when it refuses, or fails to.
-async fn delegated(space: &Space, reason: &str) -> Vec<Vec<u8>> {
+async fn delegated(space: &str, reason: &str) -> Vec<Vec<u8>> {
     let access = Access {
-        subject: Some(space.subject.clone()),
+        subject: Some(space.to_owned()),
         command: "/".to_owned(),
         arguments: Vec::new(),
         reason: reason.to_owned(),
@@ -470,10 +484,7 @@ async fn delegated(space: &Space, reason: &str) -> Vec<Vec<u8>> {
     match tonk_kernel_world::session::delegate(access).await {
         Ok(chain) => vec![chain],
         Err(error) => {
-            eprintln!(
-                "tonk-kernel: {} was not delegated: {error:?}",
-                space.subject
-            );
+            eprintln!("tonk-kernel: {space} was not delegated: {error:?}");
             Vec::new()
         }
     }
@@ -482,13 +493,10 @@ async fn delegated(space: &Space, reason: &str) -> Vec<Vec<u8>> {
 /// Take up `chains`. A chain is taken up only if the space signed it all the
 /// way down to this kernel's session, so a host cannot make the kernel act
 /// for another space.
-async fn adopt(state: &TonkState, space: &Space, chains: &[Vec<u8>]) {
+async fn adopt(state: &TonkState, space: &str, chains: &[Vec<u8>]) {
     for chain in chains {
-        if let Err(error) = state.adopt_space(&space.subject, chain).await {
-            eprintln!(
-                "tonk-kernel: a delegation of {} was not taken up: {error}",
-                space.subject
-            );
+        if let Err(error) = state.adopt_space(space, chain).await {
+            eprintln!("tonk-kernel: a delegation of {space} was not taken up: {error}");
         }
     }
 }

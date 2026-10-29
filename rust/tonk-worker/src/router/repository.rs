@@ -4228,7 +4228,7 @@ async fn enable_sync_for_repository(
 /// already carry a foreign or partially configured remote. The account sweep
 /// must leave every such repository untouched. Returns whether this call made
 /// the local-only -> account-hosted transition.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(super) async fn attach_account_remote_if_local(
     tonk: &TonkState,
     key: &str,
@@ -4255,7 +4255,7 @@ pub(super) async fn attach_account_remote_if_local(
 
 /// Whether the repository's local meta branch names any remote, regardless of
 /// whether a content branch currently tracks it.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 async fn repository_has_any_remote<C>(
     tonk: &TonkState,
     repository: &Repository<C>,
@@ -7370,7 +7370,7 @@ impl AsRef<dialog_artifacts::Entity> for DirectoryAnchor {
 /// Joined spaces can become visible before their content (and therefore their
 /// name) has downloaded. The account sweep calls this after later pulls so an
 /// initially nameless Hub row repairs itself without remounting the space.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn record_space_name(tonk: &TonkState, subject: &Did, display_name: &str) {
     let transaction = tonk
         .reactor

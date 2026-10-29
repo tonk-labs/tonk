@@ -1422,7 +1422,7 @@ pub(crate) async fn custody_seed(
 /// provider to genuinely local-only spaces once the customer is served.
 /// Every space is checked independently; a failure is logged and left for the
 /// next sweep rather than failing its siblings.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn converge_account_state(tonk: &TonkState) -> Result<(), TonkWorkerError> {
     use tonk_schema::{AccountDisplayName, ProfileName};
 
@@ -1495,7 +1495,7 @@ pub(crate) async fn converge_account_state(tonk: &TonkState) -> Result<(), TonkW
 /// queueing each space that changed for sync. `republish` also refreshes
 /// the self-identity overlay of the spaces that did not change, for a
 /// profile-name cache that did.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 async fn project_member_names(
     tonk: &TonkState,
     member: &dialog_varsig::Did,
@@ -1534,7 +1534,7 @@ async fn project_member_names(
     }
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn converge_account_state(_tonk: &TonkState) -> Result<(), TonkWorkerError> {
     Ok(())
 }

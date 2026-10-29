@@ -38,7 +38,11 @@
 //!
 //! A worker also tells its embedder what it expects no answer to: that the
 //! page that asked something, by its client id, is to go to an address,
-//! `{ "tell": "navigate", "client", "href", "replace": bool }`. The embedder
+//! `{ "tell": "navigate", "client", "href", "replace": bool }`, and that what
+//! a space's worker takes up of it changed, such as where it syncs, so that
+//! worker asks for its delegation again: `{ "tell": "changed", "space": did
+//! or null for every space }`. The embedder tells a space's worker to ask:
+//! `{ "tell": "renew" }`. The embedder
 //! tells a persona that the person refused the passkey ceremony a merge
 //! asked for, by the ceremony's kind and the browser's name for the refusal:
 //! `{ "tell": "refused", "kind", "name" }`; and that the sign-in failed, with
@@ -279,6 +283,13 @@ pub async fn seeded() -> Result<(), Error> {
     Ok(())
 }
 
+/// Tell the embedder that what the worker of `space`, or of every space
+/// when `None`, takes up of it changed.
+pub async fn changed(space: Option<&str>) -> Result<(), Error> {
+    let message = json!({ "tell": "changed", "space": space });
+    application::send(message.to_string().into_bytes()).await
+}
+
 /// Tell the embedder that the page `client` is to go to `href`, as a fresh
 /// load replacing its history entry where `replace`.
 pub async fn navigate(client: &str, href: &str, replace: bool) -> Result<(), Error> {
@@ -311,6 +322,9 @@ pub enum Told {
     /// The person refused the passkey ceremony `kind` a merge asked for, as
     /// the browser names the refusal.
     Refused { kind: String, name: String },
+    /// What this worker's space is to take up changed: ask for its
+    /// delegation again.
+    Renew,
     /// The sign-in the passkey ceremony `kind` began failed, saying
     /// `message`, with the custody service's `code` for a refusal it knows,
     /// such as that the account awaits activation.
@@ -340,6 +354,7 @@ pub fn received(message: &[u8]) -> Result<Option<Told>, Error> {
                 name: text("name"),
             }));
         }
+        Some("renew") => return Ok(Some(Told::Renew)),
         Some("failed") => {
             return Ok(Some(Told::Failed {
                 kind: text("kind"),

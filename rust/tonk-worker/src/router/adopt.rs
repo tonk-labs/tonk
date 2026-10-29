@@ -367,7 +367,7 @@ pub(super) fn space_subject(key: &str) -> Option<dialog_varsig::Did> {
 
 /// Apply the account directory's latest mount facts to one replica that is
 /// already present locally. Returns whether a mount record existed.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 async fn reconcile_mounted_space_from_directory(
     tonk: &TonkState,
     key: &str,
@@ -599,7 +599,7 @@ where
 /// is the one safe ownership shape we automatically provision and attach.
 /// Every repository is isolated: malformed or temporarily unavailable state
 /// is logged and retried on the next account sweep without blocking siblings.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn reconcile_account_spaces(tonk: &TonkState) {
     use std::collections::HashMap;
 

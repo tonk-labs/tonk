@@ -108,6 +108,12 @@ function adopt(port) {
             cancelCall(data.cancel);
             return;
         }
+        // What the kernel takes up of the space changed, such as where it
+        // syncs: it asks for its delegation again.
+        if (data?.signal === "grant") {
+            booting.then(embedder => embedder.receive(new TextEncoder().encode(JSON.stringify({ tell: "renew" })))).catch(error => log("the kernel was not told to renew:", error));
+            return;
+        }
         // The profile asks for a copy of the space to make another from. A
         // kernel space has no such copy to give yet.
         if (typeof data?.ask === "number") {
@@ -519,6 +525,7 @@ async function kernelSent(bytes) {
     }
     if (message?.tell === "navigate") return navigatePage(message);
     if (message?.tell === "cancel") return cancelStream(message.ask);
+    if (message?.tell === "changed") return signalSpaces(message.space);
     if (typeof message?.ask !== "number") return;
     if (message.stream === true) return streamToKernel(message);
     let answer;
@@ -569,6 +576,16 @@ async function streamToKernel(message) {
         held.port.postMessage({ call, request: { method: message.method, path: message.path, headers, body } }, body ? [body] : []);
     } catch (error) {
         await tell({ answer: id, error: String(error?.message ?? error) });
+    }
+}
+
+// What the kernel of `space`, or of every space for `null`, takes up of it
+// changed, such as where it syncs: signal its host to have it ask for its
+// delegation again, as the profile's worker signalled a space's.
+function signalSpaces(space) {
+    const named = space == null ? null : space.startsWith("did:key:") ? space : `did:key:${space}`;
+    for (const [repo, held] of spacePorts) {
+        if (named === null || repo === named) held.port.postMessage({ signal: "grant" });
     }
 }
 
