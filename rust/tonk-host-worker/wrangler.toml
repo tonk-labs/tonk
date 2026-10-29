@@ -1,0 +1,23 @@
+name = "tonk-host-worker"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Built with `worker-build --release` beforehand (see the crate docs);
+# wrangler serves `build/` as it is.
+
+# One space writer per space and MCP session: the only place revisions for
+# that pair are signed. The object keeps nothing durable; its peer and
+# caches live in memory, and the access service holds the space.
+[[durable_objects.bindings]]
+name = "SPACE_WRITER"
+class_name = "SpaceWriterObject"
+
+[[migrations]]
+tag = "v1-space-writer"
+new_sqlite_classes = ["SpaceWriterObject"]
+
+[vars]
+# The access service the writers sync with (`tonk-access-local` locally);
+# the peer syncs at /ucan/.
+ACCESS_SERVICE_URL = "http://127.0.0.1:8787"
