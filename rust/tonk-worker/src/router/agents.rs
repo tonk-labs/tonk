@@ -177,13 +177,18 @@ async fn grants(
     agent: &Did,
 ) -> Result<Vec<(DelegationChain, Held)>, TonkWorkerError> {
     let now = Timestamp::now().to_unix();
-    let profile = tonk.profile.did();
+    // The approval page issues from the profile today; the agreed design
+    // issues from the account root, behind a passkey.
+    let mut issuers = vec![tonk.profile.did()];
+    if let Ok(root) = super::identity::local_root(tonk).await {
+        issuers.push(root.root_did.clone());
+    }
     let mut seen = std::collections::BTreeSet::new();
     let mut found = Vec::new();
     for held in [Held::AgentSpace, Held::Profile] {
         for delegation in retained(tonk, agent, held).await? {
             let chain = delegation.0;
-            if chain.issuer() != &profile
+            if !issuers.contains(chain.issuer())
                 || chain.subject().is_none_or(|subject| subject == agent)
                 || chain.expiration().is_some_and(|at| at.to_unix() <= now)
                 || !seen.insert(*chain.proof_cids().last().unwrap())
@@ -286,6 +291,13 @@ pub async fn revoke(
         ));
     }
     let profile = tonk.profile.did();
+    // A grant the account root issued is withdrawn with the account key,
+    // which takes a passkey; this worker can only withdraw its own.
+    if leaves.iter().any(|(leaf, _)| leaf.issuer() != &profile) {
+        return Err(TonkWorkerError::Forbidden(
+            "this access was granted with your account key; revoking it needs a passkey, which this page does not ask for yet".into(),
+        ));
+    }
     for (leaf, held) in leaves {
         let target = *leaf
             .proof_cids()

@@ -2613,14 +2613,16 @@ element!: &hub-discover
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ space: button.dataset.agentSpace }),
           });
-          if (!response.ok) throw new Error(await response.text());
+          if (!response.ok) { const error = new Error(await response.text()); error.status = response.status; throw error; }
           if (status) status.textContent = 'Access revoked. Enforcement may take a moment; anything already read stays read.';
           await self.agents();
         } catch (error) {
           button.disabled = false;
           button.dataset.confirming = '';
           button.textContent = 'retry revoke';
-          if (status) status.textContent = 'The revocation could not be confirmed. Try again.';
+          if (status) status.textContent = error.status === 403
+            ? 'This access was granted with your account key. Revoking it needs a passkey, which isn’t supported here yet.'
+            : 'The revocation could not be confirmed. Try again.';
         }
       }
     load: |
