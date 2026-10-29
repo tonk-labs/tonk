@@ -132,6 +132,7 @@ async fn a_missing_or_malformed_token_is_unauthorized() {
     let endpoint = McpEndpoint {
         origin: ORIGIN,
         key: &key,
+        tickets: &crate::router::hosted::view::TicketKey::derive("test"),
         writers: &Unreachable,
     };
     assert_unauthorized(&endpoint, None).await;
@@ -183,6 +184,7 @@ async fn a_token_whose_powerline_is_addressed_elsewhere_is_unauthorized() {
     let endpoint = McpEndpoint {
         origin: ORIGIN,
         key: &key,
+        tickets: &crate::router::hosted::view::TicketKey::derive("test"),
         writers: &Unreachable,
     };
     assert_unauthorized(&endpoint, Some(&forged)).await;
@@ -213,6 +215,7 @@ async fn a_grant_not_issued_by_its_space_is_unauthorized() {
     let endpoint = McpEndpoint {
         origin: ORIGIN,
         key: &key,
+        tickets: &crate::router::hosted::view::TicketKey::derive("test"),
         writers: &Unreachable,
     };
     assert_unauthorized(&endpoint, Some(&token)).await;
@@ -272,6 +275,7 @@ async fn a_session_id_of_another_token_is_refused() {
     let endpoint = McpEndpoint {
         origin: ORIGIN,
         key: &key,
+        tickets: &crate::router::hosted::view::TicketKey::derive("test"),
         writers: &Unreachable,
     };
     let response = endpoint
@@ -327,6 +331,7 @@ async fn evaluate_on_a_read_grant_is_refused_before_any_writer() {
     let endpoint = McpEndpoint {
         origin: ORIGIN,
         key: &key,
+        tickets: &crate::router::hosted::view::TicketKey::derive("test"),
         writers: &Unreachable,
     };
     let response = endpoint
@@ -514,6 +519,7 @@ concept!: &mcp-note
         let endpoint = McpEndpoint {
             origin: ORIGIN,
             key: &key,
+            tickets: &crate::router::hosted::view::TicketKey::derive("test"),
             writers: &writers,
         };
         let subject = space.did().to_string();

@@ -6,6 +6,21 @@ use serde_json::Value;
 
 use super::mcp::Verified;
 
+/// The key view tickets are bound under, derived from the host's secret
+/// under its own context, apart from the session id MAC.
+#[derive(Clone)]
+pub struct TicketKey(#[allow(dead_code)] [u8; 32]);
+
+impl TicketKey {
+    /// Derive the key from `secret`, the host's MCP secret.
+    pub fn derive(secret: &str) -> Self {
+        Self(blake3::derive_key(
+            "tonk hosted view ticket v1",
+            secret.as_bytes(),
+        ))
+    }
+}
+
 /// Tools appended to `tools/list`.
 pub fn tools() -> Vec<Value> {
     Vec::new()
@@ -30,6 +45,7 @@ pub async fn call(
     _bearer: &str,
     _mcp_session: &str,
     _origin: &str,
+    _tickets: &TicketKey,
 ) -> Option<Value> {
     None
 }

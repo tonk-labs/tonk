@@ -312,6 +312,8 @@ pub struct McpEndpoint<'a, W> {
     pub key: &'a SessionKey,
     /// Where tool calls on a space go.
     pub writers: &'a W,
+    /// The key view tickets are bound under.
+    pub tickets: &'a super::view::TicketKey,
 }
 
 impl<W: Writers> McpEndpoint<'_, W> {
@@ -534,8 +536,16 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 };
                 tool_result(body, !status.is_success())
             }
-            _ => match super::view::call(name, arguments, verified, bearer, session, self.origin)
-                .await
+            _ => match super::view::call(
+                name,
+                arguments,
+                verified,
+                bearer,
+                session,
+                self.origin,
+                self.tickets,
+            )
+            .await
             {
                 Some(result) => result,
                 None => tool_result(json!("Tool unavailable."), true),
