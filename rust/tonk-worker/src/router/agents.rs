@@ -30,7 +30,7 @@ use super::{
 use crate::{TonkState, TonkWorkerError};
 
 /// One agent and the spaces it can reach.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSummary {
     /// The agent space's DID: the agent's identity.
@@ -44,7 +44,7 @@ pub struct AgentSummary {
 }
 
 /// One space an agent can reach, and how.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSpaceAccess {
     subject: Did,
