@@ -147,9 +147,13 @@ async fn the_manuals_it_names_are_resources_it_serves() {
     }
     assert!(read_guide("tonk://guide/missing").is_none());
     let said = instructions("https://tonk.example/");
-    assert!(said.starts_with("# This connection"));
+    assert!(said.starts_with("# Working with Tonk"));
     assert!(said.contains("Tonk at https://tonk.example to check"));
-    assert!(said.contains(guide::AGENT));
+    assert!(!said.contains("{origin}"));
+    let agent = read_guide("tonk://guide/agent").unwrap();
+    assert_eq!(agent["contents"][0]["text"], HOSTED);
+    let answer = json!({ "revision_before": [1, 2], "revision_after": [3], "matches": [] });
+    assert_eq!(without_revisions(answer), json!({ "matches": [] }));
 }
 
 #[dialog_common::test]
