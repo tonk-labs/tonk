@@ -15,10 +15,11 @@ const READINESS_FAILURE_MESSAGE: &str =
 #[wasm_bindgen(main)]
 async fn main() {
     // Diagnostics must remain available even when worker/Wasm startup fails.
+    // The OAuth approval page is its own module too (`assets/agent.mjs`).
     if web_sys::window().is_some_and(|window| {
         matches!(
             window.location().pathname().as_deref(),
-            Ok("/doctor" | "/doctor/")
+            Ok("/doctor" | "/doctor/" | "/settings/agent")
         )
     }) {
         return;
