@@ -270,7 +270,6 @@ mod against_a_service {
     use dialog_common::helpers::{Provisionable as _, Service};
     use dialog_effects::storage::Directory;
     use dialog_repository::HeldCaches;
-    use http_body_util::BodyExt as _;
     use tonk_access_service::helpers::{AccessServer, AccessServiceAddress};
     use zeroize::Zeroizing;
 
@@ -363,11 +362,37 @@ concept!: &view-note
             }
         }
 
-        /// A view's peer over the delegations its key was given.
+        /// A view's peer of the agent space over the delegations its key
+        /// was given.
         async fn view(&self, edit: bool) -> (HostedPeer, String) {
+            let (verified, writer) = &self.verified;
+            self.view_of(verified, writer, &self.agent.did(), edit)
+                .await
+        }
+
+        /// A view's peer of `space`, its delegations signed by the
+        /// session `verified` from what `writers` answers.
+        async fn view_of(
+            &self,
+            verified: &Verified,
+            writers: &impl Writers,
+            space: &Did,
+            edit: bool,
+        ) -> (HostedPeer, String) {
             let seed = Zeroizing::new(rand::random::<[u8; 32]>());
             let key = Ed25519Signer::import(&*seed).await.unwrap();
-            let result = access(&self.verified, &self.agent.did(), &key.did(), edit).await;
+            let result = call(
+                ACCESS,
+                &json!({ "space": space.to_string(), "audience": key.did().to_string(), "edit": edit }),
+                verified,
+                writers,
+                "",
+                "session",
+                ORIGIN,
+                &TicketKey::derive("secret"),
+            )
+            .await
+            .unwrap();
             assert_eq!(result["isError"], false, "{result}");
             let peer = HostedPeer::open_in(
                 Directory::At(scratch()),
@@ -377,10 +402,129 @@ concept!: &view-note
             )
             .await
             .unwrap();
-            peer.mount(&self.agent.did(), &self.remote).await.unwrap();
-            let base = format!("/api/repository/{}/branch/main", self.agent.did());
+            peer.mount(space, &self.remote).await.unwrap();
+            let base = format!("/api/repository/{space}/branch/main");
             (peer, base)
         }
+    }
+
+    /// The agent space's own writer, answering the front's access routes
+    /// as the Host Worker's does.
+    struct Served(SpaceWriter);
+
+    impl Writers for Served {
+        async fn call(
+            &self,
+            _verified: &Verified,
+            _bearer: &str,
+            _mcp_session: &str,
+            _space: &Did,
+            request: Request<Body>,
+        ) -> Response<Body> {
+            let answer = match request.uri().path() {
+                ACCESS_ROUTE => serde_json::to_value(self.0.agent_access().await.unwrap()).unwrap(),
+                CHAINS_ROUTE => {
+                    let query = request.uri().query().unwrap_or_default();
+                    let space = query.strip_prefix("space=").unwrap().parse().unwrap();
+                    chains_answer(&self.0.space_chains(&space).await.unwrap()).unwrap()
+                }
+                other => panic!("no agent writer route {other}"),
+            };
+            Response::new(Body::from(answer.to_string()))
+        }
+    }
+
+    /// Grants of `verb` on `space` to `agent`, as the approval retains
+    /// them: `space -> device -> agent`, one per storage scope.
+    async fn grant(space: &Ed25519Signer, agent: &Did, verb: &str) -> Vec<DelegationChain> {
+        super::grants(space, agent, &[verb]).await
+    }
+
+    #[dialog_common::test]
+    async fn a_view_reads_a_granted_space_through_the_grants_the_agent_space_holds() {
+        let fixture = Fixture::start().await;
+        let agent = fixture.agent.did();
+        let garden = Ed25519Signer::generate().await.unwrap();
+        fixture
+            .service
+            .address
+            .provision_subject(garden.did().as_ref())
+            .await
+            .unwrap();
+        // The garden's owner writes a note there.
+        let owner = issue_agent_session_with_grants(garden.clone(), &fixture.remote, &[])
+            .await
+            .unwrap()
+            .token;
+        let owner = super::super::super::mcp::verify(&owner).await.unwrap();
+        let owner = SpaceWriter::open(
+            &scratch(),
+            &owner.writer_session("owner"),
+            &garden.did(),
+            &fixture.remote,
+        )
+        .await
+        .unwrap();
+        let document =
+            format!("{NOTE}view-note!:\n  this: urn:view:garden\n  title: \"in the garden\"\n");
+        let (status, body) = json(
+            owner
+                .write(request(Method::POST, "/evaluate?transact=true", document))
+                .await,
+        )
+        .await;
+        assert!(status.is_success(), "seed: {status}: {body}");
+        owner.close().await;
+        // The approval retains a read grant of it in the agent space.
+        let (verified, _) = &fixture.verified;
+        let session = verified.writer_session("agent");
+        let own = SpaceWriter::open(&scratch(), &session, &agent, &fixture.remote)
+            .await
+            .unwrap();
+        own.approve(&grant(&garden, &agent, "get").await, &[])
+            .await
+            .unwrap();
+        let served = Served(own);
+
+        let (view, base) = fixture
+            .view_of(verified, &served, &garden.did(), false)
+            .await;
+        let (status, body) = json(
+            view.call(request(Method::POST, &format!("{base}/sync/pull"), ""))
+                .await,
+        )
+        .await;
+        assert!(status.is_success(), "pull: {status}: {body}");
+        let (status, body) = json(
+            view.call(request(
+                Method::POST,
+                &format!("{base}/evaluate?transact=false"),
+                "view.note:\n  this: ?n\n  title: ?t\n",
+            ))
+            .await,
+        )
+        .await;
+        assert!(status.is_success(), "query: {status}: {body}");
+        assert!(body.to_string().contains("in the garden"), "{body}");
+
+        // Editing a space granted only to read is refused.
+        let key = Ed25519Signer::generate().await.unwrap();
+        let refused = call(
+            ACCESS,
+            &json!({ "space": garden.did().to_string(), "audience": key.did().to_string(), "edit": true }),
+            verified,
+            &served,
+            "",
+            "session",
+            ORIGIN,
+            &TicketKey::derive("secret"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(refused["isError"], true, "{refused}");
+        view.close().await;
+        served.0.close().await;
+        fixture.service.stop().await.unwrap();
     }
 
     #[dialog_common::test]

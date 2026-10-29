@@ -221,7 +221,7 @@ pub async fn space_chains(
     };
     let mut chains = Vec::new();
     for leaf in leaves {
-        let chain = leaf.0;
+        let chain = &leaf.0;
         if chain.subject() != Some(space) || space == agent {
             continue;
         }
@@ -244,8 +244,17 @@ pub async fn space_chains(
             .during(at_now)
             .perform(&tonk.operator)
             .await;
-        if proved.is_ok() {
-            chains.push(chain);
+        // The store keeps each delegation apart: the leaf alone names
+        // only its last hop, so the chain is the one the proof walked.
+        let Ok(proof) = proved else {
+            continue;
+        };
+        let mut links: Vec<_> = proof.proofs.into_iter().map(|link| link.0).collect();
+        if links.first().is_some_and(|root| root.issuer() != space) {
+            links.reverse();
+        }
+        if let Ok(proved) = dialog_ucan_core::DelegationChain::try_from(links) {
+            chains.push(proved);
         }
     }
     Ok(chains)
