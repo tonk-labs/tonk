@@ -512,7 +512,25 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 if let Some(refusal) = refusal(verified, &space, write) {
                     return tool_result(json!(refusal), true);
                 }
-                let path = if write { "/api/evaluate" } else { "/api/query" };
+                let path = if write {
+                    "/api/evaluate".to_owned()
+                } else {
+                    // A page of a large read: the writer caps reads and
+                    // answers the next cursor.
+                    let mut page = url::form_urlencoded::Serializer::new(String::new());
+                    if let Some(limit) = arguments["limit"].as_u64() {
+                        page.append_pair("limit", &limit.to_string());
+                    }
+                    if let Some(cursor) = arguments["cursor"].as_str() {
+                        page.append_pair("cursor", cursor);
+                    }
+                    let page = page.finish();
+                    if page.is_empty() {
+                        "/api/query".to_owned()
+                    } else {
+                        format!("/api/query?{page}")
+                    }
+                };
                 let request = Request::builder()
                     .method(Method::POST)
                     .uri(path)
@@ -646,6 +664,17 @@ pub fn tools() -> Vec<Value> {
                 if let Some(required) = tool["inputSchema"]["required"].as_array_mut() {
                     required.push(json!("space"));
                 }
+            }
+            if name == "tonk_query" {
+                tool["inputSchema"]["properties"]["limit"] = json!({
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Most rows to answer; a larger read is paged.",
+                });
+                tool["inputSchema"]["properties"]["cursor"] = json!({
+                    "type": "string",
+                    "description": "The `page.next` of the previous answer, to read the next page.",
+                });
             }
             tool
         })
