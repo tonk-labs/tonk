@@ -201,6 +201,9 @@ struct Inner {
     /// frame through every slide's binding diff, so `dom.host/*` is a
     /// live render input rather than a mount-time snapshot.
     host_watch: Option<HostAttrWatch>,
+    /// The wait for this display to be shown, while it is not: until then
+    /// it resolves and subscribes to nothing.
+    waiting: Option<crate::shown::Waiting>,
     /// The model concept's descriptor JSON: the fields introspection
     /// reports and the scalar fields a view is told about. Set on every
     /// connect.
@@ -282,6 +285,7 @@ impl Inner {
             depth_annotator: None,
             entity_serial: 0,
             host_watch: None,
+            waiting: None,
             portal_descriptor: None,
             portal_model: None,
             recorder: None,
@@ -314,6 +318,8 @@ impl Inner {
         self.delegate.take();
         // Disconnect the host-attribute watcher.
         self.host_watch.take();
+        // Stop waiting to be shown.
+        self.waiting.take();
     }
 }
 
@@ -571,7 +577,7 @@ impl CustomElement for TonkDisplay {
             })
         });
         *self.inner.borrow_mut() = Some(state.clone());
-        start_flows(&host, state);
+        start_when_shown(&host, state);
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
@@ -631,7 +637,7 @@ impl CustomElement for TonkDisplay {
             clear_host(&host, &mut s);
         }
         state::set(&host, State::Loading);
-        start_flows(&host, state);
+        start_when_shown(&host, state);
     }
 }
 
@@ -1005,6 +1011,40 @@ fn already_registered() -> bool {
         return false;
     };
     !win.custom_elements().get("tonk-display").is_undefined()
+}
+
+/// Start the display's flows, or for a display marked `loading="lazy"`,
+/// once it is shown: at once when the browser renders it, or else the first
+/// time it does. See [`crate::shown`]. Only a lazy display waits: a hidden
+/// one is often what a page reads its data from.
+fn start_when_shown(host: &Element, state: Rc<RefCell<Inner>>) {
+    let lazy = host.get_attribute("loading").as_deref() == Some("lazy");
+    if !lazy || crate::shown::shown(host) {
+        start_flows(host, state);
+        return;
+    }
+    let waiting = crate::shown::when_shown(host, {
+        let host = host.clone();
+        let state = Rc::downgrade(&state);
+        move || {
+            // Off the observer's own callback, which the wait owns and
+            // starting drops.
+            spawn_local(async move {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
+                if state.borrow().disposed {
+                    return;
+                }
+                state.borrow_mut().waiting = None;
+                start_flows(&host, state);
+            });
+        }
+    });
+    match waiting {
+        Some(waiting) => state.borrow_mut().waiting = Some(waiting),
+        None => start_flows(host, state),
+    }
 }
 
 fn start_flows(host: &Element, state: Rc<RefCell<Inner>>) {
