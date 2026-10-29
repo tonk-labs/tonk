@@ -749,7 +749,7 @@ script (`tests/e2e/hosted-agent/`) plays every part a host and a person play:
 | LLM host | `@modelcontextprotocol/client` `Client` over Streamable HTTP, with an `OAuthClientProvider`: discovery from the 401, dynamic registration, PKCE, `redirect_uri` on a loopback listener the script owns |
 | The person's browser | Playwright Chromium opening the `/authorize` URL the SDK hands over |
 | The passkey | Chrome's virtual authenticator over CDP (`WebAuthn.addVirtualAuthenticator`, `hasPrf`), as `driver_with_prf` does for the Rust browser suite |
-| The emailed activation link | Resend's test inbox: the account is `delivered+e2e-<run>@resend.dev`, and the script reads the link back through the Resend API with the preview's key |
+| The emailed activation link | The preview's test inbox: the account is `e2e-<run>@hosted-agent.test`, and the preview records activation mail to `.test` addresses (reserved, never delivered) in a preview-only KV instead of sending it; the script reads it at `/_test/emails?address=`. The real email path is not under test here |
 | Approval | Playwright on `/settings/agent`, by role and accessible name |
 
 What it checks, in order:
@@ -781,10 +781,7 @@ the only sweep it needs.
 Where it runs:
 
 - **CI:** a job after `deploy` in `publish.yml`, on pull requests, against the
-  preview URL `deploy` outputs. Needs one repository secret,
-  `TONK_E2E_RESEND_API_KEY`: a Resend key that can read sent mail, which
-  takes `full_access` (the preview's own key only sends).
-  Uploads a Playwright trace on failure.
+  preview URL `deploy` outputs. Needs no secret. Uploads a Playwright trace on failure.
 - **By hand:** the same script against any origin (`TONK_E2E_ORIGIN`), with
   `TONK_E2E_HEADED=1` to watch the approval. `local/stack.sh` runs the
   whole stack on this machine on one origin (a small proxy stands in for
