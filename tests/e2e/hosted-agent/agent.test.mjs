@@ -157,7 +157,11 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       }
       const listed = (await call(client, 'tonk_list_spaces', {})).structuredContent.spaces;
       assert.deepEqual(
-        listed.map((space) => space.subject).sort(),
+        // The agent's own space is listed too, marked as such.
+        listed
+          .filter((space) => !space.agent_space)
+          .map((space) => space.subject)
+          .sort(),
         [spaces.writable, spaces.readable].sort(),
         `listed ${JSON.stringify(listed)}`,
       );
