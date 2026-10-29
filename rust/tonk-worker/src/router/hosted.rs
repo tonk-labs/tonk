@@ -5,12 +5,15 @@
 //!
 //! Built for the hosted agent peer spike (a Cloudflare Worker), where the
 //! key comes from a session token and the authority from its powerline.
+//! [`SpaceWriter`] keeps one open for a space and an MCP session and
+//! serializes its writes.
 use std::sync::Arc;
 
 use axum::{Router, body::Body, http::Request, response::Response};
 use dialog_capability::{Subject, did};
 use dialog_credentials::{Credential, Ed25519Signer, SignerCredential};
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt};
+use dialog_repository::HeldCaches;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::{Did, Principal as _};
@@ -18,6 +21,9 @@ use tower_service::Service;
 
 use super::{AppState, LspHub};
 use crate::TonkWorkerError;
+
+mod writer;
+pub use writer::{NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, writer_seed};
 
 /// The ordinary worker router over a peer that exists for one request.
 pub struct HostedPeer {
@@ -37,7 +43,23 @@ impl HostedPeer {
         seed: &[u8; 32],
         proofs: &[DelegationChain],
     ) -> Result<Self, TonkWorkerError> {
-        let directory = Directory::At(format!("/hosted/{name}"));
+        Self::open_in(
+            Directory::At(format!("/hosted/{name}")),
+            seed,
+            proofs,
+            HeldCaches::new(),
+        )
+        .await
+    }
+
+    /// [`open`](Self::open) in `directory`, its repositories holding
+    /// `caches`. Two peers open at once need different directories.
+    pub async fn open_in(
+        directory: Directory,
+        seed: &[u8; 32],
+        proofs: &[DelegationChain],
+        caches: HeldCaches,
+    ) -> Result<Self, TonkWorkerError> {
         let internal = |error: &dyn std::fmt::Display| TonkWorkerError::Internal(error.to_string());
         let (credentials, _) = crate::device::open_system(directory.clone())
             .await
@@ -53,7 +75,8 @@ impl HostedPeer {
             .perform(&credentials)
             .await
             .map_err(|error| internal(&error))?;
-        let registry = crate::device::Registry::new("hosted".to_owned(), directory.clone());
+        let registry =
+            crate::device::Registry::holding("hosted".to_owned(), directory.clone(), caches);
         let storage = registry.storage().await?;
         let profile = registry.open_profile(&storage, "hosted").await?;
         let state =
@@ -95,9 +118,16 @@ impl HostedPeer {
         self.state.read().await.profile.did()
     }
 
-    /// Serve one request with the ordinary worker router.
-    pub async fn call(&mut self, request: Request<Body>) -> Response {
-        match self.router.call(request).await {
+    /// The DID this peer's revisions are issued by: the worker's session
+    /// operator, derived from [`did`](Self::did).
+    pub async fn operator(&self) -> Did {
+        self.state.read().await.operator.did()
+    }
+
+    /// Serve one request with the ordinary worker router. Requests may
+    /// overlap: each is served by its own handle on the router.
+    pub async fn call(&self, request: Request<Body>) -> Response {
+        match self.router.clone().call(request).await {
             Ok(response) => response,
             Err(never) => match never {},
         }

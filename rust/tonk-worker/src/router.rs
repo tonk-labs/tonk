@@ -83,13 +83,18 @@ pub(crate) mod rotation;
 
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 mod agent_link;
-#[cfg(feature = "volatile-storage")]
+// Built natively too, without the feature, for this crate's own tests:
+// the space writer is tested against a native access service.
+#[cfg(any(feature = "volatile-storage", test))]
+#[cfg_attr(not(feature = "volatile-storage"), allow(dead_code, unused_imports))]
 mod hosted;
 mod join;
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 pub use agent_link::AgentLinkWorker;
 #[cfg(feature = "volatile-storage")]
-pub use hosted::HostedPeer;
+pub use hosted::{
+    HostedPeer, NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, writer_seed,
+};
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 mod local_peer;
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]

@@ -241,10 +241,16 @@ impl Registry {
     /// The registry of the profile `profile` in `directory`, with caches
     /// of its own.
     pub(crate) fn new(profile: String, directory: Directory) -> Self {
+        Self::holding(profile, directory, HeldCaches::new())
+    }
+
+    /// The registry of the profile `profile` in `directory`, whose peers
+    /// hold `caches`: a hosted peer passes caches with a budget it chose.
+    pub(crate) fn holding(profile: String, directory: Directory, caches: HeldCaches) -> Self {
         Self {
             profile,
             directory,
-            caches: HeldCaches::new(),
+            caches,
         }
     }
 
