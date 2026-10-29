@@ -623,8 +623,9 @@ Both
 - `frame-src` is hashed into the view's origin, so granting `frameDomains` later
   changes the origin and orphans anything the view stored.
 - The view's CSP allows `frame-src blob: data:`; blob and `srcdoc` frames load
-  and share the view's IndexedDB. Whether a service worker can register there is
-  still to be probed.
+  and share the view's IndexedDB, which suits route B. No service worker can
+  register on the view's origin: that host serves only `/mcp_apps` and 404s
+  everything else.
 - The view origin is real and stable per surface (`{hash}.claudemcpcontent.com`,
   a different hash on web and desktop), with working IndexedDB. The relay can
   keep one key per surface instead of minting one per load (see "Minted per load").
