@@ -37,10 +37,19 @@ pub(crate) fn update_pending() -> bool {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         use wasm_bindgen::JsCast;
+        // A Workers isolate's global passes as a service worker scope but
+        // has no registration to update.
         return js_sys::global()
             .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
-            .map(|scope| scope.registration().waiting().is_some())
-            .unwrap_or(false);
+            .ok()
+            .and_then(|scope| js_sys::Reflect::get(&scope, &"registration".into()).ok())
+            .filter(|registration| registration.is_object())
+            .is_some_and(|registration| {
+                registration
+                    .unchecked_into::<web_sys::ServiceWorkerRegistration>()
+                    .waiting()
+                    .is_some()
+            });
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     false
@@ -74,9 +83,13 @@ pub(crate) mod rotation;
 
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 mod agent_link;
+#[cfg(feature = "volatile-storage")]
+mod hosted;
 mod join;
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 pub use agent_link::AgentLinkWorker;
+#[cfg(feature = "volatile-storage")]
+pub use hosted::HostedPeer;
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 mod local_peer;
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]

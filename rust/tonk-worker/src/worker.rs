@@ -347,8 +347,22 @@ async fn passthrough(_request: Request, _is_navigation: bool) -> Result<JsValue,
 }
 
 /// Default storage type — IndexedDB on WASM, filesystem on native.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "volatile-storage")
+))]
 pub type DefaultSpace = dialog_storage::provider::storage::WebSpace;
+
+/// In-memory storage on WASM, for a hosted peer in an isolate that has
+/// neither IndexedDB nor OPFS (a Cloudflare Worker). Nothing survives the
+/// state it was opened for.
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    feature = "volatile-storage"
+))]
+pub type DefaultSpace = dialog_storage::provider::storage::VolatileSpace;
 
 /// Default storage type — filesystem on native.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
