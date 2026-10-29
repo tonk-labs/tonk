@@ -309,7 +309,9 @@ async fn a_session_id_of_another_token_is_refused() {
             "tonk_evaluate",
             "tonk_guide",
             "tonk_list_spaces",
-            "tonk_query"
+            "tonk_query",
+            "tonk_show",
+            "tonk_view_ticket"
         ]
     );
 
