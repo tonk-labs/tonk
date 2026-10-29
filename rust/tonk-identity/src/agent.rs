@@ -54,6 +54,11 @@ pub const TOKEN_VERSION: &str = "token.version";
 /// `meta` key carrying the session key's 32-byte Ed25519 seed.
 pub const TOKEN_SEED: &str = "token.seed";
 
+/// `meta` key carrying the grants the agent was given with this session:
+/// a list of encoded delegation chains, each delegating some space to
+/// the agent space. Absent when there are none.
+pub const TOKEN_GRANTS: &str = "token.grants";
+
 /// The [`TOKEN_TYPE`] of an agent session token.
 pub const AGENT_SESSION_TOKEN: &str = "agent-session";
 
@@ -102,6 +107,26 @@ pub async fn issue_agent_session(
     agent_space: impl Into<Signer>,
     home: &Url,
 ) -> Result<IssuedAgentSession> {
+    issue_agent_session_with_grants(agent_space, home, &[]).await
+}
+
+/// [`issue_agent_session`], with `grants` carried in the token: chains
+/// delegating other spaces to the agent space, so the host can act in
+/// them without looking them up.
+pub async fn issue_agent_session_with_grants(
+    agent_space: impl Into<Signer>,
+    home: &Url,
+    grants: &[DelegationChain],
+) -> Result<IssuedAgentSession> {
+    let agent_space = agent_space.into();
+    let agent = agent_space.did();
+    for grant in grants {
+        ensure!(
+            grant.audience() == &agent,
+            "a grant delegates to {}, not to the agent {agent}",
+            grant.audience()
+        );
+    }
     let mut seed = Zeroizing::new([0u8; 32]);
     getrandom::fill(seed.as_mut())
         .map_err(|error| anyhow!("no entropy for a session key: {error}"))?;
@@ -109,7 +134,7 @@ pub async fn issue_agent_session(
         .await
         .map_err(|error| anyhow!("failed to derive the session key: {error:?}"))?;
     let powerline = mint_agent_session(agent_space, &session.did(), home).await?;
-    let token = encode_agent_session_token(&seed, &powerline).await?;
+    let token = encode_agent_session_token_with_grants(&seed, &powerline, grants).await?;
     Ok(IssuedAgentSession { token, powerline })
 }
 
@@ -121,6 +146,18 @@ pub async fn encode_agent_session_token(
     seed: &Zeroizing<[u8; 32]>,
     powerline: &DelegationChain,
 ) -> Result<String> {
+    encode_agent_session_token_with_grants(seed, powerline, &[]).await
+}
+
+/// [`encode_agent_session_token`], carrying `grants` under [`TOKEN_GRANTS`].
+///
+/// Refuses a grant that does not delegate to the powerline's issuer: the
+/// session could never use it.
+pub async fn encode_agent_session_token_with_grants(
+    seed: &Zeroizing<[u8; 32]>,
+    powerline: &DelegationChain,
+    grants: &[DelegationChain],
+) -> Result<String> {
     let session = Ed25519Signer::import(&**seed)
         .await
         .map_err(|error| anyhow!("failed to derive the session key: {error:?}"))?;
@@ -131,7 +168,7 @@ pub async fn encode_agent_session_token(
         powerline.audience()
     );
 
-    let meta = BTreeMap::from([
+    let mut meta = BTreeMap::from([
         (
             TOKEN_TYPE.to_owned(),
             Ipld::String(AGENT_SESSION_TOKEN.to_owned()),
@@ -142,6 +179,23 @@ pub async fn encode_agent_session_token(
         ),
         (TOKEN_SEED.to_owned(), Ipld::Bytes(seed.to_vec())),
     ]);
+    if !grants.is_empty() {
+        let mut encoded = Vec::with_capacity(grants.len());
+        for grant in grants {
+            ensure!(
+                grant.audience() == powerline.issuer(),
+                "a grant delegates to {}, not to the agent {}",
+                grant.audience(),
+                powerline.issuer()
+            );
+            encoded.push(Ipld::Bytes(
+                grant
+                    .to_bytes()
+                    .map_err(|e| anyhow!("failed to encode a grant: {e}"))?,
+            ));
+        }
+        meta.insert(TOKEN_GRANTS.to_owned(), Ipld::List(encoded));
+    }
     let outer = DelegationBuilder::new()
         .issuer(Signer::from(session))
         .audience(&did)
@@ -165,6 +219,7 @@ pub struct AgentSessionToken {
     session: Ed25519Signer,
     powerline: DelegationChain,
     home: Url,
+    grants: Vec<DelegationChain>,
 }
 
 impl AgentSessionToken {
@@ -193,6 +248,13 @@ impl AgentSessionToken {
     /// The agent's sync endpoint, from the powerline's signed `meta`.
     pub fn home(&self) -> &Url {
         &self.home
+    }
+
+    /// The grants the token carries, each delegating to [`Self::agent`].
+    /// Decoding checks only their audience: whether each chain is valid,
+    /// unexpired and unrevoked is for the verifier on every call.
+    pub fn grants(&self) -> &[DelegationChain] {
+        &self.grants
     }
 }
 
@@ -270,12 +332,36 @@ pub async fn decode_agent_session_token(token: &str) -> Result<AgentSessionToken
             })?;
     }
 
+    let grants = match meta.get(TOKEN_GRANTS) {
+        None => Vec::new(),
+        Some(Ipld::List(items)) => items
+            .iter()
+            .map(|item| {
+                let Ipld::Bytes(bytes) = item else {
+                    bail!("a `{TOKEN_GRANTS}` entry is not bytes");
+                };
+                let grant = DelegationChain::try_from(bytes.as_slice()).map_err(|e| {
+                    anyhow!("a `{TOKEN_GRANTS}` entry is not a delegation chain: {e}")
+                })?;
+                ensure!(
+                    grant.audience() == powerline.issuer(),
+                    "a grant delegates to {}, not to the agent {}",
+                    grant.audience(),
+                    powerline.issuer()
+                );
+                Ok(grant)
+            })
+            .collect::<Result<_>>()?,
+        Some(_) => bail!("the token's `{TOKEN_GRANTS}` is not a list"),
+    };
+
     let powerline = DelegationChain::new(powerline.clone());
     let home = home_address(&powerline)?.context("the token's powerline names no home")?;
     Ok(AgentSessionToken {
         session,
         powerline,
         home,
+        grants,
     })
 }
 
@@ -399,6 +485,95 @@ mod tests {
         let decoded = decode_agent_session_token(&first.token).await.unwrap();
         assert_eq!(decoded.powerline(), &first.powerline);
         assert_eq!(decoded.agent(), &agent.did());
+    }
+
+    /// `space → device → agent` for each of the six agent-link scopes:
+    /// the shape the approval page puts in a token for one space.
+    async fn grants_for(space_seed: &[u8; 32], agent: &Did) -> Vec<DelegationChain> {
+        let space = signer(space_seed).await;
+        let device = signer(&[11u8; 32]).await;
+        let mut chains = Vec::new();
+        for verb in ["get", "put"] {
+            for (kind, item) in [
+                ("memory", "cell"),
+                ("archive", "block"),
+                ("archive", "blob"),
+            ] {
+                let command = vec!["use".into(), verb.into(), kind.into(), item.into()];
+                let root = DelegationBuilder::new()
+                    .issuer(Signer::from(space.clone()))
+                    .audience(&device.did())
+                    .subject(UcanSubject::Specific(space.did()))
+                    .command(command.clone())
+                    .try_build()
+                    .await
+                    .unwrap();
+                let leaf = DelegationBuilder::new()
+                    .issuer(Signer::from(device.clone()))
+                    .audience(agent)
+                    .subject(UcanSubject::Specific(space.did()))
+                    .command(command)
+                    .meta(home_address_meta(&home()))
+                    .try_build()
+                    .await
+                    .unwrap();
+                chains.push(DelegationChain::new(root).push(leaf).unwrap());
+            }
+        }
+        chains
+    }
+
+    #[dialog_common::test]
+    async fn it_round_trips_a_token_with_grants() {
+        let agent = signer(&AGENT_SEED).await;
+        let mut grants = grants_for(&[21u8; 32], &agent.did()).await;
+        grants.extend(grants_for(&[22u8; 32], &agent.did()).await);
+        let issued = issue_agent_session_with_grants(agent.clone(), &home(), &grants)
+            .await
+            .unwrap();
+        // Two spaces read/write must still fit an `Authorization` header.
+        assert!(
+            issued.token.len() < 16 * 1024,
+            "{} bytes",
+            issued.token.len()
+        );
+
+        let decoded = decode_agent_session_token(&issued.token).await.unwrap();
+        assert_eq!(decoded.grants(), &grants[..]);
+        assert_eq!(decoded.powerline(), &issued.powerline);
+
+        let bare = issue_agent_session(agent, &home()).await.unwrap();
+        let decoded = decode_agent_session_token(&bare.token).await.unwrap();
+        assert!(decoded.grants().is_empty());
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_grant_to_someone_else() {
+        let agent = signer(&AGENT_SEED).await;
+        let other = signer(&OTHER_SEED).await;
+        let grants = grants_for(&[21u8; 32], &other.did()).await;
+        assert!(
+            issue_agent_session_with_grants(agent.clone(), &home(), &grants)
+                .await
+                .is_err()
+        );
+
+        let session = signer(&SESSION_SEED).await;
+        let powerline = mint_agent_session(agent, &session.did(), &home())
+            .await
+            .unwrap();
+        let mut smuggled = meta(AGENT_SESSION_TOKEN, 1, &SESSION_SEED);
+        smuggled.insert(
+            TOKEN_GRANTS.to_owned(),
+            Ipld::List(vec![Ipld::Bytes(grants[0].to_bytes().unwrap())]),
+        );
+        let smuggled = forged(&powerline, session.clone(), &session.did(), smuggled).await;
+        let error = decode_agent_session_token(&smuggled)
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("not to the agent"), "{error}");
     }
 
     #[dialog_common::test]
