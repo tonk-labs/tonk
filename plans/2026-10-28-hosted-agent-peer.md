@@ -271,7 +271,7 @@ impossible:
 | Idle isolate (bundle, runtime) | ~2 MiB measured | none |
 | Tree node cache | 24 MiB | `HeldCaches::with_budget` |
 | Spilled values | 8 MiB per open repository; a space writer opens two (the space and its local profile), so 16 MiB | fixed |
-| Entry caches (causal verdicts, contexts, records, rules, plans) | unmeasured, estimated under 8 MiB | fixed at 2048 entries each |
+| Entry caches (causal verdicts, contexts, records, rules, plans) | contexts 8.5 to 17 MiB when full on 2k to 7k origins, records 0.7 to 1.2 MiB, the rest about 0 (measured, see below) | fixed at 2048 entries each |
 | Query working set | what is left, about 70 MiB | read caps |
 | Margin | ~10 MiB | |
 
@@ -297,8 +297,54 @@ Remaining risk:
   stage 3b retry rule.
 - Contexts are per-origin watermarks, and every MCP reconnect mints an origin, so
   a cached context grows with the space's writer history while the cache count
-  stays at 2048. Stage 2 measures the entry caches on a space with many origins;
-  if they grow past a few MiB, #706 becomes a blocker rather than a nicety.
+  stays at 2048. Measured (below): past a few MiB once the cache is full, so
+  #706 is a blocker for long-lived writers on spaces past a few thousand
+  origins, not for the demo.
+
+#### Entry caches on a space with many origins
+
+Measured natively on dialog-db `becde74` with a counting allocator: the bytes
+clearing each cache frees, after a writer works a space whose history has N
+origins. Wasm has 4-byte pointers, so these are an upper bound. The harness is
+an ignored test, `entry_cache_footprint` in `dialog-repository` (patch in the
+project files, `hosted-agent-peer/entry-cache-measure/`).
+
+| Scenario | Origins | Contexts | Records | Causal verdicts, rewrites |
+| --- | --- | --- | --- | --- |
+| Writer commits 4200 times on its own chain | 1001 | 0 entries, 0 MiB | 2048, 1.15 MiB | 0 |
+| Each round a new origin commits on the writer's head, the writer commits concurrently and merges it; 2100 rounds | 2111 | 2085 entries, 8.5 MiB | 2048, 0.7 MiB | 0 |
+| Same, on 1000 seeded origins | 3101 | 2085, 10.1 MiB | 2048, 0.7 MiB | 0 |
+| Same, on 5000 seeded origins | 7101 | 2085, 16.8 MiB | 2048, 0.7 MiB | 0 |
+
+What the numbers say:
+
+- **Contexts fill only from other origins' heads.** A commit on the writer's
+  own head reads its context from the tree's region and caches nothing, so a
+  session writer that mostly writes holds almost none. Each pull or merge of
+  another origin's head caches one.
+- **A full context cache grows about 1.7 MiB per 1000 origins** (3.1k to 7.1k),
+  not with the full map per entry: settled watermarks are shared between
+  contexts, and each entry adds only its recent part (up to 64 origins, or the
+  square root of the map). Extrapolated, 10k origins is about 22 MiB and 20k
+  about 39 MiB.
+- **Records stay under 1.2 MiB** whatever the origins: a fixed-size record per
+  version.
+- **Causal verdicts are never filled by dialog or tonk.** `CausalityCache` is
+  only reached through `Branch::causality()`, which nothing calls; its keys are
+  fixed size anyway (about 0.3 MiB if full). Rewrites fill only on a number-band
+  rekey.
+- **Rules and plans are keyed by content**, so origins do not grow them; not
+  measured here.
+- **The node cache default is 128 MiB** (`NODE_CACHE_BUDGET`), and it filled to
+  that in every run. The space writer must set `HeldCaches::with_budget`; the
+  default alone exceeds the Durable Object.
+
+For the budget: keep 8 MiB for entry caches while a space has under about 2k
+origins. Above that, until #706 lets the context cache be sized, the recycle at
+96 MiB is what bounds it: a long-lived writer on a 10k-origin space would give
+up about 14 MiB of the query working set before recycling. Origin growth itself
+is the cost driver; a session origin that is reused across reconnects of the
+same agent would remove it.
 - The numbers above come from the spike's 20k-record space. A larger space moves
   the threshold for routing reads away, not the cache budgets.
 
@@ -514,8 +560,9 @@ Stage 2a is in review as #1207 (on #1205): the space writer core in
 session all land, where the spike kept 1 of 5. Still to do in stage 2: the token
 front (needs #1202 to expose the session seed, or a `writer_key(mcp_session)`
 accessor), SSE, assets with `Range`, read caps and routing, recycling, skipping
-the profile bootstrap (still about 0.8 s on open), agent-level reads, and
-measuring entry caches on a space with many origins.
+the profile bootstrap (still about 0.8 s on open), and agent-level reads. Entry
+caches on a space with many origins are measured (see
+[Memory](#entry-caches-on-a-space-with-many-origins)).
 
 ### Stage 3: authorization server
 
