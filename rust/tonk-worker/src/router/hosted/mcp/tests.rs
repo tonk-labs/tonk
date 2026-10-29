@@ -295,19 +295,21 @@ async fn a_session_id_of_another_token_is_refused() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let names: Vec<&str> = body["result"]["tools"]
+    // In catalog order, which is not this list's.
+    let mut names: Vec<&str> = body["result"]["tools"]
         .as_array()
         .unwrap()
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
+    names.sort_unstable();
     assert_eq!(
         names,
         [
-            "tonk_list_spaces",
-            "tonk_query",
             "tonk_evaluate",
-            "tonk_guide"
+            "tonk_guide",
+            "tonk_list_spaces",
+            "tonk_query"
         ]
     );
 
