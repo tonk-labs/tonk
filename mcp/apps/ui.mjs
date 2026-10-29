@@ -36,7 +36,9 @@ export function createWorkerUI({ origin, resourceMetadata = {} }) {
   const digest = createHash('sha256').update(html).digest('hex').slice(0, 16);
   const uri = `ui://tonk/worker-space-${digest}.html`;
 
-  return function registerWorkerUI(server, backend) {
+  // `tools: false` registers the page alone. A host may read it in a request
+  // that does not repeat the client's Apps capability.
+  return function registerWorkerUI(server, backend, { tools = true } = {}) {
     if (!backend.openSpace) return;
     server.registerResource(
       'tonk-space',
@@ -56,6 +58,7 @@ export function createWorkerUI({ origin, resourceMetadata = {} }) {
         ],
       }),
     );
+    if (!tools) return;
     server.registerTool(
       'tonk_open_space',
       {

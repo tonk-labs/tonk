@@ -186,9 +186,15 @@ test('modern SDK negotiates 2026-07-28 and carries UI capability independently o
   });
   try {
     assert.equal(ui.transport.sessionId, undefined);
-    assert.equal((await ui.client.listTools()).tools.length, 6);
+    const tools = (await ui.client.listTools()).tools;
+    assert.equal(tools.length, 6);
     assert.equal((await headless.client.listTools()).tools.length, 4);
     assert.equal((await ui.client.listTools()).tools.length, 6);
+    // A host may read the page without repeating the Apps capability; it is
+    // there, while the app tools stay off that request.
+    const uri = tools.find((tool) => tool.name === 'tonk_open_space')._meta.ui.resourceUri;
+    const page = (await headless.client.readResource({ uri })).contents[0];
+    assert.equal(page.mimeType, 'text/html;profile=mcp-app');
   } finally {
     await ui.client.close();
     await headless.client.close();

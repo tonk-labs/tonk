@@ -135,10 +135,16 @@ export function createAuthenticatedTonkHTTP({
           throw error;
         }
       } else {
-        const ui =
-          !legacy && supportsApps(message.params?._meta?.[CLIENT_CAPABILITIES_META_KEY])
-            ? registerUI
-            : undefined;
+        // App tools follow each request's declared capability. App pages are
+        // readable on every modern request: ChatGPT reads the page in a request
+        // that does not declare Apps, and reports "Couldn't display" if absent.
+        const ui = !registerUI
+          ? undefined
+          : legacy
+            ? undefined
+            : supportsApps(message.params?._meta?.[CLIENT_CAPABILITIES_META_KEY])
+              ? registerUI
+              : (server, backend) => registerUI(server, backend, { tools: false });
         handler = createTonkHTTP(() => resolveBackend(principal), { registerUI: ui });
         handlers.add(handler);
       }
