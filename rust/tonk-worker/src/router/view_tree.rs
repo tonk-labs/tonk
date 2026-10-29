@@ -51,32 +51,45 @@ async fn home_entity(state: &AppState, space: &str) -> String {
 }
 
 /// The `<tonk-display>` tree rendering `route` mounts.
+///
+/// The renderer's futures are not `Send` (it also runs in the browser), and
+/// hosts run peer calls on spawned tasks. So the walk runs on a blocking
+/// thread, driven by this runtime's handle, and only its result crosses back.
 pub(super) async fn outline(
     state: &AppState,
     space: &str,
     route: &RenderRoute,
 ) -> Result<Value, String> {
-    let outline = tonk_render::outline(&Space { state, space }, route)
-        .await
-        .map_err(|error| error.to_string())?;
+    let backend = Space {
+        state: state.clone(),
+        space: space.to_owned(),
+    };
+    let route = route.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let outline = tokio::task::spawn_blocking(move || {
+        runtime.block_on(async move { tonk_render::outline(&backend, &route).await })
+    })
+    .await
+    .map_err(|_| "The outline could not be completed.".to_owned())?
+    .map_err(|error| error.to_string())?;
     Ok(json!({ "space": space, "outline": outline }))
 }
 
 /// Queries against one space's `main` branch.
-struct Space<'a> {
-    state: &'a AppState,
-    space: &'a str,
+struct Space {
+    state: AppState,
+    space: String,
 }
 
 #[async_trait::async_trait(?Send)]
-impl QueryBackend for Space<'_> {
+impl QueryBackend for Space {
     async fn query(
         &self,
         query: ConceptQuery,
     ) -> Result<Vec<tonk_schema::conclusion::Conclusion>, RenderError> {
         let tonk = self.state.read().await;
         tonk.reactor
-            .repository(self.space)
+            .repository(&self.space)
             .branch("main")
             .query(query)
             .perform(&tonk.operator)
