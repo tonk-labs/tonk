@@ -179,7 +179,12 @@ pub async fn verify(bearer: &str) -> Result<Verified, String> {
             return Err(format!("a grant for {subject} is not issued by it"));
         }
         for delegation in grant.proofs() {
-            if delegation.subject() != &UcanSubject::Specific(subject.clone()) {
+            // A subject-open link (the account's powerline to a device) is
+            // in every grant an account mints; it narrows nothing, and the
+            // chain's other links pin the space.
+            if delegation.subject() != &UcanSubject::Specific(subject.clone())
+                && delegation.subject() != &UcanSubject::Any
+            {
                 return Err(format!("a grant for {subject} changes subject"));
             }
             delegation
