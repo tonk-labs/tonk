@@ -407,7 +407,7 @@ async fn revoke_through_profile(
 /// ([`revoke_through_profile`]), in the person's profile, which holds the
 /// authority. The path has to be for `subject`, the space whose worker
 /// asked, and end at the grant it names.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn revoke_for_space(
     tonk: &TonkState,
     subject: &Did,
@@ -480,7 +480,7 @@ where
 /// The person's account's `/` chain over `subject`, as the profile has it
 /// on record: what a space's own worker asks for when the space's retained
 /// chains prove none ([`account_authority`]). Base58.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn authority_for_space(
     tonk: &TonkState,
     subject: &Did,

@@ -57,7 +57,7 @@ use axum::Router;
 use axum::http::StatusCode;
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
-use site::{Routed, Site};
+use site::{Routed, Site, SpaceAsk};
 use tonk_kernel_world::application::Told;
 use tonk_kernel_world::boot;
 use tonk_kernel_world::guest::HandleLayer;
@@ -333,6 +333,11 @@ impl handler::Guest for Kernel {
             Routed::Seed(space) => seed_of(&space).await,
             Routed::Settle(space) => settle(&space).await,
             Routed::Snapshot(space) => snapshot(&space).await,
+            Routed::SpaceAsk {
+                space,
+                ask,
+                request,
+            } => space_ask(&space, ask, request).await,
         };
         // A write, or a page's poke, is followed by a sync with the remote,
         // as the browser's worker drains its queue after each request: once
@@ -360,6 +365,43 @@ impl handler::Guest for Kernel {
             }
         });
         Ok(response)
+    }
+}
+
+/// Do for the space `space` what its own kernel asks of the persona: the
+/// answer is `{ invited }`, `{ authority }` or `{ receipt }`, as a profile's
+/// worker answered the same asks in a browser.
+async fn space_ask(
+    space: &str,
+    ask: SpaceAsk,
+    request: axum::http::Request<axum::body::Body>,
+) -> axum::http::Response<axum::body::Body> {
+    let Some(state) = state() else {
+        return site::answer(StatusCode::SERVICE_UNAVAILABLE, &json!("booting"));
+    };
+    let body: Value = match request.into_body().collect().await {
+        Ok(collected) => serde_json::from_slice(&collected.to_bytes()).unwrap_or(Value::Null),
+        Err(error) => {
+            return site::answer(StatusCode::BAD_REQUEST, &json!(error.to_string()));
+        }
+    };
+    let answered = match ask {
+        SpaceAsk::Invite => {
+            let time = body.get("time").and_then(Value::as_f64).unwrap_or_default();
+            tonk_worker::profile_asks::invite_space(&state, space, time)
+                .await
+                .map(|()| json!({ "invited": true }))
+        }
+        SpaceAsk::Authority => tonk_worker::profile_asks::space_authority(&state, space)
+            .await
+            .map(|authority| json!({ "authority": authority })),
+        SpaceAsk::Revoke => tonk_worker::profile_asks::revoke_grant(&state, space, body)
+            .await
+            .map(|receipt| json!({ "receipt": receipt })),
+    };
+    match answered {
+        Ok(answer) => site::answer(StatusCode::OK, &answer),
+        Err(error) => site::answer(StatusCode::INTERNAL_SERVER_ERROR, &json!(error.to_string())),
     }
 }
 

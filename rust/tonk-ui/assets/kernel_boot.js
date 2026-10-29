@@ -613,6 +613,11 @@ async function answerOf(message) {
         const seed = answer.fresh ? JSON.parse(answer.fresh) : null;
         return { status: 200, body: JSON.stringify({ seed, copy }) };
     }
+    // What only the person's persona can do for the space, passed up to it.
+    if (message.profile && !PROFILE) {
+        const { id: _, ...answer } = await askHost(message.profile);
+        return { status: 200, body: JSON.stringify(answer) };
+    }
     if (message.seeded === true && !PROFILE) {
         settleCreation();
         await askHost({ seeded: true, from: "seed" });
@@ -980,6 +985,21 @@ function bindSpacePort(port, { repo }) {
                 port.postMessage({ id, settled: true });
                 return;
             }
+            // What only the persona can do for the space: mint an invite to
+            // it, answer the account's authority over it, or revoke a grant
+            // on it, for the space's kernel, which asked.
+            const asked =
+                typeof data.invite === "number" ? ["POST", "invite", { time: data.invite }]
+                : data.authority === true ? ["GET", "authority", null]
+                : data.revoke ? ["POST", "revoke", data.revoke]
+                : null;
+            if (asked) {
+                const [method, what, body] = asked;
+                const reply = await askPersona(method, `/_kernel/space/${repo}/${what}`, body);
+                if (reply.status !== 200) throw new Error(reply.text);
+                port.postMessage({ id, ...JSON.parse(reply.text) });
+                return;
+            }
             throw new Error("unknown request");
         } catch (error) {
             port.postMessage({ id, error: String(error?.message ?? error) });
@@ -989,8 +1009,10 @@ function bindSpacePort(port, { repo }) {
 
 // Ask the persona's kernel, as a page of this origin would: `{ status, text
 // }`, the body whole.
-async function askPersona(method, path) {
-    const reply = await (await booting).handle(method, path, [], new Uint8Array());
+async function askPersona(method, path, body = null) {
+    const bytes = body == null ? new Uint8Array() : new TextEncoder().encode(JSON.stringify(body));
+    const headers = body == null ? [] : [["content-type", "application/json"]];
+    const reply = await (await booting).handle(method, path, headers, bytes);
     const pieces = [];
     for (let piece; (piece = await reply.body.next()); ) pieces.push(piece);
     return { status: reply.status, text: await new Blob(pieces).text() };

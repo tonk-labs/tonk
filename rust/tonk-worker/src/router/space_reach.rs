@@ -484,7 +484,17 @@ pub(crate) async fn ask_profile(
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or(serde_json::Value::Null))
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    // A kernel asks through its embedder, which passes the ask up to the
+    // person's persona.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    {
+        tonk_kernel_world::application::ask_profile(request)
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("could not ask the profile: {error:?}"))
+            })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let _ = request;
         Err(TonkWorkerError::Internal(

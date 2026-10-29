@@ -1180,7 +1180,7 @@ async fn execute_invite(env: crate::router::CommandEnv, request: InviteRequest) 
 /// Mint an invite to the space this worker's profile holds as `key`, as
 /// though its share control had been clicked at `time`. For a space whose own
 /// worker was asked for an invite and has passed the asking on.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn invite_space(state: &AppState, key: &str, time: f64) {
     let env =
         crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());

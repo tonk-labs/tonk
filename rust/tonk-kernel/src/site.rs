@@ -6,7 +6,10 @@
 //! answers its host, at `/_kernel/seed/{space}`, what a space it created is to
 //! be created from, and takes `POST /_kernel/seed/{space}/settled` once the
 //! space's own kernel did. A space's kernel answers `/_kernel/snapshot` with
-//! the space, for another to be made a copy of.
+//! the space, for another to be made a copy of. A persona does for a space
+//! what its own kernel asks through their hosts and only the persona can:
+//! `POST /_kernel/space/{space}/invite`, `GET .../authority` and
+//! `POST .../revoke`.
 
 use axum::body::Body;
 use axum::http::{HeaderValue, Method, Request, Response, StatusCode, header};
@@ -44,6 +47,23 @@ pub enum Routed {
     Settle(String),
     /// The space, by its DID, for another to be made a copy of.
     Snapshot(String),
+    /// What the kernel of the space, by its DID, asks the persona to do for
+    /// it, and the request.
+    SpaceAsk {
+        space: String,
+        ask: SpaceAsk,
+        request: Request<Body>,
+    },
+}
+
+/// What a space's kernel asks the persona to do for the space.
+pub enum SpaceAsk {
+    /// Mint an invite to it.
+    Invite,
+    /// Answer the account's authority over it.
+    Authority,
+    /// Revoke a grant on it.
+    Revoke,
 }
 
 /// The headers an asset's request keeps as it reaches the worker.
@@ -63,6 +83,23 @@ pub fn route(request: Request<Body>, site: &Site) -> Routed {
         // The profile keeps no content: every page load is its page.
         if visits {
             return Routed::Answer(page());
+        }
+        if let Some(rest) = path.strip_prefix("/_kernel/space/")
+            && let Some((space, asked)) = rest.split_once('/')
+        {
+            let ask = match (asked, &method) {
+                ("invite", &Method::POST) => Some(SpaceAsk::Invite),
+                ("authority", &Method::GET) => Some(SpaceAsk::Authority),
+                ("revoke", &Method::POST) => Some(SpaceAsk::Revoke),
+                _ => None,
+            };
+            if let Some(ask) = ask {
+                return Routed::SpaceAsk {
+                    space: space.to_owned(),
+                    ask,
+                    request,
+                };
+            }
         }
         if let Some(rest) = path.strip_prefix("/_kernel/seed/") {
             match (rest.strip_suffix("/settled"), method) {

@@ -23,6 +23,10 @@
 //!   delegation to the representative, `{ "ask": id, "ceremony": link64 }`;
 //!   and, for an account the ceremony created, to enroll it at the access
 //!   service, `{ "ask": id, "enroll": true }`, answered with the receipt
+//! - asked of the person's persona, by a space's worker, for what only the
+//!   persona can do for the space, such as to mint an invite to it:
+//!   `{ "ask": id, "profile": request }`, answered with the persona's
+//!   answer, as JSON, in the body
 //! - asked of the worker of a space, by the space's DID, for an answer that
 //!   comes in pieces, such as a subscription's: `{ "ask": id, "to": did,
 //!   "method", "path", "body", "stream": true }`, answered with its status
@@ -155,6 +159,17 @@ fn pending<R>(touch: impl FnOnce(&mut Pending) -> R) -> R {
 /// `body`.
 pub async fn ask(to: &str, method: &str, path: &str, body: Option<&str>) -> Result<Answer, Error> {
     send(|id| json!({ "ask": id, "to": to, "method": method, "path": path, "body": body })).await
+}
+
+/// Ask the person's persona what only it can do for this worker's space:
+/// `request`, which says what. Answers the persona's answer.
+pub async fn ask_profile(request: &Value) -> Result<Value, Error> {
+    let answer = send(|id| json!({ "ask": id, "profile": request })).await?;
+    if !(200..300).contains(&answer.status) {
+        return Err(Error::Unavailable(answer.body));
+    }
+    serde_json::from_str(&answer.body)
+        .map_err(|error| Error::Invalid(format!("the persona's answer: {error}")))
 }
 
 /// Ask the embedder for the text at `url`, which anyone may read: no

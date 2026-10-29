@@ -89,6 +89,9 @@ pub use join::{JoinRequest, JoinResponse};
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub use merge::{failed, merged, refused};
 mod local_space_link;
+/// What a space's own worker asks of the persona, on a kernel.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub mod profile_asks;
 
 pub(crate) mod account_devices;
 
