@@ -8,7 +8,10 @@
 //! write, with the same leaves an agent link carries. The token holds the
 //! session and those grants; it goes back to the page and from there to
 //! the authorization server, and is never stored here.
-use axum::{Json, extract::State};
+use axum::{
+    Extension, Json,
+    extract::{Path, State},
+};
 use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_repository::RepositoryExt as _;
 use dialog_ucan::UcanDelegation;
@@ -27,7 +30,7 @@ use super::{
     agent_connections::{failure, issue_to_recipient, issuer_ancestors},
     create_invite::{RemoteRequirement, resolve_remote_url},
 };
-use crate::TonkWorkerError;
+use crate::{TonkWorkerError, axum::RequestOrigin};
 
 /// Longest agent name the page may ask for.
 const MAX_NAME: usize = 80;
@@ -41,6 +44,11 @@ pub struct AgentSessionRequest {
     /// The spaces the agent may reach, by routing key.
     #[serde(default)]
     spaces: Vec<AgentSpaceRequest>,
+    /// The pending OAuth authorization this answers. With it, the worker
+    /// hands the token to the authorization server itself and answers
+    /// with where to send the browser; the token never reaches the page.
+    #[serde(default)]
+    request: Option<String>,
 }
 
 /// One space the agent may reach, and how.
@@ -73,9 +81,14 @@ impl From<Access> for AgentAccess {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionResponse {
-    /// The session token, for the authorization server. Holds the
-    /// session key's seed: never log or store it.
-    token: String,
+    /// The session token, when no authorization request was named.
+    /// Holds the session key's seed: never log or store it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
+    /// The client's callback, when the token went to the authorization
+    /// server for a request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    redirect: Option<String>,
     /// The agent space's DID.
     agent: Did,
     /// The agent space's routing key.
@@ -108,8 +121,13 @@ impl std::fmt::Debug for AgentSessionResponse {
 #[wasm_compat]
 pub async fn create(
     State(state): State<AppState>,
+    Extension(origin): Extension<RequestOrigin>,
     Json(request): Json<AgentSessionRequest>,
 ) -> Result<Json<AgentSessionResponse>, TonkWorkerError> {
+    // A lapsed request fails before anything is created.
+    if let Some(handle) = &request.request {
+        describe_request(&origin, handle).await?;
+    }
     let name = request.name.trim();
     if name.is_empty() || name.chars().count() > MAX_NAME {
         return Err(TonkWorkerError::Router(format!(
@@ -265,13 +283,125 @@ pub async fn create(
         agent_did,
         spaces.len()
     );
+    let (token, redirect) = match &request.request {
+        Some(handle) => (
+            None,
+            Some(
+                answer(
+                    &origin,
+                    handle,
+                    serde_json::json!({ "token": issued.token }),
+                )
+                .await?,
+            ),
+        ),
+        None => (Some(issued.token), None),
+    };
     Ok(Json(AgentSessionResponse {
-        token: issued.token,
+        token,
+        redirect,
         agent: agent_did.clone(),
         key: agent_did.repo_key().to_owned(),
         spaces,
         expires_at: expires.to_unix(),
     }))
+}
+
+/// Where the authorization server keeps a pending request.
+fn authorize_url(origin: &RequestOrigin, handle: &str) -> Result<url::Url, TonkWorkerError> {
+    if handle.is_empty()
+        || !handle
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(TonkWorkerError::Router(
+            "malformed authorization request".into(),
+        ));
+    }
+    origin
+        .url()
+        .join(&format!("authorize/{handle}"))
+        .map_err(failure)
+}
+
+/// An authorization server refusal, worded for the page. A request that
+/// is no longer pending has most likely expired while signing in.
+fn refused(error: super::http::HttpError) -> TonkWorkerError {
+    use super::http::HttpError;
+    match error {
+        HttpError::Upstream(failure) if failure.status == 404 || failure.status == 410 => {
+            TonkWorkerError::NotFound(
+                "this connection request has expired. Start connecting again from your app."
+                    .into(),
+            )
+        }
+        HttpError::Upstream(failure) if failure.status == 403 => TonkWorkerError::Forbidden(
+            "this connection was started in another browser. Start connecting again from your app here."
+                .into(),
+        ),
+        error => TonkWorkerError::Internal(format!("the authorization server: {error}")),
+    }
+}
+
+async fn describe_request(
+    origin: &RequestOrigin,
+    handle: &str,
+) -> Result<serde_json::Value, TonkWorkerError> {
+    let response = super::http::get(&authorize_url(origin, handle)?)
+        .await
+        .map_err(refused)?;
+    serde_json::from_slice(&response.body).map_err(failure)
+}
+
+/// Answer a pending request and return the callback to send the browser
+/// to. Sent from this worker, so it carries this origin and its cookie.
+async fn answer(
+    origin: &RequestOrigin,
+    handle: &str,
+    decision: serde_json::Value,
+) -> Result<String, TonkWorkerError> {
+    let body = serde_json::to_vec(&decision).map_err(failure)?;
+    let response = super::http::post_json(&authorize_url(origin, handle)?, &body)
+        .await
+        .map_err(refused)?;
+    #[derive(Deserialize)]
+    struct Answer {
+        redirect: String,
+    }
+    let answer: Answer = serde_json::from_slice(&response.body).map_err(failure)?;
+    Ok(answer.redirect)
+}
+
+/// `GET /api/agent/request/{handle}`: who is asking, for the approval
+/// page, which cannot reach the authorization server from its frame.
+#[wasm_compat]
+pub async fn request(
+    Extension(origin): Extension<RequestOrigin>,
+    Path(handle): Path<String>,
+) -> Result<Json<serde_json::Value>, TonkWorkerError> {
+    Ok(Json(describe_request(&origin, &handle).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DenyRequest {
+    request: String,
+}
+
+/// `POST /api/agent/deny`: refuse a pending request; answers
+/// `{"redirect": ...}`.
+#[wasm_compat]
+pub async fn deny(
+    Extension(origin): Extension<RequestOrigin>,
+    Json(request): Json<DenyRequest>,
+) -> Result<Json<serde_json::Value>, TonkWorkerError> {
+    let redirect = answer(
+        &origin,
+        &request.request,
+        serde_json::json!({ "deny": true }),
+    )
+    .await?;
+    Ok(Json(serde_json::json!({ "redirect": redirect })))
 }
 
 /// The chains delegating `subject` to `agent` at `access`: one per scope,
