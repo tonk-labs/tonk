@@ -423,7 +423,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
                             "title": "Tonk",
                             "version": env!("CARGO_PKG_VERSION"),
                         },
-                        "instructions": guide::AGENT,
+                        "instructions": instructions(self.origin),
                     },
                 }),
             );
@@ -452,12 +452,18 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 tools.extend(super::view::tools());
                 Ok(json!({ "tools": tools }))
             }
-            "resources/list" => Ok(json!({ "resources": super::view::resources() })),
+            "resources/list" => {
+                let mut resources = guide_resources();
+                resources.extend(super::view::resources());
+                Ok(json!({ "resources": resources }))
+            }
             "resources/read" => {
                 let uri = message["params"]["uri"].as_str().unwrap_or_default();
-                super::view::read_resource(uri, self.origin).ok_or_else(
-                    || json!({ "code": -32602, "message": format!("no resource {uri}") }),
-                )
+                read_guide(uri)
+                    .or_else(|| super::view::read_resource(uri, self.origin))
+                    .ok_or_else(
+                        || json!({ "code": -32602, "message": format!("no resource {uri}") }),
+                    )
             }
             "tools/call" => Ok(self
                 .call_tool(&verified, &bearer, &session, &message["params"])
@@ -483,7 +489,20 @@ impl<W: Writers> McpEndpoint<'_, W> {
         let name = params["name"].as_str().unwrap_or_default();
         let arguments = &params["arguments"];
         match name {
-            "tonk_list_spaces" => tool_result(json!({ "spaces": list_spaces(verified) }), false),
+            "tonk_list_spaces" => {
+                let mut spaces = list_spaces(verified);
+                let names = futures_util::future::join_all(spaces.iter().map(|entry| {
+                    let space = entry["subject"].as_str().unwrap_or_default().to_owned();
+                    self.space_name(verified, bearer, session, space)
+                }))
+                .await;
+                for (entry, name) in spaces.iter_mut().zip(names) {
+                    if let Some(name) = name {
+                        entry["name"] = json!(name);
+                    }
+                }
+                tool_result(json!({ "spaces": spaces }), false)
+            }
             "tonk_guide" => {
                 let topic = arguments["topic"].as_str().unwrap_or("");
                 let body = if topic == "context" {
@@ -582,6 +601,34 @@ impl<W: Writers> McpEndpoint<'_, W> {
         }
     }
 
+    /// The name `space` gives itself in its `tonk/repository` record, read
+    /// through its writer; `None` when it has none or the read fails, so a
+    /// listing never fails on a name.
+    async fn space_name(
+        &self,
+        verified: &Verified,
+        bearer: &str,
+        session: &str,
+        space: String,
+    ) -> Option<String> {
+        let did = space.parse::<Did>().ok()?;
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/query")
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(Body::from(format!("tonk/repository:\n  this: {space}\n")))
+            .expect("static request");
+        let response = self
+            .writers
+            .call(verified, bearer, session, &did, request)
+            .await;
+        if !response.status().is_success() {
+            return None;
+        }
+        let body = response.into_body().collect().await.ok()?.to_bytes();
+        first_name(&serde_json::from_slice(&body).ok()?)
+    }
+
     fn unauthorized(&self, reason: &str) -> Response<Body> {
         let mut response = plain(StatusCode::UNAUTHORIZED, reason);
         let challenge = format!(
@@ -637,14 +684,116 @@ fn list_spaces(verified: &Verified) -> Vec<Value> {
                 "access": if access.write { "read-write" } else { "read" },
             });
             if access.agent {
-                entry["agent_space"] = json!(true);
+                entry["home"] = json!(true);
+                entry["about"] = json!(HOME);
             }
             if let Some(expires) = access.expires {
-                entry["expires"] = json!(expires);
+                entry["expires"] = json!(date(expires));
             }
             entry
         })
         .collect()
+}
+
+/// What this connection is, ahead of the shared agent manual, which is
+/// written for hosts that can render views.
+const HOSTED: &str = "\
+# This connection
+
+You are a Tonk agent with a space of your own, your home. Start with \
+`tonk_list_spaces`: it returns your home (`home: true`) and the spaces the \
+person granted you, each with its `name`, its `access` (`read` or \
+`read-write`) and when the grant `expires`. Pass the exact `subject` as \
+`space` to `tonk_query` and `tonk_evaluate`; never guess one.
+
+Keep your own notes, drafts and anything you want to remember across \
+conversations in your home. Change a granted space only when the person asks. \
+A write to a `read` space is refused: ask the person to grant read and write \
+rather than retrying or writing elsewhere.
+
+This connection cannot render views, for you or for the person. You can \
+author views with notation, but you cannot see them: say so, and ask the \
+person to open the space in Tonk at {origin} to check. Where the manual below \
+mentions the host's UI facilities, this connection has none. The manuals are \
+also resources, `tonk://guide/<topic>`.
+
+";
+
+/// The server instructions: this connection, then the shared manual.
+fn instructions(origin: &str) -> String {
+    format!(
+        "{}{}",
+        HOSTED.replace("{origin}", origin.trim_end_matches('/')),
+        guide::AGENT
+    )
+}
+
+/// The manuals as `tonk://guide/<topic>` resources.
+fn guide_resources() -> Vec<Value> {
+    guide::TOPICS
+        .iter()
+        .map(|topic| {
+            json!({
+                "uri": format!("tonk://guide/{topic}"),
+                "name": topic,
+                "description": guide::description(topic).unwrap_or_default(),
+                "mimeType": "text/markdown",
+            })
+        })
+        .collect()
+}
+
+/// The manual a `tonk://guide/<topic>` resource names.
+fn read_guide(uri: &str) -> Option<Value> {
+    let body = guide::topic(uri.strip_prefix("tonk://guide/")?)?;
+    Some(json!({
+        "contents": [{ "uri": uri, "mimeType": "text/markdown", "text": body }],
+    }))
+}
+
+/// How a listing describes the agent's own space to the model.
+const HOME: &str = "Your own space. Only you write here unless you share it: \
+keep notes, drafts and anything you want to remember across conversations. \
+The other spaces are the ones the person granted you, with the access shown.";
+
+/// The first `name` string anywhere in a query answer.
+fn first_name(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(fields) => fields
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .or_else(|| fields.values().find_map(first_name)),
+        Value::Array(items) => items.iter().find_map(first_name),
+        _ => None,
+    }
+}
+
+/// `seconds` since the Unix epoch as an RFC 3339 UTC time.
+fn date(seconds: u64) -> String {
+    // Days to a civil date (Howard Hinnant's algorithm).
+    let days = (seconds / 86_400) as i64 + 719_468;
+    let era = days.div_euclid(146_097);
+    let day_of_era = days.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    let time = seconds % 86_400;
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        time / 3600,
+        time / 60 % 60,
+        time % 60
+    )
 }
 
 /// The offered tools, from the shared catalog, with `space` added to the

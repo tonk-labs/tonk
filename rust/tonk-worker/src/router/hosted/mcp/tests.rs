@@ -127,6 +127,32 @@ async fn assert_unauthorized<W: Writers>(endpoint: &McpEndpoint<'_, W>, bearer: 
 }
 
 #[dialog_common::test]
+async fn a_listing_dates_expiry_and_finds_a_name_in_any_answer_shape() {
+    assert_eq!(date(0), "1970-01-01T00:00:00Z");
+    assert_eq!(date(1_801_079_968), "2027-01-27T19:59:28Z");
+    assert_eq!(date(951_782_400), "2000-02-29T00:00:00Z");
+    let answer = json!({ "results": [{ "this": "did:key:z", "fields": { "name": "Recipes" } }] });
+    assert_eq!(first_name(&answer).as_deref(), Some("Recipes"));
+    assert_eq!(first_name(&json!({ "results": [] })), None);
+}
+
+#[dialog_common::test]
+async fn the_manuals_it_names_are_resources_it_serves() {
+    let listed = guide_resources();
+    assert_eq!(listed.len(), guide::TOPICS.len());
+    for resource in &listed {
+        let uri = resource["uri"].as_str().unwrap();
+        let read = read_guide(uri).unwrap();
+        assert!(!read["contents"][0]["text"].as_str().unwrap().is_empty());
+    }
+    assert!(read_guide("tonk://guide/missing").is_none());
+    let said = instructions("https://tonk.example/");
+    assert!(said.starts_with("# This connection"));
+    assert!(said.contains("Tonk at https://tonk.example to check"));
+    assert!(said.contains(guide::AGENT));
+}
+
+#[dialog_common::test]
 async fn a_missing_or_malformed_token_is_unauthorized() {
     let key = SessionKey::derive("test");
     let endpoint = McpEndpoint {

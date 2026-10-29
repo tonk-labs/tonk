@@ -48,7 +48,7 @@ claude
    access level (read, or read and write), and approve. The browser returns to
    Claude Code's callback and `/mcp` shows the server connected with 4 tools.
 3. Ask: "List my Tonk spaces." Expect `tonk_list_spaces` to return the agent
-   space (`agent_space: true`) and the granted space with its access level.
+   space marked `home: true` and the granted space with its name and access level.
 4. Ask: "In <space>, list the concepts." Expect `tonk_query` with that space
    subject to succeed.
 5. Ask: "In <space>, add a note titled hello." Expect `tonk_evaluate` to
