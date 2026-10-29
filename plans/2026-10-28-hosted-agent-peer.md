@@ -634,9 +634,20 @@ Both
 - Not covered yet: the 20 s tool call, key persistence across reloads, VS Code,
   Goose, mobile and ChatGPT desktop.
 
-Build route B first. Route A is a ChatGPT-only extra, and it is the only route
-that plays and seeks video through a service worker, so M7's video check
-applies to ChatGPT only unless route B finds another way to serve ranged assets.
+**Route choice: A where the host allows it, B otherwise.** The relay decides
+per render, without guessing:
+
+1. Take route A only when the host's `ui/initialize` result lists the provider
+   origin in `hostCapabilities.sandbox.csp.frameDomains` (Claude returns `[]`
+   today; ChatGPT echoes the declared list).
+2. Frame the space page and wait for its hello within a timeout, listening for a
+   `securitypolicyviolation` on `frame-src` at the same time.
+3. On any of those failing, fall back to route B in the same render.
+
+Today that makes route B the path for every Claude user, so it gets the same
+test coverage as route A, not fallback-grade coverage. Video seeking through a
+service worker exists only on route A, so on route B a video plays without
+seeking unless the relay finds another way to serve ranged assets.
 
 **Then:**
 
@@ -644,11 +655,13 @@ applies to ChatGPT only unless route B finds another way to serve ranged assets.
   to the frame's (or worker's) key. Read-only by default.
 - Route A: the space page accepts a delegation by `postMessage` when framed.
 - Route B: relay with the peer runtime in a Web Worker and the guest bridge.
+- Route selection in the relay as above, with tests that force each branch
+  (`frameDomains` absent, frame blocked by CSP, frame hello timing out).
 - Last resort: `tonk_watch` in the MCP Worker over `live.rs`.
 
-**M7:** in Claude and ChatGPT, a tool renders a live view of a space; a write from
-the CLI shows up in the view without a model turn. On route A, a video asset
-plays and seeks.
+**M7:** in Claude (route B) and ChatGPT (route A), a tool renders a live view of
+a space; a write from the CLI shows up in the view without a model turn. On
+route A, a video asset plays and seeks. Forcing ChatGPT onto route B also works.
 
 ### Stage 8 (later): did:web identifiers
 
