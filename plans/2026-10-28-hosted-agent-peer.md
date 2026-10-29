@@ -741,11 +741,12 @@ What it checks, in order:
 
 1. `POST /mcp` without a token answers 401 with `resource_metadata`; a garbage
    Bearer answers 401 too.
-2. A fresh profile signs up, activates, and makes a second space.
-3. OAuth runs to a token. The approval grants the onboarding space read and
-   write and the made space read.
+2. A fresh profile signs up, activates, and makes two spaces (a new account
+   has none).
+3. OAuth runs to a token. The approval grants one space read and write and
+   the other read.
 4. `tools/list` names the tools; `tonk_list_spaces` lists exactly the two
-   granted spaces; both read; the read-only one refuses `tonk_evaluate` (a
+   granted subjects; both read; the read-only one refuses `tonk_evaluate` (a
    tool error, not a 401) and the other takes it.
 5. Writes to the writable space: 8 concurrent `evaluate` calls on one MCP
    session, and 8 more on a second session with the same token (a second
