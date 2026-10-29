@@ -438,3 +438,28 @@ test('shutdown aborts an active worker and checkpoints its closed state', async 
   await error;
   assert.equal(saved, true);
 });
+
+test('hosted agent calls close open views before each checkpoint', async () => {
+  const events = [];
+  const backend = agentLinkBackend({
+    binary: 'unused',
+    dataDirectory: tmpdir(),
+    remote: 'https://access.example/ucan/',
+    run: async ({ input }) => {
+      events.push(input.tool);
+      return { result: {} };
+    },
+    beforeCheckpoint: async () => {
+      events.push('close views');
+    },
+    checkpoint: {
+      save: async () => {
+        events.push('checkpoint');
+      },
+    },
+  });
+  await backend.agent({ tool: 'agent_create' });
+  await backend.agent({ tool: 'agent_identity', agent: 'a'.repeat(32) });
+  assert.deepEqual(events, ['agent_create', 'close views', 'checkpoint', 'agent_identity']);
+  await backend.close();
+});

@@ -38,7 +38,6 @@
         session,
         pack,
         port,
-        serial = 0,
         rpcId = 0,
         controller = new AbortController();
       const pending = new Map(),
@@ -144,7 +143,16 @@
         route.site = site;
         route.model = 'tonk:site';
         showError('');
-        frame.src = origin + '/worker-guest.html?instance=' + ++serial;
+        // Load the guest inline, not as a frame of our origin: hosts may
+        // refuse to frame sites outside their own list (Claude does), while
+        // fetching the document only needs a connect domain.
+        const guestPage = await fetch(origin + '/worker-guest.html', {
+          credentials: 'omit',
+          signal: controller.signal,
+        });
+        if (!guestPage.ok) throw Error('Could not load the Tonk view.');
+        frame.removeAttribute('src');
+        frame.srcdoc = await guestPage.text();
       }
       async function guest(message, current) {
         if (message.type === 'title') {
@@ -159,6 +167,8 @@
             prefix = '/space/' + route.subject;
           if (u.origin !== 'https://tonk.foundation' || u.search)
             throw Error('Navigation outside this space is unavailable.');
+          // A link leaves a single view for the space route it names.
+          route = { ...route, view: undefined };
           return navigate(
             u.pathname.startsWith(prefix + '/') ? u.pathname.slice(prefix.length) : u.pathname,
           );
@@ -310,8 +320,8 @@
               branch: 'main',
               with: 'main@' + route.subject,
               site: route.site,
-              this: route.site,
-              model: route.model,
+              this: route.view?.entity ?? route.site,
+              model: route.view?.model ?? route.model,
               selectionReporting: false,
             },
           });
@@ -337,20 +347,26 @@
           send({ __tonkRuntime: 'inject-code', code: pack.code });
         if (m?.__tonkRuntime === 'error') showError('Tonk runtime could not load.');
       });
-      const ready = (async () => {
-        const response = await fetch(origin + '/space-runtime.json', { credentials: 'omit' });
-        if (!response.ok) throw Error('Could not load Tonk runtime.');
-        pack = await response.json();
-        await rpc('ui/initialize', {
-          appInfo: { name: 'tonk-space', version: '0.2.0' },
-          appCapabilities: {},
-          protocolVersion: '2026-01-26',
-        });
+      // Answer the host first: it waits on this handshake to show the app,
+      // and the runtime is a large download that may be slow or blocked.
+      const initialized = rpc('ui/initialize', {
+        appInfo: { name: 'tonk-space', version: '0.2.0' },
+        appCapabilities: {},
+        protocolVersion: '2026-01-26',
+      }).then(() =>
         parent.postMessage(
           { jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} },
           '*',
-        );
-      })();
+        ),
+      );
+      const loaded = (async () => {
+        const response = await fetch(origin + '/space-runtime.json', { credentials: 'omit' });
+        if (!response.ok) throw Error('Could not load Tonk runtime.');
+        pack = await response.json();
+      })().catch(() => {
+        throw Error('Could not load the Tonk runtime from ' + origin + '.');
+      });
+      const ready = Promise.all([initialized, loaded]);
       ready.catch((e) => showError(e.message));
     })();
   </script>

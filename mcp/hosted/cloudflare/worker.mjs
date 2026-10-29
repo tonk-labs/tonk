@@ -23,8 +23,8 @@ export class TonkRuntime extends Container {
 }
 TonkRuntime.outbound = outbound;
 
-// Paths the container serves: both MCP endpoints, OAuth discovery and the
-// authorization server.
+// Paths the container serves: both MCP endpoints, OAuth discovery, the
+// authorization server, and view sessions.
 const containerPaths = new Set([
   '/mcp',
   '/mcp/link',
@@ -39,7 +39,10 @@ const containerPaths = new Set([
   '/oauth/register',
 ]);
 export const containerPath = (path) =>
-  containerPaths.has(path) || /^\/oauth\/register\/[A-Za-z0-9_-]{1,64}$/.test(path);
+  containerPaths.has(path) ||
+  /^\/oauth\/register\/[A-Za-z0-9_-]{1,64}$/.test(path) ||
+  // Views in the chat reach their space through short-lived sessions.
+  path.startsWith('/space-api/');
 
 export default {
   async fetch(request, env) {

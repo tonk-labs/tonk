@@ -74,7 +74,11 @@ test('headless catalogs exclude Apps; SDK session retains negotiated UI across P
     ]);
     assert.equal(headless.transport.sessionId, undefined);
     const tools = (await ui.client.listTools()).tools;
-    assert.equal(tools.length, 5);
+    assert.deepEqual(
+      tools.map((tool) => tool.name).filter((name) => /open_space|show_view/.test(name)),
+      ['tonk_open_space', 'tonk_show_view'],
+    );
+    assert.equal(tools.length, 6);
     assert.ok(ui.transport.sessionId);
     const opened = await ui.client.callTool({ name: 'tonk_open_space', arguments: { path: '/' } });
     assert.equal(opened._meta.session.token, 'private-browser-token');
@@ -100,7 +104,7 @@ test('headless catalogs exclude Apps; SDK session retains negotiated UI across P
       }),
     );
     assert.equal(response.status, 404);
-    assert.equal((await ui.client.listTools()).tools.length, 5);
+    assert.equal((await ui.client.listTools()).tools.length, 6);
     await assert.rejects(
       headless.client.callTool({ name: 'tonk_open_space', arguments: {} }),
       /not found/,
@@ -182,9 +186,15 @@ test('modern SDK negotiates 2026-07-28 and carries UI capability independently o
   });
   try {
     assert.equal(ui.transport.sessionId, undefined);
-    assert.equal((await ui.client.listTools()).tools.length, 5);
+    const tools = (await ui.client.listTools()).tools;
+    assert.equal(tools.length, 6);
     assert.equal((await headless.client.listTools()).tools.length, 4);
-    assert.equal((await ui.client.listTools()).tools.length, 5);
+    assert.equal((await ui.client.listTools()).tools.length, 6);
+    // A host may read the page without repeating the Apps capability; it is
+    // there, while the app tools stay off that request.
+    const uri = tools.find((tool) => tool.name === 'tonk_open_space')._meta.ui.resourceUri;
+    const page = (await headless.client.readResource({ uri })).contents[0];
+    assert.equal(page.mimeType, 'text/html;profile=mcp-app');
   } finally {
     await ui.client.close();
     await headless.client.close();

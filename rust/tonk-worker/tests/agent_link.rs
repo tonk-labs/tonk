@@ -597,12 +597,23 @@ async fn hosted_agent_keeps_its_identity_and_its_sponsor_across_processes() -> a
     Ok(())
 }
 
-/// A sponsored hosted agent creates a space its sponsor owns: provisioned
-/// under the sponsor, pushed, readable from an independent replica through
-/// the founder chain in the claim link, with the space key sealed to the
-/// sponsor's account in the link's fragment.
-#[tokio::test]
-async fn hosted_agent_creates_a_space_its_sponsor_owns() -> anyhow::Result<()> {
+/// A sponsored hosted agent and a space it created for its sponsor.
+struct SponsoredSpace {
+    service: dialog_common::helpers::Service<
+        tonk_access_service::helpers::AccessServiceAddress,
+        tonk_access_service::helpers::AccessServer,
+    >,
+    remote: url::Url,
+    sponsor: Ed25519Signer,
+    account_secret: tonk_identity::envelope::AccountSecret,
+    root: std::path::PathBuf,
+    agents: tonk_worker::HostedAgents,
+    agent: String,
+    space: serde_json::Value,
+    space_did: dialog_varsig::Did,
+}
+
+async fn sponsored_space(name: &str) -> anyhow::Result<SponsoredSpace> {
     use tonk_invite::sponsorship::AgentSponsorship;
     use tonk_worker::HostedAgents;
 
@@ -649,10 +660,40 @@ async fn hosted_agent_creates_a_space_its_sponsor_owns() -> anyhow::Result<()> {
         .map_err(anyhow::Error::msg)?;
 
     let space = agents
-        .create_space(&agent, "Notes from a chat", "ChatGPT")
+        .create_space(&agent, name, "ChatGPT")
         .await
         .map_err(anyhow::Error::msg)?;
     let space_did: dialog_varsig::Did = space["space"].as_str().unwrap().parse()?;
+    Ok(SponsoredSpace {
+        service,
+        remote,
+        sponsor,
+        account_secret,
+        root,
+        agents,
+        agent,
+        space,
+        space_did,
+    })
+}
+
+/// A sponsored hosted agent creates a space its sponsor owns: provisioned
+/// under the sponsor, pushed, readable from an independent replica through
+/// the founder chain in the claim link, with the space key sealed to the
+/// sponsor's account in the link's fragment.
+#[tokio::test]
+async fn hosted_agent_creates_a_space_its_sponsor_owns() -> anyhow::Result<()> {
+    let SponsoredSpace {
+        service: _service,
+        remote,
+        sponsor,
+        account_secret,
+        root,
+        agents,
+        agent,
+        space,
+        space_did,
+    } = sponsored_space("Notes from a chat").await?;
     let claim = url::Url::parse(space["claim_url"].as_str().unwrap())?;
     assert_eq!(claim.path(), "/join");
 
@@ -734,5 +775,180 @@ async fn hosted_agent_creates_a_space_its_sponsor_owns() -> anyhow::Result<()> {
         note.to_string().contains("Remember the train times"),
         "the sponsor reads what the agent wrote: {note}"
     );
+    Ok(())
+}
+
+/// A sponsored agent outlines the views its space nests: the to-do list
+/// inside a trip is a node of its own, with a route to show it alone.
+// Multi-threaded, as the agent worker runs: the outline runs on a blocking
+// thread driven by the runtime handle.
+#[tokio::test(flavor = "multi_thread")]
+async fn hosted_agent_outlines_the_views_its_space_nests() -> anyhow::Result<()> {
+    let SponsoredSpace {
+        service: _service,
+        agents,
+        agent,
+        space_did,
+        ..
+    } = sponsored_space("Trip planner").await?;
+    let space = space_did.to_string();
+    let call = |call: &'static str, arguments: serde_json::Value| {
+        let mut arguments = arguments;
+        arguments["space"] = serde_json::Value::String(space.clone());
+        let agents = &agents;
+        let agent = &agent;
+        async move {
+            agents
+                .call_peer(agent, call, &arguments)
+                .await
+                .map_err(anyhow::Error::msg)
+        }
+    };
+    call(
+        "tonk_evaluate",
+        serde_json::json!({
+            "document": r#"concept!: &trip
+  description: a trip being planned
+  with:
+    title: { the: example.trip/title, as: text, description: Trip title }
+concept!: &todo
+  description: something to do before leaving
+  with:
+    task: { the: example.todo/task, as: text, description: What to do }
+view!:
+  this: trip
+  show:
+    ui: "<section><h1>{title}</h1><tonk-display model=\"todo\"></tonk-display></section>"
+view!:
+  this: todo
+  show:
+    directory: "<ul><li>{task}</li></ul>"
+trip!:
+  this: urn:trip:lisbon
+  title: Lisbon
+todo!:
+  this: urn:todo:flights
+  task: Book flights
+todo!:
+  this: urn:todo:pack
+  task: Pack
+"#,
+        }),
+    )
+    .await?;
+
+    // The home outlines without naming a route.
+    let home = call("tonk_outline", serde_json::json!({})).await?;
+    assert_eq!(home["outline"]["model"], "tonk/space", "{home}");
+    assert_eq!(home["outline"]["concept"], "tonk:blank", "{home}");
+    assert!(home["outline"]["error"].is_null(), "{home}");
+
+    let trip = call(
+        "tonk_outline",
+        serde_json::json!({ "route": "urn:trip:lisbon@trip" }),
+    )
+    .await?;
+    let todo = &trip["outline"]["children"][0];
+    assert_eq!(todo["route"], "todo", "{trip}");
+    assert_eq!(todo["records"], 2, "{trip}");
+
+    Ok(())
+}
+
+/// Serve mode holds a sponsored agent's directory open: it serves
+/// the agent's worker on loopback only to a request carrying the host token,
+/// and runs the agent's tool calls from stdin, on the same peer, so a write
+/// through the served worker is what the next call reads.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_served_agent_shares_one_peer_between_its_views_and_its_calls() -> anyhow::Result<()> {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+
+    let SponsoredSpace {
+        service: _service,
+        root,
+        agents,
+        agent,
+        space_did,
+        ..
+    } = sponsored_space("Groceries").await?;
+    let space = space_did.to_string();
+
+    let live = root.join("agents").join(&agent);
+    let token = "t".repeat(43);
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_tonk-agent-worker"))
+        .arg(&live)
+        .arg("http://127.0.0.1:9/ucan/")
+        .arg("serve")
+        .env("TONK_WORKER_HOST_TOKEN", &token)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    async fn marked(
+        lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+        marker: &str,
+    ) -> serde_json::Value {
+        loop {
+            let line = lines
+                .next_line()
+                .await
+                .unwrap()
+                .expect("the server stopped");
+            if let Some(json) = line.strip_prefix(marker) {
+                return serde_json::from_str(json).unwrap();
+            }
+        }
+    }
+    let served = marked(&mut stdout, "TONK_AGENT_SERVE ").await;
+    let origin = format!("http://{}", served["address"].as_str().expect("an address"));
+    let base = format!("{origin}/api/repository/{space}/branch/main");
+
+    let client = reqwest::Client::new();
+    let refused = client
+        .post(format!("{base}/evaluate?transact=false"))
+        .body("tonk/repository:\n")
+        .send()
+        .await?;
+    assert_eq!(refused.status(), 401);
+
+    let written = client
+        .post(format!("{base}/evaluate?transact=true"))
+        .bearer_auth(&token)
+        .header("content-type", "text/plain")
+        .body("concept!: &grocery\n  with:\n    item: { the: example.grocery/item, as: text, description: Item }\ngrocery!:\n  this: urn:grocery:milk\n  item: Milk\n")
+        .send()
+        .await?;
+    assert!(written.status().is_success(), "{}", written.text().await?);
+
+    let call = serde_json::json!({
+        "id": 7,
+        "call": "tonk_query",
+        "arguments": { "space": space, "document": "grocery:\n" },
+    });
+    stdin.write_all(format!("{call}\n").as_bytes()).await?;
+    let reply = marked(&mut stdout, "TONK_AGENT_CALL ").await;
+    assert_eq!(reply["id"], 7);
+    assert!(reply["result"].to_string().contains("Milk"), "{reply}");
+
+    // The served agent holds its directory: no one-shot process opens it.
+    let busy = agents
+        .call_peer(&agent, "tonk_list_spaces", &serde_json::json!({}))
+        .await;
+    assert_eq!(busy.unwrap_err(), "The agent is busy.");
+
+    // A call outside the agent's space tools is refused.
+    let refused = serde_json::json!({ "id": 8, "call": "agent_create" });
+    stdin.write_all(format!("{refused}\n").as_bytes()).await?;
+    assert_eq!(
+        marked(&mut stdout, "TONK_AGENT_CALL ").await["error"],
+        "Tool unavailable."
+    );
+
+    // Closing stdin stops the server.
+    drop(stdin);
+    assert!(child.wait().await?.success());
     Ok(())
 }

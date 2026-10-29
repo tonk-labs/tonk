@@ -55,8 +55,8 @@ export function agentProvisioner(agents) {
   };
 }
 
-// Tools for a sponsored agent: the guide, its spaces, and creating a space
-// its sponsor owns. Every call runs on the agent's own peer, which pulls
+// Tools for a sponsored agent: the guide, its spaces, creating a space its
+// sponsor owns, and outlining a space's views. Every call runs on the agent's own peer, which pulls
 // before it reads and pushes after it writes.
 export function sponsoredAgentBackend(principal, { agents, agentName }) {
   const capabilities = [
@@ -65,6 +65,7 @@ export function sponsoredAgentBackend(principal, { agents, agentName }) {
     'tonk_create_space',
     'tonk_query',
     'tonk_evaluate',
+    'tonk_outline',
   ];
   const agent = principal.tenantId;
   return {
@@ -87,6 +88,8 @@ export function sponsoredAgentBackend(principal, { agents, agentName }) {
       }
       if (name === 'tonk_query' || name === 'tonk_evaluate')
         return agents.call({ agent, call: name, space: args.space, document: args.document });
+      if (name === 'tonk_outline')
+        return agents.call({ agent, call: name, space: args.space, route: args.route });
       throw new TonkToolError('Tool unavailable.');
     },
   };

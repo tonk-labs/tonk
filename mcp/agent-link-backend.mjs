@@ -9,6 +9,9 @@ export function agentLinkBackend({
   linkOrigin = new URL(remote).origin,
   run = invoke,
   checkpoint,
+  // Called before each checkpoint save, to close anything else holding the
+  // directory open.
+  beforeCheckpoint = async () => {},
   maxPending = 32,
 }) {
   // One adapter owns this directory. Serialize subprocesses so workers never
@@ -27,6 +30,23 @@ export function agentLinkBackend({
       drainQueued = drain;
       if (cancel) lifetime.abort();
       await pending;
+    },
+    // Run `task` in this directory's queue, between subprocesses, without a
+    // checkpoint: for opening the directory while nothing else has it open.
+    exclusive(task) {
+      if (closed || failed || queued >= maxPending)
+        throw new TonkToolError('Agent worker unavailable or busy.');
+      queued++;
+      const run = pending.then(() => {
+        if (failed) throw new TonkToolError('Agent storage requires recovery.');
+        return task();
+      });
+      pending = run
+        .catch(() => {})
+        .finally(() => {
+          queued--;
+        });
+      return run;
     },
     // Hosted agent tools (`agent_create`, `agent_identity`, `agent_sponsor`).
     // They share this queue and checkpoint: agents live under the same root.
@@ -53,6 +73,7 @@ export function agentLinkBackend({
         } finally {
           if (checkpoint && input.tool !== 'agent_identity') {
             try {
+              await beforeCheckpoint();
               await checkpoint.save();
             } catch {
               failed = true;
@@ -151,6 +172,7 @@ export function agentLinkBackend({
         } finally {
           if (checkpoint) {
             try {
+              await beforeCheckpoint();
               await checkpoint.save();
             } catch {
               failed = true;
