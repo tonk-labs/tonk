@@ -61,6 +61,22 @@ erDiagram
         INTEGER measured_at
         INTEGER deleted_at "when deletion began; the row goes when it finishes"
     }
+
+    email_invitation {
+        TEXT id PK "not a DID: 32 random bytes, hex"
+        TEXT sender "DID (did:key) of the sending account"
+        TEXT email "normalized address the invitation is for"
+        TEXT space "DID (did:key) of the space shared"
+        INTEGER created_at
+        INTEGER expires_at "latest claim time"
+        TEXT original "the signed grant, base58; null until published"
+        TEXT recipient "DID (did:key) of the claiming account; set with completed"
+        TEXT completed "the completed chain, base58; set with recipient"
+        INTEGER sent_at "transport acknowledgement; null until sent"
+        INTEGER cancelled "0 or 1"
+        INTEGER attempts "transport attempts, at most three"
+        INTEGER next_attempt_at "delivery lease and cooldown"
+    }
 ```
 
 `account` is drawn above but is **not a table**. `customer.did` is the
@@ -69,6 +85,12 @@ fusion is deliberate for now and has a consequence worth knowing: an
 account has exactly one subscription, forever, with no history of a
 lapsed one. Splitting them is the change to make when an account needs
 a second subscription or a cancelled one has to be kept.
+
+`email_invitation` stands apart: the gate never reads it, and it
+references no other table. It names its sender and recipient by DID,
+and is completed only while a customer with the invited address is
+`Active`, which the completing statement checks rather than a foreign
+key.
 
 ## What decides service
 

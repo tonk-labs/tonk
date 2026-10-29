@@ -47,6 +47,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0006_account_schema.sql",
         include_str!("../../migrations/0006_account_schema.sql"),
     ),
+    (
+        "0007_email_invitation.sql",
+        include_str!("../../migrations/0007_email_invitation.sql"),
+    ),
 ];
 
 /// The schema every migration adds up to, as `table -> columns`.
