@@ -211,23 +211,21 @@ pub async fn create(
         .await
         .map_err(failure)?;
 
-    let signer = tonk.profile.credential().signer().clone();
     let mut grants = Vec::new();
     let mut spaces = Vec::new();
     for (key, subject, access, remote) in targets {
-        let scopes = agent_grant_scopes(&subject, access.into());
-        let ancestors = issuer_ancestors(&tonk, &scopes, now, expires).await?;
-        let bundle = issue_to_recipient(
-            &agent_did,
-            signer.clone(),
-            ancestors,
-            &scopes,
-            &remote,
-            now,
-            expires,
-        )
-        .await?;
-        grants.extend(bundle.chains().iter().cloned());
+        grants.extend(
+            grant(
+                &tonk,
+                &agent_did,
+                &subject,
+                access.into(),
+                &remote,
+                now,
+                expires,
+            )
+            .await?,
+        );
         spaces.push(AgentSpaceGranted {
             key,
             subject,
@@ -274,4 +272,97 @@ pub async fn create(
         spaces,
         expires_at: expires.to_unix(),
     }))
+}
+
+/// The chains delegating `subject` to `agent` at `access`: one per scope,
+/// each the account's own proof for the space with a leaf from the
+/// profile to the agent space, the shape an agent link's grants have.
+async fn grant(
+    tonk: &crate::TonkState,
+    agent: &Did,
+    subject: &Did,
+    access: AgentAccess,
+    remote: &url::Url,
+    now: Timestamp,
+    expires: Timestamp,
+) -> Result<Vec<dialog_ucan_core::DelegationChain>, TonkWorkerError> {
+    let scopes = agent_grant_scopes(subject, access);
+    let ancestors = issuer_ancestors(tonk, &scopes, now, expires).await?;
+    let bundle = issue_to_recipient(
+        agent,
+        tonk.profile.credential().signer().clone(),
+        ancestors,
+        &scopes,
+        remote,
+        now,
+        expires,
+    )
+    .await?;
+    Ok(bundle.chains().to_vec())
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use dialog_effects::storage::Directory;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    /// A token minted the way the approval page's request mints one is
+    /// one the hosted front accepts, with the access that was chosen.
+    #[dialog_common::test]
+    async fn it_mints_grants_the_hosted_front_accepts() -> anyhow::Result<()> {
+        let directory =
+            std::env::temp_dir().join(format!("tonk-agent-session-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&directory)?;
+        let location = Directory::At(directory.to_string_lossy().into_owned());
+        let (storage, profile) =
+            crate::device::open_profile_at("agent-session", location.clone()).await?;
+        let registry = crate::device::Registry::new("agent-session".into(), location);
+        let tonk =
+            crate::worker::boot_state(storage, "agent-session".into(), profile, registry).await?;
+        let state: AppState = Arc::new(RwLock::new(tonk));
+
+        let mut keys = Vec::new();
+        for name in ["Notes", "Plans"] {
+            keys.push(super::super::repository::create_space_inner(&state, name, None).await?);
+        }
+        let agent = Ed25519Signer::import(&[61; 32]).await?;
+        let remote: url::Url = "https://sync.example.test/ucan/".parse()?;
+        let now = Timestamp::now();
+        let expires = Timestamp::try_from((now.to_unix() + DEFAULT_GRANT_TTL_SECONDS) as i128)?;
+
+        let tonk = state.read().await;
+        let mut subjects = Vec::new();
+        let mut grants = Vec::new();
+        for (key, access) in keys.iter().zip([AgentAccess::Read, AgentAccess::ReadWrite]) {
+            let subject = tonk
+                .profile
+                .space(key)
+                .load()
+                .perform(&tonk.operator)
+                .await?
+                .did();
+            grants
+                .extend(grant(&tonk, &agent.did(), &subject, access, &remote, now, expires).await?);
+            subjects.push(subject);
+        }
+        assert_eq!(grants.len(), 3 + 6);
+
+        let issued = tonk_identity::agent::issue_agent_session_with_grants(
+            Signer::from(agent.clone()),
+            &remote,
+            &grants,
+        )
+        .await?;
+        let verified = super::super::hosted::mcp::verify(&issued.token)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let read = &verified.spaces()[&subjects[0]];
+        assert!(read.read && !read.write, "read only");
+        let write = &verified.spaces()[&subjects[1]];
+        assert!(write.read && write.write, "read and write");
+        assert!(verified.spaces()[&agent.did()].agent);
+        Ok(())
+    }
 }
