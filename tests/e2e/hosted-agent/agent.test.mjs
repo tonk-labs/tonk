@@ -2,8 +2,8 @@
 // is the MCP client, and Playwright is the person approving it.
 //
 //   TONK_E2E_ORIGIN           the provider origin, e.g. a PR preview's workers.dev URL
-//   TONK_E2E_RESEND_API_KEY   reads the activation email back (deployed origins)
-//   TONK_E2E_CAPTURED_EMAILS  or: a local access service that captures it
+//   TONK_E2E_CAPTURED_EMAILS  where activation emails are read back; defaults to the
+//                             origin (a preview records mail to `.test` addresses)
 //   TONK_E2E_HEADED=1         watch the browser
 //   TONK_E2E_TRACE            where to write a Playwright trace when a step fails
 //
@@ -88,11 +88,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
     // Subjects by name, of the spaces the person grants.
     let granted;
     await step('a fresh person signs up, confirms their email and makes two spaces', async () => {
-      const mail = inbox({
-        run,
-        resendKey: process.env.TONK_E2E_RESEND_API_KEY,
-        captured: process.env.TONK_E2E_CAPTURED_EMAILS,
-      });
+      const mail = inbox({ run, base: process.env.TONK_E2E_CAPTURED_EMAILS || origin });
       await signUp(person.page, { origin, address: mail.address, inbox: mail });
       await createSpace(person.page, { origin, name: writableName });
       await createSpace(person.page, { origin, name: readableName });

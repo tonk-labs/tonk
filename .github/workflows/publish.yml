@@ -242,6 +242,7 @@ jobs:
           ingest="tonk-access-ingest-pr-${{ github.event.pull_request.number }}"
           revocations="tonk-access-revocations-pr-${{ github.event.pull_request.number }}"
           servability="tonk-access-servability-pr-${{ github.event.pull_request.number }}"
+          inbox="tonk-access-test-inbox-pr-${{ github.event.pull_request.number }}"
           worker="tonk-access-service-pr-${{ github.event.pull_request.number }}"
           host="tonk-host-worker-pr-${{ github.event.pull_request.number }}"
           config="$PWD/wrangler.preview.toml"
@@ -249,6 +250,7 @@ jobs:
           ingest_id="$(resolve "$ingest" "rust/tonk-access-service/migrations-ingest")"
           revocations_id="$(resolve_kv "$revocations")"
           servability_id="$(resolve_kv "$servability")"
+          inbox_id="$(resolve_kv "$inbox")"
           store_id="$(resolve_store)"
           cp wrangler.toml "$config"
           sed -i \
@@ -259,6 +261,7 @@ jobs:
             -e "s/database_id = \"INGEST-REPLACED-PER-PULL-REQUEST\"/database_id = \"$ingest_id\"/" \
             -e "s/id = \"REPLACED-PER-PULL-REQUEST\"/id = \"$revocations_id\"/" \
             -e "s/id = \"SERVABILITY-REPLACED-PER-PULL-REQUEST\"/id = \"$servability_id\"/" \
+            -e "s/id = \"TEST-INBOX-REPLACED-PER-PULL-REQUEST\"/id = \"$inbox_id\"/" \
             -e "s/store_id = \"SECRETS-STORE-REPLACED-PER-DEPLOY\"/store_id = \"$store_id\"/" \
             -e "s/service = \"tonk-host-worker-preview\"/service = \"$host\"/" \
             "$config"
@@ -269,6 +272,7 @@ jobs:
             || ! grep -Fq "database_id = \"$ingest_id\"" "$config" \
             || ! grep -Fq "id = \"$revocations_id\"" "$config" \
             || ! grep -Fq "id = \"$servability_id\"" "$config" \
+            || ! grep -Fq "id = \"$inbox_id\"" "$config" \
             || ! grep -Fq "service = \"$host\"" "$config" \
             || grep -Fq "SECRETS-STORE-REPLACED-PER-DEPLOY" "$config"; then
             echo "::error::Could not bind the access preview config to $worker/$control/$ingest/$revocations"
@@ -609,7 +613,6 @@ jobs:
         run: npm test
         env:
           TONK_E2E_ORIGIN: ${{ needs.deploy.outputs.provider }}
-          TONK_E2E_RESEND_API_KEY: ${{ secrets.TONK_E2E_RESEND_API_KEY }}
           TONK_E2E_TRACE: ${{ runner.temp }}/agent-e2e-trace.zip
       - uses: actions/upload-artifact@v4
         if: failure()

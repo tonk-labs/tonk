@@ -52,6 +52,8 @@ run_worker_first = [
   # The hosted agent's MCP endpoint, forwarded to the Host Worker.
   "/mcp",
   "/mcp/*",
+  # The preview's test inbox; 404 wherever `TEST_INBOX` is unbound.
+  "/_test/emails",
 ]
 
 # Every space's objects. `/ucan/` never presigns this bucket's S3
@@ -376,6 +378,14 @@ id = "REPLACED-PER-PULL-REQUEST"
 [[env.preview.kv_namespaces]]
 binding = "SERVABILITY_KV"
 id = "SERVABILITY-REPLACED-PER-PULL-REQUEST"
+
+# The end to end test's stand-in inbox (src/handlers/test_inbox.rs): mail
+# to a `.test` address is recorded here instead of sent. Bound only in the
+# preview, so no other environment can record mail. Replaced per pull
+# request, like the namespaces above.
+[[env.preview.kv_namespaces]]
+binding = "TEST_INBOX"
+id = "TEST-INBOX-REPLACED-PER-PULL-REQUEST"
 
 [[env.preview.ratelimits]]
 name = "LOOKUP_LIMITER"

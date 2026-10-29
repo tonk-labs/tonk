@@ -164,6 +164,9 @@ async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
         // this the router answers 405 and there is no redirect to
         // follow at all.
         .head_async("/@/:hash", handlers::shortcut::handle_get)
+        // The preview's stand-in inbox for the end to end test; 404
+        // wherever `TEST_INBOX` is unbound, which is everywhere else.
+        .get_async("/_test/emails", handlers::test_inbox::handle)
         // 404 for everything else
         .run(req, env)
         .await
