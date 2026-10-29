@@ -11,15 +11,13 @@ use ::axum::{
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::{ArtifactSelector, Entity, Relation, Value};
 use dialog_effects::blob::{BlobError, BlobReader, ByteRange};
 use dialog_repository::{Blob, CommitError, RepositoryExt as _};
 use futures_util::{StreamExt as _, stream};
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::{ExclusiveStream, log};
+use tonk_macros::handler;
 
 use super::AppState;
 use super::claim::RawClaim;
@@ -75,7 +73,7 @@ fn byte_range(header: Option<&str>, size: u64) -> Result<Option<(u64, u64)>, ()>
 /// from the branch's blob store. The `Content-Type` is the asset's recorded
 /// media type, or the legacy one older blobs carry, defaulting to
 /// `application/octet-stream`.
-#[wasm_compat]
+#[handler]
 pub async fn serve(
     State(state): State<AppState>,
     Path(params): Path<BlobPath>,
@@ -299,7 +297,7 @@ async fn migrate_once(tonk: &TonkState, repo: &str, branch: &str) -> Result<(), 
 /// `claim::assert_claim`'s commit path, which re-polls subscriptions, so
 /// following the commit with `run_scheduled_polls` makes the new facts
 /// visible to subscribers immediately.
-#[wasm_compat]
+#[handler]
 pub async fn upload(
     State(state): State<AppState>,
     Path(path): Path<EvaluatePath>,

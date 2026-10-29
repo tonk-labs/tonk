@@ -1,0 +1,15 @@
+package sapling:kernel@0.1.0;
+
+/// What the embedder asks of the guest kernel of a persona on behalf of the
+/// person's other workers. Only a persona exports it.
+interface guest {
+  use types.{did, ucan, error};
+  use credential.{access};
+
+  /// Delegate `access` to `audience`, the credential of another worker's
+  /// session, as the embedder of that worker asks in its
+  /// `representative.delegate`: a chain down to `audience`. A persona
+  /// delegates only what the person's persona reaches, and refuses the
+  /// rest.
+  delegate: async func(audience: did, access: access) -> result<ucan, error>;
+}

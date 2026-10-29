@@ -97,7 +97,7 @@ impl CustomElement for UiMemberRosterElement {
             ],
         );
         // Whether the viewer only observes is said by the space's worker.
-        resolve_observer(this);
+        resolve_observer(this, true);
         // Light children connect before the bar builds its shadow buttons.
         // Delegate through the stable host so reconnects cannot leave dead controls.
         if let Some(bar) = this.closest("tonk-fab").ok().flatten() {
@@ -216,7 +216,7 @@ impl CustomElement for UiMemberRosterElement {
             ],
         );
         // Whether the viewer only observes is said by the space's worker.
-        resolve_observer(this);
+        resolve_observer(this, true);
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
@@ -264,6 +264,12 @@ impl subscribing::Subscribing for MemberRosterBehaviour {
             self.viewer.borrow().as_deref(),
             &self.invitations.borrow(),
         );
+        // A roster that starts over with members comes from the space's
+        // worker, which may not have answered when the bar first asked:
+        // ask it again whether the viewer only observes.
+        if !members.is_empty() {
+            resolve_observer(host, false);
+        }
     }
 
     fn render_update(&self, host: &HtmlElement, payload: &JsValue) {
@@ -459,6 +465,14 @@ fn render_rows(
     invitations: &BTreeMap<String, String>,
 ) {
     stamp_manages(host, members, viewer);
+    // Once both are known: a viewer among no members of the roster only
+    // observes, as the space's worker said when the bar asked, or would
+    // have, had it been up.
+    if let Some(viewer) = viewer
+        && !members.is_empty()
+    {
+        stamp_observer(host, !members.iter().any(|member| member.did == viewer));
+    }
     let Some(panel) = member_panel(host) else {
         return;
     };
@@ -989,12 +1003,20 @@ fn stamp_manages(host: &HtmlElement, members: &[Member], viewer: Option<&str>) {
 fn stamp_observer(host: &HtmlElement, observes: bool) {
     if let Some(bar) = host.closest("tonk-fab").ok().flatten() {
         let _ = bar.toggle_attribute_with_force("data-observer", observes);
+        // Drawn here too: the bar's own callback for the attribute does not
+        // always run for a stamp from inside it, and the disc kept the state
+        // it had.
+        if let Ok(bar) = bar.dyn_into::<HtmlElement>() {
+            crate::bar::update(&bar);
+        }
     }
 }
 
 /// Stamp the bar with whether the viewer only observes the space, as the
-/// space's own worker says in what it answers about the repository.
-fn resolve_observer(host: &HtmlElement) {
+/// space's own worker says in what it answers about the repository. For a
+/// space the bar was not showing, `afresh`, what it said of the last one
+/// goes first; asked again of the same space, it stands until the answer.
+fn resolve_observer(host: &HtmlElement, afresh: bool) {
     let Some(win) = window() else { return };
     let Some(space) = host.get_attribute("space") else {
         return;
@@ -1002,7 +1024,9 @@ fn resolve_observer(host: &HtmlElement) {
     let Ok(endpoint) = repository_endpoint(&space) else {
         return;
     };
-    stamp_observer(host, false);
+    if afresh {
+        stamp_observer(host, false);
+    }
     let host = host.clone();
     spawn_local(async move {
         let response = match JsFuture::from(win.fetch_with_str(&endpoint)).await {
@@ -1050,6 +1074,36 @@ pub fn register() {
 mod tests {
     use super::*;
     use crate::subscribing::Subscribing;
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn it_says_a_viewer_among_no_members_observes() {
+        crate::register();
+        let document = window().unwrap().document().unwrap();
+        let bar: HtmlElement = document
+            .create_element("tonk-fab")
+            .unwrap()
+            .unchecked_into();
+        bar.set_attribute("space", "did:key:published").unwrap();
+        document.body().unwrap().append_child(&bar).unwrap();
+        let host: HtmlElement = bar
+            .query_selector("ui-member-roster")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
+        let owner = Member {
+            this: "owner-membership".into(),
+            name: "Owner".into(),
+            did: "did:key:owner".into(),
+            role: "tonk:founder".into(),
+            invitation: None,
+        };
+        let members = [owner];
+        render_rows(&host, &members, Some("did:key:reader"), &BTreeMap::new());
+        assert!(bar.has_attribute("data-observer"), "a reader observes");
+        render_rows(&host, &members, Some("did:key:owner"), &BTreeMap::new());
+        assert!(!bar.has_attribute("data-observer"), "a member does not");
+        bar.remove();
+    }
 
     #[wasm_bindgen_test::wasm_bindgen_test]
     fn roster_updates_names_and_viewer_labels() {

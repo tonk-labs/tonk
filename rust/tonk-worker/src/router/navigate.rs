@@ -12,6 +12,9 @@
 
 use tonk_common::log;
 
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+use crate::detach;
+
 /// Post a `{ type: "navigate", href }` message to the originating client so
 /// it redirects there.
 ///
@@ -98,19 +101,47 @@ fn post_navigate(client: Option<&crate::router::ClientId>, href: &str, replace: 
     });
 }
 
+/// On a kernel, its embedder holds the pages: it is told where the page that
+/// asked is to go.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
+    tell_navigate(client, href, false);
+}
+
+/// [`notify_navigate`] as a fresh load replacing the page's history entry.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub(crate) fn notify_replace(client: Option<&crate::router::ClientId>, href: &str) {
+    tell_navigate(client, href, true);
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+fn tell_navigate(client: Option<&crate::router::ClientId>, href: &str, replace: bool) {
+    let Some(client) = client else {
+        log!("navigate: no originating client; skipping redirect");
+        return;
+    };
+    let (client, href) = (client.0.clone(), href.to_owned());
+    detach(async move {
+        if let Err(error) = tonk_kernel_world::application::navigate(&client, &href, replace).await
+        {
+            log!("navigate: the embedder was not told: {error:?}");
+        }
+    });
+}
+
 /// Navigation is a page capability, and this host has no page: the
 /// target is logged so a host shell (CLI, TUI) that tails the log can
 /// still present it. The triggering command has already done its work —
 /// only the convenience redirect is absent, mirroring the "client is
 /// gone" path above.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
     let _ = client;
     log!("navigate: no page on this host; the target was {href}");
 }
 
 /// No page on this host either; see [`notify_navigate`].
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn notify_replace(client: Option<&crate::router::ClientId>, href: &str) {
     notify_navigate(client, href);
 }
@@ -170,8 +201,39 @@ pub(crate) fn notify_profile_changed(except: Option<&crate::router::ClientId>) {
     });
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn notify_profile_changed(_except: Option<&crate::router::ClientId>) {}
+
+/// On a kernel, its embedder holds the pages: it is told to post the reload
+/// to every page but `except`.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub(crate) fn notify_profile_changed(except: Option<&crate::router::ClientId>) {
+    tell_post(
+        None,
+        except,
+        serde_json::json!({ "type": "profile-changed" }),
+    );
+}
+
+/// Tell the embedder to post `message` to the page `client`, or, with none,
+/// to every page but `except`.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+fn tell_post(
+    client: Option<&crate::router::ClientId>,
+    except: Option<&crate::router::ClientId>,
+    message: serde_json::Value,
+) {
+    let client = client.map(|client| client.0.clone());
+    let except = except.map(|client| client.0.clone());
+    detach(async move {
+        if let Err(error) =
+            tonk_kernel_world::application::post(client.as_deref(), except.as_deref(), &message)
+                .await
+        {
+            log!("post: the embedder was not told: {error:?}");
+        }
+    });
+}
 
 /// Ask the ORIGINATING document to reload after the active branch changes
 /// under it. Its own requests are fenced from here on (a stale context
@@ -223,8 +285,22 @@ pub(crate) fn notify_profile_changed_to(client: Option<&crate::router::ClientId>
     });
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn notify_profile_changed_to(_client: Option<&crate::router::ClientId>) {}
+
+/// [`notify_profile_changed_to`], told to a kernel's embedder.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub(crate) fn notify_profile_changed_to(client: Option<&crate::router::ClientId>) {
+    let Some(client) = client else {
+        log!("profile change: no originating client; nothing to reload");
+        return;
+    };
+    tell_post(
+        Some(client),
+        None,
+        serde_json::json!({ "type": "profile-changed" }),
+    );
+}
 
 /// Post a typed launch-funnel success to the originating page.
 ///
@@ -285,12 +361,28 @@ pub(crate) fn notify_analytics(
 /// A launch-funnel event with no page to deliver it to — dropped, like
 /// the "client is gone" path above. Analytics capture is a browser
 /// concern; a native host has nowhere (and no reason) to send it.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn notify_analytics(
     client: Option<&crate::router::ClientId>,
     event: tonk_worker_api::AnalyticsEvent,
 ) {
     let _ = (client, event);
+}
+
+/// [`notify_analytics`], told to a kernel's embedder.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub(crate) fn notify_analytics(
+    client: Option<&crate::router::ClientId>,
+    event: tonk_worker_api::AnalyticsEvent,
+) {
+    let Some(client) = client else {
+        log!("analytics: no originating client; skipping event");
+        return;
+    };
+    match serde_json::to_value(tonk_worker_api::AnalyticsMessage::new(event)) {
+        Ok(message) => tell_post(Some(client), None, message),
+        Err(error) => log!("analytics: failed to serialize event: {error}"),
+    }
 }
 
 /// Ask the originating document to run a WebAuthn ceremony the worker

@@ -7,6 +7,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+use crate::router::space_worker;
 use crate::{
     LspHub,
     axum::{RequestConversion, ResponseConversion},
@@ -18,9 +20,11 @@ use axum::{
     body::Body,
     http::{HeaderValue, header::HeaderName},
 };
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+use dialog_artifacts::Asset;
 use dialog_peer::{Peer, Session};
 use dialog_storage::provider::storage::Storage;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 use dialog_varsig::Did;
 use js_sys::Promise;
 use send_wrapper::SendWrapper;
@@ -348,8 +352,13 @@ async fn passthrough(_request: Request, _is_navigation: bool) -> Result<JsValue,
 pub type DefaultSpace = dialog_storage::provider::storage::WebSpace;
 
 /// Default storage type — filesystem on native.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub type DefaultSpace = dialog_storage::provider::storage::NativeSpace;
+
+/// Default storage type on WASI: the layers and credentials of the kernel's
+/// host.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub type DefaultSpace = tonk_kernel_world::space::KernelSpace;
 
 /// Concrete operator type for the default storage backend.
 pub type DefaultOperator = Peer<DefaultSpace, Session>;
@@ -488,6 +497,203 @@ impl TonkState {
         let storage = registry.storage().await?;
         let profile = registry.open_profile(&storage, "hosted").await?;
         boot_state(storage, "hosted".to_owned(), profile, registry).await
+    }
+
+    /// Open the worker runtime in a kernel on WASI, as the browser's worker
+    /// opens it: the device's registry, and the profile this device signs as.
+    /// Its storage and keys are the layers and credentials the kernel's host
+    /// gives it (`tonk-kernel-world`).
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn open_kernel() -> Result<Self, crate::TonkWorkerError> {
+        let registry = crate::device::Registry::device();
+        let storage = registry.storage().await?;
+        let (name, profile) = registry.open_active(&storage).await?;
+        boot_state(storage, name, profile, registry).await
+    }
+
+    /// Take up a delegation for `space`, as a space's own worker does: the
+    /// chain from the space to this worker's profile, as the person's profile
+    /// signed it.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn adopt_space(
+        &self,
+        space: &str,
+        chain: &[u8],
+    ) -> Result<(), crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        space_worker::adopt(self, &space, chain).await?;
+        self.reactor.run_scheduled_polls(&self.operator).await;
+        Ok(())
+    }
+
+    /// Delegate `space` to `audience`, the credential of the session of the
+    /// space's own worker, as the person's persona grants what that worker
+    /// claims: the chain from the space down to `audience`, encoded.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn delegate_space(
+        &self,
+        space: &str,
+        audience: &str,
+    ) -> Result<Vec<u8>, crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        let audience: Did = audience
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("audience: {e:?}")))?;
+        let grant = space_worker::delegate(self, &space, &audience).await?;
+        // The space's own worker takes it up on this device with what it is
+        // delegated: from now on this device holds it, as a replica.
+        if !crate::router::join::find_replica_for_subject(self, &space).await? {
+            crate::router::repository::record_initialized_replica_in_profile(self, &space)
+                .await
+                .map_err(|e| crate::TonkWorkerError::Internal(format!("list {space}: {e}")))?;
+        }
+        Ok(grant.chain)
+    }
+
+    /// Whether this worker took up a delegation before: it acts for the
+    /// account the delegation named.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn acts(&self) -> Result<bool, crate::TonkWorkerError> {
+        Ok(crate::router::account::acts_for(self).await?.is_some())
+    }
+
+    /// Give `space`, which this worker holds, its first commit if it has
+    /// none: the kernel it runs, the asset `kernel` (its BLAKE3 `hash` and
+    /// `size`, which the space's store already holds), and the pin to it.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn found_space(
+        &self,
+        space: &str,
+        hash: [u8; 32],
+        size: u64,
+    ) -> Result<(), crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        let kernel = Asset::stored(hash, size);
+        space_worker::found(self, &space, kernel).await?;
+        self.reactor.run_scheduled_polls(&self.operator).await;
+        Ok(())
+    }
+
+    /// What the space's own worker is to create `space`'s content from, as
+    /// JSON, or `None` when there is nothing left to hand over: the seed this
+    /// persona kept as it created the space.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn pending_seed(
+        &self,
+        space: &str,
+    ) -> Result<Option<String>, crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        crate::router::repository::pending_seed(self, &space)
+            .await?
+            .map(|seed| {
+                serde_json::to_string(&seed)
+                    .map_err(|e| crate::TonkWorkerError::Internal(e.to_string()))
+            })
+            .transpose()
+    }
+
+    /// The space's own worker created `space`'s content from its seed:
+    /// there is nothing left to hand over.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn settle_seed(&self, space: &str) -> Result<(), crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        crate::router::repository::settle_seed(self, &space).await
+    }
+
+    /// Create the content of `space`, which this worker holds, from `seed`
+    /// (JSON, as [`pending_seed`] gives it), and record the kernel it runs,
+    /// the asset `kernel` (its BLAKE3 `hash` and `size`) on top. Nothing is
+    /// written over a `main` that has content.
+    ///
+    /// [`pending_seed`]: Self::pending_seed
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn seed_space(
+        &self,
+        space: &str,
+        seed: &str,
+        hash: [u8; 32],
+        size: u64,
+    ) -> Result<(), crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        let seed: crate::router::repository::SpaceSeed = serde_json::from_str(seed)
+            .map_err(|e| crate::TonkWorkerError::Router(format!("seed: {e}")))?;
+        crate::router::repository::create_content(self, &space, &seed)
+            .await
+            .map_err(|e| crate::TonkWorkerError::Internal(e.to_string()))?;
+        space_worker::pin(self, &space, Asset::stored(hash, size)).await?;
+        self.reactor.run_scheduled_polls(&self.operator).await;
+        Ok(())
+    }
+
+    /// Create `space` as a copy of another space, from that space's
+    /// `content` and `revision` (see [`snapshot_space`]) and `seed` (JSON, as
+    /// [`pending_seed`] gives it), and record the kernel it runs, the asset
+    /// `kernel` (its BLAKE3 `hash` and `size`) on top. Nothing is written over
+    /// a `main` that has content.
+    ///
+    /// [`snapshot_space`]: Self::snapshot_space
+    /// [`pending_seed`]: Self::pending_seed
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn copy_space(
+        &self,
+        space: &str,
+        seed: &str,
+        content: &[u8],
+        revision: &[u8],
+        hash: [u8; 32],
+        size: u64,
+    ) -> Result<(), crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        let seed: crate::router::repository::SpaceSeed = serde_json::from_str(seed)
+            .map_err(|e| crate::TonkWorkerError::Router(format!("seed: {e}")))?;
+        crate::router::repository::create_copy(self, &space, &seed, content, revision)
+            .await
+            .map_err(|e| crate::TonkWorkerError::Internal(e.to_string()))?;
+        space_worker::pin(self, &space, Asset::stored(hash, size)).await?;
+        self.reactor.run_scheduled_polls(&self.operator).await;
+        Ok(())
+    }
+
+    /// `space`'s `main`, for another space to be made a copy of: the CARv1 of
+    /// everything its revision reaches, and the revision as JSON. `None` for a
+    /// space with nothing on `main` yet.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn snapshot_space(
+        &self,
+        space: &str,
+    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        Ok(space_worker::snapshot(self, &space)
+            .await?
+            .map(|snapshot| (snapshot.content, snapshot.revision)))
+    }
+
+    /// Put back what a restart lost about `space`, a space this worker took
+    /// up before.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn resume_space(&self, space: &str) -> Result<(), crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        space_worker::resume(self, &space).await?;
+        self.reactor.run_scheduled_polls(&self.operator).await;
+        Ok(())
     }
 
     /// Enter the one-way retiring state and release every query stream.
@@ -2917,10 +3123,19 @@ async fn has_syncable_repo(state: &AppState) -> bool {
     false
 }
 
+/// Whether a page watches something this worker holds: a cached branch
+/// holds a live subscriber. A kernel syncs on a timer while one does, as
+/// the browser's worker's loop does; each drain sweeps the account too,
+/// which is how a page waiting on an emailed link hears it was followed.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub async fn watched(state: &AppState) -> bool {
+    has_live_subscribers(state).await
+}
+
 /// Whether any cached branch — named repositories or the profile — holds a
 /// live subscriber. The signal that a page is watching, so the SW should
 /// keep pulling upstream changes.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 async fn has_live_subscribers(state: &AppState) -> bool {
     let tonk = state.read().await;
     // The profile's own repository is among the cached ones.

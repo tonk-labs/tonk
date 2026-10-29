@@ -17,8 +17,9 @@ use ::axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
 };
-use axum_wasm_macros::wasm_compat;
-use dialog_credentials::{Credential, Ed25519Signer};
+use dialog_credentials::Credential;
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+use dialog_credentials::Ed25519Signer;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
     ConnectedReplica, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
@@ -27,18 +28,19 @@ use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
+use tonk_macros::handler;
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+use tonk_schema::SeedKind;
 use tonk_schema::claim::SourceClaim;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
     Branch as MetaBranch, Invitation, InvitedVia, MemberName, MemberRole, Membership, Remote,
-    RemoteExecution, Replica, RepositoryName, SeedKind, SpaceDescription, SpaceStatus,
-    TrackingBranch,
+    RemoteExecution, Replica, RepositoryName, SpaceDescription, SpaceStatus, TrackingBranch,
 };
 use url::Url;
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
 use zeroize::Zeroizing;
 
 use super::AppState;
@@ -244,7 +246,7 @@ pub struct RepositoryInfo {
 ///   and wires up upstream tracking when specified.
 /// - Returns `201 Created` with a [`RepositoryInfo`] body whose `name`
 ///   is the new routing key.
-#[wasm_compat]
+#[handler]
 pub async fn put_repository(
     State(state): State<AppState>,
     Path(display_name): Path<String>,
@@ -300,7 +302,7 @@ pub async fn put_repository(
     let branches: Vec<String> = configuration.branch.keys().cloned().collect();
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     spawn_seed(state, display_name, key, subject, branches);
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     seed_and_initialize(&state, &display_name, None, &key, &subject, &branches).await?;
 
     Ok((StatusCode::CREATED, Json(info)))
@@ -1178,7 +1180,7 @@ async fn execute_invite(env: crate::router::CommandEnv, request: InviteRequest) 
 /// Mint an invite to the space this worker's profile holds as `key`, as
 /// though its share control had been clicked at `time`. For a space whose own
 /// worker was asked for an invite and has passed the asking on.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn invite_space(state: &AppState, key: &str, time: f64) {
     let env =
         crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
@@ -2807,12 +2809,18 @@ pub(super) fn worker_origin() -> Option<String> {
             .map(|global| global.location().origin())
             .filter(|origin| !origin.is_empty())
     }
+    // A kernel serves an origin it does not know: its host says which app
+    // it is the deployment of (see [`crate::set_app_origin`]).
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    {
+        crate::app_origin()
+    }
     // A native host serves no origin of its own; the access-service
     // address must come from recorded facts (an account provider) or
     // host configuration, so "derive it from where I am serving" has no
     // native answer. Callers already treat `None` as "the service is
     // unknown" and refuse or degrade visibly.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         None
     }
@@ -4220,7 +4228,7 @@ async fn enable_sync_for_repository(
 /// already carry a foreign or partially configured remote. The account sweep
 /// must leave every such repository untouched. Returns whether this call made
 /// the local-only -> account-hosted transition.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(super) async fn attach_account_remote_if_local(
     tonk: &TonkState,
     key: &str,
@@ -4247,7 +4255,7 @@ pub(super) async fn attach_account_remote_if_local(
 
 /// Whether the repository's local meta branch names any remote, regardless of
 /// whether a content branch currently tracks it.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 async fn repository_has_any_remote<C>(
     tonk: &TonkState,
     repository: &Repository<C>,
@@ -4545,7 +4553,7 @@ impl ProfileLibraryCache {
         #[cfg(test)]
         if self
             .acquisition_failures
-            .fetch_update(
+            .try_update(
                 std::sync::atomic::Ordering::Relaxed,
                 std::sync::atomic::Ordering::Relaxed,
                 |remaining| remaining.checked_sub(1),
@@ -6355,6 +6363,7 @@ pub async fn create_repository(
     // Delegating to an account from the start means enrolling a passkey
     // is an account key ROTATION, the same operation a compromised
     // passkey needs, rather than a bespoke migration.
+    #[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
     let owner = match super::identity::local_root(tonk).await {
         Ok(root) => root.root_did,
         Err(TonkWorkerError::RootRequired) => {
@@ -6385,6 +6394,12 @@ pub async fn create_repository(
             )));
         }
     };
+    // A kernel's space delegates to whom the profile acts for: itself, until
+    // the person signs in.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    let owner = super::account::member_did(tonk)
+        .await
+        .map_err(|error| RepositoryError::Internal(format!("the space has no owner: {error}")))?;
 
     // 1. Generate the repository's credential up front so its
     // `did:key` is its stable identity. The repository's routing
@@ -6397,26 +6412,31 @@ pub async fn create_repository(
     // sealed to the account below; the signer imports from it the same
     // way an account root does (non-extractable on the web target), so
     // the credential the repository stores is the shape it always was.
-    let mut seed = Zeroizing::new([0u8; 32]);
-    getrandom::fill(seed.as_mut())
-        .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
-    let signer = Ed25519Signer::import(&*seed)
-        .await
-        .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
+    #[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+    let signer = {
+        let mut seed = Zeroizing::new([0u8; 32]);
+        getrandom::fill(seed.as_mut())
+            .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
+        let signer = Ed25519Signer::import(&*seed)
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
+        // The seed sealed to the account is the ONLY copy of the space
+        // secret that outlives this function: the repository stores the
+        // verifier, and every later act on the space proves through `space
+        // -> account -> device`, the way a joined replica does. So the
+        // custody row lands before anything else does, and a seed that
+        // cannot be custodied is a space that is not created.
+        if !super::account_state::custody_seed(tonk, &signer.did(), SeedKind::Space, seed).await {
+            return Err(RepositoryError::Internal(
+                "the space seed could not be custodied under the account".to_string(),
+            ));
+        }
+        signer
+    };
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    let signer = generated_space_key(tonk).await?;
     let did = signer.did();
     let key = did.repo_key();
-
-    // The seed sealed to the account is the ONLY copy of the space secret
-    // that outlives this function: the repository stores the verifier, and
-    // every later act on the space proves through `space -> account ->
-    // device`, the way a joined replica does. So the custody row lands
-    // before anything else does, and a seed that cannot be custodied is a
-    // space that is not created.
-    if !super::account_state::custody_seed(tonk, &did, SeedKind::Space, seed).await {
-        return Err(RepositoryError::Internal(
-            "the space seed could not be custodied under the account".to_string(),
-        ));
-    }
 
     // Where the space renders on an origin of its own, the worker there
     // mounts it and holds everything in it. This worker makes its identity
@@ -6547,6 +6567,53 @@ pub async fn create_repository(
     Ok(repository)
 }
 
+/// A new space's key, made by the kernel's host, which holds it: the
+/// kernel signs as the space through the host, and keeps the key's backup,
+/// restored by the session's credential, as this peer's copy of the key.
+/// Its seed never reaches the kernel.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+async fn generated_space_key(
+    tonk: &TonkState,
+) -> Result<dialog_credentials::SignerCredential, RepositoryError> {
+    use tonk_kernel_world::world::sapling::kernel::credential::{self, Custodian};
+
+    let failed = |what: &str, error: &dyn std::fmt::Debug| {
+        RepositoryError::Internal(format!("{what}: {error:?}"))
+    };
+    let space = std::rc::Rc::new(
+        credential::generate()
+            .await
+            .map_err(|error| failed("the host made no key for the space", &error))?,
+    );
+    let session = tonk_kernel_world::session::credential();
+    let backup = space
+        .backup(Custodian::Credential(&session))
+        .await
+        .map_err(|error| failed("the space's key was not backed up", &error))?;
+    let did: Did = space
+        .did()
+        .parse()
+        .map_err(|error| failed("the space's key names no DID", &error))?;
+    dialog_repository::secrets::grant(
+        tonk.profile.state(),
+        &did,
+        &tonk.profile.did(),
+        backup.secret,
+        &tonk.profile,
+    )
+    .await
+    .map_err(|error| failed("the space's custody was not kept", &error))?;
+    // Signed in, the space is the account's too: its other devices restore
+    // the key from what the account holds.
+    if let Some(credential::Persona::Permanent(persona)) = tonk_kernel_world::session::persona() {
+        super::merge::hold_for_account(tonk, &space, &did, Custodian::Permanent(&persona))
+            .await
+            .map_err(|error| RepositoryError::Internal(error.to_string()))?;
+    }
+    tonk_kernel_world::credentials::signer(space)
+        .map_err(|error| failed("the space's key is not a signer", &error))
+}
+
 /// The profile secret a space's pending [`SpaceSeed`] is kept under.
 const PENDING_SEED_SITE_PREFIX: &str = "tonk-space-seed:";
 
@@ -6557,7 +6624,7 @@ const PENDING_SEED_SITE_PREFIX: &str = "tonk-space-seed:";
 /// branch: the worker of the space's origin holds that, and there is to be
 /// one copy of it. That worker writes what creating a space writes (the
 /// standard library, the space's name, the founder's membership) from this.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpaceSeed {
     /// The space's display name.
@@ -6668,6 +6735,7 @@ async fn save_pending_seed(
 /// own worker asks this branch what to fill it from. Nothing to bring for a
 /// space whose worker has filled it, or that this branch already has a seed
 /// for.
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
 pub(crate) async fn carry_pending_seed(
     tonk: &TonkState,
     workspace: &crate::worker::DefaultProfile,
@@ -6682,7 +6750,7 @@ pub(crate) async fn carry_pending_seed(
 
 /// What `subject`'s own worker is to create its content from, or `None` when
 /// this worker created that content itself or the seed has been settled.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn pending_seed(
     tonk: &TonkState,
     subject: &Did,
@@ -6723,7 +6791,7 @@ pub(crate) async fn pending_seed(
 
 /// The space's own worker has created its content: there is nothing left to
 /// hand over.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn settle_seed(tonk: &TonkState, subject: &Did) -> Result<(), TonkWorkerError> {
     save_pending_seed(tonk, subject, Vec::new())
         .await
@@ -6749,7 +6817,7 @@ pub(crate) async fn settle_seed(tonk: &TonkState, subject: &Did) -> Result<(), T
 /// standard library and the space's name on a `main` with nothing on it yet,
 /// and the founder's membership. Each is safe to repeat, so a worker stopped
 /// part-way picks it up when it is asked again.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn create_content(
     tonk: &TonkState,
     subject: &Did,
@@ -6762,7 +6830,7 @@ pub(crate) async fn create_content(
 }
 
 /// [`create_content`], with the standard library's text in hand.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 async fn create_content_with(
     tonk: &TonkState,
     subject: &Did,
@@ -6820,7 +6888,7 @@ async fn create_content_with(
 /// revision, and written under this space's own identity without the
 /// source's history or its records of itself. Then the founder's membership,
 /// as for any new space. Nothing is written over a `main` that has content.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn create_copy(
     tonk: &TonkState,
     subject: &Did,
@@ -6879,7 +6947,7 @@ pub(crate) async fn create_copy(
 }
 
 /// Fetch `definitions` and add them to `key`'s content.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 async fn add_definitions(
     tonk: &TonkState,
     key: &str,
@@ -7310,7 +7378,7 @@ impl AsRef<dialog_artifacts::Entity> for DirectoryAnchor {
 /// Joined spaces can become visible before their content (and therefore their
 /// name) has downloaded. The account sweep calls this after later pulls so an
 /// initially nameless Hub row repairs itself without remounting the space.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn record_space_name(tonk: &TonkState, subject: &Did, display_name: &str) {
     let transaction = tonk
         .reactor
@@ -7686,7 +7754,12 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
     // harness that serves no library) costs a degraded Hub until the
     // next attempt — not a worker that refuses to boot or a profile
     // switch that dies half-way.
-    if let Err(error) = reconcile_profile_library(tonk).await {
+    //
+    // A space's own worker serves no Hub: its peer only holds what the
+    // person's profile delegated it.
+    if tonk.registry.standing != crate::device::Standing::Site
+        && let Err(error) = reconcile_profile_library(tonk).await
+    {
         log!("profile library reconciliation skipped: {error}");
     }
     // A fresh state, a fresh overlay: say whether this device is linked
@@ -8217,7 +8290,7 @@ pub(crate) async fn reconcile_profile_library_from(
 /// Development-only asset update boundary used by hot swap. The supplied
 /// document becomes the worker's acquired input before it is reconciled, so a
 /// later account sweep cannot restore bytes cached before the edit.
-#[wasm_compat]
+#[handler]
 pub(super) async fn update_profile_library(
     State(state): State<AppState>,
     body: Bytes,
@@ -8299,7 +8372,7 @@ async fn reconcile_prepared_profile_library(
             &encode_seed_version(minted),
         )
     };
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(target_arch = "wasm32")]
     let plan = || -> futures_util::future::LocalBoxFuture<'_, _> {
         Box::pin(async {
             current_profile_library_retractions(tonk, &complete_provenance)
@@ -8307,7 +8380,7 @@ async fn reconcile_prepared_profile_library(
                 .map_err(|error| TonkWorkerError::Internal(error.to_string()))
         })
     };
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let plan = || -> futures_util::future::BoxFuture<'_, _> {
         Box::pin(async {
             current_profile_library_retractions(tonk, &complete_provenance)
@@ -8348,7 +8421,7 @@ async fn reconcile_prepared_profile_library(
 ///
 /// Handler for `GET /api/repository/{repo}`. 404s when the
 /// repository can't be loaded.
-#[wasm_compat]
+#[handler]
 pub async fn get_repository(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -8429,7 +8502,7 @@ pub async fn get_repository(
 /// `.refetch()` just the profile-as-repository view after
 /// branch-level operations without re-fetching the full profile
 /// payload (with its replica list).
-#[wasm_compat]
+#[handler]
 pub async fn get_profile_repository(
     State(state): State<AppState>,
 ) -> Result<Json<RepositoryInfo>, TonkWorkerError> {
@@ -9291,7 +9364,7 @@ where
 /// instead of unpicking it from the create path, and a freshly
 /// created repo stays local until something explicitly gives it a
 /// remote.
-#[wasm_compat]
+#[handler]
 pub async fn attach_remote(
     State(state): State<AppState>,
     Path(name): Path<String>,

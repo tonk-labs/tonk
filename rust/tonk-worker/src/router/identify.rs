@@ -1,10 +1,8 @@
 //! Identity endpoint for retrieving the user's DID.
 
 use ::axum::{Extension, Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
+use tonk_macros::handler;
 
 use super::{AppState, ClientId};
 use crate::TonkWorkerError;
@@ -20,7 +18,7 @@ pub struct IdentifyResponse {
 ///
 /// This endpoint allows the UI to retrieve the user's persistent identity.
 /// The DID is generated on first use and persists across sessions.
-#[wasm_compat]
+#[handler]
 pub async fn identify(
     State(state): State<AppState>,
     client: Option<Extension<ClientId>>,

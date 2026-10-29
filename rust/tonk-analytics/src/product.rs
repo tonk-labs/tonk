@@ -15,7 +15,9 @@ pub const MAX_DURATION_MS: u64 = 600_000;
 
 /// Create an opaque random token for correlating one interaction lifecycle.
 pub fn attempt_id() -> String {
-    hex::encode(rand::random::<[u8; 16]>())
+    let mut bytes = [0u8; 16];
+    dialog_common::random::fill(&mut bytes).expect("the system has a source of random bytes");
+    hex::encode(bytes)
 }
 
 macro_rules! closed_enum {

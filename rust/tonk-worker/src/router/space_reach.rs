@@ -10,7 +10,7 @@ use tonk_schema::claim::SourceClaim;
 
 use super::repository::CONTENT_BRANCH;
 use crate::TonkWorkerError;
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(any(test, target_arch = "wasm32"))]
 use crate::reactor::Frame;
 use crate::reactor::{
     Conclusion, PeerBranchReference, PeerError, PeerFrames, PeerProvider, PeerRepositoryReference,
@@ -69,7 +69,25 @@ pub(crate) async fn ask(
         }
         Ok(serde_json::from_str(&text).unwrap_or(serde_json::Value::Null))
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    // A kernel asks through its embedder, which delivers the request to the
+    // space's kernel.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    {
+        let unreachable =
+            |why: String| TonkWorkerError::Internal(format!("could not ask {space}: {why}"));
+        let body = body.map(ToString::to_string);
+        let answer = tonk_kernel_world::application::ask(space, method, path, body.as_deref())
+            .await
+            .map_err(|error| unreachable(format!("{error:?}")))?;
+        if !(200..300).contains(&answer.status) {
+            return Err(unreachable(format!(
+                "it answered {}: {}",
+                answer.status, answer.body
+            )));
+        }
+        Ok(serde_json::from_str(&answer.body).unwrap_or(serde_json::Value::Null))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     {
         #[cfg(test)]
         if let Some(answer) = stand_in::answer(space, method, path, body) {
@@ -175,13 +193,13 @@ impl PeerProvider for SpacePeer<'_> {
 /// The frames a subscription's answer carries: one per `data:` event. An
 /// event that is no frame (the worker telling a page it is being replaced)
 /// is passed over.
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(any(test, target_arch = "wasm32"))]
 #[derive(Default)]
 struct Events {
     unread: Vec<u8>,
 }
 
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(any(test, target_arch = "wasm32"))]
 impl Events {
     /// Take in the next bytes of the answer, and give the frames they
     /// complete.
@@ -264,7 +282,26 @@ async fn subscribe(
             });
         Ok(Box::pin(frames))
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    // A kernel subscribes through its embedder, which delivers the
+    // subscription's answer piece by piece.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    {
+        use futures_util::{StreamExt as _, stream};
+
+        let unreachable = |why: String| PeerError::Unreachable(format!("{space}: {why}"));
+        let body = body.to_string();
+        let (status, pieces) =
+            tonk_kernel_world::application::ask_streaming(space, "POST", path, Some(&body))
+                .await
+                .map_err(|error| unreachable(format!("{error:?}")))?;
+        if !(200..300).contains(&status) {
+            return Err(PeerError::Refused(format!("{space} answered {status}")));
+        }
+        let mut events = Events::default();
+        let frames = pieces.flat_map(move |piece| stream::iter(events.read(&piece)));
+        Ok(Box::pin(frames))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     {
         #[cfg(test)]
         if let Some(answer) = stand_in::answer(space, "SUBSCRIBE", path, Some(body)) {
@@ -367,7 +404,17 @@ pub(crate) fn changed(space: Option<&str>) {
             let _ = hook.call1(&global, &space);
         }
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    // A kernel tells its embedder, which signals the space's host.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    {
+        let space = space.map(str::to_owned);
+        crate::detach(async move {
+            if let Err(error) = tonk_kernel_world::application::changed(space.as_deref()).await {
+                tonk_common::log!("space change was not told: {error:?}");
+            }
+        });
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let _ = space;
     }
@@ -447,7 +494,17 @@ pub(crate) async fn ask_profile(
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or(serde_json::Value::Null))
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    // A kernel asks through its embedder, which passes the ask up to the
+    // person's persona.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    {
+        tonk_kernel_world::application::ask_profile(request)
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("could not ask the profile: {error:?}"))
+            })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let _ = request;
         Err(TonkWorkerError::Internal(

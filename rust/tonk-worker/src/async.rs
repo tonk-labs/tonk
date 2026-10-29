@@ -48,6 +48,39 @@ pub async fn sleep(duration: web_time::Duration) -> Result<(), wasm_bindgen::JsE
     Ok(())
 }
 
+/// Asynchronously sleep for the specified duration, on WASI's monotonic
+/// clock. It cannot fail; the error type matches the browser's.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub async fn sleep(duration: web_time::Duration) -> Result<(), wasm_bindgen::JsError> {
+    dialog_common::time::sleep(duration).await;
+    Ok(())
+}
+
+/// A future in a component on WASI, which has no threads: nothing can send
+/// it to another thread, so it is `Send` whatever it holds. axum asks each
+/// handler for a `Send` future, and Dialog DB's futures are not `Send` on
+/// `wasm32` (see `tonk_macros::handler`).
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub struct Unthreaded<F>(pub F);
+
+// SAFETY: `wasm32-wasip3` has no threads. A component instance runs on one,
+// so no value is ever reached from another.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+unsafe impl<F> Send for Unthreaded<F> {}
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+impl<F: std::future::Future> std::future::Future for Unthreaded<F> {
+    type Output = F::Output;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        // SAFETY: the inner future is never moved out of a pinned wrapper.
+        unsafe { self.map_unchecked_mut(|unthreaded| &mut unthreaded.0) }.poll(context)
+    }
+}
+
 /// Run `work` without waiting for it, so a caller that only needs it
 /// STARTED can return.
 ///
@@ -62,6 +95,16 @@ where
     F: std::future::Future<Output = ()> + 'static,
 {
     wasm_bindgen_futures::spawn_local(work);
+}
+
+/// Run `work` without waiting for it, as a task of the component's own
+/// async runtime on WASI.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub fn detach<F>(work: F)
+where
+    F: std::future::Future<Output = ()> + 'static,
+{
+    wit_bindgen::spawn_local(work);
 }
 
 /// Run `work` without waiting for it (non-wasm).

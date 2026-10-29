@@ -1,0 +1,32 @@
+[package]
+name = "tonk-kernel"
+description = "A Tonk kernel: a component for the world sapling:kernel, on the latest Dialog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+# The kernel for the world `sapling:kernel/persona`: the person's own worker,
+# which serves their profile and delegates to their other workers what their
+# hosts ask for.
+# Without it, a space's own worker, for `sapling:kernel/kernel`.
+persona = []
+# Agents and tools connect to a space through an invitation, as the worker
+# of a deployment that offers it does.
+connection-invites = ["tonk-worker/connection-invites"]
+
+# The kernel is a component on WASI; other targets build an empty crate.
+[target.'cfg(all(target_arch = "wasm32", not(target_os = "unknown")))'.dependencies]
+axum = { workspace = true }
+base64 = { workspace = true }
+http-body-util = { workspace = true }
+serde_json = { workspace = true }
+tonk-common = { workspace = true }
+tonk-kernel-world = { workspace = true }
+tonk-worker = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+wit-bindgen = { workspace = true, features = ["inter-task-wakeup"] }

@@ -2,12 +2,10 @@
 
 use ::axum::extract::Path;
 use ::axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_repository::{RepositoryExt as _, Revision};
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_macros::handler;
 
 use super::super::AppState;
 use crate::TonkWorkerError;
@@ -60,7 +58,7 @@ pub struct RemoteBranchStatusResponse {
 }
 
 /// Returns the status of a specific remote.
-#[wasm_compat]
+#[handler]
 pub async fn inspect_remote(
     State(state): State<AppState>,
     Path(params): Path<InspectRemotePath>,
@@ -97,7 +95,7 @@ pub async fn inspect_remote(
 }
 
 /// Returns the status of a specific remote branch.
-#[wasm_compat]
+#[handler]
 pub async fn inspect_remote_branch(
     State(state): State<AppState>,
     Path(params): Path<InspectRemoteBranchPath>,

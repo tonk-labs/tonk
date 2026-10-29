@@ -18,13 +18,11 @@ use ::axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_csv::{CsvExporter, CsvImporter};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_macros::handler;
 
 use super::AppState;
 use super::evaluate::EvaluatePath;
@@ -61,7 +59,7 @@ fn strip_governance_rows(csv: &str) -> String {
 ///
 /// Streams every artifact on the branch as a CSV document
 /// (`the,of,as,is,cause` columns). Read-only.
-#[wasm_compat]
+#[handler]
 pub async fn export(
     State(state): State<AppState>,
     Path(path): Path<EvaluatePath>,
@@ -96,7 +94,7 @@ pub async fn export(
 /// This is what lets the profile branch be captured as a fixture: its
 /// content (delegations, device links, definitions) is otherwise
 /// reachable only one query at a time.
-#[wasm_compat]
+#[handler]
 pub async fn export_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileExportPath>,
@@ -254,7 +252,7 @@ pub struct ImportResponse {
 /// Reads a `text/csv` body (`the,of,as,is,cause` columns) and
 /// commits each row as an assertion in one transaction. Returns the
 /// post-commit revision and broadcasts it so subscribers refresh.
-#[wasm_compat]
+#[handler]
 pub async fn import(
     State(state): State<AppState>,
     Path(path): Path<EvaluatePath>,

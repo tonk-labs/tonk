@@ -1,0 +1,63 @@
+[package]
+name = "tonk-kernel-host"
+description = "The embedder of a kernel: runs a component for the world sapling:kernel on the Wasm Component Model Polyfill, natively or in a service worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+blake3 = "1"
+dialog-capability.workspace = true
+dialog-common.workspace = true
+dialog-credentials.workspace = true
+# Each layer a space of Dialog DB, where Dialog DB keeps its location.
+dialog-effects.workspace = true
+dialog-storage.workspace = true
+# The chain a layer outside a kernel's stack is opened with.
+dialog-ucan-core.workspace = true
+# A replica on an access service, acted on as Dialog DB's UCAN site acts.
+dialog-remote-ucan.workspace = true
+dialog-ucan.workspace = true
+dialog-varsig.workspace = true
+ipld-core = "0.4"
+serde_ipld_dagcbor = "0.6"
+zeroize = "1"
+bs58 = "0.5"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+futures = "0.3"
+getrandom = "0.2"
+tracing = "0.1"
+wcmp.workspace = true
+tonk-kernel-world = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = ["time", "macros", "rt"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+# The session's key, kept in Dialog DB's credential store.
+dialog-identity.workspace = true
+# Signing a person in: the account a passkey holds, and its enrollment.
+anyhow.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+tonk-identity.workspace = true
+tonk-common.workspace = true
+js-sys = { version = "0.3", default-features = false, features = ["std"] }
+wasm-bindgen = "=0.2.126"
+wasm-bindgen-futures = "0.4"
+wcmp-wasm-core-web.workspace = true
+web-sys = { version = "0.3", features = ["console", "Window", "WorkerGlobalScope", "Performance"] }
+
+# The native tests run the Tonk kernel on Wasmtime's core engine.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tonk-components = { workspace = true }
+# The wire form of a query, as the worker's own tests derive it.
+tonk-worker = { workspace = true, features = ["helpers"] }
+serde_json = "1"
+wasmparser = { version = "0.258", default-features = false, features = ["std", "component-model"] }
+wcmp-wasm-core-wasmtime.workspace = true

@@ -15,10 +15,12 @@
 //! The space worker stores it and publishes that revision ([`seed`]), so the
 //! replica holds the same history the host did, and syncs on from there.
 
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+use dialog_artifacts::Asset;
 use dialog_capability::Subject;
 use dialog_common::Blake3Hash;
 use dialog_credentials::DidKeyResolver;
-use dialog_effects::Use;
+use dialog_effects::{Use, method};
 use dialog_repository::{RepositoryExt as _, Revision, Upstream, codec};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::{
@@ -26,18 +28,24 @@ use dialog_ucan_core::{
     time::{TimeRange, Timestamp},
 };
 use dialog_varsig::Did;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use dialog_varsig::Principal as _;
 use dialog_varsig::signature::AnySignature;
 use futures_util::stream;
 use ipld_core::ipld::Ipld;
 use std::collections::BTreeMap;
 use tonk_common::log;
 use tonk_invite::{HOME_ADDRESS, home_address_meta};
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+use tonk_schema::SpaceKernel;
 use tonk_schema::prelude::DidExt as _;
 use url::Url;
 
 use super::account::{act_for, acts_for, member_did};
 use super::adopt::ensure_space_mounted;
-use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url};
+use super::create_invite::{
+    ConfiguredRemoteRequirement, resolve_configured_remote_url, resolve_configured_remote_url_with,
+};
 use super::join::mount_replica;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use super::profile_name::project_member_name;
@@ -77,16 +85,37 @@ pub(crate) async fn delegate(
     let until = Timestamp::try_from(expires as i128)
         .map_err(|e| TonkWorkerError::Internal(format!("delegation expiry: {e:?}")))?;
     let terms = terms(tonk, space).await?;
-    let delegation: UcanDelegation = tonk
+    let meta = terms.signed()?;
+    let using = tonk
         .profile
         .access()
         .claim(Subject::from(space.clone()).attenuate(Use))
         .expires(until)
         .delegate(audience.clone())
-        .meta(terms.signed()?)
+        .meta(meta.clone())
         .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to delegate {space}: {e}")))?;
+        .await;
+    // A space the person only observes, as a published one, is theirs to
+    // read and no more: its worker is delegated that.
+    let delegation: UcanDelegation = match using {
+        Ok(delegation) => delegation,
+        Err(error) => tonk
+            .profile
+            .access()
+            .claim(
+                Subject::from(space.clone())
+                    .attenuate(Use)
+                    .attenuate(method::Get),
+            )
+            .expires(until)
+            .delegate(audience.clone())
+            .meta(meta)
+            .perform(&tonk.operator)
+            .await
+            .map_err(|_| {
+                TonkWorkerError::Internal(format!("failed to delegate {space}: {error}"))
+            })?,
+    };
     let chain = delegation
         .into_chain()
         .to_bytes()
@@ -184,16 +213,30 @@ pub(crate) async fn terms(tonk: &TonkState, space: &Did) -> Result<Terms, TonkWo
 /// Where each space has a worker of its own, the profile mounts nothing of a
 /// space: the account's directory lists every space the person has with
 /// where it syncs, one made here, one joined, and one of the account's that
-/// this device has not opened yet. A host with one database reads it from
-/// the space it has mounted, mounting it from the directory first if it has
-/// not.
+/// this device has not opened yet. A space the person only reads, as a
+/// published one, is in no directory: the profile mounts it to read it, and
+/// its mount says. A host with one database reads it from the space it has
+/// mounted, mounting it from the directory first if it has not.
 async fn where_it_syncs(
     tonk: &TonkState,
     space: &Did,
 ) -> Result<ConfiguredRemoteRequirement, TonkWorkerError> {
     if tonk.spaces_elsewhere() {
         let repository = super::space_directory::held(tonk, space.as_str()).await?;
-        return resolve_configured_remote_url(tonk, &repository).await;
+        let listed = resolve_configured_remote_url(tonk, &repository).await?;
+        if matches!(listed, ConfiguredRemoteRequirement::Ready(_)) {
+            return Ok(listed);
+        }
+        return match tonk
+            .profile
+            .space(space.repo_key())
+            .load()
+            .perform(&tonk.operator)
+            .await
+        {
+            Ok(mounted) => resolve_configured_remote_url_with(&mounted, &tonk.operator).await,
+            Err(_) => Ok(listed),
+        };
     }
     if let Err(error) = ensure_space_mounted(tonk, space.repo_key()).await {
         log!("space {space} was not taken up from the directory: {error}");
@@ -282,6 +325,74 @@ pub(crate) async fn adopt(
     Ok(terms)
 }
 
+/// Give `space`, which this worker holds, its first commit, if it has none
+/// yet: the kernel it runs, as the asset `kernel`, which the space's store
+/// already holds, and the space's pin to it. Nothing is written over a `main`
+/// that has a revision. The space then holds what it needs to start wherever
+/// it syncs.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub(crate) async fn found(
+    tonk: &TonkState,
+    space: &Did,
+    kernel: Asset,
+) -> Result<(), TonkWorkerError> {
+    let key = space.repo_key();
+    // A space this worker has not taken up yet has nothing to found: it is
+    // founded as it is taken up.
+    if tonk
+        .profile
+        .space(key)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .is_err()
+    {
+        return Ok(());
+    }
+    let main = tonk
+        .reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("open '{key}': {e}")))?;
+    if main.handle().revision().is_some() {
+        return Ok(());
+    }
+    // A space joined, or only read, lands the head its remote holds, as the
+    // first boot after a join does: it commits nothing of its own.
+    if tonk_account::peer::upstream(main.handle()).is_some() {
+        return Ok(());
+    }
+    pin(tonk, space, kernel).await
+}
+
+/// Record on `space`'s `main` the kernel it runs, the asset `kernel`, and the
+/// pin to it.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub(crate) async fn pin(
+    tonk: &TonkState,
+    space: &Did,
+    kernel: Asset,
+) -> Result<(), TonkWorkerError> {
+    let key = space.repo_key();
+    let asset = kernel
+        .entity()
+        .map_err(|e| TonkWorkerError::Internal(format!("the kernel's asset: {e}")))?;
+    tonk.reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .transaction()
+        .assert(kernel)
+        .assert(SpaceKernel::new(space.this(), asset))
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("the first commit of {space}: {e}")))?;
+    log!("space worker: founded {space} on its kernel");
+    Ok(())
+}
+
 /// Put back what a restart of this worker lost about `space`: the account
 /// this session acts for, in the session overlay, where a view reads who is
 /// looking at it. An overlay lives only as long as the worker, so this runs
@@ -326,7 +437,7 @@ pub(crate) async fn name_member(
     }
     let named = project_member_name(tonk, key, &account, name).await?;
     if named {
-        tonk.sync_queue.mark_dirty(key, js_sys::Date::now());
+        tonk.sync_queue.mark_dirty(key, super::sync::now_millis());
     }
     Ok(named)
 }

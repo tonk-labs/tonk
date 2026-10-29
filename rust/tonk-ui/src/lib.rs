@@ -31,6 +31,6 @@ mod account_flow;
 #[cfg(test)]
 mod identity;
 
-/// Real-browser service-worker load-time upgrade tests.
+/// Real-browser tests of the kernels sites pin.
 #[cfg(test)]
-mod service_worker_upgrade;
+mod kernel_pins;

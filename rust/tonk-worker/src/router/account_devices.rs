@@ -7,14 +7,12 @@
 //! account summary still proxies the account service.
 
 use axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use serde::Deserialize;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_account::delegations::account_scope;
 use tonk_common::log;
+use tonk_macros::handler;
 use tonk_worker_api::{
     AccountDevice, AccountSummary, PasskeyMetadata, RevokeDeviceAcknowledgement,
     RevokeDeviceRequest,
@@ -61,7 +59,7 @@ async fn local_devices(
 /// One row per device: a device described more than once (a historical
 /// grant minted alongside a fresh one) keeps its earliest link time,
 /// since the extra grants are the same authorization re-minted.
-#[wasm_compat]
+#[handler]
 pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<AccountDevice>>, TonkWorkerError> {
@@ -124,7 +122,7 @@ pub struct RegisterDeviceRequest {
 /// grant.
 ///
 /// [`DeviceLink`]: tonk_schema::DeviceLink
-#[wasm_compat]
+#[handler]
 pub async fn register(
     State(state): State<AppState>,
     Json(request): Json<RegisterDeviceRequest>,
@@ -585,7 +583,7 @@ pub(super) async fn publish_revocation(
 /// first, because a device that has just revoked itself can no longer
 /// push anything — the published revocation is what makes its pushes
 /// start failing.
-#[wasm_compat]
+#[handler]
 pub async fn revoke(
     State(state): State<AppState>,
     Json(request): Json<RevokeDeviceRequest>,

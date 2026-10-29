@@ -1,0 +1,110 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <!-- What the kernel answers a page load of its site with, at an
+             address its routes keep no content at: the site's view, rendered
+             by the element runtime its host serves under `/guest/`. The relay
+             the host puts before this carries the ports. -->
+        <script>
+            (function () {
+                // The relay says the page is ready once it loads, unless the
+                // page says so itself, as this one does once the site is up.
+                window.tonkSaysReady = true;
+                function say(stage) {
+                    if (parent !== window) parent.postMessage({ __tonkOrigin: "status", stage: stage }, "*");
+                }
+                function report(error) {
+                    if (parent === window) return console.error(error);
+                    parent.postMessage(
+                        { __tonkRuntime: "error", error: "site origin: " + (error && error.stack || error) },
+                        "*",
+                    );
+                }
+
+                // Opened on its own, not framed by the app: the app is where a
+                // site is shown. Go there, to this space.
+                if (parent === window) {
+                    Promise.all([
+                        fetch("/.well-known/tonk").then(function (answer) { return answer.json(); }),
+                        fetch("/api/health").then(function (answer) { return answer.json(); }),
+                    ])
+                        .then(function (said) {
+                            var app = said[0] && said[0].sites && said[0].sites.app;
+                            var space = said[1] && said[1].space;
+                            if (typeof app !== "string") throw new Error("no app is named");
+                            var rest = location.pathname === "/" ? "" : location.pathname;
+                            location.replace(
+                                typeof space === "string"
+                                    ? app + "/space/" + space + rest + location.search + location.hash
+                                    : app,
+                            );
+                        })
+                        .catch(report);
+                    return;
+                }
+
+                // The app frames a profile's origin this way with no site to
+                // render: only to reach the profile's kernel, whose requests
+                // reach it over a port, which is not an event to the browser.
+                // So while the app is on screen, this frame keeps telling the
+                // worker it is open.
+                if (location.hash === "#connector") {
+                    setInterval(function () {
+                        var worker = navigator.serviceWorker.controller;
+                        if (worker && document.visibilityState === "visible") {
+                            worker.postMessage({ type: "keepalive" });
+                        }
+                    }, 10000);
+                    say("ready");
+                    return;
+                }
+
+                function run(src) {
+                    return new Promise(function (resolve, reject) {
+                        var script = document.createElement("script");
+                        script.src = src;
+                        script.onload = resolve;
+                        script.onerror = function () {
+                            reject(new Error("could not load " + src));
+                        };
+                        document.head.appendChild(script);
+                    });
+                }
+
+                // The route the address names, which the kernel stamps on the
+                // site when the bootstrap claims the load. The placeholders
+                // keep the frame reading as loading until then.
+                function display(site) {
+                    var pending =
+                        "hidden class='site-pending'><span class='tonk-pulse' aria-hidden='true'></span></div>";
+                    return (
+                        "<tonk-display entity='" + site + "' model='tonk:site'>" +
+                        "<div slot='loading' " + pending +
+                        "<div slot='no-entity' " + pending +
+                        "<div slot='no-model' " + pending +
+                        "</tonk-display>"
+                    );
+                }
+
+                (async function () {
+                    say("loading");
+                    var base = document.createElement("base");
+                    base.href = "/";
+                    document.head.appendChild(base);
+                    var manifest = await (await fetch("/guest/manifest.json", { cache: "no-cache" })).json();
+                    window.tonkBuildFiles = manifest;
+                    await run("/guest/" + manifest.bootstrap);
+                    await run("/guest/" + manifest.runtime);
+                    await run("/guest/" + manifest.preview);
+                    await window.tonk.ready;
+                    document.body.innerHTML = display(window.tonk.context.siteEntity);
+                    await window.tonkRuntime;
+                    await window.tonk.claimed;
+                    say("ready");
+                })().catch(report);
+            })();
+        </script>
+    </head>
+    <body></body>
+</html>

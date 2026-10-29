@@ -1,0 +1,16 @@
+package spike:wasi;
+
+/// The WASI 0.3 functions a guest kernel imports that the demo's dynamic
+/// definitions do not cover. Monotonic time, standard output and error, and
+/// the HTTP types come from the demo's modules.
+world rest {
+  import wasi:clocks/system-clock@0.3.0;
+  import wasi:random/random@0.3.0;
+  import wasi:random/insecure-seed@0.3.0;
+  import wasi:cli/environment@0.3.0;
+  import wasi:cli/exit@0.3.0;
+  import wasi:cli/stdin@0.3.0;
+  import wasi:cli/terminal-stdin@0.3.0;
+  import wasi:cli/terminal-stdout@0.3.0;
+  import wasi:cli/terminal-stderr@0.3.0;
+}

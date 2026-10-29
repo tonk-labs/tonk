@@ -1229,7 +1229,8 @@ pub(crate) async fn retain_space_delegation(tonk: &TonkState, chain: &Delegation
         Ok(wrote) => {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             if wrote {
-                tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
+                tonk.sync_queue
+                    .mark_dirty(&ready.key, super::sync::now_millis());
             }
             // The routing key only feeds the wasm dirty-marking above.
             #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -1359,7 +1360,8 @@ pub(crate) async fn seed_sealed_inbox(tonk: &TonkState) -> bool {
         return false;
     }
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
+    tonk.sync_queue
+        .mark_dirty(&ready.key, super::sync::now_millis());
     true
 }
 
@@ -1405,7 +1407,8 @@ pub(crate) async fn custody_seed(
     // out rather than waiting for the next sweep.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     if let Ok(ready) = require_ready_account_state(tonk).await {
-        tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
+        tonk.sync_queue
+            .mark_dirty(&ready.key, super::sync::now_millis());
     }
     true
 }
@@ -1419,7 +1422,7 @@ pub(crate) async fn custody_seed(
 /// provider to genuinely local-only spaces once the customer is served.
 /// Every space is checked independently; a failure is logged and left for the
 /// next sweep rather than failing its siblings.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn converge_account_state(tonk: &TonkState) -> Result<(), TonkWorkerError> {
     use tonk_schema::{AccountDisplayName, ProfileName};
 
@@ -1492,7 +1495,7 @@ pub(crate) async fn converge_account_state(tonk: &TonkState) -> Result<(), TonkW
 /// queueing each space that changed for sync. `republish` also refreshes
 /// the self-identity overlay of the spaces that did not change, for a
 /// profile-name cache that did.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 async fn project_member_names(
     tonk: &TonkState,
     member: &dialog_varsig::Did,
@@ -1516,7 +1519,7 @@ async fn project_member_names(
         {
             Ok(changed) => {
                 if changed {
-                    tonk.sync_queue.mark_dirty(&key, js_sys::Date::now());
+                    tonk.sync_queue.mark_dirty(&key, super::sync::now_millis());
                 }
                 changed
             }
@@ -1531,7 +1534,7 @@ async fn project_member_names(
     }
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn converge_account_state(_tonk: &TonkState) -> Result<(), TonkWorkerError> {
     Ok(())
 }
@@ -1567,7 +1570,8 @@ async fn adopt_account_display_name(
             TonkWorkerError::Internal(format!("commit account display name: {error}"))
         })?;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
+    tonk.sync_queue
+        .mark_dirty(&ready.key, super::sync::now_millis());
     // The rename's own fan-out: every space this device can reach gets
     // the name now and is queued for sync; the sweep catches up the rest.
     converge_account_state(tonk).await?;

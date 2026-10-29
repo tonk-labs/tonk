@@ -111,7 +111,30 @@ async fn post_with_timeout(
     request_with_timeout("POST", endpoint, Some(body), Some(media_type), timeout).await
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+/// A kernel on WASI has no HTTP client: its embedder delivers the request,
+/// such as an invocation the kernel signed, and hands back the answer. The
+/// embedder keeps its own time.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+async fn request_with_timeout(
+    method: &str,
+    endpoint: &Url,
+    body: Option<&[u8]>,
+    media_type: Option<&str>,
+    _timeout: Duration,
+) -> Result<HttpResponse, HttpError> {
+    let answer = tonk_kernel_world::application::fetch(method, endpoint.as_str(), media_type, body)
+        .await
+        .map_err(|error| HttpError::Transport(format!("{error:?}")))?;
+    if !(200..300).contains(&answer.status) {
+        return Err(HttpError::Upstream(failure(answer.status, &answer.body)));
+    }
+    Ok(HttpResponse {
+        status: answer.status,
+        body: answer.body,
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 async fn request_with_timeout(
     method: &str,
     endpoint: &Url,

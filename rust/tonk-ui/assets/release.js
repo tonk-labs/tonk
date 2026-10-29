@@ -600,6 +600,25 @@ const spaceKey = repo => repo.replace(/^did:key:/, "");
 // (the seed of a space made for it to fill, or a copy of one this worker
 // held before). Every request is acknowledged before it is answered, so the
 // space's worker can tell a restarted (silent) worker from a slow one.
+// Where this origin keeps the host's files it has fetched: the kernels it
+// hands its spaces.
+const HOST_CACHE = "tonk-host";
+
+// The bytes of the kernel `id` this deployment ships, from this origin's
+// copy, or else fetched and kept.
+async function hostKernel(id) {
+    if (!/^b[a-z2-7]+$/.test(id)) throw new Error(`${id} names no kernel`);
+    const address = `/_host/kernel/${id}.wasm`;
+    const cache = await caches.open(HOST_CACHE);
+    let response = await cache.match(address);
+    if (!response) {
+        response = await fetch(address);
+        if (!response.ok) throw new Error(`the deployment ships no kernel ${id}: ${response.status}`);
+        await cache.put(address, response.clone());
+    }
+    return response.arrayBuffer();
+}
+
 function bindSpacePort(port, { repo, branch }) {
     if (!port || typeof repo !== "string" || typeof branch !== "string") return;
     const space = holdSpacePort(repo, port);
@@ -630,6 +649,14 @@ function bindSpacePort(port, { repo, branch }) {
                 // Where the space syncs and which account it is for are
                 // signed into the chain, and read from nowhere else.
                 port.postMessage({ id, space: repo, chain, expires: grant.expires }, [chain]);
+                return;
+            }
+            // A space that runs a kernel installs the one it was made for
+            // from this profile, which holds the deployment's copy: a space
+            // made on this device takes nothing from anywhere else.
+            if (typeof data.kernel === "string") {
+                const bytes = await hostKernel(data.kernel);
+                port.postMessage({ id, bytes }, [bytes]);
                 return;
             }
             // The space's worker was asked for an invite, which is this

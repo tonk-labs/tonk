@@ -12,6 +12,13 @@ stage = "post_build"
 command = "sh"
 command_arguments = ["scripts/hash-guest.sh"]
 
+# Spaces that run a kernel load the embedder and their first kernel from
+# `/_host/`, which this hook builds.
+[[hooks]]
+stage = "post_build"
+command = "sh"
+command_arguments = ["scripts/build-kernel-host.sh"]
+
 [serve]
 port = 8080
 # Disable trunk's built-in reload-everything client. A change to a
@@ -73,6 +80,12 @@ watch = [
     "../tonk-prose/assets",
     "../tonk-table/assets",
     "../tonk-tree/src",
+    # The kernel a space runs, and the embedder that runs it: built by the
+    # post-build hook into `_host/`.
+    "../tonk-kernel",
+    "../tonk-kernel-world",
+    "../tonk-kernel-host",
+    "../tonk-components",
 ]
 
 # Proxies for /ucan/ and /@ are appended by the dev:web command, which

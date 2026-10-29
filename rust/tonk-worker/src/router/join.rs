@@ -55,7 +55,6 @@
 //! from a closed set rather than anything an upstream response said.
 
 use ::axum::{Json, extract::State, http::StatusCode};
-use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::{ArtifactSelector, Changes, Entity, Relation, Statement as _, Value};
 use dialog_capability::access::{AuthorizeError, Prove, Retain};
 use dialog_capability::{Fork, Provider};
@@ -71,11 +70,10 @@ use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 use tonk_invite::{Invite, InviteAudience, Ticket};
+use tonk_macros::handler;
 use tonk_schema::{
     Invitation, InvitationExecution, InvitedVia, MemberName, MemberRole, Membership, Replica,
     RepositoryName, SeedKind, prelude::DidExt as _,
@@ -479,7 +477,7 @@ impl PreparedJoin {
 }
 
 /// Redeem an invite URL to this device's account.
-#[wasm_compat]
+#[handler]
 pub async fn join(
     State(state): State<AppState>,
     Json(body): Json<JoinRequest>,
@@ -2114,7 +2112,17 @@ async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
 
 /// Native resolution: fetch without following, read `Location`, resolve
 /// against the short link. Mirrors the CLI's `resolve_shortcut`.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+/// A kernel on WASI has no HTTP client: the capability that would carry
+/// this through the host is not designed yet (`plan/kernel-capabilities.md`,
+/// `services`).
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
+    Err(format!(
+        "this host gives the kernel no way to resolve {short_url}"
+    ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())

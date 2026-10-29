@@ -92,6 +92,9 @@ pub use repository::*;
 pub mod membership;
 pub use membership::*;
 
+pub mod space_kernel;
+pub use space_kernel::SpaceKernel;
+
 pub mod agent_connection;
 pub use agent_connection::{AgentGrantGroup, AgentGrantRevocation};
 

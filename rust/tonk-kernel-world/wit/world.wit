@@ -1,0 +1,80 @@
+package sapling:kernel@0.1.0;
+
+/// What each guest kernel needs to read and write its stack, to sign, and
+/// to serve its routes. See PDD008, "The World" and "What the World Leaves
+/// Out".
+///
+/// It imports no file system, no sockets, and no `wasi:http/client`. A guest
+/// kernel reaches data only through handles.
+///
+/// The WASI versions are those of the final release of WASI 0.3, `0.3.0`, as
+/// PDD008 names them. The final release renamed `wasi:clocks/wall-clock` to
+/// `wasi:clocks/system-clock`.
+world core {
+  import types;
+  import storage;
+  import credential;
+  import session;
+
+  import wasi:clocks/monotonic-clock@0.3.0;
+  import wasi:clocks/system-clock@0.3.0;
+  import wasi:random/random@0.3.0;
+  import wasi:cli/stderr@0.3.0;
+
+  /// The standard library of `wasm32-wasip3` imports these in each guest
+  /// kernel that it builds, from its panics, its exit, and its standard
+  /// streams, and seeds each `HashMap` from `insecure-seed`. None of them
+  /// gives authority: the environment is empty, `exit` ends only this worker,
+  /// standard input is empty, standard output goes to the log as standard
+  /// error does, and no stream is a terminal. PDD008, "The World", lists them
+  /// for the same reason: so that a guest kernel can use the standard
+  /// library.
+  import wasi:cli/environment@0.3.0;
+  import wasi:cli/exit@0.3.0;
+  import wasi:cli/stdin@0.3.0;
+  import wasi:cli/stdout@0.3.0;
+  import wasi:cli/terminal-stdin@0.3.0;
+  import wasi:cli/terminal-stdout@0.3.0;
+  import wasi:cli/terminal-stderr@0.3.0;
+  import wasi:random/insecure-seed@0.3.0;
+
+  export lifecycle;
+  export wasi:http/handler@0.3.0;
+}
+
+/// `core`, with the channel between a worker and its embedder. See PDD009,
+/// "The Application Interface".
+world commands {
+  include core;
+  import application;
+  export channel;
+}
+
+/// The world that the embedder serves, and that a guest kernel targets:
+/// `commands`, with the peers a guest kernel connects to through its
+/// embedder. See PDD010, "The Network Interface".
+world kernel {
+  include commands;
+  import network;
+}
+
+/// `kernel`, for the persona of a person: it delegates to the person's
+/// other workers what their embedders ask for.
+world persona {
+  include kernel;
+  export guest;
+}
+
+/// What the adapters of `tonk-kernel-world` reach: the storage of a layer,
+/// the replicas of the peers the embedder reaches, the keys the embedder
+/// holds, the session, and the channel to the embedder.
+/// A guest kernel that uses them imports the same interfaces through its own
+/// world.
+world imports {
+  import types;
+  import storage;
+  import network;
+  import credential;
+  import session;
+  import application;
+}

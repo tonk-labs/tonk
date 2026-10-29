@@ -15,13 +15,11 @@ use ::axum::{
     extract::{Path, State},
     http::HeaderMap,
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_repository::Revision;
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_evaluator::evaluate::CommitSummary;
+use tonk_macros::handler;
 use tonk_schema::claim::{Claim, TransactRequest};
 
 use super::AppState;
@@ -63,7 +61,7 @@ pub struct TransactResponse {
 }
 
 /// `POST /api/repository/{repo}/branch/{branch}/transact`
-#[wasm_compat]
+#[handler]
 pub async fn transact(
     State(state): State<AppState>,
     Path(path): Path<TransactPath>,
@@ -158,7 +156,7 @@ pub async fn transact(
 /// [`transact`] for the profile's own repository, which [`transact`]
 /// hands a request naming it. A sealed guest is refused, and the commit's
 /// origin names no space.
-#[wasm_compat]
+#[handler]
 async fn transact_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileTransactPath>,

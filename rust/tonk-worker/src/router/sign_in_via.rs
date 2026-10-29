@@ -229,7 +229,10 @@ async fn forget_pending(state: &TonkState) {
 /// page to.
 async fn start(state: &TonkState, via: &str) -> Result<String, String> {
     let here = super::customer::service_origin().map_err(|error| error.to_string())?;
-    let request = hex::encode(rand::random::<[u8; 16]>());
+    let mut request = [0u8; 16];
+    getrandom::fill(&mut request)
+        .map_err(|error| format!("no entropy for the request: {error}"))?;
+    let request = hex::encode(request);
     let approval = approval_url(via, &here, state.profile.did().as_ref(), &request)?;
     let origin = Url::parse(&approval)
         .map(|approval| approval.origin().ascii_serialization())
@@ -347,10 +350,15 @@ async fn finish(
     };
     let tonk = adopt(state, source, delivered).await?;
     let state = &*tonk;
+    // On a kernel, the embedder holds whom the profile acts for, and the
+    // spaces the provisional persona holds go to the account.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    carried(state, tonk.signed_out()).await;
     super::account::finish_link(state)
         .await
         .map_err(|error| format!("the account did not finish linking: {error}"))?;
     // What was made while signed out joins the account signed back in to.
+    #[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
     if let Some(signed_out) = tonk.signed_out() {
         super::rotation::carry_from(state, signed_out).await;
     }
@@ -358,6 +366,41 @@ async fn finish(
         log!("sign-in-via: the push behind the link did not land: {error}");
     }
     Ok(())
+}
+
+/// Tell the embedder the profile acts for the account it was linked to, and
+/// bring the spaces the provisional persona holds under it, here and in the
+/// workspace `signed_out` it was on while signed out: backed up to the
+/// account by its DID, as no key of the account is here.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+async fn carried(tonk: &TonkState, signed_out: Option<&str>) {
+    use tonk_kernel_world::world::sapling::kernel::credential::{Custodian, Persona};
+
+    super::merge::stand(tonk).await;
+    let Ok(root) = super::identity::local_root(tonk).await else {
+        return;
+    };
+    let Some(Persona::Permanent(persona)) = tonk_kernel_world::session::persona() else {
+        log!("sign-in-via: the embedder does not act for the account");
+        return;
+    };
+    let provisional = tonk.profile.did().to_string();
+    super::merge::carry_spaces(
+        tonk,
+        &provisional,
+        Custodian::Permanent(&persona),
+        &root.root_did,
+    )
+    .await;
+    if let Some(signed_out) = signed_out {
+        super::merge::carry_workspace(
+            tonk,
+            signed_out,
+            Custodian::Permanent(&persona),
+            &root.root_did,
+        )
+        .await;
+    }
 }
 
 /// Run `tonk:sign-in-via`: record the request and send the page to the

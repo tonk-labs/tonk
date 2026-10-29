@@ -102,10 +102,15 @@ let
     }
   );
 
+  # The Tonk kernel's components build in a nested cargo build for
+  # `wasm32-wasip3` (rust/tonk-components/build.rs), and the host's tests boot
+  # them. Neither runs in the sandbox yet; a check of their own is to come.
+  kernelExcludeArgs = "--exclude tonk-components --exclude tonk-kernel-host";
+
   # Build WASM dependencies separately (different target)
   # Exclude native-only crates that can't compile for wasm32-unknown-unknown.
   # If you add a new native-only crate, add it to the --exclude list here.
-  wasmCargoExcludeArgs = "--workspace --exclude tonk-cli --exclude tonk-perf";
+  wasmCargoExcludeArgs = "--workspace --exclude tonk-cli --exclude tonk-perf ${kernelExcludeArgs}";
 
   wasmAttributes = commonAttributes // {
     CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
@@ -272,6 +277,7 @@ let
       // {
         pname = "tonk-clippy-lint";
         cargoArtifacts = nativeArtifacts;
+        cargoExtraArgs = "--workspace ${kernelExcludeArgs}";
         cargoClippyExtraArgs = "--all-targets --all-features -- -D warnings";
       }
     );

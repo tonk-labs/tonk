@@ -9,6 +9,7 @@ members = [
   "rust/tonk-cli",
   "rust/tonk-code",
   "rust/tonk-common",
+  "rust/tonk-components",
   "rust/tonk-core",
   "rust/tonk-display",
   "rust/tonk-email",
@@ -21,6 +22,9 @@ members = [
   "rust/tonk-invite",
   "rust/tonk-language-server",
   "rust/tonk-library",
+  "rust/tonk-kernel",
+  "rust/tonk-kernel-host",
+  "rust/tonk-kernel-world",
   "rust/tonk-macros",
   "rust/tonk-notation",
   "rust/tonk-intent",
@@ -66,6 +70,9 @@ tonk-inspector = { path = "./rust/tonk-inspector" }
 tonk-invite = { path = "./rust/tonk-invite" }
 tonk-language-server = { path = "./rust/tonk-language-server" }
 tonk-library = { path = "./rust/tonk-library" }
+tonk-components = { path = "./rust/tonk-components" }
+tonk-kernel-host = { path = "./rust/tonk-kernel-host" }
+tonk-kernel-world = { path = "./rust/tonk-kernel-world" }
 tonk-macros = { path = "./rust/tonk-macros" }
 tonk-notation = { path = "./rust/tonk-notation" }
 tonk-intent = { path = "./rust/tonk-intent" }
@@ -86,7 +93,6 @@ aes-gcm = "0.10"
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false }
-axum-wasm-macros = "0.1"
 base58 = "0.2"
 base64 = "0.22"
 blake3 = "1.5"
@@ -177,8 +183,14 @@ ulid = "1"
 unicode-width = "0.2"
 url = "2"
 urlencoding = "2"
-wasm-streams = "0.6"
+wasm-streams = "0.5"
 web-time = "1"
+wit-bindgen = { version = "0.61.1", features = ["async-spawn"] }
+# The Wasm Component Model Polyfill, on which a host runs a Tonk kernel in a
+# browser and natively.
+wcmp = "0.1.2"
+wcmp-wasm-core-wasmtime = "0.1.2"
+wcmp-wasm-core-web = "0.1.2"
 webbrowser = "1.0"
 worker = "0.8.5"
 worker-macros = "0.8.5"
@@ -194,24 +206,26 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-identity = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-network = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay" }
 
 [profile.dev]
 opt-level = 1

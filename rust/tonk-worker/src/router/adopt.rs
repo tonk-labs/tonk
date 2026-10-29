@@ -180,7 +180,7 @@ pub(crate) async fn ensure_space_mounted(
     // waiting for an idle beat.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     tonk.sync_queue
-        .mark_dirty(subject.as_str(), js_sys::Date::now());
+        .mark_dirty(subject.as_str(), super::sync::now_millis());
     Ok(true)
 }
 
@@ -367,7 +367,7 @@ pub(super) fn space_subject(key: &str) -> Option<dialog_varsig::Did> {
 
 /// Apply the account directory's latest mount facts to one replica that is
 /// already present locally. Returns whether a mount record existed.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 async fn reconcile_mounted_space_from_directory(
     tonk: &TonkState,
     key: &str,
@@ -599,7 +599,7 @@ where
 /// is the one safe ownership shape we automatically provision and attach.
 /// Every repository is isolated: malformed or temporarily unavailable state
 /// is logged and retried on the next account sweep without blocking siblings.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn reconcile_account_spaces(tonk: &TonkState) {
     use std::collections::HashMap;
 
@@ -701,7 +701,7 @@ pub(crate) async fn reconcile_account_spaces(tonk: &TonkState) {
         match super::repository::attach_account_remote_if_local(tonk, &key, remote).await {
             Ok(true) => {
                 log!("space reconcile: attached account remote to local space '{subject}'");
-                tonk.sync_queue.mark_dirty(&key, js_sys::Date::now());
+                tonk.sync_queue.mark_dirty(&key, super::sync::now_millis());
             }
             Ok(false) => {}
             Err(error) => log!("space reconcile: attach account remote to '{subject}': {error}"),

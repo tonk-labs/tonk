@@ -9,19 +9,22 @@
 //! already tells it of a created or joined space with; the page validates
 //! and captures it. Nothing here names an account, an address or a space.
 
+#[cfg(test)]
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::sync::{Mutex, PoisonError};
 
 use tonk_analytics::account::{
     AccountAction, AccountEvent, AccountOutcome, AccountState, FailureKind, Journey, Stage,
     Surface, Trigger,
 };
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+use tonk_analytics::product::attempt_id;
+#[cfg(any(target_arch = "wasm32", test))]
 use tonk_identity::custody::CustodyDenial;
 use tonk_schema::registration::kind;
 
 use super::ClientId;
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(any(target_arch = "wasm32", test))]
 use super::registration::Stage as Panel;
 
 /// One attempt at an account action, from what began it to the one outcome
@@ -90,10 +93,18 @@ fn classify(action: AccountAction) -> (Journey, Stage, Surface, AccountState) {
     }
 }
 
-thread_local! {
-    /// The failures attempts nobody asked for last ended in, by action. One
-    /// that fails the same way again is not told; a success clears them.
-    static REPEATED: RefCell<HashSet<(AccountAction, FailureKind)>> = RefCell::new(HashSet::new());
+/// The failures attempts nobody asked for last ended in, by action. One
+/// that fails the same way again is not told; a success clears them. A
+/// static, as an attempt's state is (see `registration`).
+static REPEATED: Mutex<Option<HashSet<(AccountAction, FailureKind)>>> = Mutex::new(None);
+
+fn repeated<R>(touch: impl FnOnce(&mut HashSet<(AccountAction, FailureKind)>) -> R) -> R {
+    touch(
+        REPEATED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(HashSet::new),
+    )
 }
 
 impl Attempt {
@@ -103,7 +114,7 @@ impl Attempt {
         action: AccountAction,
         trigger: Trigger,
     ) -> Self {
-        let id = hex::encode(rand::random::<[u8; 16]>());
+        let id = attempt_id();
         let (journey, stage, surface, state) = classify(action);
         let began =
             AccountEvent::started(journey, action, stage, surface, trigger, state, id.clone());
@@ -120,7 +131,7 @@ impl Attempt {
     }
 
     /// The page this attempt is told to.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn client(&self) -> Option<&ClientId> {
         self.client.as_ref()
     }
@@ -152,7 +163,7 @@ impl Attempt {
     pub(crate) fn end(mut self, stage: Stage, outcome: AccountOutcome) {
         if self.trigger == Trigger::Automatic {
             let action = self.action;
-            let repeated = REPEATED.with_borrow_mut(|repeated| match outcome.failure_kind() {
+            let repeated = repeated(|repeated| match outcome.failure_kind() {
                 Some(kind) => !repeated.insert((action, kind)),
                 None => {
                     repeated.retain(|(failed, _)| *failed != action);
@@ -205,7 +216,7 @@ pub(crate) fn passkey_stage(kind: &str) -> Stage {
 /// waiting for the emailed link, or at a failure the service's `code` may
 /// explain. A hand-off that failed is told at the passkey assertion,
 /// whichever ceremony it was.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn handed_off(panel: Option<&Panel>, code: Option<&str>) -> (Stage, AccountOutcome) {
     match panel {
         None => (Stage::Complete, AccountOutcome::success()),
@@ -233,7 +244,7 @@ pub(crate) fn handed_off(panel: Option<&Panel>, code: Option<&str>) -> (Stage, A
 
 /// How a passkey ceremony the page refused ended: `name` is the browser's
 /// name for the refusal.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn refused(name: &str) -> (Stage, AccountOutcome) {
     let outcome = match name {
         "NotAllowedError" => AccountOutcome::cancelled(),
@@ -256,7 +267,7 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn listen() {
     HEARD.set(Some(Vec::new()));
-    REPEATED.with_borrow_mut(HashSet::clear);
+    repeated(HashSet::clear);
 }
 
 /// What was told since [`listen`], as the properties a page would capture.

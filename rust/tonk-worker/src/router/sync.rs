@@ -11,14 +11,12 @@
 use std::collections::HashMap;
 
 use ::axum::{Json, extract::Path, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_capability::access::{AuthorizeError, Recourse};
 use dialog_effects::Rejection;
 use dialog_repository::{PublishError, PullError, Revision};
 use serde::Deserialize;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_macros::handler;
 use tonk_schema::{SyncState, classify};
 use tonk_worker_api::SyncDisposition;
 pub use tonk_worker_api::{SyncResponse, SyncStatusResponse};
@@ -705,7 +703,7 @@ pub struct SyncPath {
 }
 
 /// Pull changes from the upstream remote.
-#[wasm_compat]
+#[handler]
 pub async fn pull(
     State(state): State<AppState>,
     Path(params): Path<SyncPath>,
@@ -865,7 +863,7 @@ async fn migrate_adopted_head(tonk_state: &crate::worker::TonkState, repo: &str,
 }
 
 /// Push local changes to the upstream remote.
-#[wasm_compat]
+#[handler]
 pub async fn push(
     State(state): State<AppState>,
     Path(params): Path<SyncPath>,
@@ -928,7 +926,7 @@ pub async fn push(
 /// no upstream returns [`SyncState::NoUpstream`] rather than an
 /// error, so the indicator has something to render for every
 /// branch.
-#[wasm_compat]
+#[handler]
 pub async fn sync_status(
     State(state): State<AppState>,
     Path(params): Path<SyncPath>,
@@ -1040,7 +1038,7 @@ pub async fn sync_status(
 }
 
 /// Full sync: pull then push.
-#[wasm_compat]
+#[handler]
 pub async fn sync(
     State(state): State<AppState>,
     Path(params): Path<SyncPath>,
@@ -1292,16 +1290,19 @@ pub async fn sync(
     }
 }
 
-/// A millisecond wall-clock stamp for sync-queue activity priority.
-/// `Date.now()` in the SW event context; native has no clock dependency
-/// (the stamp only orders sweeps, it never gates correctness), so 0 —
-/// which also keeps native tests deterministic.
+/// A millisecond wall-clock stamp for sync-queue activity priority: the
+/// worker's clock in a browser and on WASI. Native has no clock dependency
+/// (the stamp only orders sweeps, it never gates correctness), so 0, which
+/// also keeps native tests deterministic.
 pub(crate) fn now_millis() -> f64 {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(target_arch = "wasm32")]
     {
-        js_sys::Date::now()
+        web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs_f64() * 1000.0)
+            .unwrap_or_default()
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         0.0
     }
@@ -1606,7 +1607,7 @@ where
 /// land a local commit, which bypasses the quiet interval. Always `200`
 /// either way: the poke is fire-and-forget and the response says nothing
 /// about whether a drain ran.
-#[wasm_compat]
+#[handler]
 pub async fn drain() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true }))
 }

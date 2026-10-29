@@ -1,0 +1,46 @@
+[package]
+name = "tonk-kernel-world"
+description = "Dialog DB over the world sapling:kernel: a layer's stores, the session and credentials as signers, for a Tonk kernel on WASI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# The boot cell's codec, which the host reads too.
+blake3 = { workspace = true }
+# The locations layers are named for, which the host keeps them at.
+dialog-effects = { workspace = true }
+
+# Everything else is for a component on WASI.
+[target.'cfg(all(target_arch = "wasm32", not(target_os = "unknown")))'.dependencies]
+async-trait = { workspace = true }
+base64 = { workspace = true }
+dialog-artifacts = { workspace = true }
+dialog-capability = { workspace = true }
+dialog-common = { workspace = true }
+dialog-credentials = { workspace = true }
+dialog-remote-ucan = { workspace = true }
+dialog-storage = { workspace = true }
+dialog-ucan-core = { workspace = true }
+dialog-varsig = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+serde_json = { workspace = true }
+signature = "2.2"
+wit-bindgen = { workspace = true, features = ["inter-task-wakeup"] }
+
+[dev-dependencies]
+dialog-artifacts = { workspace = true }
+dialog-capability = { workspace = true }
+dialog-common = { workspace = true, features = ["helpers"] }
+dialog-credentials = { workspace = true }
+dialog-varsig = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  "cfg(dialog_test_native_integration)",
+  "cfg(dialog_test_wasm_integration)",
+  'cfg(feature, values("web-integration-tests"))',
+] }

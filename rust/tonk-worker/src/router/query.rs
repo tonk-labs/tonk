@@ -16,13 +16,11 @@ use ::axum::body::{Body, Bytes};
 use ::axum::extract::{Path, Query as UrlQuery, Request, State};
 use ::axum::http::{HeaderMap, StatusCode, header};
 use ::axum::response::{IntoResponse, Response};
-use axum_wasm_macros::wasm_compat;
 use http_body_util::BodyExt as _;
 use serde::Deserialize;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tonk_macros::handler;
 
 use crate::reactor::{Conclusion, Query, ReactorError};
 use crate::router::update_pending;
@@ -57,7 +55,7 @@ pub struct QueryParams {
 
 /// Handler. Reads body, decides one-shot vs subscription based on
 /// `Accept`, dispatches to the reactor.
-#[wasm_compat]
+#[handler]
 pub async fn query(
     State(state): State<AppState>,
     Path(path): Path<QueryPath>,
@@ -96,7 +94,7 @@ pub async fn query(
 /// no space to mount. Lets a `<tonk-display>` read the profile's meta
 /// branch (e.g. the Hub's list of spaces) the same way it reads any
 /// repository branch.
-#[wasm_compat]
+#[handler]
 async fn query_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileQueryPath>,
@@ -208,10 +206,7 @@ fn spawn_detached<F>(future: F)
 where
     F: std::future::Future<Output = ()> + dialog_common::ConditionalSend + 'static,
 {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    wasm_bindgen_futures::spawn_local(future);
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    drop(tokio::spawn(future));
+    crate::r#async::detach(future);
 }
 
 /// The stream a page gets when the branch it subscribes to is about to be

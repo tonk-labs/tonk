@@ -298,6 +298,12 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // after minting an invite to the space. It records for the origin
         // and names no other space.
         .command::<tonk_schema::command::RecordInvite>()
+        // What the person's profile hands a space's own worker to write
+        // after publishing the space.
+        .command::<tonk_schema::command::RecordPublication>()
+        // What the person's profile hands a space's own worker to make the
+        // space private again: the records and revocations are the space's.
+        .command::<tonk_schema::command::UnpublishSpace>()
         // What the person's profile hands a space's own worker when a
         // signed-in account takes over the one its roster entry is under.
         .command::<tonk_schema::command::MoveMembership>()

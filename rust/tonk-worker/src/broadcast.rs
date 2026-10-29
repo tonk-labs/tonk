@@ -49,16 +49,19 @@ pub struct Notification {
 /// propagated — a failed notification can only cause a missed UI
 /// refresh, never a data integrity problem, and the caller has
 /// already committed its work.
+///
+/// Only a browser has broadcast channels. Elsewhere, and in a kernel on
+/// WASI, a page hears of a commit through its subscriptions alone.
 pub fn broadcast(channel: &str, message: &Notification) {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm::broadcast(channel, message);
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
         let _ = (channel, message);
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod wasm {
     use super::Notification;
     use tonk_common::log;

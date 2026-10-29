@@ -283,8 +283,22 @@ async fn fetch(url: &Url) -> Result<Vec<u8>, String> {
 }
 
 /// Fetch `url` the way a seed is fetched: no credentials, no redirects, at
-/// most [`MAX_BYTES`].
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+/// most [`MAX_BYTES`]. A kernel has no HTTP client: its embedder reads it.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+async fn fetch(url: &Url) -> Result<Vec<u8>, String> {
+    let answer = tonk_kernel_world::application::read(url.as_str())
+        .await
+        .map_err(|error| format!("could not read {url}: {error:?}"))?;
+    if !(200..300).contains(&answer.status) {
+        return Err(format!("{url} returned HTTP {}", answer.status));
+    }
+    if answer.body.len() > MAX_BYTES {
+        return Err(format!("{url} is larger than a seed may be"));
+    }
+    Ok(answer.body.into_bytes())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 async fn fetch(url: &Url) -> Result<Vec<u8>, String> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())

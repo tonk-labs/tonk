@@ -2,14 +2,12 @@
 //! it owns.
 
 use ::axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::Entity;
 use dialog_query::{Output as _, Query, Term};
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_macros::handler;
 use tonk_schema::{Replica, domain::replica::Profile as ProfileEntity, prelude::DidExt as _};
 
 use super::{AppState, RepositoryInfo, repository::build_repository_info};
@@ -575,7 +573,7 @@ pub struct ProfileInfo {
 /// it uses for a space. `space` is populated by a separate
 /// `Query<Replica>` on the profile's meta branch, filtered to
 /// exclude the self replica.
-#[wasm_compat]
+#[handler]
 pub async fn get_profile(
     State(state): State<AppState>,
 ) -> Result<Json<ProfileInfo>, TonkWorkerError> {

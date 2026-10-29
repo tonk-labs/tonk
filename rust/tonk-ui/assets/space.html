@@ -108,7 +108,6 @@
                 // worker must answer with the same number; bump both together
                 // when the contract changes.
                 var PROTOCOL = 2;
-                var RECOVERY_KEY = "tonk-space-worker-recovery";
 
                 // Whether `worker` answers the protocol check in time. A worker
                 // from an older build does not answer at all.
@@ -126,25 +125,44 @@
                     });
                 }
 
+                // Have `script` answer this origin, this document included,
+                // and wait until it does. A worker that takes over takes this
+                // document as it is: nothing here loads again.
+                async function install(script) {
+                    var container = navigator.serviceWorker;
+                    var wanted = new URL(script, location.href).href;
+                    var answers = function () {
+                        return !!container.controller && container.controller.scriptURL === wanted;
+                    };
+                    if (answers()) return;
+                    var taken = new Promise(function (resolve) {
+                        container.addEventListener("controllerchange", function check() {
+                            if (!answers()) return;
+                            container.removeEventListener("controllerchange", check);
+                            resolve();
+                        });
+                    });
+                    await container.register(script, { scope: "/", updateViaCache: "none" });
+                    if (answers()) return;
+                    // A worker takes the documents open when it starts. One
+                    // that loads just after is left with a worker that is
+                    // running and does not answer it: ask that worker to
+                    // take this document too.
+                    container.ready.then(function (registration) {
+                        if (!answers() && registration.active) registration.active.postMessage({ type: "claim" });
+                    });
+                    await taken;
+                }
+
                 // A worker the browser cannot update keeps control of this
                 // origin for good. That happens when its registration can no
                 // longer load the current script: one registered as a classic
-                // script cannot become a module. Unregister it and load again,
-                // so the next load registers a worker that works. At most once
-                // a minute, so a worker that still fails cannot loop the frame.
-                async function recover() {
-                    try {
-                        var last = Number(sessionStorage.getItem(RECOVERY_KEY) || 0);
-                        if (Date.now() - last < 60000) return false;
-                        sessionStorage.setItem(RECOVERY_KEY, String(Date.now()));
-                    } catch (error) {
-                        return false;
-                    }
+                // script cannot become a module. Withdraw it, and have the
+                // current script take its place.
+                async function recover(script) {
                     var registration = await navigator.serviceWorker.getRegistration();
-                    if (!registration) return false;
-                    await registration.unregister();
-                    location.reload();
-                    return true;
+                    if (registration) await registration.unregister();
+                    await install(script);
                 }
 
                 // The release this space pins: what its worker last read in the
@@ -153,96 +171,70 @@
                 // release its deployment was built with.
                 var BOOT_CACHE = "tonk-boot";
                 var BOOT_KEY = "/__boot";
-                async function pinned() {
+                async function bootRecord() {
                     try {
                         var held = await (await caches.open(BOOT_CACHE)).match(BOOT_KEY);
-                        var record = held ? await held.json() : null;
-                        return record && typeof record.pin === "string" ? record.pin : null;
+                        return held ? await held.json() : null;
                     } catch (error) {
                         return null;
                     }
                 }
-
-                // The release a worker was registered for: its own address says.
-                function runs(worker) {
-                    return new URL(worker.scriptURL).searchParams.get("pin");
+                async function pinned() {
+                    var record = await bootRecord();
+                    return record && typeof record.pin === "string" ? record.pin : null;
                 }
 
-                // The worker in control runs another release than the space
-                // pins. A document it served may not register a worker, so
-                // withdraw its registration and load again: the shell the
-                // server answers with registers the one pinned. Once for each
-                // pin, so a release that cannot start does not loop the frame.
-                var SWITCH_KEY = "tonk-space-pin-switch";
-                async function switchTo(pin) {
-                    var tried = String(pin);
+                // The kernel this space runs, on host version 2 (see
+                // `plan/space-kernel.md`): the one its boot record pins, or,
+                // for a space with no record yet, the one this deployment
+                // installs into a space it creates. A deployment that ships
+                // none leaves a new space on a release.
+                async function kernel() {
+                    var record = await bootRecord();
+                    if (record) return record.v === 2 && typeof record.kernel === "string" ? record.kernel : null;
                     try {
-                        if (sessionStorage.getItem(SWITCH_KEY) === tried) return false;
-                        sessionStorage.setItem(SWITCH_KEY, tried);
+                        var shipped = await fetch("/_host/kernel.json", { cache: "no-cache" });
+                        if (!shipped.ok) return null;
+                        var id = (await shipped.json()).kernel;
+                        if (typeof id !== "string") return null;
+                        await (await caches.open(BOOT_CACHE)).put(BOOT_KEY, Response.json({ v: 2, kernel: id }));
+                        return id;
                     } catch (error) {
-                        return false;
+                        return null;
                     }
-                    var registration = await navigator.serviceWorker.getRegistration();
-                    if (!registration) return false;
-                    await registration.unregister();
-                    location.reload();
-                    return true;
+                }
+                var KERNEL = kernel();
+
+                // What a worker was registered for: its own address says.
+                function runs(worker) {
+                    var params = new URL(worker.scriptURL).searchParams;
+                    return params.get("kernel") || params.get("pin");
                 }
 
-                // Registers only when nothing controls the frame yet: once the
-                // worker serves this shell, its `worker-src` refuses a second
-                // `register()`, and the browser checks for updates on its own.
+                // Have the worker this space pins answer it. One that runs
+                // another release or kernel is replaced in place, as is one
+                // too old to speak this shell's protocol. A worker that takes
+                // over later, a new build of the same one, takes this document
+                // as it is: it asks for a port of its own (`need-port`), and
+                // nothing here loads again.
                 async function control() {
                     var container = navigator.serviceWorker;
-                    var pin = await pinned();
-                    if (container.controller) {
-                        if (runs(container.controller) !== pin) {
-                            if (await switchTo(pin)) return new Promise(function () {});
-                            throw new Error("the release this space pins could not be started: " + pin);
-                        }
-                        try {
-                            sessionStorage.removeItem(SWITCH_KEY);
-                        } catch (error) {}
-                        if (await speaks(container.controller)) return;
-                        if (await recover()) return new Promise(function () {});
-                        throw new Error("the site's worker is out of date and could not be replaced");
+                    var kernelId = await KERNEL;
+                    var pin = kernelId || (await pinned());
+                    var script = kernelId
+                        ? "/kernel_boot.js?kernel=" + encodeURIComponent(kernelId)
+                        : "/boot.js" + (pin ? "?pin=" + encodeURIComponent(pin) : "");
+                    if (!container.controller) {
+                        say("installing its worker");
+                        return install(script);
                     }
-                    say("installing its worker");
-                    await container.register("/boot.js" + (pin ? "?pin=" + encodeURIComponent(pin) : ""), {
-                        scope: "/",
-                        updateViaCache: "none",
-                    });
-                    if (container.controller) return;
-                    say("waiting for its worker");
-                    var claimed = new Promise(function (resolve) {
-                        container.addEventListener("controllerchange", resolve, { once: true });
-                    });
-                    // A worker takes the documents open when it starts. One
-                    // that loads just after is left with a worker that is
-                    // running and does not answer it: ask that worker to
-                    // take this document too.
-                    container.ready.then(function (registration) {
-                        if (!container.controller && registration.active) {
-                            registration.active.postMessage({ type: "claim" });
-                        }
-                    });
-                    await claimed;
-                }
-
-                // What this document runs was served by the worker it loaded
-                // under, and is built to speak to that one. A worker that
-                // takes over is another build's: load again, so the site is
-                // brought up by the worker that now answers it. Each
-                // replacement replaces the document once.
-                function follow() {
-                    var container = navigator.serviceWorker;
-                    var served = container.controller;
-                    container.addEventListener("controllerchange", function () {
-                        if (!container.controller || container.controller === served) return;
-                        served = container.controller;
-                        say("taking up a new version");
-                        location.reload();
-                    });
+                    if (runs(container.controller) !== pin) {
+                        say("switching its worker");
+                        return install(script);
+                    }
+                    if (await speaks(container.controller)) return;
+                    say("replacing its worker");
+                    return recover(script);
                 }
 
                 // Whether the site's worker served this document. Only then
@@ -444,11 +436,34 @@
                 control().then(async function () {
                     // The server answered an address of this site with the
                     // app's page, there being no worker yet, and that page
-                    // sent the frame here to start one. Go back to the
-                    // address: the worker answers it now, with this shell or
-                    // with whatever content the site keeps there.
-                    if (location.hash.indexOf("#boot=") === 0) {
-                        location.replace(decodeURIComponent(location.hash.slice(6)) || "/");
+                    // sent the frame here to start one. The address is what
+                    // this frame shows.
+                    var booting = location.hash.indexOf("#boot=") === 0
+                        ? decodeURIComponent(location.hash.slice(6)) || "/"
+                        : null;
+                    // A space that runs a kernel starts its worker from here
+                    // the first time, with the server's copy of this shell:
+                    // its first start asks the person's profile which space
+                    // it is. Its worker now in control, this frame goes to the
+                    // address it was asked for, which the kernel answers.
+                    if ((await KERNEL) && !servedByWorker()) {
+                        // Its first start asks the person's profile which
+                        // space it is, over the port this shell hands it.
+                        broker();
+                        say("starting the space");
+                        await new Promise(function (resolve, reject) {
+                            var channel = new MessageChannel();
+                            channel.port1.onmessage = function (event) {
+                                if (event.data && event.data.booted) resolve();
+                                else reject(new Error((event.data && event.data.error) || "the space did not start"));
+                            };
+                            navigator.serviceWorker.controller.postMessage({ type: "booted" }, [channel.port2]);
+                        });
+                        location.replace(booting !== null ? booting : "/");
+                        return;
+                    }
+                    if (booting !== null) {
+                        location.replace(booting);
                         return;
                     }
                     if (!servedByWorker()) {
@@ -459,7 +474,6 @@
                         sessionStorage.removeItem("tonk-space-shell-reload");
                     } catch (error) {}
                     if (location.pathname === SHELL) history.replaceState(null, "", "/");
-                    follow();
                     broker();
                     say("loading");
                     var base = document.createElement("base");

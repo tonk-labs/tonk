@@ -22,14 +22,12 @@ use ::axum::{
     extract::{Path, State},
     http::HeaderMap,
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::Changes;
 use dialog_repository::{RepositoryExt as _, Revision};
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_evaluator::evaluate::{EvaluateError, SyntaxEvaluateExt};
+use tonk_macros::handler;
 use tonk_notation::{Parsed, Syntax, parse};
 
 use super::AppState;
@@ -136,7 +134,7 @@ fn deserialize_bool<'de, D: serde::Deserializer<'de>>(de: D) -> Result<bool, D::
 /// Body: an asserted-notation document — any mix of queries and
 /// mutations. Returns query matches and a commit summary in one
 /// response.
-#[wasm_compat]
+#[handler]
 pub async fn evaluate(
     State(state): State<AppState>,
     Path(path): Path<EvaluatePath>,
@@ -252,7 +250,7 @@ pub struct ConditionalEvaluateRequest {
     pub expected_revision: Option<Revision>,
 }
 
-#[wasm_compat]
+#[handler]
 pub async fn evaluate_conditional(
     state: State<AppState>,
     path: Path<EvaluatePath>,
@@ -289,7 +287,7 @@ fn revision_conflict() -> TonkWorkerError {
 /// the route surface is parallel to the repository routes rather
 /// than nested under one. Same body / query-string / response
 /// contract.
-#[wasm_compat]
+#[handler]
 pub async fn evaluate_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileEvaluatePath>,
@@ -474,13 +472,13 @@ enum EvaluationMode {
     LibrarySeedWithRace,
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(super) type RetractionPlanner<'a> = &'a dyn Fn() -> futures_util::future::LocalBoxFuture<
     'a,
     Result<Vec<crate::router::claim::RawClaim>, TonkWorkerError>,
 >;
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) type RetractionPlanner<'a> = &'a (
         dyn Fn() -> futures_util::future::BoxFuture<
     'a,

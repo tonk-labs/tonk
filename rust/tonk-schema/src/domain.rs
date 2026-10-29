@@ -202,6 +202,14 @@ pub mod space {
     #[domain("xyz.tonk.space")]
     pub struct Subject(pub Entity);
 
+    /// The kernel the space runs: the asset of its wasm, `asset:<hash>`, on
+    /// the space's own `main`. A new kernel moves it, in the same commit
+    /// that records the new asset.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[pick(last)]
+    pub struct Kernel(pub Entity);
+
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.space")]
     pub struct Status(pub Entity);
@@ -1476,6 +1484,18 @@ pub mod command {
             #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
             #[domain("xyz.tonk.command.record-invite")]
             pub struct Seed(pub String);
+        }
+
+        /// `tonk/record-publication` — a space's own worker records a
+        /// publication of it the person's profile minted.
+        pub mod record_publication {
+            use dialog_query::Attribute;
+
+            /// The base58 delegation chain the publication grants the
+            /// public principal.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.record-publication")]
+            pub struct Proof(pub String);
         }
 
         /// `tonk/retain-invite` — a space's own worker keeps the record of

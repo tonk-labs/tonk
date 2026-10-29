@@ -12,16 +12,14 @@ use axum::{
     Json,
     extract::{Extension, State},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_ucan_core::time::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_account::customer::{CustomerStatus, Receipt};
 use tonk_account::pending::{PendingQueue, PendingWork};
 use tonk_account::{CUSTOMER_CREDENTIAL_SITE, PENDING_WORK_CREDENTIAL_SITE};
 use tonk_common::log;
 use tonk_identity::request::build_enroll_invocation;
+use tonk_macros::handler;
 use url::Url;
 
 use super::AppState;
@@ -128,7 +126,18 @@ pub(crate) async fn enroll_customer(
         }
         Err(error) => return Err(error.into()),
     };
+    enrolled(state, &receipt, email).await?;
+    Ok(receipt)
+}
 
+/// Record what the service answered enrolling this profile's account with
+/// `email`: the customer record, the ledger grant, and the account's
+/// status as a fact.
+pub(crate) async fn enrolled(
+    state: &crate::worker::TonkState,
+    receipt: &Receipt,
+    email: String,
+) -> Result<(), TonkWorkerError> {
     save_customer(
         state,
         &CustomerRecord {
@@ -139,7 +148,7 @@ pub(crate) async fn enroll_customer(
         },
     )
     .await?;
-    retain_ledger(state, &receipt).await;
+    retain_ledger(state, receipt).await;
     // The same answer as a fact on profile main, so every device on this
     // account reads the registration state by query rather than by
     // probing the service itself.
@@ -154,7 +163,7 @@ pub(crate) async fn enroll_customer(
     {
         log!("account customer status not recorded: {error}");
     }
-    Ok(receipt)
+    Ok(())
 }
 
 /// Run the `tonk:enroll` command.
@@ -302,7 +311,7 @@ pub(crate) async fn probe(
 
 /// GET `/api/customer` → the account's registration state: the service's
 /// live answer joined with the locally recorded enrollment.
-#[wasm_compat]
+#[handler]
 pub async fn get_state(
     State(state): State<AppState>,
     Extension(origin): Extension<RequestOrigin>,
@@ -347,7 +356,7 @@ fn decode_custody_consent(
 /// this profile's account. The page runs the enrollment ceremony and
 /// hands the consent here; the call is idempotent, and retryable — the
 /// published cell, not this row, is the account's durability.
-#[wasm_compat]
+#[handler]
 pub async fn provision_custody(
     State(state): State<AppState>,
     Json(request): Json<ProvisionCustodyRequest>,
@@ -405,7 +414,7 @@ fn custody_pending_batch(request: &QueueCustodyRequest) -> Vec<PendingWork> {
 /// this itself — no page, no assertion. The cell is also recorded on
 /// profile main right away: the account's own sync is the durability
 /// channel, and the vault copy only bootstraps a brand-new browser.
-#[wasm_compat]
+#[handler]
 pub async fn queue_custody(
     State(state): State<AppState>,
     Json(request): Json<QueueCustodyRequest>,
@@ -783,11 +792,12 @@ pub(crate) async fn deprovision_consumer(
 }
 
 /// The app's origin, which the access service serves: the worker's own,
-/// or the app's where sites have origins of their own. Known only inside a
-/// service-worker scope; callers outside one (native tests) carry an origin
-/// of their own through `RequestOrigin` instead.
+/// or the app's where sites have origins of their own, or, on a kernel, the
+/// app its host says it is the deployment of. Unknown natively; callers
+/// there (native tests) carry an origin of their own through
+/// `RequestOrigin` instead.
 pub(crate) fn service_origin() -> Result<Url, TonkWorkerError> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(target_arch = "wasm32")]
     {
         let origin = super::repository::app_origin().ok_or_else(|| {
             TonkWorkerError::Internal("the worker origin is unavailable".to_string())
@@ -796,9 +806,9 @@ pub(crate) fn service_origin() -> Result<Url, TonkWorkerError> {
             TonkWorkerError::Internal(format!("worker origin is not a URL: {error}"))
         })
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(not(target_arch = "wasm32"))]
     Err(TonkWorkerError::Internal(
-        "the worker origin is only known in a service-worker scope".to_string(),
+        "the worker origin is unknown on a native host".to_string(),
     ))
 }
 
@@ -1463,7 +1473,7 @@ async fn run_pending(
 /// `GET /api/customer/pending` → the queued work still waiting: the
 /// account panel reads this to say a backup is on its way; the worker
 /// itself drains it.
-#[wasm_compat]
+#[handler]
 pub async fn get_pending(
     State(state): State<AppState>,
 ) -> Result<Json<PendingQueue>, TonkWorkerError> {
@@ -1505,7 +1515,7 @@ pub(crate) async fn record_test_customer(
     record_customer_status(state, status, EMAIL, provider).await
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn clear_customer(
     state: &crate::worker::TonkState,
 ) -> Result<(), TonkWorkerError> {
