@@ -1,7 +1,7 @@
 //! Inline views of a space in MCP Apps hosts (plan #1200, stage 7), served
 //! by the space writer.
 //!
-//! `tonk_show` names a `ui://` relay page and returns, in `_meta` (which a
+//! `tonk_open_space` names a `ui://` relay page and returns, in `_meta` (which a
 //! host hands the view and not the model), a view ticket: the session's
 //! bearer, its `Mcp-Session-Id` and one space, sealed under a key only the
 //! host holds and good for [`TICKET_LIFETIME`]. The relay presents it at
@@ -52,8 +52,10 @@ const TICKET_AAD: &[u8] = b"tonk view ticket v1";
 /// Bytes of nonce before a ticket's ciphertext.
 const NONCE_BYTES: usize = 12;
 
-/// The model-visible tool that shows a space inline.
-pub const SHOW: &str = "tonk_show";
+/// The model-visible tool that shows a space inline: a route of it, as the
+/// hosted MCP server's `tonk_open_space` does, not the local peer's
+/// `tonk_show` (a live query result).
+pub const SHOW: &str = "tonk_open_space";
 
 /// The app-only tool the relay renews its ticket with.
 pub const RENEW: &str = "tonk_view_ticket";
