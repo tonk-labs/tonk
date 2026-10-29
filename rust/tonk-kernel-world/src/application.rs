@@ -17,12 +17,23 @@
 //!   is to be created from: `{ "ask": id, "seed": true }`, answered with a
 //!   body of `{ "seed": seed or null, "copy": { "content64", "revision64" }
 //!   or null }`, and that it has been: `{ "ask": id, "seeded": true }`
+//! - asked of the embedder, by a persona merging into the permanent persona
+//!   the person signed in as, inside `lifecycle.merge`: what the passkey
+//!   ceremony made of the account, handing over the permanent persona's
+//!   delegation to the representative, `{ "ask": id, "ceremony": link64 }`;
+//!   and, for an account the ceremony created, to enroll it at the access
+//!   service, `{ "ask": id, "enroll": true }`, answered with the receipt
 //! - answered: `{ "answer": id, "status", "body": text }`, or
 //!   `{ "answer": id, "error": text }` when it could not be answered.
 //!
 //! A worker also tells its embedder what it expects no answer to: that the
 //! page that asked something, by its client id, is to go to an address,
-//! `{ "tell": "navigate", "client", "href", "replace": bool }`.
+//! `{ "tell": "navigate", "client", "href", "replace": bool }`. The embedder
+//! tells a persona that the person refused the passkey ceremony a merge
+//! asked for, by the ceremony's kind and the browser's name for the refusal:
+//! `{ "tell": "refused", "kind", "name" }`; and that the sign-in failed, with
+//! the custody service's code for a refusal it knows: `{ "tell": "failed",
+//! "kind", "code": text or null, "message" }`.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
@@ -143,6 +154,28 @@ pub async fn seed() -> Result<Option<Seed>, Error> {
     Ok(Some(Seed { seed, copy }))
 }
 
+/// Ask the embedder what the passkey ceremony made of the account this
+/// persona merges into, handing it `link`, the permanent persona's
+/// delegation to the representative. Answers JSON.
+pub async fn ceremony(link: &[u8]) -> Result<Answer, Error> {
+    let link64 = BASE64.encode(link);
+    let answer = send(|id| json!({ "ask": id, "ceremony": link64 })).await?;
+    if !(200..300).contains(&answer.status) {
+        return Err(Error::Unavailable(answer.body));
+    }
+    Ok(answer)
+}
+
+/// Ask the embedder to enroll the account the passkey ceremony created at
+/// the access service. Answers the service's receipt, as JSON.
+pub async fn enroll() -> Result<Answer, Error> {
+    let answer = send(|id| json!({ "ask": id, "enroll": true })).await?;
+    if !(200..300).contains(&answer.status) {
+        return Err(Error::Unavailable(answer.body));
+    }
+    Ok(answer)
+}
+
 /// Tell the person's persona this worker created its space's content from
 /// the seed.
 pub async fn seeded() -> Result<(), Error> {
@@ -180,16 +213,54 @@ async fn send(asked: impl FnOnce(u64) -> Value) -> Result<Answer, Error> {
         .unwrap_or_else(|_| Err(Error::BrokeOff("the embedder dropped the request".into())))
 }
 
+/// What the embedder told this worker, expecting no answer.
+pub enum Told {
+    /// The person refused the passkey ceremony `kind` a merge asked for, as
+    /// the browser names the refusal.
+    Refused { kind: String, name: String },
+    /// The sign-in the passkey ceremony `kind` began failed, saying
+    /// `message`, with the custody service's `code` for a refusal it knows,
+    /// such as that the account awaits activation.
+    Failed {
+        kind: String,
+        code: Option<String>,
+        message: String,
+    },
+}
+
 /// Take up a message the embedder handed over: the answer to a request this
-/// worker asked.
-pub fn received(message: &[u8]) -> Result<(), Error> {
+/// worker asked, or what it tells this worker.
+pub fn received(message: &[u8]) -> Result<Option<Told>, Error> {
     let message: Value = serde_json::from_slice(message)
         .map_err(|error| Error::Invalid(format!("a message is JSON: {error}")))?;
+    let text = |field: &str| {
+        message
+            .get(field)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    match message.get("tell").and_then(Value::as_str) {
+        Some("refused") => {
+            return Ok(Some(Told::Refused {
+                kind: text("kind"),
+                name: text("name"),
+            }));
+        }
+        Some("failed") => {
+            return Ok(Some(Told::Failed {
+                kind: text("kind"),
+                code: Some(text("code")).filter(|code| !code.is_empty()),
+                message: text("message"),
+            }));
+        }
+        _ => {}
+    }
     let Some(id) = message.get("answer").and_then(Value::as_u64) else {
         return Err(Error::Invalid("the message answers nothing asked".into()));
     };
     let Some(answered) = pending(|pending| pending.waiting.remove(&id)) else {
-        return Ok(());
+        return Ok(None);
     };
     let answer = match message.get("error").and_then(Value::as_str) {
         Some(error) => Err(Error::Unavailable(error.to_owned())),
@@ -208,5 +279,5 @@ pub fn received(message: &[u8]) -> Result<(), Error> {
         }),
     };
     let _ = answered.send(answer);
-    Ok(())
+    Ok(None)
 }

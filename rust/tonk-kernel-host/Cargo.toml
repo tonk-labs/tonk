@@ -38,6 +38,12 @@ tokio = { version = "1", features = ["time", "macros", "rt"] }
 getrandom = { version = "0.2", features = ["js"] }
 # The session's key, kept in Dialog DB's credential store.
 dialog-identity.workspace = true
+# Signing a person in: the account a passkey holds, and its enrollment.
+anyhow.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+tonk-identity.workspace = true
+tonk-common.workspace = true
 js-sys = { version = "0.3", default-features = false, features = ["std"] }
 wasm-bindgen = "=0.2.126"
 wasm-bindgen-futures = "0.4"

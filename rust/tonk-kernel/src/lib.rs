@@ -55,6 +55,7 @@ use axum::http::StatusCode;
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 use site::{Routed, Site};
+use tonk_kernel_world::application::Told;
 use tonk_kernel_world::boot;
 use tonk_kernel_world::guest::HandleLayer;
 use tonk_kernel_world::layer::{SharedLayer, share};
@@ -207,13 +208,27 @@ impl lifecycle::Guest for Kernel {
         Ok(())
     }
 
+    /// The person signed in: the permanent persona delegates everything it
+    /// has to the representative, which links this device to it, and the
+    /// worker records the account. What the provisional persona held stays
+    /// where it is for now.
     async fn merge(
         _provisional: &PersonaAuthority,
-        _permanent: &PersonaAuthority,
+        permanent: &PersonaAuthority,
     ) -> Result<(), Error> {
-        Err(Error::Unavailable(
-            "this kernel merges no persona yet".into(),
-        ))
+        let state =
+            state().ok_or_else(|| Error::Unavailable("the persona has not booted".into()))?;
+        let representative = tonk_kernel_world::session::representative().did();
+        let access = Access {
+            subject: None,
+            command: "/".to_owned(),
+            arguments: Vec::new(),
+            reason: "to link this device to your account".to_owned(),
+        };
+        let link = permanent.delegate(representative, access).await?;
+        tonk_worker::merged(&state, link)
+            .await
+            .map_err(|error| Error::Unavailable(error.to_string()))
     }
 
     async fn authorize(_persona: &PersonaAuthority, _context: Vec<u8>) -> Result<(), Error> {
@@ -227,7 +242,19 @@ impl lifecycle::Guest for Kernel {
 
 impl channel::Guest for Kernel {
     async fn receive(message: Vec<u8>) -> Result<(), Error> {
-        tonk_kernel_world::application::received(&message)
+        let told = tonk_kernel_world::application::received(&message)?;
+        let (Some(told), Some(state)) = (told, state()) else {
+            return Ok(());
+        };
+        match told {
+            Told::Refused { kind, name } => tonk_worker::refused(&state, &kind, &name).await,
+            Told::Failed {
+                kind,
+                code,
+                message,
+            } => tonk_worker::failed(&state, &kind, code.as_deref(), &message).await,
+        }
+        Ok(())
     }
 }
 
@@ -349,7 +376,7 @@ async fn renew(state: &AppState, space: &Space) {
 /// answers: none when it refuses, or fails to.
 async fn delegated(space: &Space, reason: &str) -> Vec<Vec<u8>> {
     let access = Access {
-        subject: space.subject.clone(),
+        subject: Some(space.subject.clone()),
         command: "/".to_owned(),
         arguments: Vec::new(),
         reason: reason.to_owned(),
@@ -529,7 +556,9 @@ async fn snapshot(space: &str) -> axum::http::Response<axum::body::Body> {
 #[cfg(feature = "persona")]
 impl world::exports::sapling::kernel::guest::Guest for Kernel {
     async fn delegate(audience: String, access: Access) -> Result<Vec<u8>, Error> {
-        let space = access.subject;
+        let space = access
+            .subject
+            .ok_or_else(|| Error::Denied("a persona delegates a space, not everything".into()))?;
         let state =
             state().ok_or_else(|| Error::Unavailable("the persona has not booted".into()))?;
         let tonk = state.read().await;

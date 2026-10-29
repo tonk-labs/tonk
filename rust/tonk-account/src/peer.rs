@@ -656,7 +656,9 @@ pub fn upstream(branch: &Branch) -> Option<Upstream> {
 /// tonk signed in, not the one made up at onboarding. The custodian is
 /// forgotten after: the account it guarded is gone. A peer already acting
 /// for that account is left alone, and so is one whose custodian is gone,
-/// which was handed over to another account before.
+/// which was handed over to another account before, and one that records
+/// no account of its own, as a kernel's, whose persona is its session's:
+/// the grant is all it keeps.
 pub async fn hand_over<S>(peer: &Peer<S>, grant: &DelegationChain) -> Result<(), CredentialError>
 where
     S: PeerSpace,
@@ -665,7 +667,12 @@ where
         + Provider<credential_fx::Retract<Credential>>,
 {
     let account = grant.issuer().clone();
-    if peer.authority().await? == account {
+    let acting = match peer.authority().await {
+        Ok(acting) => Some(acting),
+        Err(CredentialError::NotFound(_)) => None,
+        Err(error) => return Err(error),
+    };
+    if acting.as_ref() == Some(&account) {
         return Ok(());
     }
     peer.access()
@@ -677,6 +684,9 @@ where
         .refresh(peer)
         .await
         .map_err(|error| CredentialError::Storage(error.to_string()))?;
+    if acting.is_none() {
+        return Ok(());
+    }
     let custodian_name = custodian_name(peer.state().name());
     let Some(custodian) = open_kept_key::<S>(&peer.did(), &custodian_name, false).await? else {
         return Ok(());

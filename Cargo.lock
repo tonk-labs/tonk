@@ -5895,6 +5895,7 @@ dependencies = [
 name = "tonk-kernel-host"
 version = "0.6.16-rc.1"
 dependencies = [
+ "anyhow",
  "blake3",
  "bs58",
  "dialog-capability",
@@ -5908,12 +5909,15 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "futures",
  "getrandom 0.2.17",
+ "hex",
  "ipld-core",
  "js-sys",
  "serde_ipld_dagcbor",
  "serde_json",
  "tokio",
+ "tonk-common",
  "tonk-components",
+ "tonk-identity",
  "tonk-kernel-world",
  "tonk-worker",
  "tracing",

@@ -43,6 +43,13 @@ pub struct KernelHost {
     pub sent: Vec<Vec<u8>>,
     /// What takes the messages the guest kernel sends, as it sends them.
     pub outbox: Option<UnboundedSender<Vec<u8>>>,
+    /// What takes the address a provisional persona asks to merge into, as
+    /// it asks.
+    pub merges: Option<UnboundedSender<String>>,
+    /// The delegation a lent persona made to the representative of a
+    /// persona's session, which links it: the persona's DID, and the
+    /// delegation.
+    pub(crate) linked: Option<(String, Vec<u8>)>,
 }
 
 impl KernelHost {

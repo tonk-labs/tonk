@@ -38,13 +38,25 @@
         if (sw.controller) sw.controller.postMessage({ type: "flush" });
     }
 
+    // The app's page runs the passkey ceremonies, and tells the profile's
+    // worker what came of one by way of this frame: what a custody ceremony
+    // derived, or that it was refused.
+    var profile = location.hostname.split(".")[0].indexOf("profile") === 0;
+    var TO_WORKER = ["custody", "ceremony-refused"];
     window.addEventListener(
         "message",
         function (e) {
-            if (e.source !== parent || !e.data || e.data.__tonkOrigin !== "port") return;
-            e.stopImmediatePropagation();
-            var port = e.ports && e.ports[0];
-            if (port && sw.controller) sw.controller.postMessage({ type: "port" }, [port]);
+            if (e.source !== parent || !e.data) return;
+            if (e.data.__tonkOrigin === "port") {
+                e.stopImmediatePropagation();
+                var port = e.ports && e.ports[0];
+                if (port && sw.controller) sw.controller.postMessage({ type: "port" }, [port]);
+            } else if (profile && e.data.__tonkOrigin === "to-worker") {
+                e.stopImmediatePropagation();
+                var message = e.data.message;
+                if (!message || TO_WORKER.indexOf(message.type) < 0 || !sw.controller) return;
+                sw.controller.postMessage(message, Array.prototype.slice.call(e.ports || []));
+            }
         },
         true,
     );
@@ -55,7 +67,6 @@
     // The worker asks for a port as it starts, and again after every restart;
     // it says what it is busy with while the page waits on it. Only the
     // profile's worker says anything else: a space's page holds author code.
-    var profile = location.hostname.split(".")[0].indexOf("profile") === 0;
     sw.addEventListener("message", function (e) {
         if (e.data && e.data.type === "need-port") ask();
         else if (e.data && e.data.type === "status") {

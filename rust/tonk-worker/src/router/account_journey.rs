@@ -17,12 +17,12 @@ use tonk_analytics::account::{
     Surface, Trigger,
 };
 use tonk_analytics::product::attempt_id;
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(any(target_arch = "wasm32", test))]
 use tonk_identity::custody::CustodyDenial;
 use tonk_schema::registration::kind;
 
 use super::ClientId;
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(any(target_arch = "wasm32", test))]
 use super::registration::Stage as Panel;
 
 /// One attempt at an account action, from what began it to the one outcome
@@ -121,7 +121,7 @@ impl Attempt {
     }
 
     /// The page this attempt is told to.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn client(&self) -> Option<&ClientId> {
         self.client.as_ref()
     }
@@ -206,7 +206,7 @@ pub(crate) fn passkey_stage(kind: &str) -> Stage {
 /// waiting for the emailed link, or at a failure the service's `code` may
 /// explain. A hand-off that failed is told at the passkey assertion,
 /// whichever ceremony it was.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn handed_off(panel: Option<&Panel>, code: Option<&str>) -> (Stage, AccountOutcome) {
     match panel {
         None => (Stage::Complete, AccountOutcome::success()),
@@ -234,7 +234,7 @@ pub(crate) fn handed_off(panel: Option<&Panel>, code: Option<&str>) -> (Stage, A
 
 /// How a passkey ceremony the page refused ended: `name` is the browser's
 /// name for the refusal.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn refused(name: &str) -> (Stage, AccountOutcome) {
     let outcome = match name {
         "NotAllowedError" => AccountOutcome::cancelled(),

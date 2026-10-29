@@ -6,8 +6,11 @@
 //! asks its representative to delegate, the representative's [`Delegates`]
 //! answer.
 //!
-//! Not yet bound: merging a provisional persona and opening a permanent one,
-//! which a browser does with a passkey.
+//! A provisional persona merges into a permanent one once the person signs in
+//! with a passkey: the embedder opens the permanent persona's key and lends
+//! both to the guest kernel for one call of the lifecycle, and the permanent
+//! persona's delegation to the representative links it. Not yet bound:
+//! opening a permanent persona to authorize.
 
 use std::collections::BTreeMap;
 #[cfg(target_arch = "wasm32")]
@@ -158,6 +161,35 @@ impl Representation {
         }
     }
 
+    /// A representative whose key this host holds, linked to the persona
+    /// `persona` by `link`, the persona's delegation to it: it answers a
+    /// delegation to itself of what the persona has with the link, and
+    /// signs each delegation of what it is itself the subject of.
+    pub fn linked(key: Key, persona: String, link: Vec<u8>) -> Self {
+        let signing = key.clone();
+        let did = key.did();
+        let own = did.clone();
+        Self {
+            did,
+            key: Some(key),
+            delegates: delegates(move |audience: String, access: Access| {
+                let key = signing.clone();
+                let link = link.clone();
+                let of_persona = access
+                    .subject
+                    .as_deref()
+                    .is_none_or(|subject| subject == persona);
+                let to_itself = audience == own;
+                Box::pin(async move {
+                    if of_persona && to_itself {
+                        return Ok(link);
+                    }
+                    delegation(&key, &audience, &access).await
+                }) as Answer
+            }),
+        }
+    }
+
     /// A representative this host holds no key of, whose delegations
     /// `delegates` answers, such as by asking the host of the persona.
     pub fn remote(did: String, delegates: Delegates) -> Self {
@@ -175,6 +207,9 @@ pub enum Acting {
     /// The persona itself, for the persona's own worker: provisional, with
     /// its key here.
     Persona(Key),
+    /// The persona itself, for the persona's own worker, once it is
+    /// permanent: its DID, since this host opens its key only to lend it.
+    Permanent(String),
     /// The persona of a space's worker, by its DID.
     Space(String),
 }
@@ -233,6 +268,18 @@ impl Standing {
         }
     }
 
+    /// The standing of a persona's own worker under `credential`, a key held
+    /// as a signer, which represents the permanent persona `persona` through
+    /// `link`, the persona's delegation to it.
+    pub fn permanent(credential: Ed25519Signer, persona: String, link: Vec<u8>) -> Self {
+        let key = Key::Sealed(Box::new(credential));
+        Self {
+            credential: key.clone(),
+            representative: Representation::linked(key, persona.clone(), link),
+            acting: Acting::Permanent(persona),
+        }
+    }
+
     /// The standing of a space's worker under `credential`, a key held as a
     /// signer, acting for the persona `persona` through `representative`.
     pub fn space(
@@ -249,13 +296,14 @@ impl Standing {
 }
 
 /// A delegation from `key` to `audience` of what `access` asks, of a subject
-/// that is `key` itself.
+/// that is `key` itself, or of whatever `key` has authority over.
 async fn delegation(key: &Key, audience: &str, access: &Access) -> Result<Vec<u8>, Error> {
     let issuer = key.did();
-    if access.subject != issuer {
+    if let Some(subject) = &access.subject
+        && *subject != issuer
+    {
         return Err(Error::Denied(format!(
-            "{issuer} delegates only itself, not {}",
-            access.subject
+            "{issuer} delegates only itself, not {subject}"
         )));
     }
     if !access.arguments.is_empty() {
@@ -266,10 +314,14 @@ async fn delegation(key: &Key, audience: &str, access: &Access) -> Result<Vec<u8
     let audience: Did = audience
         .parse()
         .map_err(|_| Error::Invalid(format!("{audience} is not a DID")))?;
-    let subject: Did = access
-        .subject
-        .parse()
-        .map_err(|_| Error::Invalid(format!("{} is not a DID", access.subject)))?;
+    let subject = match &access.subject {
+        Some(subject) => UcanSubject::Specific(
+            subject
+                .parse()
+                .map_err(|_| Error::Invalid(format!("{subject} is not a DID")))?,
+        ),
+        None => UcanSubject::Any,
+    };
     let command = access
         .command
         .split('/')
@@ -285,7 +337,7 @@ async fn delegation(key: &Key, audience: &str, access: &Access) -> Result<Vec<u8
     let delegation = DelegationBuilder::new()
         .issuer(dialog_credentials::Signer::from(signer))
         .audience(&audience)
-        .subject(UcanSubject::Specific(subject))
+        .subject(subject)
         .command(command)
         .try_build()
         .await
@@ -303,6 +355,39 @@ pub(crate) struct Held {
 }
 
 impl KernelHost {
+    /// A persona's key, lent to the guest kernel for one call of the
+    /// lifecycle: what a handle on it represents.
+    pub(crate) fn lend(&mut self, key: Key) -> u32 {
+        self.keep_persona(Held {
+            did: key.did(),
+            key: Some(key),
+        })
+    }
+
+    /// Take back the key lent as `authority`: the call it was lent for
+    /// returned.
+    pub(crate) fn withdraw(&mut self, authority: u32) {
+        self.personas[authority as usize].key = None;
+    }
+
+    /// The persona's own worker merged into the permanent persona that
+    /// linked its representative: from now on it acts for that persona,
+    /// through the link. Answers the persona and the link, if one was made.
+    pub(crate) fn merged(&mut self) -> Option<(String, Vec<u8>)> {
+        let (persona, link) = self.linked.take()?;
+        for standing in &mut self.sessions {
+            if !matches!(standing.acting, Acting::Persona(_) | Acting::Permanent(_)) {
+                continue;
+            }
+            let Some(key) = standing.representative.key.clone() else {
+                continue;
+            };
+            standing.representative = Representation::linked(key, persona.clone(), link.clone());
+            standing.acting = Acting::Permanent(persona.clone());
+        }
+        Some((persona, link))
+    }
+
     fn hold(&mut self, key: Key) -> Resource<Credential> {
         self.keys.push(key);
         Resource::new_own((self.keys.len() - 1) as u32)
@@ -332,7 +417,7 @@ impl KernelHost {
 
     /// A handle on `standing`, for the boot.
     pub fn session(&mut self, standing: Standing) -> Session {
-        let persona = matches!(standing.acting, Acting::Persona(_));
+        let persona = matches!(standing.acting, Acting::Persona(_) | Acting::Permanent(_));
         self.sessions.push(standing);
         let rep = (self.sessions.len() - 1) as u32;
         if persona {
@@ -656,12 +741,14 @@ impl credential::HostProvisionalPersona for KernelHost {
         self.persona_of(persona.rep()).did
     }
 
-    fn merge(&mut self, _persona: Resource<ProvisionalPersona>, _id: String) {
-        crate::platform::log(
-            "kernel",
-            "a merge was asked for: this host signs no one in yet",
-            true,
-        );
+    fn merge(&mut self, _persona: Resource<ProvisionalPersona>, id: String) {
+        let taken = self
+            .merges
+            .as_ref()
+            .is_some_and(|merges| merges.unbounded_send(id).is_ok());
+        if !taken {
+            crate::platform::log("kernel", "a merge was asked for, and no one takes it", true);
+        }
     }
 
     fn drop(&mut self, _persona: Resource<ProvisionalPersona>) -> wcmp::Result<()> {
@@ -722,7 +809,22 @@ impl<T: 'static> credential::HostPersonaAuthorityWithStore<T> for Sapling {
     ) -> Result<Vec<u8>, Error> {
         trace("persona-authority.delegate");
         let key = lent(accessor, &authority)?;
-        delegation(&key, &audience, &access).await
+        let chain = delegation(&key, &audience, &access).await?;
+        // A delegation of everything the persona has, to the representative
+        // of the persona's own worker, links that representative.
+        if access.subject.is_none() {
+            accessor.with(|mut access| {
+                let host = access.get();
+                let represents = host.sessions.iter().any(|standing| {
+                    matches!(standing.acting, Acting::Persona(_) | Acting::Permanent(_))
+                        && standing.representative.did == audience
+                });
+                if represents {
+                    host.linked = Some((key.did(), chain.clone()));
+                }
+            });
+        }
+        Ok(chain)
     }
 
     async fn confide(
@@ -784,15 +886,20 @@ impl session::HostPersonaSession for KernelHost {
     }
 
     fn persona(&mut self, session: Resource<PersonaSession>) -> Persona {
-        let key = match &self.standing(session.rep()).acting {
-            Acting::Persona(key) => key.clone(),
+        match self.standing(session.rep()).acting.clone() {
+            Acting::Persona(key) => {
+                let rep = self.keep_persona(Held {
+                    did: key.did(),
+                    key: Some(key),
+                });
+                Persona::Provisional(Resource::new_own(rep))
+            }
+            Acting::Permanent(did) => {
+                let rep = self.keep_persona(Held { did, key: None });
+                Persona::Permanent(Resource::new_own(rep))
+            }
             Acting::Space(_) => unreachable!("a persona session acts for the persona itself"),
-        };
-        let rep = self.keep_persona(Held {
-            did: key.did(),
-            key: Some(key),
-        });
-        Persona::Provisional(Resource::new_own(rep))
+        }
     }
 
     fn drop(&mut self, _session: Resource<PersonaSession>) -> wcmp::Result<()> {
@@ -813,7 +920,7 @@ impl session::HostSpaceSession for KernelHost {
 
     fn persona(&mut self, session: Resource<SpaceSession>) -> String {
         match &self.standing(session.rep()).acting {
-            Acting::Space(did) => did.clone(),
+            Acting::Space(did) | Acting::Permanent(did) => did.clone(),
             Acting::Persona(key) => key.did(),
         }
     }

@@ -253,6 +253,89 @@ async fn it_answers_page_loads_with_its_page() {
     }
 }
 
+/// A persona's provisional persona merges into the account the person signs
+/// in to: the account delegates to the representative, which links this
+/// device to it, and the persona records the account as its root, from what
+/// its host says the passkey ceremony made of it. The persona acts for the
+/// account from then on.
+#[tokio::test(flavor = "current_thread")]
+async fn it_merges_into_the_account_the_person_signs_in_to() {
+    use futures::StreamExt as _;
+    use serde_json::{Value, json};
+    use tonk_kernel_host::credentials::Key;
+    use zeroize::Zeroizing;
+
+    let engine = engine();
+    let session = did_key(&ed25519_dalek::SigningKey::from_bytes(&[7; 32]));
+    let account = did_key(&ed25519_dalek::SigningKey::from_bytes(&[9; 32]));
+    let mut kernel = Kernel::load(
+        &engine,
+        tonk_components::TONK_PERSONA_BYTES,
+        scratch("merge"),
+    )
+    .await
+    .unwrap();
+    let mut messages = kernel.messages();
+    kernel.init(&session, persona_standing()).await.unwrap();
+    let (served, driver) = kernel.serve();
+
+    // The host answers what the persona asks, as a browser's host would for
+    // a log-in: no service answers it here.
+    let answering = async {
+        while let Some(message) = messages.next().await {
+            let message: Value = serde_json::from_slice(&message).unwrap();
+            let Some(id) = message["ask"].as_u64() else {
+                continue;
+            };
+            let answer = if message.get("ceremony").is_some() {
+                let ceremony = json!({
+                    "kind": "log-in",
+                    "credentialId": "0a0b",
+                    "remote": "https://tonk.test/ucan/",
+                });
+                json!({ "answer": id, "status": 200, "body": ceremony.to_string() })
+            } else if message.get("fetch").is_some() {
+                json!({ "answer": id, "status": 404, "body64": "" })
+            } else {
+                json!({ "answer": id, "status": 404, "body": "" })
+            };
+            let _ = served.receive(answer.to_string().into_bytes()).await;
+        }
+    };
+    let asked = async {
+        let key = |seed: [u8; 32]| Key::Seed {
+            seed: Zeroizing::new(seed),
+            imported: false,
+        };
+        let (persona, link) = served.merge(key([7; 32]), key([9; 32])).await.unwrap();
+        assert_eq!(persona, account, "the persona is the account's");
+        let link = dialog_ucan_core::DelegationChain::try_from(link.as_slice()).unwrap();
+        assert_eq!(link.issuer().to_string(), account);
+        assert_eq!(
+            link.audience().to_string(),
+            session,
+            "the account links the device"
+        );
+
+        let root = served
+            .request("GET", "/api/identity/root", Vec::new(), b"")
+            .await
+            .unwrap();
+        let body: Vec<Vec<u8>> = root.body.collect().await;
+        let root: Value = serde_json::from_slice(&body.concat()).unwrap();
+        assert_eq!(
+            root["rootDid"], account,
+            "the persona records the account: {root}"
+        );
+    };
+    let asked = tokio::time::timeout(std::time::Duration::from_secs(60), asked);
+    tokio::select! {
+        answered = asked => answered.expect("the merge finished within a minute"),
+        () = answering => panic!("the persona stopped sending"),
+        stopped = driver => panic!("the kernel stopped while asked: {stopped:?}"),
+    }
+}
+
 /// A kernel's peer is its session: it acts with the key its host hands it.
 #[tokio::test(flavor = "current_thread")]
 async fn it_acts_as_its_session() {
@@ -295,7 +378,7 @@ async fn it_takes_up_a_space_its_persona_delegates() {
     let (mut persona, space) = persona_with_space(&engine, scratch("granting")).await;
     let worker = did_key(&ed25519_dalek::SigningKey::from_bytes(&[8; 32]));
     let access = Access {
-        subject: space.clone(),
+        subject: Some(space.clone()),
         command: "/".to_owned(),
         arguments: Vec::new(),
         reason: "to serve the space".to_owned(),

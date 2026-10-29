@@ -126,7 +126,18 @@ pub(crate) async fn enroll_customer(
         }
         Err(error) => return Err(error.into()),
     };
+    enrolled(state, &receipt, email).await?;
+    Ok(receipt)
+}
 
+/// Record what the service answered enrolling this profile's account with
+/// `email`: the customer record, the ledger grant, and the account's
+/// status as a fact.
+pub(crate) async fn enrolled(
+    state: &crate::worker::TonkState,
+    receipt: &Receipt,
+    email: String,
+) -> Result<(), TonkWorkerError> {
     save_customer(
         state,
         &CustomerRecord {
@@ -137,7 +148,7 @@ pub(crate) async fn enroll_customer(
         },
     )
     .await?;
-    retain_ledger(state, &receipt).await;
+    retain_ledger(state, receipt).await;
     // The same answer as a fact on profile main, so every device on this
     // account reads the registration state by query rather than by
     // probing the service itself.
@@ -152,7 +163,7 @@ pub(crate) async fn enroll_customer(
     {
         log!("account customer status not recorded: {error}");
     }
-    Ok(receipt)
+    Ok(())
 }
 
 /// Run the `tonk:enroll` command.

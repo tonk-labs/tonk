@@ -261,7 +261,7 @@ async function start() {
     let embedder;
     if (PROFILE) {
         profileDid = session.did;
-        embedder = await wasm_bindgen.bootPersona(space, session, kernelSent);
+        embedder = await wasm_bindgen.bootPersona(space, session, kernelSent, askedToMerge, await keptPersona());
     } else {
         const { representative, persona } = await standing();
         embedder = await wasm_bindgen.bootSpace(space, session, representative, persona, delegates(handed), kernelSent);
@@ -543,6 +543,11 @@ async function navigatePage({ client, href, replace }) {
 // What answers `message`: `{ status, body }`.
 async function answerOf(message) {
     if (typeof message.read === "string") return readPublic(message.read);
+    if (typeof message.ceremony === "string" && PROFILE) {
+        const link = Uint8Array.from(atob(message.ceremony), char => char.charCodeAt(0));
+        return { status: 200, body: await (await booting).ceremony(link) };
+    }
+    if (message.enroll === true && PROFILE) return enroll();
     if (typeof message.fetch === "string") {
         if (!PROFILE) throw new Error("a space's kernel has nothing delivered");
         return deliver(message);
@@ -598,6 +603,124 @@ function toBase64(bytes) {
 async function readPublic(url) {
     const response = await fetch(url, { mode: "cors", credentials: "omit", redirect: "error", cache: "no-store" });
     return { status: response.status, body: await response.text() };
+}
+
+// ---- Signing in ---------------------------------------------------------
+//
+// The persona's provisional persona asks to merge into the persona an
+// address names (`provisional-persona.merge`). This host looks the address
+// up, to know whether the person signs up or logs in, and asks the page
+// that asked for the passkey ceremony, as the browser's worker did:
+// `{ type: "webauthn", request: "custody", intent }`. The page runs it, and
+// hands over what the passkey derived, `{ type: "custody", credentialId,
+// key, kek }` with a port to answer on, or that the person refused it,
+// `{ type: "ceremony-refused", kind, name }`. The embedder creates or opens
+// the account with it and merges the persona into it; inside that merge the
+// kernel asks what the ceremony made of the account (`{ ask, ceremony }`)
+// and, for one it created, to enroll it (`{ ask, enroll }`). The persona
+// then boots as the account, through its delegation to this device, which
+// this host keeps with its files.
+
+const PERSONA_REQUEST = new Request(new URL("/_host/persona.json", self.location.href));
+async function keptPersona() {
+    if (!PROFILE) return null;
+    const kept = await caches.match(PERSONA_REQUEST, { cacheName: HOST_CACHE });
+    if (!kept) return null;
+    const { persona, link64 } = await kept.json();
+    return { persona, link: Uint8Array.from(atob(link64), char => char.charCodeAt(0)) };
+}
+async function keepPersona({ persona, link }) {
+    const body = JSON.stringify({ persona, link64: toBase64(new Uint8Array(link)) });
+    const cache = await caches.open(HOST_CACHE);
+    await cache.put(PERSONA_REQUEST, new Response(body, { headers: { "content-type": "application/json" } }));
+}
+
+// The sign-in the persona asked for, while the page runs its ceremony.
+let signing = null;
+// The page that last asked this origin something: the one that asked to
+// sign in.
+let lastPage = null;
+
+// Whether the account at `address` exists, as the deployment's directory of
+// addresses says: a log-in, or else a sign-up.
+async function ceremonyFor(app, address) {
+    const [local, domain] = address.split("@");
+    if (!local || !domain) return "log-in";
+    try {
+        const answer = await fetch(new URL(`/customer/${encodeURIComponent(domain)}/${encodeURIComponent(local)}/did.json`, app), {
+            credentials: "omit",
+            cache: "no-store",
+        });
+        return answer.status === 404 ? "create" : "log-in";
+    } catch {
+        return "create";
+    }
+}
+
+async function askedToMerge(address) {
+    try {
+        const app = (await siteOrigins())?.app ?? self.location.origin;
+        const kind = await ceremonyFor(app, address);
+        const deviceName = wasm_bindgen.deviceLabel(self.navigator.userAgent);
+        const remote = new URL("/ucan/", app).href;
+        const intent =
+            kind === "create"
+                ? { kind: "create-account", email: address, deviceName, remote, provider: remote, createdOn: deviceName }
+                : { kind: "login", deviceName, endpoint: remote, provider: remote };
+        signing = { kind, email: address, deviceName, remote };
+        const page = (lastPage && (await self.clients.get(lastPage))) ?? (await self.clients.matchAll({ type: "window" }))[0];
+        if (!page) throw new Error("no page is open to ask for a passkey");
+        page.postMessage({ type: "webauthn", request: "custody", intent });
+    } catch (error) {
+        log("the sign-in could not be asked for:", error);
+        await tellKernel({ tell: "failed", kind: signing?.kind ?? "create", code: null, message: "This page could not be asked for a passkey." });
+        signing = null;
+    }
+}
+
+// What the page derived with a passkey: sign the person in with it, and
+// answer the page on `port`.
+async function signIn(handoff, port) {
+    const asked = signing;
+    if (!asked) {
+        port?.postMessage({ error: "no sign-in was asked for" });
+        return;
+    }
+    try {
+        const merged = await (await booting).signIn(handoff, asked.kind, asked.email, asked.deviceName, asked.remote);
+        await keepPersona(merged);
+        port?.postMessage({ ok: {} });
+    } catch (error) {
+        const message = String(error?.message ?? error);
+        log("the sign-in failed:", message);
+        port?.postMessage({ error: message, ...(error?.code ? { code: error.code } : {}) });
+        await tellKernel({ tell: "failed", kind: asked.kind, code: error?.code ?? null, message });
+    } finally {
+        if (signing === asked) signing = null;
+    }
+}
+
+async function tellKernel(message) {
+    try {
+        await (await booting).receive(new TextEncoder().encode(JSON.stringify(message)));
+    } catch (error) {
+        log("the kernel was not told:", error);
+    }
+}
+
+// The account the sign-in created, enrolled at the access service: its
+// receipt.
+async function enroll() {
+    const app = (await siteOrigins())?.app ?? self.location.origin;
+    const body = await (await booting).enrollment();
+    const answer = await fetch(new URL("/ucan/", app), {
+        method: "POST",
+        headers: { "content-type": "application/cbor" },
+        body,
+        credentials: "omit",
+        cache: "no-store",
+    });
+    return { status: answer.status, body: await answer.text() };
 }
 
 // The port to each space's host, by the space's DID, as the profile's pages
@@ -772,6 +895,17 @@ self.addEventListener("activate", event => event.waitUntil(self.clients.claim())
 
 self.addEventListener("message", event => {
     const type = event.data?.type;
+    // What the page around the profile derived with a passkey, or that the
+    // person refused the ceremony.
+    if (PROFILE && type === "custody") {
+        event.waitUntil(signIn(event.data, event.ports[0]));
+        return;
+    }
+    if (PROFILE && type === "ceremony-refused") {
+        signing = null;
+        event.waitUntil(tellKernel({ tell: "refused", kind: event.data.kind, name: event.data.name }));
+        return;
+    }
     if (type === "protocol") event.ports[0]?.postMessage({ protocol: PROTOCOL });
     else if (type === "claim") event.waitUntil(self.clients.claim());
     // The shell that installed this worker waits for the kernel to boot, and
@@ -797,6 +931,7 @@ self.addEventListener("message", event => {
 self.addEventListener("fetch", event => {
     const url = new URL(event.request.url);
     if (url.origin !== self.location.origin) return;
+    if (event.clientId) lastPage = event.clientId;
     if (HOST_FILES.has(url.pathname) || HOST_PREFIXES.some(prefix => url.pathname.startsWith(prefix))) {
         event.respondWith(hostFile(event.request));
         return;

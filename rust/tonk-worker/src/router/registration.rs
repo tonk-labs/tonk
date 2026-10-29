@@ -43,7 +43,7 @@ pub(crate) enum Stage {
         /// One of [`kind`].
         kind: &'static str,
     },
-    #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+    #[cfg(any(target_arch = "wasm32", test))]
     /// See [`RegistrationConfirming`].
     Confirming {
         /// One of [`kind`].
@@ -93,7 +93,7 @@ pub(crate) fn opened(client: Option<&crate::router::ClientId>) {
 
 /// The panel begins its wait for the emailed link, for the page behind
 /// `client`.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(any(target_arch = "wasm32", test))]
 fn watch(client: Option<&crate::router::ClientId>) {
     WATCHING.set(Some(Attempt::begin(
         client,
@@ -188,7 +188,7 @@ pub(crate) async fn record(tonk: &TonkState, stage: Option<Stage>) {
             this,
             kind: tonk_schema::domain::registration::ceremony::Kind(kind.to_owned()),
         }),
-        #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+        #[cfg(any(target_arch = "wasm32", test))]
         Some(Stage::Confirming { kind }) => overlay.assert(RegistrationConfirming {
             this,
             kind: tonk_schema::domain::registration::confirming::Kind(kind.to_owned()),
@@ -249,7 +249,7 @@ pub(crate) async fn activated(tonk: &TonkState) {
 
 /// What a refused custody hand-off says to the person, and whether it is
 /// a wait for the emailed link rather than a failure.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(any(target_arch = "wasm32", test))]
 fn refusal(code: Option<&str>, message: &str) -> Result<(), String> {
     use tonk_identity::custody::CustodyDenial;
 
@@ -269,7 +269,7 @@ fn refusal(code: Option<&str>, message: &str) -> Result<(), String> {
 
 /// What a passkey ceremony the page refused says to the person: the
 /// browser's `name` for the refusal.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn refused(name: &str) -> String {
     match name {
         "NotAllowedError" => "The passkey prompt was closed. Try again when you are ready.",
@@ -285,7 +285,7 @@ pub(crate) fn refused(name: &str) -> String {
 
 /// The stage a finished custody hand-off for `kind` leads to. `active` is
 /// whether the account it reached is served.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn settled(
     kind: &'static str,
     outcome: Result<(), (Option<&str>, &str)>,
@@ -324,7 +324,7 @@ pub(crate) fn kind_in(data: &wasm_bindgen::JsValue) -> Option<&'static str> {
 /// Whether the account this profile holds is served, as the service says
 /// now: right after a login the account's own facts have not synced here
 /// yet, so they cannot say.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 async fn served(tonk: &TonkState) -> bool {
     use tonk_account::customer::CustomerStatus;
 
@@ -341,7 +341,7 @@ async fn served(tonk: &TonkState) -> bool {
 
 /// Record where a custody hand-off for `kind` left the panel, and wait out
 /// the emailed link when that is where it is.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn settle(
     state: &crate::router::AppState,
     kind: &'static str,
@@ -382,7 +382,7 @@ pub(crate) async fn settle(
 /// seconds how the account stands. The link can be opened on another
 /// device, which reaches this one only through the service; the probe that
 /// hears `Active` records it, and that puts the panel away.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 fn await_confirmation(state: crate::router::AppState) {
     thread_local! {
         static WAITING: Cell<bool> = const { Cell::new(false) };
@@ -390,7 +390,7 @@ fn await_confirmation(state: crate::router::AppState) {
     if WAITING.replace(true) {
         return;
     }
-    wasm_bindgen_futures::spawn_local(async move {
+    crate::detach(async move {
         loop {
             let _ = crate::r#async::sleep(web_time::Duration::from_secs(4)).await;
             let tonk = state.read().await;
@@ -405,7 +405,7 @@ fn await_confirmation(state: crate::router::AppState) {
 /// A passkey ceremony the page asked for was refused before anything
 /// reached this worker: the prompt was closed, or the browser would not
 /// show it. `name` is the browser's name for the refusal.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn ceremony_refused(tonk: &TonkState, kind: &str, name: &str) {
     let kind = match kind {
         kind::CREATE => kind::CREATE,
@@ -426,12 +426,15 @@ fn endpoint() -> Option<String> {
     super::repository::app_origin().map(|origin| format!("{}/ucan/", origin.trim_end_matches('/')))
 }
 
-/// Ask the page that asserted `env`'s command for the passkey ceremony
-/// `intent`, recording that the panel waits for it.
+/// Ask for the passkey ceremony `intent` for the address `address`, where
+/// one was typed, recording that the panel waits for it: of the page that
+/// asserted `env`'s command, or, on a kernel, of its embedder, by asking
+/// the provisional persona to merge into the one the person signs in as.
 async fn ask(
     env: &crate::router::CommandEnv,
     kind: &'static str,
     intent: tonk_worker_api::CustodyIntent,
+    address: &str,
 ) {
     if !claim_ceremony() {
         log!("registration: a passkey ceremony is already out; not asking for another");
@@ -460,31 +463,51 @@ async fn ask(
         kind,
         message: message.to_owned(),
     };
-    let Some(client) = env.client() else {
-        unasked();
-        record(&tonk, Some(failed("No page is open to ask for a passkey."))).await;
-        return;
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    let asked = {
+        let name = match intent {
+            tonk_worker_api::CustodyIntent::CreateAccount(creation) => creation.display_name,
+            _ => None,
+        };
+        super::merge::ask(kind, address, name)
     };
-    if let Err(error) = super::navigate::request_webauthn_with(
+    #[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+    let asked = {
+        let _ = address;
+        ask_page(env, intent).await
+    };
+    if let Err(message) = asked {
+        unasked();
+        record(&tonk, Some(failed(&message))).await;
+    }
+}
+
+/// Ask the page that asserted `env`'s command for the passkey ceremony
+/// `intent`. An error, for the person, when it could not be asked.
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+async fn ask_page(
+    env: &crate::router::CommandEnv,
+    intent: tonk_worker_api::CustodyIntent,
+) -> Result<(), String> {
+    let client = env
+        .client()
+        .ok_or_else(|| "No page is open to ask for a passkey.".to_owned())?;
+    super::navigate::request_webauthn_with(
         client,
         tonk_worker_api::WebAuthnKind::Custody,
         Some(intent),
         None,
     )
     .await
-    {
+    .map_err(|error| {
         log!("registration: the page could not be asked for a passkey: {error}");
-        unasked();
-        record(
-            &tonk,
-            Some(failed("This page could not be asked for a passkey.")),
-        )
-        .await;
-    }
+        "This page could not be asked for a passkey.".to_owned()
+    })
 }
 
-/// Log in with a passkey the person picks.
-async fn log_in(env: &crate::router::CommandEnv) {
+/// Log in with a passkey the person picks, to the account at `address`
+/// where one was typed.
+async fn log_in(env: &crate::router::CommandEnv, address: &str) {
     let Some(endpoint) = endpoint() else {
         let tonk = env.state().read().await;
         let message = "This deployment's address is not known.".to_owned();
@@ -507,6 +530,7 @@ async fn log_in(env: &crate::router::CommandEnv) {
         env,
         kind::LOG_IN,
         tonk_worker_api::CustodyIntent::Login(link),
+        address,
     )
     .await;
 }
@@ -558,7 +582,7 @@ impl dialog_capability::Provider<tonk_schema::command::StartRegistration>
                 let tonk = self.state().read().await;
                 record(&tonk, Some(Stage::Naming { email })).await;
             }
-            Next::LogIn => log_in(self).await,
+            Next::LogIn => log_in(self, &email).await,
             Next::Stay => {}
         }
     }
@@ -606,10 +630,12 @@ impl dialog_capability::Provider<tonk_schema::command::CreateAccount>
             provider: endpoint,
             created_on: Some(device),
         };
+        let address = creation.email.clone();
         ask(
             self,
             kind::CREATE,
             tonk_worker_api::CustodyIntent::CreateAccount(creation),
+            &address,
         )
         .await;
     }
@@ -620,7 +646,7 @@ impl dialog_capability::Provider<tonk_schema::command::CreateAccount>
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::LogIn> for crate::router::CommandEnv {
     async fn execute(&self, _command: tonk_schema::command::LogIn) {
-        log_in(self).await;
+        log_in(self, "").await;
     }
 }
 

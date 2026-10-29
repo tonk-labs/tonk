@@ -11,6 +11,8 @@ pub mod kernel;
 pub mod layers;
 pub mod platform;
 pub mod sapling;
+#[cfg(target_arch = "wasm32")]
+pub mod signing;
 pub mod wasi;
 pub mod wasi_rest;
 

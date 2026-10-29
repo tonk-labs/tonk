@@ -25,12 +25,17 @@ use crate::bindings::sapling::kernel::types::Error;
 use crate::credentials::{Answer, Delegates, Representation, Standing, delegates};
 use crate::kernel::{Kernel, Served};
 use crate::layers::{LayerSpace, Layers};
+use crate::signing::{Asked, Kind, SignIn};
 use crate::{boot, platform};
 
 #[wasm_bindgen]
 pub struct Embedder {
     kernel: Served,
     timings: Vec<(String, f64)>,
+    /// The key the persona's worker acts under, which the provisional
+    /// persona is and the representative is.
+    session: Option<Ed25519Signer>,
+    sign_in: SignIn,
 }
 
 /// The body of an answer of the kernel, piece by piece as the kernel writes
@@ -89,6 +94,13 @@ pub async fn open_session(name: String) -> Result<Session, JsError> {
     Ok(Session { key })
 }
 
+/// What this device is called, from a browser's user agent, as an account's
+/// devices are listed.
+#[wasm_bindgen(js_name = deviceLabel)]
+pub fn device_label(agent: String) -> String {
+    tonk_common::device_label::from_navigator(&agent, "", 0)
+}
+
 /// The space this origin's host serves, or `undefined` before it serves one.
 #[wasm_bindgen(js_name = heldSpace)]
 pub async fn held_space() -> Result<Option<String>, JsError> {
@@ -122,17 +134,34 @@ pub async fn pinned(subject: String) -> Result<Option<String>, JsError> {
 }
 
 /// Boot the persona the profile `subject` pins, with a session that acts
-/// under `session`, whose key represents the persona and is it, until the
-/// person makes themselves known.
+/// under `session`, whose key represents the persona: the provisional
+/// persona it is itself, until the person makes themselves known, and after
+/// that the permanent persona `standing` names, `{ persona, link }`, with the
+/// persona's delegation to it as `link`.
 ///
-/// Each message the kernel sends its embedder goes to `message`, as bytes.
+/// Each message the kernel sends its embedder goes to `message`, as bytes,
+/// and each address its provisional persona asks to merge into to `merge`.
 #[wasm_bindgen(js_name = bootPersona)]
 pub async fn boot_persona(
     subject: String,
     session: &Session,
     message: Function,
+    merge: Function,
+    standing: JsValue,
 ) -> Result<Embedder, JsError> {
-    run(subject, Standing::persona(session.key.clone()), message).await
+    let standing = if standing.is_object() {
+        let persona = Reflect::get(&standing, &"persona".into())
+            .ok()
+            .and_then(|persona| persona.as_string())
+            .ok_or_else(|| JsError::new("the standing names no persona"))?;
+        let link = Uint8Array::new(&Reflect::get(&standing, &"link".into()).unwrap_or_default());
+        Standing::permanent(session.key.clone(), persona, link.to_vec())
+    } else {
+        Standing::persona(session.key.clone())
+    };
+    let mut embedder = run(subject, standing, message, Some(merge)).await?;
+    embedder.session = Some(session.key.clone());
+    Ok(embedder)
 }
 
 /// Boot the kernel the space `subject` pins, with a session that acts under
@@ -156,11 +185,17 @@ pub async fn boot_space(
         subject,
         Standing::space(session.key.clone(), representative, persona),
         message,
+        None,
     )
     .await
 }
 
-async fn run(subject: String, standing: Standing, message: Function) -> Result<Embedder, JsError> {
+async fn run(
+    subject: String,
+    standing: Standing,
+    message: Function,
+    merge: Option<Function>,
+) -> Result<Embedder, JsError> {
     let started = platform::now_millis();
     let layers = Layers::default();
     let (_, bytes) = boot::pinned(&layers, &subject)
@@ -186,6 +221,16 @@ async fn run(subject: String, standing: Standing, message: Function) -> Result<E
             }
         }
     });
+    if let Some(merge) = merge {
+        let mut asked = kernel.merges();
+        wasm_bindgen_futures::spawn_local(async move {
+            while let Some(address) = asked.next().await {
+                if let Err(error) = merge.call1(&JsValue::UNDEFINED, &address.into()) {
+                    platform::log("kernel", &format!("a merge was not taken: {error:?}"), true);
+                }
+            }
+        });
+    }
     kernel
         .init(&subject, standing)
         .await
@@ -202,7 +247,12 @@ async fn run(subject: String, standing: Standing, message: Function) -> Result<E
             platform::log("kernel", &format!("the kernel stopped: {error}"), true);
         }
     });
-    Ok(Embedder { kernel, timings })
+    Ok(Embedder {
+        kernel,
+        timings,
+        session: None,
+        sign_in: SignIn::default(),
+    })
 }
 
 /// The representative's delegations, answered by the bootloader's
@@ -250,7 +300,9 @@ fn access_from_js(access: &JsValue) -> Result<Access, JsError> {
         })
         .collect::<Result<_, JsError>>()?;
     Ok(Access {
-        subject: text("subject")?,
+        subject: Reflect::get(access, &"subject".into())
+            .ok()
+            .and_then(|subject| subject.as_string()),
         command: text("command")?,
         arguments,
         reason: text("reason")?,
@@ -269,7 +321,8 @@ fn access_to_js(access: Access) -> JsValue {
             )
         })
         .collect();
-    let _ = Reflect::set(&object, &"subject".into(), &access.subject.into());
+    let subject = access.subject.map_or(JsValue::NULL, JsValue::from);
+    let _ = Reflect::set(&object, &"subject".into(), &subject);
     let _ = Reflect::set(&object, &"command".into(), &access.command.into());
     let _ = Reflect::set(&object, &"arguments".into(), &arguments);
     let _ = Reflect::set(&object, &"reason".into(), &access.reason.into());
@@ -292,6 +345,86 @@ impl Embedder {
                 .map_err(|error| JsValue::from(JsError::new(&error)))?
                 .map_err(|error| JsValue::from(JsError::new(&format!("{error:?}"))))?;
             Ok(Uint8Array::from(chain.as_slice()).into())
+        }))
+    }
+
+    /// Sign the person in with what the page derived with a passkey,
+    /// `handoff` as `{ credentialId, key, kek }`, for the ceremony `kind`,
+    /// `create` or `log-in`, as `email`, from this device named
+    /// `deviceName`, to an account that syncs through `remote`: the
+    /// persona's provisional persona merges into the account. Resolves to
+    /// `{ persona, link }`, the account's DID and its delegation to this
+    /// device, to boot the persona with from then on; rejects with an error
+    /// that may carry the custody service's `code`.
+    #[wasm_bindgen(js_name = signIn)]
+    pub fn sign_in(
+        &self,
+        handoff: JsValue,
+        kind: String,
+        email: String,
+        device_name: String,
+        remote: String,
+    ) -> Result<Promise, JsError> {
+        let session = self
+            .session
+            .clone()
+            .ok_or_else(|| JsError::new("only a persona signs in"))?;
+        let kind = match kind.as_str() {
+            "create" => Kind::Create,
+            "log-in" => Kind::LogIn,
+            other => return Err(JsError::new(&format!("no ceremony is {other}"))),
+        };
+        let (kernel, sign_in) = (self.kernel.clone(), self.sign_in.clone());
+        Ok(wasm_bindgen_futures::future_to_promise(async move {
+            let (persona, link) = sign_in
+                .sign_in(
+                    &kernel,
+                    &session,
+                    handoff,
+                    Asked {
+                        kind,
+                        email,
+                        device_name,
+                        remote,
+                    },
+                )
+                .await?;
+            let merged = Object::new();
+            let _ = Reflect::set(&merged, &"persona".into(), &persona.into());
+            let _ = Reflect::set(&merged, &"link".into(), &Uint8Array::from(link.as_slice()));
+            Ok(merged.into())
+        }))
+    }
+
+    /// What the ceremony of the sign-in under way made of the account, as
+    /// JSON, for the kernel, which hands over `link`, the account's
+    /// delegation to this device.
+    pub fn ceremony(&self, link: Uint8Array) -> Promise {
+        let sign_in = self.sign_in.clone();
+        let link = link.to_vec();
+        wasm_bindgen_futures::future_to_promise(async move {
+            let answer = sign_in
+                .ceremony(&link)
+                .await
+                .map_err(|error| JsValue::from(JsError::new(&error)))?;
+            Ok(answer.into())
+        })
+    }
+
+    /// The invocation that enrolls the account the sign-in under way
+    /// created at the access service, as the bytes to post to it.
+    pub fn enrollment(&self) -> Result<Promise, JsError> {
+        let session = self
+            .session
+            .clone()
+            .ok_or_else(|| JsError::new("only a persona enrolls"))?;
+        let sign_in = self.sign_in.clone();
+        Ok(wasm_bindgen_futures::future_to_promise(async move {
+            let body = sign_in
+                .enrollment(&session)
+                .await
+                .map_err(|error| JsValue::from(JsError::new(&error)))?;
+            Ok(Uint8Array::from(body.as_slice()).into())
         }))
     }
 

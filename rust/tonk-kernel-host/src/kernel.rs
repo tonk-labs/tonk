@@ -4,13 +4,13 @@
 use futures::channel::{mpsc, oneshot};
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt as _, StreamExt as _};
-use wcmp::{Accessor, Component, Engine, Func, Linker, ResourceDynamic, Store, Val};
+use wcmp::{Accessor, Component, Engine, Func, Linker, Resource, ResourceDynamic, Store, Val};
 
 use crate::bindings::Host_;
 use crate::bindings::exports::sapling::kernel::lifecycle::{Access as StackAccess, Boot, Stacked};
 use crate::bindings::sapling::kernel::credential::Access;
 use crate::bindings::sapling::kernel::types::Error;
-use crate::credentials::Standing;
+use crate::credentials::{Key, Standing};
 use crate::http_types::{self, Body, Fields, HttpHost, Request, Types};
 use crate::layers::Layers;
 use crate::persona_bindings::exports::sapling::kernel::guest;
@@ -75,7 +75,16 @@ enum Job {
         message: Vec<u8>,
         reply: oneshot::Sender<Result<Result<(), Error>, String>>,
     },
+    Merge {
+        provisional: Key,
+        permanent: Key,
+        reply: oneshot::Sender<Merged>,
+    },
 }
+
+/// What came of a merge: the permanent persona and its delegation to the
+/// representative, which links it.
+pub type Merged = Result<(String, Vec<u8>), String>;
 
 /// A guest kernel that a driver runs (see [`Kernel::serve`]): requests reach
 /// it at once, each answered as the guest writes its answer, however many
@@ -123,6 +132,23 @@ impl Served {
             .map_err(|_| "the kernel has stopped".to_owned())?
     }
 
+    /// Merge the guest kernel's provisional persona, whose key is
+    /// `provisional`, into the permanent one, whose key is `permanent`: both
+    /// are lent to it for one call of `lifecycle.merge`.
+    pub async fn merge(&self, provisional: Key, permanent: Key) -> Merged {
+        let (reply, answered) = oneshot::channel();
+        self.jobs
+            .unbounded_send(Job::Merge {
+                provisional,
+                permanent,
+                reply,
+            })
+            .map_err(|_| "the kernel has stopped".to_owned())?;
+        answered
+            .await
+            .map_err(|_| "the kernel has stopped".to_owned())?
+    }
+
     /// Ask the guest kernel, a persona, to delegate `access` to `audience`.
     /// An error when the guest kernel is no persona.
     pub async fn delegate(&self, audience: &str, access: Access) -> Delegated {
@@ -138,6 +164,41 @@ impl Served {
             .await
             .map_err(|_| "the kernel has stopped".to_owned())?
     }
+}
+
+/// Lend the guest kernel both personas' keys for one call of
+/// `lifecycle.merge`, take them back, and have the persona's worker act for
+/// the permanent persona from then on.
+async fn merge(
+    accessor: &Accessor<KernelHost>,
+    bindings: &Host_,
+    provisional: Key,
+    permanent: Key,
+) -> Merged {
+    let (provisional, permanent) = accessor.with(|mut access| {
+        let host = access.data_mut();
+        host.linked = None;
+        (host.lend(provisional), host.lend(permanent))
+    });
+    let merged = bindings
+        .sapling_kernel_lifecycle()
+        .call_merge(
+            accessor,
+            Resource::new_borrow(provisional),
+            Resource::new_borrow(permanent),
+        )
+        .await;
+    accessor.with(|mut access| {
+        let host = access.data_mut();
+        host.withdraw(provisional);
+        host.withdraw(permanent);
+    });
+    merged
+        .map_err(|error| platform::describe(&error))?
+        .map_err(|error| format!("merge answered {error:?}"))?;
+    accessor
+        .with(|mut access| access.data_mut().merged())
+        .ok_or_else(|| "the permanent persona linked no representative".to_owned())
 }
 
 /// Start `request` in the guest kernel and answer the start of its answer,
@@ -253,6 +314,15 @@ impl Kernel {
                                         .boxed_local(),
                                     );
                                 }
+                                Some(Job::Merge { provisional, permanent, reply }) => {
+                                    let bindings = &bindings;
+                                    running.push(
+                                        async move {
+                                            let _ = reply.send(merge(accessor, bindings, provisional, permanent).await);
+                                        }
+                                        .boxed_local(),
+                                    );
+                                }
                                 Some(Job::Request { method, path, headers, body, reply }) => {
                                     let handle = &handle;
                                     running.push(
@@ -322,6 +392,14 @@ impl Kernel {
             types,
             timings,
         })
+    }
+
+    /// The addresses the guest kernel's provisional persona asks to merge
+    /// into, from now on, as it asks.
+    pub fn merges(&mut self) -> mpsc::UnboundedReceiver<String> {
+        let (merges, asked) = mpsc::unbounded();
+        self.store.data_mut().merges = Some(merges);
+        asked
     }
 
     /// The messages the guest kernel sends with `application.send` from now

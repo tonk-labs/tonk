@@ -73,6 +73,10 @@ pub(crate) mod custody;
 pub(crate) mod rotation;
 
 mod join;
+/// Signing in on a kernel: the provisional persona merges into the
+/// permanent one.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+mod merge;
 pub(crate) mod public_access;
 mod publication;
 /// Reaching a space's own worker from the person's profile.
@@ -82,6 +86,8 @@ pub(crate) mod space_reach;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod space_worker;
 pub use join::{JoinRequest, JoinResponse};
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub use merge::{failed, merged, refused};
 mod local_space_link;
 
 pub(crate) mod account_devices;
