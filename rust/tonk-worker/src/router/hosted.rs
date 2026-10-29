@@ -22,6 +22,7 @@ use tower_service::Service;
 use super::{AppState, LspHub};
 use crate::TonkWorkerError;
 
+pub mod access;
 pub mod mcp;
 pub mod view;
 mod writer;
@@ -113,6 +114,21 @@ impl HostedPeer {
             .await
             .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
         Ok(())
+    }
+
+    /// Point this peer's access branch at the agent space `agent`, served
+    /// at `home`, and pull it: the grants retained there become proofs
+    /// this peer's operator finds. See [`access::adopt_agent_access`].
+    pub async fn adopt_access(&self, agent: &Did, home: &url::Url) -> Result<(), TonkWorkerError> {
+        let state = self.state.read().await;
+        access::adopt_agent_access(&state, agent, home).await
+    }
+
+    /// The spaces the agent space `agent` reaches, read from its replica
+    /// here as it is now. See [`access::read_agent_access`].
+    pub async fn agent_access(&self, agent: &Did) -> Result<access::AgentAccess, TonkWorkerError> {
+        let state = self.state.read().await;
+        access::read_agent_access(&state, agent).await
     }
 
     /// The DID this peer signs as.

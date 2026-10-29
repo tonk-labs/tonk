@@ -9,7 +9,7 @@
 //! signs revisions for the pair.
 //!
 //! The front ([`tonk_worker::mcp`]) decodes the agent session token,
-//! verifies its grants, mints and checks `Mcp-Session-Id`, and answers MCP
+//! verifies it, mints and checks `Mcp-Session-Id`, and answers MCP
 //! JSON-RPC. Tool calls on a space go to the writer named by the space
 //! and the session's writer DID.
 //!
@@ -126,12 +126,20 @@ impl Writers for DurableWriters<'_> {
                 );
             }
         };
+        // Where the agent space's directory says the space syncs, when it
+        // says; the writer mounts it there.
+        let remote = request
+            .headers()
+            .get(tonk_worker::mcp::ADDRESS_HEADER)
+            .and_then(|address| address.to_str().ok())
+            .filter(|address| url::Url::parse(address).is_ok())
+            .map_or_else(|| self.remote.clone(), str::to_owned);
         let identity = writer::Identity {
             writer,
             token: bearer.to_owned(),
             mcp_session: mcp_session.to_owned(),
             space: space.to_string(),
-            remote: self.remote.clone(),
+            remote,
         };
         let path = request.uri().path().trim_start_matches('/').to_owned();
         match writer::forward(self.env, &identity, request, &path).await {

@@ -488,11 +488,26 @@ mod tests {
         let verified = super::super::hosted::mcp::verify(&issued.token)
             .await
             .map_err(anyhow::Error::msg)?;
-        let read = &verified.spaces()[&subjects[0]];
-        assert!(read.read && !read.write, "read only");
-        let write = &verified.spaces()[&subjects[1]];
-        assert!(write.read && write.write, "read and write");
-        assert!(verified.spaces()[&agent.did()].agent);
+        assert_eq!(verified.agent(), &agent.did());
+        // What the agent space's writer classifies each space by: the
+        // commands the chains to the agent space end in.
+        let reaches = |subject: &Did, verb: &str| {
+            grants.iter().any(|chain| {
+                chain.subject() == Some(subject)
+                    && chain.audience() == &agent.did()
+                    && chain.proofs().last().is_some_and(|leaf| {
+                        super::super::hosted::access::reaches(&leaf.command().0, verb)
+                    })
+            })
+        };
+        assert!(
+            reaches(&subjects[0], "get") && !reaches(&subjects[0], "put"),
+            "read only"
+        );
+        assert!(
+            reaches(&subjects[1], "get") && reaches(&subjects[1], "put"),
+            "read and write"
+        );
         Ok(())
     }
 }

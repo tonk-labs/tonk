@@ -1,12 +1,12 @@
 //! `/mcp`: the hosted agent's MCP endpoint, Streamable HTTP without SSE.
 //!
 //! A request carries an agent session token (`tonk-identity`'s
-//! [`AgentSessionToken`]) as its Bearer. The front decodes it, checks the
-//! grants it carries (each a chain from a space to the agent space), and
-//! answers JSON-RPC over `POST`: `initialize`, `ping`, `tools/list` and
-//! `tools/call`. A missing or bad token is answered `401` with the
-//! protected resource metadata the OAuth client discovers the
-//! authorization server from.
+//! [`AgentSessionToken`]) as its Bearer: the `agent space -> session`
+//! powerline and the session's seed, nothing else. The front decodes and
+//! verifies it, and answers JSON-RPC over `POST`: `initialize`, `ping`,
+//! `tools/list` and `tools/call`. A missing or bad token is answered
+//! `401` with the protected resource metadata the OAuth client discovers
+//! the authorization server from.
 //!
 //! `initialize` mints `Mcp-Session-Id`: a nonce and a MAC over it and the
 //! token's hash, under a secret only the host holds. Every later request
@@ -18,10 +18,15 @@
 //! Spaces and access:
 //!
 //! - the agent space itself, through the powerline: read and write;
-//! - each space a grant names: readable when a grant reaches
-//!   `/use/get/...`, writable when one also reaches `/use/put/...`.
-//!   `tonk_evaluate` is refused for a space without put grants, and the
-//!   access service refuses a put such a chain carries anyway.
+//! - each space the agent space holds a grant for: the approval retains
+//!   each chain `space -> ... -> agent space` in the agent space, with a
+//!   directory entry naming the space (see [`super::access`]). The front
+//!   asks the agent space's own writer, which stays warm, to classify
+//!   them: readable when a chain in force reaches `/use/get/...`,
+//!   writable when one also reaches `/use/put/...`. `tonk_evaluate` is
+//!   refused for a space without put grants, and the access service
+//!   refuses a put such a chain carries anyway. The writer of a granted
+//!   space pulls the same chains from the agent space to act with.
 //!
 //! What is not checked here: revocation. The access service checks every
 //! chain an invocation carries against its revocation index, and every
@@ -34,22 +39,17 @@
 //! Object namespace in the Host Worker and a map of [`super::SpaceWriter`]s
 //! in native tests.
 
-use std::collections::BTreeMap;
-
 use axum::body::Body;
 use axum::http::{HeaderValue, Method, Request, Response, StatusCode, header};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
-use dialog_credentials::DidKeyResolver;
-use dialog_ucan_core::DelegationChain;
-use dialog_ucan_core::subject::Subject as UcanSubject;
-use dialog_ucan_core::time::Timestamp;
 use dialog_varsig::Did;
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 use tonk_identity::agent::{AgentSessionToken, decode_agent_session_token};
 
 use super::WriterSession;
+pub use super::access::{AgentAccess, SpaceAccess};
 
 #[path = "../../../../tonk-cli/src/guide.rs"]
 #[allow(dead_code)]
@@ -90,28 +90,25 @@ const MAC_BYTES: usize = 16;
 /// The largest JSON-RPC request accepted, in bytes.
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 
-/// What one space is open to through the token.
-#[derive(Debug, Clone)]
-pub struct SpaceAccess {
-    /// Whether this is the agent space itself.
-    pub agent: bool,
-    /// Whether a grant in force reaches `/use/get/...`.
-    pub read: bool,
-    /// Whether a grant in force also reaches `/use/put/...`.
-    pub write: bool,
-    /// The grants for this space that are in force, to hand the writer.
-    pub grants: Vec<DelegationChain>,
-    /// The earliest expiry among those grants, in Unix seconds.
-    pub expires: Option<u64>,
-    /// Grants for this space that have expired or are not yet valid.
-    pub lapsed: usize,
-}
+/// The agent space writer's route answering [`AgentAccess`] as JSON.
+pub const ACCESS_ROUTE: &str = "/api/access";
 
-/// A token that decoded and whose grants verified.
+/// Header on a request to a granted space's writer: the CIDs of the
+/// grants the front found for the space, comma separated, so the writer
+/// pulls the agent space again when one is new to it
+/// ([`super::SpaceWriter::admit`]).
+pub const GRANTS_HEADER: &str = "x-tonk-space-grants";
+
+/// Header on a request to a granted space's writer: where the agent
+/// space's directory says the space syncs, when it says.
+pub const ADDRESS_HEADER: &str = "x-tonk-space-address";
+
+/// A token that decoded and verified: the agent space's powerline to the
+/// session whose seed it carries. Which other spaces it reaches is the
+/// agent space's to say ([`AgentAccess`]).
 pub struct Verified {
     token: AgentSessionToken,
     hash: [u8; 32],
-    spaces: BTreeMap<Did, SpaceAccess>,
 }
 
 impl Verified {
@@ -120,133 +117,40 @@ impl Verified {
         &self.token
     }
 
-    /// The spaces the token reaches, the agent space among them.
-    pub fn spaces(&self) -> &BTreeMap<Did, SpaceAccess> {
-        &self.spaces
+    /// The agent space.
+    pub fn agent(&self) -> &Did {
+        self.token.agent()
     }
 
-    /// What the writer of `space` for the MCP session `mcp_session` acts
-    /// with: the session's seed and powerline, and the grants in force
-    /// for that space.
-    pub fn writer_session(&self, space: &Did, mcp_session: &str) -> WriterSession {
+    /// What the writer of a space for the MCP session `mcp_session` acts
+    /// with: the session's seed and powerline, and where the agent space
+    /// syncs, to pull its grants from.
+    pub fn writer_session(&self, mcp_session: &str) -> WriterSession {
         WriterSession {
             seed: self.token.seed().clone(),
             powerline: self.token.powerline().clone(),
             mcp_session: mcp_session.to_owned(),
-            grants: self
-                .spaces
-                .get(space)
-                .map(|access| access.grants.clone())
-                .unwrap_or_default(),
+            home: self.token.home().clone(),
         }
     }
 }
 
-/// Decode `bearer` and check what it carries. Every refusal is a reason
-/// to answer `401`.
+/// Decode `bearer` and check it. Every refusal is a reason to answer
+/// `401`.
 ///
-/// The token's own delegations are checked by
-/// [`decode_agent_session_token`]. Each grant must start at its subject,
-/// end at the agent space, and be signed throughout; a grant outside its
-/// time bounds is kept as lapsed rather than refused, so a tool can name
-/// the space whose access ran out instead of the host starting over.
+/// [`decode_agent_session_token`] checks the token's own delegations:
+/// the seed's DID is the outer delegation's issuer and audience, and the
+/// powerline from the agent space is addressed to it and signed. Grants
+/// the token may still carry from an older approval are ignored: access
+/// to other spaces is read from the agent space.
 pub async fn verify(bearer: &str) -> Result<Verified, String> {
     let token = decode_agent_session_token(bearer)
         .await
         .map_err(|error| error.to_string())?;
-    let now = Timestamp::now();
-    let agent = token.agent().clone();
-    let mut spaces = BTreeMap::new();
-    spaces.insert(
-        agent.clone(),
-        SpaceAccess {
-            agent: true,
-            read: true,
-            write: true,
-            grants: Vec::new(),
-            expires: None,
-            lapsed: 0,
-        },
-    );
-    for grant in token.grants() {
-        if grant.audience() != &agent {
-            return Err("a grant is not addressed to the agent space".into());
-        }
-        let Some(subject) = grant.subject().cloned() else {
-            return Err("a grant names no space".into());
-        };
-        if grant.issuer() != &subject {
-            return Err(format!("a grant for {subject} is not issued by it"));
-        }
-        let mut audience: Option<&Did> = None;
-        for delegation in grant.proofs() {
-            // Each link is issued by whoever the one before it delegated to.
-            if audience.is_some_and(|audience| delegation.issuer() != audience) {
-                return Err(format!("a grant for {subject} is not one chain"));
-            }
-            audience = Some(delegation.audience());
-            // A subject-open link (the account's powerline to a device) is
-            // in every grant an account mints; it narrows nothing, and the
-            // chain's other links pin the space.
-            if delegation.subject() != &UcanSubject::Specific(subject.clone())
-                && delegation.subject() != &UcanSubject::Any
-            {
-                return Err(format!("a grant for {subject} changes subject"));
-            }
-            delegation
-                .verify_signature(&DidKeyResolver)
-                .await
-                .map_err(|error| format!("a grant for {subject} is not signed: {error}"))?;
-        }
-        let access = spaces.entry(subject).or_insert_with(|| SpaceAccess {
-            agent: false,
-            read: false,
-            write: false,
-            grants: Vec::new(),
-            expires: None,
-            lapsed: 0,
-        });
-        if access.agent {
-            continue;
-        }
-        let in_force = grant.expiration().is_none_or(|at| at > now)
-            && grant.not_before().is_none_or(|at| at <= now);
-        if !in_force {
-            access.lapsed += 1;
-            continue;
-        }
-        let command = grant
-            .proofs()
-            .last()
-            .map(|leaf| leaf.command().0.clone())
-            .unwrap_or_default();
-        access.read |= reaches(&command, "get");
-        access.write |= reaches(&command, "put");
-        if let Some(at) = grant.expiration() {
-            let at = at.to_unix();
-            access.expires = Some(access.expires.map_or(at, |held| held.min(at)));
-        }
-        access.grants.push(grant.clone());
-    }
-    // A space is writable only if it is readable too: a write pulls first.
-    for access in spaces.values_mut() {
-        access.write &= access.read;
-    }
     Ok(Verified {
         hash: *blake3::hash(bearer.trim().as_bytes()).as_bytes(),
         token,
-        spaces,
     })
-}
-
-/// Whether a grant whose leaf command is `command` covers some
-/// `/use/{verb}/...` invocation.
-fn reaches(command: &[String], verb: &str) -> bool {
-    let wanted = ["use", verb];
-    command
-        .iter()
-        .zip(wanted)
-        .all(|(segment, wanted)| segment == wanted)
 }
 
 /// Where the front sends a space's reads and writes.
@@ -255,7 +159,10 @@ pub trait Writers {
     /// Serve `request` on the writer of `space` for `mcp_session`.
     ///
     /// `request` is one of the writer's routes relative to the space:
-    /// `POST /api/query` (a read) or `POST /api/evaluate` (a write).
+    /// `POST /api/query` (a read), `POST /api/evaluate` (a write), or
+    /// `GET` [`ACCESS_ROUTE`] (to the agent space's writer). A request to
+    /// another space carries [`GRANTS_HEADER`] and, when the directory
+    /// names one, [`ADDRESS_HEADER`], the remote its writer mounts.
     /// `bearer` is the token as it arrived, for writers that decode it
     /// themselves.
     async fn call(
@@ -483,7 +390,10 @@ impl<W: Writers> McpEndpoint<'_, W> {
         let name = params["name"].as_str().unwrap_or_default();
         let arguments = &params["arguments"];
         match name {
-            "tonk_list_spaces" => tool_result(json!({ "spaces": list_spaces(verified) }), false),
+            "tonk_list_spaces" => match self.access(verified, bearer, session).await {
+                Ok(access) => tool_result(json!({ "spaces": list_spaces(&access) }), false),
+                Err(error) => tool_result(json!(error), true),
+            },
             "tonk_guide" => {
                 let topic = arguments["topic"].as_str().unwrap_or("");
                 let body = if topic == "context" {
@@ -520,9 +430,20 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 let Ok(space) = space.parse::<Did>() else {
                     return tool_result(json!(format!("`{space}` is not a space DID.")), true);
                 };
-                if let Some(refusal) = refusal(verified, &space, write) {
-                    return tool_result(json!(refusal), true);
-                }
+                // The agent space is reached through the powerline alone;
+                // any other space through what the agent space holds.
+                let granted = if &space == verified.agent() {
+                    None
+                } else {
+                    let access = match self.access(verified, bearer, session).await {
+                        Ok(access) => access,
+                        Err(error) => return tool_result(json!(error), true),
+                    };
+                    if let Some(refusal) = refusal(access.get(&space), &space, write) {
+                        return tool_result(json!(refusal), true);
+                    }
+                    access.get(&space).cloned()
+                };
                 let path = if write {
                     "/api/evaluate".to_owned()
                 } else {
@@ -542,12 +463,19 @@ impl<W: Writers> McpEndpoint<'_, W> {
                         format!("/api/query?{page}")
                     }
                 };
-                let request = Request::builder()
+                let mut request = Request::builder()
                     .method(Method::POST)
                     .uri(path)
-                    .header(header::CONTENT_TYPE, "text/plain")
-                    .body(Body::from(document.to_owned()))
-                    .expect("static request");
+                    .header(header::CONTENT_TYPE, "text/plain");
+                if let Some(granted) = &granted {
+                    request = request.header(GRANTS_HEADER, granted.grants.join(","));
+                    if let Some(address) = &granted.address {
+                        request = request.header(ADDRESS_HEADER, address);
+                    }
+                }
+                let Ok(request) = request.body(Body::from(document.to_owned())) else {
+                    return tool_result(json!("The space's directory entry is malformed."), true);
+                };
                 let response = self
                     .writers
                     .call(verified, bearer, session, &space, request)
@@ -582,6 +510,40 @@ impl<W: Writers> McpEndpoint<'_, W> {
         }
     }
 
+    /// What the agent space reaches, as its own writer reads it.
+    async fn access(
+        &self,
+        verified: &Verified,
+        bearer: &str,
+        session: &str,
+    ) -> Result<AgentAccess, String> {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(ACCESS_ROUTE)
+            .body(Body::empty())
+            .expect("static request");
+        let response = self
+            .writers
+            .call(verified, bearer, session, verified.agent(), request)
+            .await;
+        let status = response.status();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .map(|body| body.to_bytes())
+            .unwrap_or_default();
+        if !status.is_success() {
+            return Err(format!(
+                "Could not read this agent's spaces from its own space ({status}): {}. Try \
+                 again; if it persists, ask the user to reconnect.",
+                String::from_utf8_lossy(&body)
+            ));
+        }
+        serde_json::from_slice(&body)
+            .map_err(|error| format!("The agent space answered unreadable grants: {error}"))
+    }
+
     fn unauthorized(&self, reason: &str) -> Response<Body> {
         let mut response = plain(StatusCode::UNAUTHORIZED, reason);
         let challenge = format!(
@@ -597,9 +559,9 @@ impl<W: Writers> McpEndpoint<'_, W> {
     }
 }
 
-/// Why a tool may not act on `space`, if it may not.
-fn refusal(verified: &Verified, space: &Did, write: bool) -> Option<String> {
-    let Some(access) = verified.spaces.get(space) else {
+/// Why a tool may not act on `space`, open to `access`, if it may not.
+fn refusal(access: Option<&SpaceAccess>, space: &Did, write: bool) -> Option<String> {
+    let Some(access) = access else {
         return Some(format!(
             "This connection has no access to {space}. Use a subject from tonk_list_spaces; \
              the user grants more spaces by reconnecting."
@@ -624,28 +586,43 @@ fn refusal(verified: &Verified, space: &Did, write: bool) -> Option<String> {
     None
 }
 
-fn list_spaces(verified: &Verified) -> Vec<Value> {
-    verified
+/// What `tonk_list_spaces` answers: the agent space first, marked
+/// `home`, then each granted space in force.
+fn list_spaces(access: &AgentAccess) -> Vec<Value> {
+    let mut listed: Vec<(&String, &SpaceAccess)> = access
         .spaces
         .iter()
         // A space whose every grant lapsed is named by the tool error a
         // call on it gets, not listed.
         .filter(|(_, access)| access.read)
+        .collect();
+    listed.sort_by_key(|(_, access)| !access.agent);
+    listed
+        .into_iter()
         .map(|(space, access)| {
             let mut entry = json!({
-                "subject": space.to_string(),
+                "subject": space,
                 "access": if access.write { "read-write" } else { "read" },
             });
-            if access.agent {
-                entry["agent_space"] = json!(true);
+            if let Some(name) = &access.name {
+                entry["name"] = json!(name);
             }
             if let Some(expires) = access.expires {
-                entry["expires"] = json!(expires);
+                entry["expires"] = json!(super::access::rfc3339(expires));
+            }
+            if access.agent {
+                entry["home"] = json!(true);
+                entry["about"] = json!(HOME_ABOUT);
             }
             entry
         })
         .collect()
 }
+
+/// What the home entry of `tonk_list_spaces` says about the agent space.
+const HOME_ABOUT: &str = "Your own space. Keep your notes, schemas and views here. It also \
+     holds what the user granted you: each granted space's delegation and its directory entry \
+     (its name and where it syncs), which is what this list is read from.";
 
 /// The offered tools, from the shared catalog, with `space` added to the
 /// scoped ones.
@@ -661,8 +638,10 @@ pub fn tools() -> Vec<Value> {
             let name = tool["name"].as_str().unwrap_or_default().to_owned();
             if name == "tonk_list_spaces" {
                 tool["description"] = json!(
-                    "List the spaces this connection reaches: the agent's own space and each \
-                     space the user granted, with its access level (read or read-write). Use \
+                    "List the spaces you can use. The first, marked home, is your own space: \
+                     it is yours to read and write, and it records the spaces the user granted \
+                     you. Each other entry is a granted space with its name when the user gave \
+                     one, its access (read or read-write) and when that access expires. Use \
                      the exact subject as the space argument of tonk_query and tonk_evaluate."
                 );
             }

@@ -26,6 +26,9 @@ const MCP_SESSION: &str = "x-tonk-writer-mcp-session";
 const SPACE: &str = "x-tonk-writer-space";
 const REMOTE: &str = "x-tonk-writer-remote";
 
+/// The agent space writer's grants route, relative to the space.
+const ACCESS: &str = "api/access";
+
 /// The session a request comes in on, as the front decoded it.
 pub(crate) struct Identity {
     /// The writer key's DID, which names the object.
@@ -112,6 +115,28 @@ impl DurableObject for SpaceWriterObject {
         let url = request.url()?;
         let path = url.path().trim_start_matches('/').to_owned();
         let method = request.method();
+        if method == worker::Method::Get && path == ACCESS {
+            return match writer.agent_access().await {
+                Ok(access) => worker::Response::from_json(&access),
+                Err(error) => failure(StatusCode::BAD_GATEWAY, &error.to_string()),
+            };
+        }
+        // The grants the front found for this space: one new to the
+        // writer makes it pull the agent space's grants again.
+        let grants: Vec<String> = request
+            .headers()
+            .get(tonk_worker::mcp::GRANTS_HEADER)?
+            .map(|grants| {
+                grants
+                    .split(',')
+                    .filter(|grant| !grant.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Err(error) = writer.admit(&grants).await {
+            return failure(StatusCode::BAD_GATEWAY, &error.to_string());
+        }
         let content_type = request
             .headers()
             .get("content-type")?
@@ -168,7 +193,7 @@ impl SpaceWriterObject {
         let verified = tonk_worker::mcp::verify(&token)
             .await
             .map_err(|error| (StatusCode::UNAUTHORIZED, error))?;
-        let session = verified.writer_session(&space, &mcp_session);
+        let session = verified.writer_session(&mcp_session);
         let key = writer_seed(&session.seed, &mcp_session);
 
         let mut opened = self.writer.lock().await;
