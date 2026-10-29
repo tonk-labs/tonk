@@ -126,7 +126,11 @@ where
 /// `dialog.ucan/audience` is written onto the delegation's own entity
 /// when the chain is retained, so this reads the device's identity from
 /// the same record that carries its label — no second source to drift.
-async fn delegation_audience<Env>(account: &Branch, entity: &Entity, env: &Env) -> Option<String>
+pub(crate) async fn delegation_audience<Env>(
+    account: &Branch,
+    entity: &Entity,
+    env: &Env,
+) -> Option<String>
 where
     Env: dialog_common::Holds
         + Provider<Get>

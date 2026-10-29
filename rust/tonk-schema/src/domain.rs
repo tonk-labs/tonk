@@ -1983,7 +1983,7 @@ pub mod custody {
 /// [`RepositoryName`]: crate::RepositoryName
 /// [`RepositoryAgents`]: crate::RepositoryAgents
 pub mod repo {
-    use super::Attribute;
+    use super::{Attribute, Entity};
 
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.repo")]
@@ -1999,6 +1999,48 @@ pub mod repo {
     #[domain("xyz.tonk.repo")]
     #[pick(last)]
     pub struct Agents(pub String);
+
+    /// What kind of space the repository is, e.g. `case:agent` for an
+    /// agent space. Absent on an ordinary space.
+    ///
+    /// An entity label rather than a flag, so a typo cannot silently
+    /// read as a different kind and a second kind needs no new
+    /// attribute.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.repo")]
+    #[pick(last)]
+    pub struct Kind(pub Entity);
+}
+
+/// Attributes for the `agent/session` concept — one session key's
+/// authorization to act for an agent space.
+///
+/// The fields of [`device`] under their own namespace: a concept's
+/// identity is the attributes it reads, so sharing `xyz.tonk.device`
+/// would make every session row a device link and the reverse.
+///
+/// [`AgentSession`]: crate::AgentSession
+pub mod agent_session {
+    use super::{Attribute, Entity};
+
+    /// When the session was minted, unix seconds.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-session")]
+    #[pick(last)]
+    pub struct CreatedAt(pub u64);
+
+    /// Human label for the session — the client it was minted for,
+    /// e.g. "Claude".
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-session")]
+    #[pick(last)]
+    pub struct Title(pub String);
+
+    /// Why the delegation exists, `case:agent-session`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-session")]
+    #[pick(last)]
+    pub struct Reason(pub Entity);
 }
 
 /// Attributes on the durable `tonk:authorization` concept — the

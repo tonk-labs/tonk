@@ -5426,6 +5426,7 @@ dependencies = [
  "dialog-peer",
  "dialog-query",
  "dialog-repository",
+ "dialog-ucan",
  "dialog-ucan-core",
  "dialog-varsig",
  "futures-util",
