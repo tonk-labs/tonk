@@ -189,6 +189,8 @@ mod against_a_service {
     use axum::body::Body;
     use axum::http::{Method, Request, Response, StatusCode, header};
     use dialog_common::helpers::{Provisionable as _, Service};
+    use dialog_effects::storage::Directory;
+    use dialog_repository::HeldCaches;
     use http_body_util::BodyExt as _;
     use tonk_access_service::helpers::{AccessServer, AccessServiceAddress};
     use zeroize::Zeroizing;
@@ -284,10 +286,11 @@ concept!: &view-note
             let key = Ed25519Signer::import(&*seed).await.unwrap();
             let result = access(&self.verified, &self.agent.did(), &key.did(), edit).await;
             assert_eq!(result["isError"], false, "{result}");
-            let peer = HostedPeer::open(
-                &format!("view-{}", rand::random::<u64>()),
+            let peer = HostedPeer::open_in(
+                Directory::At(scratch()),
                 &seed,
                 &chains(&result),
+                HeldCaches::new(),
             )
             .await
             .unwrap();

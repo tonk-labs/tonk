@@ -1,0 +1,34 @@
+[package]
+name = "tonk-view-peer"
+description = "A shown MCP Apps view's peer: the ordinary router over the view's own key and delegations, in a browser Web Worker."
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Not a workspace member, like `tonk-host-worker`: it turns on
+# tonk-worker's `volatile-storage`, which a workspace-wide wasm build would
+# unify into every other crate's tonk-worker.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
+js-sys = "0.3"
+tonk-worker = { path = "../tonk-worker", features = ["volatile-storage"] }
+url = "2"
+wasm-bindgen = "=0.2.126"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Request", "Response"] }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"

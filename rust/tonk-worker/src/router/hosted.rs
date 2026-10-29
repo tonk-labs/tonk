@@ -63,10 +63,23 @@ impl HostedPeer {
         caches: HeldCaches,
     ) -> Result<Self, TonkWorkerError> {
         let internal = |error: &dyn std::fmt::Display| TonkWorkerError::Internal(error.to_string());
-        let (credentials, _) = crate::device::open_system(directory.clone())
+        let signer = Ed25519Signer::import(seed)
             .await
             .map_err(|error| internal(&error))?;
-        let signer = Ed25519Signer::import(seed)
+        Self::open_as(directory, signer, proofs, caches).await
+    }
+
+    /// [`open_in`](Self::open_in), acting as `signer` itself rather than a
+    /// key derived from a seed: a browser view's key, which is generated
+    /// non-extractable and so has no seed to hand over.
+    pub async fn open_as(
+        directory: Directory,
+        signer: Ed25519Signer,
+        proofs: &[DelegationChain],
+        caches: HeldCaches,
+    ) -> Result<Self, TonkWorkerError> {
+        let internal = |error: &dyn std::fmt::Display| TonkWorkerError::Internal(error.to_string());
+        let (credentials, _) = crate::device::open_system(directory.clone())
             .await
             .map_err(|error| internal(&error))?;
         let did = signer.did();
