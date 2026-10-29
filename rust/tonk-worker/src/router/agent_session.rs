@@ -195,6 +195,10 @@ async fn targets(
 }
 
 /// An agent of this account that an app may connect again.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
 struct Reusable {
     did: Did,
     key: String,
@@ -592,7 +596,7 @@ async fn open_held(
 
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 /// Mark the agent space as one, and note which provider's apps it is for.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 async fn mark(
     tonk: &crate::TonkState,
     key: &str,
