@@ -40,6 +40,7 @@ lifecycle). In the kernel build:
 | Add a passkey, approve a device or a connection, delete the account | absent | `permanent-persona.authorize` and the lifecycle's `authorize`; needs a WIT addition (see below) |
 | Sync with a remote | works | Dialog's UCAN site hands each operation to a relay (dialog `feat/ucan-relay`), which opens the subject's replica through `network.open` and `peer.open`; the host signs with the key the chain names and runs the UCAN site against the service. The kernel syncs after each write |
 | A space's content, asked of the profile | works | the profile's host passes requests under a space's branches to its kernel, streaming answers that come in pieces |
+| An account's spaces left local, once it is active | works | the account's convergence runs on the kernel; the persona tells the host what a space's kernel takes up changed, `{ tell: "changed" }`, and the space's kernel asks for its delegation again |
 | A space asking the persona (invites, authority, revocation) | works | `{ ask, profile }` on the channel, up the space's port, answered on the persona's `/_kernel/space/{space}/…` |
 | Telling a page to navigate | works | `{ tell: "navigate", client, href }` on the channel, the client named by the host in `x-tonk-client-id` |
 | A second account on a device | absent | needs a decision (see below) |
@@ -47,19 +48,22 @@ lifecycle). In the kernel build:
 
 ## What the suite says
 
-The whole suite on the kernel build (2026-10-28, after sync): 99 tests, 57
-pass, 42 fail. Since then the agent and tool connection tests pass (the
-kernels are built with `connection-invites`, 7 tests), and a sync no longer
-starts while a write runs.
+The whole suite on the kernel build (2026-10-29): 99 tests, 71 pass, 28
+fail. Since then an asset uploaded while a sync moved the space's line no
+longer fails (dialog's blob write retries its commit).
 
 What fails, and why:
 
 | Count | Why |
 |---|---|
 | 11 | the old worker's upgrade generations (`service_worker_upgrade.rs`, and `profile_library_repairs_claims_from_an_old_account_writer`) |
-| ~8 | approving with the account's key: signing in through another deployment, a waiting CLI, a local space's link, the wrong account for a handoff, deleting the account |
+| 8 | approving with the account's key: signing in through another deployment (4), a waiting CLI, the wrong account for a handoff, promoting a member, deleting the account |
 | 3 | a second account on a device: "no profile key named tonk" |
-| the rest | one each: member roles and removal, a published space's bar, sign-out's reload, the sign-up journey's analytics, a third device confirming, the harness's own test |
+| 1 | publishing a space: `space/publish` runs where the space is held, and the profile holds none; this predates the kernel |
+| 1 | the sign-up journey's analytics: no account event reaches the page |
+| 1 | signing out: the page is not reloaded |
+| 1 | a third device confirming: the first tab stays "confirming" |
+| 1 | the harness's own test |
 
 ## Sign-up on the world
 
@@ -104,8 +108,9 @@ Done as above, with these differences:
   as `{ tell: "refused" }` / `{ tell: "failed" }`.
 - `access.subject` is optional (WIT change): the account's link to a device
   is of everything it has.
-- The spaces the provisional persona holds stay under it: resealing them to
-  the permanent persona in `merge` is not done yet.
+- In `merge`, each space the provisional persona holds is backed up to the
+  permanent persona too, delegates to the account, and is settled as the
+  old worker's rotation settled it.
 
 Open, for a decision:
 
