@@ -18,22 +18,30 @@ use axum::{
     Extension, Json,
     extract::{Path, State},
 };
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_repository::RepositoryExt as _;
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 use dialog_ucan_core::time::Timestamp;
-use dialog_varsig::{Did, Principal as _};
+use dialog_varsig::Did;
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+use dialog_varsig::Principal as _;
 use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_handler_macros::wasm_compat;
-use tonk_invite::connection::{AgentAccess, DEFAULT_GRANT_TTL_SECONDS, agent_grant_scopes};
+use tonk_invite::connection::AgentAccess;
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+use tonk_invite::connection::{DEFAULT_GRANT_TTL_SECONDS, agent_grant_scopes};
 use tonk_worker_api::{AgentAuthorization, AgentSpaceChoice};
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 use zeroize::Zeroizing;
 
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+use super::agent_connections::issuer_ancestors;
 use super::{
     AppState,
-    agent_connections::{failure, issuer_ancestors},
+    agent_connections::failure,
     create_invite::{RemoteRequirement, resolve_remote_url},
 };
 use crate::{TonkWorkerError, axum::RequestOrigin};
@@ -100,6 +108,10 @@ pub(crate) fn provider(redirect_uri: &str, client_name: &str) -> Option<&'static
 
 /// A chosen space, checked: it exists here and syncs somewhere a hosted
 /// agent can reach.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
 struct Target {
     subject: Did,
     access: AgentAccess,
@@ -224,6 +236,7 @@ pub async fn create(
 
 /// Make the agent the page asked for, with the account the passkey just
 /// opened, and answer the app's request. Returns the app's callback.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn authorize(
     state: &AppState,
     custodian: &tonk_identity::custodian::Custodian,
@@ -243,15 +256,6 @@ pub(crate) async fn authorize(
     )
     .await;
     outcome
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-async fn authorize_inner(
-    _state: &AppState,
-    _custodian: &tonk_identity::custodian::Custodian,
-    _authorization: &AgentAuthorization,
-) -> Result<String, String> {
-    Err("an agent is approved in the browser".into())
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -364,13 +368,19 @@ async fn authorize_inner(
         });
     }
     record_grants(&tonk, &key, &granted).await.map_err(said)?;
+    drop(tonk);
+    // The host reads the grants from the agent space's remote, and the page
+    // navigates to the app's callback as soon as this answers, so push now
+    // rather than leave it to the background sync the navigation cuts off.
+    super::sync::sync_repository(state, &key)
+        .await
+        .map_err(|error| format!("the agent's grants could not be saved: {error}"))?;
 
     // The token is the session alone: what the agent may reach is in its
     // own space, where the host reads it like any other space's content.
     let issued = tonk_identity::agent::issue_agent_session(Signer::from(agent), &home)
         .await
         .map_err(|error| error.to_string())?;
-    drop(tonk);
     tonk_common::log!(
         "agent {agent_did} created with {} space grant(s)",
         granted.len()
@@ -385,6 +395,7 @@ async fn authorize_inner(
 }
 
 /// Mark the agent space as one, and note which provider's apps it is for.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn mark(
     tonk: &crate::TonkState,
     key: &str,
@@ -410,6 +421,7 @@ async fn mark(
 }
 
 /// One space granted to an agent, as its space records it.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 struct Granted {
     subject: Did,
     name: String,
@@ -423,6 +435,7 @@ struct Granted {
 /// directory entry per space (`xyz.tonk.space/name` and
 /// `xyz.tonk.space/home-address` on the space's entity). What the agent
 /// may do there is read off the chains themselves.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 async fn record_grants(
     tonk: &crate::TonkState,
     key: &str,
@@ -573,6 +586,7 @@ pub async fn deny(
 /// scope, signed by `issuer`: the account's own proof for the space, cut
 /// where it reaches `issuer`, with a leaf from `issuer` to the agent
 /// space. Signed by the account, a grant runs `space → account → agent`.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn grant(
     tonk: &crate::TonkState,
