@@ -19,6 +19,7 @@
 //! Nothing here knows about Durable Objects: the Host Worker keeps one
 //! writer per object, and native tests drive the same type directly.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -36,6 +37,9 @@ use zeroize::Zeroizing;
 
 use super::HostedPeer;
 use crate::TonkWorkerError;
+
+mod caps;
+pub use caps::ReadCaps;
 
 /// The bytes of tree nodes a writer's peer keeps, for every repository it
 /// opens together.
@@ -80,20 +84,28 @@ pub struct WriterSession {
     /// The MCP session the writer serves: `Mcp-Session-Id`, minted by the
     /// MCP Worker and bound to the token, so a client cannot choose it.
     pub mcp_session: String,
-    /// Chains from other spaces to the agent space (the token's grants),
-    /// verified by the front. The writer extends each by the session and
-    /// writer hops so its peer can act on those spaces.
-    pub grants: Vec<DelegationChain>,
+    /// Where the agent space syncs: the powerline's `home.address`. A
+    /// writer of another space pulls the agent space's grants from here.
+    pub home: url::Url,
+}
+
+impl WriterSession {
+    /// The agent space: the powerline's issuer.
+    pub fn agent(&self) -> &Did {
+        self.powerline.issuer()
+    }
 }
 
 /// The key one MCP session writes as, and the chain that lets it.
+///
+/// The chain is all the writer's peer is handed. Other spaces' grants
+/// reach it by pulling the agent space (see [`SpaceWriter::open`]), and
+/// its operator proves `space -> ... -> agent space` on through this
+/// chain.
 pub struct WriterKey {
     seed: Zeroizing<[u8; 32]>,
     did: Did,
     chain: DelegationChain,
-    /// `chain`, then each grant extended by `chain`'s delegations:
-    /// `space -> ... -> agent space -> session -> writer`.
-    proofs: Vec<DelegationChain>,
 }
 
 impl WriterKey {
@@ -127,27 +139,7 @@ impl WriterKey {
             .powerline
             .push(delegation)
             .map_err(|error| internal(&error))?;
-        let mut proofs = vec![chain.clone()];
-        for grant in &session.grants {
-            if grant.audience() != session.powerline.issuer() {
-                return Err(TonkWorkerError::Forbidden(
-                    "a grant is not addressed to the agent space".into(),
-                ));
-            }
-            let mut extended = grant.clone();
-            for delegation in chain.proofs() {
-                extended = extended
-                    .push(delegation.clone())
-                    .map_err(|error| internal(&error))?;
-            }
-            proofs.push(extended);
-        }
-        Ok(Self {
-            seed,
-            did,
-            chain,
-            proofs,
-        })
+        Ok(Self { seed, did, chain })
     }
 
     /// The writer's DID.
@@ -193,6 +185,16 @@ pub struct SpaceWriter {
     key: WriterKey,
     space: Did,
     remote: url::Url,
+    /// The agent space, and where it syncs: another space's writer pulls
+    /// its grants from there.
+    agent: Did,
+    home: url::Url,
+    /// Grants (CIDs of delegations to the agent space) the peer is known
+    /// to hold, from the access pulls so far.
+    admitted: parking_lot::Mutex<BTreeSet<String>>,
+    /// The peer was opened, and so pulled the agent space's grants,
+    /// after the front read the grants of the request that opened it.
+    fresh: AtomicBool,
     /// Where each peer is opened: `{root}/{generation}`.
     root: String,
     generation: AtomicU64,
@@ -208,6 +210,8 @@ pub struct SpaceWriter {
     reads: AtomicU64,
     /// Reads numbered below this began before a pull that has landed.
     pulled_for: AtomicU64,
+    /// The most one read answers.
+    caps: ReadCaps,
     /// Fail the next push before it is sent, as a refusing remote would.
     #[cfg(test)]
     refuse_push: AtomicBool,
@@ -216,7 +220,13 @@ pub struct SpaceWriter {
 impl SpaceWriter {
     /// Open the writer of `space` for `session`, its peers kept under the
     /// directory `root` (which nothing else may use), syncing with `remote`
-    /// (the access service's `/ucan/`).
+    /// (the space's UCAN endpoint).
+    ///
+    /// The writer of any space but the agent space first adopts the agent
+    /// space (at the session's `home`) as its peer's access upstream and
+    /// pulls it, so the grants retained there are found as proofs, the
+    /// way a device finds what its account holds. A space with no grant
+    /// there still opens, and the access service refuses its first pull.
     pub async fn open(
         root: &str,
         session: &WriterSession,
@@ -225,12 +235,18 @@ impl SpaceWriter {
     ) -> Result<Self, TonkWorkerError> {
         let key = WriterKey::derive(session).await?;
         let root = root.trim_end_matches('/').to_owned();
-        let peer = open_peer(&key, &format!("{root}/0"), space, remote).await?;
+        let agent = session.agent().clone();
+        let home = session.home.clone();
+        let peer = open_peer(&key, &format!("{root}/0"), space, remote, (&agent, &home)).await?;
         Ok(Self {
             peer: RwLock::new(Arc::new(peer)),
             key,
             space: space.clone(),
             remote: remote.clone(),
+            agent,
+            home,
+            admitted: parking_lot::Mutex::new(BTreeSet::new()),
+            fresh: AtomicBool::new(true),
             root,
             generation: AtomicU64::new(0),
             base: format!("/api/repository/{space}/branch/{BRANCH}"),
@@ -239,9 +255,16 @@ impl SpaceWriter {
             pulls: Mutex::new(()),
             reads: AtomicU64::new(0),
             pulled_for: AtomicU64::new(0),
+            caps: ReadCaps::default(),
             #[cfg(test)]
             refuse_push: AtomicBool::new(false),
         })
+    }
+
+    /// This writer, answering reads up to `caps`.
+    pub fn with_read_caps(mut self, caps: ReadCaps) -> Self {
+        self.caps = caps;
+        self
     }
 
     /// The space this writer writes.
@@ -324,7 +347,20 @@ impl SpaceWriter {
     /// `query`, and an `evaluate` with `transact=false`. Anything else is
     /// refused with `405`, since a commit here would skip the lock and the
     /// push.
+    ///
+    /// A `query` or `evaluate` answers at most the writer's [`ReadCaps`],
+    /// and is refused over them unless it asks for a page with `limit`
+    /// and `cursor` (see [`caps`]).
     pub async fn read(&self, request: Request<Body>) -> Response<Body> {
+        let (mut parts, body) = request.into_parts();
+        let page = match caps::Page::take(&parts.uri) {
+            Ok((page, uri)) => {
+                parts.uri = uri;
+                page
+            }
+            Err(error) => return failure(StatusCode::BAD_REQUEST, "BAD_PAGE", &error),
+        };
+        let request = Request::from_parts(parts, body);
         if !is_read(request.method(), request.uri()) {
             return failure(
                 StatusCode::METHOD_NOT_ALLOWED,
@@ -335,13 +371,70 @@ impl SpaceWriter {
         if let Err(error) = self.refresh().await {
             return failure(StatusCode::BAD_GATEWAY, "PULL_FAILED", &error);
         }
-        self.peer().call(self.on_branch(request)).await
+        let capped = request.method() == Method::POST;
+        let response = self.peer().call(self.on_branch(request)).await;
+        if capped {
+            caps::cap(response, self.caps, &page).await
+        } else {
+            response
+        }
+    }
+
+    /// The spaces the agent space reaches, read from it after a pull (a
+    /// read's pull: never one that would merge into a write in flight).
+    ///
+    /// Only the agent space's own writer answers: it already holds the
+    /// agent space warm, so the front asks it rather than opening a peer.
+    pub async fn agent_access(&self) -> Result<super::access::AgentAccess, TonkWorkerError> {
+        if self.space != self.agent {
+            return Err(TonkWorkerError::Forbidden(
+                "only the agent space's writer reads its grants".into(),
+            ));
+        }
+        self.refresh().await.map_err(TonkWorkerError::Internal)?;
+        self.peer().agent_access(&self.agent).await
+    }
+
+    /// Make sure the peer holds `grants`, the CIDs of the delegations to
+    /// the agent space the front found for this space, pulling the agent
+    /// space's grants again when one is new to it: a grant renewed while
+    /// the writer stays warm reaches it this way.
+    ///
+    /// The pull takes the write lock, so it never lands under a write's
+    /// proofs.
+    pub async fn admit(&self, grants: &[String]) -> Result<(), TonkWorkerError> {
+        if self.space == self.agent {
+            return Ok(());
+        }
+        let held =
+            |admitted: &BTreeSet<String>| grants.iter().all(|grant| admitted.contains(grant));
+        if self.fresh.swap(false, Ordering::SeqCst) {
+            self.admitted.lock().extend(grants.iter().cloned());
+            return Ok(());
+        }
+        if held(&self.admitted.lock()) {
+            return Ok(());
+        }
+        let _turn = self.lock.lock().await;
+        if held(&self.admitted.lock()) {
+            return Ok(());
+        }
+        self.peer().adopt_access(&self.agent, &self.home).await?;
+        self.admitted.lock().extend(grants.iter().cloned());
+        Ok(())
     }
 
     /// The branch's sync status: its local head and the remote's, read
     /// without moving either.
     pub async fn status(&self) -> Result<tonk_worker_api::SyncStatusResponse, TonkWorkerError> {
         status(&self.peer(), &self.base).await
+    }
+
+    /// Whether the lock is held: a write is in flight, or a read is
+    /// pulling under it. A writer that holds it must not be dropped, since
+    /// a write between its commit and its push would be lost.
+    pub fn holds_write(&self) -> bool {
+        self.lock.try_lock().is_err()
     }
 
     /// Release the peer. Waits for a write in flight to finish.
@@ -368,9 +461,15 @@ impl SpaceWriter {
     async fn reopen(&self) -> Result<(), String> {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let directory = format!("{}/{generation}", self.root);
-        let peer = open_peer(&self.key, &directory, &self.space, &self.remote)
-            .await
-            .map_err(|error| error.to_string())?;
+        let peer = open_peer(
+            &self.key,
+            &directory,
+            &self.space,
+            &self.remote,
+            (&self.agent, &self.home),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
         if let Err(error) = self.sync(&peer, "pull").await {
             peer.close().await;
             return Err(error);
@@ -453,17 +552,20 @@ impl SpaceWriter {
 }
 
 /// Open a hosted peer acting as `key` in `directory`, with `space`
-/// mounted as a replica of `remote`.
+/// mounted as a replica of `remote`. Unless `space` is the agent space,
+/// the peer's access branch adopts the agent space (`agent` at `home`)
+/// and pulls its grants first.
 async fn open_peer(
     key: &WriterKey,
     directory: &str,
     space: &Did,
     remote: &url::Url,
+    (agent, home): (&Did, &url::Url),
 ) -> Result<HostedPeer, TonkWorkerError> {
     let peer = HostedPeer::open_in(
         Directory::At(directory.to_owned()),
         &key.seed,
-        &key.proofs,
+        std::slice::from_ref(&key.chain),
         HeldCaches::with_budget(NODE_CACHE_BUDGET),
     )
     .await?;
@@ -472,6 +574,12 @@ async fn open_peer(
         return Err(TonkWorkerError::Internal(
             "the hosted peer does not act as the writer key".into(),
         ));
+    }
+    if space != agent
+        && let Err(error) = peer.adopt_access(agent, home).await
+    {
+        peer.close().await;
+        return Err(error);
     }
     if let Err(error) = peer.mount(space, remote).await {
         peer.close().await;
@@ -541,6 +649,29 @@ fn failure(status: StatusCode, code: &str, message: &str) -> Response<Body> {
         header::HeaderValue::from_static("application/json"),
     );
     response
+}
+
+#[cfg(test)]
+impl SpaceWriter {
+    /// Grant the agent space, as the approval does: retain `chains` and
+    /// record `directory` in this writer's space (the agent space), under
+    /// the lock, and push. See [`super::access::retain_agent_grants`].
+    pub(crate) async fn approve(
+        &self,
+        chains: &[DelegationChain],
+        directory: &[super::access::DirectoryEntry],
+    ) -> Result<(), String> {
+        let _turn = self.lock.lock().await;
+        let peer = self.peer();
+        self.sync(&peer, "pull").await?;
+        {
+            let state = peer.state.read().await;
+            super::access::retain_agent_grants(&state, &self.space, chains, directory)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        self.push(&peer).await
+    }
 }
 
 #[cfg(test)]

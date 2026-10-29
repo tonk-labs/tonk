@@ -22,6 +22,7 @@ use tower_service::Service;
 use super::{AppState, LspHub};
 use crate::TonkWorkerError;
 
+pub mod access;
 pub mod mcp;
 pub mod view;
 mod writer;
@@ -81,8 +82,16 @@ impl HostedPeer {
             crate::device::Registry::holding("hosted".to_owned(), directory.clone(), caches);
         let storage = registry.storage().await?;
         let profile = registry.open_profile(&storage, "hosted").await?;
-        let state =
-            crate::worker::boot_state(storage, "hosted".to_owned(), profile, registry).await?;
+        // The profile is this peer's signing identity and nothing else: it
+        // is never synced or browsed, so it skips the bootstrap a device's
+        // profile gets on every boot.
+        let state = crate::worker::boot_unbootstrapped_state(
+            storage,
+            "hosted".to_owned(),
+            profile,
+            registry,
+        )
+        .await?;
         if state.profile.did() != did {
             return Err(TonkWorkerError::Internal("hosted identity mismatch".into()));
         }
@@ -113,6 +122,21 @@ impl HostedPeer {
             .await
             .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
         Ok(())
+    }
+
+    /// Point this peer's access branch at the agent space `agent`, served
+    /// at `home`, and pull it: the grants retained there become proofs
+    /// this peer's operator finds. See [`access::adopt_agent_access`].
+    pub async fn adopt_access(&self, agent: &Did, home: &url::Url) -> Result<(), TonkWorkerError> {
+        let state = self.state.read().await;
+        access::adopt_agent_access(&state, agent, home).await
+    }
+
+    /// The spaces the agent space `agent` reaches, read from its replica
+    /// here as it is now. See [`access::read_agent_access`].
+    pub async fn agent_access(&self, agent: &Did) -> Result<access::AgentAccess, TonkWorkerError> {
+        let state = self.state.read().await;
+        access::read_agent_access(&state, agent).await
     }
 
     /// The DID this peer signs as.

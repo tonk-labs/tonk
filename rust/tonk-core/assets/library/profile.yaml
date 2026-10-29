@@ -560,6 +560,32 @@ view!:
       hub-discover .stack { padding:0; border:0; background:transparent; }
       hub-discover[collection="spaces"] .discover-collection,
       hub-discover[collection="discover"] > tonk-display { display:none; }
+      .collection-tabs button[hidden] { display:none; }
+      .collection-square--round { border-radius:50%; }
+      hub-discover:not([collection="contacts"]) .contacts-collection,
+      hub-discover[collection="contacts"] > tonk-display,
+      hub-discover[collection="contacts"] .discover-collection { display:none; }
+      .contact-list { display:grid; gap:16px; }
+      .contact-card { border:1px solid var(--ink); background:var(--card); }
+      .contact-head { display:flex; align-items:center; gap:14px; padding:16px 19px; }
+      .contact-mark { display:grid; place-items:center; flex:none; width:40px; height:40px;
+        border:1px solid var(--ink); font:500 16px/1 var(--cond); }
+      .contact-name { margin:0; letter-spacing:-.02em; overflow-wrap:anywhere;
+        font:300 27px/1.1 Gestalte,Georgia,serif; }
+      .contact-kind { margin:4px 0 0; color:var(--soft); font:12px/1.4 var(--cond); }
+      .contact-open { margin-left:auto; font:500 12px var(--cond); color:var(--ink); }
+      .contact-spaces { margin:0; padding:0; list-style:none; border-top:1px solid var(--sep); }
+      .contact-space { display:flex; align-items:center; gap:16px; min-height:49px;
+        padding:8px 19px; font:14px/1.4 var(--cond); }
+      .contact-space + .contact-space { border-top:1px solid var(--sep); }
+      .contact-space a { color:var(--ink); overflow-wrap:anywhere; }
+      .contact-access { margin-left:auto; color:var(--soft); white-space:nowrap; }
+      .contact-space button { min-height:32px; padding:4px 10px; font:500 12px var(--cond); }
+      .contact-none { padding:12px 19px; color:var(--soft); font:12px/1.4 var(--cond); }
+      @media (max-width:600px) {
+        .contact-space { flex-wrap:wrap; gap:4px 12px; }
+        .contact-access { margin-left:0; }
+      }
       .template-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:34px 26px; }
       .template-card.srow-wrap { display:block; min-width:0; }
       .template-preview { display:flex; flex-direction:column; width:100%; height:100%;
@@ -674,6 +700,15 @@ view!:
       .hub-page account-settings .settings-heading h2 { margin:0; }
       .hub-page account-settings .agent-access-panel { grid-column:1 / -1; }
       .hub-page account-settings .agent-access-panel .srowd h2 { margin:0; }
+      /* A plain bordered verb, sized by its word: the bare `.cta` here
+         picked up the panel's 44px square and its text spilled out. */
+      .hub-page account-settings .connection-refresh { flex:none; width:auto; height:auto;
+        min-width:0; min-height:36px; padding:8px 14px; border:1px solid var(--sep);
+        background:var(--card); color:var(--ink); white-space:nowrap; box-shadow:none;
+        font:600 14px/1.2 var(--cond); }
+      .hub-page account-settings .connection-refresh:hover:not(:disabled) { background:var(--wash); }
+      .hub-page account-settings .connection-refresh:disabled { opacity:.5; cursor:default; }
+      .hub-page account-settings .connection-refresh:focus-visible { outline:2px solid var(--ink); outline-offset:2px; }
       .hub-page account-settings .danger-panel p,
       .hub-page account-settings .signout-panel p { margin:0; font:400 15px/1.55 var(--sans); }
       .hub-page account-settings .danger-panel .panel-action { width:fit-content; }
@@ -2488,6 +2523,106 @@ element!: &hub-discover
           </tonk-dialog>
         </space-create>`;
       }
+    # The account's agents: each one's own space and the spaces it can
+    # reach. The tab appears only once there is an agent, and agent
+    # spaces leave the spaces collection, since they are identities
+    # rather than places to work. A load that fails keeps what showed.
+    agents: |
+      async (self) => {
+        if (self.__agentsLoading) return;
+        self.__agentsLoading = true;
+        const status = self.querySelector('[data-contacts-status]');
+        try {
+          const origin = window.tonk?.context?.origin ?? window.location.origin;
+          const response = await fetch(`${origin}/api/agents`);
+          if (!response.ok) throw new Error(String(response.status));
+          const agents = await response.json();
+          if (!self.isConnected || !Array.isArray(agents)) return;
+          self.agentsRender(agents);
+        } catch (error) {
+          if (status && self.getAttribute('collection') === 'contacts') status.textContent = 'Couldn’t load your agents. Switch tabs to try again.';
+        } finally { self.__agentsLoading = false; }
+      }
+    agents-render: |
+      (self, agents) => {
+        const tab = self.querySelector('[data-contacts-tab]');
+        const list = self.querySelector('[data-contacts-list]');
+        const status = self.querySelector('[data-contacts-status]');
+        const hide = self.querySelector('style[data-agent-spaces]');
+        const key = text => String(text ?? '').replace(/[^A-Za-z0-9]/g, '');
+        if (hide) hide.textContent = agents.map(agent => `.space-card[data-space-subject$="${key(agent.key)}"]`).join(',') + (agents.length ? '{display:none}' : '');
+        if (tab) tab.hidden = agents.length === 0;
+        if (!agents.length && self.getAttribute('collection') === 'contacts') {
+          self.querySelector('[data-collection="spaces"]')?.click();
+        }
+        if (status) status.textContent = '';
+        if (!list) return;
+        const el = (tag, className, text, parent) => {
+          const node = document.createElement(tag);
+          if (className) node.className = className;
+          if (text) node.textContent = text;
+          parent?.append(node);
+          return node;
+        };
+        const date = seconds => {
+          const at = new Date(seconds * 1000);
+          return Number.isFinite(at.getTime()) ? at.toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'}) : '';
+        };
+        list.textContent = '';
+        for (const agent of agents) {
+          const name = agent.name || 'Unnamed agent';
+          const card = el('article', 'contact-card', '', list);
+          card.dataset.agent = agent.did;
+          card.setAttribute('aria-label', name);
+          const head = el('div', 'contact-head', '', card);
+          el('span', 'contact-mark', name.trim().charAt(0).toUpperCase() || 'A', head).setAttribute('aria-hidden', 'true');
+          const who = el('div', '', '', head);
+          el('h3', 'contact-name', name, who);
+          el('p', 'contact-kind', `agent · ${agent.did}`, who);
+          const open = el('a', 'contact-open', 'open its space ↗', head);
+          open.href = `/space/${agent.did}`;
+          const spaces = el('ul', 'contact-spaces', '', card);
+          if (!agent.spaces?.length) el('li', 'contact-none', 'No access to your spaces.', spaces);
+          for (const space of agent.spaces ?? []) {
+            const row = el('li', 'contact-space', '', spaces);
+            const link = el('a', '', space.name || space.subject, row);
+            link.href = `/space/${space.subject}`;
+            const access = space.access === 'write' ? 'read and write' : 'read';
+            el('span', 'contact-access', space.expiresAt ? `${access} · until ${date(space.expiresAt)}` : access, row);
+            const revoke = el('button', 'cta', 'revoke', row);
+            revoke.type = 'button';
+            revoke.dataset.agentRevoke = agent.key;
+            revoke.dataset.agentSpace = space.subject;
+            revoke.setAttribute('aria-label', `revoke ${name}’s access to ${space.name || space.subject}`);
+          }
+        }
+      }
+    agents-revoke: |
+      async (self, button) => {
+        const status = self.querySelector('[data-contacts-status]');
+        if (button.dataset.confirming !== 'true') {
+          button.dataset.confirming = 'true';
+          button.textContent = 'confirm revoke';
+          return;
+        }
+        button.disabled = true;
+        button.textContent = 'revoking…';
+        try {
+          const origin = window.tonk?.context?.origin ?? window.location.origin;
+          const response = await fetch(`${origin}/api/agents/${encodeURIComponent(button.dataset.agentRevoke)}/revoke`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ space: button.dataset.agentSpace }),
+          });
+          if (!response.ok) { const error = new Error(await response.text()); error.status = response.status; throw error; }
+          if (status) status.textContent = 'Access revoked. Enforcement may take a moment; anything already read stays read.';
+          await self.agents();
+        } catch (error) {
+          button.disabled = false;
+          button.dataset.confirming = '';
+          button.textContent = 'retry revoke';
+          if (status) status.textContent = 'The revocation could not be confirmed. Try again.';
+        }
+      }
     load: |
       async (self) => {
         if (self.__loading || self.__loaded) return;
@@ -2516,15 +2651,21 @@ element!: &hub-discover
       }
     connected: |
       (self) => {
+        self.agents();
         if (self.__wired) return;
         self.__wired = true;
+        // An agent approved in another tab shows on coming back here.
+        window.addEventListener('focus', () => { if (self.isConnected) self.agents(); });
         self.addEventListener('click', event => {
           if (event.target?.closest?.('[data-discover-retry]')) { self.load(); return; }
+          const revoke = event.target?.closest?.('[data-agent-revoke]');
+          if (revoke && self.contains(revoke)) { self.agentsRevoke(revoke); return; }
           const button = event.target?.closest?.('[data-collection]');
           if (!button || !self.contains(button)) return;
           const collection = button.getAttribute('data-collection');
           self.setAttribute('collection', collection);
           if (collection === 'discover') self.load();
+          self.agents();
           for (const tab of self.querySelectorAll('[data-collection]')) {
             tab.setAttribute('aria-pressed', String(tab === button));
           }
@@ -2842,6 +2983,7 @@ view!:
           <nav class="collection-tabs chrome" aria-label="space collections">
             <button type="button" data-collection="spaces" aria-pressed="true"><span class="collection-square" aria-hidden="true"></span>your spaces</button>
             <button type="button" data-collection="discover" aria-pressed="false"><svg class="collection-compass" viewBox="0 0 18 18" fill="none" aria-hidden="true"><circle cx="9" cy="9" r="6.5" stroke="currentColor" stroke-width="1.2"/><path d="m11.8 6.2-1.6 4-4 1.6 1.6-4z" fill="currentColor"/></svg>discover</button>
+            <button type="button" data-collection="contacts" aria-pressed="false" data-contacts-tab hidden><span class="collection-square collection-square--round" aria-hidden="true"></span>your agents</button>
           </nav>
           <!-- One page for `/` and `/settings`: the stack and the panel
                are both here, and the bar's `path` picks the one that
@@ -2855,6 +2997,13 @@ view!:
             <button type="button" class="cta" data-discover-retry hidden>try again</button>
             <hub-collection class="template-grid"></hub-collection>
           </section>
+          <!-- The agents this account approved, each with the spaces it
+               can reach. The tab shows only once there is one. -->
+          <section class="contacts-collection" aria-label="your agents">
+            <p class="space-create-help" data-contacts-status role="status" aria-live="polite"></p>
+            <div class="contact-list" data-contacts-list></div>
+          </section>
+          <style data-agent-spaces></style>
         </hub-discover>
         <section class="settings chrome" data-settings-view>
             <a class="settings-back" href="/" data-return-spaces>‹ back to spaces</a>
@@ -2865,7 +3014,7 @@ view!:
                   <div class="account-panels">
                     <tonk-display model="tonk:account/registered" view="settings"></tonk-display>
                     <section class="settings-panel agent-access-panel" data-agent-connections hidden aria-label="agent access">
-                      <div class="srowd"><h2>Agent access</h2><button class="cta" type="button" data-connections-refresh>refresh</button></div>
+                      <div class="settings-heading"><h2>Agent access</h2><button class="connection-refresh" type="button" data-connections-refresh>refresh</button></div>
                       <p class="expl">Completed connections created by this account.</p>
                       <p class="expl" data-connections-status role="status" aria-live="polite"></p>
                       <div data-connections-list></div>
@@ -2933,6 +3082,36 @@ view!:
                   </div>
                   <span hidden data-via-return on:finish-sign-in-via=tonk:finish-sign-in-via></span>
                 </div>
+                <div class="pane" data-pane="agent" hidden data-link-approval data-agent-approval>
+                  <h2 class="link-heading">connect an agent</h2>
+                  <dl class="link-details">
+                    <div><dt>app</dt><dd data-agent-client>…</dd></div>
+                    <div><dt>returns to</dt><dd data-agent-host>…</dd></div>
+                    <div><dt>account</dt><dd>
+                      <tonk-display model="tonk:account/registered" view="link-email">
+                        <span slot="loading">loading account…</span>
+                        <span slot="no-entity">account email unavailable</span>
+                      </tonk-display>
+                    </dd></div>
+                  </dl>
+                  <p class="expl agent-warning" data-agent-warning hidden></p>
+                  <label class="agent-field"><span>agent name</span>
+                    <input class="agent-input" type="text" data-agent-name maxlength="80" autocomplete="off" aria-label="Agent name"></label>
+                  <div class="agent-spaces" role="group" aria-label="what it can reach">
+                    <div class="agent-spaces-head">what it can reach</div>
+                    <div data-agent-spaces><p class="expl">loading your spaces…</p></div>
+                  </div>
+                  <p class="expl">
+                    the agent gets a space of its own, named as above, and can always read and
+                    write there. read lets it see a space; read and write lets it change it too.
+                    access to your spaces lasts 90 days.
+                  </p>
+                  <p class="expl agent-error" data-agent-error role="alert" hidden></p>
+                  <div class="link-foot">
+                    <button class="m-cancel" type="button" data-agent-deny>deny</button>
+                    <button class="m-go" type="button" data-agent-approve disabled>approve</button>
+                  </div>
+                </div>
                 <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
                 <tonk-display model="state:ceremony" entity="state:ceremony" view="settings">
                   <span slot="no-entity" hidden></span>
@@ -2981,6 +3160,14 @@ route!: &route/settings
 route!: &route/settings/link
   this: id:tonk:route/settings/link
   path: "/settings/link"
+  concept: tonk:hub
+
+# `/settings/agent` is the same page too: an app signing in over OAuth
+# (`/authorize` on this origin) sends the browser here with its pending
+# request, and the settings panel asks which spaces its agent may reach.
+route!: &route/settings/agent
+  this: id:tonk:route/settings/agent
+  path: "/settings/agent"
   concept: tonk:hub
 
 # The /join route: redeem an invite. The shell's top-level `<tonk-site>`
@@ -5484,6 +5671,155 @@ element!: &account-settings
         const target = self.querySelector(selector);
         if (target && target.textContent !== value) target.textContent = value;
       }
+    # An app's OAuth request: `/authorize` recorded it and sent the browser
+    # here with its handle. The worker reads and answers it, since this
+    # frame cannot reach the authorization server with its cookie.
+    agent-request: |
+      (self) => {
+        const at = self.context();
+        if (at.path !== '/settings/agent') return null;
+        return new URLSearchParams(at.search).get('request') || null;
+      }
+    agent-error: |
+      (self, text) => {
+        const node = self.querySelector('[data-agent-error]');
+        if (!node) return;
+        if (node.textContent !== text) node.textContent = text;
+        node.hidden = !text;
+      }
+    # A worker error body's message, or the raw text.
+    agent-reason: |
+      (self, error) => {
+        try { return JSON.parse(error.message)?.error?.message ?? error.message; } catch { return error.message; }
+      }
+    # Show the pane; once this browser has an account, read the request
+    # and the spaces it could reach, once per request.
+    agent-show: |
+      (self) => {
+        const request = self.agentRequest();
+        if (!request) return false;
+        self.pane('agent');
+        if (!self.linked() || self.getAttribute('data-agent-shown') === request) return true;
+        self.setAttribute('data-agent-shown', request);
+        self.api(`/api/agent/request/${encodeURIComponent(request)}`).then((described) => {
+          const client = described?.client_name || 'an app';
+          const host = described?.redirect_host || described?.redirect_uri || '';
+          self._agentClient = client;
+          self.text('[data-agent-client]', client);
+          self.text('[data-agent-host]', host);
+          const name = self.querySelector('[data-agent-name]');
+          if (name && !name.value) name.value = client;
+          const loopback = host === 'localhost' || host === '[::1]' || /^127\./.test(host);
+          const warning = self.querySelector('[data-agent-warning]');
+          if (warning) {
+            warning.textContent = loopback ? `${host} is this computer. approve only if you just started ${client} here yourself.` : '';
+            warning.hidden = !loopback;
+          }
+          return self.agentSpaces();
+        }).then(() => {
+          const approve = self.querySelector('[data-agent-approve]');
+          if (approve) approve.disabled = false;
+        }, (error) => {
+          self.agentError(error.status === 404
+            ? 'this connection request has expired. start connecting again from your app.'
+            : `this request can't be answered: ${self.agentReason(error)}`);
+        });
+        return true;
+      }
+    # One row per space, a select per row: synced spaces only, since a
+    # hosted agent reaches a space through its sync remote.
+    agent-spaces: |
+      async (self) => {
+        const list = self.querySelector('[data-agent-spaces]');
+        const profile = await self.api('/api/profile');
+        // Agents' own spaces are contacts, not spaces to grant.
+        const agents = new Set(((await self.api('/api/agents').catch(() => [])) ?? []).map((agent) => agent.key));
+        const rows = [];
+        for (const { key } of profile?.space ?? []) {
+          if (agents.has(key)) continue;
+          let label = key, synced = false;
+          try {
+            const info = await self.api(`/api/repository/${encodeURIComponent(key)}`);
+            label = info?.label || key;
+            synced = Object.keys(info?.remote ?? {}).length > 0;
+          } catch {}
+          rows.push({ key, label, synced });
+        }
+        rows.sort((a, b) => a.label.localeCompare(b.label));
+        if (!list) return;
+        list.replaceChildren();
+        if (!rows.length) {
+          const empty = document.createElement('p');
+          empty.className = 'expl';
+          empty.textContent = 'there are no spaces to choose from.';
+          list.append(empty);
+        }
+        for (const row of rows) {
+          const line = document.createElement('label');
+          line.className = 'agent-space';
+          const name = document.createElement('span');
+          name.className = 'agent-space-name';
+          name.textContent = row.label;
+          const select = document.createElement('select');
+          select.className = 'agent-access';
+          select.dataset.key = row.key;
+          select.dataset.testid = `space-access-${row.key}`;
+          select.setAttribute('aria-label', row.label);
+          select.disabled = !row.synced;
+          for (const [value, text] of [['none', 'No access'], ['read', 'Read'], ['write', 'Read and write']]) {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = text;
+            select.append(option);
+          }
+          line.append(name, select);
+          if (!row.synced) {
+            const why = document.createElement('small');
+            why.className = 'agent-space-why';
+            why.textContent = 'only on this device: sync it to let a hosted agent reach it';
+            line.append(why);
+          }
+          list.append(line);
+        }
+      }
+    agent-busy: |
+      (self, busy, text) => {
+        for (const button of self.querySelectorAll('[data-agent-approve], [data-agent-deny]')) button.disabled = busy;
+        self.status(text);
+      }
+    agent-approve: |
+      (self) => {
+        const request = self.agentRequest();
+        const field = self.querySelector('[data-agent-name]');
+        const name = (field?.value ?? '').trim();
+        if (!request) return;
+        if (!name) { field?.focus(); self.agentError('give the agent a name.'); return; }
+        const spaces = [...self.querySelectorAll('select.agent-access')]
+          .filter((select) => !select.disabled && (select.value === 'read' || select.value === 'write'))
+          .map((select) => ({ key: select.dataset.key, access: select.value }));
+        self.agentError('');
+        self.agentBusy(true, 'Waiting for passkey…');
+        // The worker asks this page's top document for the passkey; the
+        // ceremony row reports how it goes, and the top page goes on to
+        // the app's callback when it is done.
+        self.api('/api/agent/session', { name, spaces, request }).catch((error) => {
+          self.agentBusy(false, '');
+          self.agentError(self.agentReason(error));
+        });
+      }
+    agent-deny: |
+      (self) => {
+        const request = self.agentRequest();
+        if (!request) return;
+        self.agentError('');
+        self.agentBusy(true, 'telling the app you said no…');
+        self.api('/api/agent/deny', { request }).then((response) => {
+          window.tonk?.navigate?.(response.redirect);
+        }).catch((error) => {
+          self.agentBusy(false, '');
+          self.agentError(self.agentReason(error));
+        });
+      }
     pane: |
       (self, name) => {
         for (const pane of self.querySelectorAll('[data-pane]')) pane.hidden = pane.dataset.pane !== name;
@@ -5502,6 +5838,7 @@ element!: &account-settings
         }
         if (self.localLinkShow()) return;
         if (self.viaShow()) return;
+        if (self.agentShow()) return;
         const request = self.linkRequest();
         if (!request) {
           self.pane('account');
@@ -5697,12 +6034,14 @@ element!: &account-settings
           'authorize-device': 'Approving the connection',
           'add-passkey': 'Adding the passkey',
           'sign-in-via': 'Signing in',
+          'authorize-agent': 'Approving the agent',
         }[which];
         if (!subject) return;
         const done = {
           'delete-account': 'Account deleted.',
           'authorize-device': 'Approved. Completing the connection…',
           'sign-in-via': 'Signed in.',
+          'authorize-agent': 'Approved. Returning to the app…',
         }[which] ?? 'Done.';
         const text = {
           'pending-ceremony': `${subject}: waiting for passkey…`,
@@ -5719,6 +6058,9 @@ element!: &account-settings
           if (asking !== self.hasAttribute('data-passkey-requested')) {
             if (asking) self.setAttribute('data-passkey-requested', ''); else self.removeAttribute('data-passkey-requested');
           }
+        }
+        if (which === 'authorize-agent' && (state === 'refused' || state === 'failed')) {
+          for (const button of self.querySelectorAll('[data-agent-approve], [data-agent-deny]')) button.disabled = false;
         }
         self.status(text);
       }
@@ -5802,6 +6144,7 @@ element!: &account-settings
           return;
         }
         if (changed && linked === 'true' && path === '/settings') self.connectionsRefresh();
+        if (changed && linked === 'true' && path === '/settings/agent') self.agentShow();
         // Signing in through another deployment needs no passkey here, so
         // its page raises no ceremony of its own. A bare `?via` (Option on
         // "add an account") raises the one that asks which Tonk to go
@@ -5852,6 +6195,10 @@ element!: &account-settings
             self.status('Waiting for passkey…');
           } else if (hit('[data-link-decline]')) {
             self.decline();
+          } else if (hit('[data-agent-approve]')) {
+            self.agentApprove();
+          } else if (hit('[data-agent-deny]')) {
+            self.agentDeny();
           }
         });
         self.addEventListener('input', (event) => {

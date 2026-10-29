@@ -3720,6 +3720,7 @@ dependencies = [
 name = "tonk-worker"
 version = "0.6.16-rc.1"
 dependencies = [
+ "anyhow",
  "async-trait",
  "axum",
  "base58",
@@ -3762,6 +3763,7 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_ipld_dagcbor",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "thiserror 2.0.18",
  "tokio",
