@@ -243,8 +243,11 @@ never are any:
   not overlap in one Durable Object, so reads are capped in rows and bytes; a
   read over the cap is refused or answered by a stateless isolate instead.
 - **A write is answered after its push lands**, so a later read anywhere sees it.
-  A write whose push fails is rolled back to the pre-write head under the lock,
-  so a write answered as failed never lands later with the next push.
+  A write whose push fails is discarded under the lock by reopening the peer
+  from the remote head (dialog cannot rewind a branch safely), so a write
+  answered as failed never lands later with the next push. One case stays
+  ambiguous: a push that published but whose status check also failed is
+  answered as failed yet landed, so retries must check before re-applying.
 - **The space writer feeds SSE** from the space's `live.rs` socket and fans
   changes out to subscribers.
 
