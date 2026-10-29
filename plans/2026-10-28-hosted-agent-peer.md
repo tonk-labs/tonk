@@ -721,8 +721,61 @@ resolves with the embedded-key check enforced.
 | Host and MCP Workers, space writer | `wrangler dev` (Durable Objects run locally), bound to the access service locally |
 | Real client | `claude mcp add --transport http tonk-local http://localhost:<port>/mcp` |
 | Step-through | `npx @modelcontextprotocol/inspector` |
-| Automated | Playwright + Chrome virtual authenticator, Node MCP SDK client |
+| Automated | `tests/e2e/hosted-agent/`, see [Testing end to end](#testing-end-to-end) |
 | claude.ai | `cloudflared tunnel --url` for the access service; passkeys are per tunnel hostname |
+
+## Testing end to end
+
+No LLM host can be driven in CI, so the test is the MCP client. One Node
+script (`tests/e2e/hosted-agent/`) plays every part a host and a person play:
+
+| Part | Played by |
+| --- | --- |
+| LLM host | `@modelcontextprotocol/sdk` `Client` over Streamable HTTP, with an `OAuthClientProvider`: discovery from the 401, dynamic registration, PKCE, `redirect_uri` on a loopback listener the script owns |
+| The person's browser | Playwright Chromium opening the `/authorize` URL the SDK hands over |
+| The passkey | Chrome's virtual authenticator over CDP (`WebAuthn.addVirtualAuthenticator`, `hasPrf`), as `driver_with_prf` does for the Rust browser suite |
+| The emailed activation link | Resend's test inbox: the account is `delivered+e2e-<run>@resend.dev`, and the script reads the link back through the Resend API with the preview's key |
+| Approval | Playwright on `/settings/agent`, by role and accessible name |
+
+What it checks, in order:
+
+1. `POST /mcp` without a token answers 401 with `resource_metadata`; a garbage
+   Bearer answers 401 too.
+2. A fresh profile signs up and activates, so it can host spaces.
+3. OAuth runs to a token; the approval creates the agent space and grants the
+   onboarding space read-only.
+4. `tools/list` names the tools; a read of the granted space succeeds; a write
+   to it is a tool error (read-only grant), not a 401.
+5. Writes to the agent space: 8 concurrent `evaluate` calls on one MCP session,
+   and 8 more on a second session with the same token (a second writer DID).
+6. A third, fresh MCP session (a new space writer, so nothing is served from
+   memory) reads all 16 back. This is the dialog-db#705 check: a lost write
+   is a missing record here.
+
+Isolation and cleanup: every run is a fresh browser profile, a fresh passkey,
+a fresh account and a fresh agent space, so no two runs share a DID and none
+needs cleaning up. A PR's preview has its own D1 and KV, deleted with the
+worker when the PR closes. Objects land in the shared `tonk-spaces-preview`
+bucket under DIDs no other run will name; a lifecycle rule on that bucket is
+the only sweep it needs.
+
+Where it runs:
+
+- **CI:** a job after `deploy` in `publish.yml`, on pull requests, against the
+  preview URL `deploy` outputs. Needs one repository secret,
+  `TONK_E2E_RESEND_API_KEY`: a Resend key that can read sent mail, which
+  takes `full_access` (the preview's own key only sends).
+  Uploads a Playwright trace on failure.
+- **By hand:** the same script against any origin (`TONK_E2E_ORIGIN`), with
+  `--headed` to watch the approval.
+- The space writer's concurrency and the OAuth server's edge cases stay in
+  the Rust tests (`hosted/writer/tests.rs`, `oauth/tests.rs`), which are
+  faster and see more than a client can.
+
+Manual, per release: adding the connector and approving in Claude web,
+Claude desktop and ChatGPT, since each host's connector UI, OAuth window and
+tool-call rendering is outside what the script exercises. MCP App views
+(stage 7) add their own manual pass.
 
 ## Open
 
