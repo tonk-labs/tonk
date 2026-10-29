@@ -339,20 +339,26 @@
           send({ __tonkRuntime: 'inject-code', code: pack.code });
         if (m?.__tonkRuntime === 'error') showError('Tonk runtime could not load.');
       });
-      const ready = (async () => {
-        const response = await fetch(origin + '/space-runtime.json', { credentials: 'omit' });
-        if (!response.ok) throw Error('Could not load Tonk runtime.');
-        pack = await response.json();
-        await rpc('ui/initialize', {
-          appInfo: { name: 'tonk-space', version: '0.2.0' },
-          appCapabilities: {},
-          protocolVersion: '2026-01-26',
-        });
+      // Answer the host first: it waits on this handshake to show the app,
+      // and the runtime is a large download that may be slow or blocked.
+      const initialized = rpc('ui/initialize', {
+        appInfo: { name: 'tonk-space', version: '0.2.0' },
+        appCapabilities: {},
+        protocolVersion: '2026-01-26',
+      }).then(() =>
         parent.postMessage(
           { jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} },
           '*',
-        );
-      })();
+        ),
+      );
+      const loaded = (async () => {
+        const response = await fetch(origin + '/space-runtime.json', { credentials: 'omit' });
+        if (!response.ok) throw Error('Could not load Tonk runtime.');
+        pack = await response.json();
+      })().catch(() => {
+        throw Error('Could not load the Tonk runtime from ' + origin + '.');
+      });
+      const ready = Promise.all([initialized, loaded]);
       ready.catch((e) => showError(e.message));
     })();
   </script>
