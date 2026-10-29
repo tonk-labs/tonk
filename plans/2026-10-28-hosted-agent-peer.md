@@ -559,6 +559,26 @@ Both
   not queued behind the model;
 - for the last resort only: a 20 s tool call survives.
 
+**Probe results so far** (probe at `sw-probe.irakli-1ed.workers.dev`, raw reports
+under `/reports`):
+
+- Claude web, custom connector: route A is out. The host returns the approved
+  CSP with `frameDomains: []`, so `frame-src` blocks the provider origin.
+- Claude web: route B passes every check. The view runs at a stable origin per
+  server, `https://{hash}.claudemcpcontent.com`, with sandbox
+  `allow-scripts allow-same-origin allow-forms`. IndexedDB and localStorage
+  work. A blob Web Worker is a secure context, makes a non-extractable Ed25519
+  key, and reaches the provider over `fetch` and `wss` (`connectDomains` is
+  honoured). View-initiated tool calls work, about 480 ms each.
+- Since the view origin is stable, the relay can keep one key per server in
+  IndexedDB instead of minting a key per load, so `tonk_view_access` does not
+  have to delegate on every render.
+- Claude desktop and ChatGPT: pending.
+
+Unless desktop or ChatGPT honour `frameDomains`, route B is the route. That
+drops video seeking through a service worker, so M7's video check needs another
+way to serve ranged assets to the view, or is dropped.
+
 **Then:**
 
 - `tonk_view_access(space, audience)`, app-only, signing a one-space delegation
