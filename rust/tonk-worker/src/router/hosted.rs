@@ -82,8 +82,16 @@ impl HostedPeer {
             crate::device::Registry::holding("hosted".to_owned(), directory.clone(), caches);
         let storage = registry.storage().await?;
         let profile = registry.open_profile(&storage, "hosted").await?;
-        let state =
-            crate::worker::boot_state(storage, "hosted".to_owned(), profile, registry).await?;
+        // The profile is this peer's signing identity and nothing else: it
+        // is never synced or browsed, so it skips the bootstrap a device's
+        // profile gets on every boot.
+        let state = crate::worker::boot_unbootstrapped_state(
+            storage,
+            "hosted".to_owned(),
+            profile,
+            registry,
+        )
+        .await?;
         if state.profile.did() != did {
             return Err(TonkWorkerError::Internal("hosted identity mismatch".into()));
         }

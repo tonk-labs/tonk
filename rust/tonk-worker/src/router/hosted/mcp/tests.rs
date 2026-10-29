@@ -234,6 +234,22 @@ fn own(agent: &Did) -> AgentAccess {
 }
 
 #[dialog_common::test]
+async fn the_manuals_it_names_are_resources_it_serves() {
+    let listed = guide_resources();
+    assert_eq!(listed.len(), guide::TOPICS.len());
+    for resource in &listed {
+        let uri = resource["uri"].as_str().unwrap();
+        let read = read_guide(uri).unwrap();
+        assert!(!read["contents"][0]["text"].as_str().unwrap().is_empty());
+    }
+    assert!(read_guide("tonk://guide/missing").is_none());
+    let said = instructions("https://tonk.example/");
+    assert!(said.starts_with("# This connection"));
+    assert!(said.contains("Tonk at https://tonk.example to check"));
+    assert!(said.contains(guide::AGENT));
+}
+
+#[dialog_common::test]
 async fn a_missing_or_malformed_token_is_unauthorized() {
     let key = SessionKey::derive("test");
     let tickets = crate::router::hosted::view::TicketKey::derive("test");

@@ -349,7 +349,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
                             "title": "Tonk",
                             "version": env!("CARGO_PKG_VERSION"),
                         },
-                        "instructions": guide::AGENT,
+                        "instructions": instructions(self.origin),
                     },
                 }),
             );
@@ -378,12 +378,18 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 tools.extend(super::view::tools());
                 Ok(json!({ "tools": tools }))
             }
-            "resources/list" => Ok(json!({ "resources": super::view::resources() })),
+            "resources/list" => {
+                let mut resources = guide_resources();
+                resources.extend(super::view::resources());
+                Ok(json!({ "resources": resources }))
+            }
             "resources/read" => {
                 let uri = message["params"]["uri"].as_str().unwrap_or_default();
-                super::view::read_resource(uri, self.origin).ok_or_else(
-                    || json!({ "code": -32602, "message": format!("no resource {uri}") }),
-                )
+                read_guide(uri)
+                    .or_else(|| super::view::read_resource(uri, self.origin))
+                    .ok_or_else(
+                        || json!({ "code": -32602, "message": format!("no resource {uri}") }),
+                    )
             }
             "tools/call" => Ok(self
                 .call_tool(&verified, &bearer, &session, &message["params"])
@@ -631,17 +637,75 @@ fn list_spaces(access: &AgentAccess) -> Vec<Value> {
             }
             if access.agent {
                 entry["home"] = json!(true);
-                entry["about"] = json!(HOME_ABOUT);
+                entry["about"] = json!(HOME);
             }
             entry
         })
         .collect()
 }
 
-/// What the home entry of `tonk_list_spaces` says about the agent space.
-const HOME_ABOUT: &str = "Your own space. Keep your notes, schemas and views here. It also \
-     holds what the user granted you: each granted space's delegation and its directory entry \
-     (its name and where it syncs), which is what this list is read from.";
+/// What this connection is, ahead of the shared agent manual, which is
+/// written for hosts that can render views.
+const HOSTED: &str = "\
+# This connection
+
+You are a Tonk agent with a space of your own, your home. Start with \
+`tonk_list_spaces`: it returns your home (`home: true`) and the spaces the \
+person granted you, each with its `name`, its `access` (`read` or \
+`read-write`) and when the grant `expires`. Pass the exact `subject` as \
+`space` to `tonk_query` and `tonk_evaluate`; never guess one.
+
+Keep your own notes, drafts and anything you want to remember across \
+conversations in your home. Change a granted space only when the person asks. \
+A write to a `read` space is refused: ask the person to grant read and write \
+rather than retrying or writing elsewhere.
+
+This connection cannot render views, for you or for the person. You can \
+author views with notation, but you cannot see them: say so, and ask the \
+person to open the space in Tonk at {origin} to check. Where the manual below \
+mentions the host's UI facilities, this connection has none. The manuals are \
+also resources, `tonk://guide/<topic>`.
+
+";
+
+/// The server instructions: this connection, then the shared manual.
+fn instructions(origin: &str) -> String {
+    format!(
+        "{}{}",
+        HOSTED.replace("{origin}", origin.trim_end_matches('/')),
+        guide::AGENT
+    )
+}
+
+/// The manuals as `tonk://guide/<topic>` resources.
+fn guide_resources() -> Vec<Value> {
+    guide::TOPICS
+        .iter()
+        .map(|topic| {
+            json!({
+                "uri": format!("tonk://guide/{topic}"),
+                "name": topic,
+                "description": guide::description(topic).unwrap_or_default(),
+                "mimeType": "text/markdown",
+            })
+        })
+        .collect()
+}
+
+/// The manual a `tonk://guide/<topic>` resource names.
+fn read_guide(uri: &str) -> Option<Value> {
+    let body = guide::topic(uri.strip_prefix("tonk://guide/")?)?;
+    Some(json!({
+        "contents": [{ "uri": uri, "mimeType": "text/markdown", "text": body }],
+    }))
+}
+
+/// How a listing describes the agent's own space to the model.
+const HOME: &str = "Your own space. Only you write here unless you share it: \
+keep notes, drafts and anything you want to remember across conversations. \
+It also holds what the person granted you, each granted space's delegation and \
+directory entry (its name and where it syncs), which is what this list is read \
+from. The other spaces are the ones the person granted you, with the access shown.";
 
 /// The offered tools, from the shared catalog, with `space` added to the
 /// scoped ones.

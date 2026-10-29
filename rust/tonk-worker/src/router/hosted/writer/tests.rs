@@ -451,6 +451,29 @@ concept!: &writer-note
         fixture.stop().await;
     }
 
+    /// A write holds the writer from its pull through its push, so the
+    /// Host Worker never recycles a writer with a write in it.
+    #[dialog_common::test]
+    async fn a_write_in_flight_holds_the_writer() {
+        let fixture = Fixture::start().await;
+        let writer = fixture.writer("mcp-1").await;
+        assert!(!writer.holds_write(), "an idle writer holds no write");
+
+        let (status, body) = {
+            let mut write = std::pin::pin!(evaluate(&writer, fixture.note("held")));
+            assert!(
+                futures_util::poll!(write.as_mut()).is_pending(),
+                "the write waits on its pull"
+            );
+            assert!(writer.holds_write(), "a write in flight holds the writer");
+            write.await
+        };
+        assert!(status.is_success(), "{status}: {body}");
+        assert!(!writer.holds_write(), "an answered write lets go");
+        writer.close().await;
+        fixture.stop().await;
+    }
+
     /// dialog-db/dialog-db#705, as the design meets it: two peers signing
     /// as one DID that commit on the same head both mint the same version,
     /// both pushes succeed, and one write is gone. One writer per MCP
