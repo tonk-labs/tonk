@@ -72,11 +72,16 @@ pub(crate) mod custody;
 /// account, then retire it.
 pub(crate) mod rotation;
 
-mod join;
+/// Acting as the account on a kernel, once the person lets it.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+mod authorize;
+pub(crate) mod join;
 /// Signing in on a kernel: the provisional persona merges into the
 /// permanent one.
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 mod merge;
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub use authorize::{authorized, delegate_asked, unauthorized};
 pub(crate) mod public_access;
 mod publication;
 /// Reaching a space's own worker from the person's profile.

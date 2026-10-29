@@ -620,6 +620,9 @@ pub mod ceremony {
     /// browser in through another deployment. One name for both halves,
     /// so the page shows one line however far the round trip got.
     pub const SIGN_IN_VIA: &str = "sign-in-via";
+    /// A page asking the account to delegate, as the bar does to promote a
+    /// member.
+    pub const DELEGATE: &str = "delegate";
 }
 
 /// The states a [`CeremonyStatus`] can report.

@@ -41,14 +41,18 @@ function page({ framed = "app", origin = "https://bspace.tonk.test" } = {}) {
     controller: { postMessage: (message, ports) => void toWorker.push({ message, ports }) },
     startMessages() {},
   });
+  // The relay's timers, run by hand.
+  const timers = [];
   vm.runInContext(SOURCE, vm.createContext({
     window,
     document,
     parent,
     navigator: { serviceWorker: worker },
     location: new URL(origin),
+    setInterval: (callback, every) => void timers.push({ callback, every }),
   }));
-  return { told, toWorker, script, window, document, worker, parent };
+  const tick = () => timers.forEach((timer) => timer.callback());
+  return { told, toWorker, script, window, document, worker, parent, timers, tick };
 }
 
 test("the relay takes its own script out of the page", () => {
@@ -114,4 +118,12 @@ test("on the profile's origin, what the worker tells the page goes up to the app
   const before = space.told.length;
   space.worker.dispatch("message", { data: { type: "webauthn" } });
   assert.equal(space.told.length, before, "a space's worker says nothing else up");
+});
+
+test("the page keeps its own origin's worker up while it is open", () => {
+  const site = page();
+  assert.ok(site.timers.some((timer) => timer.every <= 10000), "the page says something at least every ten seconds");
+  const before = site.toWorker.length;
+  site.tick();
+  assert.deepEqual(JSON.parse(JSON.stringify(site.toWorker.slice(before).map((posted) => posted.message))), [{ type: "keepalive" }]);
 });

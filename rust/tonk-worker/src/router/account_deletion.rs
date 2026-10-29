@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 use axum::extract::Extension;
 use axum::{Json, extract::State};
 use dialog_query::{Output as _, Query, Term};
@@ -198,11 +198,31 @@ async fn purge_inner(
     let invocation = tonk_identity::request::build_purge_invocation(root)
         .await
         .map_err(|error| format!("the purge did not sign: {error:#}"))?;
+    purged(state, source, &current.root_did, &invocation).await
+}
+
+/// Present `invocation`, a `/void/customer/purge` of the account `root`, to
+/// the access service, and clear this device of the account: its replicas,
+/// its customer record and its link.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn purged(
+    state: &AppState,
+    source: Option<&super::ClientId>,
+    root: &str,
+    invocation: &[u8],
+) -> Result<(), String> {
+    let current = {
+        let tonk = state.read().await;
+        load_plan(&tonk).await.map_err(|error| error.to_string())?
+    };
+    if current.root_did != root {
+        return Err("this passkey belongs to a different account".into());
+    }
     let ucan = super::customer::ucan_endpoint(
         &super::customer::service_origin().map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
-    super::http::post_cbor(&ucan, &invocation)
+    super::http::post_cbor(&ucan, invocation)
         .await
         .map_err(|error| format!("the service did not purge the account: {error}"))?;
 

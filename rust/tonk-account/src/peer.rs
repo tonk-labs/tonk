@@ -254,6 +254,22 @@ where
     assemble_peer(credential, location, base, storage, system, ACCESS_BRANCH).await
 }
 
+/// [`open_delegate_as`], its records kept in the home's `branch`, as
+/// [`open_peer_on`] keeps them: the peer acting on another account branch.
+pub async fn open_delegate_as_on<S>(
+    credential: SignerCredential,
+    location: Location,
+    base: Directory,
+    storage: Storage<S>,
+    system: &SignerCredential,
+    branch: &str,
+) -> Result<Peer<S>, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+{
+    assemble_peer(credential, location, base, storage, system, branch).await
+}
+
 /// The peer acting with `credential`, its home found from `location`.
 async fn assemble_peer<S>(
     credential: SignerCredential,

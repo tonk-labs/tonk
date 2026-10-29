@@ -18,7 +18,7 @@
 use dialog_query::{Output as _, Query, Term};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
-use dialog_varsig::{Did, Principal as _};
+use dialog_varsig::Did;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 use tonk_schema::{InvitedVia, MemberName, MemberRole, Membership, SeedKind, prelude::DidExt as _};
@@ -138,7 +138,10 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
 /// signs as a space or an invite. Once every principal has moved, the
 /// workspace's onboarding account is retired and the workspace forgotten;
 /// one that would not move keeps both.
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
 pub(crate) async fn carry_from(tonk: &TonkState, signed_out: &str) {
+    use dialog_varsig::Principal as _;
+
     if signed_out == tonk.active_branch {
         return;
     }
@@ -252,6 +255,7 @@ pub(crate) async fn carry_from(tonk: &TonkState, signed_out: &str) {
 /// Carry a space made on `branch`: its custody first, so a carry that
 /// fails moves nothing, then its listing, then tonk's own bookkeeping
 /// from the chain the handover left.
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
 async fn carry_space(
     tonk: &TonkState,
     workspace: &crate::worker::DefaultProfile,
@@ -277,6 +281,7 @@ async fn carry_space(
 /// Carry an invite redeemed on `branch`, and the space it joined. The
 /// space is listed and its stored chain brought here first: settling the
 /// membership finds it among this branch's spaces.
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
 async fn carry_membership(
     tonk: &TonkState,
     workspace: &crate::worker::DefaultProfile,
@@ -307,6 +312,7 @@ async fn carry_membership(
 
 /// Bring what `branch` holds of `principal`'s key and its delegations
 /// into the branch this profile keeps its own in.
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
 async fn carry_custody(tonk: &TonkState, branch: &str, principal: &Did) -> Result<(), String> {
     tonk.profile
         .held_principal(principal)
@@ -320,6 +326,7 @@ async fn carry_custody(tonk: &TonkState, branch: &str, principal: &Did) -> Resul
 /// it there: the listed space whose stored chain ends `member ->
 /// onboarding` (or already `-> root`, when an earlier attempt re-rooted
 /// it). A space an earlier attempt already listed here is found here.
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
 async fn joined_space(
     tonk: &TonkState,
     workspace: &crate::worker::DefaultProfile,
@@ -353,6 +360,7 @@ async fn joined_space(
 
 /// Forget `branch` once it lists no spaces: nothing on it is worth
 /// returning to, and listing it would offer an empty workspace.
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
 async fn forget_if_empty(tonk: &TonkState, branch: &str) {
     if super::profile_name::real_space_keys_on(tonk, branch)
         .await
@@ -1714,6 +1722,7 @@ mod tests {
 mod native_tests {
     use super::*;
     use dialog_credentials::Ed25519Signer;
+    use dialog_varsig::Principal as _;
     use tower::ServiceExt as _;
 
     /// A booted worker with the space `label` created through the router,

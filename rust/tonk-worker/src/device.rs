@@ -328,6 +328,7 @@ impl Registry {
     /// Open the profile `name` as it acts on its account branch `branch`:
     /// the same key, its records kept in that branch, so the account the
     /// branch belongs to is the one it acts for.
+    #[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
     pub(crate) async fn open_on(
         &self,
         storage: &Storage<DefaultSpace>,
@@ -355,6 +356,33 @@ impl Registry {
                 "failed to open the profile on the branch {branch}: {error}"
             ))
         })
+    }
+
+    /// [`Registry::open_on`], in a kernel: the session's key, as
+    /// [`Registry::open`] opens it there, its records kept in `branch`.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub(crate) async fn open_on(
+        &self,
+        storage: &Storage<DefaultSpace>,
+        name: &str,
+        branch: &str,
+    ) -> Result<DefaultProfile, TonkWorkerError> {
+        let failed = |error: String| {
+            TonkWorkerError::Internal(format!(
+                "failed to open the profile on the branch {branch}: {error}"
+            ))
+        };
+        let session = session().map_err(|error| failed(error.to_string()))?;
+        tonk_account::peer::open_delegate_as_on(
+            session.clone(),
+            Location::new(self.directory.clone(), name),
+            self.space_location("").directory,
+            storage.clone(),
+            &session,
+            branch,
+        )
+        .await
+        .map_err(|error| failed(error.to_string()))
     }
 
     /// Move the site secrets the profile `name` kept in its space for the

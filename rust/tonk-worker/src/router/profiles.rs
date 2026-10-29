@@ -649,6 +649,9 @@ async fn promote(
         *active = new_state;
         active.context_generation.fetch_add(1, Ordering::AcqRel);
     }
+    // On a kernel, the embedder holds the persona the profile acts for.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    super::merge::stand(&*state.read().await).await;
     super::navigate::notify_profile_changed(source);
     // A space's own worker acts for the account its profile does, and was
     // told so by the profile this one replaces.

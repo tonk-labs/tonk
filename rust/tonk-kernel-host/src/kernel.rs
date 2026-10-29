@@ -80,6 +80,15 @@ enum Job {
         permanent: Key,
         reply: oneshot::Sender<Merged>,
     },
+    Authorize {
+        persona: Key,
+        context: Vec<u8>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Stand {
+        standing: Option<(String, Vec<u8>)>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 /// What came of a merge: the permanent persona and its delegation to the
@@ -149,6 +158,37 @@ impl Served {
             .map_err(|_| "the kernel has stopped".to_owned())?
     }
 
+    /// Lend the guest kernel the permanent persona's key, `persona`, for one
+    /// call of `lifecycle.authorize` with `context`, the context it asked to
+    /// be authorized in. Refused when `persona` is not the permanent persona
+    /// the guest kernel acts for.
+    pub async fn authorize(&self, persona: Key, context: Vec<u8>) -> Result<(), String> {
+        let (reply, answered) = oneshot::channel();
+        self.jobs
+            .unbounded_send(Job::Authorize {
+                persona,
+                context,
+                reply,
+            })
+            .map_err(|_| "the kernel has stopped".to_owned())?;
+        answered
+            .await
+            .map_err(|_| "the kernel has stopped".to_owned())?
+    }
+
+    /// Have the guest kernel, a persona, act for the permanent persona
+    /// `standing` names, with its delegation to the representative, or for
+    /// its provisional persona with none.
+    pub async fn stand(&self, standing: Option<(String, Vec<u8>)>) -> Result<(), String> {
+        let (reply, answered) = oneshot::channel();
+        self.jobs
+            .unbounded_send(Job::Stand { standing, reply })
+            .map_err(|_| "the kernel has stopped".to_owned())?;
+        answered
+            .await
+            .map_err(|_| "the kernel has stopped".to_owned())?
+    }
+
     /// Ask the guest kernel, a persona, to delegate `access` to `audience`.
     /// An error when the guest kernel is no persona.
     pub async fn delegate(&self, audience: &str, access: Access) -> Delegated {
@@ -199,6 +239,34 @@ async fn merge(
     accessor
         .with(|mut access| access.data_mut().merged())
         .ok_or_else(|| "the permanent persona linked no representative".to_owned())
+}
+
+/// Lend the guest kernel the key of the permanent persona it acts for for one
+/// call of `lifecycle.authorize`, and take it back.
+async fn authorize(
+    accessor: &Accessor<KernelHost>,
+    bindings: &Host_,
+    persona: Key,
+    context: Vec<u8>,
+) -> Result<(), String> {
+    let authority = accessor.with(|mut access| {
+        let host = access.data_mut();
+        if host.permanent().as_deref() != Some(persona.did().as_str()) {
+            return Err("this passkey belongs to a different account".to_owned());
+        }
+        Ok(host.lend(persona))
+    })?;
+    let authorized = bindings
+        .sapling_kernel_lifecycle()
+        .call_authorize(accessor, Resource::new_borrow(authority), context)
+        .await;
+    accessor.with(|mut access| access.data_mut().withdraw(authority));
+    authorized
+        .map_err(|error| platform::describe(&error))?
+        .map_err(|error| match error {
+            Error::Denied(reason) | Error::Invalid(reason) | Error::Unavailable(reason) => reason,
+            other => format!("{other:?}"),
+        })
 }
 
 /// Start `request` in the guest kernel and answer the start of its answer,
@@ -324,6 +392,18 @@ impl Kernel {
                                         .boxed_local(),
                                     );
                                 }
+                                Some(Job::Authorize { persona, context, reply }) => {
+                                    let bindings = &bindings;
+                                    running.push(
+                                        async move {
+                                            let _ = reply.send(authorize(accessor, bindings, persona, context).await);
+                                        }
+                                        .boxed_local(),
+                                    );
+                                }
+                                Some(Job::Stand { standing, reply }) => {
+                                    let _ = reply.send(accessor.with(|mut access| access.data_mut().stand(standing)));
+                                }
                                 Some(Job::Request { method, path, headers, body, reply }) => {
                                     let handle = &handle;
                                     running.push(
@@ -406,6 +486,14 @@ impl Kernel {
     pub fn merges(&mut self) -> mpsc::UnboundedReceiver<String> {
         let (merges, asked) = mpsc::unbounded();
         self.store.data_mut().merges = Some(merges);
+        asked
+    }
+
+    /// The authorizations the guest kernel's permanent persona asks for, from
+    /// now on, as it asks: the reason to show, and the context.
+    pub fn authorizations(&mut self) -> mpsc::UnboundedReceiver<(String, Vec<u8>)> {
+        let (authorizations, asked) = mpsc::unbounded();
+        self.store.data_mut().authorizations = Some(authorizations);
         asked
     }
 

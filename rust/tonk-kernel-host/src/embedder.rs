@@ -25,7 +25,7 @@ use crate::bindings::sapling::kernel::types::Error;
 use crate::credentials::{Answer, Delegates, Representation, Standing, delegates};
 use crate::kernel::{Kernel, Served};
 use crate::layers::{LayerSpace, Layers};
-use crate::signing::{Asked, Kind, SignIn};
+use crate::signing::{self, Asked, Kind, SignIn};
 use crate::{boot, platform};
 
 #[wasm_bindgen]
@@ -140,13 +140,16 @@ pub async fn pinned(subject: String) -> Result<Option<String>, JsError> {
 /// persona's delegation to it as `link`.
 ///
 /// Each message the kernel sends its embedder goes to `message`, as bytes,
-/// and each address its provisional persona asks to merge into to `merge`.
+/// each address its provisional persona asks to merge into to `merge`, and
+/// each authorization its permanent persona asks for to `authorize`, as the
+/// reason to show the person and the context, bytes, to pass back.
 #[wasm_bindgen(js_name = bootPersona)]
 pub async fn boot_persona(
     subject: String,
     session: &Session,
     message: Function,
     merge: Function,
+    authorize: Function,
     standing: JsValue,
 ) -> Result<Embedder, JsError> {
     let standing = if standing.is_object() {
@@ -159,7 +162,7 @@ pub async fn boot_persona(
     } else {
         Standing::persona(session.key.clone())
     };
-    let mut embedder = run(subject, standing, message, Some(merge)).await?;
+    let mut embedder = run(subject, standing, message, Some((merge, authorize))).await?;
     embedder.session = Some(session.key.clone());
     Ok(embedder)
 }
@@ -194,7 +197,7 @@ async fn run(
     subject: String,
     standing: Standing,
     message: Function,
-    merge: Option<Function>,
+    persona: Option<(Function, Function)>,
 ) -> Result<Embedder, JsError> {
     let started = platform::now_millis();
     let layers = Layers::default();
@@ -231,12 +234,25 @@ async fn run(
             }
         }
     });
-    if let Some(merge) = merge {
+    if let Some((merge, authorize)) = persona {
         let mut asked = kernel.merges();
         wasm_bindgen_futures::spawn_local(async move {
             while let Some(address) = asked.next().await {
                 if let Err(error) = merge.call1(&JsValue::UNDEFINED, &address.into()) {
                     platform::log("kernel", &format!("a merge was not taken: {error:?}"), true);
+                }
+            }
+        });
+        let mut asked = kernel.authorizations();
+        wasm_bindgen_futures::spawn_local(async move {
+            while let Some((reason, context)) = asked.next().await {
+                let context = Uint8Array::from(context.as_slice());
+                if let Err(error) = authorize.call2(&JsValue::UNDEFINED, &reason.into(), &context) {
+                    platform::log(
+                        "kernel",
+                        &format!("an authorization was not taken: {error:?}"),
+                        true,
+                    );
                 }
             }
         });
@@ -295,7 +311,25 @@ fn access_from_js(access: &JsValue) -> Result<Access, JsError> {
             .as_string()
             .ok_or_else(|| JsError::new(&format!("an access's {name} is text")))
     };
-    let arguments = Array::from(&field("arguments"))
+    let seconds = |name: &str| field(name).as_f64().map(|seconds| seconds as u64);
+    Ok(Access {
+        subject: field("subject").as_string(),
+        command: text("command")?,
+        arguments: pairs_from_js(&field("arguments"))?,
+        meta: pairs_from_js(&field("meta"))?,
+        not_before: seconds("notBefore"),
+        expiration: seconds("expiration"),
+        reason: text("reason")?,
+    })
+}
+
+/// The arguments, or the meta, of an access, as `[key, value]` pairs: none
+/// when there are none.
+fn pairs_from_js(pairs: &JsValue) -> Result<Vec<Argument>, JsError> {
+    if pairs.is_undefined() || pairs.is_null() {
+        return Ok(Vec::new());
+    }
+    Array::from(pairs)
         .iter()
         .map(|pair| {
             let pair = Array::from(&pair);
@@ -308,21 +342,11 @@ fn access_from_js(access: &JsValue) -> Result<Access, JsError> {
                 value: Uint8Array::new(&pair.get(1)).to_vec(),
             })
         })
-        .collect::<Result<_, JsError>>()?;
-    Ok(Access {
-        subject: Reflect::get(access, &"subject".into())
-            .ok()
-            .and_then(|subject| subject.as_string()),
-        command: text("command")?,
-        arguments,
-        reason: text("reason")?,
-    })
+        .collect()
 }
 
-fn access_to_js(access: Access) -> JsValue {
-    let object = Object::new();
-    let arguments: Array = access
-        .arguments
+fn pairs_to_js(pairs: Vec<Argument>) -> Array {
+    pairs
         .into_iter()
         .map(|argument| {
             Array::of2(
@@ -330,11 +354,21 @@ fn access_to_js(access: Access) -> JsValue {
                 &Uint8Array::from(argument.value.as_slice()).into(),
             )
         })
-        .collect();
+        .collect()
+}
+
+fn access_to_js(access: Access) -> JsValue {
+    let object = Object::new();
     let subject = access.subject.map_or(JsValue::NULL, JsValue::from);
+    let seconds = |seconds: Option<u64>| {
+        seconds.map_or(JsValue::NULL, |seconds| JsValue::from(seconds as f64))
+    };
     let _ = Reflect::set(&object, &"subject".into(), &subject);
     let _ = Reflect::set(&object, &"command".into(), &access.command.into());
-    let _ = Reflect::set(&object, &"arguments".into(), &arguments);
+    let _ = Reflect::set(&object, &"arguments".into(), &pairs_to_js(access.arguments));
+    let _ = Reflect::set(&object, &"meta".into(), &pairs_to_js(access.meta));
+    let _ = Reflect::set(&object, &"notBefore".into(), &seconds(access.not_before));
+    let _ = Reflect::set(&object, &"expiration".into(), &seconds(access.expiration));
     let _ = Reflect::set(&object, &"reason".into(), &access.reason.into());
     object.into()
 }
@@ -343,7 +377,7 @@ fn access_to_js(access: Access) -> JsValue {
 impl Embedder {
     /// Ask the kernel, a persona, to delegate `access` to `audience`,
     /// another worker's session: `access` as `{ subject, command, arguments,
-    /// reason }`, as a kernel's request reaches the bootloader. Resolves to
+    /// meta, notBefore, expiration, reason }`, as a kernel's request reaches the bootloader. Resolves to
     /// the delegation, an encoded chain.
     pub fn delegate(&self, audience: String, access: JsValue) -> Result<Promise, JsError> {
         let access = access_from_js(&access)?;
@@ -403,6 +437,68 @@ impl Embedder {
             let _ = Reflect::set(&merged, &"persona".into(), &persona.into());
             let _ = Reflect::set(&merged, &"link".into(), &Uint8Array::from(link.as_slice()));
             Ok(merged.into())
+        }))
+    }
+
+    /// Finish the log-in parked until its account is served, if it is now.
+    /// Resolves to `{ persona, link }`, as [`Embedder::sign_in`] does, or to
+    /// `null` while the account still awaits its activation.
+    #[wasm_bindgen(js_name = resumeSignIn)]
+    pub fn resume_sign_in(&self) -> Result<Promise, JsError> {
+        let session = self
+            .session
+            .clone()
+            .ok_or_else(|| JsError::new("only a persona signs in"))?;
+        let (kernel, sign_in) = (self.kernel.clone(), self.sign_in.clone());
+        Ok(wasm_bindgen_futures::future_to_promise(async move {
+            let Some((persona, link)) = sign_in.resume(&kernel, &session).await? else {
+                return Ok(JsValue::NULL);
+            };
+            let merged = Object::new();
+            let _ = Reflect::set(&merged, &"persona".into(), &persona.into());
+            let _ = Reflect::set(&merged, &"link".into(), &Uint8Array::from(link.as_slice()));
+            Ok(merged.into())
+        }))
+    }
+
+    /// Act as the account the passkey the page derived `handoff` with holds,
+    /// `handoff` as for [`Embedder::sign_in`]: open it from `remote`, where
+    /// it syncs, and lend its key to the kernel for the authorization it
+    /// asked for in `context`. Resolves once the kernel is done with it;
+    /// rejects when the account is not the one the kernel acts for, or the
+    /// kernel failed.
+    pub fn authorize(&self, handoff: JsValue, remote: String, context: Uint8Array) -> Promise {
+        let kernel = self.kernel.clone();
+        let context = context.to_vec();
+        wasm_bindgen_futures::future_to_promise(async move {
+            signing::authorize(&kernel, handoff, remote, context).await?;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Have the kernel act for the permanent persona `standing` names, as
+    /// `{ persona, link }` with its delegation to this device, or for its
+    /// provisional persona when `standing` is `null`, as the kernel said it
+    /// now does.
+    pub fn stand(&self, standing: JsValue) -> Result<Promise, JsError> {
+        let standing = if standing.is_object() {
+            let persona = Reflect::get(&standing, &"persona".into())
+                .ok()
+                .and_then(|persona| persona.as_string())
+                .ok_or_else(|| JsError::new("the standing names no persona"))?;
+            let link =
+                Uint8Array::new(&Reflect::get(&standing, &"link".into()).unwrap_or_default());
+            Some((persona, link.to_vec()))
+        } else {
+            None
+        };
+        let kernel = self.kernel.clone();
+        Ok(wasm_bindgen_futures::future_to_promise(async move {
+            kernel
+                .stand(standing)
+                .await
+                .map_err(|error| JsValue::from(JsError::new(&error)))?;
+            Ok(JsValue::UNDEFINED)
         }))
     }
 

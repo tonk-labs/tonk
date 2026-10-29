@@ -56,6 +56,9 @@ pub struct KernelHost {
     /// What takes the address a provisional persona asks to merge into, as
     /// it asks.
     pub merges: Option<UnboundedSender<String>>,
+    /// What takes each authorization a permanent persona asks for, as it
+    /// asks: the reason to show the person, and the context to pass back.
+    pub authorizations: Option<UnboundedSender<(String, Vec<u8>)>>,
     /// The delegation a lent persona made to the representative of a
     /// persona's session, which links it: the persona's DID, and the
     /// delegation.
@@ -89,6 +92,7 @@ impl Default for KernelHost {
             peers: Vec::new(),
             replicas: Vec::new(),
             merges: None,
+            authorizations: None,
             linked: None,
         }
     }

@@ -543,7 +543,15 @@ impl TonkState {
         let audience: Did = audience
             .parse()
             .map_err(|e| crate::TonkWorkerError::Router(format!("audience: {e:?}")))?;
-        Ok(space_worker::delegate(self, &space, &audience).await?.chain)
+        let grant = space_worker::delegate(self, &space, &audience).await?;
+        // The space's own worker takes it up on this device with what it is
+        // delegated: from now on this device holds it, as a replica.
+        if !crate::router::join::find_replica_for_subject(self, &space).await? {
+            crate::router::repository::record_initialized_replica_in_profile(self, &space)
+                .await
+                .map_err(|e| crate::TonkWorkerError::Internal(format!("list {space}: {e}")))?;
+        }
+        Ok(grant.chain)
     }
 
     /// Whether this worker took up a delegation before: it acts for the
@@ -3115,10 +3123,19 @@ async fn has_syncable_repo(state: &AppState) -> bool {
     false
 }
 
+/// Whether a page watches something this worker holds: a cached branch
+/// holds a live subscriber. A kernel syncs on a timer while one does, as
+/// the browser's worker's loop does; each drain sweeps the account too,
+/// which is how a page waiting on an emailed link hears it was followed.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub async fn watched(state: &AppState) -> bool {
+    has_live_subscribers(state).await
+}
+
 /// Whether any cached branch — named repositories or the profile — holds a
 /// live subscriber. The signal that a page is watching, so the SW should
 /// keep pulling upstream changes.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 async fn has_live_subscribers(state: &AppState) -> bool {
     let tonk = state.read().await;
     // The profile's own repository is among the cached ones.

@@ -21,7 +21,7 @@ const ACCESS = { subject: SPACE, command: "/", arguments: [], reason: "serve the
 // against stand-ins for a service worker's globals and for the embedder.
 // `holds` is the kernel the space already holds, if any; `shipped` is what
 // the deployment serves under `/_host/kernel/`.
-function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, origin = ORIGIN } = {}) {
+function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, origin = ORIGIN, boots = true } = {}) {
   const listeners = {};
   const told = [];
   const booted = [];
@@ -32,8 +32,15 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, 
   const imported = [];
   const fetched = [];
   const pages = [{ postMessage: (message) => void told.push(message) }];
+  // What the host lent the kernel for an authorization, and whom it had the
+  // kernel act for.
+  const authorized = [];
+  const stood = [];
   const embedder = {
     timings: {},
+    authorize: async (handoff, remote, context) =>
+      void authorized.push({ handoff, remote, context: JSON.parse(new TextDecoder().decode(context)) }),
+    stand: async (standing) => void stood.push(standing),
     receive: async (bytes) => void received.push(JSON.parse(new TextDecoder().decode(bytes))),
     handle: async (method, path, headers = []) => {
       handled.push(`${method} ${path}`);
@@ -49,10 +56,12 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, 
       const bytes = new TextEncoder().encode(text);
       const pieces = [];
       for (let at = 0; at < bytes.length; at += 3) pieces.push(bytes.slice(at, at + 3));
+      // A subscription stays open once it said what it had.
+      const open = path.endsWith("/subscribe");
       return {
         status,
         headers: [["content-type", type]],
-        body: { next: async () => pieces.shift(), cancel() {} },
+        body: { next: () => (pieces.length || !open ? Promise.resolve(pieces.shift()) : new Promise(() => {})), cancel() {} },
       };
     },
   };
@@ -72,12 +81,13 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, 
     pinned: async (subject) => kept.pins.get(subject),
     // A kernel creates a space it takes up for the first time, and says so.
     bootSpace: async (subject, session, representative, persona, delegate, sent) => {
+      if (!boots) throw new Error("the person has no such space");
       booted.push({ subject, session: session.did, representative, persona, delegate, sent });
       if (!holds) queueMicrotask(() => sent(new TextEncoder().encode(JSON.stringify({ ask: 1, seeded: true }))));
       return embedder;
     },
-    bootPersona: async (subject, session, sent) => {
-      booted.push({ subject, session: session.did, sent });
+    bootPersona: async (subject, session, sent, merge, authorize) => {
+      booted.push({ subject, session: session.did, sent, merge, authorize });
       return embedder;
     },
   });
@@ -149,14 +159,16 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, 
   const request = async (path, { mode = "cors", method = "GET", clientId = "" } = {}) => {
     let responded;
     const waits = [];
+    const made = {
+      url: new URL(path, origin).href,
+      method,
+      mode,
+      headers: new Headers(),
+      arrayBuffer: async () => new ArrayBuffer(0),
+      clone: () => ({ ...made }),
+    };
     listeners.fetch({
-      request: {
-        url: new URL(path, origin).href,
-        method,
-        mode,
-        headers: new Headers(),
-        arrayBuffer: async () => new ArrayBuffer(0),
-      },
+      request: made,
       clientId,
       respondWith: (response) => void (responded = response),
       waitUntil: (promise) => void waits.push(promise),
@@ -177,6 +189,10 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, 
     listeners.message({ data, ports: [{ postMessage: (reply) => void (answered = reply) }], waitUntil() {} });
     return answered;
   };
+  // Post `data` as a page does, answered later on its port: resolves to the
+  // answer.
+  const post = (data) =>
+    new Promise((resolve) => listeners.message({ data, ports: [{ postMessage: resolve }], waitUntil() {} }));
   // The profile passes a request down the port, as it does one a page of
   // the app asks about this space.
   const passDown = (call, path) => port.onmessage({ data: { call, request: { method: "GET", path } } });
@@ -187,7 +203,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, 
     new Promise((resolve) =>
       listeners.message({ data: { type: "booted" }, ports: [{ postMessage: resolve }], waitUntil() {} }),
     );
-  return { received, sentHeaders, listeners, imported, fetched, booted, handled, asked, told, kept, opened, handPort, passDown, request, message, goOffline, started };
+  return { received, sentHeaders, listeners, imported, fetched, booted, handled, asked, told, kept, opened, authorized, stood, handPort, passDown, request, message, post, goOffline, started };
 }
 
 test("the bootloader loads the host's embedder", () => {
@@ -420,4 +436,114 @@ test("the persona's subscription to a space's kernel reaches it in pieces, and s
 
   await profile.booted[0].sent(new TextEncoder().encode(JSON.stringify({ tell: "cancel", ask: 9 })));
   assert.deepEqual(JSON.parse(JSON.stringify(asked.at(-1))), { cancel: asked[0].call }, "the call to the space is cancelled");
+});
+
+// What the kernel sends its host, as bytes.
+const sending = (message) => new TextEncoder().encode(JSON.stringify(message));
+// What a page derived with a passkey, for `request`.
+const handoff = (request) => ({ type: "custody", credentialId: "aa", key: new Uint8Array(32), kek: new Uint8Array(32), request });
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test("the persona's ask to act as the account asks the page for the passkey, and lends the account it opens", async () => {
+  const profile = space({ origin: "https://profile.tonk.test" });
+  await profile.started();
+  const intent = { kind: "purge-account" };
+  await profile.booted[0].authorize("to delete your account", sending(intent));
+  assert.deepEqual(JSON.parse(JSON.stringify(profile.told.at(-1))), { type: "webauthn", request: "custody", intent });
+
+  const answer = await profile.post(handoff(intent));
+  assert.deepEqual(JSON.parse(JSON.stringify(answer)), { ok: {} });
+  assert.equal(profile.authorized.length, 1);
+  assert.deepEqual(profile.authorized[0].context, intent, "the kernel gets back the context it asked in");
+  assert.equal(profile.authorized[0].remote, "https://profile.tonk.test/ucan/");
+});
+
+test("a page's ask for a delegation is the kernel's to make, under the passkey the page already ran", async () => {
+  const profile = space({ origin: "https://profile.tonk.test" });
+  await profile.started();
+  const request = { kind: "delegate", subject: SPACE, command: "/", audience: PERSONA };
+  const answered = profile.post(handoff(request));
+  await settle();
+  assert.deepEqual(profile.received.at(-1), { tell: "delegate", subject: SPACE, command: "/", audience: PERSONA });
+
+  // The kernel asks to act as the account for it: the page is not asked
+  // again, and its hand-off is lent.
+  const asked = profile.told.length;
+  await profile.booted[0].authorize("to share a space", sending(request));
+  assert.equal(profile.told.length, asked, "the page is not asked for the passkey again");
+  assert.equal(profile.authorized.length, 1);
+
+  await profile.booted[0].sent(sending({ tell: "delegated", chain: "zChain" }));
+  assert.deepEqual(JSON.parse(JSON.stringify(await answered)), { ok: { delegation: "zChain" } });
+});
+
+test("the persona acts for another persona once it asks to, from its next boot too", async () => {
+  const profile = space({ origin: "https://profile.tonk.test" });
+  await profile.started();
+  await profile.booted[0].sent(sending({ ask: 7, standing: { persona: PERSONA, link64: btoa("link") } }));
+  await settle();
+  assert.equal(profile.stood.length, 1);
+  assert.equal(profile.stood[0].persona, PERSONA);
+  assert.equal(new TextDecoder().decode(profile.stood[0].link), "link");
+  assert.deepEqual(profile.received.at(-1), { answer: 7, status: 200, body: "" });
+
+  await profile.booted[0].sent(sending({ ask: 8, standing: null }));
+  await settle();
+  assert.equal(profile.stood.at(-1), null, "signed out, it acts for its provisional persona");
+});
+
+test("a page load while the kernel did not boot gets the host's page, which tries again", async () => {
+  const site = space({ holds: KERNEL, boots: false });
+  site.handPort();
+  const response = await site.request("/", { mode: "navigate" });
+  assert.equal(response.status, 502);
+  const page = await response.text();
+  assert.match(page, /location\.reload\(\)/, "the page loads again in a while");
+});
+
+test("what a page asks of a space whose kernel does not answer, the persona answers", async () => {
+  const profile = space({ origin: "https://profile.tonk.test" });
+  const host = {
+    postMessage: ({ call }) => {
+      queueMicrotask(() => host.onmessage({ data: { call, error: "the person has no such space" } }));
+    },
+  };
+  profile.listeners.message({ data: { type: "space-port", repo: SPACE }, ports: [host], waitUntil() {} });
+  const path = `/api/repository/${SPACE}/branch/main/query`;
+  const response = await profile.request(path, { method: "POST" });
+  assert.equal(response.status, 404, "the persona's answer, of a space it does not hold");
+  assert.ok(profile.handled.includes(`POST ${path}`), "the persona is asked");
+});
+
+test("what the persona answered of a space ends once the space's kernel answers", async () => {
+  const profile = space({ origin: "https://profile.tonk.test" });
+  let answers = false;
+  const host = {
+    postMessage: ({ call }) => {
+      queueMicrotask(() => {
+        if (!answers) return host.onmessage({ data: { call, error: "the kernel did not boot" } });
+        host.onmessage({ data: { call, head: { status: 200, headers: [] } } });
+        host.onmessage({ data: { call, end: true } });
+      });
+    },
+  };
+  profile.listeners.message({ data: { type: "space-port", repo: SPACE }, ports: [host], waitUntil() {} });
+  const path = `/api/repository/${SPACE}/branch/main/subscribe`;
+  let responded;
+  profile.listeners.fetch({
+    request: { url: new URL(path, "https://profile.tonk.test").href, method: "POST", mode: "cors", headers: new Headers(), arrayBuffer: async () => new ArrayBuffer(0), clone() { return { ...this }; } },
+    clientId: "",
+    respondWith: (response) => void (responded = response),
+    waitUntil() {},
+  });
+  const persona = await responded;
+  const reading = persona.body.getReader();
+  // What the persona had to say, "not found" in its three pieces; then it
+  // waits for more.
+  for (let piece = 0; piece < 3; piece++) await reading.read();
+  const first = reading.read();
+
+  answers = true;
+  await profile.request(path, { method: "POST" });
+  await assert.rejects(first, /answers now/, "the persona's answer ends");
 });

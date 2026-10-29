@@ -23,10 +23,12 @@ use tonk_common::log;
 use tonk_kernel_world::application;
 use tonk_kernel_world::credentials;
 use tonk_kernel_world::session;
-use tonk_kernel_world::world::sapling::kernel::credential::{Custodian, Persona, PersonaAuthority};
-use tonk_schema::AccountDisplayName;
+use tonk_kernel_world::world::sapling::kernel::credential::{
+    Credential, Custodian, Persona, PersonaAuthority,
+};
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::registration::kind;
+use tonk_schema::{AccountDisplayName, SeedKind};
 use tonk_worker_api::{AccountLinkRequest, PasskeyMetadata, SaveRootRequest};
 
 use super::registration;
@@ -115,7 +117,10 @@ pub async fn merged(
         .map(|pending| pending.address.clone())
         .unwrap_or_default();
 
-    let tonk = state.read().await;
+    // Signing in to an account a branch of this profile already follows
+    // goes back to that branch, and what was made while signed out follows.
+    let tonk = super::profiles::for_account(state.clone(), &root, None).await?;
+    let signed_out = tonk.signed_out().map(str::to_owned);
     identity::persist_root(
         &tonk,
         SaveRootRequest {
@@ -171,7 +176,16 @@ pub async fn merged(
         })?;
         customer::enrolled(&tonk, &receipt, address).await?;
     }
-    carry_spaces(&tonk, provisional, permanent, &root).await;
+    carry_spaces(
+        &tonk,
+        &provisional.did(),
+        Custodian::Persona(permanent),
+        &root,
+    )
+    .await;
+    if let Some(signed_out) = &signed_out {
+        carry_workspace(&tonk, signed_out, Custodian::Persona(permanent), &root).await;
+    }
     drop(tonk);
     registration::settle(state, kind, Ok(())).await;
     if !created {
@@ -186,18 +200,18 @@ pub async fn merged(
     Ok(())
 }
 
-/// Bring every space the provisional persona holds under the account, the
-/// permanent persona: each space's key is backed up to the permanent persona
-/// too, and the space delegates to the account, in place of the
-/// provisional persona. Best effort per space: one that fails is logged and
-/// left under the provisional persona.
-async fn carry_spaces(
+/// Bring every space the provisional persona `provisional` holds under the
+/// account, the permanent persona `custodian` is: each space's key is backed
+/// up to the permanent persona too, and the space delegates to the account,
+/// in place of the provisional persona. Best effort per space: one that
+/// fails is logged and left under the provisional persona.
+pub(crate) async fn carry_spaces(
     tonk: &TonkState,
-    provisional: &PersonaAuthority,
-    permanent: &PersonaAuthority,
+    provisional: &str,
+    custodian: Custodian<'_>,
     account: &Did,
 ) {
-    let previous: Did = match provisional.did().parse() {
+    let previous: Did = match provisional.parse() {
         Ok(previous) => previous,
         Err(error) => {
             log!("merge: the provisional persona names no DID: {error:?}");
@@ -213,16 +227,82 @@ async fn carry_spaces(
             }
         };
     for (space, backup) in held {
-        match carry_space(tonk, permanent, &previous, account, &space, backup).await {
+        match carry_space(tonk, again(&custodian), &previous, account, &space, backup).await {
             Ok(()) => log!("merge: {space} is the account's"),
             Err(error) => log!("merge: {space} stays the provisional persona's: {error}"),
         }
     }
 }
 
+/// `custodian`, to hand over once more.
+fn again<'a>(custodian: &'a Custodian<'_>) -> Custodian<'a> {
+    match custodian {
+        Custodian::Persona(authority) => Custodian::Persona(authority),
+        Custodian::Permanent(persona) => Custodian::Permanent(persona),
+        Custodian::Provisional(persona) => Custodian::Provisional(persona),
+        Custodian::Representative(representative) => Custodian::Representative(representative),
+        Custodian::Credential(credential) => Custodian::Credential(credential),
+    }
+}
+
+/// Bring under the account, the permanent persona `custodian` is, what the
+/// branch `signed_out` holds: a workspace the profile was on while signed
+/// out, whose spaces the provisional persona made there. Each space is
+/// listed on the branch signed in on and carried as [`carry_spaces`] carries
+/// one; once all are, the workspace is forgotten. One that will not move
+/// is logged, and keeps the workspace.
+pub(crate) async fn carry_workspace(
+    tonk: &TonkState,
+    signed_out: &str,
+    custodian: Custodian<'_>,
+    account: &Did,
+) {
+    if signed_out == tonk.active_branch {
+        return;
+    }
+    let workspace = match tonk
+        .registry
+        .open_on(&tonk.storage, &tonk.profile_name, signed_out)
+        .await
+    {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            log!("merge: the workspace '{signed_out}' did not open: {error}");
+            return;
+        }
+    };
+    let previous = tonk.profile.did();
+    let held = match secrets::keys_for(workspace.state(), &previous, &workspace).await {
+        Ok(held) => held,
+        Err(error) => {
+            log!("merge: what '{signed_out}' holds was not read: {error}");
+            return;
+        }
+    };
+    let mut kept = false;
+    for (space, backup) in held {
+        let carried = async {
+            super::repository::carry_replica_rows(tonk, signed_out, &space)
+                .await
+                .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+            carry_space(tonk, again(&custodian), &previous, account, &space, backup).await
+        };
+        match carried.await {
+            Ok(()) => log!("merge: {space}, made while signed out, is the account's"),
+            Err(error) => {
+                kept = true;
+                log!("merge: {space} stays in '{signed_out}': {error}");
+            }
+        }
+    }
+    if !kept {
+        super::profile::forget_branch(tonk, signed_out).await;
+    }
+}
+
 async fn carry_space(
     tonk: &TonkState,
-    permanent: &PersonaAuthority,
+    custodian: Custodian<'_>,
     previous: &Did,
     account: &Did,
     space: &Did,
@@ -235,19 +315,7 @@ async fn carry_space(
         .restore(session::backup_to_credential(backup))
         .await
         .map_err(|error| failed("the space's key was not restored", &error))?;
-    let resealed = key
-        .backup(Custodian::Persona(permanent))
-        .await
-        .map_err(|error| failed("the space's key was not backed up to the account", &error))?;
-    secrets::grant(
-        tonk.profile.state(),
-        space,
-        account,
-        resealed.secret,
-        &tonk.profile,
-    )
-    .await
-    .map_err(|error| failed("the account's copy of the key was not kept", &error))?;
+    hold_for_account(tonk, &key, space, custodian).await?;
     let signer = credentials::signer(Rc::new(key))
         .map_err(|error| failed("the space's key is not a signer", &error))?;
     let minter = Repository::from(signer);
@@ -288,4 +356,52 @@ pub async fn failed(state: &AppState, kind: &str, code: Option<&str>, message: &
     };
     log!("merge: the {kind} sign-in failed: {message}");
     registration::settle(state, kind, Err((code, message))).await;
+}
+
+/// Tell the embedder whom the profile acts for on the branch it is on now:
+/// the account the branch is signed in to, through its delegation to this
+/// device, or, on a branch signed in to none, the provisional persona, so
+/// the person can sign in there.
+pub(crate) async fn stand(tonk: &TonkState) {
+    let told = match identity::local_root(tonk).await {
+        Ok(root) => {
+            let persona = root.root_did.to_string();
+            application::standing(Some((&persona, &root.bytes))).await
+        }
+        Err(_) => application::standing(None).await,
+    };
+    if let Err(error) = told {
+        log!("merge: the embedder was not told whom the profile acts for: {error:?}");
+    }
+}
+
+/// Hold `key`, the key of the space `space`, for the account `custodian`
+/// is: backed up to it, and kept as a principal the account holds, as Dialog
+/// DB's peer keeps one, so the account's other devices restore it.
+pub(crate) async fn hold_for_account(
+    tonk: &TonkState,
+    key: &Credential,
+    space: &Did,
+    custodian: Custodian<'_>,
+) -> Result<(), TonkWorkerError> {
+    let failed = |what: &str, error: &dyn std::fmt::Debug| {
+        TonkWorkerError::Internal(format!("{what}: {error:?}"))
+    };
+    let backup = key
+        .backup(custodian)
+        .await
+        .map_err(|error| failed("the space's key was not backed up to the account", &error))?;
+    let account: Did = backup
+        .custodian
+        .parse()
+        .map_err(|error| failed("the account names no DID", &error))?;
+    secrets::hold_principal(
+        tonk.profile.state(),
+        space,
+        SeedKind::Space.held(),
+        secrets::sealed_message(&account, backup.secret),
+        &tonk.profile,
+    )
+    .await
+    .map_err(|error| failed("the account's copy of the key was not kept", &error))
 }

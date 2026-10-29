@@ -60,6 +60,14 @@
         },
         true,
     );
+    // A worker the browser hears nothing from for a while it stops, and
+    // the page's open answers with it, such as its subscriptions: an open
+    // answer does not keep it up, an event does. The page around this one
+    // keeps its own worker up, not this origin's.
+    var KEEPALIVE_MS = 10000;
+    setInterval(function () {
+        if (sw.controller) sw.controller.postMessage({ type: "keepalive" });
+    }, KEEPALIVE_MS);
     window.addEventListener("pagehide", flush);
     document.addEventListener("visibilitychange", function () {
         if (document.visibilityState === "hidden") flush();

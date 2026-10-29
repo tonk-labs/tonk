@@ -6,7 +6,8 @@
 //! ceremony itself runs in the top-level page, the one place WebAuthn
 //! can, which the worker asks for it; everything else is decided here.
 
-use std::cell::{Cell, RefCell};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use dialog_artifacts::Entity;
 use tonk_analytics::account::{self, AccountOutcome};
@@ -58,23 +59,40 @@ pub(crate) enum Stage {
     },
 }
 
-thread_local! {
-    /// Whether a passkey ceremony is out with the page. Claimed before the
-    /// first await, so two commands in one turn cannot both ask for one;
-    /// recording any other stage gives it up.
-    static ASKING: Cell<bool> = const { Cell::new(false) };
+// Statics, not thread-locals: on a kernel each call into it is a task of
+// its own, and an attempt a request begins, a later call of the lifecycle
+// ends.
+
+/// Whether a passkey ceremony is out with the page. Claimed before the
+/// first await, so two commands in one turn cannot both ask for one;
+/// recording any other stage gives it up.
+static ASKING: AtomicBool = AtomicBool::new(false);
+
+/// An attempt kept between the calls that begin and end it.
+struct Kept(Mutex<Option<Attempt>>);
+
+impl Kept {
+    const fn new() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    fn set(&self, attempt: Option<Attempt>) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = attempt;
+    }
+
+    fn take(&self) -> Option<Attempt> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
 }
 
-thread_local! {
-    /// The attempt the passkey ceremony now out is part of.
-    static CEREMONY: RefCell<Option<Attempt>> = const { RefCell::new(None) };
-    /// The panel's wait for its first answer about an address, begun when
-    /// it opens.
-    static LOADING: RefCell<Option<Attempt>> = const { RefCell::new(None) };
-    /// The panel's wait for the emailed link, begun when a ceremony leaves
-    /// an account that is not yet served.
-    static WATCHING: RefCell<Option<Attempt>> = const { RefCell::new(None) };
-}
+/// The attempt the passkey ceremony now out is part of.
+static CEREMONY: Kept = Kept::new();
+/// The panel's wait for its first answer about an address, begun when it
+/// opens.
+static LOADING: Kept = Kept::new();
+/// The panel's wait for the emailed link, begun when a ceremony leaves an
+/// account that is not yet served.
+static WATCHING: Kept = Kept::new();
 
 /// The panel opened for the page behind `client`: told as an action done at
 /// once, and the wait for its first answer begins.
@@ -112,7 +130,7 @@ pub(crate) fn answered() {
 /// Claim the one passkey ceremony the panel may have out, or `false` when
 /// it already has one.
 fn claim_ceremony() -> bool {
-    !ASKING.replace(true)
+    !ASKING.swap(true, Ordering::AcqRel)
 }
 
 /// What a typed address leads to, given what the lookup said about it.
@@ -140,7 +158,10 @@ pub(crate) fn next(answer: &str) -> Next {
 /// Record `stage` as where the panel is, in place of whichever stage was
 /// there. `None` puts the panel away.
 pub(crate) async fn record(tonk: &TonkState, stage: Option<Stage>) {
-    ASKING.set(matches!(stage, Some(Stage::Ceremony { .. })));
+    ASKING.store(
+        matches!(stage, Some(Stage::Ceremony { .. })),
+        Ordering::Release,
+    );
     let Ok(this) = ENTITY.parse::<Entity>() else {
         return;
     };
@@ -384,10 +405,8 @@ pub(crate) async fn settle(
 /// hears `Active` records it, and that puts the panel away.
 #[cfg(target_arch = "wasm32")]
 fn await_confirmation(state: crate::router::AppState) {
-    thread_local! {
-        static WAITING: Cell<bool> = const { Cell::new(false) };
-    }
-    if WAITING.replace(true) {
+    static WAITING: AtomicBool = AtomicBool::new(false);
+    if WAITING.swap(true, Ordering::AcqRel) {
         return;
     }
     crate::detach(async move {
@@ -398,7 +417,7 @@ fn await_confirmation(state: crate::router::AppState) {
                 break;
             }
         }
-        WAITING.set(false);
+        WAITING.store(false, Ordering::Release);
     });
 }
 
@@ -687,6 +706,8 @@ impl dialog_capability::Provider<tonk_schema::command::DismissRegistration>
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+
     use super::{ASKING, Next, Stage, claim_ceremony, next, refused, settled};
     use tonk_schema::registration::kind;
 
@@ -697,15 +718,15 @@ mod tests {
 
     #[dialog_common::test]
     fn it_asks_for_one_passkey_at_a_time() {
-        ASKING.set(false);
+        ASKING.store(false, Ordering::Release);
         assert!(claim_ceremony());
         assert!(!claim_ceremony(), "a second ask while one is out");
-        ASKING.set(false);
+        ASKING.store(false, Ordering::Release);
         assert!(
             claim_ceremony(),
             "a stage other than the ceremony gives it up"
         );
-        ASKING.set(false);
+        ASKING.store(false, Ordering::Release);
     }
 
     #[dialog_common::test]

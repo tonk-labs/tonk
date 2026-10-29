@@ -106,6 +106,7 @@ pub(crate) async fn signer(state: &TonkState) -> Result<Option<Ed25519Signer>, T
 ///
 /// Each branch's peer keeps that branch's envelope, so another branch's
 /// is read through the peer opened on it.
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
 pub(crate) async fn account_on(
     state: &TonkState,
     branch: &str,

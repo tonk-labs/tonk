@@ -381,6 +381,9 @@ async fn it_takes_up_a_space_its_persona_delegates() {
         subject: Some(space.clone()),
         command: "/".to_owned(),
         arguments: Vec::new(),
+        meta: Vec::new(),
+        not_before: None,
+        expiration: None,
         reason: "to serve the space".to_owned(),
     };
     let delegated = persona

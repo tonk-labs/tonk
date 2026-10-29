@@ -9,8 +9,9 @@
 //! A provisional persona merges into a permanent one once the person signs in
 //! with a passkey: the embedder opens the permanent persona's key and lends
 //! both to the guest kernel for one call of the lifecycle, and the permanent
-//! persona's delegation to the representative links it. Not yet bound:
-//! opening a permanent persona to authorize.
+//! persona's delegation to the representative links it. Once permanent, the
+//! embedder opens the persona's key with a passkey to lend it for one call of
+//! `lifecycle.authorize`, as the guest kernel asks.
 
 use std::collections::BTreeMap;
 #[cfg(target_arch = "wasm32")]
@@ -26,6 +27,7 @@ use dialog_credentials::ed25519::Extractable;
 use dialog_credentials::key::{ExtractableKey, KeyExport};
 use dialog_credentials::secret::{Context, SealedSecret, SecretExtractableDerive};
 use dialog_ucan_core::subject::Subject as UcanSubject;
+use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::{DelegationBuilder, DelegationChain};
 use dialog_varsig::eddsa::Ed25519Signature;
 use dialog_varsig::{Did, Principal as _};
@@ -34,6 +36,7 @@ use ed25519_dalek::Signer as _;
 use futures::future::BoxFuture;
 #[cfg(target_arch = "wasm32")]
 use futures::future::LocalBoxFuture;
+use ipld_core::ipld::Ipld;
 use wcmp::{Accessor, Resource};
 use zeroize::Zeroizing;
 
@@ -316,6 +319,13 @@ async fn delegation(key: &Key, audience: &str, access: &Access) -> Result<Vec<u8
             "{issuer} delegates only itself, not {subject}"
         )));
     }
+    delegated(key, audience, access).await
+}
+
+/// A delegation from `key` to `audience` of what `access` asks, of any
+/// subject: whether `key` has authority over it is for the chain it extends
+/// to show.
+async fn delegated(key: &Key, audience: &str, access: &Access) -> Result<Vec<u8>, Error> {
     if !access.arguments.is_empty() {
         return Err(Error::Invalid(
             "a delegation that constrains arguments is not made here yet".into(),
@@ -338,18 +348,41 @@ async fn delegation(key: &Key, audience: &str, access: &Access) -> Result<Vec<u8
         .filter(|segment| !segment.is_empty())
         .map(str::to_owned)
         .collect();
+    let meta = access
+        .meta
+        .iter()
+        .map(|entry| {
+            serde_ipld_dagcbor::from_slice::<Ipld>(&entry.value)
+                .map(|value| (entry.key.clone(), value))
+                .map_err(|_| Error::Invalid(format!("the meta {} is no DAG-CBOR", entry.key)))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
     let signer = key.signer().await?;
-    let delegation = DelegationBuilder::new()
+    let mut builder = DelegationBuilder::new()
         .issuer(dialog_credentials::Signer::from(signer))
         .audience(&audience)
         .subject(subject)
         .command(command)
+        .meta(meta);
+    if let Some(at) = access.not_before {
+        builder = builder.not_before(timestamp(at)?);
+    }
+    if let Some(at) = access.expiration {
+        builder = builder.expiration(timestamp(at)?);
+    }
+    let delegation = builder
         .try_build()
         .await
         .map_err(|error| Error::Invalid(format!("{error:?}")))?;
     DelegationChain::new(delegation)
         .to_bytes()
         .map_err(|error| Error::Invalid(format!("{error:?}")))
+}
+
+/// The time `seconds` after the Unix epoch, as a UCAN says it.
+fn timestamp(seconds: u64) -> Result<Timestamp, Error> {
+    Timestamp::try_from(i128::from(seconds))
+        .map_err(|_| Error::Invalid(format!("{seconds} is out of a UCAN's range")))
 }
 
 /// What a persona handle names: its key, where this host holds it.
@@ -391,6 +424,55 @@ impl KernelHost {
             standing.acting = Acting::Permanent(persona.clone());
         }
         Some((persona, link))
+    }
+
+    /// The permanent persona the persona's own worker acts for, if it acts
+    /// for one.
+    pub(crate) fn permanent(&self) -> Option<String> {
+        self.sessions
+            .iter()
+            .find_map(|standing| match &standing.acting {
+                Acting::Permanent(persona) => Some(persona.clone()),
+                _ => None,
+            })
+    }
+
+    /// Have the persona's own worker act for the permanent persona `persona`
+    /// through `link`, its delegation to the representative, or, with none,
+    /// for the provisional persona its representative's key is, as the
+    /// worker said it now does, such as on signing out. A link that is not
+    /// the persona's delegation to the representative is refused.
+    pub(crate) fn stand(&mut self, standing: Option<(String, Vec<u8>)>) -> Result<(), String> {
+        for held in &mut self.sessions {
+            if !matches!(held.acting, Acting::Persona(_) | Acting::Permanent(_)) {
+                continue;
+            }
+            let Some(key) = held.representative.key.clone() else {
+                continue;
+            };
+            match &standing {
+                None => {
+                    held.representative = Representation::held(key.clone());
+                    held.acting = Acting::Persona(key);
+                }
+                Some((persona, link)) => {
+                    let chain = DelegationChain::try_from(link.as_slice())
+                        .map_err(|error| format!("the link is no delegation: {error}"))?;
+                    if chain.issuer().to_string() != *persona
+                        || chain.audience().to_string() != key.did()
+                    {
+                        return Err(format!(
+                            "the link is not {persona}'s delegation to {}",
+                            key.did()
+                        ));
+                    }
+                    held.representative =
+                        Representation::linked(key, persona.clone(), link.clone());
+                    held.acting = Acting::Permanent(persona.clone());
+                }
+            }
+        }
+        Ok(())
     }
 
     fn hold(&mut self, key: Key) -> Resource<Credential> {
@@ -770,13 +852,19 @@ impl credential::HostPermanentPersona for KernelHost {
         &mut self,
         _persona: Resource<PermanentPersona>,
         reason: String,
-        _context: Vec<u8>,
+        context: Vec<u8>,
     ) {
-        crate::platform::log(
-            "kernel",
-            &format!("authorization was asked for {reason}: this host opens no persona yet"),
-            true,
-        );
+        let taken = self
+            .authorizations
+            .as_ref()
+            .is_some_and(|authorizations| authorizations.unbounded_send((reason, context)).is_ok());
+        if !taken {
+            crate::platform::log(
+                "kernel",
+                "an authorization was asked for, and no one takes it",
+                true,
+            );
+        }
     }
 
     fn drop(&mut self, _persona: Resource<PermanentPersona>) -> wcmp::Result<()> {
@@ -814,7 +902,7 @@ impl<T: 'static> credential::HostPersonaAuthorityWithStore<T> for Sapling {
     ) -> Result<Vec<u8>, Error> {
         trace("persona-authority.delegate");
         let key = lent(accessor, &authority)?;
-        let chain = delegation(&key, &audience, &access).await?;
+        let chain = delegated(&key, &audience, &access).await?;
         // A delegation of everything the persona has, to the representative
         // of the persona's own worker, links that representative.
         if access.subject.is_none() {
@@ -979,5 +1067,81 @@ mod tests {
             recovered.did(),
             Key::generated(Zeroizing::new([6; 32])).did()
         );
+    }
+
+    fn access(subject: Option<String>) -> Access {
+        Access {
+            subject,
+            command: "/".to_owned(),
+            arguments: Vec::new(),
+            meta: Vec::new(),
+            not_before: None,
+            expiration: None,
+            reason: "a test".to_owned(),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn it_signs_what_a_delegation_says_of_itself_and_when_it_holds() {
+        let persona = Key::generated(Zeroizing::new([1; 32]));
+        let audience = Key::generated(Zeroizing::new([2; 32])).did();
+        let address = Ipld::String("https://tonk.test/ucan/".to_owned());
+        let asked = Access {
+            meta: vec![crate::bindings::sapling::kernel::credential::Argument {
+                key: "home.address".to_owned(),
+                value: serde_ipld_dagcbor::to_vec(&address).unwrap(),
+            }],
+            not_before: Some(1_000),
+            expiration: Some(2_000),
+            ..access(None)
+        };
+        let chain = delegated(&persona, &audience, &asked).await.unwrap();
+        let chain = DelegationChain::try_from(chain.as_slice()).unwrap();
+        assert_eq!(chain.meta("home.address"), Some(&address));
+        let delegation = chain.proofs().next().unwrap();
+        assert_eq!(
+            delegation.expiration().map(|at| at.to_unix()),
+            Some(2_000),
+            "the delegation holds until its expiration"
+        );
+        assert_eq!(delegation.not_before().map(|at| at.to_unix()), Some(1_000));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn it_has_a_lent_persona_delegate_what_it_is_not_and_a_key_only_itself() {
+        let persona = Key::generated(Zeroizing::new([1; 32]));
+        let audience = Key::generated(Zeroizing::new([2; 32])).did();
+        let space = Key::generated(Zeroizing::new([3; 32])).did();
+        assert!(
+            delegated(&persona, &audience, &access(Some(space.clone())))
+                .await
+                .is_ok(),
+            "a persona delegates a space it has authority over"
+        );
+        assert!(matches!(
+            delegation(&persona, &audience, &access(Some(space))).await,
+            Err(Error::Denied(_))
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn it_acts_for_the_persona_whose_link_it_is_given_and_no_other() {
+        let mut host = KernelHost::default();
+        host.sessions.push(Standing::new([4; 32]));
+        let representative = host.sessions[0].representative.did.clone();
+        let account = Key::generated(Zeroizing::new([5; 32]));
+        let link = delegated(&account, &representative, &access(None))
+            .await
+            .unwrap();
+        host.stand(Some((account.did(), link.clone()))).unwrap();
+        assert_eq!(host.permanent(), Some(account.did()));
+
+        let stranger = Key::generated(Zeroizing::new([6; 32])).did();
+        assert!(
+            host.stand(Some((stranger, link))).is_err(),
+            "a link is not another persona's"
+        );
+        host.stand(None).unwrap();
+        assert_eq!(host.permanent(), None, "signed out, it acts for no account");
     }
 }

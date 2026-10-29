@@ -527,6 +527,26 @@ impl Command for RecordInvite {
     type Output = ();
 }
 
+/// Record, in a space, a publication of it that the person's profile
+/// minted: the invitation to the public principal, of the `public` kind,
+/// and the delegation retained so making the space private again revokes
+/// it. As with [`RecordInvite`], the profile holds the authority and signs,
+/// and the space's own worker writes what the publication leaves in the
+/// space. It fires on the space's own branch and records for that space
+/// only.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RecordPublication {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The delegation chain the publication grants.
+    pub proof: crate::domain::command::current::record_publication::Proof,
+}
+
+impl Command for RecordPublication {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Keep, in a space, the record of an invitation the person's profile
 /// issued: the roster's invitation, and the delegation retained so the
 /// invitation can be found again and revoked.

@@ -45,6 +45,9 @@ const READ_COMMAND: &str = "/use/get";
 /// on the space; [`TonkWorkerError::Conflict`] when the space has no sync
 /// service to publish through, or the service does not keep the ticket.
 pub(crate) async fn publish(tonk: &TonkState, repo: &str) -> Result<String, TonkWorkerError> {
+    if tonk.spaces_elsewhere() {
+        return publish_elsewhere(tonk, repo).await;
+    }
     let repository = tonk
         .profile
         .space(repo)
@@ -118,7 +121,89 @@ pub(crate) async fn publish(tonk: &TonkState, repo: &str) -> Result<String, Tonk
         TonkWorkerError::Conflict(format!("the space did not keep its public ticket: {error}"))
     })?;
 
-    let invitation = Invitation::from_chain(&chain)
+    record_publication(tonk, repo, &chain).await?;
+    log!("published '{repo}' at {address}");
+    Ok(address)
+}
+
+/// [`publish`], where the space is held by a worker of its own: this worker
+/// holds the authority, so it mints the publication and has the space keep
+/// its ticket, and hands that worker the publication to record.
+async fn publish_elsewhere(tonk: &TonkState, repo: &str) -> Result<String, TonkWorkerError> {
+    let repository = super::repository::space_named(tonk, repo).await?;
+    let subject = repository.did();
+    super::repository::space_root_prefix(tonk, &subject)
+        .await
+        .map_err(|_| {
+            TonkWorkerError::Forbidden("only an admin of the space can publish it".into())
+        })?;
+    let remote = match resolve_remote_url(tonk, &repository).await? {
+        RemoteRequirement::Ready(remote) => remote,
+        RemoteRequirement::Refused(reason) => {
+            let reason = explain_refusal(tonk, reason).await;
+            return Err(TonkWorkerError::Conflict(format!(
+                "cannot publish '{repo}': {} ({})",
+                reason.detail(),
+                reason.code()
+            )));
+        }
+    };
+    let address = Ticket::public(subject.clone(), &remote.access_url)
+        .and_then(|ticket| ticket.to_url())
+        .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+    let public = tonk_invite::public::did()
+        .await
+        .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+    let delegation: UcanDelegation = tonk
+        .profile
+        .access()
+        .claim(
+            Subject::from(subject.clone())
+                .attenuate(Use)
+                .attenuate(method::Get),
+        )
+        .delegate(public)
+        .meta(home_address_meta(&remote.access_url))
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("failed to delegate: {error}")))?;
+    let chain = delegation.into_chain();
+    tonk_account::ticket::issue(
+        SiteAddress::from(UcanAddress::new(remote.access_url.as_str())),
+        &chain,
+        &tonk.operator,
+    )
+    .await
+    .map_err(|error| {
+        TonkWorkerError::Conflict(format!("the space did not keep its public ticket: {error}"))
+    })?;
+    let proof = chain
+        .to_bytes()
+        .map(|bytes| bs58::encode(bytes).into_string())
+        .map_err(|error| TonkWorkerError::Internal(format!("the publication: {error}")))?;
+    let peer = super::space_reach::peer(repo);
+    super::space_reach::run(
+        peer,
+        peer.content(),
+        super::space_reach::command(
+            &[("proof", "xyz.tonk.command.record-publication/proof", "Text")],
+            serde_json::json!({ "proof": proof }),
+        )?,
+    )
+    .await?;
+    log!("published '{repo}' at {address}");
+    Ok(address)
+}
+
+/// Record the publication `chain` of the space at `repo` on its content
+/// branch, and retain its delegation, so making the space private again
+/// finds and revokes it.
+async fn record_publication(
+    tonk: &TonkState,
+    repo: &str,
+    chain: &dialog_ucan_core::DelegationChain,
+) -> Result<(), TonkWorkerError> {
+    let invitation = Invitation::from_chain(chain)
         .ok_or_else(|| TonkWorkerError::Internal("the publication names no space".into()))?;
     let execution = InvitationExecution::new(&invitation, PUBLIC_KIND);
     tonk.reactor
@@ -133,9 +218,44 @@ pub(crate) async fn publish(tonk: &TonkState, repo: &str) -> Result<String, Tonk
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to record the publication: {error}"))
         })?;
-    super::create_invite::retain_invite_authority(tonk, repo, &chain).await?;
-    log!("published '{repo}' at {address}");
-    Ok(address)
+    super::create_invite::retain_invite_authority(tonk, repo, chain).await
+}
+
+/// Run the [`RecordPublication`] command: record, in the space this worker
+/// holds, the publication the person's profile minted for it. One for any
+/// other space than the branch it fired on is refused.
+///
+/// [`RecordPublication`]: tonk_schema::command::RecordPublication
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::RecordPublication>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::RecordPublication) {
+        let repo = self.origin().repo.clone();
+        let recorded = async {
+            let bytes = bs58::decode(&command.proof.0)
+                .into_vec()
+                .map_err(|error| TonkWorkerError::Router(format!("not base58: {error}")))?;
+            let chain =
+                dialog_ucan_core::DelegationChain::try_from(bytes.as_slice()).map_err(|error| {
+                    TonkWorkerError::Router(format!("malformed delegation: {error}"))
+                })?;
+            if chain.subject().map(|subject| subject.to_string()) != Some(repo.clone()) {
+                return Err(TonkWorkerError::Forbidden(format!(
+                    "the publication is not of '{repo}'"
+                )));
+            }
+            let tonk = self.state().read().await;
+            record_publication(&tonk, &repo, &chain).await?;
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            Ok(())
+        };
+        match recorded.await {
+            Ok(()) => log!("recorded a publication of '{repo}'"),
+            Err(error) => log!("RecordPublication for '{repo}' failed: {error}"),
+        }
+    }
 }
 
 /// Make the space at `repo` private again: take its public ticket back,
@@ -147,6 +267,9 @@ pub(crate) async fn publish(tonk: &TonkState, repo: &str) -> Result<String, Tonk
 /// [`TonkWorkerError::Forbidden`] when this account holds no `/` chain
 /// on the space, or the service refuses the revocation.
 pub(crate) async fn unpublish(tonk: &TonkState, repo: &str) -> Result<(), TonkWorkerError> {
+    if tonk.spaces_elsewhere() {
+        return unpublish_elsewhere(tonk, repo).await;
+    }
     let repository = tonk
         .profile
         .space(repo)
@@ -171,19 +294,13 @@ pub(crate) async fn unpublish(tonk: &TonkState, repo: &str) -> Result<(), TonkWo
         .await
         .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
 
-    if let RemoteRequirement::Ready(remote) = resolve_remote_url(tonk, &repository).await? {
-        tonk_account::ticket::withdraw(
-            SiteAddress::from(UcanAddress::new(remote.access_url.as_str())),
-            &subject,
-            &public,
-            &tonk.operator,
-        )
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Conflict(format!(
-                "the space did not give up its public ticket: {error}"
-            ))
-        })?;
+    // A space's own worker reaches no service: the person's profile takes
+    // the ticket back.
+    if tonk.registry.standing == crate::device::Standing::Site {
+        super::space_reach::ask_profile(&serde_json::json!({ "withdraw": public.to_string() }))
+            .await?;
+    } else {
+        withdraw_ticket(tonk, &subject, &public).await?;
     }
 
     for (invitation, execution) in publications(tonk, session.handle(), &public).await? {
@@ -221,6 +338,56 @@ pub(crate) async fn unpublish(tonk: &TonkState, repo: &str) -> Result<(), TonkWo
             })?;
     }
     log!("unpublished '{repo}'");
+    Ok(())
+}
+
+/// [`unpublish`], where the space is held by a worker of its own: that
+/// worker holds the publications and retracts them, and has this one take
+/// the ticket back and sign the revocations.
+async fn unpublish_elsewhere(tonk: &TonkState, repo: &str) -> Result<(), TonkWorkerError> {
+    let repository = super::repository::space_named(tonk, repo).await?;
+    let subject = repository.did();
+    super::repository::space_root_prefix(tonk, &subject)
+        .await
+        .map_err(|_| {
+            TonkWorkerError::Forbidden("only an admin of the space can unpublish it".into())
+        })?;
+    let peer = super::space_reach::peer(repo);
+    super::space_reach::run(
+        peer,
+        peer.content(),
+        super::space_reach::command(
+            &[
+                ("space", "xyz.tonk.unpublish/space", "Entity"),
+                ("time", "xyz.tonk.unpublish/time", "Float"),
+            ],
+            serde_json::json!({ "space": subject.to_string(), "time": super::sync::now_millis() }),
+        )?,
+    )
+    .await
+}
+
+/// Take back the ticket `subject` keeps for `audience` at the service it
+/// syncs with, if it syncs with one.
+pub(crate) async fn withdraw_ticket(
+    tonk: &TonkState,
+    subject: &Did,
+    audience: &Did,
+) -> Result<(), TonkWorkerError> {
+    let repository = super::repository::space_named(tonk, subject.repo_key()).await?;
+    let RemoteRequirement::Ready(remote) = resolve_remote_url(tonk, &repository).await? else {
+        return Ok(());
+    };
+    tonk_account::ticket::withdraw(
+        SiteAddress::from(UcanAddress::new(remote.access_url.as_str())),
+        subject,
+        audience,
+        &tonk.operator,
+    )
+    .await
+    .map_err(|error| {
+        TonkWorkerError::Conflict(format!("the space did not give up its ticket: {error}"))
+    })?;
     Ok(())
 }
 

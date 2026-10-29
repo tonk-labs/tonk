@@ -8,8 +8,8 @@
 //! space's own kernel did. A space's kernel answers `/_kernel/snapshot` with
 //! the space, for another to be made a copy of. A persona does for a space
 //! what its own kernel asks through their hosts and only the persona can:
-//! `POST /_kernel/space/{space}/invite`, `GET .../authority` and
-//! `POST .../revoke`.
+//! `POST /_kernel/space/{space}/invite`, `GET .../authority`,
+//! `POST .../revoke` and `POST .../withdraw`.
 
 use axum::body::Body;
 use axum::http::{HeaderValue, Method, Request, Response, StatusCode, header};
@@ -64,6 +64,8 @@ pub enum SpaceAsk {
     Authority,
     /// Revoke a grant on it.
     Revoke,
+    /// Take back the ticket it keeps for an audience.
+    Withdraw,
 }
 
 /// The headers an asset's request keeps as it reaches the worker.
@@ -91,6 +93,7 @@ pub fn route(request: Request<Body>, site: &Site) -> Routed {
                 ("invite", &Method::POST) => Some(SpaceAsk::Invite),
                 ("authority", &Method::GET) => Some(SpaceAsk::Authority),
                 ("revoke", &Method::POST) => Some(SpaceAsk::Revoke),
+                ("withdraw", &Method::POST) => Some(SpaceAsk::Withdraw),
                 _ => None,
             };
             if let Some(ask) = ask {

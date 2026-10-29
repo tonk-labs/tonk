@@ -198,6 +198,7 @@ impl lifecycle::Guest for Kernel {
             CREATING.store(true, Ordering::Release);
         }
         wit_bindgen::spawn_local(configure());
+        wit_bindgen::spawn_local(sync_while_watched());
         if let Some(space) = renewing {
             wit_bindgen::spawn_local(async move { renew(&state, &space.subject).await });
         } else if let Some(space) = fresh {
@@ -227,6 +228,9 @@ impl lifecycle::Guest for Kernel {
             subject: None,
             command: "/".to_owned(),
             arguments: Vec::new(),
+            meta: Vec::new(),
+            not_before: None,
+            expiration: None,
             reason: "to link this device to your account".to_owned(),
         };
         let link = permanent.delegate(representative, access).await?;
@@ -235,10 +239,14 @@ impl lifecycle::Guest for Kernel {
             .map_err(|error| Error::Unavailable(error.to_string()))
     }
 
-    async fn authorize(_persona: &PersonaAuthority, _context: Vec<u8>) -> Result<(), Error> {
-        Err(Error::Unavailable(
-            "this kernel acts as no persona yet".into(),
-        ))
+    /// The person let this worker act as their permanent persona, lent as
+    /// `persona`, for what the command that asked put in `context`.
+    async fn authorize(persona: &PersonaAuthority, context: Vec<u8>) -> Result<(), Error> {
+        let state =
+            state().ok_or_else(|| Error::Unavailable("the persona has not booted".into()))?;
+        tonk_worker::authorized(&state, persona, &context)
+            .await
+            .map_err(|error| Error::Denied(error.to_string()))
     }
 
     async fn shutdown(_deadline_ms: u32) {}
@@ -262,6 +270,12 @@ impl channel::Guest for Kernel {
                 code,
                 message,
             } => tonk_worker::failed(&state, &kind, code.as_deref(), &message).await,
+            Told::Delegate {
+                subject,
+                command,
+                audience,
+            } => tonk_worker::delegate_asked(subject, command, audience).await,
+            Told::Unauthorized { message } => tonk_worker::unauthorized(&state, &message).await,
         }
         Ok(())
     }
@@ -374,8 +388,9 @@ impl handler::Guest for Kernel {
 }
 
 /// Do for the space `space` what its own kernel asks of the persona: the
-/// answer is `{ invited }`, `{ authority }` or `{ receipt }`, as a profile's
-/// worker answered the same asks in a browser.
+/// answer is `{ invited }`, `{ authority }`, `{ receipt }` or
+/// `{ withdrawn }`, as a profile's worker answered the same asks in a
+/// browser.
 async fn space_ask(
     space: &str,
     ask: SpaceAsk,
@@ -403,6 +418,15 @@ async fn space_ask(
         SpaceAsk::Revoke => tonk_worker::profile_asks::revoke_grant(&state, space, body)
             .await
             .map(|receipt| json!({ "receipt": receipt })),
+        SpaceAsk::Withdraw => {
+            let audience = body
+                .get("audience")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            tonk_worker::profile_asks::withdraw_ticket(&state, space, audience)
+                .await
+                .map(|()| json!({ "withdrawn": true }))
+        }
     };
     match answered {
         Ok(answer) => site::answer(StatusCode::OK, &answer),
@@ -429,6 +453,23 @@ fn drain_soon() {
 /// How long a sync waits after the write that asks for it.
 const DRAIN_AFTER_MS: u64 = 500;
 
+/// Sync with the remote every [`SYNC_EVERY_MS`] while a page watches
+/// something, as the browser's worker's loop does: with no write to follow,
+/// nothing else brings another device's change in.
+async fn sync_while_watched() {
+    loop {
+        let _ = tonk_worker::sleep(Duration::from_millis(SYNC_EVERY_MS)).await;
+        if let Some(state) = state()
+            && tonk_worker::watched(&state).await
+        {
+            tonk_worker::drain_sync(&state).await;
+        }
+    }
+}
+
+/// How often a watched kernel syncs.
+const SYNC_EVERY_MS: u64 = 2_000;
+
 /// Ask for the delegation of `space` to this kernel's session, and take up
 /// what the representative hands over.
 async fn take_up(state: &TonkState, space: &Space) {
@@ -441,6 +482,9 @@ async fn take_up(state: &TonkState, space: &Space) {
 /// for the person opens.
 async fn configure() {
     let read = tonk_kernel_world::application::read("/.well-known/tonk").await;
+    if let Err(error) = &read {
+        tonk_common::log!("tonk-kernel: the deployment's configuration was not read: {error:?}");
+    }
     let app = read.ok().and_then(|answer| {
         let configuration: Value = serde_json::from_str(&answer.body).ok()?;
         configuration
@@ -479,6 +523,9 @@ async fn delegated(space: &str, reason: &str) -> Vec<Vec<u8>> {
         subject: Some(space.to_owned()),
         command: "/".to_owned(),
         arguments: Vec::new(),
+        meta: Vec::new(),
+        not_before: None,
+        expiration: None,
         reason: reason.to_owned(),
     };
     match tonk_kernel_world::session::delegate(access).await {

@@ -1486,6 +1486,18 @@ pub mod command {
             pub struct Seed(pub String);
         }
 
+        /// `tonk/record-publication` — a space's own worker records a
+        /// publication of it the person's profile minted.
+        pub mod record_publication {
+            use dialog_query::Attribute;
+
+            /// The base58 delegation chain the publication grants the
+            /// public principal.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.record-publication")]
+            pub struct Proof(pub String);
+        }
+
         /// `tonk/retain-invite` — a space's own worker keeps the record of
         /// an invitation the person's profile issued to a named audience.
         pub mod retain_invite {

@@ -6603,6 +6603,13 @@ async fn generated_space_key(
     )
     .await
     .map_err(|error| failed("the space's custody was not kept", &error))?;
+    // Signed in, the space is the account's too: its other devices restore
+    // the key from what the account holds.
+    if let Some(credential::Persona::Permanent(persona)) = tonk_kernel_world::session::persona() {
+        super::merge::hold_for_account(tonk, &space, &did, Custodian::Permanent(&persona))
+            .await
+            .map_err(|error| RepositoryError::Internal(error.to_string()))?;
+    }
     tonk_kernel_world::credentials::signer(space)
         .map_err(|error| failed("the space's key is not a signer", &error))
 }
@@ -6728,6 +6735,7 @@ async fn save_pending_seed(
 /// own worker asks this branch what to fill it from. Nothing to bring for a
 /// space whose worker has filled it, or that this branch already has a seed
 /// for.
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
 pub(crate) async fn carry_pending_seed(
     tonk: &TonkState,
     workspace: &crate::worker::DefaultProfile,

@@ -201,8 +201,39 @@ pub(crate) fn notify_profile_changed(except: Option<&crate::router::ClientId>) {
     });
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn notify_profile_changed(_except: Option<&crate::router::ClientId>) {}
+
+/// On a kernel, its embedder holds the pages: it is told to post the reload
+/// to every page but `except`.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub(crate) fn notify_profile_changed(except: Option<&crate::router::ClientId>) {
+    tell_post(
+        None,
+        except,
+        serde_json::json!({ "type": "profile-changed" }),
+    );
+}
+
+/// Tell the embedder to post `message` to the page `client`, or, with none,
+/// to every page but `except`.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+fn tell_post(
+    client: Option<&crate::router::ClientId>,
+    except: Option<&crate::router::ClientId>,
+    message: serde_json::Value,
+) {
+    let client = client.map(|client| client.0.clone());
+    let except = except.map(|client| client.0.clone());
+    detach(async move {
+        if let Err(error) =
+            tonk_kernel_world::application::post(client.as_deref(), except.as_deref(), &message)
+                .await
+        {
+            log!("post: the embedder was not told: {error:?}");
+        }
+    });
+}
 
 /// Ask the ORIGINATING document to reload after the active branch changes
 /// under it. Its own requests are fenced from here on (a stale context
@@ -254,8 +285,22 @@ pub(crate) fn notify_profile_changed_to(client: Option<&crate::router::ClientId>
     });
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn notify_profile_changed_to(_client: Option<&crate::router::ClientId>) {}
+
+/// [`notify_profile_changed_to`], told to a kernel's embedder.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub(crate) fn notify_profile_changed_to(client: Option<&crate::router::ClientId>) {
+    let Some(client) = client else {
+        log!("profile change: no originating client; nothing to reload");
+        return;
+    };
+    tell_post(
+        Some(client),
+        None,
+        serde_json::json!({ "type": "profile-changed" }),
+    );
+}
 
 /// Post a typed launch-funnel success to the originating page.
 ///
@@ -316,12 +361,28 @@ pub(crate) fn notify_analytics(
 /// A launch-funnel event with no page to deliver it to — dropped, like
 /// the "client is gone" path above. Analytics capture is a browser
 /// concern; a native host has nowhere (and no reason) to send it.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn notify_analytics(
     client: Option<&crate::router::ClientId>,
     event: tonk_worker_api::AnalyticsEvent,
 ) {
     let _ = (client, event);
+}
+
+/// [`notify_analytics`], told to a kernel's embedder.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub(crate) fn notify_analytics(
+    client: Option<&crate::router::ClientId>,
+    event: tonk_worker_api::AnalyticsEvent,
+) {
+    let Some(client) = client else {
+        log!("analytics: no originating client; skipping event");
+        return;
+    };
+    match serde_json::to_value(tonk_worker_api::AnalyticsMessage::new(event)) {
+        Ok(message) => tell_post(Some(client), None, message),
+        Err(error) => log!("analytics: failed to serialize event: {error}"),
+    }
 }
 
 /// Ask the originating document to run a WebAuthn ceremony the worker

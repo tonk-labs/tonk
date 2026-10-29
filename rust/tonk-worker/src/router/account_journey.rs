@@ -9,8 +9,10 @@
 //! already tells it of a created or joined space with; the page validates
 //! and captures it. Nothing here names an account, an address or a space.
 
+#[cfg(test)]
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::sync::{Mutex, PoisonError};
 
 use tonk_analytics::account::{
     AccountAction, AccountEvent, AccountOutcome, AccountState, FailureKind, Journey, Stage,
@@ -91,10 +93,18 @@ fn classify(action: AccountAction) -> (Journey, Stage, Surface, AccountState) {
     }
 }
 
-thread_local! {
-    /// The failures attempts nobody asked for last ended in, by action. One
-    /// that fails the same way again is not told; a success clears them.
-    static REPEATED: RefCell<HashSet<(AccountAction, FailureKind)>> = RefCell::new(HashSet::new());
+/// The failures attempts nobody asked for last ended in, by action. One
+/// that fails the same way again is not told; a success clears them. A
+/// static, as an attempt's state is (see `registration`).
+static REPEATED: Mutex<Option<HashSet<(AccountAction, FailureKind)>>> = Mutex::new(None);
+
+fn repeated<R>(touch: impl FnOnce(&mut HashSet<(AccountAction, FailureKind)>) -> R) -> R {
+    touch(
+        REPEATED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(HashSet::new),
+    )
 }
 
 impl Attempt {
@@ -153,7 +163,7 @@ impl Attempt {
     pub(crate) fn end(mut self, stage: Stage, outcome: AccountOutcome) {
         if self.trigger == Trigger::Automatic {
             let action = self.action;
-            let repeated = REPEATED.with_borrow_mut(|repeated| match outcome.failure_kind() {
+            let repeated = repeated(|repeated| match outcome.failure_kind() {
                 Some(kind) => !repeated.insert((action, kind)),
                 None => {
                     repeated.retain(|(failed, _)| *failed != action);
@@ -257,7 +267,7 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn listen() {
     HEARD.set(Some(Vec::new()));
-    REPEATED.with_borrow_mut(HashSet::clear);
+    repeated(HashSet::clear);
 }
 
 /// What was told since [`listen`], as the properties a page would capture.

@@ -9,6 +9,11 @@
 //! ceremony made of the account, and to enroll an account it created at the
 //! access service, which the embedder answers from what it keeps here until
 //! the merge returns. The account's key and the passkey's are gone then.
+//!
+//! Once the person is signed in, the guest kernel asks to act as the
+//! account (`permanent-persona.authorize`): the page runs the ceremony
+//! again, and the embedder opens the account with what the passkey derived
+//! and lends its key for one call of `lifecycle.authorize`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -45,6 +50,7 @@ impl Kind {
 
 /// What a sign-in was asked for: the ceremony, the address the person signs
 /// in as, what this device is called, and where the account syncs.
+#[derive(Clone)]
 pub struct Asked {
     pub kind: Kind,
     pub email: String,
@@ -68,9 +74,14 @@ struct Signing {
     link: Option<DelegationChain>,
 }
 
-/// The sign-in under way, if one is.
+/// The sign-in under way, if one is, and a log-in parked until the account
+/// it opens is served: what the passkey derived is kept for it, so the
+/// person is not asked again once they follow the emailed link.
 #[derive(Clone, Default)]
-pub struct SignIn(Rc<RefCell<Option<Signing>>>);
+pub struct SignIn {
+    signing: Rc<RefCell<Option<Signing>>>,
+    parked: Rc<RefCell<Option<(Custodian, Asked)>>>,
+}
 
 /// What the page derived with a passkey, as it hands it over:
 /// `{ credentialId, key, kek }`, the credential in hex and the two PRF
@@ -108,6 +119,48 @@ async fn custodian_of(handoff: &JsValue) -> Result<Custodian, String> {
     Ok(Custodian::Passkey(custodian))
 }
 
+/// Why an account did not open: what to say, and the custody service's
+/// refusal, when it is what refused.
+struct NotOpened {
+    message: &'static str,
+    error: Option<anyhow::Error>,
+}
+
+impl NotOpened {
+    fn into_page(self) -> JsValue {
+        failure(self.message, self.error.as_ref())
+    }
+}
+
+/// Whether the custody service refused to open the account because it
+/// awaits its emailed activation.
+fn awaits_activation(not_opened: &NotOpened) -> bool {
+    matches!(
+        not_opened
+            .error
+            .as_ref()
+            .and_then(tonk_identity::custody::denial_of),
+        Some(tonk_identity::custody::CustodyDenial::AwaitingActivation)
+    )
+}
+
+/// The account `custodian` opens, from `remote`, where it syncs.
+async fn opened(custodian: &Custodian, remote: &str) -> Result<Account, NotOpened> {
+    custodian
+        .account()
+        .load(remote.to_owned())
+        .perform(&Crypto)
+        .await
+        .map_err(|error| NotOpened {
+            message: "the account did not open",
+            error: Some(error),
+        })?
+        .ok_or(NotOpened {
+            message: "this passkey has published no account yet; create one on the browser that holds it",
+            error: None,
+        })
+}
+
 /// An error for the page, with the custody service's `code` for a refusal
 /// it knows, such as that the account awaits activation.
 fn failure(message: &str, error: Option<&anyhow::Error>) -> JsValue {
@@ -130,40 +183,77 @@ impl SignIn {
         handoff: JsValue,
         asked: Asked,
     ) -> Result<(String, Vec<u8>), JsValue> {
+        let custodian = custodian_of(&handoff)
+            .await
+            .map_err(|error| failure(&error, None))?;
+        let account = match asked.kind {
+            Kind::Create => custodian
+                .account()
+                .create()
+                .perform(&Crypto)
+                .await
+                .map_err(|error| {
+                    failure("the account did not seal under this passkey", Some(&error))
+                })?,
+            Kind::LogIn => match opened(&custodian, &asked.remote).await {
+                Ok(account) => account,
+                Err(error) => {
+                    if awaits_activation(&error) {
+                        *self.parked.borrow_mut() = Some((custodian, asked));
+                    }
+                    return Err(error.into_page());
+                }
+            },
+        };
+        self.merge(kernel, session, custodian, account, asked).await
+    }
+
+    /// Finish the log-in parked until its account is served, if it is now:
+    /// answers the permanent persona and its delegation to the
+    /// representative, or nothing while the account still awaits its
+    /// activation.
+    pub async fn resume(
+        &self,
+        kernel: &Served,
+        session: &Ed25519Signer,
+    ) -> Result<Option<(String, Vec<u8>)>, JsValue> {
+        let Some((custodian, asked)) = self.parked.borrow_mut().take() else {
+            return Err(failure("no log-in is parked", None));
+        };
+        match opened(&custodian, &asked.remote).await {
+            Ok(account) => self
+                .merge(kernel, session, custodian, account, asked)
+                .await
+                .map(Some),
+            Err(error) if awaits_activation(&error) => {
+                *self.parked.borrow_mut() = Some((custodian, asked));
+                Ok(None)
+            }
+            Err(error) => Err(error.into_page()),
+        }
+    }
+
+    /// Merge `session`'s provisional persona into `account`, which
+    /// `custodian` opened or created for what was `asked`.
+    async fn merge(
+        &self,
+        kernel: &Served,
+        session: &Ed25519Signer,
+        custodian: Custodian,
+        account: Account,
+        asked: Asked,
+    ) -> Result<(String, Vec<u8>), JsValue> {
         let Asked {
             kind,
             email,
             device_name,
             remote,
         } = asked;
-        let custodian = custodian_of(&handoff)
-            .await
-            .map_err(|error| failure(&error, None))?;
-        let account = match kind {
-            Kind::Create => custodian
-                .account()
-                .create()
-                .perform(&Crypto)
-                .await
-                .map_err(|error| failure("the account did not seal under this passkey", Some(&error)))?,
-            Kind::LogIn => custodian
-                .account()
-                .load(remote.clone())
-                .perform(&Crypto)
-                .await
-                .map_err(|error| failure("the account did not open", Some(&error)))?
-                .ok_or_else(|| {
-                    failure(
-                        "this passkey has published no account yet; create one on the browser that holds it",
-                        None,
-                    )
-                })?,
-        };
         let Signer::Ed25519(permanent) = account
             .signer()
             .await
             .map_err(|error| failure("the account's key did not derive", Some(&error)))?;
-        *self.0.borrow_mut() = Some(Signing {
+        *self.signing.borrow_mut() = Some(Signing {
             kind,
             email,
             device_name,
@@ -179,7 +269,7 @@ impl SignIn {
                 Key::Sealed(Box::new(permanent)),
             )
             .await;
-        self.0.borrow_mut().take();
+        self.signing.borrow_mut().take();
         merged.map_err(|error| failure(&error, None))
     }
 
@@ -190,7 +280,7 @@ impl SignIn {
         let link = DelegationChain::try_from(link)
             .map_err(|error| format!("the link is no delegation: {error}"))?;
         let (custodian, account, kind) = {
-            let held = self.0.borrow();
+            let held = self.signing.borrow();
             let signing = held.as_ref().ok_or("no one is signing in")?;
             (
                 signing.custodian.clone(),
@@ -202,7 +292,7 @@ impl SignIn {
             Kind::Create => Some(Rc::new(material(&custodian, &account).await?)),
             Kind::LogIn => None,
         };
-        let mut held = self.0.borrow_mut();
+        let mut held = self.signing.borrow_mut();
         let signing = held.as_mut().ok_or("no one is signing in")?;
         let created = (kind == Kind::Create).then(|| {
             json!({
@@ -229,7 +319,7 @@ impl SignIn {
     /// through the permanent persona's delegation to it.
     pub async fn enrollment(&self, device: &Ed25519Signer) -> Result<Vec<u8>, String> {
         let (email, link, material) = {
-            let held = self.0.borrow();
+            let held = self.signing.borrow();
             let signing = held.as_ref().ok_or("no one is signing in")?;
             (
                 signing.email.clone(),
@@ -247,6 +337,32 @@ impl SignIn {
             .await
             .map_err(|error| format!("the enrollment did not sign: {error:#}"))
     }
+}
+
+/// Open the account the passkey the page derived `handoff` with holds,
+/// from `remote`, where it syncs, and lend its key to the guest kernel for
+/// one call of `lifecycle.authorize` with `context`. Refused when the
+/// account is not the permanent persona the guest kernel acts for.
+pub async fn authorize(
+    kernel: &Served,
+    handoff: JsValue,
+    remote: String,
+    context: Vec<u8>,
+) -> Result<(), JsValue> {
+    let custodian = custodian_of(&handoff)
+        .await
+        .map_err(|error| failure(&error, None))?;
+    let account = opened(&custodian, &remote)
+        .await
+        .map_err(NotOpened::into_page)?;
+    let Signer::Ed25519(persona) = account
+        .signer()
+        .await
+        .map_err(|error| failure("the account's key did not derive", Some(&error)))?;
+    kernel
+        .authorize(Key::Sealed(Box::new(persona)), context)
+        .await
+        .map_err(|error| failure(&error, None))
 }
 
 /// The custody set an account the ceremony created is enrolled with: the

@@ -267,7 +267,7 @@ async function start() {
     let embedder;
     if (PROFILE) {
         profileDid = session.did;
-        embedder = await wasm_bindgen.bootPersona(space, session, kernelSent, askedToMerge, await keptPersona());
+        embedder = await wasm_bindgen.bootPersona(space, session, kernelSent, askedToMerge, askedToAuthorize, await keptPersona());
     } else {
         const { representative, persona } = await standing();
         embedder = await wasm_bindgen.bootSpace(space, session, representative, persona, delegates(handed), kernelSent);
@@ -281,7 +281,9 @@ async function start() {
 // delegation the kernel asks for alongside never holds a page up.
 function run() {
     booting = start();
+    bootFailed = false;
     booting.catch(error => {
+        bootFailed = true;
         log("the kernel did not boot:", error);
         // The embedder's script, which this worker imported as it installed,
         // and its wasm, fetched as it starts, are of two builds: a newer
@@ -290,6 +292,9 @@ function run() {
     });
 }
 let booting;
+// Whether the last boot failed, such as for a space the person's profile
+// did not hold yet: the next request boots it again.
+let bootFailed = false;
 // Whether the space taken up for the first time has been created: its kernel
 // creates it from what the person's profile kept for it once it serves, and
 // the shell goes to its address only after. Resolved at once for any other
@@ -311,15 +316,20 @@ run();
 
 // A kernel that trapped answers nothing again: boot it anew, from what the
 // space's store kept. At most once in a while, so a kernel that traps as it
-// starts does not loop.
+// starts does not loop. A kernel that did not boot is booted again on a
+// request after it, sooner: what it lacked, such as the person's profile
+// holding its space, may have come since.
 const RESTART_EVERY_MS = 10_000;
+const REBOOT_EVERY_MS = 2_000;
 let restarted = Date.now();
 function restartIfStopped(error) {
-    if (!/the kernel has stopped/.test(String(error?.message ?? error))) return;
-    if (Date.now() - restarted < RESTART_EVERY_MS) return;
+    const stopped = /the kernel has stopped/.test(String(error?.message ?? error));
+    if (!stopped && !bootFailed) return false;
+    if (Date.now() - restarted < (stopped ? RESTART_EVERY_MS : REBOOT_EVERY_MS)) return false;
     restarted = Date.now();
-    log("the kernel stopped; booting it again");
+    log(stopped ? "the kernel stopped; booting it again" : "the kernel did not boot; booting it again");
     run();
+    return true;
 }
 
 // ---- Requests -----------------------------------------------------------
@@ -376,10 +386,15 @@ function withRelay(page) {
     );
 }
 
-// The host's page for a page load the kernel could not answer.
+// The host's page for a page load the kernel could not answer. While the
+// kernel did not boot, the page tries again in a while, as the next load
+// boots it again: what it lacked, such as the person's profile holding its
+// space, may have come.
+const RETRY_PAGE_MS = 3_000;
 function hostPage(status) {
+    const retry = bootFailed ? `<script>setTimeout(() => location.reload(), ${RETRY_PAGE_MS})</script>` : "";
     return new Response(
-        `<!doctype html><html><head>${RELAY}<meta charset="utf-8"><title>${status}</title>` +
+        `<!doctype html><html><head>${RELAY}${retry}<meta charset="utf-8"><title>${status}</title>` +
         `<style>body{font:14px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;` +
         `min-height:100vh;opacity:.7}</style></head><body><p>This space could not answer.</p></body></html>`,
         { status, headers: { "content-type": "text/html; charset=utf-8" } },
@@ -506,7 +521,13 @@ async function withPolicy(headers) {
 // ---- What the kernel asks of other kernels, and of its host --------------
 //
 // The kernel tells this host where the page that asked something is to go,
-// `{ tell: "navigate", client, href, replace }`, and asks with
+// `{ tell: "navigate", client, href, replace }`; a persona, what to post to
+// its pages, `{ tell: "post", client, except, message }`, and the delegation
+// a page asked for, `{ tell: "delegated", chain }` or `{ tell: "delegated",
+// error }`. A persona asks to act for another persona from now on,
+// `{ ask, standing: { persona, link64 } }`, or for its provisional one,
+// `{ ask, standing: null }`.
+// It asks with
 // `application.send`: `{ ask, to, method, path, body }` asks the kernel of
 // the space `to`; `{ ask, read }` asks this host for the text at the
 // address `read`, which anyone may read, such as a seed; and `{ ask, fetch,
@@ -526,6 +547,8 @@ async function kernelSent(bytes) {
     if (message?.tell === "navigate") return navigatePage(message);
     if (message?.tell === "cancel") return cancelStream(message.ask);
     if (message?.tell === "changed") return signalSpaces(message.space);
+    if (message?.tell === "post" && PROFILE) return postPages(message);
+    if (message?.tell === "delegated" && PROFILE) return delegated(message);
     if (typeof message?.ask !== "number") return;
     if (message.stream === true) return streamToKernel(message);
     let answer;
@@ -606,6 +629,23 @@ async function navigatePage({ client, href, replace }) {
     page.postMessage({ type: "navigate", href, ...(replace ? { replace: true } : {}) });
 }
 
+// Post `message` to the page `client`, or else to each page of this origin
+// but `except`: the top-level ones, or, where none is, as on a site's origin,
+// every frame, which passes what it hears up to the page around it.
+async function postPages({ client, except, message }) {
+    if (typeof client === "string") {
+        const page = await self.clients.get(client);
+        if (!page) return log("post: the page is gone");
+        return page.postMessage(message);
+    }
+    const pages = await self.clients.matchAll({ type: "window" });
+    const framed = !pages.some(page => page.frameType === "top-level");
+    for (const page of pages) {
+        if ((!framed && page.frameType !== "top-level") || page.id === except) continue;
+        page.postMessage(message);
+    }
+}
+
 // What answers `message`: `{ status, body }`.
 async function answerOf(message) {
     if (typeof message.read === "string") return readPublic(message.read);
@@ -614,6 +654,10 @@ async function answerOf(message) {
         return { status: 200, body: await (await booting).ceremony(link) };
     }
     if (message.enroll === true && PROFILE) return enroll();
+    if ("standing" in message && PROFILE) {
+        await stand(message.standing);
+        return { status: 200, body: "" };
+    }
     if (typeof message.fetch === "string") {
         if (!PROFILE) throw new Error("a space's kernel has nothing delivered");
         return deliver(message);
@@ -700,6 +744,10 @@ async function keptPersona() {
     const { persona, link64 } = await kept.json();
     return { persona, link: Uint8Array.from(atob(link64), char => char.charCodeAt(0)) };
 }
+async function forgetPersona() {
+    const cache = await caches.open(HOST_CACHE);
+    await cache.delete(PERSONA_REQUEST);
+}
 async function keepPersona({ persona, link }) {
     const body = JSON.stringify({ persona, link64: toBase64(new Uint8Array(link)) });
     const cache = await caches.open(HOST_CACHE);
@@ -766,9 +814,121 @@ async function signIn(handoff, port) {
         log("the sign-in failed:", message);
         port?.postMessage({ error: message, ...(error?.code ? { code: error.code } : {}) });
         await tellKernel({ tell: "failed", kind: asked.kind, code: error?.code ?? null, message });
+        if (error?.code === "awaiting-activation") resumeSignIn();
     } finally {
         if (signing === asked) signing = null;
     }
+}
+
+// A log-in refused until the person follows the emailed link is parked in
+// the embedder with what the passkey derived: try it again until the
+// account is served, then finish it as the sign-in would have, with no
+// second ceremony. An hour of tries at most.
+const RESUME_EVERY_MS = 4_000;
+const RESUME_TRIES = 900;
+async function resumeSignIn() {
+    for (let tries = 0; tries < RESUME_TRIES; tries++) {
+        await new Promise(resolve => setTimeout(resolve, RESUME_EVERY_MS));
+        try {
+            const merged = await (await booting).resumeSignIn();
+            if (!merged) continue;
+            await keepPersona(merged);
+            log("the parked log-in finished once its account was served");
+        } catch (error) {
+            log("the parked log-in could not finish:", String(error?.message ?? error));
+        }
+        return;
+    }
+}
+
+// ---- Acting as the account ---------------------------------------------
+//
+// Once signed in, the kernel asks to act as the account
+// (`permanent-persona.authorize`), with the custody intent the page runs
+// the ceremony for as its context. This host asks the page that last asked
+// this origin something for the passkey, as for a sign-in, and lends the
+// kernel the account the passkey opens for the one call of
+// `lifecycle.authorize`, which is refused unless it is the account the
+// kernel acts for. A page that asks the account to delegate, as the bar
+// does to promote a member, runs the ceremony first: its hand-off waits
+// here while the kernel is told, `{ tell: "delegate" }`, and asks for the
+// authorization, and the delegation the kernel minted answers the page.
+
+// The authorization the persona asked for, while the page runs its ceremony.
+let authorizing = null;
+// A page's hand-off for a delegation it asked for, until the kernel asks to
+// be authorized for it, and the page's port, until the delegation is made.
+let delegating = null;
+
+async function askedToAuthorize(reason, context) {
+    if (delegating?.handoff) {
+        const { handoff } = delegating;
+        delegating.handoff = null;
+        return authorize(handoff, context, delegating.port, false);
+    }
+    try {
+        const intent = JSON.parse(new TextDecoder().decode(context));
+        authorizing = { context, reason };
+        const page = (lastPage && (await self.clients.get(lastPage))) ?? (await self.clients.matchAll({ type: "window" }))[0];
+        if (!page) throw new Error("no page is open to ask for a passkey");
+        page.postMessage({ type: "webauthn", request: "custody", intent });
+    } catch (error) {
+        log("the authorization could not be asked for:", error);
+        authorizing = null;
+        await tellKernel({ tell: "unauthorized", message: "This page could not be asked for a passkey." });
+    }
+}
+
+// What the page derived with a passkey for the authorization `context`: lend
+// the kernel the account it opens, and answer the page on `port`, unless the
+// answer is the delegation the kernel mints.
+async function authorize(handoff, context, port, answers = true) {
+    try {
+        const app = (await siteOrigins())?.app ?? self.location.origin;
+        await (await booting).authorize(handoff, new URL("/ucan/", app).href, context);
+        if (answers) port?.postMessage({ ok: {} });
+    } catch (error) {
+        const message = String(error?.message ?? error);
+        log("the authorization failed:", message);
+        port?.postMessage({ error: message });
+        if (!answers) delegating = null;
+        await tellKernel({ tell: "unauthorized", message });
+    }
+}
+
+// The custody hand-off a page posted, with `port` to answer it on: for the
+// sign-in or the authorization asked for, or a page's own ask to delegate.
+function custodyFrom(handoff, port) {
+    if (signing) return signIn(handoff, port);
+    if (authorizing) {
+        const { context } = authorizing;
+        authorizing = null;
+        return authorize(handoff, context, port);
+    }
+    const request = handoff?.request;
+    if (request?.kind === "delegate") {
+        delegating = { handoff, port };
+        return tellKernel({ tell: "delegate", subject: request.subject, command: request.command, audience: request.audience });
+    }
+    port?.postMessage({ error: "no passkey was asked for" });
+}
+
+// The delegation the kernel minted for the page that asked, or why there is
+// none.
+function delegated({ chain, error }) {
+    const asked = delegating;
+    delegating = null;
+    if (!asked) return log("a delegation was made that no page waits for");
+    asked.port?.postMessage(typeof chain === "string" ? { ok: { delegation: chain } } : { error: error ?? "no delegation was made" });
+}
+
+// The kernel acts for another persona now, or for its provisional one, when
+// `standing` is null: boot it as that from now on.
+async function stand(standing) {
+    const now = standing ? { persona: standing.persona, link: Uint8Array.from(atob(standing.link64), char => char.charCodeAt(0)) } : null;
+    await (await booting).stand(now);
+    if (now) await keepPersona(now);
+    else await forgetPersona();
 }
 
 async function tellKernel(message) {
@@ -881,6 +1041,51 @@ function spaceAsked(url) {
     return space === profileDid ? null : space;
 }
 
+// What the persona answered of a space whose kernel did not answer, while
+// it goes on, by the space: each answer's stream and what it reads from.
+const answeredForSpaces = new Map();
+
+// `response`, the persona's answer of `space`, which ends once the space's
+// kernel answers something: a subscription the page then opens again
+// reaches that kernel.
+function untilSpaceAnswers(space, response) {
+    if (!response.body) return response;
+    const reader = response.body.getReader();
+    const answered = answeredForSpaces.get(space) ?? new Set();
+    answeredForSpaces.set(space, answered);
+    let held;
+    const body = new ReadableStream({
+        start(controller) {
+            held = { controller, reader };
+            answered.add(held);
+        },
+        async pull(controller) {
+            const { done, value } = await reader.read();
+            if (!done) return controller.enqueue(value);
+            answered.delete(held);
+            controller.close();
+        },
+        cancel(reason) {
+            answered.delete(held);
+            return reader.cancel(reason);
+        },
+    });
+    return new Response(body, { status: response.status, headers: response.headers });
+}
+
+// The kernel of `space` answers now: end what the persona answers of it.
+function spaceAnswers(space) {
+    const answered = answeredForSpaces.get(space);
+    if (!answered) return;
+    answeredForSpaces.delete(space);
+    for (const { controller, reader } of answered) {
+        try {
+            controller.error(new Error(`the kernel of ${space} answers now`));
+        } catch {}
+        reader.cancel().catch(() => {});
+    }
+}
+
 // Pass `event`'s request to the kernel of `repo`, over the port to its host,
 // and answer as it answers, as it writes: a subscription goes on flowing
 // until the page stops reading it.
@@ -913,6 +1118,7 @@ async function passToSpace(event, repo) {
             if (data.head) {
                 answered = true;
                 clearTimeout(timer);
+                spaceAnswers(repo);
                 resolve(new Response(stream, { status: data.head.status, headers: data.head.headers }));
             } else if (data.chunk) writing.enqueue(new Uint8Array(data.chunk));
             else if (data.end) {
@@ -961,6 +1167,10 @@ function bindSpacePort(port, { repo }) {
                 const chain = (await (await booting).delegate(data.delegate, access)).buffer;
                 const representative = profileDid;
                 port.postMessage({ id, space: repo, chain, representative, persona: profileDid }, [chain]);
+                // The space's kernel takes the space up with it: what the
+                // persona answered of the space meanwhile is the kernel's
+                // to answer now.
+                spaceAnswers(repo);
                 return;
             }
             // Who the space's kernel acts for, and through.
@@ -1009,6 +1219,7 @@ function bindSpacePort(port, { repo }) {
                 typeof data.invite === "number" ? ["POST", "invite", { time: data.invite }]
                 : data.authority === true ? ["GET", "authority", null]
                 : data.revoke ? ["POST", "revoke", data.revoke]
+                : typeof data.withdraw === "string" ? ["POST", "withdraw", { audience: data.withdraw }]
                 : null;
             if (asked) {
                 const [method, what, body] = asked;
@@ -1051,7 +1262,7 @@ self.addEventListener("message", event => {
     // What the page around the profile derived with a passkey, or that the
     // person refused the ceremony.
     if (PROFILE && type === "custody") {
-        event.waitUntil(signIn(event.data, event.ports[0]));
+        event.waitUntil(custodyFrom(event.data, event.ports[0]));
         return;
     }
     if (PROFILE && type === "ceremony-refused") {
@@ -1096,18 +1307,33 @@ self.addEventListener("fetch", event => {
     }
     const space = PROFILE ? spaceAsked(url) : null;
     if (space) {
+        // A space whose kernel does not answer, such as one the person does
+        // not hold, is answered by the persona: of one it does not hold, it
+        // knows nothing.
+        const unanswered = { request: event.request.clone(), clientId: event.clientId, resultingClientId: event.resultingClientId, waitUntil: promise => event.waitUntil(promise) };
         event.respondWith(
-            passToSpace(event, space).catch(error => new Response(String(error?.message ?? error), { status: 502 })),
+            passToSpace(event, space).catch(error => {
+                log("the kernel of", space, "did not answer; the persona does:", String(error?.message ?? error));
+                return serveKernel(unanswered).then(
+                    response => untilSpaceAnswers(space, response),
+                    error => new Response(String(error?.message ?? error), { status: 502 }),
+                );
+            }),
         );
         return;
     }
+    // A request that had the kernel booted again is answered by the kernel
+    // it booted, when it reads nothing it could not read twice.
+    const notAnswered = error => {
+        log("could not answer", url.pathname, error);
+        return event.request.mode === "navigate"
+            ? hostPage(502)
+            : new Response(String(error?.message ?? error), { status: 502 });
+    };
+    const again = event.request.method === "GET" || event.request.method === "HEAD";
     event.respondWith(
-        serveKernel(event).catch(error => {
-            restartIfStopped(error);
-            log("could not answer", url.pathname, error);
-            return event.request.mode === "navigate"
-                ? hostPage(502)
-                : new Response(String(error?.message ?? error), { status: 502 });
-        }),
+        serveKernel(event).catch(error =>
+            restartIfStopped(error) && again ? serveKernel(event).catch(notAnswered) : notAnswered(error),
+        ),
     );
 });

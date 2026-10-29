@@ -27,6 +27,11 @@
 //!   persona can do for the space, such as to mint an invite to it:
 //!   `{ "ask": id, "profile": request }`, answered with the persona's
 //!   answer, as JSON, in the body
+//! - asked of the embedder, by a persona, to act for another persona from
+//!   now on, such as when the person signs out or switches to another
+//!   account: the permanent persona, by its DID and its delegation to the
+//!   representative, `{ "ask": id, "standing": { "persona", "link64" } }`,
+//!   or the provisional persona, `{ "ask": id, "standing": null }`
 //! - asked of the worker of a space, by the space's DID, for an answer that
 //!   comes in pieces, such as a subscription's: `{ "ask": id, "to": did,
 //!   "method", "path", "body", "stream": true }`, answered with its status
@@ -41,7 +46,16 @@
 //! `{ "tell": "navigate", "client", "href", "replace": bool }`, and that what
 //! a space's worker takes up of it changed, such as where it syncs, so that
 //! worker asks for its delegation again: `{ "tell": "changed", "space": did
-//! or null for every space }`. The embedder tells a space's worker to ask:
+//! or null for every space }`. A persona tells its embedder to post the
+//! message `message` to its pages: to the page `client`, or else to every
+//! page but the page `except`, `{ "tell": "post", "client": id or null,
+//! "except": id or null, "message" }`; and the delegation a
+//! page asked for, `{ "tell": "delegated", "chain": base58 }`, or why there
+//! is none, `{ "tell": "delegated", "error" }`. The embedder tells a
+//! persona that a page asked the account to delegate, `{ "tell":
+//! "delegate", "subject", "command", "audience" }`, and that the
+//! authorization it asked for could not be had, `{ "tell": "unauthorized",
+//! "message" }`. The embedder tells a space's worker to ask:
 //! `{ "tell": "renew" }`. The embedder
 //! tells a persona that the person refused the passkey ceremony a merge
 //! asked for, by the ceremony's kind and the browser's name for the refusal:
@@ -297,6 +311,40 @@ pub async fn navigate(client: &str, href: &str, replace: bool) -> Result<(), Err
     application::send(message.to_string().into_bytes()).await
 }
 
+/// Tell the embedder to post `message` to the page `client`, or, with none,
+/// to every page but the page `except`.
+pub async fn post(
+    client: Option<&str>,
+    except: Option<&str>,
+    message: &Value,
+) -> Result<(), Error> {
+    let message = json!({ "tell": "post", "client": client, "except": except, "message": message });
+    application::send(message.to_string().into_bytes()).await
+}
+
+/// Ask the embedder to have this persona act for the permanent persona
+/// `persona` through `link`, its delegation to the representative, or for
+/// the provisional persona with none. Answers once it does.
+pub async fn standing(persona: Option<(&str, &[u8])>) -> Result<(), Error> {
+    let standing =
+        persona.map(|(persona, link)| json!({ "persona": persona, "link64": BASE64.encode(link) }));
+    let answer = send(|id| json!({ "ask": id, "standing": standing })).await?;
+    if !(200..300).contains(&answer.status) {
+        return Err(Error::Unavailable(answer.body));
+    }
+    Ok(())
+}
+
+/// Tell the embedder the delegation a page asked for, `chain` in base58, or
+/// why there is none.
+pub async fn delegated(chain: Result<&str, &str>) -> Result<(), Error> {
+    let message = match chain {
+        Ok(chain) => json!({ "tell": "delegated", "chain": chain }),
+        Err(error) => json!({ "tell": "delegated", "error": error }),
+    };
+    application::send(message.to_string().into_bytes()).await
+}
+
 /// Send the message `asked` makes of its id, and answer what comes back
 /// under it.
 async fn send(asked: impl FnOnce(u64) -> Value) -> Result<Answer, Error> {
@@ -333,6 +381,15 @@ pub enum Told {
         code: Option<String>,
         message: String,
     },
+    /// A page asked the account to delegate `command` on `subject` to
+    /// `audience`, behind the passkey.
+    Delegate {
+        subject: String,
+        command: String,
+        audience: String,
+    },
+    /// The authorization asked for could not be had, saying `message`.
+    Unauthorized { message: String },
 }
 
 /// Take up a message the embedder handed over: the answer to a request this
@@ -355,6 +412,18 @@ pub fn received(message: &[u8]) -> Result<Option<Told>, Error> {
             }));
         }
         Some("renew") => return Ok(Some(Told::Renew)),
+        Some("delegate") => {
+            return Ok(Some(Told::Delegate {
+                subject: text("subject"),
+                command: text("command"),
+                audience: text("audience"),
+            }));
+        }
+        Some("unauthorized") => {
+            return Ok(Some(Told::Unauthorized {
+                message: text("message"),
+            }));
+        }
         Some("failed") => {
             return Ok(Some(Told::Failed {
                 kind: text("kind"),

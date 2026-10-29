@@ -48,3 +48,18 @@ pub async fn revoke_grant(
     serde_json::to_value(receipt)
         .map_err(|error| TonkWorkerError::Internal(format!("the revocation receipt: {error}")))
 }
+
+/// Take back the ticket `space` keeps for `audience` at the service it syncs
+/// with, as its own worker asked: that worker reaches no service itself.
+pub async fn withdraw_ticket(
+    state: &AppState,
+    space: &str,
+    audience: &str,
+) -> Result<(), TonkWorkerError> {
+    let space = space_of(space)?;
+    let audience: Did = audience.parse().map_err(|error| {
+        TonkWorkerError::Router(format!("{audience} is no audience: {error:?}"))
+    })?;
+    let tonk = state.read().await;
+    super::publication::withdraw_ticket(&tonk, &space, &audience).await
+}
