@@ -407,7 +407,7 @@ pub async fn deny(
 /// The chains delegating `subject` to `agent` at `access`: one per scope,
 /// each the account's own proof for the space with a leaf from the
 /// profile to the agent space, the shape an agent link's grants have.
-async fn grant(
+pub(super) async fn grant(
     tonk: &crate::TonkState,
     agent: &Did,
     subject: &Did,
