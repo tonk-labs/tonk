@@ -35,29 +35,31 @@ lifecycle). In the kernel build:
 | The profile reaching a space: names, copies | works | `space_reach` sends its request with `application.send`; the persona's host passes it over the port the profile's page opens; the answer comes back with `channel.receive` |
 | A space's seed and copy | works | the space's kernel asks for the seed it was made from on its first boot, and the persona's host hands along the source's snapshot for a copy; requests wait until it is created |
 | Public reads (seeds, the deployment's configuration) | works | `{ ask, read }` on the channel, answered by the host |
-| The access service (lookups, signed invocations) | works for the persona | `{ ask, fetch }` on the channel, delivered by the persona's host; a space's host delivers nothing |
-| Passkey ceremonies (sign up, sign in, add a passkey, approve a device, delete) | absent | `provisional-persona.merge`, `permanent-persona.authorize` and the lifecycle's `merge` / `authorize` (see below) |
-| Sync with a remote | absent | `network.open(peer, routes)` and `peer.open(subject, chain)` (host: not yet) |
-| Telling a page to navigate | not needed so far | the hub navigates from the creation's receipt |
-| Upgrades | absent | the bootloader's, not the old worker's generations |
+| The access service (lookups, signed invocations, ticket claims) | works for the persona | `{ ask, fetch }` on the channel, delivered by the persona's host; a space's host delivers nothing |
+| Sign up, sign in | works | `provisional-persona.merge` and the lifecycle's `merge` (see below) |
+| Add a passkey, approve a device or a connection, delete the account | absent | `permanent-persona.authorize` and the lifecycle's `authorize`; needs a WIT addition (see below) |
+| Sync with a remote | works | Dialog's UCAN site hands each operation to a relay (dialog `feat/ucan-relay`), which opens the subject's replica through `network.open` and `peer.open`; the host signs with the key the chain names and runs the UCAN site against the service. The kernel syncs after each write |
+| A space's content, asked of the profile | works | the profile's host passes requests under a space's branches to its kernel, streaming answers that come in pieces |
+| A space asking the persona (invites, authority, revocation) | works | `{ ask, profile }` on the channel, up the space's port, answered on the persona's `/_kernel/space/{space}/…` |
+| Telling a page to navigate | works | `{ tell: "navigate", client, href }` on the channel, the client named by the host in `x-tonk-client-id` |
+| A second account on a device | absent | needs a decision (see below) |
+| Upgrades | absent | the bootloader's, not the old worker's generations; needs a decision (see below) |
 
 ## What the suite says
 
-The whole suite on the kernel build (2026-10-28): 99 tests, 30 pass, 69
-fail. Every space flow that needs no account passes: the hub, creating a
-space from the collection card, the wizard, a seed link and a remote
-template, duplicating (its menu click is flaky), renaming, removing, the
-blank canvas, and storing an asset and reading it in parts.
+The whole suite on the kernel build (2026-10-28, after sync): 99 tests, 57
+pass, 42 fail. Since then the agent and tool connection tests pass (the
+kernels are built with `connection-invites`, 7 tests), and a sync no longer
+starts while a write runs.
 
-The failures:
+What fails, and why:
 
 | Count | Why |
 |---|---|
-| 55 | sign-up and sign-in: no passkey ceremony runs, so account creation fails (see below) |
 | 11 | the old worker's upgrade generations (`service_worker_upgrade.rs`, and `profile_library_repairs_claims_from_an_old_account_writer`) |
-| 1 | `it_returns_bare_join_visits_home`: a bare `/join` is not sent home |
-| 1 | `it_switches_between_a_space_and_the_hub_without_an_absence_flash`: a display renders against a blank context while switching |
-| 1 | `it_removes_the_test_workspace_after_orderly_shutdown`: the harness's own test |
+| ~8 | approving with the account's key: signing in through another deployment, a waiting CLI, a local space's link, the wrong account for a handoff, deleting the account |
+| 3 | a second account on a device: "no profile key named tonk" |
+| the rest | one each: member roles and removal, a published space's bar, sign-out's reload, the sign-up journey's analytics, a third device confirming, the harness's own test |
 
 ## Sign-up on the world
 
@@ -94,13 +96,30 @@ Settled:
   both persona-authorities, so the kernel reseals the spaces' keys to the
   permanent persona and makes it the profile's upstream.
 
-Open:
+Done as above, with these differences:
 
-- The old worker switched to a profile of the account's own
-  (`profiles::for_account`, then a reload). On the world the provisional
-  persona merges into the permanent one instead: the profile goes on.
-- Which of add-a-passkey, approve-a-device and delete-the-account become
-  `authorize` with a `context` the kernel reads back.
+- The kernel asks its host for what the ceremony made of the account inside
+  `merge` (`{ ask, ceremony }`, handing over the link it made) and to enroll
+  one it created (`{ ask, enroll }`). A refusal or failure reaches the panel
+  as `{ tell: "refused" }` / `{ tell: "failed" }`.
+- `access.subject` is optional (WIT change): the account's link to a device
+  is of everything it has.
+- The spaces the provisional persona holds stay under it: resealing them to
+  the permanent persona in `merge` is not done yet.
+
+Open, for a decision:
+
+- **Approving with the account's key.** A device's grant carries the
+  account's sync address in its signed `meta`, which `access` cannot say.
+  Proposed: `access` gains `meta: list<argument>`, and approving runs as
+  `permanent-persona.authorize(reason, context)` with the pending approval as
+  `context`, done in the lifecycle's `authorize`.
+- **A second account on a device.** The old worker kept a profile per
+  account and switched between them. On the world one persona merges into
+  one account; a second account is a second persona on the device.
+- **Upgrades.** The tests check the old worker's generations of a whole
+  deployment. On the world the host's files follow the deployment and each
+  space pins its kernel; the tests need re-specifying for that.
 
 ## Decisions
 
