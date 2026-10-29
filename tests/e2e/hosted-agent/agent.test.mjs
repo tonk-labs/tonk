@@ -122,41 +122,36 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       return result;
     };
 
+    // The token carries grant chains, not names, so the listed spaces are
+    // told apart by what they allow: the space granted "Read" refuses a
+    // write, and the agent's own space takes it.
     let spaces;
-    await t.test('the agent sees its own space and the granted one', async () => {
+    await t.test('the agent reads its grants and cannot write a read-only one', async () => {
       const client = await connect();
       const tools = (await client.listTools()).tools.map((tool) => tool.name);
       for (const name of ['tonk_list_spaces', 'tonk_query', 'tonk_evaluate', 'tonk_guide']) {
         assert.ok(tools.includes(name), `tools/list lacks ${name}: ${tools}`);
       }
       const listed = (await call(client, 'tonk_list_spaces', {})).structuredContent.spaces;
-      const named = (name) => listed.find((space) => space.name === name)?.subject;
-      spaces = { granted: named(granted) };
-      // The agent space carries the agent's name; failing that, it is the
-      // one space the person did not grant.
-      spaces.agent =
-        named(agent) ??
-        (listed.length === 2
-          ? listed.find((space) => space.subject !== spaces.granted)?.subject
-          : undefined);
-      assert.ok(spaces.agent, `no agent space named ${agent}: ${JSON.stringify(listed)}`);
-      assert.ok(spaces.granted, `no granted space named ${granted}: ${JSON.stringify(listed)}`);
-    });
-
-    await t.test('a read-only grant reads but cannot write', async () => {
-      const client = sessions[0];
-      await call(client, 'tonk_query', { space: spaces.granted, document: 'concept:\n' });
-      const refused = await client.callTool({
-        name: 'tonk_evaluate',
-        arguments: { space: spaces.granted, document: NOTE },
-      });
-      assert.equal(refused.isError, true, 'a write to a read-only space was accepted');
+      const readOnly = [],
+        writable = [];
+      for (const { subject } of listed) {
+        await call(client, 'tonk_query', { space: subject, document: 'concept:\n' });
+        const written = await client.callTool({
+          name: 'tonk_evaluate',
+          arguments: { space: subject, document: NOTE },
+        });
+        (written.isError ? readOnly : writable).push(subject);
+      }
+      const seen = JSON.stringify(listed);
+      assert.equal(readOnly.length, 1, `expected one read-only space (${granted}): ${seen}`);
+      assert.equal(writable.length, 1, `expected one writable space, the agent's: ${seen}`);
+      spaces = { granted: readOnly[0], agent: writable[0] };
     });
 
     const labels = [];
     await t.test('concurrent writes from two sessions on one token all land', async () => {
       const [first] = sessions;
-      await call(first, 'tonk_evaluate', { space: spaces.agent, document: NOTE });
       const second = await connect();
       const writes = [first, second].flatMap((client, session) =>
         Array.from({ length: WRITES }, (_, index) => {
