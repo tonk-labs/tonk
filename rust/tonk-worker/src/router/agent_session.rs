@@ -171,7 +171,16 @@ pub async fn create(
                     )));
                 }
             };
-            targets.push((space.key.clone(), repository.did(), space.access, remote));
+            let label = super::repository::repository_display_name(&tonk, &repository, &space.key)
+                .await
+                .unwrap_or_else(|| space.key.clone());
+            targets.push((
+                space.key.clone(),
+                repository.did(),
+                space.access,
+                remote,
+                label,
+            ));
         }
     }
 
@@ -231,25 +240,32 @@ pub async fn create(
 
     let mut grants = Vec::new();
     let mut spaces = Vec::new();
-    for (key, subject, access, remote) in targets {
-        grants.extend(
-            grant(
-                &tonk,
-                &agent_did,
-                &subject,
-                access.into(),
-                &remote,
-                now,
-                expires,
-            )
-            .await?,
-        );
+    let mut directory = Vec::new();
+    for (key, subject, access, remote, label) in targets {
+        let chains = grant(
+            &tonk,
+            &agent_did,
+            &subject,
+            access.into(),
+            &remote,
+            now,
+            expires,
+        )
+        .await?;
+        grants.extend(chains.iter().cloned());
+        directory.push(Granted {
+            subject: subject.clone(),
+            name: label,
+            home: remote,
+            chains,
+        });
         spaces.push(AgentSpaceGranted {
             key,
             subject,
             access,
         });
     }
+    record_grants(&tonk, &key, &directory).await?;
 
     // Retained so the account can find and revoke them later, the way it
     // keeps the grants of an agent link.
@@ -274,10 +290,11 @@ pub async fn create(
             .map_err(failure)?;
     }
 
-    let issued =
-        tonk_identity::agent::issue_agent_session_with_grants(Signer::from(agent), &home, &grants)
-            .await
-            .map_err(failure)?;
+    // The token is the session alone: what the agent may reach is in its
+    // own space, where the host reads it like any other space's content.
+    let issued = tonk_identity::agent::issue_agent_session(Signer::from(agent), &home)
+        .await
+        .map_err(failure)?;
     tonk_common::log!(
         "agent {} created with {} space grant(s)",
         agent_did,
@@ -305,6 +322,69 @@ pub async fn create(
         spaces,
         expires_at: expires.to_unix(),
     }))
+}
+
+/// One space granted to an agent, as its space records it.
+struct Granted {
+    subject: Did,
+    name: String,
+    home: url::Url,
+    chains: Vec<dialog_ucan_core::DelegationChain>,
+}
+
+/// Record in the agent space what it may reach, the way the account
+/// records its own spaces: each grant's chains retained into the agent
+/// space's `main`, where pulling that branch brings them along, and a
+/// directory entry per space (`xyz.tonk.space/name` and
+/// `xyz.tonk.space/home-address` on the space's entity). What the agent
+/// may do there is read off the chains themselves.
+async fn record_grants(
+    tonk: &crate::TonkState,
+    key: &str,
+    granted: &[Granted],
+) -> Result<(), TonkWorkerError> {
+    if granted.is_empty() {
+        return Ok(());
+    }
+    let branch = tonk
+        .reactor
+        .repository(key)
+        .branch(super::repository::CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(failure)?;
+    for space in granted {
+        for chain in &space.chains {
+            tonk_account::delegations::retain_space_delegation(
+                branch.handle(),
+                chain,
+                &tonk.operator,
+            )
+            .await
+            .map_err(failure)?;
+        }
+    }
+    let mut transaction = tonk
+        .reactor
+        .repository(key)
+        .branch(super::repository::CONTENT_BRANCH)
+        .transaction();
+    for space in granted {
+        transaction = transaction
+            .assert(tonk_schema::SpaceName::new(&space.subject, &space.name))
+            .assert(tonk_schema::SpaceHomeAddress::new(
+                &space.subject,
+                space.home.as_str(),
+            ));
+    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(failure)?;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    tonk.sync_queue.mark_dirty(key, js_sys::Date::now());
+    Ok(())
 }
 
 /// Where the authorization server keeps a pending request.
@@ -493,6 +573,115 @@ mod tests {
         let write = &verified.spaces()[&subjects[1]];
         assert!(write.read && write.write, "read and write");
         assert!(verified.spaces()[&agent.did()].agent);
+        Ok(())
+    }
+
+    /// Approving two spaces leaves, in the agent space, both spaces'
+    /// chains retained and a directory entry for each.
+    #[dialog_common::test]
+    async fn it_records_the_grants_in_the_agent_space() -> anyhow::Result<()> {
+        use dialog_query::{Output as _, Query, Term};
+        use tonk_schema::prelude::DidExt as _;
+
+        let directory =
+            std::env::temp_dir().join(format!("tonk-agent-grants-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&directory)?;
+        let location = Directory::At(directory.to_string_lossy().into_owned());
+        let (storage, profile) =
+            crate::device::open_profile_at("agent-grants", location.clone()).await?;
+        let registry = crate::device::Registry::new("agent-grants".into(), location);
+        let tonk =
+            crate::worker::boot_state(storage, "agent-grants".into(), profile, registry).await?;
+        let state: AppState = Arc::new(RwLock::new(tonk));
+
+        let mut keys = Vec::new();
+        for name in ["Notes", "Plans"] {
+            keys.push(super::super::repository::create_space_inner(&state, name, None).await?);
+        }
+        let seed = Zeroizing::new([62u8; 32]);
+        let agent = Ed25519Signer::import(&*seed).await?.did();
+        let agent_key =
+            super::super::repository::create_space_from_seed(&state, "Claude", None, seed).await?;
+        assert_eq!(agent.repo_key(), agent_key);
+
+        let remote: url::Url = "https://sync.example.test/ucan/".parse()?;
+        let now = Timestamp::now();
+        let expires = Timestamp::try_from((now.to_unix() + DEFAULT_GRANT_TTL_SECONDS) as i128)?;
+        let tonk = state.read().await;
+        let mut granted = Vec::new();
+        for ((key, name), access) in keys
+            .iter()
+            .zip(["Notes", "Plans"])
+            .zip([AgentAccess::Read, AgentAccess::ReadWrite])
+        {
+            let subject = tonk
+                .profile
+                .space(key)
+                .load()
+                .perform(&tonk.operator)
+                .await?
+                .did();
+            let chains = grant(&tonk, &agent, &subject, access, &remote, now, expires).await?;
+            granted.push(Granted {
+                subject,
+                name: name.into(),
+                home: remote.clone(),
+                chains,
+            });
+        }
+        record_grants(&tonk, &agent_key, &granted).await?;
+
+        let branch = tonk
+            .reactor
+            .repository(&agent_key)
+            .branch(super::super::repository::CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await?;
+        let retained = branch
+            .handle()
+            .delegations()
+            .issued_to(agent.clone())
+            .perform(&tonk.operator)
+            .await?;
+        for space in &granted {
+            let mine = retained
+                .iter()
+                .filter(|chain| chain.0.subject() == Some(&space.subject))
+                .count();
+            assert_eq!(mine, space.chains.len(), "chains for {}", space.name);
+        }
+        assert_eq!(retained.len(), 3 + 6);
+
+        let names: Vec<tonk_schema::SpaceName> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SpaceName> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await?;
+        for space in &granted {
+            assert!(
+                names
+                    .iter()
+                    .any(|row| row.this == space.subject.this() && row.name.0 == space.name),
+                "a directory entry for {} in {names:?}",
+                space.name
+            );
+        }
+        let homes: Vec<tonk_schema::SpaceHomeAddress> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SpaceHomeAddress> {
+                this: Term::var("this"),
+                home_address: Term::var("home_address"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await?;
+        assert_eq!(homes.len(), 2);
         Ok(())
     }
 }
