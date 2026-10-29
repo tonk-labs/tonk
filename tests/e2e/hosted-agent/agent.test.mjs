@@ -159,7 +159,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       assert.deepEqual(
         // The agent's own space is listed too, marked as such.
         listed
-          .filter((space) => !space.agent_space)
+          .filter((space) => !space.home)
           .map((space) => space.subject)
           .sort(),
         [spaces.writable, spaces.readable].sort(),
