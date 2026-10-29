@@ -21,3 +21,11 @@ new_sqlite_classes = ["SpaceWriterObject"]
 # The access service the writers sync with (`tonk-access-local` locally);
 # the peer syncs at /ucan/.
 ACCESS_SERVICE_URL = "http://127.0.0.1:8787"
+
+# Also needs the secret MCP_SESSION_SECRET (any high-entropy string), the
+# key `Mcp-Session-Id`s are MAC'd under: `wrangler secret put`, or
+# `--var MCP_SESSION_SECRET:<anything>` under `wrangler dev`.
+
+[observability]
+enabled = true
+head_sampling_rate = 1

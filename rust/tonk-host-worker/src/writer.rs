@@ -10,12 +10,9 @@
 use std::rc::Rc;
 
 use axum::body::Body;
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
-use dialog_ucan_core::DelegationChain;
 use futures_util::lock::Mutex;
 use http::{Method, Request, StatusCode, header};
-use tonk_worker::{SpaceWriter, WriterSession, writer_seed};
+use tonk_worker::{SpaceWriter, writer_seed};
 use worker::{DurableObject, Env, State, durable_object};
 use zeroize::Zeroizing;
 
@@ -24,8 +21,7 @@ const BINDING: &str = "SPACE_WRITER";
 
 /// Headers the front hands the session in. The binding is internal, so
 /// they reach the object only from the front.
-const SEED: &str = "x-tonk-writer-seed";
-const POWERLINE: &str = "x-tonk-writer-powerline";
+const TOKEN: &str = "x-tonk-writer-token";
 const MCP_SESSION: &str = "x-tonk-writer-mcp-session";
 const SPACE: &str = "x-tonk-writer-space";
 const REMOTE: &str = "x-tonk-writer-remote";
@@ -34,10 +30,9 @@ const REMOTE: &str = "x-tonk-writer-remote";
 pub(crate) struct Identity {
     /// The writer key's DID, which names the object.
     pub writer: String,
-    /// The session key's seed, base64url.
-    pub seed: String,
-    /// The `agent space -> session` powerline container, base64url.
-    pub powerline: String,
+    /// The agent session token, as it arrived. The object decodes it
+    /// itself when it opens its writer.
+    pub token: String,
     pub mcp_session: String,
     pub space: String,
     /// The access service's `/ucan/`.
@@ -49,7 +44,7 @@ pub(crate) struct Identity {
 pub(crate) async fn forward(
     env: &Env,
     identity: &Identity,
-    request: worker::HttpRequest,
+    request: http::Request<Body>,
     path: &str,
 ) -> worker::Result<http::Response<Body>> {
     let (mut parts, body) = request.into_parts();
@@ -62,8 +57,7 @@ pub(crate) async fn forward(
         .parse()
         .map_err(|error: http::uri::InvalidUri| worker::Error::RustError(error.to_string()))?;
     for (name, value) in [
-        (SEED, &identity.seed),
-        (POWERLINE, &identity.powerline),
+        (TOKEN, &identity.token),
         (MCP_SESSION, &identity.mcp_session),
         (SPACE, &identity.space),
         (REMOTE, &identity.remote),
@@ -166,14 +160,16 @@ impl SpaceWriterObject {
                 .flatten()
                 .ok_or_else(|| (StatusCode::BAD_REQUEST, format!("missing {name}")))
         };
-        let seed: [u8; 32] = B64
-            .decode(header(SEED)?)
-            .ok()
-            .and_then(|seed| seed.try_into().ok())
-            .ok_or_else(|| (StatusCode::BAD_REQUEST, "malformed seed".to_owned()))?;
-        let seed = Zeroizing::new(seed);
+        let token = header(TOKEN)?;
         let mcp_session = header(MCP_SESSION)?;
-        let key = writer_seed(&seed, &mcp_session);
+        let space: dialog_varsig::Did = header(SPACE)?
+            .parse()
+            .map_err(|_| (StatusCode::BAD_REQUEST, "malformed space".to_owned()))?;
+        let verified = tonk_worker::mcp::verify(&token)
+            .await
+            .map_err(|error| (StatusCode::UNAUTHORIZED, error))?;
+        let session = verified.writer_session(&space, &mcp_session);
+        let key = writer_seed(&session.seed, &mcp_session);
 
         let mut opened = self.writer.lock().await;
         if let Some((held, writer)) = opened.as_ref() {
@@ -185,21 +181,8 @@ impl SpaceWriterObject {
             }
             return Ok(writer.clone());
         }
-        let powerline = B64
-            .decode(header(POWERLINE)?)
-            .ok()
-            .and_then(|bytes| DelegationChain::try_from(bytes.as_slice()).ok())
-            .ok_or_else(|| (StatusCode::BAD_REQUEST, "malformed powerline".to_owned()))?;
-        let space = header(SPACE)?
-            .parse()
-            .map_err(|_| (StatusCode::BAD_REQUEST, "malformed space".to_owned()))?;
         let remote = url::Url::parse(&header(REMOTE)?)
             .map_err(|_| (StatusCode::BAD_REQUEST, "malformed remote".to_owned()))?;
-        let session = WriterSession {
-            seed,
-            powerline,
-            mcp_session,
-        };
         // In-memory storage, so the directory only has to be one no other
         // peer in this isolate uses.
         let root = format!(
