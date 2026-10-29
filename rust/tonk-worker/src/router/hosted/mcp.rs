@@ -569,15 +569,13 @@ fn list_spaces(verified: &Verified) -> Vec<Value> {
     verified
         .spaces
         .iter()
+        // A space whose every grant lapsed is named by the tool error a
+        // call on it gets, not listed.
+        .filter(|(_, access)| access.read)
         .map(|(space, access)| {
-            let level = match (access.read, access.write) {
-                (true, true) => "read-write",
-                (true, false) => "read",
-                _ => "lapsed",
-            };
             let mut entry = json!({
-                "space": space.to_string(),
-                "access": level,
+                "subject": space.to_string(),
+                "access": if access.write { "read-write" } else { "read" },
             });
             if access.agent {
                 entry["agent_space"] = json!(true);

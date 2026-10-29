@@ -527,7 +527,7 @@ concept!: &mcp-note
         assert!(!error, "{spaces}");
         let listed = spaces["spaces"].as_array().unwrap();
         assert!(listed.iter().any(
-            |entry| entry["space"] == json!(subject) && entry["access"] == json!("read-write")
+            |entry| entry["subject"] == json!(subject) && entry["access"] == json!("read-write")
         ));
         for document in [SCHEMA.to_owned(), note.clone()] {
             let (result, error) = writer
