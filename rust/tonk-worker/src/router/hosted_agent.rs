@@ -439,6 +439,7 @@ fn write_record(directory: &Path, record: &SponsorRecord) -> Result<(), String> 
 mod tests {
     use super::*;
     use dialog_credentials::{Ed25519Signer, Signer};
+    use dialog_repository::RepositoryExt as _;
     use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject};
     use dialog_varsig::Principal as _;
 
@@ -476,6 +477,105 @@ mod tests {
             .secret()
             .did()
             .to_string()
+    }
+
+    /// Copy `from` to `to` in private directories, as a checkpoint restore
+    /// rewrites the files.
+    fn restore(from: &Path, to: &Path) {
+        use std::os::unix::fs::DirBuilderExt as _;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(to)
+            .unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                restore(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    /// Mount a space on the agent's peer the way a sponsored space is.
+    async fn mount_space(directory: &Path) -> Did {
+        let space = Ed25519Signer::generate().await.unwrap().did();
+        let _lock = lock(directory).unwrap();
+        let peer = LocalPeer::open(directory.to_owned()).await.unwrap();
+        let state = peer.sync_state();
+        {
+            let tonk = state.read().await;
+            super::super::join::mount_replica(
+                &tonk,
+                &space,
+                Some("http://127.0.0.1:9/ucan/"),
+                None,
+            )
+            .await
+            .unwrap();
+            super::super::repository::record_initialized_replica_in_profile(&tonk, &space)
+                .await
+                .unwrap();
+        }
+        peer.close().await;
+        space
+    }
+
+    async fn loads(directory: &Path, space: &Did) -> Result<(), String> {
+        let _lock = lock(directory).unwrap();
+        let peer = LocalPeer::open(directory.to_owned()).await.unwrap();
+        let state = peer.sync_state();
+        let loaded = {
+            let tonk = state.read().await;
+            tonk.profile
+                .space(space.repo_key())
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .map(drop)
+                .map_err(|error| error.to_string())
+        };
+        peer.close().await;
+        loaded
+    }
+
+    // The profile records each space by the absolute path of its storage, so
+    // a checkpointed store only loads its spaces when restored at the same
+    // root. The hosted runtime keeps its agent store at one fixed path.
+    #[dialog_common::test]
+    async fn it_loads_spaces_only_from_a_store_restored_in_place() {
+        let root = root();
+        let agents = HostedAgents::new(root.clone(), "http://127.0.0.1:9/ucan/".parse().unwrap());
+        let id = agents.create().await.unwrap()["agent"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let space = mount_space(&agents.existing(&id).unwrap()).await;
+        // The first load records where the space is stored, as publishing
+        // a new space does.
+        loads(&root.join(&id), &space).await.unwrap();
+
+        let recorded = root.canonicalize().unwrap();
+        let saved = root.with_extension("saved");
+        restore(&root, &saved);
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let moved = root.with_extension("moved");
+        restore(&saved, &moved);
+        let error = loads(&moved.join(&id), &space).await.unwrap_err();
+        assert!(
+            error.contains("Space not found") && error.contains(&*recorded.to_string_lossy()),
+            "a moved store still resolves the old root: {error}"
+        );
+
+        restore(&saved, &root);
+        loads(&root.join(&id), &space).await.unwrap();
+
+        for directory in [root, saved, moved] {
+            std::fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[dialog_common::test]
