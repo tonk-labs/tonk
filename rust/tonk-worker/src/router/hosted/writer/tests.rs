@@ -30,6 +30,7 @@ async fn session_with(
         seed,
         powerline,
         mcp_session: mcp_session.to_owned(),
+        grants: Vec::new(),
     }
 }
 

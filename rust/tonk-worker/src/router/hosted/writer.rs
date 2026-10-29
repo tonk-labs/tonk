@@ -80,6 +80,10 @@ pub struct WriterSession {
     /// The MCP session the writer serves: `Mcp-Session-Id`, minted by the
     /// MCP Worker and bound to the token, so a client cannot choose it.
     pub mcp_session: String,
+    /// Chains from other spaces to the agent space (the token's grants),
+    /// verified by the front. The writer extends each by the session and
+    /// writer hops so its peer can act on those spaces.
+    pub grants: Vec<DelegationChain>,
 }
 
 /// The key one MCP session writes as, and the chain that lets it.
@@ -87,6 +91,9 @@ pub struct WriterKey {
     seed: Zeroizing<[u8; 32]>,
     did: Did,
     chain: DelegationChain,
+    /// `chain`, then each grant extended by `chain`'s delegations:
+    /// `space -> ... -> agent space -> session -> writer`.
+    proofs: Vec<DelegationChain>,
 }
 
 impl WriterKey {
@@ -120,7 +127,27 @@ impl WriterKey {
             .powerline
             .push(delegation)
             .map_err(|error| internal(&error))?;
-        Ok(Self { seed, did, chain })
+        let mut proofs = vec![chain.clone()];
+        for grant in &session.grants {
+            if grant.audience() != session.powerline.issuer() {
+                return Err(TonkWorkerError::Forbidden(
+                    "a grant is not addressed to the agent space".into(),
+                ));
+            }
+            let mut extended = grant.clone();
+            for delegation in chain.proofs() {
+                extended = extended
+                    .push(delegation.clone())
+                    .map_err(|error| internal(&error))?;
+            }
+            proofs.push(extended);
+        }
+        Ok(Self {
+            seed,
+            did,
+            chain,
+            proofs,
+        })
     }
 
     /// The writer's DID.
@@ -436,7 +463,7 @@ async fn open_peer(
     let peer = HostedPeer::open_in(
         Directory::At(directory.to_owned()),
         &key.seed,
-        std::slice::from_ref(&key.chain),
+        &key.proofs,
         HeldCaches::with_budget(NODE_CACHE_BUDGET),
     )
     .await?;
