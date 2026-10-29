@@ -152,13 +152,23 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
         assert.ok(tools.includes(name), `tools/list lacks ${name}: ${tools}`);
       }
       const listed = (await call(client, 'tonk_list_spaces', {})).structuredContent.spaces;
+      // The agent's own space is listed too, marked as such. The rest come
+      // from the grants the approval kept in it.
+      assert.equal(
+        listed.filter((space) => space.home).length,
+        1,
+        `listed ${JSON.stringify(listed)}`,
+      );
       assert.deepEqual(
-        // The agent's own space is listed too, marked as such.
-        listed
-          .filter((space) => !space.home)
-          .map((space) => space.subject)
-          .sort(),
-        [spaces.writable, spaces.readable].sort(),
+        Object.fromEntries(
+          listed
+            .filter((space) => !space.home)
+            .map(({ subject, name, access }) => [subject, { name, access }]),
+        ),
+        {
+          [spaces.writable]: { name: writableName, access: 'read-write' },
+          [spaces.readable]: { name: readableName, access: 'read' },
+        },
         `listed ${JSON.stringify(listed)}`,
       );
       for (const space of [spaces.writable, spaces.readable]) {
