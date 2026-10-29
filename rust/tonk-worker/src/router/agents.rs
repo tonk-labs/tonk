@@ -291,13 +291,6 @@ pub async fn revoke(
         ));
     }
     let profile = tonk.profile.did();
-    // A grant the account root issued is withdrawn with the account key,
-    // which takes a passkey; this worker can only withdraw its own.
-    if leaves.iter().any(|(leaf, _)| leaf.issuer() != &profile) {
-        return Err(TonkWorkerError::Forbidden(
-            "this access was granted with your account key; revoking it needs a passkey, which this page does not ask for yet".into(),
-        ));
-    }
     for (leaf, held) in leaves {
         let target = *leaf
             .proof_cids()
@@ -360,15 +353,28 @@ async fn ancestor(
         .perform(&tonk.operator)
         .await
         .map_err(failure)?;
-    let mut certificates = proof.proofs.into_iter();
+    // The profile's proof runs space → … → account root → profile. A leaf
+    // the root issued hangs off the root, so the path stops there; the
+    // profile then withdraws it under the root's delegation to it, the
+    // way `publish_target` withdraws a sibling device's grant.
+    let issuer = leaf.issuer();
+    let mut certificates: Vec<_> = proof.proofs.into_iter().map(|proof| proof.0).collect();
+    if let Some(at) = certificates
+        .iter()
+        .position(|certificate| certificate.audience() == issuer)
+    {
+        certificates.truncate(at + 1);
+    } else {
+        return Err(failure("no path from the space to the grant's issuer"));
+    }
+    let mut certificates = certificates.into_iter();
     let mut chain = DelegationChain::new(
         certificates
             .next()
-            .ok_or_else(|| failure("issuer proof is empty"))?
-            .0,
+            .ok_or_else(|| failure("issuer proof is empty"))?,
     );
     for certificate in certificates {
-        chain = chain.push(certificate.0).map_err(failure)?;
+        chain = chain.push(certificate).map_err(failure)?;
     }
     Ok(chain)
 }
@@ -458,6 +464,19 @@ mod tests {
             access,
             vec![("Notes".into(), "read"), ("Plans".into(), "write")]
         );
+
+        // A revocation's witness path is the issuer's proof for the space
+        // with the grant on its end.
+        let tonk = state.read().await;
+        let profile = tonk.profile.did();
+        for (leaf, _) in grants(&tonk, &agent).await? {
+            let subject = leaf.subject().unwrap().clone();
+            let path = ancestor(&tonk, &profile, &subject, &leaf).await?;
+            assert_eq!(path.audience(), leaf.issuer());
+            let path = path.push(leaf.proofs().last().unwrap().clone())?;
+            assert_eq!(path.subject(), Some(&subject));
+            assert_eq!(path.audience(), &agent);
+        }
         Ok(())
     }
 }

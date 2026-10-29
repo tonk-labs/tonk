@@ -2620,9 +2620,7 @@ element!: &hub-discover
           button.disabled = false;
           button.dataset.confirming = '';
           button.textContent = 'retry revoke';
-          if (status) status.textContent = error.status === 403
-            ? 'This access was granted with your account key. Revoking it needs a passkey, which isn’t supported here yet.'
-            : 'The revocation could not be confirmed. Try again.';
+          if (status) status.textContent = 'The revocation could not be confirmed. Try again.';
         }
       }
     load: |
