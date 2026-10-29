@@ -580,6 +580,45 @@ jobs:
 
             ${{ steps.config.outputs.connection_settings }}
 
+  # The hosted agent end to end against this pull request's preview: an MCP
+  # SDK client does OAuth, and Playwright with a virtual passkey signs up and
+  # approves on /settings/agent. See "Testing end to end" in
+  # plans/2026-10-28-hosted-agent-peer.md.
+  agent-e2e:
+    name: Hosted agent end to end
+    needs: [deploy]
+    # Secrets do not reach pull requests from forks.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: tests/e2e/hosted-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install the client and browser
+        run: |
+          npm ci
+          npx --no-install playwright install --with-deps chromium
+      - name: Run against the preview
+        run: npm test
+        env:
+          TONK_E2E_ORIGIN: ${{ needs.deploy.outputs.provider }}
+          TONK_E2E_RESEND_API_KEY: ${{ secrets.TONK_E2E_RESEND_API_KEY }}
+          TONK_E2E_TRACE: ${{ runner.temp }}/agent-e2e-trace.zip
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: agent-e2e-trace
+          path: ${{ runner.temp }}/agent-e2e-trace.zip
+          if-no-files-found: ignore
+          retention-days: 7
+
   cleanup-preview-databases:
     if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
     runs-on: ubuntu-latest
