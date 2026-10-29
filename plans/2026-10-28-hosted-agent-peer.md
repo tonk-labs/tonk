@@ -10,13 +10,15 @@ full fidelity: list its spaces, see contacts (the account it works for among
 them), query, subscribe, transact, store and read assets, create spaces when
 allowed.
 
-Two surfaces on the provider origin, each its own Worker behind a service binding:
+Two Workers:
 
-- `/host/` is the hosted peer: a space's origin API, mounted per space.
-- `/mcp` is MCP, a thin wrapper that proxies to `/host/`.
+- `/mcp` on the provider origin: MCP, a thin wrapper.
+- The Host Worker: the hosted peer, reached by the MCP Worker over a service
+  binding. Internal; nothing public routes to it.
 
-Inline views in MCP Apps come later (stage 7): framing the space's page if a probe
-shows hosts allow it, otherwise long-polling a watch tool.
+Inline views in MCP Apps come later (stage 7). A view is a relay: it gets a
+delegation for a key the browser holds and frames the space's own page, so the
+page runs the peer in the browser like it does anywhere else.
 
 ## Model
 
@@ -82,7 +84,7 @@ flowchart LR
 ```
 
 The outermost delegation is issued by the session to itself, so it authorizes
-nothing on its own. `/host/` reads `token.*` from its `meta`, derives the key
+nothing on its own. The Host Worker reads `token.*` from its `meta`, derives the key
 from the seed and checks that its DID is both issuer and audience. Invocations
 use only the powerline as proof, and only the powerline is retained in the
 agent space (the session row), so the seed is never stored or sent to a
@@ -92,45 +94,41 @@ verifier.
 
 ```mermaid
 flowchart LR
-  client[LLM host] --> origin
+  client[LLM host] -- "/mcp" --> access
   subgraph origin[provider origin, e.g. tonk.foundation]
     access[tonk-access-service]
   end
-  access -- "/mcp (binding)" --> mcp[MCP Worker]
-  access -- "/host/ (binding)" --> host[Host Worker]
-  mcp -- "proxies" --> host
+  access -- "binding" --> mcp[MCP Worker]
+  mcp -- "binding" --> host[Host Worker]
   host -- "/ucan/, reads and writes" --> access
 ```
 
 - The channel comes from the host: `tonk.foundation` is main, `staging.tonk.xyz`
   staging, `tonk.network` stable, each PR preview its own. Authorization server
   and resource server are the same origin.
-- `tonk-access-service` forwards `/mcp` and `/host/*` through two service
-  bindings. MCP and host deploy and scale on their own.
-- The app's service worker must let `/mcp` and `/host/` bypass it (next to `/@`),
-  so a tab opened on them is not handed the app shell.
-- `/mcp` and `/host/` are separate because Streamable HTTP clients `POST`
-  JSON-RPC with `Accept: application/json, text/event-stream`; a notation `POST`
-  with SSE on the same path could only be told apart by its body.
+- `tonk-access-service` forwards `/mcp` to the MCP Worker over a service binding.
+  The MCP Worker reaches the Host Worker over its own binding. MCP and host deploy
+  and scale on their own.
+- The app's service worker must let `/mcp` bypass it (next to `/@`), so a tab
+  opened on it is not handed the app shell.
 
-### `/host/{space}/`
+### Host Worker API
 
-Mounts what a space's own origin answers (`tonk-kernel/src/site.rs`, #1201)
-under a per-space prefix, authorized by the Bearer token instead of the origin:
+The contract the MCP Worker calls: what a space's own origin answers
+(`tonk-kernel/src/site.rs`, #1201), mounted per space and authorized by the
+Bearer token instead of the origin.
 
 | Request | Same as on the space origin |
 | --- | --- |
-| `/host/{space}/api/...` | the worker API: query (SSE with `Accept: text/event-stream`), evaluate, transact |
-| `PUT /host/{space}/` | store an asset; `201`, `Location: /host/{space}/asset:{hash}` |
-| `GET`/`HEAD /host/{space}/asset:{hash}` | read an asset, `Range` supported |
-| `GET /host/{space}/{path}` | the content the space's routes keep at `{path}` (views) |
+| `/{space}/api/...` | the worker API: query (SSE with `Accept: text/event-stream`), evaluate, transact |
+| `PUT /{space}/` | store an asset |
+| `GET`/`HEAD /{space}/asset:{hash}` | read an asset, `Range` supported |
+| `GET /{space}/{path}` | the content the space's routes keep at `{path}` |
 
-Space origins exist so each space is its own origin; `/host/` puts every space
-on the provider origin, which also holds the account and its passkeys. So:
-
-- **Every HTML response from `/host/` carries `Content-Security-Policy: sandbox
-  allow-scripts allow-forms`** (no `allow-same-origin`): an opaque origin even
-  when opened directly. Space content must never run as the provider origin.
+Views do not use it (they run the peer in the browser), so it stays internal. If
+it is ever routed publicly on the provider origin, its HTML must carry
+`Content-Security-Policy: sandbox` without `allow-same-origin`: that origin holds
+the account and its passkeys.
 
 ## Authorization
 
@@ -192,86 +190,88 @@ flowchart TD
 
 ## Views in MCP Apps (later)
 
-The OAuth token stays in the LLM host; a view never sees it. Two routes, decided
-by a probe (stage 7).
+The OAuth token stays in the LLM host; a view never sees it. The view (`ui://`)
+is a relay. It frames the space's own page and gets that page a delegation for
+a key the page holds. Nothing secret crosses the host.
 
-### Preferred: frame the space's page
+### Delegating to the frame's key
 
 ```mermaid
 sequenceDiagram
   participant H as LLM host
+  participant R as Relay (ui:// view)
+  participant F as Space page (framed)
   participant M as MCP Worker
-  participant V as View
-  participant F as Framed space page
-  participant S as Its service worker
-  participant P as /host/
+  participant P as Provider (/ucan/, live)
 
-  H->>M: tool call that renders a view
-  M-->>H: result, _meta: view credential
-  H-->>V: render, _meta
-  V->>F: iframe src = page URL, credential in the fragment
-  F->>S: register, hand over location.hash
-  F->>S: fetch, SSE, video range requests
-  S->>P: same requests + view credential
-  P-->>F: responses, streamed
-```
-
-- **View credential.** When rendering, the session redelegates to a fresh key for
-  the view: one space, read-only unless the view writes. Same container format as
-  the agent token (seed in the outermost delegation), so `/host/` accepts both.
-  Delivered in the tool result's `_meta`, which the model does not read.
-- **In the fragment.** The view frames the space's page with the credential in
-  `#`. The fragment never reaches a server or its logs. The page's service worker
-  reads it and attaches it to every request the page makes.
-- **The framed page needs a real origin** for its service worker, so it is not
-  served from the provider origin (where `/host/` HTML is sandboxed because the
-  account and passkeys live there). A per-space subdomain or a dedicated hosted
-  origin; see open question 7.
-
-Why this is preferred:
-
-- **Live subscriptions.** SSE straight from `/host/`, not a long poll.
-- **Media works.** `<video>` and friends stream with real `Range` requests,
-  through the service worker. Nothing goes through the host as base64.
-- **Pages render as they do on the space's own origin.** No view-specific runtime,
-  no tool round trip per update.
-
-The cost is a credential inside the view, and probably stored with the
-conversation (hosts keep `_meta` to re-render views). Narrowing it to one space,
-read-only, bounds that. A leaked agent token would expose every space the agent
-reaches, writes and space creation.
-
-### Fallback: long-poll a watch tool
-
-If the probe fails: no credential in the view at all.
-
-```mermaid
-sequenceDiagram
-  participant V as View
-  participant H as LLM host
-  participant M as MCP Worker
-  participant O as Space DO (live.rs)
-
-  V->>H: tools/call tonk_watch(space, query, cursor)
+  H->>R: render view (space, route)
+  R->>F: iframe: the space page
+  Note over F: generate non-extractable Ed25519 key
+  F->>R: postMessage: audience DID
+  R->>H: tools/call tonk_view_access(space, audience)
   H->>M: tool call + Bearer
-  M->>O: socket, watch the space's cells
-  Note over O: hibernates until a commit
-  O-->>M: change
-  M-->>H: result + new cursor
-  H-->>V: result
-  V->>H: tonk_watch(space, query, new cursor)
+  Note over M: session signs delegation<br/>session to audience, one space
+  M-->>H: delegation
+  H-->>R: result
+  R->>F: postMessage: delegation
+  F->>P: invocations signed by its key,<br/>live socket, assets with Range
 ```
 
-- **`tonk_watch(space, query, cursor)`** is app-only (MCP Apps tool visibility),
-  so the model never sees it. It answers as soon as the result moves past
-  `cursor`, or after about 20 s with "no change". The view calls again at once.
-- **The cursor makes it lossless.** A change between two calls is seen by the
-  next one, which answers immediately.
-- **Waiting costs little.** The Worker holds the tool call (wall time, not CPU)
-  and watches through the space's Durable Object (`live.rs`, `GET
-  /ucan/?sub=<space>`), whose sockets hibernate between commits.
-- **Assets** are resource reads, whole. MCP has no ranges, so large media
-  (video) is deferred to its own follow-up on this route.
+- **`tonk_view_access(space, audience)`** is app-only (MCP Apps tool
+  visibility). The MCP Worker already holds the session seed, so it signs a
+  delegation from the session to the frame's DID: one space, read-only unless the
+  view writes.
+- **The delegation is not a secret.** It is useless without the frame's private
+  key, which is generated in the frame, non-extractable, and never leaves it. So
+  it can sit in tool results, conversation storage and logs. No `_meta`, no
+  fragment secrets, no sealing to an x25519 key (that works too, but delegating
+  to the frame's own key moves nothing secret at all).
+- **Minted per load.** A reopened conversation reloads the view, which asks again
+  for a fresh frame key.
+
+### Route A: framed page with its service worker
+
+The framed page is the space's ordinary page, on its own origin: the per-space
+origin (`https://{hash}.tonk.foundation/...`, #1054) or the existing
+`https://tonk.foundation/space/{did}/{route}` shape, extended to take the
+delegation by `postMessage` (open question 7). Its service worker and peer run
+as they do anywhere, with the delegation as their authority:
+
+- **Live subscriptions** through the space's `live.rs` socket, not a long poll.
+- **Media works.** `<video>` streams with real `Range` requests through the
+  service worker. Nothing goes through the host as base64.
+- **Pages render as they do on the space's own origin.** No view-specific runtime,
+  no tool round trip per update, no Host Worker involved.
+
+### Route B: relay runs the peer
+
+If a nested frame cannot keep a real origin or register a service worker, the
+relay does what the shell does for sandboxed guests today: it runs the peer
+runtime (what the service worker would run) in a Web Worker, and the sandboxed
+space page talks to it over `postMessage`, the same bridge `tonk-guest` uses.
+
+```mermaid
+flowchart LR
+  subgraph relay[ui:// relay]
+    W[Web Worker<br/>peer, key, delegation]
+  end
+  G[sandboxed space page] -- "postMessage bridge" --> relay
+  W -- "/ucan/, live socket" --> P[provider]
+```
+
+- The key is generated in the Web Worker instead of the frame; same tool call.
+- Live updates still come over the `live.rs` socket.
+- Media: blob URLs or Media Source Extensions from the worker. Large video is a
+  follow-up on this route.
+
+### Last resort: long-poll a watch tool
+
+Only if the view cannot reach the provider at all (`connectDomains` not
+honoured). No delegation in the view; `tonk_watch(space, query, cursor)`,
+app-only, answers when the result moves past `cursor` or after about 20 s. The
+MCP Worker holds the call and watches through the space's `live.rs` Durable
+Object, whose sockets hibernate between commits. Assets are resource reads,
+whole; MCP has no ranges.
 
 ## Records
 
@@ -286,12 +286,12 @@ New concepts go in the YAML library first (`schema-first`).
 
 ## Channels
 
-| Channel | MCP | Host |
-| --- | --- | --- |
-| main | `https://tonk.foundation/mcp` | `https://tonk.foundation/host/` |
-| staging | `https://staging.tonk.xyz/mcp` | `https://staging.tonk.xyz/host/` |
-| stable | `https://tonk.network/mcp` | `https://tonk.network/host/` |
-| PR N | preview origin `/mcp` | preview origin `/host/` |
+| Channel | MCP |
+| --- | --- |
+| main | `https://tonk.foundation/mcp` |
+| staging | `https://staging.tonk.xyz/mcp` |
+| stable | `https://tonk.network/mcp` |
+| PR N | preview origin `/mcp` |
 
 `agent*.tonk.host` (#1110) is retired.
 
@@ -348,24 +348,21 @@ Rust, in `tonk-identity`, `tonk-schema` and the YAML library.
 **M1:** from the CLI, create an agent, invite it to a space, mint a token,
 decode and verify it, revoke it.
 
-### Stage 2: Host Worker (`/host/`)
+### Stage 2: Host Worker (internal)
 
 - Decode, verify, revocation check, construct the peer (authority and operator).
-- Mount the space-origin surface per space (see `/host/{space}/`): worker API
-  with SSE, `PUT /` assets, `/asset:{hash}` with `Range`, route content. Reuse
-  the kernel's rewrite onto the worker's routes rather than reimplementing it.
-- SSE subscriptions on `/host/` are fed by the space's `live.rs` socket, not by
-  polling the remote.
-- CSP sandbox on every HTML response.
+- Serve the Host Worker API per space: worker API with SSE, `PUT` assets,
+  `asset:{hash}` with `Range`, route content. Reuse the kernel's rewrite onto the
+  worker's routes rather than reimplementing it.
+- SSE subscriptions are fed by the space's `live.rs` socket, not by polling.
 - Agent-level reads: the agent's spaces and contacts.
-- Service binding from `tonk-access-service`; service worker bypass for `/host/`.
 - Tests: missing, malformed, wrong-audience and revoked tokens; concurrent writes
   from two sessions of one agent; a lapsed invite; a `Range` read; an SSE
-  subscription receiving a change; HTML served sandboxed.
+  subscription receiving a change.
 
-**M2:** with a CLI token and `curl`, list the agent's spaces, subscribe to a
-query over SSE, write from a second shell and see the event, store and range-read
-an asset.
+**M2:** locally (`wrangler dev`), with a CLI token and `curl`: list the agent's
+spaces, subscribe to a query over SSE, write from a second shell and see the
+event, store and range-read an asset.
 
 ### Stage 3: authorization server
 
@@ -391,7 +388,7 @@ stack using a stub approval page that returns a CLI-minted token.
 Replaces `mcp/agent-link-backend.mjs`, `mcp/hosted/agent-service.mjs` and the
 container.
 
-- Bearer token passed through to `/host/` over the binding.
+- Bearer token passed through to the Host Worker over the binding.
 - Tools: `tonk_query` and `tonk_evaluate` addressed by `space` instead of
   `agent_link`; list spaces; contacts; join from a pasted ticket; create space
   when delegated. Keep `mcp/primitive.mjs` notation semantics.
@@ -421,7 +418,7 @@ tools work, with no static header.
 
 - List agents and their sessions (title, created, last used); revoke a session;
   revoke an agent (all sessions); manage its invites; toggle space creation.
-- Last used: throttled write from `/host/`, at most once a day per session.
+- Last used: throttled write from the Host Worker, at most once a day per session.
 - Renewal of an agent's lapsed invites, per open question 4.
 
 **M5:** revoking a session on the account page makes its next call return 401;
@@ -429,11 +426,11 @@ revoking an agent does so for all its sessions.
 
 ### Stage 6: deploy and migrate
 
-- Deployment config: MCP and Host Workers, bound into each channel's access
-  service. Drop the container, the `TonkRuntime` Durable Object, the checkpoint
+- Deployment config: MCP Worker bound into each channel's access service, Host
+  Worker bound to it. Drop the container, the `TonkRuntime` Durable Object, the checkpoint
   buckets and the `agent*.tonk.host` custom domains.
 - Smoke: PRM served, 401 carries `resource_metadata`, AS metadata reachable, a
-  CLI-minted token for a fixture agent can query through `/mcp` and `/host/`.
+  CLI-minted token for a fixture agent can query through `/mcp`.
 - Agent-link callers: tools still sent `agent_link` get an error telling them to
   reconnect with OAuth. Remove the agent-link backend after one release.
 - Acceptance on `tonk.foundation`: claude.ai, Claude Code, ChatGPT. Then staging,
@@ -446,41 +443,40 @@ working in a space it was invited to.
 
 Wanted, not needed for the core flow. Starts with a probe that picks the route.
 
-**Probe.** A throwaway MCP server whose view frames a test page on a separate
-origin, with a dummy credential in the fragment. The page reports what worked:
+**Probe.** A throwaway MCP server whose view is a relay framing a test page on a
+separate origin. Run in Claude (web and desktop) and ChatGPT; VS Code and Goose
+if cheap. The pages report:
 
-- the frame loads at all (`frameDomains` honoured);
+Route A
+- the nested frame loads (`frameDomains` honoured, our `frame-ancestors` allows
+  the host's view origin);
 - it has a real origin, not `null` (sandbox flags the host passes down);
-- a service worker registers, controls the page and reads the fragment;
-- the service worker adds the credential to `fetch`, SSE and media requests;
-- an SSE stream flows for minutes;
-- a `<video>` plays and seeks, with `206` range responses seen;
-- after reloading the conversation, whether `_meta` (and so the credential) was
-  persisted and re-delivered.
+- a service worker registers (partitioned) and controls the page;
+- WebCrypto makes a non-extractable Ed25519 key and keeps it in IndexedDB;
+- `postMessage` between relay and frame both ways;
+- `fetch` and a WebSocket to the provider from the frame;
+- a `<video>` plays and seeks through the service worker, with `206` responses.
 
-For the fallback, the same server also checks: view-initiated tool calls are
-allowed, approved once rather than per call, not queued behind the model, and a
-20 s call survives.
+Route B
+- the relay can start a Web Worker (`worker-src`);
+- `fetch` and a WebSocket to the provider from it (`connectDomains`).
 
-Run in Claude (web and desktop) and ChatGPT. VS Code and Goose if cheap.
+Both
+- view-initiated tool calls are allowed, approved once rather than per call, and
+  not queued behind the model;
+- for the last resort only: a 20 s tool call survives.
 
-**If the probe passes: framed page.**
+**Then:**
 
-- View credential: session redelegation, one space, read-only by default, in the
-  container format; `/host/` accepts it.
-- Hosted space page on its own origin with a service worker that attaches the
-  credential from the fragment.
-- MCP Apps resource declares that origin in `frameDomains`.
-
-**If it fails: watch.**
-
-- `tonk_watch`, app-only, held in the MCP Worker, watching through `live.rs`.
-- Content and assets as resource reads or tool results.
-- Large media as a separate follow-up.
+- `tonk_view_access(space, audience)`, app-only, signing a one-space delegation
+  to the frame's (or worker's) key. Read-only by default.
+- Route A: the space page accepts a delegation by `postMessage` when framed.
+- Route B: relay with the peer runtime in a Web Worker and the guest bridge.
+- Last resort: `tonk_watch` in the MCP Worker over `live.rs`.
 
 **M7:** in Claude and ChatGPT, a tool renders a live view of a space; a write from
-the CLI shows up in the view without a model turn. On the framed route, a video
-asset plays and seeks.
+the CLI shows up in the view without a model turn. On route A, a video asset
+plays and seeks.
 
 ### Stage 8 (later): did:web identifiers
 
@@ -492,7 +488,7 @@ did:web:tonk.network:agent:z6Mk...
 
 Same pattern as `did:web:tonk.network:customer:...`, so each channel names its
 own agents. The document is derived from the key: one `verificationMethod` for
-the embedded key, `alsoKnownAs` the `did:key`, a `service` entry for `/host/`.
+the embedded key, `alsoKnownAs` the `did:key`, a `service` entry for `/mcp`.
 
 - Resolvers **must** check that the document's key is the one embedded in the
   identifier, so whoever controls the host cannot rotate an agent's key. The
@@ -526,15 +522,15 @@ resolves with the embedded-key check enforced.
 3. **Workers fit.** Answered by stage 0.
 4. **Invite renewal.** Who renews an agent's lapsed invite, and how the agent
    learns which one lapsed. Needed by stage 5.
-5. **Kernel site surface.** `/host/{space}/` mirrors `site.rs` from #1201, which
+5. **Kernel site surface.** The Host Worker API mirrors `site.rs` from #1201, which
    is not merged. Stage 2 follows whatever lands.
 6. **`did:web` as principal or alias.** As principal, the powerline issuer,
    invite audiences and contacts use the `did:web`, and every verifier resolves
    it. As alias, UCANs keep the `did:key`. Does the space's storage subject stay
    `did:key` either way? Needed by stage 8.
-7. **Framed page origin.** Where the view's framed space page is served: a
-   per-space subdomain, or one hosted origin with a service worker scoped per
-   space under `/host/`. Must not be the provider origin as-is. Needed by stage 7
-   if the probe passes.
-8. **View credential lifetime.** Revoked with the session, or short and minted per
-   render? Depends on whether hosts persist `_meta` (the probe tells us).
+7. **Framed page URL.** The per-space origin (`{hash}.tonk.foundation`, #1054)
+   or `tonk.foundation/space/{did}/{route}` extended to accept a delegation. The
+   per-space origin keeps space content off the origin that holds passkeys.
+   Needed by stage 7.
+8. **View delegation scope.** Read-only by default; do any views need to write?
+   Lifetime matters less because the private key never leaves the frame.
