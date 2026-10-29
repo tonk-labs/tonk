@@ -17,11 +17,15 @@ The Worker (`src/lib.rs`) routes:
 - `GET /.well-known/tonk`: same-origin browser deployment configuration.
 - `GET /`: service info as JSON (`service`, `version`).
 - `GET /health`: liveness check (`OK`).
-- `GET /.well-known/oauth-protected-resource/mcp`, `GET /.well-known/oauth-authorization-server`, `POST /register`: the OAuth authorization server for `/mcp` (`src/oauth.rs`).
+- `/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-authorization-server`, `POST /register`, `GET /authorize`, `GET`/`POST /authorize/{request}`, `POST /token`: the OAuth authorization server for `/mcp` (`src/oauth.rs`).
 
 ### OAuth for `/mcp`
 
 This origin is both the resource (`<origin>/mcp`) and its authorization server. Clients are public and identify themselves by a Client ID Metadata Document (an HTTPS `client_id`) or by dynamic registration, whose `client_id` carries the registered metadata signed by the service, so registration stores nothing. Callbacks are HTTPS on a public name, or `http://localhost`, `127.0.0.1` or `[::1]` on any port.
+
+`GET /authorize` validates the client, the callback, PKCE (S256 only), the `resource` and `state`, records the request in `oauth_authorization` (D1), sets a per-request cookie, and sends the browser to the app's approval page, `/settings/agent?request=<handle>`. The page reads `GET /authorize/{handle}` for the client name and callback host, does all key work in the browser, and posts `{"token": "..."}` (or `{"deny": true}`) to `POST /authorize/{handle}` from this origin with the cookie. The answer is `{"redirect": "..."}`: the callback with `code`, `state` and `iss`.
+
+`POST /token` redeems a code once, within a minute, matching the verifier, client, callback and resource in the statement that deletes it. The answer is `{"access_token", "token_type": "Bearer"}` with no `expires_in` and no `refresh_token`. The token is opaque to this service; it is stored sealed under a key derived from the code, which is never stored.
 
 `GET /.well-known/tonk` returns canonical camelCase JSON:
 

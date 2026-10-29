@@ -621,3 +621,122 @@ impl super::invitation::InvitationStore for D1Store {
         Ok(changed_rows(&result) > 0)
     }
 }
+
+/// The one column `REDEEM` returns.
+#[derive(Deserialize)]
+struct RedeemedToken {
+    token: String,
+}
+
+#[async_trait(?Send)]
+impl super::oauth::AuthorizationStore for D1Store {
+    async fn begin_authorization(
+        &self,
+        row: &super::oauth::PendingAuthorization,
+        now: u64,
+    ) -> Result<(), StoreError> {
+        let prune = self
+            .0
+            .prepare(super::oauth::PRUNE)
+            .bind(&[JsValue::from_f64(now as f64)])
+            .map_err(map_err)?;
+        let begin = self
+            .0
+            .prepare(super::oauth::BEGIN)
+            .bind(&[
+                JsValue::from(row.request.as_str()),
+                JsValue::from(row.browser.as_str()),
+                JsValue::from(row.client_id.as_str()),
+                JsValue::from(row.client_name.as_str()),
+                JsValue::from(row.registration.as_str()),
+                JsValue::from(row.redirect_uri.as_str()),
+                JsValue::from(row.state.as_str()),
+                JsValue::from(row.resource.as_str()),
+                JsValue::from(row.challenge.as_str()),
+                JsValue::from_f64(row.expires_at as f64),
+            ])
+            .map_err(map_err)?;
+        self.0.batch(vec![prune, begin]).await.map_err(map_err)?;
+        Ok(())
+    }
+    async fn pending_authorization(
+        &self,
+        request: &str,
+        now: u64,
+    ) -> Result<Option<super::oauth::PendingAuthorization>, StoreError> {
+        self.0
+            .prepare(super::oauth::PENDING)
+            .bind(&[JsValue::from(request), JsValue::from_f64(now as f64)])
+            .map_err(map_err)?
+            .first(None)
+            .await
+            .map_err(map_err)
+    }
+    async fn approve_authorization(
+        &self,
+        request: &str,
+        browser: &str,
+        code: &str,
+        token: &str,
+        now: u64,
+        expires_at: u64,
+    ) -> Result<bool, StoreError> {
+        let result = self
+            .0
+            .prepare(super::oauth::APPROVE)
+            .bind(&[
+                JsValue::from(request),
+                JsValue::from(browser),
+                JsValue::from(code),
+                JsValue::from(token),
+                JsValue::from_f64(now as f64),
+                JsValue::from_f64(expires_at as f64),
+            ])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        Ok(changed_rows(&result) > 0)
+    }
+    async fn deny_authorization(
+        &self,
+        request: &str,
+        browser: &str,
+        now: u64,
+    ) -> Result<bool, StoreError> {
+        let result = self
+            .0
+            .prepare(super::oauth::DENY)
+            .bind(&[
+                JsValue::from(request),
+                JsValue::from(browser),
+                JsValue::from_f64(now as f64),
+            ])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        Ok(changed_rows(&result) > 0)
+    }
+    async fn redeem_authorization(
+        &self,
+        redemption: super::oauth::Redemption<'_>,
+    ) -> Result<Option<String>, StoreError> {
+        let row: Option<RedeemedToken> = self
+            .0
+            .prepare(super::oauth::REDEEM)
+            .bind(&[
+                JsValue::from(redemption.code),
+                JsValue::from(redemption.client_id),
+                JsValue::from(redemption.redirect_uri),
+                JsValue::from(redemption.resource),
+                JsValue::from(redemption.challenge),
+                JsValue::from_f64(redemption.now as f64),
+            ])
+            .map_err(map_err)?
+            .first(None)
+            .await
+            .map_err(map_err)?;
+        Ok(row.map(|row| row.token))
+    }
+}

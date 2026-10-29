@@ -15,8 +15,8 @@
 //!   [`shortcut`] module)
 //! - `GET /@/{hash}` - Permanent relative redirect to the stored target, with
 //!   allowlisted public referral tags forwarded
-//! - `/.well-known/oauth-*`, `/register` - The OAuth authorization
-//!   server for `/mcp` (see the [`oauth`] module)
+//! - `/.well-known/oauth-*`, `/register`, `/authorize`, `/token` - The
+//!   OAuth authorization server for `/mcp` (see the [`oauth`] module)
 //!
 //! ## Request Format
 //!

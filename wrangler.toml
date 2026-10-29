@@ -41,10 +41,14 @@ run_worker_first = [
   "/connection/*",
   "/ucan",
   "/ucan/*",
-  # The OAuth authorization server for `/mcp`.
+  # The OAuth authorization server for `/mcp`. Its approval page is an
+  # app route (`/settings/agent`), so it is deliberately not listed.
   "/.well-known/oauth-protected-resource/*",
   "/.well-known/oauth-authorization-server",
   "/register",
+  "/authorize",
+  "/authorize/*",
+  "/token",
 ]
 
 # Every space's objects. `/ucan/` never presigns this bucket's S3

@@ -313,6 +313,38 @@ fn request_host(req: &Request<Incoming>) -> String {
         .unwrap_or_default()
 }
 
+/// Fetches client metadata documents over the network, as the worker
+/// does, redirects unfollowed.
+struct FetchedDocuments;
+
+#[async_trait]
+impl crate::oauth::client::Documents for FetchedDocuments {
+    async fn fetch(&self, url: &url::Url) -> Result<Vec<u8>, String> {
+        use crate::oauth::client::MAX_DOCUMENT;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let response = client
+            .get(url.as_str())
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(format!("answered {}", response.status()));
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length as usize > MAX_DOCUMENT)
+        {
+            return Err(format!("the document is over {MAX_DOCUMENT} bytes"));
+        }
+        Ok(response.bytes().await.map_err(|e| e.to_string())?.to_vec())
+    }
+}
+
 /// The OAuth authorization server, as the worker serves it, under the
 /// configured public origin: the one clients are told about.
 async fn serve_oauth(
@@ -350,6 +382,8 @@ async fn serve_oauth(
     let key = crate::oauth::client::ClientKey::derive(&registration.service_seed)
         .expect("the service seed was validated at start");
     let answer = AuthorizationServer {
+        store: &registration.store,
+        documents: &FetchedDocuments,
         key: &key,
         origin: registration.origin.trim_end_matches('/'),
         now: unix_now(),
@@ -510,7 +544,7 @@ async fn serve_claim(
 /// - GET /.well-known/did.json → The service's own DID document
 /// - GET /customer/{domain}/{local}/did.json → The DID document for an
 ///   email address
-/// - `/.well-known/oauth-*`, `/register` → The
+/// - `/.well-known/oauth-*`, `/register`, `/authorize`, `/token` → The
 ///   OAuth authorization server
 /// - OPTIONS → CORS preflight
 async fn handle_request(
