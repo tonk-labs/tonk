@@ -49,7 +49,7 @@ struct PublicGroup {
     issued_at: u64,
     chains: Vec<String>,
 }
-fn failure(error: impl std::fmt::Display) -> TonkWorkerError {
+pub(super) fn failure(error: impl std::fmt::Display) -> TonkWorkerError {
     TonkWorkerError::Internal(format!("agent connection: {error}"))
 }
 fn enabled() -> Result<(), TonkWorkerError> {
@@ -129,7 +129,7 @@ async fn issue(
 
 /// The browser delegates to a terminal's exact public key; it never receives or
 /// generates that terminal's private key. The same leaf builder serves Flow A.
-async fn issue_to_recipient(
+pub(super) async fn issue_to_recipient(
     recipient: &Did,
     signer: Signer,
     ancestors: Vec<DelegationChain>,
@@ -197,7 +197,7 @@ fn issuer_proof_failure(error: dialog_capability::access::AuthorizeError) -> Ton
     }
 }
 
-async fn issuer_ancestors(
+pub(super) async fn issuer_ancestors(
     tonk: &TonkState,
     scopes: &[Scope],
     now: Timestamp,
