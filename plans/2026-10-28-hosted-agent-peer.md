@@ -15,7 +15,8 @@ Two surfaces on the provider origin, each its own Worker behind a service bindin
 - `/host/` is the hosted peer: a space's origin API, mounted per space.
 - `/mcp` is MCP, a thin wrapper that proxies to `/host/`.
 
-Inline views in MCP Apps come later, by long-polling a watch tool (stage 7).
+Inline views in MCP Apps come later (stage 7): framing the space's page if a probe
+shows hosts allow it, otherwise long-polling a watch tool.
 
 ## Model
 
@@ -191,10 +192,58 @@ flowchart TD
 
 ## Views in MCP Apps (later)
 
-A view never holds a credential. It reads through the host, so the host's own
-token does the work, which is all the MCP Apps spec guarantees: views can call
-tools and read resources. Hosts may forward subscriptions or notifications to a
-view, but nothing requires it, so live updates are a long poll.
+The OAuth token stays in the LLM host; a view never sees it. Two routes, decided
+by a probe (stage 7).
+
+### Preferred: frame the space's page
+
+```mermaid
+sequenceDiagram
+  participant H as LLM host
+  participant M as MCP Worker
+  participant V as View
+  participant F as Framed space page
+  participant S as Its service worker
+  participant P as /host/
+
+  H->>M: tool call that renders a view
+  M-->>H: result, _meta: view credential
+  H-->>V: render, _meta
+  V->>F: iframe src = page URL, credential in the fragment
+  F->>S: register, hand over location.hash
+  F->>S: fetch, SSE, video range requests
+  S->>P: same requests + view credential
+  P-->>F: responses, streamed
+```
+
+- **View credential.** When rendering, the session redelegates to a fresh key for
+  the view: one space, read-only unless the view writes. Same container format as
+  the agent token (seed in the outermost delegation), so `/host/` accepts both.
+  Delivered in the tool result's `_meta`, which the model does not read.
+- **In the fragment.** The view frames the space's page with the credential in
+  `#`. The fragment never reaches a server or its logs. The page's service worker
+  reads it and attaches it to every request the page makes.
+- **The framed page needs a real origin** for its service worker, so it is not
+  served from the provider origin (where `/host/` HTML is sandboxed because the
+  account and passkeys live there). A per-space subdomain or a dedicated hosted
+  origin; see open question 7.
+
+Why this is preferred:
+
+- **Live subscriptions.** SSE straight from `/host/`, not a long poll.
+- **Media works.** `<video>` and friends stream with real `Range` requests,
+  through the service worker. Nothing goes through the host as base64.
+- **Pages render as they do on the space's own origin.** No view-specific runtime,
+  no tool round trip per update.
+
+The cost is a credential inside the view, and probably stored with the
+conversation (hosts keep `_meta` to re-render views). Narrowing it to one space,
+read-only, bounds that. A leaked agent token would expose every space the agent
+reaches, writes and space creation.
+
+### Fallback: long-poll a watch tool
+
+If the probe fails: no credential in the view at all.
 
 ```mermaid
 sequenceDiagram
@@ -213,17 +262,16 @@ sequenceDiagram
   V->>H: tonk_watch(space, query, new cursor)
 ```
 
-- **`tonk_watch(space, query, cursor)`** is app-only (MCP Apps tool visibility), so
-  the model never sees it. It answers as soon as the result moves past `cursor`,
-  or after about 20 s with "no change". The view calls again at once.
-- **The cursor makes it lossless.** A change that lands between two calls is
-  seen by the next one, which answers immediately.
-- **Waiting costs little.** The Worker holds the tool call (wall time, not CPU).
-  It watches through the space's existing Durable Object (`live.rs`, `GET
-  /ucan/?sub=<space>`), whose sockets hibernate between commits, so nothing is
-  awake while a space is idle.
-- **Content and assets** reach the view as tool results or resource reads, for
-  the same reason.
+- **`tonk_watch(space, query, cursor)`** is app-only (MCP Apps tool visibility),
+  so the model never sees it. It answers as soon as the result moves past
+  `cursor`, or after about 20 s with "no change". The view calls again at once.
+- **The cursor makes it lossless.** A change between two calls is seen by the
+  next one, which answers immediately.
+- **Waiting costs little.** The Worker holds the tool call (wall time, not CPU)
+  and watches through the space's Durable Object (`live.rs`, `GET
+  /ucan/?sub=<space>`), whose sockets hibernate between commits.
+- **Assets** are resource reads, whole. MCP has no ranges, so large media
+  (video) is deferred to its own follow-up on this route.
 
 ## Records
 
@@ -396,19 +444,43 @@ working in a space it was invited to.
 
 ### Stage 7 (later): MCP App views
 
-Wanted, not needed for the core flow.
+Wanted, not needed for the core flow. Starts with a probe that picks the route.
 
-- Probe first: a throwaway MCP server with an app that long-polls a tool, run in
-  Claude and ChatGPT. Check that view-initiated calls are allowed, are approved
-  once rather than per call, are not queued behind the model, and survive a 20 s
-  wait. Note whether either host forwards subscriptions or progress to views.
-- `tonk_watch`, app-only, held in the MCP Worker, watching through the space's
-  `live.rs` Durable Object.
-- Content and assets for views as tool results or resource reads.
-- `apps/ui.mjs` CSP no longer needs the provider in `connectDomains`.
+**Probe.** A throwaway MCP server whose view frames a test page on a separate
+origin, with a dummy credential in the fragment. The page reports what worked:
 
-**M7:** in Claude or ChatGPT, a tool renders a live view of a space; a write from
-the CLI shows up in the view without a model turn.
+- the frame loads at all (`frameDomains` honoured);
+- it has a real origin, not `null` (sandbox flags the host passes down);
+- a service worker registers, controls the page and reads the fragment;
+- the service worker adds the credential to `fetch`, SSE and media requests;
+- an SSE stream flows for minutes;
+- a `<video>` plays and seeks, with `206` range responses seen;
+- after reloading the conversation, whether `_meta` (and so the credential) was
+  persisted and re-delivered.
+
+For the fallback, the same server also checks: view-initiated tool calls are
+allowed, approved once rather than per call, not queued behind the model, and a
+20 s call survives.
+
+Run in Claude (web and desktop) and ChatGPT. VS Code and Goose if cheap.
+
+**If the probe passes: framed page.**
+
+- View credential: session redelegation, one space, read-only by default, in the
+  container format; `/host/` accepts it.
+- Hosted space page on its own origin with a service worker that attaches the
+  credential from the fragment.
+- MCP Apps resource declares that origin in `frameDomains`.
+
+**If it fails: watch.**
+
+- `tonk_watch`, app-only, held in the MCP Worker, watching through `live.rs`.
+- Content and assets as resource reads or tool results.
+- Large media as a separate follow-up.
+
+**M7:** in Claude and ChatGPT, a tool renders a live view of a space; a write from
+the CLI shows up in the view without a model turn. On the framed route, a video
+asset plays and seeks.
 
 ### Stage 8 (later): did:web identifiers
 
@@ -460,3 +532,9 @@ resolves with the embedded-key check enforced.
    invite audiences and contacts use the `did:web`, and every verifier resolves
    it. As alias, UCANs keep the `did:key`. Does the space's storage subject stay
    `did:key` either way? Needed by stage 8.
+7. **Framed page origin.** Where the view's framed space page is served: a
+   per-space subdomain, or one hosted origin with a service worker scoped per
+   space under `/host/`. Must not be the provider origin as-is. Needed by stage 7
+   if the probe passes.
+8. **View credential lifetime.** Revoked with the session, or short and minted per
+   render? Depends on whether hosts persist `_meta` (the probe tells us).
