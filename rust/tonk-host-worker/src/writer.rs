@@ -120,7 +120,18 @@ impl DurableObject for SpaceWriterObject {
         // The Host Worker API of a space, onto the routes of its branch.
         let response = match (method, path.as_str()) {
             (worker::Method::Post, "api/query") => {
-                let request = branch(Method::POST, "/evaluate?transact=false", "text/plain", body);
+                // A page of the read, if it asks for one (see `ReadCaps`).
+                let page: String = url
+                    .query_pairs()
+                    .filter(|(name, _)| name == "limit" || name == "cursor")
+                    .map(|(name, value)| {
+                        let value: String =
+                            url::form_urlencoded::byte_serialize(value.as_bytes()).collect();
+                        format!("&{name}={value}")
+                    })
+                    .collect();
+                let path = format!("/evaluate?transact=false{page}");
+                let request = branch(Method::POST, &path, "text/plain", body);
                 writer.read(request).await
             }
             (worker::Method::Post, "api/evaluate") => {

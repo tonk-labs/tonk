@@ -31,6 +31,7 @@ use http::{Response, StatusCode, header};
 use tonk_worker::mcp::{McpEndpoint, SessionKey, Verified, Writers};
 use worker::{Context, Env, HttpRequest, event};
 
+mod stateless;
 mod writer;
 pub use writer::SpaceWriterObject;
 
@@ -106,6 +107,18 @@ impl Writers for DurableWriters<'_> {
         space: &Did,
         request: http::Request<Body>,
     ) -> Response<Body> {
+        // A read in pages is one the writer found too large to answer at
+        // once, so it runs here rather than raise the writer's memory.
+        if stateless::is_paged_read(&request) {
+            return match stateless::read(verified, mcp_session, space, &self.remote, request).await
+            {
+                Ok(response) => response,
+                Err(error) => json(
+                    StatusCode::BAD_GATEWAY,
+                    serde_json::json!({ "error": error, "code": "READ_UNAVAILABLE" }),
+                ),
+            };
+        }
         // The object is named by the writer it holds, not by the MCP
         // session id alone: two OAuth sessions that happen to send one id
         // are two writers.
