@@ -178,7 +178,13 @@ pub async fn verify(bearer: &str) -> Result<Verified, String> {
         if grant.issuer() != &subject {
             return Err(format!("a grant for {subject} is not issued by it"));
         }
+        let mut audience: Option<&Did> = None;
         for delegation in grant.proofs() {
+            // Each link is issued by whoever the one before it delegated to.
+            if audience.is_some_and(|audience| delegation.issuer() != audience) {
+                return Err(format!("a grant for {subject} is not one chain"));
+            }
+            audience = Some(delegation.audience());
             // A subject-open link (the account's powerline to a device) is
             // in every grant an account mints; it narrows nothing, and the
             // chain's other links pin the space.
