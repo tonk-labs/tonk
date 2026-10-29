@@ -588,7 +588,7 @@ concept!: &writer-note
 
         let rows = writer.with_read_caps(ReadCaps {
             rows: 3,
-            bytes: MAX_READ_BYTES,
+            bytes: caps::MAX_READ_BYTES,
         });
         let (status, body) = query(&rows, &document).await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
@@ -604,7 +604,7 @@ concept!: &writer-note
         rows.close().await;
 
         let writer = fixture.writer("mcp-2").await.with_read_caps(ReadCaps {
-            rows: MAX_READ_ROWS,
+            rows: caps::MAX_READ_ROWS,
             bytes: 256,
         });
         let (status, body) = query(&writer, &document).await;
@@ -631,7 +631,7 @@ concept!: &writer-note
         writer.close().await;
         let reader = fixture.writer("mcp-reader").await.with_read_caps(ReadCaps {
             rows: 3,
-            bytes: MAX_READ_BYTES,
+            bytes: caps::MAX_READ_BYTES,
         });
         let document = notes_of(fixture.run);
         // The reader's first read pulls the space's head.
