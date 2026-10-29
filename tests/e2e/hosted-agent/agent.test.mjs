@@ -20,7 +20,7 @@ import {
 } from '@modelcontextprotocol/client';
 import { loopback, provider } from './lib/oauth.mjs';
 import { inbox } from './lib/inbox.mjs';
-import { launch, signUp, createSpace, approve } from './lib/browser.mjs';
+import { launch, signUp, createSpace, syncedSpaces, approve } from './lib/browser.mjs';
 
 const origin = new URL(process.env.TONK_E2E_ORIGIN ?? 'http://localhost:8787').origin;
 const endpoint = new URL('/mcp', origin);
@@ -76,6 +76,8 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       }
     });
 
+    // Subjects by name, of the spaces the person grants.
+    let granted;
     await t.test('a fresh person signs up, confirms their email and makes a space', async () => {
       const mail = inbox({
         run,
@@ -84,6 +86,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       });
       await signUp(person.page, { origin, address: mail.address, inbox: mail });
       await createSpace(person.page, { origin, name: readableName });
+      granted = await syncedSpaces(person.page, [writableName, readableName]);
     });
 
     let token;
@@ -130,31 +133,32 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       return result;
     };
 
-    // The agent sees exactly the spaces it was granted. The token carries
-    // grant chains, not names, so they are told apart by what they allow.
-    let spaces;
+    // The agent sees exactly the spaces it was granted, and each allows
+    // what it was granted.
+    const spaces = {};
     await t.test('the agent lists its grants, reads both and writes only one', async () => {
+      spaces.writable = granted[writableName];
+      spaces.readable = granted[readableName];
       const client = await connect();
       const tools = (await client.listTools()).tools.map((tool) => tool.name);
       for (const name of ['tonk_list_spaces', 'tonk_query', 'tonk_evaluate', 'tonk_guide']) {
         assert.ok(tools.includes(name), `tools/list lacks ${name}: ${tools}`);
       }
       const listed = (await call(client, 'tonk_list_spaces', {})).structuredContent.spaces;
-      const readOnly = [],
-        writable = [];
-      for (const { subject } of listed) {
-        await call(client, 'tonk_query', { space: subject, document: 'concept:\n' });
-        const written = await client.callTool({
-          name: 'tonk_evaluate',
-          arguments: { space: subject, document: NOTE },
-        });
-        (written.isError ? readOnly : writable).push(subject);
+      assert.deepEqual(
+        listed.map((space) => space.subject).sort(),
+        [spaces.writable, spaces.readable].sort(),
+        `listed ${JSON.stringify(listed)}`,
+      );
+      for (const space of [spaces.writable, spaces.readable]) {
+        await call(client, 'tonk_query', { space, document: 'concept:\n' });
       }
-      const seen = JSON.stringify(listed);
-      assert.equal(listed.length, 2, `expected the two granted spaces: ${seen}`);
-      assert.equal(readOnly.length, 1, `expected ${readableName} to refuse a write: ${seen}`);
-      assert.equal(writable.length, 1, `expected ${writableName} to take a write: ${seen}`);
-      spaces = { readable: readOnly[0], writable: writable[0] };
+      const refused = await client.callTool({
+        name: 'tonk_evaluate',
+        arguments: { space: spaces.readable, document: NOTE },
+      });
+      assert.equal(refused.isError, true, `${readableName} was granted Read but took a write`);
+      await call(client, 'tonk_evaluate', { space: spaces.writable, document: NOTE });
     });
 
     const labels = [];

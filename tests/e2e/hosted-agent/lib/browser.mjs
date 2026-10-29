@@ -132,6 +132,40 @@ export async function createSpace(page, { origin, name }) {
 }
 
 /**
+ * Wait until the profile lists a space labelled with each of `names` and
+ * each has a remote (the approval page offers only synced spaces), and
+ * return their subjects by name.
+ */
+export async function syncedSpaces(page, names, timeout = 120_000) {
+  const read = () =>
+    page.evaluate(async () => {
+      const json = async (path) => (await fetch(path)).json();
+      const spaces = [];
+      for (const { key, subject } of (await json('/api/profile'))?.space ?? []) {
+        const info = await json(`/api/repository/${encodeURIComponent(key)}`).catch(() => null);
+        spaces.push({
+          subject,
+          label: info?.label,
+          synced: Object.keys(info?.remote ?? {}).length > 0,
+        });
+      }
+      return spaces;
+    });
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const spaces = await read().catch(() => []);
+    const found = names.map((name) => spaces.find((space) => space.label === name && space.synced));
+    if (found.every(Boolean)) {
+      return Object.fromEntries(names.map((name, index) => [name, found[index].subject]));
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`spaces never synced: wanted ${names}, have ${JSON.stringify(spaces)}`);
+    }
+    await page.waitForTimeout(1000);
+  }
+}
+
+/**
  * Approve the agent on the page `/authorize` sent the browser to, granting
  * `grants` (space name to "Read" or "Read and write"). The page then sends
  * the browser on to the client's callback.
