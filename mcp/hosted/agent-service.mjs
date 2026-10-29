@@ -1,10 +1,15 @@
-import { mkdtemp } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agentLinkBackend } from '../agent-link-backend.mjs';
 import { createTonkHTTP } from '../http.mjs';
 import { createCheckpoint } from './checkpoint.mjs';
 import { createAgentViews } from './agent-views.mjs';
+
+// The native store records each space by the absolute path of its storage, so
+// a restored checkpoint must land at the same path in every container. A fresh
+// temporary name per start would leave every space pointing at the last one.
+export const agentStore = join(tmpdir(), 'tonk-agent-store');
 
 // One bounded, serialized worker owner. Checkpoint only after the child closes,
 // including failure paths; a failed checkpoint freezes subsequent calls.
@@ -17,7 +22,10 @@ export async function createAgentService({
   run,
   viewOptions = {},
 }) {
-  directory ??= await mkdtemp(join(tmpdir(), 'tonk-agent-workers-'));
+  if (!directory) {
+    directory = agentStore;
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+  }
   checkpoint ??= await createCheckpoint({
     directory,
     endpoint: 'http://checkpoint.internal/agent-state',

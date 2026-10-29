@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { createAgentService } from './agent-service.mjs';
+import { createAgentService, agentStore } from './agent-service.mjs';
 import { createServer, request as httpRequest } from 'node:http';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { invoke } from '../agent-link-backend.mjs';
@@ -254,4 +254,28 @@ test('legacy stateless HTTP discovers link schemas without account sessions', as
   } finally {
     await service.close();
   }
+});
+
+// Each container restart restores the agent store from its checkpoint. The
+// native store records spaces by absolute path, so a restart must restore to
+// the same path, or every space resolves into the previous container's root.
+test('a restarted service restores its agents at the same path', async (t) => {
+  t.after(() => rm(agentStore, { recursive: true, force: true }));
+  const roots = [];
+  for (let start = 0; start < 2; start++) {
+    await rm(agentStore, { recursive: true, force: true });
+    const service = await createAgentService({
+      issuer: 'https://mcp.example',
+      provider: 'https://tonk.example',
+      checkpoint: { save: async () => {} },
+      run: async ({ dataDirectory }) => {
+        roots.push(dataDirectory);
+        return { result: { agent: 'a', did: 'did:key:z' } };
+      },
+    });
+    await service.agents.create();
+    await service.close();
+  }
+  assert.deepEqual(roots, [agentStore, agentStore]);
+  assert.equal((await stat(agentStore)).mode & 0o777, 0o700);
 });
