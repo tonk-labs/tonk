@@ -608,6 +608,8 @@ pub mod ceremony {
     pub const AUTHORIZE_DEVICE: &str = "authorize-device";
     /// `tonk:add-passkey`.
     pub const ADD_PASSKEY: &str = "add-passkey";
+    /// Making an agent for an app signing in over OAuth.
+    pub const AUTHORIZE_AGENT: &str = "authorize-agent";
     /// `tonk:add-profile` — signing up a fresh profile's account.
     ///
     /// Unlike its siblings the worker does not drive this one to

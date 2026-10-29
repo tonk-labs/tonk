@@ -1822,6 +1822,37 @@ pub(crate) async fn boot_state_with_profile_library(
     registry: crate::device::Registry,
     profile_library: crate::router::ProfileLibraryCache,
 ) -> Result<TonkState, crate::TonkWorkerError> {
+    let state = open_state(storage, profile_name, profile, registry, profile_library).await?;
+    bootstrap_profile(&state).await.map_err(|e| {
+        crate::TonkWorkerError::Internal(format!("failed to bootstrap profile meta: {e}"))
+    })?;
+    crate::router::identity::follow_signed_in_account(&state).await?;
+    Ok(state)
+}
+
+/// [`boot_state`] without the profile bootstrap: no meta commit, no
+/// profile library, no account overlays, no signed-in account to follow.
+///
+/// For a hosted peer, whose profile is a throwaway signing identity that
+/// is never synced or browsed: the bootstrap's commits and its
+/// `/library/profile.yaml` fetch cost every open and serve nothing.
+#[cfg(any(feature = "volatile-storage", test))]
+pub(crate) async fn boot_unbootstrapped_state(
+    storage: Storage<DefaultSpace>,
+    profile_name: String,
+    profile: DefaultProfile,
+    registry: crate::device::Registry,
+) -> Result<TonkState, crate::TonkWorkerError> {
+    open_state(storage, profile_name, profile, registry, Default::default()).await
+}
+
+async fn open_state(
+    storage: Storage<DefaultSpace>,
+    profile_name: String,
+    profile: DefaultProfile,
+    registry: crate::device::Registry,
+    profile_library: crate::router::ProfileLibraryCache,
+) -> Result<TonkState, crate::TonkWorkerError> {
     // A switch hands over the peer of the branch it leaves; the profile's
     // own branch is where every other branch's peer is derived from.
     let profile = if profile.state().name() == crate::router::repository::PROFILE_BRANCH {
@@ -1871,7 +1902,7 @@ pub(crate) async fn boot_state_with_profile_library(
         (branch, session)
     };
 
-    let state = TonkState {
+    Ok(TonkState {
         profile,
         operator: session.operator,
         active_branch,
@@ -1895,12 +1926,7 @@ pub(crate) async fn boot_state_with_profile_library(
         profile_transition: Arc::new(Mutex::new(())),
         context_generation: Arc::new(AtomicU64::new(0)),
         profile_swaps: Default::default(),
-    };
-    bootstrap_profile(&state).await.map_err(|e| {
-        crate::TonkWorkerError::Internal(format!("failed to bootstrap profile meta: {e}"))
-    })?;
-    crate::router::identity::follow_signed_in_account(&state).await?;
-    Ok(state)
+    })
 }
 
 /// The main Tonk service worker that handles browser fetch events.
