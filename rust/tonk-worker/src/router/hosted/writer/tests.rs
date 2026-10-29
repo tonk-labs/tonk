@@ -708,4 +708,43 @@ concept!: &writer-note
         other.close().await;
         fixture.stop().await;
     }
+
+    /// Schema discovery, the first read an agent makes, pages like any other.
+    #[dialog_common::test]
+    async fn a_concept_read_pages() {
+        let fixture = Fixture::start().await;
+        let reader = fixture.writer("mcp-reader").await;
+        let (status, whole) = query(&reader, "concept:\n").await;
+        assert!(status.is_success(), "{status}: {whole}");
+        let total: usize = whole["matches_before"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["results"].as_array().unwrap().len())
+            .sum();
+        assert!(total > 1, "the space has concepts: {whole}");
+
+        let mut seen = 0;
+        let mut cursor: Option<String> = None;
+        loop {
+            let (status, body) = page(&reader, "concept:\n", 1, cursor.as_deref()).await;
+            assert!(status.is_success(), "{status}: {body}");
+            assert_eq!(body["page"]["rows"], total);
+            let rows: usize = body["matches_before"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|block| block["results"].as_array().unwrap().len())
+                .sum();
+            assert_eq!(rows, 1, "a page of one concept: {body}");
+            seen += rows;
+            match body["page"]["next"].as_str() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => break,
+            }
+        }
+        assert_eq!(seen, total, "every concept, one page each");
+        reader.close().await;
+        fixture.stop().await;
+    }
 }
