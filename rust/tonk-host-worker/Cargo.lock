@@ -3720,6 +3720,7 @@ dependencies = [
 name = "tonk-worker"
 version = "0.6.16-rc.1"
 dependencies = [
+ "aes-gcm",
  "async-trait",
  "axum",
  "base58",

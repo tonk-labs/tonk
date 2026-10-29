@@ -81,9 +81,37 @@ pub(crate) async fn forward(
     if let Some(content_type) = response.headers().get("content-type")? {
         answer = answer.header(header::CONTENT_TYPE, content_type);
     }
+    // A subscription stays a stream; everything else is read whole.
+    let streaming = response
+        .headers()
+        .get("content-type")?
+        .is_some_and(|content_type| content_type.starts_with("text/event-stream"));
+    let body = if streaming {
+        Body::from_stream(Streamed(response.stream()?))
+    } else {
+        Body::from(response.bytes().await?)
+    };
     answer
-        .body(Body::from(response.bytes().await?))
+        .body(body)
         .map_err(|error| worker::Error::RustError(error.to_string()))
+}
+
+/// A response body read as it arrives. Workers run one thread, so the
+/// stream never crosses one, which is what `Body` asks it to promise.
+struct Streamed(worker::ByteStream);
+
+// SAFETY: a Worker isolate runs on one thread.
+unsafe impl Send for Streamed {}
+
+impl futures_util::Stream for Streamed {
+    type Item = worker::Result<Vec<u8>>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        std::pin::Pin::new(&mut self.0).poll_next(context)
+    }
 }
 
 /// An opened writer, and the seed of its key.
@@ -116,6 +144,7 @@ impl DurableObject for SpaceWriterObject {
             .headers()
             .get("content-type")?
             .unwrap_or_else(|| "application/octet-stream".to_owned());
+        let accept = request.headers().get("accept")?;
         let body = Body::from(request.bytes().await?);
         // The Host Worker API of a space, onto the routes of its branch.
         let response = match (method, path.as_str()) {
@@ -136,6 +165,30 @@ impl DurableObject for SpaceWriterObject {
                 let entity = &path["asset/".len()..];
                 let request = branch(Method::GET, &format!("/blob/{entity}"), "", Body::empty());
                 writer.read(request).await
+            }
+            // A view's guest, onto any route of the branch (see `view.rs`).
+            (method, path) if path.starts_with("view/") => {
+                let route = format!(
+                    "/{}{}",
+                    &path["view/".len()..],
+                    url.query()
+                        .map(|query| format!("?{query}"))
+                        .unwrap_or_default()
+                );
+                let Ok(method) = Method::from_bytes(method.to_string().as_bytes()) else {
+                    return failure(StatusCode::METHOD_NOT_ALLOWED, "no such method");
+                };
+                let mut request = Request::builder()
+                    .method(method)
+                    .uri(route)
+                    .header(header::CONTENT_TYPE, &content_type);
+                if let Some(accept) = accept {
+                    request = request.header(header::ACCEPT, accept);
+                }
+                match request.body(body) {
+                    Ok(request) => writer.serve(request).await,
+                    Err(_) => return failure(StatusCode::BAD_REQUEST, "malformed route"),
+                }
             }
             _ => return failure(StatusCode::NOT_FOUND, "no such route"),
         };

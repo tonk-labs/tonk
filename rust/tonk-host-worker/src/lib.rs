@@ -32,6 +32,7 @@ use tonk_worker::mcp::{McpEndpoint, SessionKey, Verified, Writers};
 use tonk_worker::view::TicketKey;
 use worker::{Context, Env, HttpRequest, event};
 
+mod view;
 mod writer;
 pub use writer::SpaceWriterObject;
 
@@ -46,7 +47,7 @@ async fn fetch(
     if path == "/" {
         return Ok(json(StatusCode::OK, serde_json::json!({ "ok": true })));
     }
-    if path != "/mcp" && path != "/mcp/" {
+    if path != "/mcp" && path != "/mcp/" && !path.starts_with(view::PREFIX) {
         return Ok(json(
             StatusCode::NOT_FOUND,
             serde_json::json!({ "error": "no such route" }),
@@ -75,6 +76,11 @@ async fn fetch(
     };
     let key = SessionKey::derive(&secret);
     let tickets = TicketKey::derive(&secret);
+    if path.starts_with(view::PREFIX) {
+        let (parts, body) = request.into_parts();
+        let request = http::Request::from_parts(parts, Body::new(body));
+        return Ok(view::serve(request, &env, &tickets, &remote).await);
+    }
     let writers = DurableWriters { env: &env, remote };
     let endpoint = McpEndpoint {
         origin: &origin,

@@ -325,6 +325,26 @@ impl SpaceWriter {
     /// refused with `405`, since a commit here would skip the lock and the
     /// push.
     pub async fn read(&self, request: Request<Body>) -> Response<Body> {
+        self.read_checked(request).await
+    }
+
+    /// Answer a request on the branch as a read when it is one, and as a
+    /// write otherwise: what a view's guest sends, whose routes are not
+    /// known up front.
+    pub async fn serve(&self, request: Request<Body>) -> Response<Body> {
+        if is_read(request.method(), request.uri()) {
+            self.read_checked(request).await
+        } else {
+            self.write(request).await
+        }
+    }
+
+    /// Whether `request` is a read this writer answers without its lock.
+    pub fn is_read(request: &Request<Body>) -> bool {
+        is_read(request.method(), request.uri())
+    }
+
+    async fn read_checked(&self, request: Request<Body>) -> Response<Body> {
         if !is_read(request.method(), request.uri()) {
             return failure(
                 StatusCode::METHOD_NOT_ALLOWED,

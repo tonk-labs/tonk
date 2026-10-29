@@ -114,7 +114,12 @@ async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
     // Worker over the `HOST_WORKER` service binding. It is answered on
     // this origin because this origin is the OAuth resource the
     // authorization server issues tokens for.
-    if req.path() == "/mcp" || req.path().starts_with("/mcp/") {
+    // `/space-api/` is what the hosted agent's inline views send; the Host
+    // Worker hands it to the space writer the view's ticket names.
+    if req.path() == "/mcp"
+        || req.path().starts_with("/mcp/")
+        || req.path().starts_with("/space-api/")
+    {
         return match env.service("HOST_WORKER") {
             Ok(host) => host.fetch_request(req).await,
             Err(_) => Response::error("this deployment serves no /mcp", 404),

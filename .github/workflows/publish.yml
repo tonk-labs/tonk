@@ -262,6 +262,15 @@ jobs:
             -e "s/store_id = \"SECRETS-STORE-REPLACED-PER-DEPLOY\"/store_id = \"$store_id\"/" \
             -e "s/service = \"tonk-host-worker-preview\"/service = \"$host\"/" \
             "$config"
+          # The inline views' guest runtime and document, beside the app,
+          # readable from the MCP hosts' view origins.
+          assets="$PWD/preview-assets"
+          rm -rf "$assets"
+          cp -rL result/tonk-ui "$assets"
+          chmod -R u+w "$assets"
+          cp mcp/hosted/public/space-runtime.json mcp/hosted/public/worker-guest.html "$assets/"
+          printf '\n/space-runtime.json\n  Access-Control-Allow-Origin: *\n\n/worker-guest.html\n  Access-Control-Allow-Origin: *\n' >> "$assets/_headers"
+          sed -i "s#^directory = \"./result/tonk-ui\"#directory = \"$assets\"#" "$config"
           if ! grep -Fxq "name = \"$worker\"" "$config" \
             || ! grep -Fq "database_name = \"$control\"" "$config" \
             || ! grep -Fq "database_id = \"$control_id\"" "$config" \

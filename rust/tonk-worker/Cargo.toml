@@ -39,6 +39,7 @@ async-trait = { workspace = true }
 axum = { workspace = true, features = ["json", "macros", "query"] }
 base58 = { workspace = true }
 base64 = { workspace = true }
+aes-gcm = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
