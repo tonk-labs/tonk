@@ -580,6 +580,13 @@ In `tonk-ui` on the provider origin, modelled on `/settings/link`.
 - New or existing agent; name; choose spaces; allow space creation.
 - On approve, the browser steps from Authorization, then post the token to the
   AS bound to the code.
+- **Approval is a passkey ceremony** (`CustodyIntent::AuthorizeAgent`, like
+  device link), not a click. A new agent's key is sealed under the account.
+  Reconnecting an existing agent needs the passkey to unseal the account and
+  then the agent key, which mints the session powerline. Granting existing
+  spaces needs the account key too, so every approval asks for the passkey.
+- Grant chains are `space → account → agent space`, the leaf signed by the
+  account root, so no device delegation sits in the middle.
 - Playwright with Chrome's virtual authenticator (`hasPrf: true`).
 
 **M4:** Claude Code runs the real flow on localhost: browser opens, user approves,
