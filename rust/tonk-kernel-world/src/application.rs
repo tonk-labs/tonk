@@ -19,6 +19,10 @@
 //!   or null }`, and that it has been: `{ "ask": id, "seeded": true }`
 //! - answered: `{ "answer": id, "status", "body": text }`, or
 //!   `{ "answer": id, "error": text }` when it could not be answered.
+//!
+//! A worker also tells its embedder what it expects no answer to: that the
+//! page that asked something, by its client id, is to go to an address,
+//! `{ "tell": "navigate", "client", "href", "replace": bool }`.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
@@ -147,6 +151,13 @@ pub async fn seeded() -> Result<(), Error> {
         return Err(Error::Unavailable(answer.body));
     }
     Ok(())
+}
+
+/// Tell the embedder that the page `client` is to go to `href`, as a fresh
+/// load replacing its history entry where `replace`.
+pub async fn navigate(client: &str, href: &str, replace: bool) -> Result<(), Error> {
+    let message = json!({ "tell": "navigate", "client": client, "href": href, "replace": replace });
+    application::send(message.to_string().into_bytes()).await
 }
 
 /// Send the message `asked` makes of its id, and answer what comes back

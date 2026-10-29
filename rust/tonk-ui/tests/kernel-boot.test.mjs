@@ -26,14 +26,16 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
   const told = [];
   const booted = [];
   const handled = [];
+  const sentHeaders = [];
   const imported = [];
   const fetched = [];
   const pages = [{ postMessage: (message) => void told.push(message) }];
   const embedder = {
     timings: {},
     receive() {},
-    handle: async (method, path) => {
+    handle: async (method, path, headers = []) => {
       handled.push(`${method} ${path}`);
+      sentHeaders.push(headers);
       const [status, text, type = "text/plain"] =
         path === "/api/identify" ? [200, JSON.stringify({ did: "did:key:zKernel" })]
         : path === "/.kernel/adopt" ? [204, ""]
@@ -68,7 +70,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     pinned: async (subject) => kept.pins.get(subject),
     // A kernel creates a space it takes up for the first time, and says so.
     bootSpace: async (subject, session, representative, persona, delegate, sent) => {
-      booted.push({ subject, session: session.did, representative, persona, delegate });
+      booted.push({ subject, session: session.did, representative, persona, delegate, sent });
       if (!holds) queueMicrotask(() => sent(new TextEncoder().encode(JSON.stringify({ ask: 1, seeded: true }))));
       return embedder;
     },
@@ -91,7 +93,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     location: new URL(`/kernel_boot.js?kernel=${pinned}`, ORIGIN),
     addEventListener: (type, listener) => void (listeners[type] = listener),
     skipWaiting: async () => {},
-    clients: { claim: async () => {}, matchAll: async () => pages },
+    clients: { claim: async () => {}, matchAll: async () => pages, get: async (id) => (id === "page-1" ? pages[0] : undefined) },
   };
   const context = vm.createContext({
     self,
@@ -142,7 +144,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
 
   // Hand the worker `request` as a fetch event; answers what it responded
   // with, or `undefined` where it left the request to the network.
-  const request = async (path, { mode = "cors", method = "GET" } = {}) => {
+  const request = async (path, { mode = "cors", method = "GET", clientId = "" } = {}) => {
     let responded;
     const waits = [];
     listeners.fetch({
@@ -153,6 +155,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
         headers: new Headers(),
         arrayBuffer: async () => new ArrayBuffer(0),
       },
+      clientId,
       respondWith: (response) => void (responded = response),
       waitUntil: (promise) => void waits.push(promise),
     });
@@ -182,7 +185,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     new Promise((resolve) =>
       listeners.message({ data: { type: "booted" }, ports: [{ postMessage: resolve }], waitUntil() {} }),
     );
-  return { listeners, imported, fetched, booted, handled, asked, told, kept, opened, handPort, passDown, request, message, goOffline, started };
+  return { sentHeaders, listeners, imported, fetched, booted, handled, asked, told, kept, opened, handPort, passDown, request, message, goOffline, started };
 }
 
 test("the bootloader loads the host's embedder", () => {
@@ -347,4 +350,17 @@ test("a request the profile passes down is answered by the kernel", async () => 
   assert.equal(body.join(""), "not found");
   assert.equal(answer.at(-1).end, true);
   assert.deepEqual(site.handled.slice(-1), ["GET /api/roster"]);
+});
+
+test("the kernel sends the page that asked somewhere, through its host", async () => {
+  const site = space();
+  site.handPort();
+  await site.request("/api/anything", { clientId: "page-1" });
+  assert.deepEqual(
+    [...site.sentHeaders.at(-1).find(([name]) => name === "x-tonk-client-id")],
+    ["x-tonk-client-id", "page-1"],
+    "the kernel hears which page asked",
+  );
+  await site.booted[0].sent(new TextEncoder().encode(JSON.stringify({ tell: "navigate", client: "page-1", href: "/" })));
+  assert.deepEqual(JSON.parse(JSON.stringify(site.told.at(-1))), { type: "navigate", href: "/" });
 });

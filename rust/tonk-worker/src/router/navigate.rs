@@ -12,6 +12,9 @@
 
 use tonk_common::log;
 
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+use crate::detach;
+
 /// Post a `{ type: "navigate", href }` message to the originating client so
 /// it redirects there.
 ///
@@ -98,19 +101,47 @@ fn post_navigate(client: Option<&crate::router::ClientId>, href: &str, replace: 
     });
 }
 
+/// On a kernel, its embedder holds the pages: it is told where the page that
+/// asked is to go.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
+    tell_navigate(client, href, false);
+}
+
+/// [`notify_navigate`] as a fresh load replacing the page's history entry.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub(crate) fn notify_replace(client: Option<&crate::router::ClientId>, href: &str) {
+    tell_navigate(client, href, true);
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+fn tell_navigate(client: Option<&crate::router::ClientId>, href: &str, replace: bool) {
+    let Some(client) = client else {
+        log!("navigate: no originating client; skipping redirect");
+        return;
+    };
+    let (client, href) = (client.0.clone(), href.to_owned());
+    detach(async move {
+        if let Err(error) = tonk_kernel_world::application::navigate(&client, &href, replace).await
+        {
+            log!("navigate: the embedder was not told: {error:?}");
+        }
+    });
+}
+
 /// Navigation is a page capability, and this host has no page: the
 /// target is logged so a host shell (CLI, TUI) that tails the log can
 /// still present it. The triggering command has already done its work —
 /// only the convenience redirect is absent, mirroring the "client is
 /// gone" path above.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
     let _ = client;
     log!("navigate: no page on this host; the target was {href}");
 }
 
 /// No page on this host either; see [`notify_navigate`].
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn notify_replace(client: Option<&crate::router::ClientId>, href: &str) {
     notify_navigate(client, href);
 }

@@ -393,7 +393,10 @@ async function serveKernel(event) {
     const embedder = await booting;
     const url = new URL(event.request.url);
     const body = new Uint8Array(await event.request.arrayBuffer());
-    const reply = await embedder.handle(event.request.method, url.pathname + url.search, [...event.request.headers], body);
+    // The page that asked, so the kernel can send it somewhere.
+    const client = event.clientId || event.resultingClientId;
+    const headers = [...event.request.headers, ...(client ? [["x-tonk-client-id", client]] : [])];
+    const reply = await embedder.handle(event.request.method, url.pathname + url.search, headers, body);
     const bodiless = reply.status === 204 || reply.status === 304 || event.request.method === "HEAD";
     const response = new Response(bodiless ? null : bodyOf(reply, event), {
         status: reply.status,
@@ -496,15 +499,16 @@ async function withPolicy(headers) {
 
 // ---- What the kernel asks of other kernels, and of its host --------------
 //
-// The kernel sends a message with `application.send`: `{ ask, to, method,
-// path, body }` asks the kernel of the space `to`; `{ ask, read }` asks this
-// host for the text at the address `read`, which anyone may read, such as a
-// seed; and `{ ask, fetch, method, type, body64 }` asks it to deliver a
-// request, such as an invocation the kernel signed, to the address `fetch`.
-// The answer goes back with `receive` as `{ answer, status, body }` (`body64`
-// for a delivery), or `{ answer, error }`. Only the persona asks other
-// kernels and has requests delivered: a space's code is its author's, and
-// gets no network.
+// The kernel tells this host where the page that asked something is to go,
+// `{ tell: "navigate", client, href, replace }`, and asks with
+// `application.send`: `{ ask, to, method, path, body }` asks the kernel of
+// the space `to`; `{ ask, read }` asks this host for the text at the
+// address `read`, which anyone may read, such as a seed; and `{ ask, fetch,
+// method, type, body64 }` asks it to deliver a request, such as an
+// invocation the kernel signed, to the address `fetch`. The answer goes back
+// with `receive` as `{ answer, status, body }` (`body64` for a delivery), or
+// `{ answer, error }`. Only the persona asks other kernels and has requests
+// delivered: a space's code is its author's, and gets no network.
 async function kernelSent(bytes) {
     let message;
     try {
@@ -513,6 +517,7 @@ async function kernelSent(bytes) {
         log("the kernel sent what is not JSON:", error);
         return;
     }
+    if (message?.tell === "navigate") return navigatePage(message);
     if (typeof message?.ask !== "number") return;
     let answer;
     try {
@@ -525,6 +530,14 @@ async function kernelSent(bytes) {
     } catch (error) {
         log("the kernel did not take an answer:", error);
     }
+}
+
+// Send the page `client` to `href`, as the kernel told: its `<tonk-host>`
+// goes there.
+async function navigatePage({ client, href, replace }) {
+    const page = typeof client === "string" ? await self.clients.get(client) : null;
+    if (!page) return log("navigate: the page that asked is gone");
+    page.postMessage({ type: "navigate", href, ...(replace ? { replace: true } : {}) });
 }
 
 // What answers `message`: `{ status, body }`.

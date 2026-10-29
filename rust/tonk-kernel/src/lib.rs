@@ -61,7 +61,7 @@ use tonk_kernel_world::layer::{SharedLayer, share};
 use tonk_kernel_world::signal::Signal;
 use tonk_kernel_world::world::sapling::kernel::credential::{Access, PersonaAuthority};
 use tonk_kernel_world::world::sapling::kernel::types::Error;
-use tonk_worker::{AppState, TonkState};
+use tonk_worker::{AppState, ClientId, TonkState};
 use tower::ServiceExt as _;
 use world::exports::sapling::kernel::{channel, lifecycle};
 use world::exports::wasi::http::handler;
@@ -231,7 +231,9 @@ impl channel::Guest for Kernel {
     }
 }
 
-/// `request`, as the worker's router takes one.
+/// `request`, as the worker's router takes one, with the page that sent it,
+/// which its host names in `x-tonk-client-id`, so a command can send that
+/// page somewhere.
 async fn incoming(request: Request) -> Result<axum::http::Request<axum::body::Body>, ErrorCode> {
     let method = request.get_method();
     let target = request
@@ -245,9 +247,18 @@ async fn incoming(request: Request) -> Result<axum::http::Request<axum::body::Bo
     for (name, value) in headers {
         built = built.header(name, value);
     }
-    built
+    let mut request = built
         .body(axum::body::Body::from(body))
-        .map_err(|error| ErrorCode::InternalError(Some(error.to_string())))
+        .map_err(|error| ErrorCode::InternalError(Some(error.to_string())))?;
+    if let Some(client) = request
+        .headers()
+        .get("x-tonk-client-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+    {
+        request.extensions_mut().insert(ClientId(client));
+    }
+    Ok(request)
 }
 
 impl handler::Guest for Kernel {
