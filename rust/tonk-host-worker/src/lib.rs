@@ -29,6 +29,7 @@ use dialog_credentials::Ed25519Signer;
 use dialog_varsig::{Did, Principal as _};
 use http::{Response, StatusCode, header};
 use tonk_worker::mcp::{McpEndpoint, SessionKey, Verified, Writers};
+use tonk_worker::view::TicketKey;
 use worker::{Context, Env, HttpRequest, event};
 
 mod writer;
@@ -73,10 +74,12 @@ async fn fetch(
         _ => remote.trim_end_matches("/ucan/").to_owned(),
     };
     let key = SessionKey::derive(&secret);
+    let tickets = TicketKey::derive(&secret);
     let writers = DurableWriters { env: &env, remote };
     let endpoint = McpEndpoint {
         origin: &origin,
         key: &key,
+        tickets: &tickets,
         writers: &writers,
     };
     let (parts, body) = request.into_parts();
