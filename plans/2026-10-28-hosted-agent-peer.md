@@ -1,7 +1,9 @@
 # Hosted agent peer
 
-Status: design agreed 2026-10-28, implementation not started. Replaces the
-per-call agent-link MCP (#1105).
+Status: design agreed 2026-10-28, amended 2026-10-29 after the stage 0 spike
+(writes go through one Durable Object per space and MCP session, see
+[Writers](#writers)). Stages 0, 1 (first half) and 3 are in review: #1205,
+#1202, #1203 and #1204. Replaces the per-call agent-link MCP (#1105).
 
 An agent gets its own space, provisioned by the user's account during an OAuth
 sign-up. The OAuth token is a session credential for that space. Every call
@@ -14,7 +16,10 @@ Two Workers:
 
 - `/mcp` on the provider origin: MCP, a thin wrapper.
 - The Host Worker: the hosted peer, reached by the MCP Worker over a service
-  binding. Internal; nothing public routes to it.
+  binding. Internal; nothing public routes to it. A stateless front verifies the
+  token and hands each request to the space writer, a Durable Object per space
+  and MCP session that keeps a warm peer and is the only place that signs
+  revisions for it.
 
 Inline views in MCP Apps come later (stage 7). A view is a relay: it gets a
 delegation for a key the browser holds and frames the space's own page, so the
@@ -49,7 +54,10 @@ flowchart LR
 - **Space creation** (opt-in at authorization): a delegation from the account
   letting the agent provision spaces on the user's behalf. Created spaces are
   owned by the user and sealed under the account.
-- **Attribution.** Authority is the agent space DID, operator is the session DID.
+- **Attribution.** Authority is the agent space DID. The operator is a writer key
+  derived from the session seed and the MCP session id, delegated to by the
+  session (see [Writers](#writers)), so each MCP connection writes as its own DID
+  and revoking the session cuts every writer under it.
 - **Identifier.** `did:key`. Naming agents by `did:web` comes later (stage 8).
 
 ### Permanent session delegations
@@ -99,8 +107,9 @@ flowchart LR
     access[tonk-access-service]
   end
   access -- "binding" --> mcp[MCP Worker]
-  mcp -- "binding" --> host[Host Worker]
-  host -- "/ucan/, reads and writes" --> access
+  mcp -- "binding" --> host[Host Worker<br/>stateless front]
+  host -- "one per space + MCP session" --> writer[Space writer<br/>Durable Object]
+  writer -- "/ucan/, reads and writes" --> access
 ```
 
 - The channel comes from the host: `tonk.foundation` is main, `staging.tonk.xyz`
@@ -174,19 +183,71 @@ flowchart TD
   verify -- no --> e401
   verify --> revoked{revoked?<br/>checked every call}
   revoked -- yes --> e401
-  revoked -- no --> peer[peer: authority = agent space<br/>operator = session]
-  peer --> svc[reads and writes via access service]
+  revoked -- no --> writer[space writer for space + MCP session<br/>authority = agent space<br/>operator = writer key]
+  writer --> svc[reads and writes via access service]
   svc -- invite lapsed --> terr[error naming the space<br/>and how to renew]
   svc --> ok[result]
 ```
 
-- Stateless Worker. No container, no replicas, no checkpoints. Any number of
-  instances; concurrent writes resolve at the revision cell.
+- No container, no replicas, no checkpoints. The front is stateless; the space
+  writers hold only caches and an in-memory peer, and the access service holds
+  everything durable. Concurrent writes resolve at the revision cell only across
+  writers with distinct DIDs (see [Writers](#writers)).
 - A verified powerline can be cached by token hash indefinitely. Revocation is
   never cached.
 - A lapsed invite is an error naming the space (a tool error through `/mcp`),
   not a 401: a 401 makes the host mint a new session instead of renewing anything.
 - Reads go through the access service. Revisit direct R2 only if it measures slow.
+
+## Writers
+
+Dialog assumes each origin is a single sequential actor. An origin is the
+branch (subject, profile, branch name) plus the operator DID, and a revision is
+identified by `(origin, edition)` without its tree. Two writers that share a DID
+and commit on the same head both mint the same version; the second one's pull
+takes the first one's head as already seen, its push fast-forwards over it, and
+one write is lost with no error. The replicas then never converge
+(dialog-db/dialog-db#705). The stage 0 spike hit this: five parallel writes
+through one token all returned 200 and one landed.
+
+Concurrent writes from one DID are out of scope. The design makes sure there
+never are any:
+
+- **One writer DID per MCP session.** The MCP Worker mints `Mcp-Session-Id` at
+  `initialize`, bound by MAC to the token hash so a client cannot pick or reuse
+  one. The Host Worker derives the writer key from the session seed and that id,
+  and the session delegates to it (the Host Worker holds the seed, so no user is
+  needed). Each connection's revisions carry their own origin.
+- **One space writer per (space, MCP session)**, a Durable Object, signs every
+  revision for that pair. Parallel tool calls in one session are normal (a model
+  emits several tool calls in a turn, subagents share a connection, clients
+  retry), and Streamable HTTP sends each as its own POST, so writes inside the
+  writer take an explicit async lock from commit through push. Durable Object
+  input gates do not serialize across `fetch` awaits.
+- **The agent space is a space like any other.** Joins, contacts and invites
+  land in it, so they go through its own (agent space, MCP session) writer. The
+  per-request local peer state is never synced and needs no writer.
+- **Different spaces write in parallel.** The origin already includes the
+  subject, so one writer key in two space writers never collides.
+- **Reads go to the space writer by default**, where dialog's caches stay warm
+  (the spike paid 60 to 80 ms per request rebuilding the peer and pulling). They
+  do not take the write lock and interleave with writes at I/O waits. CPU does
+  not overlap in one Durable Object, so reads are capped in rows and bytes; a
+  read over the cap is refused or answered by a stateless isolate instead.
+- **A write is answered after its push lands**, so a later read anywhere sees it.
+- **The space writer feeds SSE** from the space's `live.rs` socket and fans
+  changes out to subscribers.
+
+Rejected: a fresh key per request (every write adds an origin to every context,
+forever); a key per isolate (an isolate serves concurrent requests, so it still
+needs a lock, and origins grow with isolate churn); one writer per session for
+all spaces (needlessly serializes unrelated spaces). Each MCP reconnect still
+mints a new origin; that growth is accepted.
+
+Memory: a Durable Object has the same 128 MB as an isolate, shared by the
+caches, the peer and the query working set. The dialog node cache must be given
+an explicit budget (`HeldCaches::with_budget`, 24 to 32 MiB to start); the other
+caches are not configurable yet (dialog-db/dialog-db#706).
 
 ## Views in MCP Apps (later)
 
@@ -329,6 +390,12 @@ Prove the stateless design before building on it.
 **M0:** go/no-go with numbers. Fallback if no-go: a container, stateless per
 call (no replicas or checkpoints), and revisit.
 
+Done in #1205 (`plans/2026-10-29-hosted-agent-peer-spike.md`): conditional go
+on the paid plan, no-go on free. 5.0 MiB gzip; 60 to 80 ms per warm request
+rebuilding the peer; every listed operation works. Its three conditions shaped
+[Writers](#writers): bound reads (a full scan of 20k records peaked at 231 MiB),
+no concurrent writers on one DID, and feed SSE from `live.rs`.
+
 ### Stage 1: identity primitives
 
 Rust, in `tonk-identity`, `tonk-schema` and the YAML library.
@@ -348,17 +415,32 @@ Rust, in `tonk-identity`, `tonk-schema` and the YAML library.
 **M1:** from the CLI, create an agent, invite it to a space, mint a token,
 decode and verify it, revoke it.
 
-### Stage 2: Host Worker (internal)
+The concepts, `mint_agent_session` and the token codec are in #1202. The CLI
+and provisioning wait on open question 9: minting the powerline needs a signer
+for the agent space key, which dialog-peer does not hand out.
 
-- Decode, verify, revocation check, construct the peer (authority and operator).
+### Stage 2: Host Worker and space writers (internal)
+
+- Front: decode, verify, revocation check, then route by (space, MCP session)
+  to the space writer.
+- Space writer (Durable Object): derive the writer key from the seed and the
+  MCP session id and delegate to it from the session; open the peer with the
+  dialog node cache budgeted; serialize writes with an async lock held from
+  commit through push; answer a write after its push lands.
 - Serve the Host Worker API per space: worker API with SSE, `PUT` assets,
   `asset:{hash}` with `Range`, route content. Reuse the kernel's rewrite onto the
   worker's routes rather than reimplementing it.
-- SSE subscriptions are fed by the space's `live.rs` socket, not by polling.
+- Cap read answers in rows and bytes and page large ones; a read-only evaluate
+  does not compute its matches twice.
+- SSE subscriptions are fed by the space writer from the space's `live.rs`
+  socket, not by polling.
 - Agent-level reads: the agent's spaces and contacts.
-- Tests: missing, malformed, wrong-audience and revoked tokens; concurrent writes
-  from two sessions of one agent; a lapsed invite; a `Range` read; an SSE
-  subscription receiving a change.
+- Skip the per-request profile bootstrap commits and the `/library/profile.yaml`
+  fetch the spike saw.
+- Tests: missing, malformed, wrong-audience and revoked tokens; parallel writes
+  through one MCP session all land; parallel writes from two MCP sessions both
+  land; no read path publishes a revision; a read over the cap is refused; a
+  lapsed invite; a `Range` read; an SSE subscription receiving a change.
 
 **M2:** locally (`wrangler dev`), with a CLI token and `curl`: list the agent's
 spaces, subscribe to a query over SSE, write from a second shell and see the
@@ -383,12 +465,22 @@ On the access service (Rust).
 **M3:** MCP Inspector completes discovery and the OAuth dance against the local
 stack using a stub approval page that returns a CLI-minted token.
 
+In review as #1203 (metadata, registration) and #1204 (authorize, code store,
+token). Registration is stateless (an HMAC'd `client_id`), tokens are sealed at
+rest, and the approval page is expected at `/settings/agent?request=<handle>`.
+M3 itself has not been run yet.
+
 ### Stage 3b: MCP Worker (`/mcp`)
 
 Replaces `mcp/agent-link-backend.mjs`, `mcp/hosted/agent-service.mjs` and the
 container.
 
-- Bearer token passed through to the Host Worker over the binding.
+- Bearer token passed through to the Host Worker over the binding, with the
+  MCP session id.
+- Mint `Mcp-Session-Id` at `initialize`, bound by MAC to the token hash, and
+  refuse an id that does not verify.
+- Tool contract: a write may be retried after a space writer restart, so writes
+  carry an idempotency key or say they are not idempotent.
 - Tools: `tonk_query` and `tonk_evaluate` addressed by `space` instead of
   `agent_link`; list spaces; contacts; join from a pasted ticket; create space
   when delegated. Keep `mcp/primitive.mjs` notation semantics.
@@ -427,8 +519,9 @@ revoking an agent does so for all its sessions.
 ### Stage 6: deploy and migrate
 
 - Deployment config: MCP Worker bound into each channel's access service, Host
-  Worker bound to it. Drop the container, the `TonkRuntime` Durable Object, the checkpoint
-  buckets and the `agent*.tonk.host` custom domains.
+  Worker bound to it, the space writer Durable Object bound to the Host Worker.
+  Drop the container, the `TonkRuntime` Durable Object (the space writer replaces
+  it), the checkpoint buckets and the `agent*.tonk.host` custom domains.
 - Smoke: PRM served, 401 carries `resource_metadata`, AS metadata reachable, a
   CLI-minted token for a fixture agent can query through `/mcp`.
 - Agent-link callers: tools still sent `agent_link` get an error telling them to
@@ -505,7 +598,7 @@ resolves with the embedded-key check enforced.
 | Piece | How |
 | --- | --- |
 | Access service, AS, app | `wrangler dev`; see the `run-app` skill |
-| Host and MCP Workers | `wrangler dev`, bound to the access service locally |
+| Host and MCP Workers, space writer | `wrangler dev` (Durable Objects run locally), bound to the access service locally |
 | Real client | `claude mcp add --transport http tonk-local http://localhost:<port>/mcp` |
 | Step-through | `npx @modelcontextprotocol/inspector` |
 | Automated | Playwright + Chrome virtual authenticator, Node MCP SDK client |
@@ -519,7 +612,8 @@ resolves with the embedded-key check enforced.
 2. **Finding agents.** Does the account page list agent spaces from the account's
    space list filtered by the marker, or keep a pointer in the account space?
    Decides whether agents show up among ordinary spaces. Needed by stage 5.
-3. **Workers fit.** Answered by stage 0.
+3. **Workers fit.** Answered by stage 0 (#1205): conditional go, see
+   [Writers](#writers).
 4. **Invite renewal.** Who renews an agent's lapsed invite, and how the agent
    learns which one lapsed. Needed by stage 5.
 5. **Kernel site surface.** The Host Worker API mirrors `site.rs` from #1201, which
@@ -534,3 +628,15 @@ resolves with the embedded-key check enforced.
    Needed by stage 7.
 8. **View delegation scope.** Read-only by default; do any views need to write?
    Lifetime matters less because the private key never leaves the frame.
+9. **Signing as the agent space key.** Minting the session powerline needs the
+   agent space key as a signer, in the CLI and in the authorize page.
+   dialog-peer only signs as the profile and does not open held keys. Options: a
+   dialog-peer API that delegates as a held principal (preferred), reaching
+   into dialog's key storage from tonk, or minting through the account chain
+   (breaks the model). Blocks the rest of stage 1 and stage 4.
+10. **Cache budgets.** Only dialog's node cache takes a budget; spilled values
+    are 8 MiB per repository and the rest are capped by entry count
+    (dialog-db/dialog-db#706). Needed to size the space writer under 128 MB.
+11. **Same-version detection in dialog.** Out-of-model concurrent writers should
+    fail loudly, not lose writes (dialog-db/dialog-db#705). The design avoids
+    them; the fix is defence in depth.
