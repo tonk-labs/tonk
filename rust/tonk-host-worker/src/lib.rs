@@ -110,18 +110,35 @@ impl Writers for DurableWriters<'_> {
         space: &Did,
         request: http::Request<Body>,
     ) -> Response<Body> {
-        // A read in pages is one the writer found too large to answer at
-        // once, so it runs here rather than raise the writer's memory.
-        if stateless::is_paged_read(&request) {
-            return match stateless::read(verified, mcp_session, space, &self.remote, request).await
-            {
-                Ok(response) => response,
-                Err(error) => json(
-                    StatusCode::BAD_GATEWAY,
-                    serde_json::json!({ "error": error, "code": "READ_UNAVAILABLE" }),
-                ),
+        // A read that may scan runs here rather than raise the writer's
+        // memory, which never comes back down.
+        let request = if stateless::is_read(&request) {
+            let (parts, body) = request.into_parts();
+            let body = match axum::body::to_bytes(body, usize::MAX).await {
+                Ok(body) => body,
+                Err(error) => {
+                    return json(
+                        StatusCode::BAD_REQUEST,
+                        serde_json::json!({ "error": error.to_string() }),
+                    );
+                }
             };
-        }
+            if stateless::runs_here(&parts.uri, &body) {
+                let request = http::Request::from_parts(parts, Body::from(body));
+                return match stateless::read(verified, mcp_session, space, &self.remote, request)
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(error) => json(
+                        StatusCode::BAD_GATEWAY,
+                        serde_json::json!({ "error": error, "code": "READ_UNAVAILABLE" }),
+                    ),
+                };
+            }
+            http::Request::from_parts(parts, Body::from(body))
+        } else {
+            request
+        };
         // The object is named by the writer it holds, not by the MCP
         // session id alone: two OAuth sessions that happen to send one id
         // are two writers.

@@ -38,7 +38,9 @@ use super::HostedPeer;
 use crate::TonkWorkerError;
 
 mod caps;
+mod scope;
 pub use caps::ReadCaps;
+pub use scope::is_narrow_read;
 
 /// The bytes of tree nodes a writer's peer keeps, for every repository it
 /// opens together.

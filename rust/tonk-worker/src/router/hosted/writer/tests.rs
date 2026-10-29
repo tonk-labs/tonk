@@ -108,6 +108,27 @@ fn a_page_is_taken_off_the_route() {
     assert!(take("/query?limit=many").is_err());
 }
 
+#[dialog_common::test]
+fn only_reads_bounded_by_their_document_are_narrow() {
+    // Schema reads.
+    assert!(is_narrow_read("concept:\n"));
+    assert!(is_narrow_read("attribute:\n  this: ?a\n"));
+    // Pinned to one entity.
+    assert!(is_narrow_read("note:\n  this: urn:note:1\n  title: ?t\n"));
+    assert!(is_narrow_read(
+        "note:\n  this: id:welcome\nperson:\n  this: did:key:z6Mk\n"
+    ));
+    // A document that does not parse fails in the writer, unread.
+    assert!(is_narrow_read("note: [\n"));
+    // Anything that may scan a concept.
+    assert!(!is_narrow_read("note:\n"));
+    assert!(!is_narrow_read("note:\n  this: ?n\n  tag: \"x\"\n"));
+    assert!(!is_narrow_read(
+        "note:\n  this: urn:note:1\n  tag: ?t\nnote:\n  this: ?other\n  tag: ?t\n"
+    ));
+    assert!(!is_narrow_read("concept:\nnote:\n"));
+}
+
 #[cfg(all(feature = "integration-tests", not(target_arch = "wasm32")))]
 mod against_a_service {
     //! These need the native access service, so they run natively only.

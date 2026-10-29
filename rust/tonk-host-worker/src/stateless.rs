@@ -1,12 +1,12 @@
-//! Paged reads, answered in the isolate the request reached instead of in
-//! the space writer.
+//! Reads that may scan, answered in the isolate the request reached
+//! instead of in the space writer.
 //!
 //! A space writer's Durable Object keeps its peer warm, and wasm memory
-//! never shrinks, so a read that scans a large share of the space would
-//! hold the object at that high water for as long as it lives. A read
-//! that pages (`limit` or `cursor`) is one the writer already found too
-//! large to answer at once, so its pages run here, on a peer opened for
-//! the one request and thrown away with the isolate's request.
+//! never shrinks, not even across a `ctx.abort()` that keeps the isolate,
+//! so a read that scans a large share of the space would hold the object
+//! at that high water for as long as it lives. A read the writer cannot
+//! bound from its document ([`tonk_worker::is_narrow_read`]), and a read
+//! in pages, runs here instead, on a peer opened for the one request.
 //!
 //! The peer acts as the session's writer key, as the space writer's does.
 //! A read commits nothing and its pull only adopts the remote head, so
@@ -18,16 +18,20 @@ use http::{Method, Request, Response, header};
 use tonk_worker::SpaceWriter;
 use tonk_worker::mcp::Verified;
 
-/// Whether `request`, one of the writer's routes, is a paged read.
-pub(crate) fn is_paged_read(request: &Request<Body>) -> bool {
-    request.method() == Method::POST
-        && request.uri().path().trim_matches('/') == "api/query"
-        && request
-            .uri()
-            .query()
-            .unwrap_or("")
-            .split('&')
-            .any(|pair| pair.starts_with("limit=") || pair.starts_with("cursor="))
+/// Whether `request`, one of the writer's routes, is a read.
+pub(crate) fn is_read(request: &Request<Body>) -> bool {
+    request.method() == Method::POST && request.uri().path().trim_matches('/') == "api/query"
+}
+
+/// Whether the read with `uri` and the document `body` runs here rather
+/// than in the writer: it pages, or it may scan.
+pub(crate) fn runs_here(uri: &http::Uri, body: &[u8]) -> bool {
+    let paged = uri
+        .query()
+        .unwrap_or("")
+        .split('&')
+        .any(|pair| pair.starts_with("limit=") || pair.starts_with("cursor="));
+    paged || !tonk_worker::is_narrow_read(&String::from_utf8_lossy(body))
 }
 
 /// Answer the paged read `request` with a peer opened for it.
