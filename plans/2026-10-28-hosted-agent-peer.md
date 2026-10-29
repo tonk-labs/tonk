@@ -731,7 +731,7 @@ script (`tests/e2e/hosted-agent/`) plays every part a host and a person play:
 
 | Part | Played by |
 | --- | --- |
-| LLM host | `@modelcontextprotocol/sdk` `Client` over Streamable HTTP, with an `OAuthClientProvider`: discovery from the 401, dynamic registration, PKCE, `redirect_uri` on a loopback listener the script owns |
+| LLM host | `@modelcontextprotocol/client` `Client` over Streamable HTTP, with an `OAuthClientProvider`: discovery from the 401, dynamic registration, PKCE, `redirect_uri` on a loopback listener the script owns |
 | The person's browser | Playwright Chromium opening the `/authorize` URL the SDK hands over |
 | The passkey | Chrome's virtual authenticator over CDP (`WebAuthn.addVirtualAuthenticator`, `hasPrf`), as `driver_with_prf` does for the Rust browser suite |
 | The emailed activation link | Resend's test inbox: the account is `delivered+e2e-<run>@resend.dev`, and the script reads the link back through the Resend API with the preview's key |
@@ -742,7 +742,8 @@ What it checks, in order:
 1. `POST /mcp` without a token answers 401 with `resource_metadata`; a garbage
    Bearer answers 401 too.
 2. A fresh profile signs up, activates, and makes two spaces (a new account
-   has none).
+   has none). Spaces are made through the app's `space/create` transact
+   call, not by clicking through the hub; sign-up and approval are clicked.
 3. OAuth runs to a token. The approval grants one space read and write and
    the other read.
 4. `tools/list` names the tools; `tonk_list_spaces` lists exactly the two
@@ -770,7 +771,9 @@ Where it runs:
   takes `full_access` (the preview's own key only sends).
   Uploads a Playwright trace on failure.
 - **By hand:** the same script against any origin (`TONK_E2E_ORIGIN`), with
-  `--headed` to watch the approval.
+  `TONK_E2E_HEADED=1` to watch the approval. `local/stack.sh` runs the
+  whole stack on this machine on one origin (a small proxy stands in for
+  the deployed routing) and reads activation mail from the local service.
 - The space writer's concurrency and the OAuth server's edge cases stay in
   the Rust tests (`hosted/writer/tests.rs`, `oauth/tests.rs`), which are
   faster and see more than a client can.
