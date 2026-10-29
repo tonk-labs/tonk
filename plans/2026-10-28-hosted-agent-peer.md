@@ -331,7 +331,8 @@ sequenceDiagram
   for a fresh frame key. The probe shows the view origin is stable per surface,
   so one stored key per surface would also work, but that key is shared by every
   conversation and space on the surface, so each delegation to it reaches all of
-  them. Keep per-load keys unless re-delegation cost shows up.
+  them, and it is orphaned when the origin changes (granting `frameDomains`
+  does that). Keep per-load keys unless re-delegation cost shows up.
 
 ### Route A: framed page with its service worker
 
@@ -615,7 +616,15 @@ Both
 | View-initiated app-only tool calls | pass, ~450 ms, no prompt | pass, ~450 ms | pass, ~690 ms |
 
 - Route B is the only route that covers Claude today; route A works only in
-  ChatGPT. Unknown whether reviewed or directory connectors get `frameDomains`.
+  ChatGPT. Claude sends `frame-src` in two cases only: a directory connector
+  whose listing declares `frameDomains` (bare https origins) and whose installed
+  URL matches the listing exactly, or a custom connector behind rollout flags,
+  never in the Code tab. So route A in Claude waits on directory review.
+- `frame-src` is hashed into the view's origin, so granting `frameDomains` later
+  changes the origin and orphans anything the view stored.
+- The view's CSP allows `frame-src blob: data:`; blob and `srcdoc` frames load
+  and share the view's IndexedDB. Whether a service worker can register there is
+  still to be probed.
 - The view origin is real and stable per surface (`{hash}.claudemcpcontent.com`,
   a different hash on web and desktop), with working IndexedDB. The relay can
   keep one key per surface instead of minting one per load (see "Minted per load").
