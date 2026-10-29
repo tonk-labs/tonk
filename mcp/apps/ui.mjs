@@ -51,7 +51,7 @@ export function createWorkerUI({ origin, resourceMetadata = {} }) {
             mimeType: 'text/html;profile=mcp-app',
             text: html,
             _meta: {
-              ui: { csp: { connectDomains: [origin], frameDomains: [origin] } },
+              ui: { csp: { connectDomains: [origin] } },
               ...resourceMetadata,
             },
           },

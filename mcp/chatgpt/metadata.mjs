@@ -3,7 +3,7 @@ export function openAIResourceMetadata(origin) {
   return {
     'openai/widgetCSP': {
       connect_domains: [origin],
-      frame_domains: [origin],
+      frame_domains: [],
       resource_domains: [],
     },
   };

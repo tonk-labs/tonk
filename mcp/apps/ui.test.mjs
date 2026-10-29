@@ -42,7 +42,8 @@ test('ChatGPT origin config controls both embedded requests and CSP, and errors 
     assert.ok(!resource.text.includes('tonk-mcp-test.tonk.workers.dev'));
     assert.ok(!resource.text.includes('__TONK_MCP_ORIGIN__'));
     assert.deepEqual(resource._meta.ui.csp.connectDomains, [origin]);
-    assert.deepEqual(resource._meta.ui.csp.frameDomains, [origin]);
+    // The guest loads inline: no site needs to be framed.
+    assert.equal(resource._meta.ui.csp.frameDomains, undefined);
     const failed = await connection.client.callTool({ name: 'tonk_open_space', arguments: {} });
     assert.equal(failed.isError, true);
     assert.ok(!JSON.stringify(failed).includes('private-session-secret'));
