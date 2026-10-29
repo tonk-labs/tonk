@@ -152,6 +152,17 @@ impl HostedPeer {
         access::read_agent_access(&state, agent).await
     }
 
+    /// The grants in force the agent space `agent` holds for `space`,
+    /// read from its replica here. See [`access::space_chains`].
+    pub async fn space_chains(
+        &self,
+        agent: &Did,
+        space: &Did,
+    ) -> Result<Vec<DelegationChain>, TonkWorkerError> {
+        let state = self.state.read().await;
+        access::space_chains(&state, agent, space).await
+    }
+
     /// The DID this peer signs as.
     pub async fn did(&self) -> Did {
         self.state.read().await.profile.did()

@@ -190,6 +190,67 @@ pub async fn read_agent_access(
     Ok(access)
 }
 
+/// The grants in force that the agent space `agent` holds for `space`,
+/// each a chain `space -> ... -> agent`, as `tonk` reads them now: what
+/// [`read_agent_access`] counts for that space, for a view to extend
+/// with the powerline and a hop to its own key.
+pub async fn space_chains(
+    tonk: &TonkState,
+    agent: &Did,
+    space: &Did,
+) -> Result<Vec<dialog_ucan_core::DelegationChain>, TonkWorkerError> {
+    let internal = |error: &dyn std::fmt::Display| TonkWorkerError::Internal(error.to_string());
+    let session = tonk
+        .reactor
+        .repository(agent.as_ref())
+        .branch(GRANTS_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| internal(&error))?;
+    let branch = session.handle();
+    let leaves = branch
+        .delegations()
+        .issued_to(agent.clone())
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| internal(&error))?;
+    let now = Timestamp::now().to_unix();
+    let at_now = TimeRange {
+        not_before: Some(now),
+        expiration: Some(now + 1),
+    };
+    let mut chains = Vec::new();
+    for leaf in leaves {
+        let chain = leaf.0;
+        if chain.subject() != Some(space) || space == agent {
+            continue;
+        }
+        let Some(delegation) = chain.proofs().next() else {
+            continue;
+        };
+        let in_window = chain.expiration().is_none_or(|at| at.to_unix() > now)
+            && chain.not_before().is_none_or(|at| at.to_unix() <= now);
+        if !in_window {
+            continue;
+        }
+        let scope = Scope {
+            subject: UcanSubject::Specific(space.clone()),
+            command: delegation.command().clone(),
+            parameters: Parameters::default(),
+        };
+        let proved = branch
+            .delegations()
+            .prove(agent.clone(), scope)
+            .during(at_now)
+            .perform(&tonk.operator)
+            .await;
+        if proved.is_ok() {
+            chains.push(chain);
+        }
+    }
+    Ok(chains)
+}
+
 /// The name the agent space's directory gives `space`.
 async fn directory_name(
     tonk: &TonkState,

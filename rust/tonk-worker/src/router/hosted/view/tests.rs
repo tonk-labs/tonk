@@ -12,7 +12,7 @@ fn home() -> url::Url {
 }
 
 /// `space -> device -> agent` for each `verb` and storage scope: the shape
-/// the approval page puts in a token.
+/// the approval page retains in the agent space.
 async fn grants(space: &Ed25519Signer, agent: &Did, verbs: &[&str]) -> Vec<DelegationChain> {
     let device = Ed25519Signer::generate().await.unwrap();
     let mut chains = Vec::new();
@@ -45,21 +45,85 @@ async fn grants(space: &Ed25519Signer, agent: &Did, verbs: &[&str]) -> Vec<Deleg
     chains
 }
 
-/// A verified token for a session of `agent`, granted `verbs` on `space`.
-async fn verified(agent: &Ed25519Signer, space: &Ed25519Signer, verbs: &[&str]) -> Verified {
+/// The agent space's writer, as the front reaches it: answers what the
+/// agent space holds, `grants` for `space`.
+struct AgentWriter {
+    space: Did,
+    grants: Vec<DelegationChain>,
+}
+
+impl Writers for AgentWriter {
+    async fn call(
+        &self,
+        verified: &Verified,
+        _bearer: &str,
+        _mcp_session: &str,
+        space: &Did,
+        request: Request<Body>,
+    ) -> Response<Body> {
+        assert_eq!(space, verified.agent(), "only the agent writer is asked");
+        let reach = |verb| {
+            self.grants
+                .iter()
+                .any(|chain| reaches(&command_of(chain), verb))
+        };
+        let body = match request.uri().path() {
+            ACCESS_ROUTE => {
+                let mut access = AgentAccess::default();
+                if !self.grants.is_empty() {
+                    access.spaces.insert(
+                        self.space.to_string(),
+                        SpaceAccess {
+                            read: reach("get"),
+                            write: reach("put"),
+                            ..SpaceAccess::default()
+                        },
+                    );
+                }
+                serde_json::to_value(access).unwrap()
+            }
+            CHAINS_ROUTE => {
+                let asked = request.uri().query().unwrap_or_default();
+                assert_eq!(asked, format!("space={}", self.space));
+                chains_answer(&self.grants).unwrap()
+            }
+            other => panic!("no agent writer route {other}"),
+        };
+        Response::new(Body::from(body.to_string()))
+    }
+}
+
+/// A verified token for a session of `agent`, and its agent space's
+/// writer holding grants of `verbs` on `space`.
+async fn verified(
+    agent: &Ed25519Signer,
+    space: &Ed25519Signer,
+    verbs: &[&str],
+) -> (Verified, AgentWriter) {
     let grants = grants(space, &agent.did(), verbs).await;
-    let token = issue_agent_session_with_grants(agent.clone(), &home(), &grants)
+    let token = issue_agent_session_with_grants(agent.clone(), &home(), &[])
         .await
         .unwrap()
         .token;
-    super::super::mcp::verify(&token).await.unwrap()
+    let verified = super::super::mcp::verify(&token).await.unwrap();
+    let writer = AgentWriter {
+        space: space.did(),
+        grants,
+    };
+    (verified, writer)
 }
 
-async fn access(verified: &Verified, space: &Did, audience: &Did, edit: bool) -> Value {
+async fn access(
+    (verified, writer): &(Verified, AgentWriter),
+    space: &Did,
+    audience: &Did,
+    edit: bool,
+) -> Value {
     call(
         ACCESS,
         &json!({ "space": space.to_string(), "audience": audience.to_string(), "edit": edit }),
         verified,
+        writer,
         "",
         "session",
         ORIGIN,
@@ -145,7 +209,7 @@ async fn the_agent_space_is_delegated_through_the_powerline() {
 }
 
 #[dialog_common::test]
-async fn a_space_the_token_does_not_reach_is_refused() {
+async fn a_space_the_agent_space_does_not_reach_is_refused() {
     let agent = Ed25519Signer::generate().await.unwrap();
     let space = Ed25519Signer::generate().await.unwrap();
     let other = Ed25519Signer::generate().await.unwrap();
@@ -159,11 +223,12 @@ async fn a_space_the_token_does_not_reach_is_refused() {
 async fn opening_a_space_names_the_relay_and_the_remote() {
     let agent = Ed25519Signer::generate().await.unwrap();
     let space = Ed25519Signer::generate().await.unwrap();
-    let verified = verified(&agent, &space, &["get"]).await;
+    let (verified, writer) = verified(&agent, &space, &["get"]).await;
     let result = call(
         OPEN,
         &json!({ "space": space.did().to_string(), "path": "/notes" }),
         &verified,
+        &writer,
         "",
         "session",
         ORIGIN,
@@ -238,7 +303,7 @@ concept!: &view-note
         service: Service<AccessServiceAddress, AccessServer>,
         agent: Ed25519Signer,
         remote: url::Url,
-        verified: Verified,
+        verified: (Verified, AgentWriter),
     }
 
     impl Fixture {
@@ -258,7 +323,7 @@ concept!: &view-note
                 .unwrap()
                 .token;
             let verified = super::super::super::mcp::verify(&token).await.unwrap();
-            let session: WriterSession = verified.writer_session(&agent.did(), "agent");
+            let session: WriterSession = verified.writer_session("agent");
             let writer = SpaceWriter::open(&scratch(), &session, &agent.did(), &remote)
                 .await
                 .unwrap();
@@ -272,11 +337,15 @@ concept!: &view-note
             .await;
             assert!(status.is_success(), "seed: {status}: {body}");
             writer.close().await;
+            let writer = AgentWriter {
+                space: agent.did(),
+                grants: Vec::new(),
+            };
             Self {
                 service,
                 agent,
                 remote,
-                verified,
+                verified: (verified, writer),
             }
         }
 

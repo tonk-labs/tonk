@@ -241,6 +241,24 @@ impl SpaceWriterObject {
                 Err(error) => failure(StatusCode::BAD_GATEWAY, &error.to_string()),
             };
         }
+        if method == worker::Method::Get
+            && path == tonk_worker::view::CHAINS_ROUTE.trim_start_matches('/')
+        {
+            let space = url
+                .query_pairs()
+                .find(|(name, _)| name == "space")
+                .and_then(|(_, space)| space.parse().ok());
+            let Some(space) = space else {
+                return failure(StatusCode::BAD_REQUEST, "name the space");
+            };
+            return match writer.space_chains(&space).await {
+                Ok(chains) => match tonk_worker::view::chains_answer(&chains) {
+                    Ok(answer) => worker::Response::from_json(&answer),
+                    Err(error) => failure(StatusCode::INTERNAL_SERVER_ERROR, &error),
+                },
+                Err(error) => failure(StatusCode::BAD_GATEWAY, &error.to_string()),
+            };
+        }
         // The grants the front found for this space: one new to the
         // writer makes it pull the agent space's grants again.
         let grants: Vec<String> = request

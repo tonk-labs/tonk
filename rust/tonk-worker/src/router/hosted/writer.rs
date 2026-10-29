@@ -395,6 +395,19 @@ impl SpaceWriter {
         self.peer().agent_access(&self.agent).await
     }
 
+    /// The grants in force the agent space holds for `space`, read from
+    /// it after a pull, as [`agent_access`](Self::agent_access) reads
+    /// them: what a view's delegation of `space` extends.
+    pub async fn space_chains(&self, space: &Did) -> Result<Vec<DelegationChain>, TonkWorkerError> {
+        if self.space != self.agent {
+            return Err(TonkWorkerError::Forbidden(
+                "only the agent space's writer reads its grants".into(),
+            ));
+        }
+        self.refresh().await.map_err(TonkWorkerError::Internal)?;
+        self.peer().space_chains(&self.agent, space).await
+    }
+
     /// Make sure the peer holds `grants`, the CIDs of the delegations to
     /// the agent space the front found for this space, pulling the agent
     /// space's grants again when one is new to it: a grant renewed while
