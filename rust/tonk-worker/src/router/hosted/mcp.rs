@@ -103,6 +103,25 @@ pub const GRANTS_HEADER: &str = "x-tonk-space-grants";
 /// space's directory says the space syncs, when it says.
 pub const ADDRESS_HEADER: &str = "x-tonk-space-address";
 
+/// Where a writer mounts a space: the address the agent space's
+/// directory names (`named`), only when its origin is `configured`'s, the
+/// access service the host is configured with; `configured` otherwise.
+///
+/// Anyone who can write the agent space can write its directory, the
+/// agent included, so the address is not trusted to send the writer's
+/// invocations anywhere else.
+pub fn mount_address(named: Option<&str>, configured: &str) -> String {
+    let origin = |address: &str| url::Url::parse(address).ok().map(|url| url.origin());
+    match (named, origin(configured)) {
+        (Some(named), Some(trusted))
+            if origin(named).is_some_and(|origin| origin == trusted && trusted.is_tuple()) =>
+        {
+            named.to_owned()
+        }
+        _ => configured.to_owned(),
+    }
+}
+
 /// A token that decoded and verified: the agent space's powerline to the
 /// session whose seed it carries. Which other spaces it reaches is the
 /// agent space's to say ([`AgentAccess`]).

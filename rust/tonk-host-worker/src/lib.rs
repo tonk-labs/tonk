@@ -126,14 +126,13 @@ impl Writers for DurableWriters<'_> {
                 );
             }
         };
-        // Where the agent space's directory says the space syncs, when it
-        // says; the writer mounts it there.
-        let remote = request
+        // Where the agent space's directory says the space syncs, only on
+        // the configured access service's origin; that service otherwise.
+        let named = request
             .headers()
             .get(tonk_worker::mcp::ADDRESS_HEADER)
-            .and_then(|address| address.to_str().ok())
-            .filter(|address| url::Url::parse(address).is_ok())
-            .map_or_else(|| self.remote.clone(), str::to_owned);
+            .and_then(|address| address.to_str().ok());
+        let remote = tonk_worker::mcp::mount_address(named, &self.remote);
         let identity = writer::Identity {
             writer,
             token: bearer.to_owned(),

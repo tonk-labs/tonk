@@ -415,6 +415,34 @@ async fn the_list_puts_home_first_with_names_and_expiry() {
 }
 
 #[dialog_common::test]
+fn a_space_mounts_only_at_the_configured_origin() {
+    let configured = "https://tonk.example/ucan/";
+    assert_eq!(
+        mount_address(Some("https://tonk.example/ucan/"), configured),
+        configured
+    );
+    assert_eq!(
+        mount_address(Some("https://tonk.example/other/ucan/"), configured),
+        "https://tonk.example/other/ucan/",
+        "another path on the configured origin"
+    );
+    for foreign in [
+        "https://elsewhere.example/ucan/",
+        "http://tonk.example/ucan/",
+        "https://tonk.example:8443/ucan/",
+        "https://tonk.example.evil/ucan/",
+        "not a url",
+    ] {
+        assert_eq!(
+            mount_address(Some(foreign), configured),
+            configured,
+            "{foreign}"
+        );
+    }
+    assert_eq!(mount_address(None, configured), configured);
+}
+
+#[dialog_common::test]
 fn session_ids_bind_to_their_token() {
     let key = SessionKey::derive("secret");
     let token = [1u8; 32];
@@ -533,6 +561,9 @@ mod against_a_service {
     use super::super::super::{SpaceWriter, WriterSession};
     use super::*;
 
+    /// An address on another origin than the configured service.
+    const FOREIGN: &str = "https://elsewhere.example/ucan/";
+
     const SCHEMA: &str = "attribute!: &mcp-note-title
   description: Title
   the: mcp.note/title
@@ -547,10 +578,17 @@ concept!: &mcp-note
     struct NativeWriters {
         remote: url::Url,
         open: tokio::sync::Mutex<HashMap<String, Arc<SpaceWriter>>>,
+        /// Each space a writer opened for, and where it mounted it.
+        mounts: tokio::sync::Mutex<Vec<(Did, String)>>,
     }
 
     impl NativeWriters {
-        async fn writer(&self, session: &WriterSession, space: &Did) -> Arc<SpaceWriter> {
+        async fn writer(
+            &self,
+            session: &WriterSession,
+            space: &Did,
+            remote: &str,
+        ) -> Arc<SpaceWriter> {
             let mut open = self.open.lock().await;
             let name = format!(
                 "{space}/{}",
@@ -562,11 +600,16 @@ concept!: &mcp-note
             match open.get(&name) {
                 Some(writer) => writer.clone(),
                 None => {
+                    let mount = url::Url::parse(remote).unwrap();
                     let writer = Arc::new(
-                        SpaceWriter::open(&scratch_root(), session, space, &self.remote)
+                        SpaceWriter::open(&scratch_root(), session, space, &mount)
                             .await
                             .unwrap(),
                     );
+                    self.mounts
+                        .lock()
+                        .await
+                        .push((space.clone(), remote.to_owned()));
                     open.insert(name, writer.clone());
                     writer
                 }
@@ -584,7 +627,14 @@ concept!: &mcp-note
             request: Request<Body>,
         ) -> Response<Body> {
             let session = verified.writer_session(mcp_session);
-            let writer = self.writer(&session, space).await;
+            // As the Host Worker does: the directory's address only on the
+            // configured service's origin.
+            let named = request
+                .headers()
+                .get(ADDRESS_HEADER)
+                .and_then(|address| address.to_str().ok());
+            let remote = mount_address(named, self.remote.as_str());
+            let writer = self.writer(&session, space, &remote).await;
             let (parts, body) = request.into_parts();
             if parts.uri.path() == ACCESS_ROUTE {
                 return match writer.agent_access().await {
@@ -679,6 +729,7 @@ concept!: &mcp-note
         space: &Ed25519Signer,
         verbs: &[&str],
         name: Option<&str>,
+        address: &str,
     ) {
         let chains = grants(space, &agent.did(), verbs, None).await;
         let session = owner(agent, remote, "approval").await;
@@ -691,7 +742,7 @@ concept!: &mcp-note
                 &[DirectoryEntry {
                     space: space.did(),
                     name: name.map(str::to_owned),
-                    address: Some(remote.to_string()),
+                    address: Some(address.to_owned()),
                 }],
             )
             .await
@@ -755,12 +806,23 @@ concept!: &mcp-note
             |label: &str| format!("mcp.note:\n  this: urn:mcp:{run}:{label}\n  title: ?title\n");
         // The shelf holds a note before the agent is let in.
         seed(&shelf, &remote, &[SCHEMA.to_owned(), note("shelved")]).await;
-        approve(&agent, &remote, &notes, &["get", "put"], Some("Notes")).await;
-        approve(&agent, &remote, &shelf, &["get"], None).await;
+        approve(
+            &agent,
+            &remote,
+            &notes,
+            &["get", "put"],
+            Some("Notes"),
+            remote.as_str(),
+        )
+        .await;
+        // The shelf's entry names a foreign service: its writer must still
+        // mount it at the configured one.
+        approve(&agent, &remote, &shelf, &["get"], None, FOREIGN).await;
 
         let writers = NativeWriters {
             remote: remote.clone(),
             open: Default::default(),
+            mounts: Default::default(),
         };
         let key = SessionKey::derive("test");
         let tickets = crate::router::hosted::view::TicketKey::derive("test");
@@ -840,7 +902,7 @@ concept!: &mcp-note
 
         // Granted put while the shelf's writer is warm: the next evaluate
         // passes the front, and the writer pulls the new grant to land it.
-        approve(&agent, &remote, &shelf, &["put"], None).await;
+        approve(&agent, &remote, &shelf, &["put"], None, FOREIGN).await;
         let (result, error) = client
             .call(
                 "tonk_evaluate",
@@ -859,6 +921,16 @@ concept!: &mcp-note
             .await;
         assert!(error);
         assert!(refused.to_string().contains("has no access"), "{refused}");
+
+        let mounts = writers.mounts.lock().await.clone();
+        assert!(
+            mounts.contains(&(shelf.did(), remote.to_string())),
+            "the shelf mounted at the configured service: {mounts:?}"
+        );
+        assert!(
+            mounts.iter().all(|(_, mounted)| mounted == remote.as_str()),
+            "nothing mounted at the foreign address: {mounts:?}"
+        );
 
         let open: Vec<Arc<SpaceWriter>> =
             writers.open.lock().await.drain().map(|(_, w)| w).collect();
