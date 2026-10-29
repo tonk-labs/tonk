@@ -6,6 +6,10 @@ import { createTonkOAuth } from './oauth.mjs';
 import { createAuthenticatedTonkHTTP } from './authenticated-http.mjs';
 import { agentProvisioner, sponsoredAgentBackend } from './sponsor-agents.mjs';
 import { providerOrigin } from './provider.mjs';
+import { createSpaceSessions } from './space-session.mjs';
+import { createWorkerUI } from '../apps/ui.mjs';
+import { openAIResourceMetadata } from '../chatgpt/metadata.mjs';
+import { TonkToolError } from '../errors.mjs';
 
 const STATE_VERSION = 'sponsor-agents-1';
 
@@ -58,24 +62,50 @@ export async function createSponsorService({
     connectionLifetime,
     saved: saved?.oauth,
     provisionAccount: provision,
+    onRevoke: (principal) => sessions.revokePrincipal(principal),
+  });
+  // A view in the chat reaches its space through the agent's open worker,
+  // with a short-lived session that names one space. It writes as the agent.
+  const sessions = createSpaceSessions({
+    now,
+    isPrincipalActive: (principal) => oauth.isPrincipalActive(principal),
+    resolveWorker: (principal) => agents.view(principal.tenantId),
   });
   const http = createAuthenticatedTonkHTTP({
     oauth,
     now,
-    resolveBackend: async (principal) =>
-      sponsoredAgentBackend(principal, {
+    registerUI: createWorkerUI({
+      origin: issuer,
+      resourceMetadata: openAIResourceMetadata(issuer),
+    }),
+    resolveBackend: async (principal) => ({
+      ...sponsoredAgentBackend(principal, {
         agents,
         agentName: oauth.clientName(principal.clientId) ?? 'Agent',
       }),
+      async openSpace(space) {
+        const listed = await agents.call({ agent: principal.tenantId, call: 'tonk_list_spaces' });
+        if (!listed?.spaces?.some((entry) => entry.subject === space))
+          throw new TonkToolError(
+            'That space is not one of yours. Call tonk_list_spaces and use an exact subject.',
+          );
+        await agents.view(principal.tenantId);
+        return sessions.issue(principal, space);
+      },
+    }),
   });
   return {
     fetch(request) {
       return durable.run(
-        () => http.fetch(request),
+        () =>
+          new URL(request.url).pathname.startsWith('/space-api/')
+            ? sessions.fetch(request)
+            : http.fetch(request),
         () => ({ version: STATE_VERSION, oauth: oauth.snapshot() }),
       );
     },
     async close() {
+      sessions.close();
       await http.close();
     },
   };

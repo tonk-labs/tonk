@@ -3,11 +3,6 @@
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use axum::{
-        extract::Request,
-        middleware::{self, Next},
-        response::Response,
-    };
     use std::path::PathBuf;
     let directory = PathBuf::from(
         std::env::args_os()
@@ -20,36 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let state = tonk_worker::TonkState::open_native(&directory).await?;
     let (router, state, hub) = tonk_worker::api_router_with_state(state);
-    let expected = format!("Bearer {secret}");
-    let router = router.layer(middleware::from_fn(
-        move |mut request: Request, next: Next| {
-            let expected = expected.clone();
-            async move {
-                if request
-                    .headers()
-                    .get("authorization")
-                    .and_then(|h| h.to_str().ok())
-                    != Some(expected.as_str())
-                {
-                    return Response::builder()
-                        .status(401)
-                        .body(axum::body::Body::empty())
-                        .unwrap();
-                }
-                if let Some(client) = request
-                    .headers()
-                    .get("x-tonk-client-id")
-                    .and_then(|h| h.to_str().ok())
-                    .map(str::to_owned)
-                {
-                    request
-                        .extensions_mut()
-                        .insert(tonk_worker::ClientId(client));
-                }
-                next.run(request).await
-            }
-        },
-    ));
+    let router = tonk_worker::private_host(router, &secret);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     println!(
         "{}",

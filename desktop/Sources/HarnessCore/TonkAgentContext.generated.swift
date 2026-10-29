@@ -298,6 +298,25 @@ var TonkAgent = (() => {
         }
       },
       {
+        name: "tonk_outline",
+        description: "List the views a Tonk space renders, as a tree. Each node is one <tonk-display>: the model it shows, the concept's name and description, the entity (absent for a list of every record), how many records it rendered, any error, and the displays nested inside it. Each node's route renders that view on its own, without the views around it: pass it to tonk_show_view to show it inline, or to tonk_outline to look inside it. Omit route to start from the space home.",
+        annotations: {
+          readOnlyHint: true,
+          openWorldHint: false
+        },
+        inputSchema: {
+          type: "object",
+          properties: {
+            route: {
+              type: "string",
+              maxLength: 2048,
+              description: "A route from an earlier tonk_outline result, as entity@model or model. Omit for the space home."
+            }
+          },
+          additionalProperties: false
+        }
+      },
+      {
         name: "tonk_create_space",
         description: "Create a new Tonk space for the user. The user owns it and is its admin; you get read and write access to its content. Returns the space subject, for tonk_query and tonk_evaluate, and a claim link. Give the user the claim link and tell them to open it: it adds the space to their Tonk space list. Never repeat the claim link anywhere else. Create a space only when the user asks for one.",
         annotations: {

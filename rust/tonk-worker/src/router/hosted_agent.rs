@@ -77,7 +77,7 @@ impl HostedAgents {
             "agent_call" => {
                 let call = text("call").ok_or(INVALID)?;
                 let mut forwarded = serde_json::Map::new();
-                for field in ["space", "document"] {
+                for field in ["space", "document", "route"] {
                     if let Some(value) = text(field) {
                         forwarded.insert(field.to_owned(), Value::String(value.to_owned()));
                     }
@@ -294,15 +294,15 @@ impl HostedAgents {
     }
 
     /// Run one of the agent's own space tools on its peer: list its spaces,
-    /// or query or evaluate one of them. The peer pulls before it reads,
-    /// journals a write, and pushes after it.
+    /// query or evaluate one of them, or outline its views. The peer pulls
+    /// before it reads, journals a write, and pushes after it.
     pub async fn call_peer(
         &self,
         id: &str,
         call: &str,
         arguments: &Value,
     ) -> Result<Value, String> {
-        if !["tonk_list_spaces", "tonk_query", "tonk_evaluate"].contains(&call) {
+        if !PEER_CALLS.contains(&call) {
             return Err("Tool unavailable.".into());
         }
         let directory = self.existing(id)?;
@@ -403,6 +403,60 @@ fn lock(directory: &Path) -> Result<std::fs::File, String> {
     super::local_peer::try_lock(directory)
         .map_err(|_| "The agent's storage is not private or cannot be locked.".to_owned())?
         .ok_or_else(|| "The agent is busy.".to_owned())
+}
+
+/// The space tools an agent runs on its own peer.
+const PEER_CALLS: [&str; 4] = [
+    "tonk_list_spaces",
+    "tonk_query",
+    "tonk_evaluate",
+    "tonk_outline",
+];
+
+/// A sponsored agent's peer, held open while its views are shown.
+///
+/// The host opens a copy of the agent's directory, so a checkpoint of the
+/// agent store never reads storage this process has open. While it runs,
+/// every call for the agent comes here: two processes never act as the
+/// same agent at once.
+pub struct ServedAgent {
+    peer: LocalPeer,
+    _lock: std::fs::File,
+}
+
+impl ServedAgent {
+    /// Open a copy of a sponsored agent's directory.
+    pub async fn open(directory: PathBuf) -> Result<Self, String> {
+        let lock = lock(&directory)?;
+        if read_record(&directory)?.is_none() {
+            return Err("This agent has no sponsor.".into());
+        }
+        let peer = LocalPeer::open(directory).await?;
+        Ok(Self { peer, _lock: lock })
+    }
+
+    /// The agent's worker router, for its views.
+    pub fn router(&self) -> axum::Router {
+        self.peer.router()
+    }
+
+    /// The worker state, for background sync.
+    pub fn sync_state(&self) -> crate::AppState {
+        self.peer.sync_state()
+    }
+
+    /// Run one of the agent's space tools, as [`HostedAgents::call_peer`] does.
+    pub async fn call(&mut self, call: &str, arguments: &Value) -> Result<Value, String> {
+        if !PEER_CALLS.contains(&call) {
+            return Err("Tool unavailable.".into());
+        }
+        self.peer.call(call, arguments).await
+    }
+
+    /// Release query streams and the worker.
+    pub async fn close(self) {
+        self.peer.close().await;
+    }
 }
 
 const INVALID: &str = "Invalid agent invocation.";

@@ -16,7 +16,7 @@ path = "src/bin/agent_worker.rs"
 required-features = ["native-host"]
 
 [features]
-native-host = ["axum/tokio", "axum/http1", "tokio/net", "tokio/rt-multi-thread", "tokio/macros", "tokio/signal"]
+native-host = ["axum/tokio", "axum/http1", "tokio/net", "tokio/rt-multi-thread", "tokio/macros", "tokio/signal", "tokio/io-std", "tokio/io-util"]
 # Local opt-in until a compatible CLI is published.
 connection-invites = []
 integration-tests = []
@@ -142,12 +142,16 @@ reqwest = { workspace = true }
 # the library from compiled-in copies, with no served `/library/` to
 # fetch from.
 tonk-library = { workspace = true }
+# Headless view rendering for the native peer's outline and render calls.
+tonk-render = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
 getrandom_0_3 = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# Drives the agent worker's serve mode as a child process.
+tokio = { workspace = true, features = ["process", "io-util"] }
 axum = { workspace = true, features = ["tokio", "http1"] }
 
 [dev-dependencies]

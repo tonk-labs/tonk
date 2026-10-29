@@ -4,10 +4,19 @@ import { join } from 'node:path';
 import { agentLinkBackend } from '../agent-link-backend.mjs';
 import { createTonkHTTP } from '../http.mjs';
 import { createCheckpoint } from './checkpoint.mjs';
+import { createAgentViews } from './agent-views.mjs';
 
 // One bounded, serialized worker owner. Checkpoint only after the child closes,
 // including failure paths; a failed checkpoint freezes subsequent calls.
-export async function createAgentService({ issuer, provider, binary, directory, checkpoint, run }) {
+export async function createAgentService({
+  issuer,
+  provider,
+  binary,
+  directory,
+  checkpoint,
+  run,
+  viewOptions = {},
+}) {
   directory ??= await mkdtemp(join(tmpdir(), 'tonk-agent-workers-'));
   checkpoint ??= await createCheckpoint({
     directory,
@@ -22,22 +31,40 @@ export async function createAgentService({ issuer, provider, binary, directory, 
     run,
   });
   const handler = createTonkHTTP(async () => backend);
+  const views = createAgentViews({
+    binary,
+    directory,
+    remote: provider + '/ucan/',
+    exclusive: (task) => backend.exclusive(task),
+    ...viewOptions,
+  });
   return {
     // Persistent hosted agents, under the same root and checkpoint.
     agents: {
       create: () => backend.agent({ tool: 'agent_create' }),
       identity: (agent) => backend.agent({ tool: 'agent_identity', agent }),
-      sponsor: ({ agent, sponsorshipHex, recipient }) =>
-        backend.agent({
+      // Changes to the agent itself close its views first: the open copy
+      // would not see them.
+      sponsor: async ({ agent, sponsorshipHex, recipient }) => {
+        await views.stop(agent);
+        return backend.agent({
           tool: 'agent_sponsor',
           agent,
           sponsorship_hex: sponsorshipHex,
           recipient,
-        }),
-      createSpace: ({ agent, name, agentName }) =>
-        backend.agent({ tool: 'agent_create_space', agent, name, agent_name: agentName }),
-      call: ({ agent, call, space, document }) =>
-        backend.agent({ tool: 'agent_call', agent, call, space, document }),
+        });
+      },
+      createSpace: async ({ agent, name, agentName }) => {
+        await views.stop(agent);
+        return backend.agent({ tool: 'agent_create_space', agent, name, agent_name: agentName });
+      },
+      async call({ agent, call, space, document, route }) {
+        const open = views.running(agent);
+        if (open) return (await open).call(call, { space, document, route });
+        return backend.agent({ tool: 'agent_call', agent, call, space, document, route });
+      },
+      // The agent's worker, held open for views of its spaces.
+      view: (agent) => views.open(agent),
     },
     async fetch(request) {
       const url = new URL(request.url);
@@ -48,6 +75,7 @@ export async function createAgentService({ issuer, provider, binary, directory, 
       return handler.fetch(request);
     },
     async close() {
+      await views.close();
       // Finish the active bounded invocation and its checkpoint. Do not start
       // queued work during rollout, or kill a write because its client closed.
       await backend.close({ drain: false });

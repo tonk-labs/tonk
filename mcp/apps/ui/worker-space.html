@@ -159,6 +159,8 @@
             prefix = '/space/' + route.subject;
           if (u.origin !== 'https://tonk.foundation' || u.search)
             throw Error('Navigation outside this space is unavailable.');
+          // A link leaves a single view for the space route it names.
+          route = { ...route, view: undefined };
           return navigate(
             u.pathname.startsWith(prefix + '/') ? u.pathname.slice(prefix.length) : u.pathname,
           );
@@ -310,8 +312,8 @@
               branch: 'main',
               with: 'main@' + route.subject,
               site: route.site,
-              this: route.site,
-              model: route.model,
+              this: route.view?.entity ?? route.site,
+              model: route.view?.model ?? route.model,
               selectionReporting: false,
             },
           });

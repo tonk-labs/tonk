@@ -135,15 +135,7 @@ impl LocalPeer {
                 if !recovering && (document.trim().is_empty() || document.len() > 32_000) {
                     return Err("Provide one inline notation document, up to 32 KB.".into());
                 }
-                if !list(&mut self.router, self.did.clone()).await?["spaces"]
-                    .as_array()
-                    .is_some_and(|spaces| spaces.iter().any(|entry| entry["subject"] == space))
-                {
-                    return Err(
-                        "This peer has not joined that space. Ask for a share link and call tonk_join."
-                            .to_owned(),
-                    );
-                }
+                self.ensure_joined(space).await?;
                 let journal = self.root.join("pending").join(space.replace(':', "_"));
                 evaluate(
                     &mut self.router,
@@ -156,8 +148,38 @@ impl LocalPeer {
                 )
                 .await
             }
+            "tonk_outline" => {
+                let space = text("space");
+                if !space.starts_with("did:key:") || space.len() > 256 {
+                    return Err("Provide the exact space subject from tonk_list_spaces.".into());
+                }
+                self.ensure_joined(space).await?;
+                if synchronize {
+                    request_detailed(
+                        &mut self.router,
+                        &format!("/api/repository/{space}/branch/main/sync/pull"),
+                        "",
+                        "POST",
+                    )
+                    .await
+                    .map_err(|error| format!("Space pull failed; nothing was read. ({error})"))?;
+                }
+                let route = super::view_tree::route(&self.state, space, text("route")).await?;
+                super::view_tree::outline(&self.state, space, &route).await
+            }
             _ => Err("Tool unavailable.".into()),
         }
+    }
+
+    /// Refuse a space this peer has not joined.
+    async fn ensure_joined(&mut self, space: &str) -> Result<(), String> {
+        if list(&mut self.router, self.did.clone()).await?["spaces"]
+            .as_array()
+            .is_some_and(|spaces| spaces.iter().any(|entry| entry["subject"] == space))
+        {
+            return Ok(());
+        }
+        Err("This peer has not joined that space. Ask for a share link and call tonk_join.".into())
     }
 
     /// Expand a `/@/` shortcut into the link it stands for. The private

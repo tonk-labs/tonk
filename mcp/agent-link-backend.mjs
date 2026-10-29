@@ -28,6 +28,23 @@ export function agentLinkBackend({
       if (cancel) lifetime.abort();
       await pending;
     },
+    // Run `task` in this directory's queue, between subprocesses, without a
+    // checkpoint: for reading the directory while nothing writes it.
+    exclusive(task) {
+      if (closed || failed || queued >= maxPending)
+        throw new TonkToolError('Agent worker unavailable or busy.');
+      queued++;
+      const run = pending.then(() => {
+        if (failed) throw new TonkToolError('Agent storage requires recovery.');
+        return task();
+      });
+      pending = run
+        .catch(() => {})
+        .finally(() => {
+          queued--;
+        });
+      return run;
+    },
     // Hosted agent tools (`agent_create`, `agent_identity`, `agent_sponsor`).
     // They share this queue and checkpoint: agents live under the same root.
     async agent(input) {

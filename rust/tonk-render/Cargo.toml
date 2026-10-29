@@ -11,6 +11,7 @@ async-trait = { workspace = true }
 dialog-query = { workspace = true }
 html5gum = { workspace = true }
 ipld-core = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tonk-schema = { workspace = true }

@@ -41,14 +41,25 @@ function fakeAgents() {
       found.spaces.push({ subject: space, name, agentName });
       return { space, name, claim_url: `https://app.tonk.example/join?access=x#seed=y` };
     },
-    async call({ agent, call, space, document }) {
+    async call({ agent, call, space, document, route }) {
       const found = agents.get(agent);
       if (call === 'tonk_list_spaces')
         return {
           peer: found.did,
           spaces: (found.spaces ?? []).map(({ subject, name }) => ({ subject, name })),
         };
-      return { call, space, document };
+      return { call, space, document, route };
+    },
+    // The agent's worker held open for views: it records what reaches it.
+    async view(agent) {
+      const found = agents.get(agent);
+      found.viewed ??= [];
+      return {
+        request: async (path, options) => {
+          found.viewed.push([options.method, path, options.headers.get('x-tonk-client-id')]);
+          return Response.json({ rows: [] });
+        },
+      };
     },
     async sponsor({ agent, sponsorshipHex, recipient: key }) {
       const found = agents.get(agent);
@@ -203,6 +214,7 @@ async function listSpaces(svc, token) {
       'tonk_evaluate',
       'tonk_guide',
       'tonk_list_spaces',
+      'tonk_outline',
       'tonk_query',
     ]);
     return (await client.callTool({ name: 'tonk_list_spaces', arguments: {} })).structuredContent;
@@ -304,6 +316,84 @@ test('a sponsored agent creates a space and works in it', async () => {
       ).structuredContent;
       assert.equal(written.call, 'tonk_evaluate');
       assert.equal(written.space, created.space);
+      const outlined = (
+        await client.callTool({
+          name: 'tonk_outline',
+          arguments: { space: created.space, route: 'todo' },
+        })
+      ).structuredContent;
+      assert.deepEqual(outlined, { call: 'tonk_outline', space: created.space, route: 'todo' });
+    } finally {
+      await client.close();
+    }
+  } finally {
+    await svc.close();
+  }
+});
+
+test("a client that renders apps shows a live view of the agent's own space", async () => {
+  const svc = await service();
+  try {
+    const { token } = await connect(svc);
+    const client = new Client(
+      { name: 'sponsor-test', version: '1' },
+      {
+        capabilities: {
+          extensions: {
+            'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] },
+          },
+        },
+      },
+    );
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(resource), {
+        fetch: (url, init) => svc.fetch(new Request(url, init)),
+        requestInit: { headers: { authorization: `Bearer ${token.access_token}` } },
+      }),
+    );
+    try {
+      const names = (await client.listTools()).tools.map((tool) => tool.name);
+      assert.ok(names.includes('tonk_show_view') && names.includes('tonk_open_space'), names);
+      const space = (
+        await client.callTool({ name: 'tonk_create_space', arguments: { name: 'Groceries' } })
+      ).structuredContent.space;
+
+      const other = await client.callTool({
+        name: 'tonk_show_view',
+        arguments: { space: 'did:key:z6MkNotThisAgentsSpace', route: 'grocery' },
+      });
+      assert.equal(other.isError, true);
+
+      const shown = await client.callTool({
+        name: 'tonk_show_view',
+        arguments: { space, route: 'grocery' },
+      });
+      assert.deepEqual(shown.structuredContent.view, { model: 'grocery' });
+      const session = shown._meta.session;
+
+      // The app reaches the space through the session, and only that space.
+      const base = `${issuer}/space-api/api/repository/${encodeURIComponent(space)}/branch/main`;
+      const query = await svc.fetch(
+        new Request(base + '/query', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${session.token}` },
+          body: '{}',
+        }),
+      );
+      assert.equal(query.status, 200);
+      const [agent] = svc.agents.agents.values();
+      assert.equal(agent.viewed.length, 1);
+      assert.equal(agent.viewed[0][0], 'POST');
+      assert.match(agent.viewed[0][2], /^mcp-/);
+      const elsewhere = await svc.fetch(
+        new Request(`${issuer}/space-api/api/repository/did%3Akey%3Aother/branch/main/query`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${session.token}` },
+        }),
+      );
+      assert.equal(elsewhere.status, 403);
+      const unsigned = await svc.fetch(new Request(base + '/query', { method: 'POST' }));
+      assert.equal(unsigned.status, 401);
     } finally {
       await client.close();
     }
