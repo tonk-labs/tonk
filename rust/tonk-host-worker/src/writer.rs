@@ -12,7 +12,6 @@ use std::rc::Rc;
 use axum::body::Body;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
-use dialog_effects::storage::Directory;
 use dialog_ucan_core::DelegationChain;
 use futures_util::lock::Mutex;
 use http::{Method, Request, StatusCode, header};
@@ -203,11 +202,11 @@ impl SpaceWriterObject {
         };
         // In-memory storage, so the directory only has to be one no other
         // peer in this isolate uses.
-        let directory = Directory::At(format!(
+        let root = format!(
             "/space-writer/{:016x}",
             (js_sys::Math::random() * 1e16) as u64
-        ));
-        let writer = SpaceWriter::open(directory, &session, &space, &remote)
+        );
+        let writer = SpaceWriter::open(&root, &session, &space, &remote)
             .await
             .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
         let writer = Rc::new(writer);

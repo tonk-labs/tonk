@@ -135,6 +135,12 @@ impl HostedPeer {
 
     /// Release the peer's subscriptions and its in-memory keys.
     pub async fn close(self) {
+        self.shut_down().await;
+    }
+
+    /// [`close`](Self::close), for a peer something else may still hold:
+    /// requests it serves from here on fail.
+    pub async fn shut_down(&self) {
         self.state.read().await.retire();
         self.hub.shutdown().await;
         crate::device::forget_system(&self.directory);

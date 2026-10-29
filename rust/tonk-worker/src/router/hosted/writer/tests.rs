@@ -163,7 +163,7 @@ concept!: &writer-note
         }
 
         async fn writer_for(&self, session: &WriterSession) -> SpaceWriter {
-            SpaceWriter::open(scratch(), session, &self.space.did(), &self.remote)
+            SpaceWriter::open(&scratch_root(), session, &self.space.did(), &self.remote)
                 .await
                 .unwrap()
         }
@@ -189,6 +189,13 @@ concept!: &writer-note
     }
 
     /// A directory no other peer uses.
+    fn scratch_root() -> String {
+        std::env::temp_dir()
+            .join(format!("space-writer-test-{}", rand::random::<u64>()))
+            .to_string_lossy()
+            .into_owned()
+    }
+
     fn scratch() -> Directory {
         Directory::At(
             std::env::temp_dir()
@@ -275,7 +282,7 @@ concept!: &writer-note
         let fixture = Fixture::start().await;
         let writer = fixture.writer("mcp-1").await;
         assert_eq!(
-            writer.peer.state.read().await.profile.caches().budget(),
+            writer.peer().state.read().await.profile.caches().budget(),
             NODE_CACHE_BUDGET,
             "the writer's node cache is budgeted"
         );
@@ -400,6 +407,46 @@ concept!: &writer-note
         );
         reader.close().await;
         other.close().await;
+        fixture.stop().await;
+    }
+
+    /// A write whose push fails is answered as failed and is gone: the
+    /// writer's head goes back to where it was before the write, and the
+    /// next write lands without it.
+    #[dialog_common::test]
+    async fn a_write_that_did_not_land_never_lands_later() {
+        let fixture = Fixture::start().await;
+        let writer = fixture.writer("mcp-1").await;
+        let (status, body) = evaluate(&writer, fixture.note("before")).await;
+        assert!(status.is_success(), "{status}: {body}");
+        let before = writer.status().await.unwrap();
+        assert!(before.local.is_some());
+        assert_eq!(before.local, before.remote);
+
+        writer.refuse_push.store(true, Ordering::SeqCst);
+        let (status, body) = evaluate(&writer, fixture.note("refused")).await;
+
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+        assert_eq!(body["code"], "WRITE_NOT_LANDED");
+        let after = writer.status().await.unwrap();
+        assert_eq!(
+            after.local, before.local,
+            "the head is back before the write"
+        );
+        assert_eq!(after.remote, before.remote, "nothing was published");
+        let expected = labels(fixture.run, &["before".into()]);
+        assert_eq!(notes(&writer, fixture.run).await, expected);
+
+        let (status, body) = evaluate(&writer, fixture.note("after")).await;
+        assert!(status.is_success(), "{status}: {body}");
+        let expected = labels(fixture.run, &["before".into(), "after".into()]);
+        assert_eq!(
+            fixture.notes().await,
+            expected,
+            "the next push carried the write after, and not the refused one"
+        );
+        assert_eq!(notes(&writer, fixture.run).await, expected);
+        writer.close().await;
         fixture.stop().await;
     }
 
