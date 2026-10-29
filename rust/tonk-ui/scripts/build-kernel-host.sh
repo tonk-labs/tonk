@@ -19,7 +19,13 @@ rm -rf "$HOST_DIR"
 mkdir -p "$HOST_DIR"
 wasm-bindgen --target no-modules --no-typescript --out-dir "$HOST_DIR" --out-name embedder \
   "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/$OUT/tonk_kernel_host.wasm"
-cargo run -q -p tonk-components --bin write-components -- "$HOST_DIR"
+# The kernels offer what the app's worker offers: connections to a space,
+# where the index builds the worker with them.
+COMPONENT_FEATURES=""
+if grep -q 'data-bin="worker"[^>]*data-cargo-features="[^"]*connection-invites' "${TRUNK_HTML_FILE:-/dev/null}" 2>/dev/null; then
+  COMPONENT_FEATURES="--features connection-invites"
+fi
+cargo run -q -p tonk-components $COMPONENT_FEATURES --bin write-components -- "$HOST_DIR"
 # The profile's shell names the persona this deployment ships, so that it can
 # take a profile a worker from before kernels serves over to it: that worker
 # does not answer `/_host/kernel.json`.

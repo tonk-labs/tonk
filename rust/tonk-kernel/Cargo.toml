@@ -15,6 +15,9 @@ crate-type = ["cdylib"]
 # hosts ask for.
 # Without it, a space's own worker, for `sapling:kernel/kernel`.
 persona = []
+# Agents and tools connect to a space through an invitation, as the worker
+# of a deployment that offers it does.
+connection-invites = ["tonk-worker/connection-invites"]
 
 # The kernel is a component on WASI; other targets build an empty crate.
 [target.'cfg(all(target_arch = "wasm32", not(target_os = "unknown")))'.dependencies]

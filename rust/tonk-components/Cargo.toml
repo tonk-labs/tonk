@@ -6,5 +6,10 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# The components are built for a deployment that offers agents and tools
+# connections to a space (see `tonk-kernel`'s feature of the same name).
+connection-invites = []
+
 [build-dependencies]
 blake3 = { workspace = true }

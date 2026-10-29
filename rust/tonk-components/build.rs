@@ -96,6 +96,10 @@ fn main() {
             // Debug info only: the polyfill reads the section of features a
             // module was built with, so that it can skip a scan of every body.
             .env("CARGO_PROFILE_RELEASE_STRIP", "debuginfo");
+        let mut features = features.to_vec();
+        if env::var_os("CARGO_FEATURE_CONNECTION_INVITES").is_some() {
+            features.push("connection-invites");
+        }
         if !features.is_empty() {
             command.arg("--features").arg(features.join(","));
         }
