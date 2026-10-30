@@ -41,8 +41,11 @@ const agent = `e2e ${run}`;
 // Writes per session, sent all at once.
 const WRITES = 8;
 // What approving may upload before it answers: the agent space and its
-// grants (about 75), not the agent's library (about 190 more).
-const APPROVAL_UPLOADS = 100;
+// grants (30 to 60 measured), plus mounting the chosen spaces in a browser
+// that never had them (about 100), but never the agent's library, which
+// is about 190 more.
+const APPROVAL_UPLOADS = 80;
+const NEW_BROWSER_APPROVAL_UPLOADS = 180;
 
 const NOTE = `attribute!: &e2e-note-label
   description: Which run, session and write made this note
@@ -107,7 +110,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
     });
 
     // OAuth as a host runs it, approved in `browser`: the token.
-    const authorize = async (browser, { name, grants, signIn }) => {
+    const authorize = async (browser, { name, grants, signIn, budget = APPROVAL_UPLOADS }) => {
       const callback = await loopback();
       try {
         let authorizationUrl;
@@ -132,8 +135,8 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
         const spent = cost.stop();
         console.log(`approval: ${JSON.stringify(spent)}`);
         assert.ok(
-          spent.uploads <= APPROVAL_UPLOADS,
-          `approval made ${spent.uploads} uploads (budget ${APPROVAL_UPLOADS})`,
+          spent.uploads <= budget,
+          `approval made ${spent.uploads} uploads (budget ${budget})`,
         );
         assert.ok(answer.get('code'), `the callback carried no code: ${answer}`);
         // The whole callback, so the SDK checks `iss` (RFC 9207) too.
@@ -253,6 +256,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
           name: `${agent} elsewhere`,
           grants: { [readableName]: 'read' },
           signIn: mail.address,
+          budget: NEW_BROWSER_APPROVAL_UPLOADS,
         });
         const listed = (await call(await connect(again), 'tonk_list_spaces', {})).structuredContent
           .spaces;
