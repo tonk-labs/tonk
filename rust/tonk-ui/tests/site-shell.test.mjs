@@ -358,14 +358,15 @@ for (const name of ["space", "profile"]) {
     assert.deepEqual(site.said, []);
   });
 
-  test(`${name}: on its own, it says what the address is and starts nothing`, async () => {
-    const site = boot(name, { framed: "alone" });
-    await settle();
-
-    assert.deepEqual(site.ran, []);
-    assert.equal(site.container.registered.length, 0);
-  });
 }
+
+test("a space on its own says what the address is and starts nothing", async () => {
+  const site = boot("space", { framed: "alone" });
+  await settle();
+
+  assert.deepEqual(site.ran, []);
+  assert.equal(site.container.registered.length, 0);
+});
 
 for (const name of ["space", "profile"]) {
   test(`${name}: a shell the worker marked renders where the browser does not say a worker served it`, async () => {
@@ -379,18 +380,20 @@ for (const name of ["space", "profile"]) {
 
 const SITES = { "/.well-known/tonk": { sites: { app: "https://tonk.test", host: "tonk.test" } } };
 
-test("a profile's address opened on its own goes to the same address of the app", async () => {
-  const site = boot("profile", { framed: "alone", address: "/settings?tab=account#keys", answers: SITES });
+test("a profile's address opened on its own renders the profile there", async () => {
+  const site = boot("profile", { framed: "alone", address: "/settings?tab=account#keys" });
   await settle();
 
-  assert.deepEqual(site.went, [["replace", "https://tonk.test/settings?tab=account#keys"]]);
+  assert.deepEqual(site.went, [], "it stays where it is");
+  assert.deepEqual(site.ran, ["/guest/bootstrap-1.js", "/guest/runtime-1.js", "/guest/preview-1.js"]);
+  assert.match(site.body.innerHTML, /tonk-display/);
 });
 
-test("the profile's shell opened on its own goes to the address it was starting", async () => {
-  const site = boot("profile", { framed: "alone", address: "/profile.html#boot=%2Fsettings", answers: SITES });
+test("the profile's shell opened on its own returns to the address it was starting", async () => {
+  const site = boot("profile", { framed: "alone", address: "/profile.html#boot=%2Fsettings", served: false });
   await settle();
 
-  assert.deepEqual(site.went, [["replace", "https://tonk.test/settings"]]);
+  assert.deepEqual(site.went, [["replace", "/settings"]]);
 });
 
 test("the profile's shell on the app's own origin stays, saying what the address is", async () => {
@@ -422,16 +425,14 @@ test("a space's address whose worker holds no space leaves a way to the app", as
   assert.equal(site.body.children[0]?.href, "https://tonk.test");
 });
 
-for (const name of ["space", "profile"]) {
-  test(`${name}: where no app is named, it says what the address is and goes nowhere`, async () => {
-    const site = boot(name, { framed: "alone" });
-    await settle();
+test("a space where no app is named says what the address is and goes nowhere", async () => {
+  const site = boot("space", { framed: "alone" });
+  await settle();
 
-    assert.deepEqual(site.went, []);
-    assert.match(site.body.textContent, /serves a Tonk site/);
-    assert.equal(site.body.children[0]?.href, undefined);
-  });
-}
+  assert.deepEqual(site.went, []);
+  assert.match(site.body.textContent, /serves a Tonk site/);
+  assert.equal(site.body.children[0]?.href, undefined);
+});
 
 test("a shell that lands in the same frame twice in a moment stops asking", async () => {
   // One frame, loaded twice: the first load asks for the content and loads

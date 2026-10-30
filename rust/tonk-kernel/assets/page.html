@@ -23,8 +23,10 @@
                 }
 
                 // Opened on its own, not framed by the app: the app is where a
-                // site is shown. Go there, to this space.
-                if (parent === window) {
+                // space is shown. Go there, to this space. The profile renders
+                // here, as its own host.
+                var profile = location.hostname.split(".")[0].indexOf("profile") === 0;
+                if (parent === window && !profile) {
                     Promise.all([
                         fetch("/.well-known/tonk").then(function (answer) { return answer.json(); }),
                         fetch("/api/health").then(function (answer) { return answer.json(); }),

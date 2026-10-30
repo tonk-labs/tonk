@@ -429,6 +429,9 @@
   // `<tonk-site>` carries the path as the route template wrote it, without
   // the leading slash an address has.
   var settleAddress=history.replaceState.bind(history);
+  // The history this document had before it handed moves to the host, for a
+  // document that is its own host.
+  var nativeHistory={push:history.pushState.bind(history),go:history.go.bind(history)};
   function followHost(){
     if(location.origin==="null") return;
     var path=(tonk.context&&tonk.context.sitePath)||"/";
@@ -632,5 +635,50 @@
     return nativeFetch(input,init);
   };
 
-  parent.postMessage({v:1,type:"hello"},"*",[ch.port2]);
+  // The profile opened on its own, not framed by the app, is its own host:
+  // what the app's page answers for a framed profile it answers here, from
+  // its own address, and it moves itself. What only the app's origin can
+  // do, a passkey's ceremony, it does not do yet.
+  function hostItself(host){
+    var site="site:"+crypto.randomUUID();
+    var sites=null;
+    function context(){
+      return {this:"",model:"",origin:sites.app,base:location.origin+"/",
+        sitePattern:"*"+(sites.suffix||"")+"."+sites.host,siteEntity:site,site:site,
+        sitePath:location.pathname,path:location.pathname,search:location.search,hash:location.hash,
+        preview:"",repo:"",branch:"main",with:"main@profile:tonk"};
+    }
+    function moved(){ host.postMessage({v:1,type:"context",context:context()}); }
+    window.addEventListener("popstate",moved);
+    host.onmessage=function(event){
+      var env=event.data; if(!env) return;
+      switch(env.type){
+        case "navigate":
+          if(typeof env.delta==="number"){ nativeHistory.go(env.delta); return; }
+          // The move is this document's own, not one to hand on again.
+          stating=true;
+          try{ (env.replace ? settleAddress : nativeHistory.push)(null,"",env.href); } finally{ stating=false; }
+          moved();
+          return;
+        case "reload": location.reload(); return;
+        case "title": document.title=String(env.text||""); return;
+        case "open": window.open(String(env.href),"_blank","noopener"); return;
+        case "preview": host.postMessage({v:1,type:"preview-result",id:env.id,value:null}); return;
+        case "delegate":
+          host.postMessage({v:1,type:"delegate-error",id:env.id,error:"a passkey needs the app, which does not frame this page"});
+          return;
+        case "task": host.postMessage({v:1,type:"task-result",focusToken:env.focusToken,result:"invalid"}); return;
+        case "fetch": host.postMessage({v:1,type:"fetch-error",id:env.id,error:"this page fetches for itself"}); return;
+      }
+    };
+    nativeFetch("/.well-known/tonk").then(function(answer){ return answer.json(); }).then(function(config){
+      sites=config.sites;
+      host.postMessage({v:1,type:"ready",context:context()});
+    },function(error){ console.error("tonk: the deployment's configuration is unreadable",error); });
+  }
+  if(parent===window&&location.origin!=="null"&&location.hostname.split(".")[0].indexOf("profile")===0){
+    hostItself(ch.port2);
+  } else {
+    parent.postMessage({v:1,type:"hello"},"*",[ch.port2]);
+  }
 })();
