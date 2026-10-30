@@ -4760,6 +4760,7 @@ dependencies = [
 name = "tonk-access-service"
 version = "0.6.16-rc.1"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-trait",
  "base58",
@@ -5426,6 +5427,7 @@ dependencies = [
  "dialog-peer",
  "dialog-query",
  "dialog-repository",
+ "dialog-ucan",
  "dialog-ucan-core",
  "dialog-varsig",
  "futures-util",
@@ -5593,6 +5595,7 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_ipld_dagcbor",
  "serde_json",
+ "serde_yaml",
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",
