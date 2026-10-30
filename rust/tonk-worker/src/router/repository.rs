@@ -2524,13 +2524,7 @@ async fn invite_url(
 pub(super) fn worker_origin() -> Option<String> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
-        use wasm_bindgen::JsCast;
-
-        js_sys::global()
-            .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
-            .ok()
-            .map(|global| global.location().origin())
-            .filter(|origin| !origin.is_empty())
+        crate::cache::location_origin()
     }
     // A native host serves no origin of its own; the access-service
     // address must come from recorded facts (an account provider) or
