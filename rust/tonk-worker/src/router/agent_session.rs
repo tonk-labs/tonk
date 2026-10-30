@@ -347,7 +347,15 @@ pub(crate) async fn authorize(
             tonk_schema::ceremony_state::DONE,
             authorization.request.clone(),
         ),
-        Err(error) => (tonk_schema::ceremony_state::FAILED, error.clone()),
+        // A refusal's code is for the handoff reply; the page shows the
+        // words after it.
+        Err(error) => (
+            tonk_schema::ceremony_state::FAILED,
+            error
+                .split_once('\u{1f}')
+                .map_or(error.as_str(), |(_, message)| message)
+                .to_owned(),
+        ),
     };
     super::ceremony::report(
         &tonk,
