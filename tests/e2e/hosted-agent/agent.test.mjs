@@ -263,9 +263,10 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
           );
           assert.ok(open, 'tools/list lacks tonk_open_space');
           const resource = await client.readResource({ uri: open._meta.ui.resourceUri });
+          // The notes' directory page: every e2e-note, each with its label.
           const result = await call(client, 'tonk_open_space', {
             space: spaces.writable,
-            path: '/',
+            path: '/e2e-note',
           });
           const view = await showView({
             client,

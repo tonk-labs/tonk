@@ -258,8 +258,9 @@ fn the_relay_is_filled_with_the_origin_it_was_reached_on() {
         "route A asks to frame the provider"
     );
     assert_eq!(
-        read["contents"][0]["_meta"]["ui"]["csp"]["connectDomains"][0],
-        "https://tonk.example"
+        read["contents"][0]["_meta"]["ui"]["csp"]["connectDomains"],
+        json!(["https://tonk.example", "wss://tonk.example"]),
+        "the view reaches the provider and its live socket"
     );
     assert_eq!(resources()[0]["uri"], RELAY_URI);
     assert!(read_resource("ui://tonk/other.html", ORIGIN).is_none());

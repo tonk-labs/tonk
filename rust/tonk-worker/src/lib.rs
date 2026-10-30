@@ -181,7 +181,7 @@ mod handoff;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod cache;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub use cache::{set_asset_paths, set_build_id};
+pub use cache::{set_asset_origin, set_asset_paths, set_build_id};
 
 mod r#async;
 pub use r#async::*;

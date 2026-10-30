@@ -113,6 +113,12 @@ export async function showView({ client, result, resource, frames, headed = fals
     log.push(`${message.type()}: ${text.slice(0, 500)}`);
   });
   page.on('pageerror', (error) => log.push(`pageerror: ${error.message}`));
+  // The route B peer runs in a Web Worker, whose console is its own.
+  page.on('worker', (worker) =>
+    worker.on('console', (message) =>
+      log.push(`worker ${message.type()}: ${message.text().slice(0, 500)}`),
+    ),
+  );
   // What the view logged, for a failure to show.
   const tail = () => log.slice(-40).join('\n');
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
