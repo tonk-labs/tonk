@@ -64,14 +64,6 @@ impl AgentSpace {
     }
 }
 
-/// One session of an agent: the label and creation time of an
-/// `agent space -> session` powerline.
-///
-/// Shaped like [`DeviceLink`](crate::DeviceLink) and for the same
-/// reason: the entity is the delegation itself, as dialog keyed it when
-/// the chain was retained, so the row cannot disagree with the proof and
-/// revoking the powerline takes the row with it. The session's DID is
-/// the delegation's own audience.
 /// Which LLM provider's apps an agent space is for, on the agent
 /// space's subject DID like [`AgentSpace`].
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -92,6 +84,14 @@ impl AgentProvider {
     }
 }
 
+/// One session of an agent: the label and creation time of an
+/// `agent space -> session` powerline.
+///
+/// Shaped like [`DeviceLink`](crate::DeviceLink) and for the same
+/// reason: the entity is the delegation itself, as dialog keyed it when
+/// the chain was retained, so the row cannot disagree with the proof and
+/// revoking the powerline takes the row with it. The session's DID is
+/// the delegation's own audience.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AgentSession {
     /// The delegation's entity — its blob hash, as dialog keyed it.
