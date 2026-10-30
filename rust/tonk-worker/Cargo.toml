@@ -28,8 +28,14 @@ web-integration-tests = []
 # way the service worker does. It is a dev-dependency for this crate's
 # own tests; downstream crates enabling `helpers` need it as a real one.
 helpers = ["dep:tower"]
+# Keep every space in memory instead of IndexedDB/OPFS on wasm, so the
+# worker runs where those do not exist (a Cloudflare Worker). No effect on
+# native builds. Exposes `hosted`.
+volatile-storage = []
 
 [dependencies]
+anyhow = { workspace = true }
+serde_yaml = { workspace = true }
 sha2_0_10 = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true, features = ["json", "macros", "query"] }
