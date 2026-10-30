@@ -29,6 +29,7 @@ const GENERATION_PREFIX: &str = "TONK_GENERATION_";
 /// across two languages.
 static BUILD_ID: OnceLock<String> = OnceLock::new();
 static ASSET_PATHS: OnceLock<HashSet<String>> = OnceLock::new();
+static ASSET_ORIGIN: OnceLock<String> = OnceLock::new();
 
 /// Record the build id for cache naming. Called once, from the
 /// worker binary's `activate` export, before any cache use.
@@ -40,6 +41,21 @@ pub fn set_build_id(id: String) {
 /// Called once beside [`set_build_id`] before any cache policy is evaluated.
 pub fn set_asset_paths(paths: Vec<String>) {
     let _ = ASSET_PATHS.set(paths.into_iter().collect());
+}
+
+/// Record the origin this worker's served assets come from, for a worker
+/// that is not the origin's service worker: an inline view's peer, in a
+/// Web Worker on the host's origin, reads the provider's library.
+pub fn set_asset_origin(origin: String) {
+    let _ = ASSET_ORIGIN.set(origin.trim_end_matches('/').to_owned());
+}
+
+/// `path` on the origin this worker's assets come from.
+pub(crate) fn asset_url(path: &str) -> String {
+    match worker_origin() {
+        Some(origin) if path.starts_with('/') => format!("{origin}{path}"),
+        _ => path.to_owned(),
+    }
 }
 
 fn build_id() -> &'static str {
@@ -219,10 +235,27 @@ pub async fn immutable_cache_first(request: &Request) -> Result<JsValue, JsValue
 /// the worker reports no origin: caching foreign bytes is worse than a network
 /// fetch.
 fn worker_origin() -> Option<String> {
-    js_sys::global()
+    scope_origin().or_else(|| ASSET_ORIGIN.get().cloned())
+}
+
+/// The origin of the service worker this runs in, or `None` in any other
+/// scope.
+///
+/// Read without `web_sys`'s `location()`: a Cloudflare worker's global is
+/// a `ServiceWorkerGlobalScope` with no `location`, and the getter's
+/// `TypeError` would unwind through wasm and leave the async executor
+/// stuck, hanging every later request in the isolate.
+pub(crate) fn scope_origin() -> Option<String> {
+    let global = js_sys::global()
         .dyn_into::<ServiceWorkerGlobalScope>()
-        .ok()
-        .map(|global| global.location().origin())
+        .ok()?;
+    let location = js_sys::Reflect::get(&global, &JsValue::from_str("location")).ok()?;
+    if !location.is_object() {
+        return None;
+    }
+    js_sys::Reflect::get(&location, &JsValue::from_str("origin"))
+        .ok()?
+        .as_string()
         .filter(|origin| !origin.is_empty())
 }
 

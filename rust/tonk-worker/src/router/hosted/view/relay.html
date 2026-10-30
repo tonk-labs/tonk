@@ -1,0 +1,601 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" /><title>Tonk space</title>
+  <style>
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      color-scheme: light dark;
+    }
+    body {
+      display: flex;
+      flex-direction: column;
+    }
+    #error {
+      margin: 0;
+      padding: 12px;
+      font: 14px system-ui;
+    }
+    #error[hidden] {
+      display: none;
+    }
+    iframe {
+      flex: 1;
+      min-height: 560px;
+      border: 0;
+      width: 100%;
+    }
+  </style>
+  <p id="error" role="alert" hidden></p>
+  <iframe title="Tonk space" sandbox="allow-scripts allow-forms"></iframe>
+  <script>
+    // The relay between an MCP Apps host and a space's page (plan #1200,
+    // stage 7). The view's peer holds its own key, which never leaves it;
+    // the host's app-only `tonk_view_access` delegates the space to that
+    // key, and the peer syncs with the provider as the view's own DID.
+    // Nothing secret crosses the host.
+    //
+    // Route A, where the host frames the provider's origin (ChatGPT): the
+    // relay frames this same page from the provider (`/view-frame`), whose
+    // service worker is the peer, in the frame's own storage, and relays
+    // the delegation to its profile's DID. Route B, everywhere else, and
+    // when the frame does not answer: the peer runs in a Web Worker here.
+    // Either way the space's page renders in a sandboxed `srcdoc` frame
+    // and reaches the peer over the guest bridge.
+    (() => {
+      const origin = __TONK_MCP_ORIGIN__,
+        framed = __TONK_VIEW_FRAME__,
+        frame = document.querySelector('iframe'),
+        errorMessage = document.querySelector('#error');
+      let route, pack, port, access, renewalTimer, viewFrame, rpcId = 0;
+      const pending = new Map(),
+        encode = new TextEncoder(),
+        bytes = (value) => Uint8Array.from(atob(value), (c) => c.charCodeAt(0));
+      function rpc(method, params) {
+        return new Promise((resolve, reject) => {
+          const id = ++rpcId;
+          pending.set(id, { resolve, reject });
+          parent.postMessage({ jsonrpc: '2.0', id, method, params }, '*');
+        });
+      }
+      function showError(message) {
+        errorMessage.textContent = message;
+        errorMessage.hidden = !message;
+      }
+      const base = () => '/api/repository/' + encodeURIComponent(route.subject) + '/branch/main';
+
+      // ---- The view's peer, in a Web Worker ---------------------------
+      const peerSource = `
+        let peer, key, module;
+        const streams = new Map();
+        self.onmessage = async ({ data }) => {
+          const { id, op } = data;
+          try {
+            if (op === 'start') {
+              if (!key) {
+                module = await import(data.glue);
+                await module.default({ module_or_path: data.wasm });
+                key = await module.ViewKey.generate();
+              }
+              postMessage({ id, did: key.did });
+            } else if (op === 'open') {
+              if (peer) {
+                await peer.close();
+                peer.free();
+              }
+              peer = await module.ViewPeer.open(key, data.delegations, data.space, data.remote, data.directory);
+              postMessage({ id });
+            } else if (op === 'follow') {
+              peer.follow();
+              postMessage({ id });
+            } else if (op === 'fetch') {
+              const response = await peer.fetch(new Request('https://view.invalid' + data.path, data.init));
+              postMessage({ id, status: response.status, statusText: response.statusText, headers: [...response.headers] });
+              if (!response.body) return postMessage({ id, done: true });
+              const reader = response.body.getReader();
+              streams.set(id, reader);
+              for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                postMessage({ id, chunk: value }, [value.buffer]);
+              }
+              streams.delete(id);
+              postMessage({ id, done: true });
+            } else if (op === 'cancel') {
+              streams.get(data.target)?.cancel();
+              streams.delete(data.target);
+            }
+          } catch (error) {
+            postMessage({ id, error: String((error && error.message) || error) });
+          }
+        };`;
+      let peerWorker,
+        workerId = 0;
+      const calls = new Map();
+      function startWorker() {
+        if (peerWorker) return;
+        peerWorker = new Worker(
+          URL.createObjectURL(new Blob([peerSource], { type: 'text/javascript' })),
+          { type: 'module' },
+        );
+        peerWorker.onmessage = ({ data }) => calls.get(data.id)?.(data);
+      }
+      function ask(op, message = {}) {
+        return new Promise((resolve, reject) => {
+          const id = ++workerId;
+          calls.set(id, (data) => {
+            calls.delete(id);
+            data.error ? reject(Error(data.error)) : resolve(data);
+          });
+          peerWorker.postMessage({ ...message, id, op });
+        });
+      }
+      // A request answered by the view's peer, its body as a stream. In a
+      // framed page the peer is this origin's service worker.
+      function peerFetch(path, init = {}) {
+        if (framed) return fetch(path, init);
+        return new Promise((resolve, reject) => {
+          const id = ++workerId;
+          let controller;
+          const body = new ReadableStream({
+            start(c) {
+              controller = c;
+            },
+            cancel() {
+              calls.delete(id);
+              peerWorker.postMessage({ op: 'cancel', target: id });
+            },
+          });
+          calls.set(id, (data) => {
+            if (data.error) {
+              calls.delete(id);
+              try {
+                controller.error(Error(data.error));
+              } catch {}
+              return reject(Error(data.error));
+            }
+            if ('status' in data)
+              resolve(
+                new Response(body, {
+                  status: data.status,
+                  statusText: data.statusText,
+                  headers: data.headers,
+                }),
+              );
+            if (data.chunk) controller.enqueue(new Uint8Array(data.chunk.buffer || data.chunk));
+            if (data.done) {
+              calls.delete(id);
+              controller.close();
+            }
+          });
+          peerWorker.postMessage({ id, op: 'fetch', path, init });
+        });
+      }
+
+      // ---- Access -----------------------------------------------------
+      async function grant(did) {
+        const result = await rpc('tools/call', {
+          name: 'tonk_view_access',
+          arguments: { space: route.subject, audience: did, edit: !!route.edit },
+        });
+        const granted = result?.structuredContent;
+        if (result?.isError || !granted?.delegations?.length)
+          throw Error(
+            result?.content?.[0]?.text || 'The view could not get access. Reopen it from the chat.',
+          );
+        return granted;
+      }
+      // Route B: the peer in a Web Worker here.
+      async function connect() {
+        startWorker();
+        await loadPack();
+        const { did } = await ask('start', {
+          glue: origin + '/view-peer/tonk_view_peer.js',
+          wasm: origin + '/view-peer/tonk_view_peer_bg.wasm',
+        });
+        access = await grant(did);
+        await ask('open', {
+          delegations: access.delegations,
+          space: route.subject,
+          remote: route.remote,
+          directory: 'tonk-view-' + crypto.randomUUID(),
+        });
+        const pulled = await peerFetch(base() + '/sync/pull', {
+          method: 'POST',
+          headers: { 'content-type': 'text/plain' },
+          body: '',
+        });
+        if (!pulled.ok) throw Error('Could not read the space (' + pulled.status + ').');
+        await ask('follow', {});
+        // A delegation holds an hour; the view reopens its peer with a
+        // fresh one before it runs out.
+        clearTimeout(renewalTimer);
+        renewalTimer = setTimeout(
+          () => connect().then(() => navigate(route.path)).catch((e) => showError(e.message)),
+          Math.max(60000, access.expiresAt - Date.now() - 5 * 60000),
+        );
+      }
+
+      // ---- Route A ----------------------------------------------------
+      // In the framed page: this origin's service worker is the peer. Its
+      // profile's DID is what the relay asks the host to delegate to.
+      const relayed = new Map();
+      function fromRelay(kind) {
+        return new Promise((resolve) => relayed.set(kind, resolve));
+      }
+      async function controlled() {
+        if (navigator.serviceWorker.controller) return;
+        const control = new Promise((resolve) =>
+          navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true }),
+        );
+        await navigator.serviceWorker.register('/service_worker.js', {
+          type: 'module',
+          updateViaCache: 'none',
+        });
+        // A first install keeps this document until asked to claim it, as
+        // the app's own page asks once the worker is active.
+        const registration = await navigator.serviceWorker.ready;
+        if (!navigator.serviceWorker.controller) registration.active?.postMessage({ type: 'claim' });
+        await Promise.race([
+          control,
+          new Promise((_, reject) =>
+            setTimeout(() => reject(Error('The Tonk worker did not start.')), 30000),
+          ),
+        ]);
+      }
+      async function connectFramed() {
+        await controlled();
+        const identified = await fetch('/api/identify');
+        if (!identified.ok) throw Error('The Tonk worker has no key (' + identified.status + ').');
+        const { did } = await identified.json();
+        const offered = fromRelay('access');
+        parent.postMessage({ tonkFrame: 'hello', did }, '*');
+        await accept(await offered);
+        await loadPack();
+      }
+      async function accept(offer) {
+        if (new URL(offer.route.remote).origin !== location.origin)
+          throw Error('This view syncs only with ' + location.origin + '.');
+        route = { ...route, ...offer.route };
+        access = offer.access;
+        const accepted = await fetch('/api/view/access', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            space: route.subject,
+            remote: route.remote,
+            delegations: access.delegations,
+          }),
+        });
+        if (!accepted.ok) throw Error('The view could not take its access (' + accepted.status + ').');
+        const pulled = await fetch(base() + '/sync/pull', {
+          method: 'POST',
+          headers: { 'content-type': 'text/plain' },
+          body: '',
+        });
+        if (!pulled.ok) throw Error('Could not read the space (' + pulled.status + ').');
+        clearTimeout(renewalTimer);
+        renewalTimer = setTimeout(
+          () => {
+            const renewed = fromRelay('access');
+            parent.postMessage({ tonkFrame: 'renew' }, '*');
+            renewed.then(accept).catch((e) => showError(e.message));
+          },
+          Math.max(60000, access.expiresAt - Date.now() - 5 * 60000),
+        );
+      }
+      // In the host: whether the host frames the provider, as ChatGPT does
+      // (Claude drops `frameDomains` for custom connectors).
+      function hostFrames(initialized) {
+        const domains =
+          initialized?.hostCapabilities?.sandbox?.csp?.frameDomains ??
+          initialized?.hostContext?.csp?.frameDomains;
+        if (Array.isArray(domains)) return domains.includes(origin);
+        return typeof window.openai === 'object' && window.openai !== null;
+      }
+      // Frame the provider's page and wait for it to say hello; a frame
+      // the host's policy refuses, or one that never answers, falls back
+      // to route B. The page says it is loading as soon as it runs, which
+      // allows its worker's first install the time that takes.
+      function tryFrame() {
+        return new Promise((resolve) => {
+          let settled = false;
+          const settle = (ok) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            removeEventListener('securitypolicyviolation', refused);
+            resolve(ok);
+          };
+          const refused = (event) => {
+            if (String(event.blockedURI || '').startsWith(origin)) settle(false);
+          };
+          let timer = setTimeout(() => settle(false), 8000);
+          addEventListener('securitypolicyviolation', refused);
+          viewFrame = {
+            hello: () => settle(true),
+            loading: () => {
+              clearTimeout(timer);
+              timer = setTimeout(() => settle(false), 60000);
+            },
+          };
+          frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin');
+          frame.removeAttribute('srcdoc');
+          frame.src = origin + '/view-frame';
+        });
+      }
+      async function offer() {
+        access = await grant(viewFrame.did);
+        frame.contentWindow.postMessage(
+          {
+            tonkFrame: 'access',
+            route: { subject: route.subject, path: route.path, edit: route.edit, remote: route.remote },
+            access,
+          },
+          origin,
+        );
+      }
+      function restoreSandbox() {
+        viewFrame = null;
+        frame.removeAttribute('src');
+        frame.setAttribute('sandbox', 'allow-scripts allow-forms');
+      }
+
+      // ---- The space's page -------------------------------------------
+      async function navigate(path) {
+        if (!path.startsWith('/') || path.startsWith('//'))
+          throw Error('Choose a route in this space.');
+        port?.close();
+        port = null;
+        route = { ...route, path };
+        const response = await peerFetch(base() + '/site', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path }),
+        });
+        if (!response.ok) throw Error('Could not open this route (' + response.status + ').');
+        const { site } = await response.json();
+        route.site = site;
+        route.model = 'tonk:site';
+        showError('');
+        const guestPage = await fetch(origin + '/worker-guest', { credentials: 'omit' });
+        if (!guestPage.ok) throw Error('Could not load the Tonk view.');
+        frame.removeAttribute('src');
+        frame.srcdoc = await guestPage.text();
+      }
+      async function guest(message, current) {
+        if (message.type === 'title') {
+          document.title = String(message.text || 'Tonk').slice(0, 200);
+          return;
+        }
+        if (message.type === 'navigate') {
+          const u = new URL(
+              message.href,
+              'https://tonk.foundation/space/' + route.subject + route.path,
+            ),
+            prefix = '/space/' + route.subject;
+          if (u.origin !== 'https://tonk.foundation' || u.search)
+            throw Error('Navigation outside this space is unavailable.');
+          route = { ...route, view: undefined };
+          return navigate(
+            u.pathname.startsWith(prefix + '/') ? u.pathname.slice(prefix.length) : u.pathname,
+          );
+        }
+        if (message.type === 'reload') return navigate(route.path);
+        if (['analytics', 'unsubscribe'].includes(message.type)) return;
+        if (message.type === 'fetch') {
+          const target = new URL(message.path, 'https://tonk.foundation');
+          if (target.origin !== 'https://tonk.foundation')
+            throw Error('External requests are unavailable.');
+          let path = target.pathname + target.search;
+          if (target.pathname === '/query') path = base() + '/query' + target.search;
+          if (target.pathname === '/api/site') {
+            path = base() + '/site';
+            message = {
+              ...message,
+              body: JSON.stringify({ path: route.path }),
+              headers: { 'content-type': 'application/json' },
+            };
+          }
+          const prefixes = [encodeURIComponent(route.subject), route.subject].map(
+            (subject) => '/api/repository/' + subject + '/branch/main/',
+          );
+          if (!prefixes.some((prefix) => path.startsWith(prefix))) {
+            current.postMessage({
+              v: 1,
+              type: 'fetch-result',
+              id: message.id,
+              status: 403,
+              statusText: 'Forbidden',
+              headers: [],
+              body: encode.encode('This request is outside the shown space.'),
+            });
+            return;
+          }
+          const response = await peerFetch(path, {
+            method: message.method,
+            headers: message.headers,
+            body: message.body,
+          });
+          const streaming = response.headers.get('content-type')?.includes('text/event-stream');
+          const body = streaming ? response.body : new Uint8Array(await response.arrayBuffer());
+          current.postMessage(
+            {
+              v: 1,
+              type: 'fetch-result',
+              id: message.id,
+              status: response.status,
+              statusText: response.statusText,
+              headers: [...response.headers],
+              body,
+            },
+            streaming ? [body] : [],
+          );
+          return;
+        }
+        if (message.type === 'evaluate') {
+          const response = await peerFetch(
+            base() + '/evaluate?transact=' + (message.transact !== false),
+            { method: 'POST', headers: { 'content-type': 'text/plain' }, body: message.document },
+          );
+          current.postMessage({
+            v: 1,
+            type: 'evaluate-result',
+            id: message.id,
+            result: await response.json(),
+          });
+          return;
+        }
+        if (message.type === 'transact' || message.type === 'query') {
+          const action = message.type === 'transact' ? 'transact' : 'query';
+          const response = await peerFetch(base() + '/' + action, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(message.request ?? message.body),
+          });
+          const value = await response.json();
+          current.postMessage({
+            v: 1,
+            type: action + '-result',
+            id: message.id,
+            ...(action === 'query' ? { rows: value } : { receipt: value }),
+          });
+          return;
+        }
+        throw Error('This host operation is unavailable: ' + String(message.type).slice(0, 40));
+      }
+      function send(value) {
+        frame.contentWindow.postMessage(value, '*');
+      }
+      addEventListener('message', (event) => {
+        const m = event.data;
+        if (event.source === parent && m?.jsonrpc === '2.0') {
+          if (pending.has(m.id)) {
+            const p = pending.get(m.id);
+            pending.delete(m.id);
+            m.error ? p.reject(Error(m.error.message)) : p.resolve(m.result);
+          } else if (
+            m.method === 'ui/notifications/tool-result' &&
+            m.params?.structuredContent?.remote
+          ) {
+            initialized
+              .then(async (result) => {
+                route = m.params.structuredContent;
+                if (hostFrames(result) && (await tryFrame())) return offer();
+                if (viewFrame !== undefined) restoreSandbox();
+                await connect();
+                await navigate(route.path);
+              })
+              .catch((e) => showError(e.message));
+          }
+          return;
+        }
+        // The framed page: from the relay that frames it.
+        if (framed && event.source === parent && m?.tonkFrame === 'access') {
+          relayed.get('access')?.(m);
+          relayed.delete('access');
+          return;
+        }
+        // The relay: from the provider's framed page.
+        if (!framed && viewFrame && event.source === frame.contentWindow && event.origin === origin) {
+          if (m?.tonkFrame === 'loading') viewFrame.loading?.();
+          else if (m?.tonkFrame === 'hello' && typeof m.did === 'string') {
+            viewFrame.did = m.did;
+            viewFrame.hello();
+          } else if (m?.tonkFrame === 'renew') offer().catch((e) => showError(e.message));
+          else if (m?.tonkFrame === 'error') showError(String(m.message).slice(0, 300));
+          return;
+        }
+        if (event.source !== frame.contentWindow || !pack || !route) return;
+        if (m?.type === 'hello' && m.v === 1 && event.ports[0]) {
+          port?.close();
+          port = event.ports[0];
+          const current = port;
+          current.onmessage = (e) =>
+            guest(e.data, current).catch((error) => {
+              showError(error.message);
+              if (e.data.id)
+                current.postMessage({
+                  v: 1,
+                  type: e.data.type + '-error',
+                  id: e.data.id,
+                  error: error.message,
+                });
+            });
+          current.postMessage({
+            v: 1,
+            type: 'ready',
+            context: {
+              origin: 'https://tonk.foundation',
+              path: '/space/' + route.subject + route.path,
+              repo: route.subject,
+              branch: 'main',
+              with: 'main@' + route.subject,
+              site: route.site,
+              this: route.view?.entity ?? route.site,
+              model: route.view?.model ?? route.model,
+              selectionReporting: false,
+            },
+          });
+        }
+        if (m?.__tonkRuntime === 'runtime-ready') {
+          send({ type: 'tonk-mount', ...route, hideFab: true });
+          send({
+            __tonkRuntime: 'inject',
+            glue: pack.glue,
+            snippets: pack.snippets,
+            wasm: bytes(pack.wasm),
+            wa: bytes(pack.wa),
+            css: pack.css,
+            prose: pack.prose,
+            table: pack.table,
+          });
+        }
+        if (m?.__tonkRuntime === 'need-prose')
+          send({ __tonkRuntime: 'inject-prose', prose: pack.proseCore });
+        if (m?.__tonkRuntime === 'need-table')
+          send({ __tonkRuntime: 'inject-table', table: pack.tableGrid });
+        if (m?.__tonkRuntime === 'need-code')
+          send({ __tonkRuntime: 'inject-code', code: pack.code });
+        if (m?.__tonkRuntime === 'error')
+          showError('Tonk runtime could not load: ' + String(m.error ?? '').split('\n')[0]);
+      });
+      // Answer the host first: it waits on this handshake to show the app,
+      // and the runtimes are large downloads that may be slow or blocked.
+      const initialized = framed
+        ? null
+        : rpc('ui/initialize', {
+            appInfo: { name: 'tonk-space', version: '0.4.0' },
+            appCapabilities: {},
+            protocolVersion: '2026-01-26',
+          }).then((result) => {
+            parent.postMessage(
+              { jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} },
+              '*',
+            );
+            return result;
+          });
+      let loading;
+      function loadPack() {
+        loading ??= (async () => {
+          const response = await fetch(origin + '/space-runtime.json', { credentials: 'omit' });
+          if (!response.ok) throw Error('Could not load Tonk runtime.');
+          pack = await response.json();
+        })().catch(() => {
+          throw Error('Could not load the Tonk runtime from ' + origin + '.');
+        });
+        return loading;
+      }
+      if (framed) parent.postMessage({ tonkFrame: 'loading' }, '*');
+      if (framed)
+        connectFramed()
+          .then(() => navigate(route.path))
+          .catch((e) => {
+            showError(e.message);
+            parent.postMessage({ tonkFrame: 'error', message: e.message }, '*');
+          });
+      else initialized.catch((e) => showError(e.message));
+    })();
+  </script>
+</html>

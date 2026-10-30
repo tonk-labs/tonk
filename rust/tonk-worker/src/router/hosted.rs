@@ -64,10 +64,23 @@ impl HostedPeer {
         caches: HeldCaches,
     ) -> Result<Self, TonkWorkerError> {
         let internal = |error: &dyn std::fmt::Display| TonkWorkerError::Internal(error.to_string());
-        let (credentials, _) = crate::device::open_system(directory.clone())
+        let signer = Ed25519Signer::import(seed)
             .await
             .map_err(|error| internal(&error))?;
-        let signer = Ed25519Signer::import(seed)
+        Self::open_as(directory, signer, proofs, caches).await
+    }
+
+    /// [`open_in`](Self::open_in), acting as `signer` itself rather than a
+    /// key derived from a seed: a browser view's key, which is generated
+    /// non-extractable and so has no seed to hand over.
+    pub async fn open_as(
+        directory: Directory,
+        signer: Ed25519Signer,
+        proofs: &[DelegationChain],
+        caches: HeldCaches,
+    ) -> Result<Self, TonkWorkerError> {
+        let internal = |error: &dyn std::fmt::Display| TonkWorkerError::Internal(error.to_string());
+        let (credentials, _) = crate::device::open_system(directory.clone())
             .await
             .map_err(|error| internal(&error))?;
         let did = signer.did();
@@ -124,6 +137,25 @@ impl HostedPeer {
         Ok(())
     }
 
+    /// Keep the mounted spaces live until `stopped`, as the service worker
+    /// keeps its open spaces: each space's upstream is watched (through
+    /// the provider's `live.rs`), a head it delivers is pulled and the
+    /// views over it repainted, and what this peer commits is pushed.
+    ///
+    /// A watch that ends is begun again on the next of the ticks every
+    /// `rewatch`; the ticks pull nothing themselves.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub fn follow(&self, rewatch: web_time::Duration, stopped: std::rc::Rc<dyn Fn() -> bool>) {
+        wasm_bindgen_futures::spawn_local(super::push_loops(self.state.clone(), stopped.clone()));
+        let state = self.state.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            while !stopped() {
+                super::watch_open_repos(&state).await;
+                let _ = crate::sleep(rewatch).await;
+            }
+        });
+    }
+
     /// Point this peer's access branch at the agent space `agent`, served
     /// at `home`, and pull it: the grants retained there become proofs
     /// this peer's operator finds. See [`access::adopt_agent_access`].
@@ -137,6 +169,17 @@ impl HostedPeer {
     pub async fn agent_access(&self, agent: &Did) -> Result<access::AgentAccess, TonkWorkerError> {
         let state = self.state.read().await;
         access::read_agent_access(&state, agent).await
+    }
+
+    /// The grants in force the agent space `agent` holds for `space`,
+    /// read from its replica here. See [`access::space_chains`].
+    pub async fn space_chains(
+        &self,
+        agent: &Did,
+        space: &Did,
+    ) -> Result<Vec<DelegationChain>, TonkWorkerError> {
+        let state = self.state.read().await;
+        access::space_chains(&state, agent, space).await
     }
 
     /// The DID this peer signs as.

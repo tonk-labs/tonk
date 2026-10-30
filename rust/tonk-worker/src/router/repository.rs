@@ -2524,13 +2524,7 @@ async fn invite_url(
 pub(super) fn worker_origin() -> Option<String> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
-        use wasm_bindgen::JsCast;
-
-        js_sys::global()
-            .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
-            .ok()
-            .map(|global| global.location().origin())
-            .filter(|origin| !origin.is_empty())
+        crate::cache::scope_origin()
     }
     // A native host serves no origin of its own; the access-service
     // address must come from recorded facts (an account provider) or
@@ -5562,12 +5556,13 @@ pub(super) async fn fetch_library_bytes(url: &str) -> Result<Vec<u8>, TonkWorker
 
     let init = RequestInit::new();
     init.set_cache(RequestCache::NoStore);
-    let request = Request::new_with_str_and_init(url, &init)
+    let request = Request::new_with_str_and_init(&crate::cache::asset_url(url), &init)
         .map_err(|e| TonkWorkerError::Internal(format!("standard library request: {e:?}")))?;
 
-    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
+    // The origin's service worker, or a Web Worker beside an inline view.
+    let global: web_sys::WorkerGlobalScope = js_sys::global()
         .dyn_into()
-        .map_err(|_| TonkWorkerError::Internal("not in a service-worker scope".to_owned()))?;
+        .map_err(|_| TonkWorkerError::Internal("not in a worker scope".to_owned()))?;
     let response: Response = JsFuture::from(global.fetch_with_request(&request))
         .await
         .and_then(|v| v.dyn_into())

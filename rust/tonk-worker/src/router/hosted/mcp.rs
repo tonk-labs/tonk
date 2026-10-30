@@ -539,6 +539,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 name,
                 arguments,
                 verified,
+                self.writers,
                 bearer,
                 session,
                 self.origin,

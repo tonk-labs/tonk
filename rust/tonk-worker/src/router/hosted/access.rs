@@ -203,6 +203,85 @@ pub async fn read_agent_access(
     Ok(access)
 }
 
+/// The grants in force that the agent space `agent` holds for `space`,
+/// each a chain `space -> ... -> agent`, as `tonk` reads them now: what
+/// [`read_agent_access`] counts for that space, for a view to extend
+/// with the powerline and a hop to its own key.
+pub async fn space_chains(
+    tonk: &TonkState,
+    agent: &Did,
+    space: &Did,
+) -> Result<Vec<dialog_ucan_core::DelegationChain>, TonkWorkerError> {
+    let internal = |error: &dyn std::fmt::Display| TonkWorkerError::Internal(error.to_string());
+    let session = tonk
+        .reactor
+        .repository(agent.as_ref())
+        .branch(GRANTS_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| internal(&error))?;
+    let branch = session.handle();
+    let leaves = branch
+        .delegations()
+        .issued_to(agent.clone())
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| internal(&error))?;
+    let now = Timestamp::now().to_unix();
+    let at_now = TimeRange {
+        not_before: Some(now),
+        expiration: Some(now + 1),
+    };
+    let mut chains = Vec::new();
+    for leaf in leaves {
+        let chain = &leaf.0;
+        if chain.subject() != Some(space) || space == agent {
+            continue;
+        }
+        let Some(delegation) = chain.proofs().next() else {
+            continue;
+        };
+        let in_window = chain.expiration().is_none_or(|at| at.to_unix() > now)
+            && chain.not_before().is_none_or(|at| at.to_unix() <= now);
+        if !in_window {
+            continue;
+        }
+        let scope = Scope {
+            subject: UcanSubject::Specific(space.clone()),
+            command: delegation.command().clone(),
+            parameters: Parameters::default(),
+        };
+        // The store keeps each delegation apart, so the leaf names only its
+        // last hop. What reaches its issuer is proved from there, rather
+        // than from the agent space, so the walk cannot set off through
+        // another of the agent space's leaves and miss this one.
+        let issuer = delegation.issuer().clone();
+        let mut links = if &issuer == space {
+            Vec::new()
+        } else {
+            let proved = branch
+                .delegations()
+                .prove(issuer.clone(), scope)
+                .during(at_now)
+                .perform(&tonk.operator)
+                .await;
+            let Ok(proof) = proved else {
+                continue;
+            };
+            let mut links: Vec<_> = proof.proofs.into_iter().map(|link| link.0).collect();
+            if links.first().is_some_and(|root| root.issuer() != space) {
+                links.reverse();
+            }
+            links
+        };
+        links.push(delegation.clone());
+        if let Ok(proved) = dialog_ucan_core::DelegationChain::try_from(links) {
+            chains.push(proved);
+        }
+    }
+    Ok(chains)
+}
+
 /// The name the agent space's directory gives `space`.
 async fn directory_name(
     tonk: &TonkState,

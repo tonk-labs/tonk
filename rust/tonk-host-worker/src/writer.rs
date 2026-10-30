@@ -17,8 +17,10 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use axum::body::Body;
+use futures_util::future::{Either, select};
 use futures_util::lock::Mutex;
 use http::{Method, Request, StatusCode, header};
 use js_sys::{Function, Reflect};
@@ -39,6 +41,11 @@ const REMOTE: &str = "x-tonk-writer-remote";
 
 /// The agent space writer's grants route, relative to the space.
 const ACCESS: &str = "api/access";
+
+/// How long a request may take before the object answers it with the
+/// step it is stuck at, rather than leaving the front to time out with
+/// no word of where. Below the MCP client's own 60 s.
+const DEADLINE: Duration = Duration::from_secs(45);
 
 /// The session a request comes in on, as the front decoded it.
 pub(crate) struct Identity {
@@ -150,6 +157,9 @@ pub struct SpaceWriterObject {
     in_flight: Cell<usize>,
     /// A recycle alarm is set.
     recycling: Cell<bool>,
+    /// The step the latest request reached, and when it began: what a
+    /// request past [`DEADLINE`] reports.
+    step: Cell<(&'static str, f64)>,
 }
 
 impl DurableObject for SpaceWriterObject {
@@ -168,12 +178,29 @@ impl DurableObject for SpaceWriterObject {
             high_water,
             in_flight: Cell::new(0),
             recycling: Cell::new(false),
+            step: Cell::new(("idle", 0.0)),
         }
     }
 
     async fn fetch(&self, request: worker::Request) -> worker::Result<worker::Response> {
         self.in_flight.set(self.in_flight.get() + 1);
-        let response = self.answer(request).await;
+        let began = js_sys::Date::now();
+        let path = request.path();
+        let answer = std::pin::pin!(self.answer(request));
+        let deadline = std::pin::pin!(worker::Delay::from(DEADLINE));
+        let response = match select(answer, deadline).await {
+            Either::Left((response, _)) => response,
+            Either::Right(((), _)) => {
+                let (step, since) = self.step.get();
+                let message = format!(
+                    "space writer: {path} unanswered after {} ms, at {step} for {} ms",
+                    js_sys::Date::now() - began,
+                    js_sys::Date::now() - since,
+                );
+                worker::console_error!("{message}");
+                failure(StatusCode::GATEWAY_TIMEOUT, &message)
+            }
+        };
         self.in_flight.set(self.in_flight.get() - 1);
         if self.over_high_water() && !self.recycling.replace(true) {
             // From an alarm, so the reset fails no request: this one is
@@ -219,6 +246,14 @@ impl DurableObject for SpaceWriterObject {
 }
 
 impl SpaceWriterObject {
+    /// Record that the request has reached `step`, logging how long the
+    /// one before took.
+    fn reach(&self, step: &'static str) {
+        let now = js_sys::Date::now();
+        let (before, since) = self.step.replace((step, now));
+        worker::console_log!("space writer: {before} took {} ms, now {step}", now - since);
+    }
+
     /// Whether the writer is open and memory is past the high water and
     /// past where it opened.
     fn over_high_water(&self) -> bool {
@@ -228,6 +263,7 @@ impl SpaceWriterObject {
     }
 
     async fn answer(&self, mut request: worker::Request) -> worker::Result<worker::Response> {
+        self.reach("open");
         let writer = match self.writer(&request).await {
             Ok(writer) => writer,
             Err((status, message)) => return failure(status, &message),
@@ -236,8 +272,27 @@ impl SpaceWriterObject {
         let path = url.path().trim_start_matches('/').to_owned();
         let method = request.method();
         if method == worker::Method::Get && path == ACCESS {
+            self.reach("access");
             return match writer.agent_access().await {
                 Ok(access) => worker::Response::from_json(&access),
+                Err(error) => failure(StatusCode::BAD_GATEWAY, &error.to_string()),
+            };
+        }
+        if method == worker::Method::Get
+            && path == tonk_worker::view::CHAINS_ROUTE.trim_start_matches('/')
+        {
+            let space = url
+                .query_pairs()
+                .find(|(name, _)| name == "space")
+                .and_then(|(_, space)| space.parse().ok());
+            let Some(space) = space else {
+                return failure(StatusCode::BAD_REQUEST, "name the space");
+            };
+            return match writer.space_chains(&space).await {
+                Ok(chains) => match tonk_worker::view::chains_answer(&chains) {
+                    Ok(answer) => worker::Response::from_json(&answer),
+                    Err(error) => failure(StatusCode::INTERNAL_SERVER_ERROR, &error),
+                },
                 Err(error) => failure(StatusCode::BAD_GATEWAY, &error.to_string()),
             };
         }
@@ -254,6 +309,7 @@ impl SpaceWriterObject {
                     .collect()
             })
             .unwrap_or_default();
+        self.reach("admit");
         if let Err(error) = writer.admit(&grants).await {
             return failure(StatusCode::BAD_GATEWAY, &error.to_string());
         }
@@ -261,7 +317,13 @@ impl SpaceWriterObject {
             .headers()
             .get("content-type")?
             .unwrap_or_else(|| "application/octet-stream".to_owned());
+        self.reach("body");
         let body = Body::from(request.bytes().await?);
+        self.reach(if path == "api/evaluate" {
+            "write"
+        } else {
+            "read"
+        });
         // The Host Worker API of a space, onto the routes of its branch.
         let response = match (method, path.as_str()) {
             (worker::Method::Post, "api/query") => {
@@ -295,6 +357,7 @@ impl SpaceWriterObject {
             }
             _ => return failure(StatusCode::NOT_FOUND, "no such route"),
         };
+        self.reach("answered");
         worker::Response::try_from(response)
     }
 
@@ -319,12 +382,14 @@ impl SpaceWriterObject {
         let space: dialog_varsig::Did = header(SPACE)?
             .parse()
             .map_err(|_| (StatusCode::BAD_REQUEST, "malformed space".to_owned()))?;
+        self.reach("verify");
         let verified = tonk_worker::mcp::verify(&token)
             .await
             .map_err(|error| (StatusCode::UNAUTHORIZED, error))?;
         let session = verified.writer_session(&mcp_session);
         let key = writer_seed(&session.seed, &mcp_session);
 
+        self.reach("writer lock");
         let mut opened = self.writer.lock().await;
         if let Some((held, writer)) = opened.as_ref() {
             if **held != *key {
@@ -343,6 +408,7 @@ impl SpaceWriterObject {
             "/space-writer/{:016x}",
             (js_sys::Math::random() * 1e16) as u64
         );
+        self.reach("writer open");
         let writer = SpaceWriter::open(&root, &session, &space, &remote)
             .await
             .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;

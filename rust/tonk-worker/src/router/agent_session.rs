@@ -1259,6 +1259,28 @@ mod tests {
         }
         assert!(access.get(&agent).is_some_and(|own| own.agent));
         assert_eq!(access.spaces.len(), 3, "{access:?}");
+
+        // What a view's delegation of a space extends: each grant whole,
+        // from the space to the agent space, as the approval signed it.
+        for space in &granted {
+            let chains =
+                super::super::hosted::access::space_chains(&tonk, &agent, &space.subject).await?;
+            assert_eq!(chains.len(), space.chains.len(), "{}", space.name);
+            for chain in &chains {
+                assert_eq!(chain.issuer(), &space.subject, "rooted at {}", space.name);
+                assert_eq!(chain.audience(), &agent);
+                assert!(
+                    space.chains.iter().any(|signed| signed.proofs().count()
+                        == chain.proofs().count()
+                        && signed
+                            .proofs()
+                            .zip(chain.proofs())
+                            .all(|(a, b)| a.to_cid() == b.to_cid())),
+                    "{} answers a chain the approval signed",
+                    space.name
+                );
+            }
+        }
         Ok(())
     }
 

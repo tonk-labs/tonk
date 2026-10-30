@@ -28,6 +28,7 @@ import {
   syncedSpaces,
   approve,
 } from './lib/browser.mjs';
+import { showView } from './lib/view-host.mjs';
 
 const origin = new URL(process.env.TONK_E2E_ORIGIN ?? 'http://localhost:8787').origin;
 const endpoint = new URL('/mcp', origin);
@@ -59,6 +60,9 @@ concept!: &e2e-note
 const note = (label) =>
   `e2e-note!:\n  this: urn:e2e:${label.replaceAll(' ', ':')}\n  label: "${label}"\n`;
 const NOTES = 'e2e-note:\n  label: ?label\n';
+// How long a write the agent makes may take to reach an open view: the
+// provider's `live.rs` tells the view's peer, which pulls.
+const LIVE = 30_000;
 
 test('the hosted agent connects, is approved, and reads and writes spaces', async (t) => {
   const mail = inbox({ run, base: process.env.TONK_E2E_CAPTURED_EMAILS || origin });
@@ -240,6 +244,63 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       const lost = labels.filter((label) => !read.includes(label));
       assert.deepEqual(lost, [], `${lost.length} of ${labels.length} writes were lost`);
     });
+
+    // A view, as a host shows `tonk_open_space`: first as a host that
+    // frames nothing (route B, the view's own peer in a Web Worker), then
+    // as one that frames the provider (route A, the provider's page with
+    // its service worker as the peer). Each must show what the agent
+    // wrote, then a write it makes while the view is open.
+    for (const [route, frames] of [
+      ['B', false],
+      ['A', true],
+    ]) {
+      await step(
+        `a shown view renders the space and follows a write (route ${route})`,
+        async () => {
+          const client = await connect();
+          const open = (await client.listTools()).tools.find(
+            (tool) => tool.name === 'tonk_open_space',
+          );
+          assert.ok(open, 'tools/list lacks tonk_open_space');
+          const resource = await client.readResource({ uri: open._meta.ui.resourceUri });
+          // The notes' directory page: every e2e-note, each with its label.
+          const result = await call(client, 'tonk_open_space', {
+            space: spaces.writable,
+            path: '/e2e-note',
+          });
+          const view = await showView({
+            client,
+            result,
+            resource,
+            frames,
+            headed: !!process.env.TONK_E2E_HEADED,
+          });
+          try {
+            const started = Date.now();
+            await view.shows(labels.slice(0, 3));
+            console.log(`route ${route}: shown in ${Date.now() - started} ms`);
+            assert.ok(view.calls.includes('tonk_view_access'), `the view called ${view.calls}`);
+            const framed = view
+              .frames()
+              .some((frame) => frame.url().startsWith(`${origin}/view-frame`));
+            assert.equal(
+              framed,
+              frames,
+              frames ? 'the view fell back to route B' : 'the view framed the provider',
+            );
+            const live = `${run} live ${route}`;
+            const wrote = Date.now();
+            await call(client, 'tonk_evaluate', { space: spaces.writable, document: note(live) });
+            await view.shows([live], LIVE);
+            console.log(`route ${route}: a write showed in ${Date.now() - wrote} ms`);
+          } finally {
+            if (view.violations.length)
+              console.log(`route ${route} CSP: ${view.violations.join('\n')}`);
+            await view.close();
+          }
+        },
+      );
+    }
 
     // What a person who made their spaces earlier meets: a browser with
     // no account on it, so the approval page signs them in first and has

@@ -353,6 +353,46 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+      # What the hosted agent's inline views load from this origin: the
+      # view peer (rust/tonk-view-peer) a view runs in a Web Worker, and
+      # the guest runtime and document its sandboxed page renders with.
+      # MCP hosts load them from their own view origins, so they carry
+      # CORS. Served from a copy of the app's assets, which the deploy's
+      # config is pointed at: the preview's own, or `wrangler.toml` for
+      # dev, staging and production.
+      - name: Build inline view assets
+        run: |
+          set -euo pipefail
+          config="${{ steps.access-database.outputs.config || 'wrangler.toml' }}"
+          assets="$PWD/preview-assets"
+          # The runner's disk holds one wasm build's target, not two: the
+          # host worker is deployed from its `build/`, which stays.
+          rm -rf rust/tonk-host-worker/target
+          rm -rf "$assets"
+          cp -rL result/tonk-ui "$assets"
+          chmod -R u+w "$assets"
+          cp mcp/hosted/public/space-runtime.json mcp/hosted/public/worker-guest.html "$assets/"
+          # Route A's framed page: the relay itself, on this origin, its
+          # peer this origin's service worker.
+          sed -e 's#__TONK_MCP_ORIGIN__#location.origin#' -e 's#__TONK_VIEW_FRAME__#true#' \
+            rust/tonk-worker/src/router/hosted/view/relay.html > "$assets/view-frame.html"
+          grep -q 'framed = true' "$assets/view-frame.html"
+          nix --accept-flake-config develop .#ci --command bash -c '
+            set -euo pipefail
+            cd rust/tonk-view-peer
+            cargo build --release --target wasm32-unknown-unknown
+            "$WASM_BINDGEN_BIN" --target web --out-dir "$0/view-peer" \
+              target/wasm32-unknown-unknown/release/tonk_view_peer.wasm
+            rm -rf target
+          ' "$assets"
+          {
+            for path in /space-runtime.json /worker-guest.html /worker-guest /view-peer/* /library/*; do
+              printf '\n%s\n  Access-Control-Allow-Origin: *\n' "$path"
+            done
+          } >> "$assets/_headers"
+          sed -i "s#^directory = \"./result/tonk-ui\"#directory = \"$assets\"#" "$config"
+          grep -Fq "directory = \"$assets\"" "$config"
+
       - name: Deploy access preview
         if: github.event_name == 'pull_request'
         id: deploy-preview
