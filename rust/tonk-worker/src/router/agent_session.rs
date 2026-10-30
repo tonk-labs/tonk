@@ -82,6 +82,29 @@ fn pending() -> &'static Mutex<HashMap<String, url::Url>> {
     PENDING.get_or_init(Default::default)
 }
 
+/// Each answered approval's callback, by request, until the page collects
+/// it. The page that asked for the passkey waits for the answer only so
+/// long; an approval that outlasts that wait is still answered, and the
+/// page finds where to go here when the ceremony reports it done.
+fn answered() -> &'static Mutex<HashMap<String, String>> {
+    static ANSWERED: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    ANSWERED.get_or_init(Default::default)
+}
+
+/// `GET /api/agent/answer/{handle}`: the app's callback for an approval
+/// this worker answered, once.
+#[wasm_compat]
+pub async fn answer_of(
+    Path(handle): Path<String>,
+) -> Result<Json<serde_json::Value>, TonkWorkerError> {
+    let redirect = answered()
+        .lock()
+        .map_err(failure)?
+        .remove(&handle)
+        .ok_or_else(|| TonkWorkerError::NotFound("no answer for that request".into()))?;
+    Ok(Json(serde_json::json!({ "redirect": redirect })))
+}
+
 fn access(choice: &AgentSpaceChoice) -> Result<AgentAccess, TonkWorkerError> {
     match choice.access.as_str() {
         "read" => Ok(AgentAccess::Read),
@@ -339,6 +362,9 @@ pub(crate) async fn authorize(
     authorization: AgentAuthorization,
 ) -> Result<String, String> {
     let outcome = authorize_inner(state, custodian, &authorization).await;
+    if let (Ok(redirect), Ok(mut answers)) = (&outcome, answered().lock()) {
+        answers.insert(authorization.request.clone(), redirect.clone());
+    }
     let tonk = state.read().await;
     let (status, detail) = match &outcome {
         Ok(_) => (tonk_schema::ceremony_state::DONE, String::new()),

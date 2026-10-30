@@ -5900,6 +5900,7 @@ element!: &account-settings
           }
         }
         self.agentStep('passkey');
+        self._agentApprovedAt = Date.now();
         // The worker asks this page's top document for the passkey; the
         // ceremony row reports how it goes, and the top page goes on to
         // the app's callback when it is done.
@@ -5919,7 +5920,19 @@ element!: &account-settings
     # to the spaces, a failure ends the request, done waits for the app.
     agent-ceremony: |
       (self, state, detail) => {
-        if (state === 'done') self.agentStep('done');
+        if (state === 'done') {
+          self.agentStep('done');
+          // The top page goes on to the app when the worker answers it
+          // within its 30 second wait, and this page goes with it. An
+          // approval that outlasted the wait leaves this page here, and
+          // it collects the answer once the wait is surely over.
+          const request = self.agentRequest();
+          const waited = Date.now() - (self._agentApprovedAt ?? 0);
+          if (request) {
+            setTimeout(() => self.api(`/api/agent/answer/${encodeURIComponent(request)}`)
+              .then((answer) => answer?.redirect && window.tonk?.navigate?.(answer.redirect), () => {}), Math.max(0, 32000 - waited));
+          }
+        }
         else if (state === 'refused') self.agentStep('spaces');
         else if (state === 'failed') self.agentError(/expired|another browser/i.test(detail)
           ? 'This connection request expired. Nothing was granted. Start connecting again from your app.'
