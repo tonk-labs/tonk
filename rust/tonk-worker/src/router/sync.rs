@@ -1665,7 +1665,7 @@ impl SyncQueue {
     }
 
     /// The lock held while `repo` syncs.
-    fn syncing(&self, repo: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    pub(crate) fn syncing(&self, repo: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
         self.syncing
             .lock()
             .map(|mut syncing| syncing.entry(repo.to_owned()).or_default().clone())

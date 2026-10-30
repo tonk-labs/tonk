@@ -437,9 +437,15 @@ async fn authorize_inner(
         js_sys::Date::now() - started
     );
 
-    let (agent, key) = match &authorization.agent {
-        Some(key) => reopen(state, &root, authorization, key).await?,
-        None => create_agent(state, authorization).await?,
+    let (agent, key, pushing) = match &authorization.agent {
+        Some(key) => {
+            let (agent, key) = reopen(state, &root, authorization, key).await?;
+            (agent, key, None)
+        }
+        None => {
+            let (agent, key, pushing) = create_agent(state, authorization).await?;
+            (agent, key, Some(pushing))
+        }
     };
     tonk_common::log!(
         "approval {}: {:.0} ms",
@@ -512,6 +518,7 @@ async fn authorize_inner(
         tonk.sync_queue.mark_dirty(&key, js_sys::Date::now());
         return Err(format!("the agent's grants could not be saved: {error}"));
     }
+    drop(pushing);
     tonk_common::log!(
         "approval {}: {:.0} ms",
         "grants pushed",
@@ -596,12 +603,13 @@ async fn push_new_space(state: &AppState, key: &str) -> Result<(), String> {
 
 /// Make a new agent space for `authorization`: its key drawn here, the
 /// space created with it, which seals it to the account, and synced.
-/// Returns the agent's key and the space's routing key.
+/// Returns the agent's key, the space's routing key, and the space's
+/// sync lock, held until the approval has pushed it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn create_agent(
     state: &AppState,
     authorization: &AgentAuthorization,
-) -> Result<(Ed25519Signer, String), String> {
+) -> Result<(Ed25519Signer, String, tokio::sync::OwnedMutexGuard<()>), String> {
     let said = |error: TonkWorkerError| error.to_string();
     // The agent space's key: signs the session's powerline, then is
     // sealed to the account by creating the space with it.
@@ -616,6 +624,15 @@ async fn create_agent(
         super::repository::create_unseeded_space_from_seed(state, authorization.name.trim(), seed)
             .await
             .map_err(|error| error.to_string())?;
+    // Held until the approval has pushed the space: a background sync of
+    // it meanwhile pulls an empty remote and pushes every block again,
+    // racing the approval's own push with the same writes.
+    let pushing = {
+        let tonk = state.read().await;
+        tonk.sync_queue.syncing(&key)
+    }
+    .lock_owned()
+    .await;
     tonk_common::log!(
         "approval {}: {:.0} ms",
         "agent space created",
@@ -638,7 +655,7 @@ async fn create_agent(
     mark(&tonk, &key, &agent_did, authorization.provider.as_deref())
         .await
         .map_err(said)?;
-    Ok((agent, key))
+    Ok((agent, key, pushing))
 }
 
 /// Open the key of the agent at `key`, which the page chose to connect
