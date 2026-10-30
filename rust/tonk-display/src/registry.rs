@@ -42,7 +42,7 @@
 //! open, which is what makes "define it later" work.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use js_sys::Reflect;
@@ -82,6 +82,10 @@ struct Watch {
     /// What each of the entity's dictionaries holds, as its stream last
     /// said: the definition the module is rendered from.
     definition: ElementDefinition,
+    /// The dictionaries whose streams have said what they hold. The module
+    /// is first rendered once every one has, so an element is defined once
+    /// with all of it rather than again as each part arrives.
+    reported: BTreeSet<String>,
     /// The last module source applied, so an unchanged frame does not
     /// re-run every instance's `connected`.
     applied: Option<String>,
@@ -196,6 +200,7 @@ async fn watch(source: &Element, tag: &str) {
         dictionaries: Vec::new(),
         entity: None,
         definition: ElementDefinition::default(),
+        reported: BTreeSet::new(),
         applied: None,
     }));
     WATCHED.with(|watched| {
@@ -292,6 +297,7 @@ async fn refresh(tag: &str, stream: &str, rows: Option<js_sys::Array>) {
             // would otherwise keep re-registering it.
             watch.dictionaries.clear();
             watch.definition = ElementDefinition::default();
+            watch.reported.clear();
             watch.applied = None;
         }
         let Some(entity) = entity else {
@@ -308,6 +314,9 @@ async fn refresh(tag: &str, stream: &str, rows: Option<js_sys::Array>) {
                     web_sys::console::warn_1(
                         &format!("<{tag}>: {field} subscription failed: {}", error.message).into(),
                     );
+                    // A stream that will say nothing reads as declaring
+                    // none, so the rest still define the element.
+                    Box::pin(refresh(tag, field, Some(js_sys::Array::new()))).await;
                 }
             }
         }
@@ -353,6 +362,11 @@ async fn refresh(tag: &str, stream: &str, rows: Option<js_sys::Array>) {
             // "declares none" rather than as a panic in a browser.
             _ => {}
         }
+        watch.reported.insert(stream.to_owned());
+        if watch.reported.len() < ELEMENT_DICTIONARIES.len() {
+            return;
+        }
+        let definition = &watch.definition;
         if definition.methods.is_empty() {
             return;
         }
@@ -1076,6 +1090,38 @@ mod tests {
             runs(),
             1.0,
             "an unchanged definition must not re-run the hook",
+        );
+    }
+
+    /// An element whose dictionaries arrive on streams of their own is
+    /// defined once, with all of them: a definition from the methods alone,
+    /// replaced as its defaults arrive, would run its hooks twice.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_defines_an_element_once_with_every_dictionary() {
+        define_with_defaults(
+            "probe-once",
+            "did:key:zOnce",
+            &[(
+                "connected",
+                "(self) => { globalThis.__onceRuns = (globalThis.__onceRuns || 0) + 1; \
+                 self.dataset.tone = self.getAttribute('tone'); }",
+            )],
+            &[("tone", "warm")],
+        );
+        let host = render("probe-once").await;
+        let runs = || {
+            Reflect::get(&js_sys::global(), &"__onceRuns".into())
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+        };
+        settle_until(|| runs() >= 1.0).await;
+        settle_briefly().await;
+        assert_eq!(runs(), 1.0, "it is defined once");
+        assert_eq!(
+            host.get_attribute("data-tone").as_deref(),
+            Some("warm"),
+            "with its defaults from the start",
         );
     }
 
