@@ -238,21 +238,30 @@ pub async fn space_chains(
             command: delegation.command().clone(),
             parameters: Parameters::default(),
         };
-        let proved = branch
-            .delegations()
-            .prove(agent.clone(), scope)
-            .during(at_now)
-            .perform(&tonk.operator)
-            .await;
-        // The store keeps each delegation apart: the leaf alone names
-        // only its last hop, so the chain is the one the proof walked.
-        let Ok(proof) = proved else {
-            continue;
+        // The store keeps each delegation apart, so the leaf names only its
+        // last hop. What reaches its issuer is proved from there, rather
+        // than from the agent space, so the walk cannot set off through
+        // another of the agent space's leaves and miss this one.
+        let issuer = delegation.issuer().clone();
+        let mut links = if &issuer == space {
+            Vec::new()
+        } else {
+            let proved = branch
+                .delegations()
+                .prove(issuer.clone(), scope)
+                .during(at_now)
+                .perform(&tonk.operator)
+                .await;
+            let Ok(proof) = proved else {
+                continue;
+            };
+            let mut links: Vec<_> = proof.proofs.into_iter().map(|link| link.0).collect();
+            if links.first().is_some_and(|root| root.issuer() != space) {
+                links.reverse();
+            }
+            links
         };
-        let mut links: Vec<_> = proof.proofs.into_iter().map(|link| link.0).collect();
-        if links.first().is_some_and(|root| root.issuer() != space) {
-            links.reverse();
-        }
+        links.push(delegation.clone());
         if let Ok(proved) = dialog_ucan_core::DelegationChain::try_from(links) {
             chains.push(proved);
         }
