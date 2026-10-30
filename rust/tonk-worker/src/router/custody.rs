@@ -94,14 +94,16 @@ pub(crate) async fn receive(
         return;
     };
 
-    // Only device approval opts into progress. Keep other custody ceremonies
-    // on their established protocol and lifetime.
+    // Only device and agent approval opt into progress. Keep other custody
+    // ceremonies on their established protocol and lifetime.
     let request = js_sys::Reflect::get(&data, &"request".into()).unwrap_or(JsValue::UNDEFINED);
-    let approval = js_sys::Reflect::get(&request, &"kind".into())
-        .ok()
-        .and_then(|value| value.as_string())
-        .as_deref()
-        == Some("authorize-device");
+    let approval = matches!(
+        js_sys::Reflect::get(&request, &"kind".into())
+            .ok()
+            .and_then(|value| value.as_string())
+            .as_deref(),
+        Some("authorize-device" | "authorize-agent")
+    );
     let progress_requested = js_sys::Reflect::get(&data, &"progress".into())
         .ok()
         .and_then(|value| value.as_bool())
@@ -192,18 +194,34 @@ async fn complete_authorization<T>(
         return outcome;
     }
     let error = "The connection took too long to finish. Start a new connection and try again.";
-    if let Ok(tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization)) =
-        serde_wasm_bindgen::from_value(request.clone())
+    let intent = serde_wasm_bindgen::from_value::<tonk_worker_api::CustodyIntent>(request.clone());
+    if let Ok(
+        intent @ (tonk_worker_api::CustodyIntent::AuthorizeDevice(_)
+        | tonk_worker_api::CustodyIntent::AuthorizeAgent(_)),
+    ) = intent
     {
         let report = async {
             let tonk = state.read().await;
-            super::ceremony::report_authorization(
-                &tonk,
-                &authorization,
-                tonk_schema::ceremony_state::FAILED,
-                error,
-            )
-            .await;
+            match &intent {
+                tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization) => {
+                    super::ceremony::report_authorization(
+                        &tonk,
+                        authorization,
+                        tonk_schema::ceremony_state::FAILED,
+                        error,
+                    )
+                    .await
+                }
+                _ => {
+                    super::ceremony::report(
+                        &tonk,
+                        tonk_schema::ceremony::AUTHORIZE_AGENT,
+                        tonk_schema::ceremony_state::FAILED,
+                        error,
+                    )
+                    .await
+                }
+            }
             Ok(())
         };
         // A stalled state lock or overlay write must not strand the terminal
@@ -451,6 +469,10 @@ async fn perform(
         tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization) => {
             let target =
                 super::ceremony::authorize_device(&state, &custodian, authorization).await?;
+            navigate_reply(&target)
+        }
+        tonk_worker_api::CustodyIntent::AuthorizeAgent(authorization) => {
+            let target = super::agent_session::authorize(&state, &custodian, authorization).await?;
             navigate_reply(&target)
         }
     }

@@ -313,6 +313,7 @@ fn intent_label(intent: &tonk_worker_api::CustodyIntent) -> &'static str {
     match intent {
         tonk_worker_api::CustodyIntent::PurgeAccount(_) => "purge-account",
         tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => "authorize-device",
+        tonk_worker_api::CustodyIntent::AuthorizeAgent(_) => "authorize-agent",
         tonk_worker_api::CustodyIntent::AddPasskey(_) => "add-passkey",
         tonk_worker_api::CustodyIntent::Enroll(_) => "enroll",
         tonk_worker_api::CustodyIntent::CreateAccount(_) => "create-account",
@@ -324,6 +325,7 @@ fn command_action(intent: &tonk_worker_api::CustodyIntent) -> AccountAction {
     match intent {
         tonk_worker_api::CustodyIntent::PurgeAccount(_) => AccountAction::DeleteAccount,
         tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => AccountAction::LinkCli,
+        tonk_worker_api::CustodyIntent::AuthorizeAgent(_) => AccountAction::AuthorizeAgent,
         tonk_worker_api::CustodyIntent::AddPasskey(_) => AccountAction::AddPasskey,
         tonk_worker_api::CustodyIntent::Enroll(_)
         | tonk_worker_api::CustodyIntent::CreateAccount(_)
@@ -551,7 +553,8 @@ pub(crate) fn mediate_custody(intent: tonk_worker_api::CustodyIntent) {
         tonk_worker_api::CustodyIntent::Enroll(_)
         | tonk_worker_api::CustodyIntent::Login(_)
         | tonk_worker_api::CustodyIntent::PurgeAccount(_)
-        | tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => "usePasskey",
+        | tonk_worker_api::CustodyIntent::AuthorizeDevice(_)
+        | tonk_worker_api::CustodyIntent::AuthorizeAgent(_) => "usePasskey",
     };
     mediate_with(method, intent);
 }
@@ -695,7 +698,8 @@ pub(crate) fn begin_with(
         tonk_worker_api::CustodyIntent::AddPasskey(_)
         | tonk_worker_api::CustodyIntent::Login(_)
         | tonk_worker_api::CustodyIntent::PurgeAccount(_)
-        | tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => None,
+        | tonk_worker_api::CustodyIntent::AuthorizeDevice(_)
+        | tonk_worker_api::CustodyIntent::AuthorizeAgent(_) => None,
     };
 
     let request = serde_wasm_bindgen::to_value(&intent)

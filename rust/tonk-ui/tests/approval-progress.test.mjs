@@ -30,7 +30,7 @@ function fixture() {
     querySelector: selector => selector === '[data-ceremony-row]' ? row
       : selector === '[data-ceremony-status]' ? line
       : selector.startsWith('tonk-display') ? progress : null,
-    localLinkShow: () => false, viaShow: () => false, text() {}, pane() {}, seat() {},
+    localLinkShow: () => false, viaShow: () => false, agentShow: () => false, text() {}, pane() {}, seat() {},
     context: () => ({ hash: '' }), connectionsRefresh() {},
   });
   for (const name of ['base58', 'approval-entity', 'ceremony-target', 'refresh', 'describe', 'status']) {

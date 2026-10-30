@@ -313,6 +313,102 @@ fn request_host(req: &Request<Incoming>) -> String {
         .unwrap_or_default()
 }
 
+/// Fetches client metadata documents over the network, as the worker
+/// does, redirects unfollowed.
+struct FetchedDocuments;
+
+#[async_trait]
+impl crate::oauth::client::Documents for FetchedDocuments {
+    async fn fetch(&self, url: &url::Url) -> Result<Vec<u8>, String> {
+        use crate::oauth::client::MAX_DOCUMENT;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let response = client
+            .get(url.as_str())
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(format!("answered {}", response.status()));
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length as usize > MAX_DOCUMENT)
+        {
+            return Err(format!("the document is over {MAX_DOCUMENT} bytes"));
+        }
+        Ok(response.bytes().await.map_err(|e| e.to_string())?.to_vec())
+    }
+}
+
+/// The OAuth authorization server, as the worker serves it, under the
+/// configured public origin: the one clients are told about.
+async fn serve_oauth(
+    req: Request<Incoming>,
+    endpoint: crate::oauth::Endpoint,
+    registration: &RegistrationState,
+) -> Response<http_body_util::Full<bytes::Bytes>> {
+    use crate::oauth::{AuthorizationServer, MAX_BODY, Request as OAuthRequest};
+    use http_body_util::{BodyExt, Full};
+
+    let header = |name: hyper::header::HeaderName| {
+        req.headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    let content_type = header(CONTENT_TYPE);
+    let origin = header(hyper::header::ORIGIN);
+    let cookie = header(hyper::header::COOKIE);
+    let method = req.method().as_str().to_owned();
+    let query = req.uri().query().map(str::to_owned);
+    if header(hyper::header::CONTENT_LENGTH)
+        .and_then(|length| length.parse::<u64>().ok())
+        .is_some_and(|length| length > MAX_BODY as u64)
+    {
+        return too_large_response(MAX_BODY as u64);
+    }
+    let body = match http_body_util::Limited::new(req.into_body(), MAX_BODY)
+        .collect()
+        .await
+    {
+        Ok(collected) => collected.to_bytes(),
+        Err(_) => return too_large_response(MAX_BODY as u64),
+    };
+    let key = crate::oauth::client::ClientKey::derive(&registration.service_seed)
+        .expect("the service seed was validated at start");
+    let answer = AuthorizationServer {
+        store: &registration.store,
+        documents: &FetchedDocuments,
+        key: &key,
+        origin: registration.origin.trim_end_matches('/'),
+        now: unix_now(),
+    }
+    .handle(
+        &endpoint,
+        &OAuthRequest {
+            method: &method,
+            query: query.as_deref(),
+            content_type: content_type.as_deref(),
+            origin: origin.as_deref(),
+            cookie: cookie.as_deref(),
+            body: &body,
+        },
+    )
+    .await;
+    let mut response = Response::builder().status(answer.status);
+    for (name, value) in answer.headers {
+        response = response.header(name, value);
+    }
+    response
+        .body(Full::new(bytes::Bytes::from(answer.body)))
+        .expect("an OAuth answer is a valid response")
+}
+
 /// The largest `/ucan/` body the harness accepts, matching the worker's default.
 const MAX_BODY_BYTES: u64 = 64 * 1024;
 
@@ -448,6 +544,8 @@ async fn serve_claim(
 /// - GET /.well-known/did.json → The service's own DID document
 /// - GET /customer/{domain}/{local}/did.json → The DID document for an
 ///   email address
+/// - `/.well-known/oauth-*`, `/register`, `/authorize`, `/token` → The
+///   OAuth authorization server
 /// - OPTIONS → CORS preflight
 async fn handle_request(
     req: Request<Incoming>,
@@ -478,6 +576,10 @@ async fn handle_request(
     // A space's socket, at the endpoint itself, as the worker keeps it.
     if req.method() == Method::GET && req.uri().path() == "/ucan/" && live::is_upgrade(&req) {
         return Ok(live::upgrade(req, registration));
+    }
+
+    if let Some(endpoint) = crate::oauth::Endpoint::of(req.uri().path()) {
+        return Ok(serve_oauth(req, endpoint, &registration).await);
     }
 
     if req.method() == Method::GET && req.uri().path() == "/.well-known/tonk" {
