@@ -2524,7 +2524,7 @@ async fn invite_url(
 pub(super) fn worker_origin() -> Option<String> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
-        crate::cache::location_origin()
+        crate::cache::scope_origin()
     }
     // A native host serves no origin of its own; the access-service
     // address must come from recorded facts (an account provider) or
