@@ -235,12 +235,28 @@ pub async fn immutable_cache_first(request: &Request) -> Result<JsValue, JsValue
 /// the worker reports no origin: caching foreign bytes is worse than a network
 /// fetch.
 fn worker_origin() -> Option<String> {
-    js_sys::global()
+    scope_origin().or_else(|| ASSET_ORIGIN.get().cloned())
+}
+
+/// The origin of the service worker this runs in, or `None` in any other
+/// scope.
+///
+/// Read without `web_sys`'s `location()`: a Cloudflare worker's global is
+/// a `ServiceWorkerGlobalScope` with no `location`, and the getter's
+/// `TypeError` would unwind through wasm and leave the async executor
+/// stuck, hanging every later request in the isolate.
+pub(crate) fn scope_origin() -> Option<String> {
+    let global = js_sys::global()
         .dyn_into::<ServiceWorkerGlobalScope>()
-        .ok()
-        .map(|global| global.location().origin())
+        .ok()?;
+    let location = js_sys::Reflect::get(&global, &JsValue::from_str("location")).ok()?;
+    if !location.is_object() {
+        return None;
+    }
+    js_sys::Reflect::get(&location, &JsValue::from_str("origin"))
+        .ok()?
+        .as_string()
         .filter(|origin| !origin.is_empty())
-        .or_else(|| ASSET_ORIGIN.get().cloned())
 }
 
 /// Whether `url` is on `origin`.
