@@ -125,6 +125,8 @@ pub(crate) fn provider(redirect_uri: &str, client_name: &str) -> Option<&'static
     allow(dead_code)
 )]
 struct Target {
+    /// The space's routing key, as the page chose it.
+    key: String,
     subject: Did,
     access: AgentAccess,
     remote: url::Url,
@@ -188,6 +190,7 @@ async fn targets(
             .await
             .unwrap_or_else(|| space.key.clone());
         targets.push(Target {
+            key: space.key.clone(),
             subject: repository.did(),
             access,
             remote,
@@ -481,6 +484,7 @@ async fn authorize_inner(
         .map_err(|error| error.to_string())?;
     let signer = Signer::from(root.clone());
     let mut granted = Vec::new();
+    let mut rostered = Vec::new();
     for target in targets {
         let chains = grant(
             &tonk,
@@ -494,6 +498,7 @@ async fn authorize_inner(
         )
         .await
         .map_err(said)?;
+        rostered.push((target.key, target.subject.clone()));
         granted.push(Granted {
             subject: target.subject,
             name: target.label,
@@ -559,6 +564,21 @@ async fn authorize_inner(
         "answered",
         js_sys::Date::now() - started
     );
+    // The agent joins each space's roster in the background: the app is
+    // not kept waiting on it, and the approval stands whether or not a row
+    // lands. A new agent is named as the page asked; one connected again
+    // keeps the name its space has.
+    {
+        let state = state.clone();
+        let named = authorization
+            .agent
+            .is_none()
+            .then(|| authorization.name.trim().to_owned());
+        let (inviter, agent) = (root.did(), agent_did.clone());
+        wasm_bindgen_futures::spawn_local(async move {
+            put_on_rosters(&state, named, &inviter, &agent, &rostered).await;
+        });
+    }
     // A new agent's space gets its library only now, after the app has
     // its answer: pushing the library is thousands of blocks, and the
     // request it answers lapses in minutes. The agent can use its grants
@@ -584,6 +604,38 @@ async fn authorize_inner(
         });
     }
     Ok(redirect)
+}
+
+/// Put the agent `agent`, approved by the account `inviter`, on the
+/// roster of each space it was granted, by routing key and subject, as
+/// `named`, or by its own space's name when `named` is `None`. A roster
+/// row that does not land is logged and left: the grants are what let
+/// the agent in, and the row only lists it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn put_on_rosters(
+    state: &AppState,
+    named: Option<String>,
+    inviter: &Did,
+    agent: &Did,
+    spaces: &[(String, Did)],
+) {
+    if spaces.is_empty() {
+        return;
+    }
+    let tonk = state.read().await;
+    let name = match named {
+        Some(name) => name,
+        None => super::agents::name(&tonk, agent)
+            .await
+            .unwrap_or_else(|| tonk_schema::petname(agent)),
+    };
+    for (key, subject) in spaces {
+        if let Err(error) =
+            super::agents::put_on_roster(&tonk, key, subject, agent, &name, inviter).await
+        {
+            tonk_common::log!("agent {agent} was not put on the roster of {key}: {error}");
+        }
+    }
 }
 
 /// Push `key`, a space this approval created, to its remote: nothing is
