@@ -10,8 +10,7 @@
 //! profile rather than inside the profile it names: a pointer stored in
 //! the thing it points at could not be read before opening it.
 
-use dialog_capability::{Subject, did};
-use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt};
+use dialog_effects::storage::{Directory, Location};
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{Branch, Repository};
 use dialog_storage::provider::storage::Storage;
@@ -405,25 +404,10 @@ impl Registry {
         &self,
         storage: &Storage<DefaultSpace>,
     ) -> Result<DefaultProfile, TonkWorkerError> {
-        // PROBE (temporary): surface the raw storage::Load error that
-        // opening the profile swallows before falling back to `Create`.
-        let probe = Subject::from(did!("local:storage"))
-            .attenuate(storage_fx::Storage)
-            .attenuate(Location::new(self.directory.clone(), &self.profile))
-            .load()
-            .perform(storage)
-            .await
-            .err()
-            .map(|error| error.to_string());
-        if let Some(error) = &probe {
-            log!("registry load probe failed: {error}");
-        }
         self.open(storage, &self.profile, true)
             .await
             .map_err(|error| {
-                TonkWorkerError::Internal(format!(
-                    "failed to open the registry profile: {error}; load probe: {probe:?}"
-                ))
+                TonkWorkerError::Internal(format!("failed to open the registry profile: {error}"))
             })
     }
 
