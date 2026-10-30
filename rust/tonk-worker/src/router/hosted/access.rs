@@ -183,7 +183,12 @@ pub async fn read_agent_access(
             agent: true,
             read: true,
             write: true,
-            name: directory_name(tonk, branch, agent).await,
+            // The agent space names itself, as any space does; a directory
+            // entry for it, should one exist, wins.
+            name: match directory_name(tonk, branch, agent).await {
+                Some(name) => Some(name),
+                None => own_name(tonk, branch, agent).await,
+            },
             ..SpaceAccess::default()
         },
     );
@@ -199,6 +204,25 @@ async fn directory_name(
     let rows: Vec<tonk_schema::SpaceName> = branch
         .query()
         .select(Query::<tonk_schema::SpaceName> {
+            this: Term::from(space.this()),
+            name: Term::var("name"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .ok()?;
+    rows.into_iter().next().map(|row| row.name.0)
+}
+
+/// The name `space` gives itself (`tonk/repository`).
+async fn own_name(
+    tonk: &TonkState,
+    branch: &dialog_repository::Branch,
+    space: &Did,
+) -> Option<String> {
+    let rows: Vec<tonk_schema::RepositoryName> = branch
+        .query()
+        .select(Query::<tonk_schema::RepositoryName> {
             this: Term::from(space.this()),
             name: Term::var("name"),
         })

@@ -135,21 +135,19 @@ fn revision_to_yaml(revision: Option<&dialog_repository::Revision>) -> serde_yam
 }
 
 /// Render every non-empty [`QueryMatchBlock`] as a stack of
-/// notation expressions, joined with `---` document markers.
-/// Empty blocks (zero results for a source expression) are
-/// skipped — emitting an empty section would land an unparseable
-/// document in front of the agent.
+/// notation expressions, one document per match, joined with `---`
+/// markers: two matches of one label in one document would repeat a
+/// key, which is not YAML. Empty blocks (zero results for a source
+/// expression) are skipped — emitting an empty section would land an
+/// unparseable document in front of the agent.
 fn render_matches(blocks: &[QueryMatchBlock]) -> String {
     let mut sections: Vec<String> = Vec::new();
     for block in blocks {
-        if block.results.is_empty() {
-            continue;
-        }
-        let mut section = String::new();
         for result in &block.results {
+            let mut section = String::new();
             render_one(&mut section, &block.label, result);
+            sections.push(section.trim_end_matches('\n').to_string());
         }
-        sections.push(section.trim_end_matches('\n').to_string());
     }
     sections.join("\n---\n")
 }
@@ -246,7 +244,10 @@ pub fn render_results(response: &EvaluateResponse, format: Format, label: &str) 
     match format {
         Format::Notation => {
             let mut out = String::new();
-            for result in &results {
+            for (index, result) in results.iter().enumerate() {
+                if index > 0 {
+                    out.push_str("---\n");
+                }
                 render_one(&mut out, label, result);
             }
             let distinct: std::collections::HashSet<&str> =
