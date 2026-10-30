@@ -517,7 +517,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
                     .map(|body| body.to_bytes())
                     .unwrap_or_default();
                 let text = if status.is_success() {
-                    notation(&body)
+                    notation(&body, write)
                 } else {
                     None
                 };
@@ -671,15 +671,27 @@ const DEFAULT_LIMIT: u64 = 100;
 /// A worker answer in Tonk notation, as `tonk eval` prints it: the
 /// envelope, then each expression's matches as re-submittable notation,
 /// then how to read the next page if there is one.
-fn notation(body: &[u8]) -> Option<String> {
+fn notation(body: &[u8], write: bool) -> Option<String> {
     let response: output::EvaluateResponse = serde_json::from_slice(body).ok()?;
     let mut answer = output::render(&response, output::Format::Notation, false).ok()?;
     let page: Value = serde_json::from_slice(body).ok()?;
-    if let Some(next) = page["page"]["next"].as_str() {
+    let mut note = |line: String| {
         if !answer.ends_with('\n') {
             answer.push('\n');
         }
-        answer.push_str(&format!(
+        answer.push_str(&line);
+    };
+    // A read-back pasted into tonk_evaluate without its `!` evaluates as a
+    // query and succeeds, so say plainly that it wrote nothing.
+    if write && response.commits.claims == 0 {
+        note(
+            "# Nothing was written: this document asserts nothing. Only a `concept!:` \
+             head (with `!`) or a command writes; without `!` a document only reads.\n"
+                .to_owned(),
+        );
+    }
+    if let Some(next) = page["page"]["next"].as_str() {
+        note(format!(
             "# More rows: call tonk_query again with cursor: \"{next}\"\n"
         ));
     }
@@ -725,9 +737,7 @@ fn read_guide(uri: &str) -> Option<Value> {
 /// How a listing describes the agent's own space to the model.
 const HOME: &str = "Your own space. Only you write here unless you share it: \
 keep notes, drafts and anything you want to remember across conversations. \
-It also holds what the person granted you, each granted space's delegation and \
-directory entry (its name and where it syncs), which is what this list is read \
-from. The other spaces are the ones the person granted you, with the access shown.";
+The other spaces are the ones the person granted you, with the access shown.";
 
 /// The offered tools, from the shared catalog, with `space` added to the
 /// scoped ones.
