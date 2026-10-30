@@ -2,10 +2,12 @@
 //!
 //! One `cli_command_run` event per invocation: command name,
 //! duration, exit class — never document content, paths, or URLs.
+//! At most [`HOURLY_BUDGET`] runs of one command are reported per hour.
 //! Opt-out model: a first-run notice on stderr, `tonk telemetry off`,
 //! `TONK_TELEMETRY=0`, or `DO_NOT_TRACK=1`. Without a build-time or
 //! runtime `TONK_POSTHOG_KEY` the whole module is a no-op.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -86,6 +88,99 @@ fn store_at(path: &Path, settings: &Settings) -> std::io::Result<()> {
     )
 }
 
+/// Most runs of one command (and subcommand) a machine reports in one UTC
+/// hour. Scripts and agents that poll `tonk pull` or `tonk status` every few
+/// seconds otherwise send tens of thousands of events a day from one
+/// profile. A run over the budget sends nothing; the next reported run of
+/// that command carries the count in `unreported_runs`.
+pub const HOURLY_BUDGET: u32 = 30;
+
+/// Per-command report counts for the current hour, in `telemetry-budget.json`
+/// beside [`state_path`]. Kept apart from [`Settings`] because every run
+/// writes it, and a lost or corrupt file only costs a few extra events.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Budget {
+    /// Hours since the Unix epoch that `commands[*].sent` counts.
+    hour: i64,
+    commands: BTreeMap<String, BudgetCount>,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+struct BudgetCount {
+    /// Runs reported in `hour`.
+    sent: u32,
+    /// Runs dropped since the last reported run, in any hour.
+    dropped: u32,
+}
+
+impl Budget {
+    /// Count one run of `command` in `hour`. `Some(dropped)` means report
+    /// it, with `dropped` earlier runs that were not reported; `None` means
+    /// the hour's budget is spent and the run sends nothing.
+    fn admit(&mut self, command: &str, hour: i64) -> Option<u32> {
+        if self.hour != hour {
+            self.hour = hour;
+            for count in self.commands.values_mut() {
+                count.sent = 0;
+            }
+        }
+        let count = self.commands.entry(command.to_owned()).or_default();
+        if count.sent >= HOURLY_BUDGET {
+            count.dropped = count.dropped.saturating_add(1);
+            return None;
+        }
+        count.sent += 1;
+        Some(std::mem::take(&mut count.dropped))
+    }
+}
+
+/// [`Budget::admit`] against the budget file, best effort: a missing or
+/// unreadable file starts a fresh budget, and a failed write is ignored.
+fn admit_run(command: &str, subcommand: Option<&str>) -> Option<u32> {
+    let key = match subcommand {
+        Some(sub) => format!("{command} {sub}"),
+        None => command.to_owned(),
+    };
+    let hour = chrono::Utc::now().timestamp().div_euclid(3600);
+    let Some(path) = state_path().map(|path| path.with_file_name("telemetry-budget.json")) else {
+        return Some(0);
+    };
+    if path
+        .parent()
+        .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
+    {
+        return Some(0);
+    }
+    // Hold the lock across read, update and replace, so parallel runs
+    // cannot both take the last slot or overwrite each other's counts.
+    // It is released when `_lock` drops. Without a lock, admit the run.
+    let Some(_lock) = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("lock"))
+        .ok()
+        .filter(|file| file.lock().is_ok())
+    else {
+        return Some(0);
+    };
+    let mut budget: Budget = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    let admitted = budget.admit(&key, hour);
+    // Write a sibling and rename, so a crash never leaves half a file.
+    let temp = path.with_extension(format!("json.{}", std::process::id()));
+    let written = serde_json::to_vec(&budget)
+        .ok()
+        .and_then(|bytes| std::fs::write(&temp, bytes).ok())
+        .and_then(|()| std::fs::rename(&temp, &path).ok());
+    if written.is_none() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    admitted
+}
+
 /// In-flight record of one command invocation.
 pub struct Recorder {
     client: tonk_analytics::native::Client,
@@ -126,10 +221,14 @@ pub async fn begin(command: &'static str, subcommand: Option<&'static str>) -> O
             ..settings
         });
     }
+    let unreported = admit_run(command, subcommand)?;
     let mut properties = Map::new();
     properties.insert("command".to_owned(), Value::from(command));
     if let Some(sub) = subcommand {
         properties.insert("subcommand".to_owned(), Value::from(sub));
+    }
+    if unreported > 0 {
+        properties.insert("unreported_runs".to_owned(), Value::from(unreported));
     }
     // Same dimension the web app registers as a posthog super
     // property; keeps all surfaces separable on one dashboard axis.
@@ -288,6 +387,48 @@ mod tests {
         let settings = Settings::default();
         assert!(settings.enabled);
         assert!(!settings.notice_shown);
+    }
+
+    #[dialog_common::test]
+    fn budget_reports_runs_up_to_the_hourly_limit_then_drops_them() {
+        let mut budget = Budget::default();
+        for _ in 0..HOURLY_BUDGET {
+            assert_eq!(budget.admit("pull", 10), Some(0));
+        }
+        assert_eq!(budget.admit("pull", 10), None);
+        assert_eq!(budget.admit("pull", 10), None);
+    }
+
+    #[dialog_common::test]
+    fn budget_counts_each_command_on_its_own() {
+        let mut budget = Budget::default();
+        for _ in 0..HOURLY_BUDGET {
+            budget.admit("pull", 10);
+        }
+        assert_eq!(budget.admit("pull", 10), None);
+        assert_eq!(budget.admit("status", 10), Some(0));
+        assert_eq!(budget.admit("space new", 10), Some(0));
+    }
+
+    #[dialog_common::test]
+    fn budget_reports_dropped_runs_once_on_the_next_hour() {
+        let mut budget = Budget::default();
+        for _ in 0..HOURLY_BUDGET + 3 {
+            budget.admit("pull", 10);
+        }
+        assert_eq!(budget.admit("pull", 11), Some(3));
+        assert_eq!(budget.admit("pull", 11), Some(0));
+    }
+
+    #[dialog_common::test]
+    fn budget_survives_a_round_trip_through_json() {
+        let mut budget = Budget::default();
+        for _ in 0..HOURLY_BUDGET {
+            budget.admit("status", 10);
+        }
+        let mut loaded: Budget =
+            serde_json::from_str(&serde_json::to_string(&budget).unwrap()).unwrap();
+        assert_eq!(loaded.admit("status", 10), None);
     }
 
     #[dialog_common::test]

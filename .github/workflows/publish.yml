@@ -357,13 +357,13 @@ jobs:
       # view peer (rust/tonk-view-peer) a view runs in a Web Worker, and
       # the guest runtime and document its sandboxed page renders with.
       # MCP hosts load them from their own view origins, so they carry
-      # CORS. Served from a copy of the app's assets, which the preview's
-      # config is pointed at.
+      # CORS. Served from a copy of the app's assets, which the deploy's
+      # config is pointed at: the preview's own, or `wrangler.toml` for
+      # dev, staging and production.
       - name: Build inline view assets
-        if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
-          config="${{ steps.access-database.outputs.config }}"
+          config="${{ steps.access-database.outputs.config || 'wrangler.toml' }}"
           assets="$PWD/preview-assets"
           # The runner's disk holds one wasm build's target, not two: the
           # host worker is deployed from its `build/`, which stays.

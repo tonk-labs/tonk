@@ -58,7 +58,8 @@ pub struct SpaceAccess {
     /// The space's name in the agent space's directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Where the space syncs, from the agent space's directory.
+    /// Where the space syncs: the `home.address` a grant in force carries
+    /// in its signed meta, as a space's grants carry it for every peer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
     /// The CIDs of the delegations to the agent space that are in force,
@@ -157,6 +158,14 @@ pub async fn read_agent_access(
                     access.expires = Some(access.expires.map_or(at, |held| held.min(at)));
                 }
                 access.grants.push(delegation.to_cid().to_string());
+                // Signed by whoever granted the space, so the agent, which
+                // can write its own space's directory, cannot redirect it.
+                if access.address.is_none() {
+                    access.address = tonk_invite::home_address(chain)
+                        .ok()
+                        .flatten()
+                        .map(|address| address.to_string());
+                }
             }
             _ if !in_window => spaces.entry(subject).or_default().lapsed += 1,
             // A chain that does not verify grants nothing.
@@ -174,7 +183,6 @@ pub async fn read_agent_access(
         entry.grants.sort_unstable();
         entry.grants.dedup();
         entry.name = directory_name(tonk, branch, &space).await;
-        entry.address = directory_address(tonk, branch, &space).await;
         access.spaces.insert(space.to_string(), entry);
     }
     access.spaces.insert(
@@ -310,25 +318,6 @@ async fn own_name(
         .await
         .ok()?;
     rows.into_iter().next().map(|row| row.name.0)
-}
-
-/// Where the agent space's directory says `space` syncs.
-async fn directory_address(
-    tonk: &TonkState,
-    branch: &dialog_repository::Branch,
-    space: &Did,
-) -> Option<String> {
-    let rows: Vec<tonk_schema::SpaceHomeAddress> = branch
-        .query()
-        .select(Query::<tonk_schema::SpaceHomeAddress> {
-            this: Term::from(space.this()),
-            home_address: Term::var("home_address"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .ok()?;
-    rows.into_iter().next().map(|row| row.home_address.0)
 }
 
 /// Whether a grant whose leaf command is `command` covers some

@@ -33,6 +33,7 @@ async fn grants(
     agent: &Did,
     verbs: &[&str],
     expires: Option<u64>,
+    home: Option<&url::Url>,
 ) -> Vec<DelegationChain> {
     let device = Ed25519Signer::generate().await.unwrap();
     let mut chains = Vec::new();
@@ -56,6 +57,10 @@ async fn grants(
                 .audience(agent)
                 .subject(UcanSubject::Specific(space.did()))
                 .command(command);
+            let leaf = match home {
+                Some(home) => leaf.meta(tonk_invite::home_address_meta(home)),
+                None => leaf,
+            };
             let leaf = match expires {
                 Some(at) => leaf
                     .expiration(Timestamp::try_from(at as i128).unwrap())
@@ -364,7 +369,7 @@ async fn a_token_whose_powerline_is_addressed_elsewhere_is_unauthorized() {
 async fn a_grant_in_the_token_opens_no_space() {
     let agent = Ed25519Signer::generate().await.unwrap();
     let space = Ed25519Signer::generate().await.unwrap();
-    let carried = grants(&space, &agent.did(), &["get", "put"], None).await;
+    let carried = grants(&space, &agent.did(), &["get", "put"], None, None).await;
     let bearer = issue_agent_session_with_grants(agent.clone(), &home(), &carried)
         .await
         .unwrap()
@@ -484,28 +489,27 @@ async fn the_list_puts_home_first_with_names_and_expiry() {
 }
 
 #[dialog_common::test]
-fn a_space_mounts_only_at_the_configured_origin() {
+fn a_space_mounts_at_its_recorded_address() {
     let configured = "https://tonk.example/ucan/";
-    assert_eq!(
-        mount_address(Some("https://tonk.example/ucan/"), configured),
-        configured
-    );
-    assert_eq!(
-        mount_address(Some("https://tonk.example/other/ucan/"), configured),
+    for named in [
+        "https://tonk.example/ucan/",
         "https://tonk.example/other/ucan/",
-        "another path on the configured origin"
-    );
-    for foreign in [
-        "https://elsewhere.example/ucan/",
-        "http://tonk.example/ucan/",
+        "https://tonk.network/ucan/",
         "https://tonk.example:8443/ucan/",
-        "https://tonk.example.evil/ucan/",
+        "http://127.0.0.1:8787/ucan/",
+        "http://localhost:8787/ucan/",
+    ] {
+        assert_eq!(mount_address(Some(named), configured), named, "{named}");
+    }
+    for unusable in [
+        "http://tonk.example/ucan/",
+        "file:///etc/passwd",
         "not a url",
     ] {
         assert_eq!(
-            mount_address(Some(foreign), configured),
+            mount_address(Some(unusable), configured),
             configured,
-            "{foreign}"
+            "{unusable}"
         );
     }
     assert_eq!(mount_address(None, configured), configured);
@@ -699,8 +703,8 @@ concept!: &mcp-note
             request: Request<Body>,
         ) -> Response<Body> {
             let session = verified.writer_session(mcp_session);
-            // As the Host Worker does: the directory's address only on the
-            // configured service's origin.
+            // As the Host Worker does: the grant's home, or the configured
+            // service.
             let named = request
                 .headers()
                 .get(ADDRESS_HEADER)
@@ -793,17 +797,19 @@ concept!: &mcp-note
     }
 
     /// Grant `agent` `verbs` on `space`, named `name`, as the approval
-    /// does: the chains retained in the agent space with a directory
-    /// entry, through a writer of the agent space of its own.
+    /// does: the chains, carrying `home` in their signed meta, retained in
+    /// the agent space with a directory entry naming `address`, through a
+    /// writer of the agent space of its own.
     async fn approve(
         agent: &Ed25519Signer,
         remote: &url::Url,
         space: &Ed25519Signer,
         verbs: &[&str],
         name: Option<&str>,
+        home: Option<&url::Url>,
         address: &str,
     ) {
-        let chains = grants(space, &agent.did(), verbs, None).await;
+        let chains = grants(space, &agent.did(), verbs, None, home).await;
         let session = owner(agent, remote, "approval").await;
         let writer = SpaceWriter::open(&scratch_root(), &session, &agent.did(), remote)
             .await
@@ -870,6 +876,17 @@ concept!: &mcp-note
                 .unwrap();
         }
         let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+        // Notes lives on another service, as a space homed on another
+        // deployment does: its grant says so.
+        let other = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        other
+            .address
+            .provision_subject(notes.did().as_ref())
+            .await
+            .unwrap();
+        let notes_home = url::Url::parse(&other.address.ucan_endpoint()).unwrap();
         let run: u64 = rand::random();
         let note = |label: &str| {
             format!("mcp-note!:\n  this: urn:mcp:{run}:{label}\n  title: \"note {label}\"\n")
@@ -884,12 +901,14 @@ concept!: &mcp-note
             &notes,
             &["get", "put"],
             Some("Notes"),
-            remote.as_str(),
+            Some(&notes_home),
+            FOREIGN,
         )
         .await;
-        // The shelf's entry names a foreign service: its writer must still
-        // mount it at the configured one.
-        approve(&agent, &remote, &shelf, &["get"], None, FOREIGN).await;
+        // The shelf's grant names no home and its directory entry names a
+        // foreign service, which the agent could have written: its writer
+        // mounts it at the configured service.
+        approve(&agent, &remote, &shelf, &["get"], None, None, FOREIGN).await;
 
         let writers = NativeWriters {
             remote: remote.clone(),
@@ -974,7 +993,7 @@ concept!: &mcp-note
 
         // Granted put while the shelf's writer is warm: the next evaluate
         // passes the front, and the writer pulls the new grant to land it.
-        approve(&agent, &remote, &shelf, &["put"], None, FOREIGN).await;
+        approve(&agent, &remote, &shelf, &["put"], None, None, FOREIGN).await;
         let (result, error) = client
             .call(
                 "tonk_evaluate",
@@ -996,17 +1015,22 @@ concept!: &mcp-note
 
         let mounts = writers.mounts.lock().await.clone();
         assert!(
+            mounts.contains(&(notes.did(), notes_home.to_string())),
+            "notes mounted at its grant's home: {mounts:?}"
+        );
+        assert!(
             mounts.contains(&(shelf.did(), remote.to_string())),
             "the shelf mounted at the configured service: {mounts:?}"
         );
         assert!(
-            mounts.iter().all(|(_, mounted)| mounted == remote.as_str()),
-            "nothing mounted at the foreign address: {mounts:?}"
+            mounts.iter().all(|(_, mounted)| mounted != FOREIGN),
+            "nothing mounted at the directory's address: {mounts:?}"
         );
 
         let open: Vec<Arc<SpaceWriter>> =
             writers.open.lock().await.drain().map(|(_, w)| w).collect();
         drop(open);
         service.stop().await.unwrap();
+        other.stop().await.unwrap();
     }
 }

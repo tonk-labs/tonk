@@ -606,8 +606,14 @@ concept!: &writer-note
     }
 
     /// `space -> device -> agent` for `verb`, one chain per storage
-    /// scope: what the approval retains in the agent space.
-    async fn grant(space: &Ed25519Signer, agent: &Did, verb: &str) -> Vec<DelegationChain> {
+    /// scope, the leaf carrying `home` in its signed meta: what the
+    /// approval retains in the agent space.
+    async fn grant(
+        space: &Ed25519Signer,
+        agent: &Did,
+        verb: &str,
+        home: &url::Url,
+    ) -> Vec<DelegationChain> {
         use dialog_credentials::Signer;
         use dialog_ucan_core::DelegationBuilder;
         use dialog_ucan_core::subject::Subject as UcanSubject;
@@ -620,18 +626,27 @@ concept!: &writer-note
         ] {
             let command: Vec<String> = vec!["use".into(), verb.into(), kind.into(), item.into()];
             let mut links = Vec::new();
-            for (issuer, audience) in [(space, &device.did()), (&device, agent)] {
-                links.push(
-                    DelegationBuilder::new()
-                        .issuer(Signer::from(issuer.clone()))
-                        .audience(audience)
-                        .subject(UcanSubject::Specific(space.did()))
-                        .command(command.clone())
-                        .try_build()
-                        .await
-                        .unwrap(),
-                );
-            }
+            links.push(
+                DelegationBuilder::new()
+                    .issuer(Signer::from(space.clone()))
+                    .audience(&device.did())
+                    .subject(UcanSubject::Specific(space.did()))
+                    .command(command.clone())
+                    .try_build()
+                    .await
+                    .unwrap(),
+            );
+            links.push(
+                DelegationBuilder::new()
+                    .issuer(Signer::from(device.clone()))
+                    .audience(agent)
+                    .subject(UcanSubject::Specific(space.did()))
+                    .command(command.clone())
+                    .meta(tonk_invite::home_address_meta(home))
+                    .try_build()
+                    .await
+                    .unwrap(),
+            );
             chains.push(DelegationChain::try_from(links).unwrap());
         }
         chains
@@ -656,8 +671,8 @@ concept!: &writer-note
                 .await
                 .unwrap();
         }
-        let mut chains = grant(&granted, &agent, "get").await;
-        chains.extend(grant(&granted, &agent, "put").await);
+        let mut chains = grant(&granted, &agent, "get", &fixture.remote).await;
+        chains.extend(grant(&granted, &agent, "put", &fixture.remote).await);
         let approval = fixture.writer("approval").await;
         approval
             .approve(
@@ -665,7 +680,7 @@ concept!: &writer-note
                 &[super::super::super::access::DirectoryEntry {
                     space: granted.did(),
                     name: Some("Garden".into()),
-                    address: Some(fixture.remote.to_string()),
+                    address: Some("https://elsewhere.example/ucan/".into()),
                 }],
             )
             .await
@@ -681,7 +696,7 @@ concept!: &writer-note
         assert_eq!(
             entry.address.as_deref(),
             Some(fixture.remote.as_str()),
-            "the directory names where it syncs"
+            "the grant, not the directory, names where it syncs"
         );
         assert_eq!(entry.grants.len(), 6, "one leaf per scope and verb");
         assert!(access.get(&agent).is_some_and(|own| own.agent));
