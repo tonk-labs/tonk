@@ -423,7 +423,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // A new agent and its first session, for the OAuth approval page.
         .route("/api/agent/session", post(agent_session::create))
         .route("/api/agent/request/{handle}", get(agent_session::request))
-        .route("/api/agent/answer/{handle}", get(agent_session::answer_of))
         .route("/api/agent/deny", post(agent_session::deny))
         // The account's agents and what each can reach, for the hub.
         .route("/api/agents", get(agents::list))
