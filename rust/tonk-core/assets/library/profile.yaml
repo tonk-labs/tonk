@@ -2550,8 +2550,10 @@ element!: &hub-discover
         const list = self.querySelector('[data-contacts-list]');
         const status = self.querySelector('[data-contacts-status]');
         const hide = self.querySelector('style[data-agent-spaces]');
-        const key = text => String(text ?? '').replace(/[^A-Za-z0-9]/g, '');
-        if (hide) hide.textContent = agents.map(agent => `.space-card[data-space-subject$="${key(agent.key)}"]`).join(',') + (agents.length ? '{display:none}' : '');
+        // A space card carries its routing key whole (a did:key now), so
+        // match it exactly, quoted for an attribute selector.
+        const key = text => String(text ?? '').replace(/["\\]/g, '\\$&');
+        if (hide) hide.textContent = agents.map(agent => `.space-card[data-space-subject="${key(agent.key)}"]`).join(',') + (agents.length ? '{display:none}' : '');
         if (tab) tab.hidden = agents.length === 0;
         if (!agents.length && self.getAttribute('collection') === 'contacts') {
           self.querySelector('[data-collection="spaces"]')?.click();
