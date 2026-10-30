@@ -151,6 +151,13 @@ pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
         return None;
     }
     let origin = origin.trim_end_matches('/');
+    // The provider's `live.rs` socket: a policy listing only the https
+    // origin refuses a `wss:` connection to the same host.
+    let socket = origin
+        .strip_prefix("https://")
+        .map(|host| format!("wss://{host}"))
+        .or_else(|| origin.strip_prefix("http://").map(|host| format!("ws://{host}")));
+    let connect: Vec<&str> = std::iter::once(origin).chain(socket.as_deref()).collect();
     let html = RELAY
         .replace("__TONK_MCP_ORIGIN__", &json!(origin).to_string())
         .replace("__TONK_VIEW_FRAME__", "false");
@@ -162,7 +169,7 @@ pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
             "_meta": {
                 "ui": {
                     "csp": {
-                        "connectDomains": [origin],
+                        "connectDomains": connect,
                         "resourceDomains": [origin],
                         // Route A: a host that honours it frames the
                         // provider's page, whose worker is the peer.
@@ -171,7 +178,7 @@ pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
                     "prefersBorder": true,
                 },
                 "openai/widgetCSP": {
-                    "connect_domains": [origin],
+                    "connect_domains": connect,
                     "resource_domains": [origin],
                     "frame_domains": [origin],
                 },
