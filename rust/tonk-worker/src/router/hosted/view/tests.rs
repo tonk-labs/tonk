@@ -50,6 +50,8 @@ async fn grants(space: &Ed25519Signer, agent: &Did, verbs: &[&str]) -> Vec<Deleg
 struct AgentWriter {
     space: Did,
     grants: Vec<DelegationChain>,
+    /// Where the grant says the space lives, when not the provider.
+    address: Option<String>,
 }
 
 impl Writers for AgentWriter {
@@ -76,6 +78,7 @@ impl Writers for AgentWriter {
                         SpaceAccess {
                             read: reach("get"),
                             write: reach("put"),
+                            address: self.address.clone(),
                             ..SpaceAccess::default()
                         },
                     );
@@ -109,6 +112,7 @@ async fn verified(
     let writer = AgentWriter {
         space: space.did(),
         grants,
+        address: None,
     };
     (verified, writer)
 }
@@ -379,6 +383,55 @@ async fn an_outline_asks_the_spaces_writer_from_the_route_given() {
     assert_eq!(elsewhere["isError"], true, "a space it does not reach");
 }
 
+/// A view syncs from the host's sandbox, under the policy the relay
+/// resource names, so a space hosted elsewhere is refused up front
+/// rather than shown as a view whose first request the host blocks.
+#[dialog_common::test]
+async fn a_space_hosted_where_the_view_cannot_reach_is_not_shown() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let view = Ed25519Signer::generate().await.unwrap();
+    let (verified, mut writer) = verified(&agent, &space, &["get"]).await;
+    let subject = space.did().to_string();
+    async fn open(verified: &Verified, writer: &AgentWriter, subject: &str) -> Value {
+        call(
+            OPEN,
+            &json!({ "space": subject, "path": "/" }),
+            verified,
+            writer,
+            "",
+            "session",
+            ORIGIN,
+            &TicketKey::derive("secret"),
+        )
+        .await
+        .unwrap()
+    }
+
+    writer.address = Some(format!("{ORIGIN}/ucan/"));
+    let shown = open(&verified, &writer, &subject).await;
+    assert_eq!(shown["isError"], false, "{shown}");
+    let remote = url::Url::parse(shown["structuredContent"]["remote"].as_str().unwrap()).unwrap();
+    let read = read_resource(RELAY_URI, ORIGIN).unwrap();
+    let allowed = &read["contents"][0]["_meta"]["ui"]["csp"]["connectDomains"];
+    assert!(
+        allowed
+            .as_array()
+            .unwrap()
+            .contains(&json!(remote.origin().ascii_serialization())),
+        "the view's policy {allowed} lets it reach {remote}"
+    );
+
+    writer.address = Some("https://elsewhere.example/ucan/".into());
+    let refused = open(&verified, &writer, &subject).await;
+    assert_eq!(refused["isError"], true, "{refused}");
+    let said = refused["content"][0]["text"].as_str().unwrap();
+    assert!(said.contains("https://elsewhere.example"), "{said}");
+    let pair = (verified, writer);
+    let refused = access(&pair, &space.did(), &view.did(), false).await;
+    assert_eq!(refused["isError"], true, "{refused}");
+}
+
 #[test]
 fn the_relay_is_filled_with_the_origin_it_was_reached_on() {
     let read = read_resource(RELAY_URI, "https://tonk.example/").unwrap();
@@ -492,6 +545,7 @@ concept!: &view-note
             let writer = AgentWriter {
                 space: agent.did(),
                 grants: Vec::new(),
+                address: None,
             };
             Self {
                 service,

@@ -188,17 +188,7 @@ pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
         return None;
     }
     let origin = origin.trim_end_matches('/');
-    // The provider's `live.rs` socket: a policy listing only the https
-    // origin refuses a `wss:` connection to the same host.
-    let socket = origin
-        .strip_prefix("https://")
-        .map(|host| format!("wss://{host}"))
-        .or_else(|| {
-            origin
-                .strip_prefix("http://")
-                .map(|host| format!("ws://{host}"))
-        });
-    let connect: Vec<&str> = std::iter::once(origin).chain(socket.as_deref()).collect();
+    let connect = connect_domains(origin);
     let html = RELAY
         .replace("__TONK_MCP_ORIGIN__", &json!(origin).to_string())
         .replace("__TONK_VIEW_FRAME__", "false");
@@ -226,6 +216,45 @@ pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
             },
         }],
     }))
+}
+
+/// The origins a view's peer may sync with: those its policy names in
+/// `connectDomains`. Only the provider's own, for now.
+fn sync_origins(origin: &str) -> Vec<String> {
+    vec![origin.trim_end_matches('/').to_owned()]
+}
+
+/// The view's `connectDomains`: each origin it syncs with, and its
+/// `live.rs` socket, which a policy listing only the https origin
+/// refuses.
+fn connect_domains(origin: &str) -> Vec<String> {
+    sync_origins(origin)
+        .into_iter()
+        .flat_map(|origin| {
+            let socket = origin
+                .strip_prefix("https://")
+                .map(|host| format!("wss://{host}"))
+                .or_else(|| {
+                    origin
+                        .strip_prefix("http://")
+                        .map(|host| format!("ws://{host}"))
+                });
+            std::iter::once(origin).chain(socket)
+        })
+        .collect()
+}
+
+/// Whether a view served from `origin` may sync with `remote`, a
+/// space's `/ucan/` address. The host enforces the view's policy, so a
+/// view of a space elsewhere would fail on its first request.
+fn view_reaches(remote: &str, origin: &str) -> bool {
+    let Ok(remote) = url::Url::parse(remote) else {
+        return false;
+    };
+    let remote = remote.origin().ascii_serialization();
+    sync_origins(origin)
+        .iter()
+        .any(|allowed| *allowed == remote)
 }
 
 /// The agent space writer's route answering the grants in force for one
@@ -326,6 +355,16 @@ pub async fn call<W: Writers>(
         access.address.as_deref(),
         &format!("{}/ucan/", origin.trim_end_matches('/')),
     );
+    if !view_reaches(&remote, origin) {
+        let at = url::Url::parse(&remote)
+            .map(|url| url.origin().ascii_serialization())
+            .unwrap_or(remote.clone());
+        return Some(error(&format!(
+            "This space is hosted at {at}, and a view from {} cannot reach it yet, so it \
+             cannot be shown inline. Ask the person to open it in Tonk at {at}.",
+            origin.trim_end_matches('/')
+        )));
+    }
     if name == OPEN {
         let path = arguments["path"].as_str().unwrap_or("/");
         if !path.starts_with('/')
