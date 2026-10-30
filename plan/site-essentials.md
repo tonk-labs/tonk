@@ -79,10 +79,12 @@ with twiggy on the core module, 2026-10-29):
    inspector, notebook, portal, site, prose, table, code, Web Awesome) are
    each a component a library declares, loaded the first time an element of
    theirs appears. Nothing is preloaded.
-4. **What is not visible stays inert.** A `<tonk-display>` that is hidden
-   (`hidden`, a closed dialog or menu, a collapsed panel) or off screen does
-   not resolve its model, subscribe or render its children until it becomes
-   visible, as React's `Activity` defers a hidden subtree.
+4. **What is not visible stays inert.** A `<tonk-display loading="lazy">`
+   that is not rendered (`hidden`, a closed dialog or menu, a collapsed
+   panel) does not resolve its model, subscribe or render its children until
+   it is, as React's `Activity` defers a hidden subtree. Opt-in, because the
+   profile reads data from displays it never shows (the deletion's scope,
+   the linked account); the library marks its dialogs and menus lazy.
 5. **The registry reads an element once.** One query for an element's
    definition (its four dictionaries together), one subscription to it, and
    no re-read on frames that carry nothing new.
@@ -100,17 +102,22 @@ with twiggy on the core module, 2026-10-29):
 
 ## Order
 
-1. Delete the browser-only paths of `tonk-worker` and the old workers. Done
-   on this branch.
-2. What a kernel ships (7): the names section first, then a space's kernel
-   without the persona's routes.
-3. Axum out of the worker (6), which the second half of (7) touches anyway.
-4. The registry and inert displays (5, 4): the largest cut in queries, with no
-   change to what is seeded.
-5. `space.yaml` and the profile's own library (1, 2), with the URIs Rust names
+1. Delete the browser-only paths of `tonk-worker` and the old workers. Done.
+2. What a kernel ships (7): the names section is stripped (21 MB to 16.7 MB).
+   Next, a space's kernel without the persona's routes (about 1 to 2 MB), and
+   the Welcome images out of the kernel (0.8 MB). `wasm-opt -Oz` takes a
+   kernel to 13.5 MB but only 6.2 MB to 5.7 MB compressed, for about 70
+   seconds a kernel per build.
+3. The registry and lazy displays (5, 4). Done: the hub's first load went
+   from 373 requests to 218. No display is marked lazy yet. What remains is displays the browser renders
+   though they draw nothing, the six registration panels foremost (one
+   display that picks the stage would do), and a read of each command a
+   view's bindings name.
+4. `space.yaml` and the profile's own library (1, 2), with the URIs Rust names
    kept declared.
-6. The renderer and built-in elements as installed components (3), and the
+5. The renderer and built-in elements as installed components (3), and the
    site shell from the server (8).
+6. Axum out of the worker (6): simpler, though it is 0.08 MB of a kernel.
 
 ## Open
 
