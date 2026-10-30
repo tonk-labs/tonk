@@ -1644,7 +1644,7 @@ async fn run_connection_invite_for(
             )
             .await;
         }
-        if let Err(error) = enable_sync_for_repository(&tonk, repo, &remote).await {
+        if let Err(error) = enable_sync_for_repository(&tonk, repo, &remote, true).await {
             log!("agent invite sync setup failed: {error}");
             return publish_connection_invite(
                 &tonk,
@@ -3644,7 +3644,21 @@ pub(super) async fn enable_sync_inner(
     remote: &str,
 ) -> Result<(), RepositoryError> {
     let tonk = state.write().await;
-    enable_sync_for_repository(&tonk, key, remote).await
+    enable_sync_for_repository(&tonk, key, remote, true).await
+}
+
+/// [`enable_sync_inner`] for a space just created: creating it
+/// provisioned it when the customer is active, and provisioning again is
+/// a round trip that answers the same.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) async fn attach_provisioned_remote(
+    state: &AppState,
+    key: &str,
+    remote: &str,
+) -> Result<(), RepositoryError> {
+    let tonk = state.write().await;
+    let provisioned = super::customer::is_active(&tonk).await;
+    enable_sync_for_repository(&tonk, key, remote, !provisioned).await
 }
 
 /// Attach the account provider to one existing repository.
@@ -3657,6 +3671,7 @@ async fn enable_sync_for_repository(
     tonk: &TonkState,
     key: &str,
     remote: &str,
+    provision: bool,
 ) -> Result<(), RepositoryError> {
     if remote.trim().is_empty() {
         // Submitted with no URL — nothing to attach.
@@ -3698,7 +3713,12 @@ async fn enable_sync_for_repository(
     // loop hammers it forever and a link handed out against it answers
     // "you don't have this space". That refusal fails the attach.
     let own_service = remote_is_own_service(tonk, remote).await;
-    match provision_space_consumer(tonk, &repository.did()).await {
+    let provisioned = if provision {
+        provision_space_consumer(tonk, &repository.did()).await
+    } else {
+        Ok(())
+    };
+    match provisioned {
         Ok(()) => {}
         Err(error) if own_service && !super::customer::is_retryable(&error) => {
             return Err(RepositoryError::Internal(format!(
@@ -3752,7 +3772,7 @@ pub(super) async fn attach_account_remote_if_local(
         return Ok(false);
     }
 
-    enable_sync_for_repository(tonk, key, remote).await?;
+    enable_sync_for_repository(tonk, key, remote, true).await?;
     Ok(true)
 }
 
