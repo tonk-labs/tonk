@@ -19,7 +19,15 @@ import {
 } from '@modelcontextprotocol/client';
 import { loopback, provider } from './lib/oauth.mjs';
 import { inbox } from './lib/inbox.mjs';
-import { launch, signUp, createSpace, syncedSpaces, approve } from './lib/browser.mjs';
+import {
+  launch,
+  boot,
+  passkeyOf,
+  signUp,
+  createSpace,
+  syncedSpaces,
+  approve,
+} from './lib/browser.mjs';
 
 const origin = new URL(process.env.TONK_E2E_ORIGIN ?? 'http://localhost:8787').origin;
 const endpoint = new URL('/mcp', origin);
@@ -49,7 +57,8 @@ const note = (label) =>
 const NOTES = 'e2e-note:\n  label: ?label\n';
 
 test('the hosted agent connects, is approved, and reads and writes spaces', async (t) => {
-  const callback = await loopback();
+  const mail = inbox({ run, base: process.env.TONK_E2E_CAPTURED_EMAILS || origin });
+  let elsewhere;
   const person = await launch({
     headed: !!process.env.TONK_E2E_HEADED,
     trace: process.env.TONK_E2E_TRACE,
@@ -90,56 +99,65 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
     // Subjects by name, of the spaces the person grants.
     let granted;
     await step('a fresh person signs up, confirms their email and makes two spaces', async () => {
-      const mail = inbox({ run, base: process.env.TONK_E2E_CAPTURED_EMAILS || origin });
       await signUp(person.page, { origin, address: mail.address, inbox: mail });
       await createSpace(person.page, { origin, name: writableName });
       await createSpace(person.page, { origin, name: readableName });
       granted = await syncedSpaces(person.page, [writableName, readableName]);
     });
 
+    // OAuth as a host runs it, approved in `browser`: the token.
+    const authorize = async (browser, { name, grants, signIn }) => {
+      const callback = await loopback();
+      try {
+        let authorizationUrl;
+        const auth = provider({
+          redirectUrl: callback.url,
+          name,
+          navigate: (url) => (authorizationUrl = url),
+        });
+        const transport = new StreamableHTTPClientTransport(endpoint, { authProvider: auth });
+        await assert.rejects(
+          new Client({ name: 'tonk-e2e', version: '0' }).connect(transport),
+          UnauthorizedError,
+        );
+        assert.ok(authorizationUrl, 'the client was never sent to /authorize');
+        assert.equal(new URL(authorizationUrl).origin, origin);
+
+        const cost = await approve(browser.page, { authorizationUrl, agent: name, grants, signIn });
+        const answer = await callback.answered;
+        // Approval has to finish while the request is still pending, on a
+        // person's link rather than CI's: it may only push the grants, not
+        // a whole space's history.
+        const spent = cost.stop();
+        console.log(`approval: ${JSON.stringify(spent)}`);
+        assert.ok(
+          spent.writes <= APPROVAL_WRITES,
+          `approval made ${spent.writes} writes (budget ${APPROVAL_WRITES})`,
+        );
+        assert.ok(answer.get('code'), `the callback carried no code: ${answer}`);
+        // The whole callback, so the SDK checks `iss` (RFC 9207) too.
+        await transport.finishAuth(answer);
+        const token = auth.tokens()?.access_token;
+        assert.ok(token, 'no access token after the code was redeemed');
+        return token;
+      } finally {
+        await callback.close();
+      }
+    };
+
     let token;
     await step('OAuth runs to a token, approved on /settings/agent', async () => {
-      let authorizationUrl;
-      const auth = provider({
-        redirectUrl: callback.url,
+      token = await authorize(person, {
         name: agent,
-        navigate: (url) => (authorizationUrl = url),
-      });
-      const transport = new StreamableHTTPClientTransport(endpoint, { authProvider: auth });
-      await assert.rejects(
-        new Client({ name: 'tonk-e2e', version: '0' }).connect(transport),
-        UnauthorizedError,
-      );
-      assert.ok(authorizationUrl, 'the client was never sent to /authorize');
-      assert.equal(new URL(authorizationUrl).origin, origin);
-
-      const cost = await approve(person.page, {
-        authorizationUrl,
-        agent,
         grants: { [writableName]: 'Read and write', [readableName]: 'Read' },
       });
-      const answer = await callback.answered;
-      // Approval has to finish while the request is still pending, on a
-      // person's link rather than CI's: it may only push the grants, not
-      // a whole space's history.
-      const spent = cost.stop();
-      console.log(`approval: ${JSON.stringify(spent)}`);
-      assert.ok(
-        spent.writes <= APPROVAL_WRITES,
-        `approval made ${spent.writes} writes (budget ${APPROVAL_WRITES})`,
-      );
-      assert.ok(answer.get('code'), `the callback carried no code: ${answer}`);
-      // The whole callback, so the SDK checks `iss` (RFC 9207) too.
-      await transport.finishAuth(answer);
-      token = auth.tokens()?.access_token;
-      assert.ok(token, 'no access token after the code was redeemed');
     });
 
-    const connect = async () => {
+    const connect = async (bearer = token) => {
       const client = new Client({ name: 'tonk-e2e', version: '0' });
       await client.connect(
         new StreamableHTTPClientTransport(endpoint, {
-          requestInit: { headers: { authorization: `Bearer ${token}` } },
+          requestInit: { headers: { authorization: `Bearer ${bearer}` } },
         }),
       );
       sessions.push(client);
@@ -218,9 +236,35 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       const lost = labels.filter((label) => !read.includes(label));
       assert.deepEqual(lost, [], `${lost.length} of ${labels.length} writes were lost`);
     });
+
+    // What a person who made their spaces earlier meets: a browser with
+    // no account on it, so the approval page signs them in first and has
+    // to list spaces this browser has never seen.
+    await step(
+      'the same person approves another agent from a browser with no account on it',
+      async () => {
+        await boot(person.page, origin);
+        elsewhere = await launch({
+          headed: !!process.env.TONK_E2E_HEADED,
+          passkey: await passkeyOf(person),
+        });
+        const again = await authorize(elsewhere, {
+          name: `${agent} elsewhere`,
+          grants: { [readableName]: 'Read' },
+          signIn: mail.address,
+        });
+        const listed = (await call(await connect(again), 'tonk_list_spaces', {})).structuredContent
+          .spaces;
+        assert.deepEqual(
+          listed.filter((space) => !space.home).map(({ subject, access }) => ({ subject, access })),
+          [{ subject: granted[readableName], access: 'read' }],
+          `listed ${JSON.stringify(listed)}`,
+        );
+      },
+    );
   } finally {
     await Promise.allSettled(sessions.map((client) => client.close()));
-    await callback.close();
     await person.close({ keepTrace: failed });
+    await elsewhere?.close();
   }
 });

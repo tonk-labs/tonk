@@ -14,7 +14,12 @@ const SETTLE = 150_000;
 // Service worker requests reach `context.on('request')` only with this.
 process.env.PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS ??= '1';
 
-export async function launch({ headed = false, trace } = {}) {
+/**
+ * A browser with its own profile and a virtual PRF passkey. Given
+ * `passkey` (from `passkeyOf`), the authenticator holds that passkey
+ * instead of an empty one: the same person on another browser.
+ */
+export async function launch({ headed = false, trace, passkey } = {}) {
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   if (trace) await context.tracing.start({ screenshots: true, snapshots: true });
@@ -23,7 +28,7 @@ export async function launch({ headed = false, trace } = {}) {
   // profile's key is derived from the passkey's PRF output.
   const cdp = await context.newCDPSession(page);
   await cdp.send('WebAuthn.enable');
-  await cdp.send('WebAuthn.addVirtualAuthenticator', {
+  const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', {
     options: {
       protocol: 'ctap2',
       ctap2Version: 'ctap2_1',
@@ -35,13 +40,78 @@ export async function launch({ headed = false, trace } = {}) {
       automaticPresenceSimulation: true,
     },
   });
+  if (passkey) {
+    for (const credential of passkey.credentials) {
+      await cdp.send('WebAuthn.addCredential', { authenticatorId, credential });
+    }
+    await context.addInitScript(graft, passkey.prf);
+  }
   return {
     page,
     context,
+    cdp,
+    authenticatorId,
     async close({ keepTrace } = {}) {
       if (trace) await context.tracing.stop(keepTrace ? { path: trace } : undefined);
       await browser.close();
     },
+  };
+}
+
+// The salts custody evaluates the passkey's PRF over
+// (`tonk_identity::envelope::CUSTODY_KEY_CONTEXT`, `CUSTODY_KEK_CONTEXT`).
+const CUSTODY = ['tonk/custody/key/v1', 'tonk/custody/kek/v1'];
+
+/**
+ * The passkey `person` holds, as a platform keychain would sync it to
+ * another browser: CDP exports the credential but not its PRF secret, so
+ * the custody outputs are read once here and grafted onto the other
+ * browser's assertions (as `second_device_with_same_passkey` does).
+ */
+export async function passkeyOf(person) {
+  const { credentials } = await person.cdp.send('WebAuthn.getCredentials', {
+    authenticatorId: person.authenticatorId,
+  });
+  const prf = await person.page.evaluate(async ([key, kek]) => {
+    const credential = await navigator.credentials.get({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        userVerification: 'required',
+        extensions: {
+          prf: {
+            eval: { first: new TextEncoder().encode(key), second: new TextEncoder().encode(kek) },
+          },
+        },
+      },
+    });
+    const { results } = credential.getClientExtensionResults().prf ?? {};
+    const b64 = (buffer) => btoa(String.fromCharCode(...new Uint8Array(buffer)));
+    return { first: b64(results.first), second: b64(results.second) };
+  }, CUSTODY);
+  return { credentials, prf };
+}
+
+/** Runs in every document of the second browser: answer PRF with `outputs`. */
+function graft(outputs) {
+  const unb64 = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0)).buffer;
+  const real = navigator.credentials?.get?.bind(navigator.credentials);
+  if (!real) return;
+  navigator.credentials.get = async (options) => {
+    const credential = await real(options);
+    if (options?.publicKey?.extensions?.prf) {
+      const results = credential.getClientExtensionResults.bind(credential);
+      Object.defineProperty(credential, 'getClientExtensionResults', {
+        value: () => {
+          const r = results();
+          r.prf = {
+            ...r.prf,
+            results: { first: unb64(outputs.first), second: unb64(outputs.second) },
+          };
+          return r;
+        },
+      });
+    }
+    return credential;
   };
 }
 
@@ -216,9 +286,12 @@ export async function syncedSpaces(page, names, timeout = 120_000) {
  *
  * Locators are by role and accessible name, agreed with the approval page.
  */
-export async function approve(page, { authorizationUrl, agent, grants }) {
+export async function approve(page, { authorizationUrl, agent, grants, signIn }) {
   await page.goto(authorizationUrl.toString());
-  const root = await approvalRoot(page);
+  const root = await approvalRoot(page, signIn);
+  // Before choosing: what the page offered on its own.
+  await page.waitForTimeout(5_000);
+  await snap(page, `offered ${agent}`);
   const name = root.getByRole('textbox', { name: /agent name/i });
   if (await name.count()) await name.fill(agent);
   for (const [space, access] of Object.entries(grants)) {
@@ -245,12 +318,21 @@ export async function snap(page, name) {
 }
 
 /** The approval page renders either in the top document or in the guest frame. */
-async function approvalRoot(page) {
+async function approvalRoot(page, signIn) {
   const approve = (root) => root.getByRole('button', { name: 'Approve' });
   const deadline = Date.now() + SETTLE;
   for (;;) {
     if (await approve(page).count()) return page;
     if (await approve(guest(page)).count()) return guest(page);
+    // A browser with no account: the page signs the person in first,
+    // then comes back to the request.
+    if (signIn && (await page.locator('#tonk-register-email').isVisible())) {
+      await page.locator('#tonk-register-email').fill(signIn);
+      const action = page.locator('#tonk-register-action:not([hidden])');
+      await action.filter({ hasText: 'log in with passkey' }).waitFor({ timeout: 30_000 });
+      await action.click();
+      signIn = undefined;
+    }
     if (Date.now() > deadline) throw new Error('the approval page never offered Approve');
     await page.waitForTimeout(500);
   }
