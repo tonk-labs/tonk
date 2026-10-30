@@ -252,9 +252,7 @@ fn view_reaches(remote: &str, origin: &str) -> bool {
         return false;
     };
     let remote = remote.origin().ascii_serialization();
-    sync_origins(origin)
-        .iter()
-        .any(|allowed| *allowed == remote)
+    sync_origins(origin).contains(&remote)
 }
 
 /// The agent space writer's route answering the grants in force for one
