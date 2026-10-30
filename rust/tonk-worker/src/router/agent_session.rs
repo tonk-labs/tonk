@@ -392,6 +392,9 @@ async fn authorize_inner(
     custodian: &tonk_identity::custodian::Custodian,
     authorization: &AgentAuthorization,
 ) -> Result<String, String> {
+    // Each step's time since the passkey, in the log, to see what the
+    // app is kept waiting on.
+    let started = js_sys::Date::now();
     let said = |error: TonkWorkerError| error.to_string();
     let origin = pending()
         .lock()
@@ -416,6 +419,11 @@ async fn authorize_inner(
         return Err("this passkey belongs to a different account".into());
     }
     progress(state, authorization, "agent", 0).await;
+    tonk_common::log!(
+        "approval {}: {:.0} ms",
+        "account opened",
+        js_sys::Date::now() - started
+    );
     let name = authorization
         .agent
         .is_none()
@@ -423,11 +431,27 @@ async fn authorize_inner(
     let targets = targets(state, name, &authorization.spaces)
         .await
         .map_err(said)?;
+    tonk_common::log!(
+        "approval {}: {:.0} ms",
+        "targets checked",
+        js_sys::Date::now() - started
+    );
 
-    let (agent, key) = match &authorization.agent {
-        Some(key) => reopen(state, &root, authorization, key).await?,
-        None => create_agent(state, authorization).await?,
+    let (agent, key, pushing) = match &authorization.agent {
+        Some(key) => {
+            let (agent, key) = reopen(state, &root, authorization, key).await?;
+            (agent, key, None)
+        }
+        None => {
+            let (agent, key, pushing) = create_agent(state, authorization).await?;
+            (agent, key, Some(pushing))
+        }
     };
+    tonk_common::log!(
+        "approval {}: {:.0} ms",
+        "agent space made",
+        js_sys::Date::now() - started
+    );
     let agent_did = agent.did();
     progress(state, authorization, "access", 0).await;
 
@@ -470,14 +494,36 @@ async fn authorize_inner(
         });
     }
     record_grants(&tonk, &key, &granted).await.map_err(said)?;
+    tonk_common::log!(
+        "approval {}: {:.0} ms",
+        "grants recorded",
+        js_sys::Date::now() - started
+    );
     drop(tonk);
     progress(state, authorization, "saving", granted.len()).await;
     // The host reads the grants from the agent space's remote, and the page
     // navigates to the app's callback as soon as this answers, so push now
     // rather than leave it to the background sync the navigation cuts off.
-    super::sync::sync_repository(state, &key)
-        .await
-        .map_err(|error| format!("the agent's grants could not be saved: {error}"))?;
+    // A space made by this approval has an empty remote, so it is pushed
+    // without the pull a sync starts with; an agent connected again may
+    // have moved on since, so it is synced.
+    let saved = if authorization.agent.is_none() {
+        push_new_space(state, &key).await
+    } else {
+        super::sync::sync_repository(state, &key).await
+    };
+    if let Err(error) = saved {
+        // Left to the background sync, which retries.
+        let tonk = state.read().await;
+        tonk.sync_queue.mark_dirty(&key, js_sys::Date::now());
+        return Err(format!("the agent's grants could not be saved: {error}"));
+    }
+    drop(pushing);
+    tonk_common::log!(
+        "approval {}: {:.0} ms",
+        "grants pushed",
+        js_sys::Date::now() - started
+    );
 
     // The token is the session alone: what the agent may reach is in its
     // own space, where the host reads it like any other space's content.
@@ -500,6 +546,11 @@ async fn authorize_inner(
     )
     .await
     .map_err(said)?;
+    tonk_common::log!(
+        "approval {}: {:.0} ms",
+        "answered",
+        js_sys::Date::now() - started
+    );
     // A new agent's space gets its library only now, after the app has
     // its answer: pushing the library is thousands of blocks, and the
     // request it answers lapses in minutes. The agent can use its grants
@@ -527,14 +578,38 @@ async fn authorize_inner(
     Ok(redirect)
 }
 
+/// Push `key`, a space this approval created, to its remote: nothing is
+/// there to pull, and a sync's pull and watch cost round trips the app
+/// waits on.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn push_new_space(state: &AppState, key: &str) -> Result<(), String> {
+    super::sync::ensure_session_authority(state)
+        .await
+        .map_err(|error| error.to_string())?;
+    let tonk = state.read().await;
+    tonk.reactor
+        .repository(key)
+        .branch(super::repository::CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| error.to_string())?
+        .handle()
+        .push()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 /// Make a new agent space for `authorization`: its key drawn here, the
 /// space created with it, which seals it to the account, and synced.
-/// Returns the agent's key and the space's routing key.
+/// Returns the agent's key, the space's routing key, and the space's
+/// sync lock, held until the approval has pushed it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn create_agent(
     state: &AppState,
     authorization: &AgentAuthorization,
-) -> Result<(Ed25519Signer, String), String> {
+) -> Result<(Ed25519Signer, String, tokio::sync::OwnedMutexGuard<()>), String> {
     let said = |error: TonkWorkerError| error.to_string();
     // The agent space's key: signs the session's powerline, then is
     // sealed to the account by creating the space with it.
@@ -544,23 +619,43 @@ async fn create_agent(
         .await
         .map_err(|error| format!("{error:?}"))?;
     let agent_did = agent.did();
+    let started = js_sys::Date::now();
     let (key, _) =
         super::repository::create_unseeded_space_from_seed(state, authorization.name.trim(), seed)
             .await
             .map_err(|error| error.to_string())?;
+    // Held until the approval has pushed the space: a background sync of
+    // it meanwhile pulls an empty remote and pushes every block again,
+    // racing the approval's own push with the same writes.
+    let pushing = {
+        let tonk = state.read().await;
+        tonk.sync_queue.syncing(&key)
+    }
+    .lock_owned()
+    .await;
+    tonk_common::log!(
+        "approval {}: {:.0} ms",
+        "agent space created",
+        js_sys::Date::now() - started
+    );
     let remote = {
         let tonk = state.read().await;
         super::repository::account_sync_remote(&tonk).await
     }
     .ok_or("this account has no sync endpoint")?;
-    super::repository::enable_sync_inner(state, &key, &remote)
+    super::repository::attach_provisioned_remote(state, &key, &remote)
         .await
         .map_err(|error| error.to_string())?;
+    tonk_common::log!(
+        "approval {}: {:.0} ms",
+        "agent space remote attached",
+        js_sys::Date::now() - started
+    );
     let tonk = state.read().await;
     mark(&tonk, &key, &agent_did, authorization.provider.as_deref())
         .await
         .map_err(said)?;
-    Ok((agent, key))
+    Ok((agent, key, pushing))
 }
 
 /// Open the key of the agent at `key`, which the page chose to connect
@@ -725,13 +820,13 @@ async fn record_grants(
                 space.home.as_str(),
             ));
     }
+    // Not marked for the background sync: the approval pushes it before
+    // answering, and a second push racing it sent every block twice.
     transaction
         .commit()
         .perform(&tonk.operator)
         .await
         .map_err(failure)?;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue.mark_dirty(key, js_sys::Date::now());
     Ok(())
 }
 
