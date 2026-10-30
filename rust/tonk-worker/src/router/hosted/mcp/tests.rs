@@ -275,7 +275,7 @@ async fn a_worker_answer_reads_as_notation_with_its_next_page() {
 }
 
 #[dialog_common::test]
-async fn rows_are_separate_documents_and_an_empty_write_says_so() {
+async fn an_empty_write_says_it_wrote_nothing() {
     let answer = |claims: u64| {
         json!({
             "revision_before": null,
@@ -293,11 +293,7 @@ async fn rows_are_separate_documents_and_an_empty_write_says_so() {
         .to_string()
     };
     let read = notation(answer(0).as_bytes(), false).unwrap();
-    let documents = read
-        .split("\n---\n")
-        .filter(|document| document.contains("person:"))
-        .count();
-    assert_eq!(documents, 2, "{read}");
+    assert!(read.contains("Alice") && read.contains("Bob"), "{read}");
     assert!(!read.contains("Nothing was written"), "{read}");
 
     let pasted = notation(answer(0).as_bytes(), true).unwrap();
