@@ -365,7 +365,12 @@ pub(crate) async fn authorize(
 /// (`spaces` grants are being pushed to its space). The ceremony row is the
 /// account's, so the detail names the request it is about.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn progress(state: &AppState, authorization: &AgentAuthorization, phase: &str, spaces: usize) {
+async fn progress(
+    state: &AppState,
+    authorization: &AgentAuthorization,
+    phase: &str,
+    spaces: usize,
+) {
     let detail = serde_json::json!({
         "request": authorization.request,
         "phase": phase,
