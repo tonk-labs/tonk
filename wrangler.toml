@@ -41,6 +41,19 @@ run_worker_first = [
   "/connection/*",
   "/ucan",
   "/ucan/*",
+  # The OAuth authorization server for `/mcp`. Its approval page is an
+  # app route (`/settings/agent`), so it is deliberately not listed.
+  "/.well-known/oauth-protected-resource/*",
+  "/.well-known/oauth-authorization-server",
+  "/register",
+  "/authorize",
+  "/authorize/*",
+  "/token",
+  # The hosted agent's MCP endpoint, forwarded to the Host Worker.
+  "/mcp",
+  "/mcp/*",
+  # The preview's test inbox; 404 wherever `TEST_INBOX` is unbound.
+  "/_test/emails",
 ]
 
 # Every space's objects. `/ucan/` never presigns this bucket's S3
@@ -328,6 +341,14 @@ head_sampling_rate = 1
 invocation_logs = false
 
 
+# The Host Worker that serves `/mcp` (rust/tonk-host-worker). Continuous
+# integration deploys `tonk-host-worker-pr-<N>` first and rewrites this name
+# to it. Other environments bind no Host Worker yet, so they answer `/mcp`
+# with 404.
+[[env.preview.services]]
+binding = "HOST_WORKER"
+service = "tonk-host-worker-preview"
+
 [[env.preview.r2_buckets]]
 binding = "BUCKET"
 bucket_name = "tonk-spaces-preview"
@@ -357,6 +378,14 @@ id = "REPLACED-PER-PULL-REQUEST"
 [[env.preview.kv_namespaces]]
 binding = "SERVABILITY_KV"
 id = "SERVABILITY-REPLACED-PER-PULL-REQUEST"
+
+# The end to end test's stand-in inbox (src/handlers/test_inbox.rs): mail
+# to a `.test` address is recorded here instead of sent. Bound only in the
+# preview, so no other environment can record mail. Replaced per pull
+# request, like the namespaces above.
+[[env.preview.kv_namespaces]]
+binding = "TEST_INBOX"
+id = "TEST-INBOX-REPLACED-PER-PULL-REQUEST"
 
 [[env.preview.ratelimits]]
 name = "LOOKUP_LIMITER"

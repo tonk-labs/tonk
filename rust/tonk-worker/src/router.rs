@@ -37,10 +37,19 @@ pub(crate) fn update_pending() -> bool {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         use wasm_bindgen::JsCast;
+        // A Workers isolate's global passes as a service worker scope but
+        // has no registration to update.
         return js_sys::global()
             .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
-            .map(|scope| scope.registration().waiting().is_some())
-            .unwrap_or(false);
+            .ok()
+            .and_then(|scope| js_sys::Reflect::get(&scope, &"registration".into()).ok())
+            .filter(|registration| registration.is_object())
+            .is_some_and(|registration| {
+                registration
+                    .unchecked_into::<web_sys::ServiceWorkerRegistration>()
+                    .waiting()
+                    .is_some()
+            });
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     false
@@ -74,9 +83,18 @@ pub(crate) mod rotation;
 
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 mod agent_link;
+// Built natively too, without the feature, for this crate's own tests:
+// the space writer is tested against a native access service.
+#[cfg(any(feature = "volatile-storage", test))]
+#[cfg_attr(not(feature = "volatile-storage"), allow(dead_code, unused_imports))]
+mod hosted;
 mod join;
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 pub use agent_link::AgentLinkWorker;
+#[cfg(feature = "volatile-storage")]
+pub use hosted::{
+    HostedPeer, NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, mcp, view, writer_seed,
+};
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 mod local_peer;
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
@@ -92,6 +110,8 @@ mod create_invite;
 pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
 pub(crate) mod agent_connections;
+mod agent_session;
+mod agents;
 mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
@@ -400,6 +420,13 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         .route("/api/repository/{repo}/invites", get(revoke_invite::list))
         .route("/api/account/connections", get(agent_connections::list))
+        // A new agent and its first session, for the OAuth approval page.
+        .route("/api/agent/session", post(agent_session::create))
+        .route("/api/agent/request/{handle}", get(agent_session::request))
+        .route("/api/agent/deny", post(agent_session::deny))
+        // The account's agents and what each can reach, for the hub.
+        .route("/api/agents", get(agents::list))
+        .route("/api/agents/{key}/revoke", post(agents::revoke))
         .route(
             "/api/account/connections/{id}/revoke",
             post(agent_connections::revoke),

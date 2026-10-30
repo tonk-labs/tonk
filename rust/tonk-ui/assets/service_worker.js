@@ -1622,6 +1622,17 @@ self.onfetch = event => {
     if (path === "/@" || path.startsWith("/@/")) {
         return;
     }
+    // The OAuth authorization server for `/mcp` is the edge worker's
+    // too. An LLM host opens `/authorize` in the user's browser, where
+    // this worker is likely installed, and the edge's redirect to the
+    // approval page (with its cookie) must reach the browser untouched.
+    if (
+        path === "/authorize" || path.startsWith("/authorize/") ||
+        path === "/token" || path === "/register" ||
+        path.startsWith("/.well-known/oauth-")
+    ) {
+        return;
+    }
     // Build metadata is mutable deployment information, not part of a
     // retained generation's application routing.
     if (path === "/version.json") return;

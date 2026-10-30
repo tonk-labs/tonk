@@ -167,15 +167,35 @@ jobs:
           # would refuse every request rather than degrade quietly.
           resolve_kv() {
             namespace="$1"
-            # `kv namespace list` emits JSON on stdout but takes no --json
-            # flag, unlike `d1 list`. Strip anything ahead of the array so a
-            # banner line cannot break the parse.
+            # Read the account's namespaces from the API, every page of them:
+            # `wrangler kv namespace list` came back without namespaces that
+            # exist once the account held many previews. A failed page is
+            # retried, so a transient refusal does not read as "missing".
             lookup() {
-              nix --accept-flake-config develop .#ci --command \
-                wrangler kv namespace list 2>/dev/null \
-                | sed -n '/^[[:space:]]*\[/,$p' \
-                | jq -r --arg title "$1" '.[] | select(.title == $title) | .id' \
-                | head -n 1
+              api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces"
+              page=1
+              while :; do
+                body=""
+                for attempt in 1 2 3 4; do
+                  if body="$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                    "$api?per_page=100&page=$page")"; then
+                    break
+                  fi
+                  body=""
+                  sleep $((attempt * 2))
+                done
+                [ -n "$body" ] || return 0
+                id="$(printf '%s' "$body" \
+                  | jq -r --arg title "$1" '.result[] | select(.title == $title) | .id' \
+                  | head -n 1)"
+                if [ -n "$id" ]; then
+                  echo "$id"
+                  return 0
+                fi
+                pages="$(printf '%s' "$body" | jq -r '.result_info.total_pages // 1')"
+                [ "$page" -lt "$pages" ] || return 0
+                page=$((page + 1))
+              done
             }
             id="$(lookup "$namespace")"
             if [ -z "$id" ]; then
@@ -242,12 +262,15 @@ jobs:
           ingest="tonk-access-ingest-pr-${{ github.event.pull_request.number }}"
           revocations="tonk-access-revocations-pr-${{ github.event.pull_request.number }}"
           servability="tonk-access-servability-pr-${{ github.event.pull_request.number }}"
+          inbox="tonk-access-test-inbox-pr-${{ github.event.pull_request.number }}"
           worker="tonk-access-service-pr-${{ github.event.pull_request.number }}"
+          host="tonk-host-worker-pr-${{ github.event.pull_request.number }}"
           config="$PWD/wrangler.preview.toml"
           control_id="$(resolve "$control" "rust/tonk-access-service/migrations")"
           ingest_id="$(resolve "$ingest" "rust/tonk-access-service/migrations-ingest")"
           revocations_id="$(resolve_kv "$revocations")"
           servability_id="$(resolve_kv "$servability")"
+          inbox_id="$(resolve_kv "$inbox")"
           store_id="$(resolve_store)"
           cp wrangler.toml "$config"
           sed -i \
@@ -258,7 +281,9 @@ jobs:
             -e "s/database_id = \"INGEST-REPLACED-PER-PULL-REQUEST\"/database_id = \"$ingest_id\"/" \
             -e "s/id = \"REPLACED-PER-PULL-REQUEST\"/id = \"$revocations_id\"/" \
             -e "s/id = \"SERVABILITY-REPLACED-PER-PULL-REQUEST\"/id = \"$servability_id\"/" \
+            -e "s/id = \"TEST-INBOX-REPLACED-PER-PULL-REQUEST\"/id = \"$inbox_id\"/" \
             -e "s/store_id = \"SECRETS-STORE-REPLACED-PER-DEPLOY\"/store_id = \"$store_id\"/" \
+            -e "s/service = \"tonk-host-worker-preview\"/service = \"$host\"/" \
             "$config"
           if ! grep -Fxq "name = \"$worker\"" "$config" \
             || ! grep -Fq "database_name = \"$control\"" "$config" \
@@ -267,6 +292,8 @@ jobs:
             || ! grep -Fq "database_id = \"$ingest_id\"" "$config" \
             || ! grep -Fq "id = \"$revocations_id\"" "$config" \
             || ! grep -Fq "id = \"$servability_id\"" "$config" \
+            || ! grep -Fq "id = \"$inbox_id\"" "$config" \
+            || ! grep -Fq "service = \"$host\"" "$config" \
             || grep -Fq "SECRETS-STORE-REPLACED-PER-DEPLOY" "$config"; then
             echo "::error::Could not bind the access preview config to $worker/$control/$ingest/$revocations"
             exit 1
@@ -275,6 +302,7 @@ jobs:
           echo "ingest=$ingest" >> "$GITHUB_OUTPUT"
           echo "config=$config" >> "$GITHUB_OUTPUT"
           echo "worker=$worker" >> "$GITHUB_OUTPUT"
+          echo "host=$host" >> "$GITHUB_OUTPUT"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -290,6 +318,37 @@ jobs:
             wrangler d1 migrations apply \
               "${{ steps.access-database.outputs.ingest }}" --remote \
               --env preview -c "${{ steps.access-database.outputs.config }}"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # The Host Worker serving `/mcp` (rust/tonk-host-worker), bound into
+      # the access preview as `HOST_WORKER`. It is deployed first so the
+      # binding has a worker to name, and deployed again once the access
+      # preview's URL, which its space writers sync with, is known.
+      - name: Build host worker preview
+        if: github.event_name == 'pull_request'
+        run: |
+          nix --accept-flake-config develop .#ci --command \
+            bash -c 'cd rust/tonk-host-worker && worker-build --release'
+
+      - name: Deploy host worker preview
+        if: github.event_name == 'pull_request'
+        working-directory: rust/tonk-host-worker
+        run: |
+          set -euo pipefail
+          host="${{ steps.access-database.outputs.host }}"
+          nix --accept-flake-config develop .#ci --command \
+            wrangler deploy --name "$host" \
+              --var "ACCESS_SERVICE_URL:https://access-preview-pending.invalid"
+          # The key `Mcp-Session-Id`s are MAC'd under. Kept across pushes,
+          # so a client's session outlives a redeploy; the worker is
+          # deleted with the pull request.
+          if ! nix --accept-flake-config develop .#ci --command \
+            wrangler secret list --name "$host" | grep -q '"MCP_SESSION_SECRET"'; then
+            openssl rand -hex 32 | nix --accept-flake-config develop .#ci --command \
+              wrangler secret put MCP_SESSION_SECRET --name "$host"
+          fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -320,6 +379,17 @@ jobs:
             cat "$log"
             echo WRANGLER_OUTPUT_EOF
           } >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Point the host worker preview at the access preview
+        if: github.event_name == 'pull_request'
+        working-directory: rust/tonk-host-worker
+        run: |
+          nix --accept-flake-config develop .#ci --command \
+            wrangler deploy --name "${{ steps.access-database.outputs.host }}" \
+              --var "ACCESS_SERVICE_URL:${{ steps.deploy-preview.outputs.url }}"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -394,6 +464,9 @@ jobs:
             **Preview of `${{ steps.commit.outputs.short }}`** · [run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
             ${{ steps.deploy-preview.outputs.url }}
+
+            Hosted agent MCP endpoint: `${{ steps.deploy-preview.outputs.url }}/mcp`
+            (see `rust/tonk-host-worker/README.md` for the manual test)
 
             To link the CLI to it:
 
@@ -531,6 +604,44 @@ jobs:
 
             ${{ steps.config.outputs.connection_settings }}
 
+  # The hosted agent end to end against this pull request's preview: an MCP
+  # SDK client does OAuth, and Playwright with a virtual passkey signs up and
+  # approves on /settings/agent. See "Testing end to end" in
+  # plans/2026-10-28-hosted-agent-peer.md.
+  agent-e2e:
+    name: Hosted agent end to end
+    needs: [deploy]
+    # Secrets do not reach pull requests from forks.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: tests/e2e/hosted-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install the client and browser
+        run: |
+          npm ci
+          npx --no-install playwright install --with-deps chromium
+      - name: Run against the preview
+        run: npm test
+        env:
+          TONK_E2E_ORIGIN: ${{ needs.deploy.outputs.provider }}
+          TONK_E2E_TRACE: ${{ runner.temp }}/agent-e2e-trace.zip
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: agent-e2e-trace
+          path: ${{ runner.temp }}/agent-e2e-trace.zip
+          if-no-files-found: ignore
+          retention-days: 7
+
   cleanup-preview-databases:
     if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
     runs-on: ubuntu-latest
@@ -562,6 +673,10 @@ jobs:
           nix --accept-flake-config develop .#ci --command \
             wrangler delete "$worker" --force \
             || echo "No preview worker $worker to delete"
+          host="tonk-host-worker-pr-${{ github.event.pull_request.number }}"
+          nix --accept-flake-config develop .#ci --command \
+            wrangler delete "$host" --force \
+            || echo "No preview worker $host to delete"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

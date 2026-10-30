@@ -80,6 +80,24 @@ pub fn candidate_build_scopes(subject: &Did) -> Vec<Scope> {
     scopes
 }
 
+/// What an agent may do in a space it is granted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentAccess {
+    /// Pull: read the space's revision, index and blobs.
+    Read,
+    /// Pull and push: also publish revisions and blobs.
+    ReadWrite,
+}
+
+/// The scopes behind each [`AgentAccess`] level: the `get` half of
+/// [`candidate_build_scopes`] to read, all of it to read and write.
+pub fn agent_grant_scopes(subject: &Did, access: AgentAccess) -> Vec<Scope> {
+    candidate_build_scopes(subject)
+        .into_iter()
+        .filter(|scope| access == AgentAccess::ReadWrite || scope.command.0[1] == "get")
+        .collect()
+}
+
 /// Stable grant-group identity shared by browser management and CLI receipts.
 pub fn grant_set_id(subject: &str, recipient: &str, grant_cids: &[String]) -> String {
     let mut grant_cids = grant_cids.to_vec();

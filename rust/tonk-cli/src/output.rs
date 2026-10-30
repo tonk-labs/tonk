@@ -123,12 +123,13 @@ fn render_envelope(response: &EvaluateResponse) -> Result<String> {
     serde_yaml::to_string(&Value::Mapping(envelope)).context("envelope YAML serialization failed")
 }
 
-/// `Some(rev)` → its display form (a `#<base58>` tree-hash).
-/// `None` → YAML `null`, which serializes as `~` and is the
-/// signal for a freshly-initialized branch.
+/// A revision as its entity: content-derived, the same on every replica,
+/// and the `this` of its `version-control/revision` record, so the value
+/// printed here can be queried for the revision's history. `None` is a
+/// freshly-initialized branch and prints as YAML `null`.
 fn revision_to_yaml(revision: Option<&dialog_repository::Revision>) -> serde_yaml::Value {
     match revision {
-        Some(rev) => serde_yaml::Value::from(rev.tree.to_string()),
+        Some(rev) => serde_yaml::Value::from(rev.entity().to_string()),
         None => serde_yaml::Value::Null,
     }
 }
