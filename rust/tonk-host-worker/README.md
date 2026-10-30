@@ -1,13 +1,15 @@
 # tonk-host-worker
 
 The hosted agent's `/mcp`. The access service forwards `/mcp` to this worker
-over the `HOST_WORKER` service binding, so the endpoint lives on the provider's
+over the `MCP_WORKER` service binding, so the endpoint lives on the provider's
 origin, which is the OAuth resource the authorization server issues tokens for.
 Writes go through one space writer Durable Object per space and MCP session (see
 `src/lib.rs` and `tonk_worker::mcp`).
 
-Every pull request deploys `tonk-host-worker-pr-<N>` and binds it into
-`tonk-access-service-pr-<N>` (`.github/workflows/publish.yml`). The bot's preview
+Every pull request deploys `tonk-mcp-worker-pr-<N>` and binds it into
+`tonk-access-service-pr-<N>` (`.github/workflows/publish.yml`). The
+`wrangler.toml` name here, `tonk-mcp-worker-local`, is for `wrangler dev`;
+deployments always pass `--name`. The bot's preview
 comment gives the access preview URL, called `$PREVIEW` below.
 
 ## Manual end-to-end test
@@ -71,7 +73,7 @@ To start over: `claude mcp remove tonk-preview`, then add it again.
 
 ### What to look for when something fails
 
-- The preview's Workers logs (`tonk-host-worker-pr-<N>`, observability is on)
+- The preview's Workers logs (`tonk-mcp-worker-pr-<N>`, observability is on)
   show each `/mcp` request and the writer objects' errors.
 - `401` after approval: the token did not verify. The body names why (a grant
   not issued by its space, a powerline addressed elsewhere).
@@ -101,5 +103,7 @@ hosted::mcp`.
   so a revoked session or grant fails at its next call. A read served while a
   write holds the lock skips the pull.
 - No SSE, no assets, no read caps.
-- Only the preview environment binds a Host Worker; dev, staging and
-  production answer `/mcp` with 404.
+- Dev, staging and production deploy `tonk-mcp-worker-dev`,
+  `tonk-mcp-worker-staging` and `tonk-mcp-worker` before the access service
+  and bind them as `MCP_WORKER`; the deploy then checks that `/mcp` answers an
+  unauthenticated request with 401.

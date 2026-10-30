@@ -49,7 +49,7 @@ run_worker_first = [
   "/authorize",
   "/authorize/*",
   "/token",
-  # The hosted agent's MCP endpoint, forwarded to the Host Worker.
+  # The hosted agent's MCP endpoint, forwarded to the MCP Worker.
   "/mcp",
   "/mcp/*",
   # The preview's test inbox; 404 wherever `TEST_INBOX` is unbound.
@@ -143,6 +143,12 @@ namespace_id = "1001"
 ACCOUNT_SERVICE_URL = "https://accounts.tonk.xyz"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
+# The MCP Worker that serves `/mcp` on tonk.network, deployed by continuous
+# integration before this worker.
+[[services]]
+binding = "MCP_WORKER"
+service = "tonk-mcp-worker"
+
 [env.staging]
 routes = [{ pattern = "staging.tonk.xyz", custom_domain = true }]
 
@@ -211,6 +217,13 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 # Dev. Every push to `main` deploys here, so tonk.foundation always runs the
 # development branch. Its state is disjoint from staging and production, and
 # being off the tonk.network apex it mints its own passkey credentials.
+
+# The MCP Worker that serves `/mcp` on staging.tonk.xyz, deployed by
+# continuous integration before this environment.
+[[env.staging.services]]
+binding = "MCP_WORKER"
+service = "tonk-mcp-worker-staging"
+
 [env.dev]
 routes = [{ pattern = "tonk.foundation", custom_domain = true }]
 
@@ -272,11 +285,11 @@ namespace_id = "1001"
 [env.dev.vars]
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
-# The Host Worker that serves `/mcp` on tonk.foundation, deployed by
+# The MCP Worker that serves `/mcp` on tonk.foundation, deployed by
 # continuous integration before this environment.
 [[env.dev.services]]
-binding = "HOST_WORKER"
-service = "tonk-host-worker-dev"
+binding = "MCP_WORKER"
+service = "tonk-mcp-worker-dev"
 
 # Preview. Every pull request deploys this environment as a worker of its own
 # and is reached at that worker's workers.dev URL, so the environment holds no
@@ -347,13 +360,13 @@ head_sampling_rate = 1
 invocation_logs = false
 
 
-# The Host Worker that serves `/mcp` (rust/tonk-host-worker). Continuous
-# integration deploys `tonk-host-worker-pr-<N>` first and rewrites this name
-# to it. Dev binds `tonk-host-worker-dev`; staging and production bind no
-# Host Worker yet, so they answer `/mcp` with 404.
+# The MCP Worker that serves `/mcp` (rust/tonk-host-worker). Continuous
+# integration deploys `tonk-mcp-worker-pr-<N>` first and rewrites this name
+# to it. Dev, staging and production bind their own (`tonk-mcp-worker-dev`,
+# `tonk-mcp-worker-staging`, `tonk-mcp-worker`), deployed before them.
 [[env.preview.services]]
-binding = "HOST_WORKER"
-service = "tonk-host-worker-preview"
+binding = "MCP_WORKER"
+service = "tonk-mcp-worker-preview"
 
 [[env.preview.r2_buckets]]
 binding = "BUCKET"

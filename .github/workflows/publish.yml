@@ -264,7 +264,7 @@ jobs:
           servability="tonk-access-servability-pr-${{ github.event.pull_request.number }}"
           inbox="tonk-access-test-inbox-pr-${{ github.event.pull_request.number }}"
           worker="tonk-access-service-pr-${{ github.event.pull_request.number }}"
-          host="tonk-host-worker-pr-${{ github.event.pull_request.number }}"
+          host="tonk-mcp-worker-pr-${{ github.event.pull_request.number }}"
           config="$PWD/wrangler.preview.toml"
           control_id="$(resolve "$control" "rust/tonk-access-service/migrations")"
           ingest_id="$(resolve "$ingest" "rust/tonk-access-service/migrations-ingest")"
@@ -283,7 +283,7 @@ jobs:
             -e "s/id = \"SERVABILITY-REPLACED-PER-PULL-REQUEST\"/id = \"$servability_id\"/" \
             -e "s/id = \"TEST-INBOX-REPLACED-PER-PULL-REQUEST\"/id = \"$inbox_id\"/" \
             -e "s/store_id = \"SECRETS-STORE-REPLACED-PER-DEPLOY\"/store_id = \"$store_id\"/" \
-            -e "s/service = \"tonk-host-worker-preview\"/service = \"$host\"/" \
+            -e "s/service = \"tonk-mcp-worker-preview\"/service = \"$host\"/" \
             "$config"
           if ! grep -Fxq "name = \"$worker\"" "$config" \
             || ! grep -Fq "database_name = \"$control\"" "$config" \
@@ -322,17 +322,17 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      # The Host Worker serving `/mcp` (rust/tonk-host-worker), bound into
-      # the access preview as `HOST_WORKER`. It is deployed first so the
+      # The MCP Worker serving `/mcp` (rust/tonk-host-worker), bound into
+      # the access preview as `MCP_WORKER`. It is deployed first so the
       # binding has a worker to name, and deployed again once the access
       # preview's URL, which its space writers sync with, is known.
-      - name: Build host worker preview
+      - name: Build MCP worker preview
         if: github.event_name == 'pull_request'
         run: |
           nix --accept-flake-config develop .#ci --command \
             bash -c 'cd rust/tonk-host-worker && worker-build --release'
 
-      - name: Deploy host worker preview
+      - name: Deploy MCP worker preview
         if: github.event_name == 'pull_request'
         working-directory: rust/tonk-host-worker
         run: |
@@ -383,7 +383,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      - name: Point the host worker preview at the access preview
+      - name: Point the MCP worker preview at the access preview
         if: github.event_name == 'pull_request'
         working-directory: rust/tonk-host-worker
         run: |
@@ -394,26 +394,36 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      # The Host Worker serving `/mcp` on tonk.foundation, bound into dev
-      # as `HOST_WORKER`, so it is deployed before dev.
-      - name: Deploy dev host worker
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      # The MCP Worker serving `/mcp` on this deployment's origin, bound
+      # into the access service as `MCP_WORKER`, so it is deployed first:
+      # `tonk-mcp-worker-dev` for tonk.foundation, `-staging` for
+      # staging.tonk.xyz and `tonk-mcp-worker` for tonk.network.
+      - name: Deploy MCP worker
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || steps.release.outputs.channel == 'staging' || steps.release.outputs.channel == 'stable'
+        id: mcp-worker
         run: |
           set -euo pipefail
+          case "$CHANNEL" in
+            dev) name=tonk-mcp-worker-dev; origin=https://tonk.foundation ;;
+            staging) name=tonk-mcp-worker-staging; origin=https://staging.tonk.xyz ;;
+            stable) name=tonk-mcp-worker; origin=https://tonk.network ;;
+            *) echo "no MCP worker for channel '$CHANNEL'" >&2; exit 1 ;;
+          esac
           nix --accept-flake-config develop .#ci --command \
             bash -c 'cd rust/tonk-host-worker && worker-build --release'
           cd rust/tonk-host-worker
           nix --accept-flake-config develop .#ci --command \
-            wrangler deploy --name tonk-host-worker-dev \
-              --var "ACCESS_SERVICE_URL:https://tonk.foundation"
+            wrangler deploy --name "$name" --var "ACCESS_SERVICE_URL:$origin"
           # The key `Mcp-Session-Id`s are MAC'd under, made once and kept,
           # so a client's session outlives a redeploy.
           if ! nix --accept-flake-config develop .#ci --command \
-            wrangler secret list --name tonk-host-worker-dev | grep -q '"MCP_SESSION_SECRET"'; then
+            wrangler secret list --name "$name" | grep -q '"MCP_SESSION_SECRET"'; then
             openssl rand -hex 32 | nix --accept-flake-config develop .#ci --command \
-              wrangler secret put MCP_SESSION_SECRET --name tonk-host-worker-dev
+              wrangler secret put MCP_SESSION_SECRET --name "$name"
           fi
+          echo "origin=$origin" >> "$GITHUB_OUTPUT"
         env:
+          CHANNEL: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'dev' || steps.release.outputs.channel }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
@@ -479,6 +489,28 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # An unauthenticated MCP request must reach the MCP worker and be
+      # refused with a pointer to the OAuth metadata. A 404 means the
+      # binding is missing ("this deployment serves no /mcp").
+      - name: Check /mcp
+        if: steps.mcp-worker.outcome == 'success'
+        run: |
+          set -euo pipefail
+          url="${{ steps.mcp-worker.outputs.origin }}/mcp"
+          for attempt in 1 2 3 4 5; do
+            headers="$(curl -sS -o /dev/null -D - -X POST "$url" \
+              -H 'content-type: application/json' -d '{}' || true)"
+            if printf '%s' "$headers" | head -n 1 | grep -q ' 401' \
+              && printf '%s' "$headers" | grep -qi '^www-authenticate:.*resource_metadata'; then
+              echo "$url answers 401 with resource metadata"
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "$url did not answer 401 with resource metadata:" >&2
+          printf '%s\n' "$headers" >&2
+          exit 1
 
       - uses: mshick/add-pr-comment@v2
         if: github.event_name == 'pull_request'
@@ -696,7 +728,7 @@ jobs:
           nix --accept-flake-config develop .#ci --command \
             wrangler delete "$worker" --force \
             || echo "No preview worker $worker to delete"
-          host="tonk-host-worker-pr-${{ github.event.pull_request.number }}"
+          host="tonk-mcp-worker-pr-${{ github.event.pull_request.number }}"
           nix --accept-flake-config develop .#ci --command \
             wrangler delete "$host" --force \
             || echo "No preview worker $host to delete"
