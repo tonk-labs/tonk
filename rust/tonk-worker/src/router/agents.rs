@@ -265,14 +265,33 @@ pub async fn revoke(
     if !is_agent(&tonk, &agent).await {
         return Err(TonkWorkerError::NotFound(format!("no agent {key}")));
     }
+    revoke_space(&tonk, &agent, &request.space).await?;
+    Ok(Json(()))
+}
+
+/// Whether `member` is one of this profile's agents: a space the profile
+/// holds that carries the agent-space mark. Its grants live in its own
+/// space, not in the spaces it reaches, so removing it is a revocation
+/// here ([`revoke_space`]), not an expulsion.
+pub(super) async fn held_agent(tonk: &TonkState, member: &Did) -> Result<bool, TonkWorkerError> {
+    Ok(spaces(tonk).await?.contains(member) && is_agent(tonk, member).await)
+}
+
+/// Withdraw every grant the agent `agent` holds to `space`, then take it
+/// off that space's roster. Answers the last revocation recorded.
+pub(super) async fn revoke_space(
+    tonk: &TonkState,
+    agent: &Did,
+    space: &Did,
+) -> Result<tonk_account::customer::RevokeReceipt, TonkWorkerError> {
     let repository = tonk
         .profile
-        .space(request.space.repo_key())
+        .space(space.repo_key())
         .load()
         .perform(&tonk.operator)
         .await
-        .map_err(|_| TonkWorkerError::NotFound(format!("no space {}", request.space)))?;
-    let remote = match resolve_remote_url(&tonk, &repository).await? {
+        .map_err(|_| TonkWorkerError::NotFound(format!("no space {space}")))?;
+    let remote = match resolve_remote_url(tonk, &repository).await? {
         RemoteRequirement::Ready(remote) => remote.access_url,
         RemoteRequirement::Refused(_) => {
             return Err(TonkWorkerError::Conflict(
@@ -280,10 +299,10 @@ pub async fn revoke(
             ));
         }
     };
-    let leaves: Vec<_> = grants(&tonk, &agent)
+    let leaves: Vec<_> = grants(tonk, agent)
         .await?
         .into_iter()
-        .filter(|(chain, _)| chain.subject() == Some(&request.space))
+        .filter(|(chain, _)| chain.subject() == Some(space))
         .collect();
     if leaves.is_empty() {
         return Err(TonkWorkerError::NotFound(
@@ -291,17 +310,18 @@ pub async fn revoke(
         ));
     }
     let profile = tonk.profile.did();
+    let mut last = None;
     for (leaf, held) in leaves {
         let target = *leaf
             .proof_cids()
             .last()
             .ok_or_else(|| failure("empty grant"))?;
         let certificate = leaf.proofs().last().unwrap().clone();
-        let path = ancestor(&tonk, &profile, &request.space, &leaf)
+        let path = ancestor(tonk, &profile, space, &leaf)
             .await?
             .push(certificate)
             .map_err(failure)?;
-        publish_target(&tonk, &remote, &path, &target).await?;
+        last = Some(publish_target(tonk, &remote, &path, &target).await?);
         let session = match held {
             Held::Profile => tonk
                 .reactor
@@ -328,13 +348,11 @@ pub async fn revoke(
     }
     // Without access the agent is no longer a member. A row left behind
     // lists an agent that cannot reach the space, not one that can.
-    if let Err(error) =
-        take_off_roster(&tonk, request.space.repo_key(), &request.space, &agent).await
-    {
+    if let Err(error) = take_off_roster(tonk, space.repo_key(), space, agent).await {
         tonk_common::log!("agent {agent} was not taken off the roster: {error}");
     }
-    tonk_common::log!("agent {} access to {} revoked", agent, request.space);
-    Ok(Json(()))
+    tonk_common::log!("agent {agent} access to {space} revoked");
+    last.ok_or_else(|| failure("no grant was revoked"))
 }
 
 /// Put the agent `agent` on the roster of the space at `repo`, whose
