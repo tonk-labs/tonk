@@ -20,8 +20,9 @@ const ACCESS = { subject: SPACE, command: "/", arguments: [], reason: "serve the
 // Run the kernel bootloader as the worker of a space pinning `pinned`,
 // against stand-ins for a service worker's globals and for the embedder.
 // `holds` is the kernel the space already holds, if any; `shipped` is what
-// the deployment serves under `/_host/kernel/`.
-function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, origin = ORIGIN, boots = true } = {}) {
+// the deployment serves under `/_host/kernel/`, and `ships` what its
+// `/_host/kernel.json` says it ships.
+function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, ships = null, origin = ORIGIN, boots = true } = {}) {
   const listeners = {};
   const told = [];
   const booted = [];
@@ -97,6 +98,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, 
     const path = new URL(typeof address === "string" ? address : address.url, origin).pathname;
     fetched.push(path);
     if (path === "/space.html") return new Response("<head></head>SHELL");
+    if (path === "/_host/kernel.json" && ships) return Response.json(ships);
     const id = /^\/_host\/kernel\/(.+)\.wasm$/.exec(path)?.[1];
     if (id && shipped[id]) return new Response(shipped[id], { headers: { "content-type": "application/wasm" } });
     return new Response("", { status: 404 });
@@ -490,6 +492,12 @@ test("the persona acts for another persona once it asks to, from its next boot t
   await profile.booted[0].sent(sending({ ask: 8, standing: null }));
   await settle();
   assert.equal(profile.stood.at(-1), null, "signed out, it acts for its provisional persona");
+});
+
+test("a new profile whose persona the deployment no longer serves runs the one it ships now", async () => {
+  const profile = space({ origin: "https://profile.tonk.test", pinned: "bafkr4igone", ships: { persona: KERNEL } });
+  await profile.started();
+  assert.equal(profile.booted.length, 1, "it boots the persona the deployment ships");
 });
 
 test("a profile whose kernel the deployment no longer serves says so on its page", async () => {

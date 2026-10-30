@@ -239,6 +239,33 @@ async function deployedKernel(id) {
     return checkedKernel(id, new Uint8Array(await response.arrayBuffer()));
 }
 
+// The persona a new profile installs: the one its worker was registered
+// for, or, where this deployment no longer serves it, the one it ships now.
+// The shell keeps which persona the profile pins; it is told of the new one
+// there, and registers the worker for it on its next load.
+const BOOT_CACHE = "tonk-boot";
+const BOOT_KEY = "/__boot";
+async function newPersona() {
+    try {
+        return await deployedKernel(PINNED);
+    } catch (error) {
+        const shipped = await hostFile(new Request(new URL("/_host/kernel.json", self.location.href)));
+        const persona = shipped.ok ? (await shipped.json()).persona : null;
+        if (typeof persona !== "string" || persona === PINNED) throw error;
+        log(`${error.message}: a new profile runs ${persona}, which it ships now`);
+        const kernel = await deployedKernel(persona);
+        await (await caches.open(BOOT_CACHE)).put(BOOT_KEY, Response.json({ v: 2, kernel: persona }));
+        return kernel;
+    }
+}
+
+// The persona the shell keeps that the profile pins.
+async function recordedPersona() {
+    const held = await (await caches.open(BOOT_CACHE)).match(BOOT_KEY);
+    const record = held ? await held.json() : null;
+    return record?.v === 2 ? record.kernel : null;
+}
+
 function checkedKernel(id, bytes) {
     const named = wasm_bindgen.kernelId(bytes);
     if (named !== id) throw new Error(`what was served as the kernel ${id} is another file (${named})`);
@@ -263,11 +290,13 @@ async function start() {
     // for.
     let pinned = await wasm_bindgen.pinned(space);
     if (!pinned) {
-        const kernel = PROFILE ? await deployedKernel(PINNED) : await shippedKernel(PINNED);
+        const kernel = PROFILE ? await newPersona() : await shippedKernel(PINNED);
         pinned = await wasm_bindgen.install(space, kernel);
         log("installed the kernel", pinned);
     }
-    if (pinned !== PINNED) throw new Error(`the space pins ${pinned}, not ${PINNED}`);
+    if (pinned !== PINNED && !(PROFILE && pinned === (await recordedPersona()))) {
+        throw new Error(`the space pins ${pinned}, not ${PINNED}`);
+    }
     let embedder;
     if (PROFILE) {
         profileDid = session.did;

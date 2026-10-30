@@ -34,15 +34,16 @@ const settle = async () => { for (let i = 0; i < 20; i++) await turn(); };
 //   wrote it down: by default, a space pins a kernel and a profile nothing.
 // - `runs`: the kernel the worker in control was registered for: by default,
 //   the one the record pins.
+// - `host`: the hostname the shell is served on: by default, the site's own.
 function boot(
   name,
   {
     address = "/", controlled = true, served = true, framed = "site", content = [], store = new Map(),
     answers = {}, marked = false, active = false,
     record = name === "space" ? { v: 2, kernel: "bafkr4ispace" } : null, runs = record?.kernel ?? null,
+    host = name === "profile" ? "profile.tonk.test" : "bspace.tonk.test",
   } = {},
 ) {
-  const host = name === "profile" ? "profile.tonk.test" : "bspace.tonk.test";
   const origin = `https://${host}`;
   const at = new URL(address, origin);
   const said = [];      // stages told to the page around
@@ -380,6 +381,21 @@ test("a profile's address opened on its own goes to the same address of the app"
   await settle();
 
   assert.deepEqual(site.went, [["replace", "https://tonk.test/settings?tab=account#keys"]]);
+});
+
+test("the profile's shell opened on its own goes to the address it was starting", async () => {
+  const site = boot("profile", { framed: "alone", address: "/profile.html#boot=%2Fsettings", answers: SITES });
+  await settle();
+
+  assert.deepEqual(site.went, [["replace", "https://tonk.test/settings"]]);
+});
+
+test("the profile's shell on the app's own origin stays, saying what the address is", async () => {
+  const site = boot("profile", { framed: "alone", address: "/profile.html", answers: SITES, host: "tonk.test" });
+  await settle();
+
+  assert.deepEqual(site.went, [], "it does not send the app to itself");
+  assert.match(site.body.textContent, /serves a Tonk site/);
 });
 
 test("a space's address opened on its own goes to that space in the app, once its worker holds it", async () => {

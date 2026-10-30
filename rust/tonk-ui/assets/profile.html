@@ -297,9 +297,19 @@
                             return app;
                         })
                         // The app shows the profile at the app's own
-                        // addresses, path for path.
+                        // addresses, path for path; the shell's own address
+                        // is the one it was starting the worker for. On the
+                        // app's own origin it is the app's file, which sends
+                        // nowhere.
                         .then(function (app) {
-                            location.replace(app + location.pathname + location.search + location.hash);
+                            if (new URL(app, location.href).origin === location.origin) return say(app);
+                            var address = location.pathname + location.search + location.hash;
+                            if (location.pathname === "/profile.html") {
+                                address = location.hash.indexOf("#boot=") === 0
+                                    ? decodeURIComponent(location.hash.slice(6)) || "/"
+                                    : "/";
+                            }
+                            location.replace(new URL(address, app).href);
                         })
                         .catch(function () { say(null); });
                     return;
