@@ -11,6 +11,9 @@ import { chromium } from 'playwright';
 
 const SETTLE = 150_000;
 
+// Service worker requests reach `context.on('request')` only with this.
+process.env.PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS ??= '1';
+
 export async function launch({ headed = false, trace } = {}) {
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
@@ -34,9 +37,31 @@ export async function launch({ headed = false, trace } = {}) {
   });
   return {
     page,
+    context,
     async close({ keepTrace } = {}) {
       if (trace) await context.tracing.stop(keepTrace ? { path: trace } : undefined);
       await browser.close();
+    },
+  };
+}
+
+/**
+ * Count the requests the browser makes, the service worker's included,
+ * until `stop()`: what an approval costs, which a person on a slow link
+ * waits out in full.
+ */
+export function traffic(context) {
+  const started = Date.now();
+  const counts = { requests: 0, writes: 0 };
+  const seen = (request) => {
+    counts.requests += 1;
+    if (request.method() === 'PUT' || request.method() === 'POST') counts.writes += 1;
+  };
+  context.on('request', seen);
+  return {
+    stop() {
+      context.off('request', seen);
+      return { ...counts, seconds: (Date.now() - started) / 1000 };
     },
   };
 }
@@ -201,7 +226,22 @@ export async function approve(page, { authorizationUrl, agent, grants }) {
       .getByRole('combobox', { name: space })
       .selectOption({ label: access }, { timeout: 120_000 });
   }
+  await snap(page, 'approval');
+  // Counted from the click: what approving costs, apart from the page.
+  const cost = traffic(page.context());
   await root.getByRole('button', { name: 'Approve' }).click();
+  return cost;
+}
+
+/** A full-page screenshot into TONK_E2E_SCREENSHOTS, when it is set. */
+export async function snap(page, name) {
+  const dir = process.env.TONK_E2E_SCREENSHOTS;
+  if (!dir) return;
+  // The app scrolls inside its frame, so a full-page shot would cut it off.
+  const size = page.viewportSize();
+  await page.setViewportSize({ width: size.width, height: 1800 });
+  await page.screenshot({ path: `${dir}/${name}.png` });
+  await page.setViewportSize(size);
 }
 
 /** The approval page renders either in the top document or in the guest frame. */

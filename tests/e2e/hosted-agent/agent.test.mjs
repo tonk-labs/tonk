@@ -32,6 +32,8 @@ const readableName = `e2e read ${run}`;
 const agent = `e2e ${run}`;
 // Writes per session, sent all at once.
 const WRITES = 8;
+// What approving may write: the agent space and its grants, not a library.
+const APPROVAL_WRITES = 100;
 
 const NOTE = `attribute!: &e2e-note-label
   description: Which run, session and write made this note
@@ -111,12 +113,21 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       assert.ok(authorizationUrl, 'the client was never sent to /authorize');
       assert.equal(new URL(authorizationUrl).origin, origin);
 
-      await approve(person.page, {
+      const cost = await approve(person.page, {
         authorizationUrl,
         agent,
         grants: { [writableName]: 'Read and write', [readableName]: 'Read' },
       });
       const answer = await callback.answered;
+      // Approval has to finish while the request is still pending, on a
+      // person's link rather than CI's: it may only push the grants, not
+      // a whole space's history.
+      const spent = cost.stop();
+      console.log(`approval: ${JSON.stringify(spent)}`);
+      assert.ok(
+        spent.writes <= APPROVAL_WRITES,
+        `approval made ${spent.writes} writes (budget ${APPROVAL_WRITES})`,
+      );
       assert.ok(answer.get('code'), `the callback carried no code: ${answer}`);
       // The whole callback, so the SDK checks `iss` (RFC 9207) too.
       await transport.finishAuth(answer);
