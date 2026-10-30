@@ -98,7 +98,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, 
     fetched.push(path);
     if (path === "/space.html") return new Response("<head></head>SHELL");
     const id = /^\/_host\/kernel\/(.+)\.wasm$/.exec(path)?.[1];
-    if (id && shipped[id]) return new Response(shipped[id]);
+    if (id && shipped[id]) return new Response(shipped[id], { headers: { "content-type": "application/wasm" } });
     return new Response("", { status: 404 });
   };
   const self = {
@@ -490,6 +490,14 @@ test("the persona acts for another persona once it asks to, from its next boot t
   await profile.booted[0].sent(sending({ ask: 8, standing: null }));
   await settle();
   assert.equal(profile.stood.at(-1), null, "signed out, it acts for its provisional persona");
+});
+
+test("a profile whose kernel the deployment no longer serves says so on its page", async () => {
+  const profile = space({ origin: "https://profile.tonk.test", shipped: {} });
+  const response = await profile.request("/", { mode: "navigate" });
+  assert.equal(response.status, 502);
+  assert.match(await response.text(), /runs the kernel bafkr4ikernel, which this deployment no longer serves/);
+  assert.deepEqual(profile.booted, []);
 });
 
 test("a page load while the kernel did not boot gets the host's page, which tries again", async () => {

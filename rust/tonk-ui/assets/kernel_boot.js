@@ -231,13 +231,17 @@ async function shippedKernel(id) {
 async function deployedKernel(id) {
     if (!/^b[a-z2-7]+$/.test(id)) throw new Error(`${id} names no kernel`);
     const response = await hostFile(new Request(new URL(`/_host/kernel/${id}.wasm`, self.location.href)));
-    if (!response.ok) throw new Error(`the deployment ships no kernel ${id}: ${response.status}`);
+    // A server answers an address it has no file for with the app's page.
+    const type = response.headers.get("content-type") ?? "";
+    if (!response.ok || !type.startsWith("application/wasm")) {
+        throw new Error(`this site runs the kernel ${id}, which this deployment no longer serves`);
+    }
     return checkedKernel(id, new Uint8Array(await response.arrayBuffer()));
 }
 
 function checkedKernel(id, bytes) {
     const named = wasm_bindgen.kernelId(bytes);
-    if (named !== id) throw new Error(`the kernel at ${id} is ${named}`);
+    if (named !== id) throw new Error(`what was served as the kernel ${id} is another file (${named})`);
     return bytes;
 }
 
@@ -386,17 +390,19 @@ function withRelay(page) {
     );
 }
 
-// The host's page for a page load the kernel could not answer. While the
-// kernel did not boot, the page tries again in a while, as the next load
-// boots it again: what it lacked, such as the person's profile holding its
-// space, may have come.
+// The host's page for a page load the kernel could not answer, saying why.
+// While the kernel did not boot, the page tries again in a while, as the
+// next load boots it again: what it lacked, such as the person's profile
+// holding its space, may have come.
 const RETRY_PAGE_MS = 3_000;
-function hostPage(status) {
+function hostPage(status, reason) {
     const retry = bootFailed ? `<script>setTimeout(() => location.reload(), ${RETRY_PAGE_MS})</script>` : "";
+    const why = String(reason ?? "").replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`);
     return new Response(
         `<!doctype html><html><head>${RELAY}${retry}<meta charset="utf-8"><title>${status}</title>` +
         `<style>body{font:14px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;` +
-        `min-height:100vh;opacity:.7}</style></head><body><p>This space could not answer.</p></body></html>`,
+        `min-height:100vh;opacity:.7}small{display:block;opacity:.7}</style></head>` +
+        `<body><p>This space could not answer.<small>${why}</small></p></body></html>`,
         { status, headers: { "content-type": "text/html; charset=utf-8" } },
     );
 }
@@ -1327,7 +1333,7 @@ self.addEventListener("fetch", event => {
     const notAnswered = error => {
         log("could not answer", url.pathname, error);
         return event.request.mode === "navigate"
-            ? hostPage(502)
+            ? hostPage(502, error?.message ?? error)
             : new Response(String(error?.message ?? error), { status: 502 });
     };
     const again = event.request.method === "GET" || event.request.method === "HEAD";

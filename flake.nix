@@ -354,6 +354,10 @@
               # link's `#seed` onto it. Left to follow the redirect itself, trunk
               # would resolve that Location against the access service, which has
               # no `/join` route, and serve its 405.
+              # A site keeps the kernel it pins, and trunk builds its dist
+              # from nothing each time. Keep the kernels built here beside the
+              # sources, for the dist to serve again.
+              export TONK_KERNEL_STORE="''${TONK_KERNEL_STORE:-$PWD/rust/tonk-ui/.kernels}"
               TRUNK_CONFIG_GENERATED="./rust/tonk-ui/.Trunk.dev.toml"
               cp ./rust/tonk-ui/Trunk.toml "$TRUNK_CONFIG_GENERATED"
               # Enable scoped agent invitations in local development. Select

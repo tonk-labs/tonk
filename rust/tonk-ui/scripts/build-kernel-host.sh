@@ -26,6 +26,26 @@ if grep -q 'data-bin="ui"[^>]*data-cargo-features="[^"]*connection-invites' "${T
   COMPONENT_FEATURES="--features connection-invites"
 fi
 cargo run -q -p tonk-components $COMPONENT_FEATURES --bin write-components -- "$HOST_DIR"
+# A site keeps the kernel it pins, and a dist is built from nothing each
+# time. Where a store of kernels is named, the ones built here are kept in
+# it, the store is held to its newest few, and the dist serves every kernel
+# the store still has.
+if [ -n "${TONK_KERNEL_STORE:-}" ]; then
+  KEEP=${TONK_KERNEL_KEEP:-50}
+  mkdir -p "$TONK_KERNEL_STORE"
+  for BUILT in "$HOST_DIR"/kernel/*.wasm; do
+    NAME=${BUILT##*/}
+    [ -f "$TONK_KERNEL_STORE/$NAME" ] || cp "$BUILT" "$TONK_KERNEL_STORE/$NAME"
+    touch "$TONK_KERNEL_STORE/$NAME"
+  done
+  ls -1t "$TONK_KERNEL_STORE" | tail -n +$((KEEP + 1)) | while IFS= read -r OLD; do
+    rm -f "${TONK_KERNEL_STORE:?}/$OLD"
+  done
+  for KEPT in "$TONK_KERNEL_STORE"/*.wasm; do
+    [ -f "$KEPT" ] || continue
+    [ -f "$HOST_DIR/kernel/${KEPT##*/}" ] || cp "$KEPT" "$HOST_DIR/kernel/"
+  done
+fi
 # The profile's shell names the persona this deployment ships, so that it can
 # take a profile a worker from before kernels serves over to it: that worker
 # does not answer `/_host/kernel.json`.
