@@ -145,19 +145,34 @@ fn admit_run(command: &str, subcommand: Option<&str>) -> Option<u32> {
     let Some(path) = state_path().map(|path| path.with_file_name("telemetry-budget.json")) else {
         return Some(0);
     };
+    if path
+        .parent()
+        .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
+    {
+        return Some(0);
+    }
+    // Hold the lock across read, update and replace, so parallel runs
+    // cannot both take the last slot or overwrite each other's counts.
+    // It is released when `_lock` drops. Without a lock, admit the run.
+    let Some(_lock) = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("lock"))
+        .ok()
+        .filter(|file| file.lock().is_ok())
+    else {
+        return Some(0);
+    };
     let mut budget: Budget = std::fs::read_to_string(&path)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default();
     let admitted = budget.admit(&key, hour);
-    // Write a sibling and rename, so a concurrent run never reads half a file.
+    // Write a sibling and rename, so a crash never leaves half a file.
     let temp = path.with_extension(format!("json.{}", std::process::id()));
     let written = serde_json::to_vec(&budget)
         .ok()
-        .filter(|_| {
-            path.parent()
-                .is_none_or(|dir| std::fs::create_dir_all(dir).is_ok())
-        })
         .and_then(|bytes| std::fs::write(&temp, bytes).ok())
         .and_then(|()| std::fs::rename(&temp, &path).ok());
     if written.is_none() {
