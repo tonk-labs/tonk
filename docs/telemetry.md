@@ -32,9 +32,16 @@ arrival events are traffic, not active profiles or accounts. See the
 
 | Event | Properties |
 |---|---|
-| `cli_command_run` | `command`, `subcommand`, `success`, `exit` (success / parse-error / analyze-error / commit-error / io-error), `duration_ms`, `version`, `os`, `arch`, `environment` (constant `"cli"`), ``$lib`` (constant `"tonk-analytics"`); eval adds `source` (inline / file / stdin), `format`, `dry_run`, `quiet` |
+| `cli_command_run` | `command`, `subcommand`, `success`, `exit` (success / parse-error / analyze-error / commit-error / io-error), `duration_ms`, `version`, `os`, `arch`, `environment` (constant `"cli"`), ``$lib`` (constant `"tonk-analytics"`); eval adds `source` (inline / file / stdin), `format`, `dry_run`, `quiet`; `unreported_runs` when earlier runs of the same command were dropped by the hourly budget |
 | `account_event` | The closed account journey schema below. Account commands emit this lifecycle in addition to one `cli_command_run`; never add the two event types together when counting account attempts. |
 | `product_event` | The closed product lifecycle below for every parsed non-account command family. It is paired with, and must not be added to, the `cli_command_run` summary. |
+
+A machine reports at most 30 runs of one command (and subcommand) in each
+UTC hour. Later runs in that hour send nothing at all, so a polling script or
+agent costs at most 30 batches an hour per command instead of one every few
+seconds. The next reported run of that command carries the dropped count in
+`unreported_runs`; count runs as `count() + sum(unreported_runs)`. The
+counts live in `telemetry-budget.json` beside `telemetry.json`.
 
 Every native batch item carries an RFC 3339 UTC occurrence timestamp recorded
 when it is queued. Starts and checkpoints therefore retain their real order

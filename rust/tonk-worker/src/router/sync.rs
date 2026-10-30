@@ -893,7 +893,6 @@ async fn pull_now(
     match pulled {
         Ok(after) => {
             log!("Pull succeeded: {}@{}", params.branch, params.repo);
-            let began = current_millis();
             if hydrate
                 && let Err(error) = super::account_state::converge_account_state(&tonk_state).await
             {
@@ -906,12 +905,6 @@ async fn pull_now(
             // unrelated poll (or a manual refresh).
             if after != before {
                 migrate_adopted_head(&tonk_state, &params.repo, &params.branch).await;
-                log!(
-                    "Pull of {}@{} moved the head; migrated by {} ms",
-                    params.branch,
-                    params.repo,
-                    current_millis() - began
-                );
                 let session = tonk_state
                     .reactor
                     .repository(&params.repo)
@@ -927,12 +920,6 @@ async fn pull_now(
                         .run_scheduled_polls(&tonk_state.operator)
                         .await;
                 }
-                log!(
-                    "Pull of {}@{} repainted its views by {} ms",
-                    params.branch,
-                    params.repo,
-                    current_millis() - began
-                );
             }
             announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
