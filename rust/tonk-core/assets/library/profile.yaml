@@ -5901,6 +5901,7 @@ element!: &account-settings
         }
         self.agentStep('passkey');
         self._agentApprovedAt = Date.now();
+        self._agentAsked = request;
         // The worker asks this page's top document for the passkey; the
         // ceremony row reports how it goes, and the top page goes on to
         // the app's callback when it is done.
@@ -5918,8 +5919,13 @@ element!: &account-settings
       }
     # The ceremony row's word on the approval: a passkey refused goes back
     # to the spaces, a failure ends the request, done waits for the app.
+    # The ceremony row is the account's, not this request's: it still
+    # says how an earlier approval ended. Only an approval this page asked
+    # for counts, and done only when it names this request.
     agent-ceremony: |
       (self, state, detail) => {
+        if (!self._agentAsked || self._agentAsked !== self.agentRequest()) return;
+        if (state === 'done' && detail !== self._agentAsked) return;
         if (state === 'done') {
           self.agentStep('done');
           // The top page goes on to the app when the worker answers it
