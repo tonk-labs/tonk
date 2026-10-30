@@ -5957,8 +5957,9 @@ element!: &space-arrival
         for (const node of self.querySelectorAll('[data-stalled]')) node.hidden = !stalled;
       }
     # Two settled looks in a row, or a worker that cannot say for a while,
-    # and nothing is arriving. A space that does arrive replaces this whole
-    # panel, so there is nothing to do for that here.
+    # and nothing is arriving: it says so and stops looking. A space that
+    # does arrive replaces this whole panel, so there is nothing to do for
+    # that here.
     watch: |
       async (self) => {
         let quiet = 0;
@@ -5967,6 +5968,10 @@ element!: &space-arrival
           quiet = seen === 'arriving' ? 0 : quiet + (seen === 'settled' ? 2 : 1);
           if (!self.isConnected || !self._watching) return;
           self.show(quiet >= 4);
+          if (quiet >= 4) {
+            self._watching = false;
+            return;
+          }
           await new Promise((resolve) => setTimeout(resolve, 3000));
         }
       }
