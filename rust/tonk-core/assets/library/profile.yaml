@@ -6439,6 +6439,22 @@ concept!: &intent/choice
       the: tonk.dialog.intent.choice/time
       as: float
 
+concept!: &intent/pick
+  description: An entity a command run from the palette was given, for ranking the values the palette lists for that command.
+  with:
+    command:
+      description: The command that was run.
+      the: tonk.dialog.intent.pick/command
+      as: entity
+    value:
+      description: The entity one of its arguments was filled with.
+      the: tonk.dialog.intent.pick/value
+      as: entity
+    time:
+      description: When it was run, so two runs are two picks.
+      the: tonk.dialog.intent.pick/time
+      as: float
+
 # The command palette's interpretation of what was typed, as session facts.
 # The palette makes an `expression` per opening and sends
 # `intent/interpret` as the line changes; its handler (the parser) records
@@ -6622,8 +6638,9 @@ element!: &command-palette
         const fab = self.closest('tonk-fab');
         if (fab) fab.removeAttribute('commanding');
         self.__asked = null;
-        // The next opening is a new expression.
+        // The next opening is a new expression, and reads memory afresh.
         self.__expression = null;
+        self.__memory = null;
         self.__typed = '';
         self.__input.value = '';
         self.__proposals = [];
@@ -6825,10 +6842,42 @@ element!: &command-palette
           return false;
         };
         const subject = space ? { this: space } : {};
-        const ofExpression = { predicate: 'intent/suggest', terms: { expression, ...subject, now, max } };
+        // What was run from the palette is kept on the profile; the space
+        // ranks its own commands and their values by it too. Read once per
+        // opening.
+        const profile = self.getAttribute('profile');
+        if (space && profile && !self.__memory) {
+          const field = (name, as) => ({ the: name, as, cardinality: 'one' });
+          const recall = async (domain, extra) => {
+            const found = await window.tonk.query({
+              predicate: { with: {
+                command: field(`${domain}/command`, 'Entity'), time: field(`${domain}/time`, 'Float'), ...extra,
+              } },
+              terms: Object.fromEntries(['this', 'command', 'time', ...Object.keys(extra)]
+                .map((name) => [name, { '?': { name } }])),
+            }, { with: profile });
+            const rows = Array.isArray(found) ? found : (found && found.rows) || [];
+            return rows.map((row) => ({ this: row.this, fields: row.fields || {} }));
+          };
+          self.__memory = Promise.all([
+            recall('tonk.dialog.intent.choice', { input: field('tonk.dialog.intent.choice/input', 'Text') }),
+            recall('tonk.dialog.intent.pick', { value: field('tonk.dialog.intent.pick/value', 'Entity') }),
+          ]).then(([choices, picks]) => JSON.stringify({ choices, picks }))
+            .catch((error) => {
+              console.warn('<command-palette> memory not read', error);
+              return null;
+            });
+        }
+        const memory = space && self.__memory ? await self.__memory : null;
+        if (self.__asked !== asked) return;
+        // Only to the space: the profile reads its own.
+        const remembered = (branch) => (memory && branch !== profile ? { memory } : {});
+        const ofExpression = (branch) => ({ predicate: 'intent/suggest',
+          terms: { expression, ...subject, now, max, ...remembered(branch) } });
         // No site to interpret against, or a branch that didn't interpret
         // the line: ask with the line itself.
-        const ofLine = { predicate: 'intent/suggest', terms: { input: typed, ...subject, now, max, site } };
+        const ofLine = (branch) => ({ predicate: 'intent/suggest',
+          terms: { input: typed, ...subject, now, max, site, ...remembered(branch) } });
         const read = (branch, row) => {
           const fields = row.fields || {};
           const json = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };
@@ -6842,6 +6891,8 @@ element!: &command-palette
             nouns: json(fields.nouns, {}),
             completion: fields.completion || null,
             claim: fields.claim ? json(fields.claim, null) : null,
+            listed: Boolean(fields.listed),
+            entities: json(fields.entities, []),
           };
         };
         const answers = await Promise.all(branches.map(async (branch) => {
@@ -6851,7 +6902,7 @@ element!: &command-palette
           }) : false;
           if (self.__asked !== asked) return [];
           timing[branch] = Math.round(performance.now() - started);
-          return window.tonk.query(done ? ofExpression : ofLine, { with: branch })
+          return window.tonk.query(done ? ofExpression(branch) : ofLine(branch), { with: branch })
             .then((found) => (Array.isArray(found) ? found : (found && found.rows) || [])
               .map((row) => read(branch, row)))
             .catch((error) => {
@@ -6870,7 +6921,20 @@ element!: &command-palette
           // own: best first, and nothing under half the best.
           readings.sort((a, b) => b.score - a.score);
           const best = readings.length ? readings[0].score : 0;
-          readings = readings.filter((reading) => reading.score >= best * 0.5).slice(0, 5);
+          readings = readings.filter((reading) => reading.score >= best * 0.5);
+          // A branch lists a command's values when the line means only that
+          // command there. If the other branch reads it as more commands,
+          // which one is meant comes first: keep each command's top value.
+          if (new Set(readings.map((reading) => reading.command)).size > 1) {
+            const kept = new Set();
+            readings = readings.filter((reading) => {
+              if (!reading.listed) return true;
+              if (kept.has(reading.command)) return false;
+              kept.add(reading.command);
+              return true;
+            });
+          }
+          readings = readings.slice(0, 5);
         }
         self.__proposals = readings;
         self.__note = '';
@@ -6924,20 +6988,34 @@ element!: &command-palette
       (self, proposal) => {
         const profile = self.getAttribute('profile');
         if (!profile) return;
-        const field = (name, as) => ({ the: `tonk.dialog.intent.choice/${name}`, as });
+        const field = (domain, name, as) => ({ the: `tonk.dialog.intent.${domain}/${name}`, as });
+        const time = Date.now();
+        // The command, and each entity it was given: what ranks the values
+        // listed for it next time.
+        const picks = (proposal.entities || []).map((value) => ({ op: 'assert', application: {
+          predicate: { kind: 'durable', concept: { with: {
+            command: field('pick', 'command', 'Entity'), value: field('pick', 'value', 'Entity'),
+            time: field('pick', 'time', 'Float'),
+          } } },
+          parameters: { command: proposal.command, value, time },
+        } }));
         window.tonk.transact({ claims: [{ op: 'assert', application: {
           predicate: { kind: 'durable', concept: { with: {
-            command: field('command', 'Entity'), input: field('input', 'Text'), time: field('time', 'Float'),
+            command: field('choice', 'command', 'Entity'), input: field('choice', 'input', 'Text'),
+            time: field('choice', 'time', 'Float'),
           } } },
-          parameters: { command: proposal.command, input: proposal.input || '', time: Date.now() },
-        } }] }, { with: profile }).catch((error) => console.warn('<command-palette> not remembered', error));
+          parameters: { command: proposal.command, input: proposal.input || '', time },
+        } }, ...picks] }, { with: profile }).catch((error) => console.warn('<command-palette> not remembered', error));
       }
     run: |
       async (self) => {
         const proposal = (self.__proposals || [])[self.__index];
         if (!proposal) return;
         if (!proposal.claim) {
-          // Incomplete: take its completion and keep typing.
+          // Incomplete, or a listed value: take its completion and keep
+          // typing. A listed value is taken even after a deletion, since
+          // taking it is what choosing it means.
+          if (proposal.listed) self.__complete = true;
           self.suggest();
           self.accept();
           return;
