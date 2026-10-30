@@ -367,7 +367,12 @@ pub(crate) async fn authorize(
     }
     let tonk = state.read().await;
     let (status, detail) = match &outcome {
-        Ok(_) => (tonk_schema::ceremony_state::DONE, String::new()),
+        // Done names the request it answered, so the approval page tells
+        // its own approval's end from an earlier one's.
+        Ok(_) => (
+            tonk_schema::ceremony_state::DONE,
+            authorization.request.clone(),
+        ),
         Err(error) => (tonk_schema::ceremony_state::FAILED, error.clone()),
     };
     super::ceremony::report(
