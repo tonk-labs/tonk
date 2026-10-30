@@ -155,7 +155,7 @@ pub enum DataOpError {
 fn describe_known(known: &[String]) -> String {
     if known.is_empty() {
         "this space defines no concepts yet; add one with \
-         `tonk concept add <name> --field <field>:<type>:<cardinality>`"
+         `tonk concept add <name> --field <field>:<type>[:<pick>]`"
             .to_string()
     } else {
         format!("concepts in this space: {}", known.join(", "))

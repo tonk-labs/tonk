@@ -772,14 +772,16 @@ enum ConceptCommand {
     /// `tonk assert <name> --help` shows the typed flags right
     /// after this succeeds.
     #[command(
-        after_help = "Types: text, entity, natural, integer... run with a bad type to see the list.\n\nExamples:\n  tonk concept add habit --field name:text:one --field target:text:one --description \"a tracked habit\"\n  tonk concept add note --field body:text:one --field tag:text:many"
+        after_help = "Types: text, entity, natural, integer... run with a bad type to see the list.\n\nExamples:\n  tonk concept add habit --field name:text --field target:text --description \"a tracked habit\"\n  tonk concept add note --field body:text --field tag:text:all"
     )]
     Add {
         /// Name for the concept (also the anchor).
         #[arg(value_name = "NAME")]
         name: String,
-        /// One field as `<field>:<type>:<cardinality>`; repeatable.
-        #[arg(long = "field", value_name = "FIELD:TYPE:CARD", required = true)]
+        /// One field as `<field>:<type>[:<pick>]`; repeatable. The pick is
+        /// `last` (the default, one value), `all` (a set of values), `max`
+        /// or `min`.
+        #[arg(long = "field", value_name = "FIELD:TYPE[:PICK]", required = true)]
         fields: Vec<String>,
         /// Human description for the concept.
         #[arg(long, value_name = "TEXT")]

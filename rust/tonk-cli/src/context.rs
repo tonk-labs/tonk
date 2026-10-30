@@ -292,7 +292,7 @@ pub async fn inspect(
             WorkflowStep {
                 purpose: "define a model",
                 command:
-                    "tonk concept add note --field title:text:one --field body:text:one".to_string(),
+                    "tonk concept add note --field title:text --field body:text".to_string(),
                 mutates: true,
             },
             WorkflowStep {

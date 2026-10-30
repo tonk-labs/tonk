@@ -50,7 +50,7 @@ impl ViewKind {
     }
 }
 
-/// One parsed `--field field:type:cardinality` flag, ready to render
+/// One parsed `--field field:type[:pick]` flag, ready to render
 /// into an `attribute!:` block and a `with:` entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttrSpec {
@@ -59,17 +59,17 @@ pub struct AttrSpec {
     /// Canonical `as:` type spelling (e.g. `Text`, `UnsignedInteger`),
     /// matched case-insensitively from the raw input.
     pub type_name: String,
-    /// Cardinality: `one` or `many`.
-    pub cardinality: String,
+    /// The field's pick: `last` (the default), `all`, `max` or `min`.
+    pub pick: tonk_notation::Pick,
 }
 
 /// Error parsing a raw `--field` flag or building notation from it.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthoringError {
-    /// The raw value didn't split into exactly three `:`-separated
-    /// parts (`<field>:<type>:<cardinality>`).
+    /// The raw value didn't split into two or three `:`-separated
+    /// parts (`<field>:<type>[:<pick>]`).
     #[error(
-        "--field '{raw}' is malformed; expected <field>:<type>:<cardinality>, e.g. title:text:one"
+        "--field '{raw}' is malformed; expected <field>:<type>[:<pick>], e.g. title:text or tag:text:all"
     )]
     BadAttrSpec {
         /// The raw, unparsed `--field` value.
@@ -84,10 +84,10 @@ pub enum AuthoringError {
         /// The canonical type names that would have been accepted.
         valid: Vec<&'static str>,
     },
-    /// The cardinality segment wasn't `one` or `many`.
-    #[error("unknown cardinality '{raw}'; valid: one, many")]
-    BadCardinality {
-        /// The offending cardinality segment, as given.
+    /// The pick segment named no pick a `--field` can declare.
+    #[error("unknown pick '{raw}'; valid: last (the default), all, max, min")]
+    BadPick {
+        /// The offending pick segment, as given.
         raw: String,
     },
     /// A view template was empty — neither `--template` nor
@@ -146,14 +146,19 @@ const VALID_TYPES: &[&str] = &[
     "text", "entity", "natural", "integer", "float", "boolean", "symbol",
 ];
 
-/// Parse a raw `--field field:type:cardinality` flag value into an
+/// Parse a raw `--field field:type[:pick]` flag value into an
 /// [`AttrSpec`]. The type segment is matched case-insensitively
-/// against [`VALID_TYPES`] and normalized to its canonical spelling;
-/// the cardinality segment must be exactly `one` or `many`.
+/// against [`VALID_TYPES`] and normalized to its canonical spelling.
+/// The pick segment is `last` (the default when it is left out), `all`,
+/// `max` or `min`; `one` and `many`, the spelling earlier releases
+/// took, still read as `last` and `all`. `top` is not offered: it ranks
+/// a list a flag cannot spell.
 pub fn parse_attr_spec(raw: &str) -> Result<AttrSpec, AuthoringError> {
     let parts: Vec<&str> = raw.split(':').collect();
-    let [field, ty, card] = parts.as_slice() else {
-        return Err(AuthoringError::BadAttrSpec { raw: raw.into() });
+    let (field, ty, pick) = match parts.as_slice() {
+        [field, ty] => (field, ty, None),
+        [field, ty, pick] => (field, ty, Some(*pick)),
+        _ => return Err(AuthoringError::BadAttrSpec { raw: raw.into() }),
     };
     let lowered = ty.to_ascii_lowercase();
     let spelled_together = match lowered.as_str() {
@@ -170,15 +175,17 @@ pub fn parse_attr_spec(raw: &str) -> Result<AttrSpec, AuthoringError> {
             raw: (*ty).into(),
             valid: VALID_TYPES.to_vec(),
         })?;
-    if !matches!(*card, "one" | "many") {
-        return Err(AuthoringError::BadCardinality {
-            raw: (*card).into(),
-        });
-    }
+    let pick = match pick {
+        None | Some("one") => tonk_notation::Pick::Last,
+        Some("many") => tonk_notation::Pick::All,
+        Some(name) => tonk_notation::Pick::from_anchor(name)
+            .filter(|pick| *pick != tonk_notation::Pick::Top)
+            .ok_or_else(|| AuthoringError::BadPick { raw: name.into() })?,
+    };
     Ok(AttrSpec {
         field: (*field).into(),
         type_name: (*type_name).into(),
-        cardinality: (*card).into(),
+        pick,
     })
 }
 
@@ -216,7 +223,7 @@ pub fn build_concept_decl(name: &str, description: Option<&str>, attrs: &[AttrSp
         let AttrSpec {
             field,
             type_name,
-            cardinality,
+            pick,
         } = attr;
         let _ = writeln!(out, "attribute!: &{name}-{field}");
         let _ = writeln!(
@@ -226,9 +233,9 @@ pub fn build_concept_decl(name: &str, description: Option<&str>, attrs: &[AttrSp
         );
         let _ = writeln!(out, "  the:         xyz.tonk.{name}/{field}");
         let _ = writeln!(out, "  as:          {type_name}");
-        // `many` reads every value; `one` is the default pick, `last`.
-        if cardinality == "many" {
-            let _ = writeln!(out, "  pick:        :all");
+        // `last` is the default pick, so only another one is written.
+        if *pick != tonk_notation::Pick::Last {
+            let _ = writeln!(out, "  pick:        :{}", pick.anchor());
         }
         out.push('\n');
     }
@@ -760,14 +767,36 @@ mod tests {
 
     #[test]
     fn it_parses_an_attr_spec() {
-        let spec = parse_attr_spec("title:text:one").unwrap();
+        let spec = parse_attr_spec("tag:text:all").unwrap();
         assert_eq!(
-            (
-                spec.field.as_str(),
-                spec.type_name.as_str(),
-                spec.cardinality.as_str()
-            ),
-            ("title", "text", "one")
+            (spec.field.as_str(), spec.type_name.as_str(), spec.pick),
+            ("tag", "text", tonk_notation::Pick::All)
+        );
+    }
+    #[test]
+    fn it_defaults_the_pick_to_last() {
+        assert_eq!(
+            parse_attr_spec("title:text").unwrap().pick,
+            tonk_notation::Pick::Last
+        );
+        assert_eq!(
+            parse_attr_spec("title:text:last").unwrap().pick,
+            tonk_notation::Pick::Last
+        );
+        assert_eq!(
+            parse_attr_spec("score:natural:max").unwrap().pick,
+            tonk_notation::Pick::Max
+        );
+    }
+    #[test]
+    fn it_reads_the_older_one_and_many_as_picks() {
+        assert_eq!(
+            parse_attr_spec("title:text:one").unwrap().pick,
+            tonk_notation::Pick::Last
+        );
+        assert_eq!(
+            parse_attr_spec("tag:text:many").unwrap().pick,
+            tonk_notation::Pick::All
         );
     }
     #[test]
@@ -792,19 +821,29 @@ mod tests {
         assert!(msg.contains("text") && msg.contains("boolean"), "{msg}");
     }
     #[test]
-    fn it_rejects_a_bad_cardinality() {
+    fn it_rejects_an_unknown_pick() {
         let msg = format!("{}", parse_attr_spec("n:text:lots").unwrap_err());
-        assert!(msg.contains("one") && msg.contains("many"), "{msg}");
+        assert!(msg.contains("last") && msg.contains("all"), "{msg}");
+        // `top` ranks a list, which a flag cannot spell.
+        assert!(matches!(
+            parse_attr_spec("n:text:top"),
+            Err(AuthoringError::BadPick { .. })
+        ));
     }
     #[test]
     fn it_rejects_a_malformed_spec() {
         let msg = format!("{}", parse_attr_spec("just-a-name").unwrap_err());
-        assert!(msg.contains("<field>:<type>:<cardinality>"), "{msg}");
+        assert!(msg.contains("<field>:<type>[:<pick>]"), "{msg}");
     }
     #[test]
     fn it_builds_an_anchored_concept_decl() {
-        let attrs = vec![parse_attr_spec("title:text:one").unwrap()];
+        let attrs = vec![
+            parse_attr_spec("title:text").unwrap(),
+            parse_attr_spec("tag:text:all").unwrap(),
+        ];
         let doc = build_concept_decl("note", Some("a note"), &attrs);
+        assert_eq!(doc.matches("pick:").count(), 1, "{doc}");
+        assert!(doc.contains("  pick:        :all"), "{doc}");
         assert!(doc.contains("attribute!: &note-title"));
         assert!(doc.contains("the:         xyz.tonk.note/title"));
         assert!(doc.contains("as:          text"));

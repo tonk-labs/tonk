@@ -35,6 +35,35 @@ mod when_adding_a_concept {
         Ok(())
     }
 
+    /// A field's third segment is its pick: left out it is `last`, one
+    /// value a later write supersedes; `all` keeps every value written.
+    #[dialog_common::test]
+    async fn it_declares_each_field_under_the_pick_it_names() -> Result<()> {
+        let test = TestSite::new().await?;
+        tonk_cli::data_ops::concept_add(
+            &test.site,
+            "note",
+            &["title:text".into(), "tag:text:all".into()],
+            None,
+            Default::default(),
+        )
+        .await?;
+        test.eval_inline("note!:\n  this: id:n\n  title: \"First\"\n  tag: \"a\"\n")
+            .await?;
+        test.eval_inline("note!:\n  this: id:n\n  title: \"Second\"\n  tag: \"b\"\n")
+            .await?;
+        let out = test
+            .eval_inline("note:\n  this: id:n\n  title: ?title\n  tag: ?tag\n")
+            .await?
+            .stdout;
+        assert!(!out.contains("First"), "`last` keeps the newest:\n{out}");
+        assert!(
+            out.contains("\"a\"") && out.contains("\"b\""),
+            "`all` keeps both:\n{out}"
+        );
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_rejects_an_existing_concept_name() -> Result<()> {
         let test = TestSite::new().await?;

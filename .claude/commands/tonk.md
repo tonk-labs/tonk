@@ -90,7 +90,7 @@ tonk retract <concept> <entity> [--field <f>]        # whole instance, or one fi
 
 ```bash
 tonk concept                          # list concepts (bare `tonk view`, `tonk element` list too)
-tonk concept add <name> --field <field>:<type>:<one|many> [--field …] [--description <text>]   # many = pick: :all
+tonk concept add <name> --field <field>:<type>[:last|all|max|min] [--field …] [--description <text>]
 tonk view add <concept> --template '<html>' | --template-file <path> \
     [--kind detail|directory|label|title] [--home]
 tonk space home <concept> [<concept> …]   # re-point the space home (replaces it)
@@ -103,7 +103,7 @@ tonk render <route> [--out file.html]     # {model} | {entity}@{model} | {entity
 - Shortest schema-to-visible path:
 
   ```bash
-  tonk concept add todo --field title:text:one
+  tonk concept add todo --field title:text
   tonk assert todo --title "Write the guide"
   tonk view add todo --kind directory --template-file todo.html --home
   tonk render todo

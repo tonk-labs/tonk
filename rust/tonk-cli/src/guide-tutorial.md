@@ -42,9 +42,10 @@ other dynamic assert flags.
 
 1. Use the schema from `tonk show` to reuse existing concepts where possible.
 2. Define a concept with `tonk concept add <name> --field
-   <field>:<type>:<one|many>`. The concept is immediately usable. `one`
-   declares a field holding one value (the default pick, `:last`), and
-   `many` a set of values (`pick: :all`). Optional fields (`maybe:`),
+   <field>:<type>[:<pick>]`. The concept is immediately usable. The pick
+   is the notation's `pick:`: left out (or `last`) the field holds one
+   value, `all` a set of values, and `max`/`min` read the greatest or
+   least. Optional fields (`maybe:`),
    ranked fields (a list under `the:` or `as:`) and keyed collections
    (`as: {[symbol]: text}`) are declared in notation through `tonk eval`;
    see `tonk help notation`.
@@ -68,7 +69,7 @@ set; `--dry-run` evaluates and plans but drops the transaction.
 The shortest schema-to-visible-directory workflow is:
 
 ```text
-tonk concept add todo --field title:text:one
+tonk concept add todo --field title:text
 tonk assert todo --title "Write the guide"
 tonk view add todo --kind directory --template-file todo.html --home
 tonk render todo
