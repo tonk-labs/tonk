@@ -167,15 +167,35 @@ jobs:
           # would refuse every request rather than degrade quietly.
           resolve_kv() {
             namespace="$1"
-            # `kv namespace list` emits JSON on stdout but takes no --json
-            # flag, unlike `d1 list`. Strip anything ahead of the array so a
-            # banner line cannot break the parse.
+            # Read the account's namespaces from the API, every page of them:
+            # `wrangler kv namespace list` came back without namespaces that
+            # exist once the account held many previews. A failed page is
+            # retried, so a transient refusal does not read as "missing".
             lookup() {
-              nix --accept-flake-config develop .#ci --command \
-                wrangler kv namespace list 2>/dev/null \
-                | sed -n '/^[[:space:]]*\[/,$p' \
-                | jq -r --arg title "$1" '.[] | select(.title == $title) | .id' \
-                | head -n 1
+              api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces"
+              page=1
+              while :; do
+                body=""
+                for attempt in 1 2 3 4; do
+                  if body="$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                    "$api?per_page=100&page=$page")"; then
+                    break
+                  fi
+                  body=""
+                  sleep $((attempt * 2))
+                done
+                [ -n "$body" ] || return 0
+                id="$(printf '%s' "$body" \
+                  | jq -r --arg title "$1" '.result[] | select(.title == $title) | .id' \
+                  | head -n 1)"
+                if [ -n "$id" ]; then
+                  echo "$id"
+                  return 0
+                fi
+                pages="$(printf '%s' "$body" | jq -r '.result_info.total_pages // 1')"
+                [ "$page" -lt "$pages" ] || return 0
+                page=$((page + 1))
+              done
             }
             id="$(lookup "$namespace")"
             if [ -z "$id" ]; then
