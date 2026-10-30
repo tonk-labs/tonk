@@ -151,7 +151,9 @@ pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
         return None;
     }
     let origin = origin.trim_end_matches('/');
-    let html = RELAY.replace("__TONK_MCP_ORIGIN__", &json!(origin).to_string());
+    let html = RELAY
+        .replace("__TONK_MCP_ORIGIN__", &json!(origin).to_string())
+        .replace("__TONK_VIEW_FRAME__", "false");
     Some(json!({
         "contents": [{
             "uri": RELAY_URI,
@@ -162,12 +164,16 @@ pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
                     "csp": {
                         "connectDomains": [origin],
                         "resourceDomains": [origin],
+                        // Route A: a host that honours it frames the
+                        // provider's page, whose worker is the peer.
+                        "frameDomains": [origin],
                     },
                     "prefersBorder": true,
                 },
                 "openai/widgetCSP": {
                     "connect_domains": [origin],
                     "resource_domains": [origin],
+                    "frame_domains": [origin],
                 },
             },
         }],

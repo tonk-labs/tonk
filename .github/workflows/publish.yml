@@ -348,6 +348,11 @@ jobs:
           cp -rL result/tonk-ui "$assets"
           chmod -R u+w "$assets"
           cp mcp/hosted/public/space-runtime.json mcp/hosted/public/worker-guest.html "$assets/"
+          # Route A's framed page: the relay itself, on this origin, its
+          # peer this origin's service worker.
+          sed -e 's#__TONK_MCP_ORIGIN__#location.origin#' -e 's#__TONK_VIEW_FRAME__#true#' \
+            rust/tonk-worker/src/router/hosted/view/relay.html > "$assets/view-frame.html"
+          grep -q 'framed = true' "$assets/view-frame.html"
           nix --accept-flake-config develop .#ci --command bash -c '
             set -euo pipefail
             cd rust/tonk-view-peer

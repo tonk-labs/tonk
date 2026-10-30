@@ -252,6 +252,11 @@ fn the_relay_is_filled_with_the_origin_it_was_reached_on() {
     let text = read["contents"][0]["text"].as_str().unwrap();
     assert!(text.contains("const origin = \"https://tonk.example\""));
     assert!(!text.contains("__TONK_MCP_ORIGIN__"));
+    assert!(text.contains("framed = false"), "the host's copy relays");
+    assert_eq!(
+        read["contents"][0]["_meta"]["ui"]["csp"]["frameDomains"][0], "https://tonk.example",
+        "route A asks to frame the provider"
+    );
     assert_eq!(
         read["contents"][0]["_meta"]["ui"]["csp"]["connectDomains"][0],
         "https://tonk.example"
@@ -524,6 +529,90 @@ concept!: &view-note
         assert_eq!(refused["isError"], true, "{refused}");
         view.close().await;
         served.0.close().await;
+        fixture.service.stop().await.unwrap();
+    }
+
+    /// Route A: a framed view's peer is the provider's ordinary worker,
+    /// holding nothing; the frame hands it the delegations to its own
+    /// profile through `/api/view/access`, and it reads the space.
+    #[dialog_common::test]
+    async fn a_framed_peer_takes_its_delegation_and_reads_the_space() {
+        let fixture = Fixture::start().await;
+        let seed = Zeroizing::new(rand::random::<[u8; 32]>());
+        let peer = HostedPeer::open_in(Directory::At(scratch()), &seed, &[], HeldCaches::new())
+            .await
+            .unwrap();
+        let (verified, writer) = &fixture.verified;
+        let space = fixture.agent.did();
+        let result = call(
+            ACCESS,
+            &json!({ "space": space.to_string(), "audience": peer.did().await.to_string() }),
+            verified,
+            writer,
+            "",
+            "session",
+            ORIGIN,
+            &TicketKey::derive("secret"),
+        )
+        .await
+        .unwrap();
+        let accept = |delegations: &Value| {
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/view/access")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "space": space.to_string(),
+                        "remote": fixture.remote.to_string(),
+                        "delegations": delegations,
+                    })
+                    .to_string(),
+                ))
+                .unwrap()
+        };
+        // Chains to another key are refused.
+        let stranger = Ed25519Signer::generate().await.unwrap();
+        let other = access(&fixture.verified, &space, &stranger.did(), false).await;
+        let (status, body) = json(
+            peer.call(accept(&other["structuredContent"]["delegations"]))
+                .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+        let (status, body) = json(
+            peer.call(accept(&result["structuredContent"]["delegations"]))
+                .await,
+        )
+        .await;
+        assert!(status.is_success(), "accept: {status}: {body}");
+        let base = format!("/api/repository/{space}/branch/main");
+        let (status, body) = json(
+            peer.call(request(Method::POST, &format!("{base}/sync/pull"), ""))
+                .await,
+        )
+        .await;
+        assert!(status.is_success(), "pull: {status}: {body}");
+        let (status, body) = json(
+            peer.call(request(
+                Method::POST,
+                &format!("{base}/evaluate?transact=false"),
+                "view.note:\n  this: ?n\n  title: ?t\n",
+            ))
+            .await,
+        )
+        .await;
+        assert!(status.is_success(), "query: {status}: {body}");
+        assert!(body.to_string().contains("from the agent"), "{body}");
+        // A renewed delegation is accepted over the same replica.
+        let (status, body) = json(
+            peer.call(accept(&result["structuredContent"]["delegations"]))
+                .await,
+        )
+        .await;
+        assert!(status.is_success(), "renew: {status}: {body}");
+        peer.close().await;
         fixture.service.stop().await.unwrap();
     }
 

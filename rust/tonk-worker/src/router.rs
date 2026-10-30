@@ -89,6 +89,7 @@ mod agent_link;
 #[cfg_attr(not(feature = "volatile-storage"), allow(dead_code, unused_imports))]
 mod hosted;
 mod join;
+mod view_access;
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 pub use agent_link::AgentLinkWorker;
 #[cfg(feature = "volatile-storage")]
@@ -382,6 +383,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // Join an invite — creates a fresh replica or refreshes
         // access on an existing one. See `router/join.rs`.
         .route("/api/profile/join", post(join::join))
+        .route("/api/view/access", post(view_access::accept))
         .route(
             "/api/local-space-link/approve",
             post(local_space_link::approve),
