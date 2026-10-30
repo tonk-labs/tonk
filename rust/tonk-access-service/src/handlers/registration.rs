@@ -424,6 +424,9 @@ pub async fn handle_did_document(req: Request, ctx: RouteContext<()>) -> worker:
         response.with_headers({
             let headers = worker::Headers::new();
             let _ = headers.set("content-type", "application/json");
+            // Public, and read cross-origin: an inline view's peer runs
+            // in a host's sandbox and discovers the socket from here.
+            let _ = headers.set("access-control-allow-origin", "*");
             headers
         })
     })

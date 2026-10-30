@@ -178,9 +178,25 @@ async function relayError(page) {
 // view makes (a `srcdoc` guest, or the provider's page and its guest).
 async function visibleText(page) {
   const texts = await Promise.all(
-    page
-      .frames()
-      .map((frame) => frame.evaluate(() => document.body?.innerText ?? '').catch(() => '')),
+    page.frames().map((frame) => frame.evaluate(shadowText).catch(() => '')),
   );
   return texts.join('\n');
+}
+
+// A document's text, shadow roots included: the space's page renders in
+// custom elements, whose text `innerText` does not reach.
+function shadowText() {
+  const parts = [];
+  const walk = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent.trim();
+      if (text) parts.push(text);
+      return;
+    }
+    if (node.nodeName === 'SCRIPT' || node.nodeName === 'STYLE') return;
+    if (node.shadowRoot) walk(node.shadowRoot);
+    for (const child of node.childNodes) walk(child);
+  };
+  if (document.body) walk(document.body);
+  return parts.join('\n');
 }
