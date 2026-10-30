@@ -639,7 +639,7 @@ window.STORYBOOK_DATA = {
       "group": "Authoring, data, rendering, and transfer",
       "id": "DATA-01",
       "title": "Define/list a concept.",
-      "variants": "Empty/existing name; field types/cardinality; notation/dry-run/sync."
+      "variants": "Empty/existing name; field types/picks; notation/dry-run/sync."
     },
     {
       "evidence": "Strong authoring/render coverage, including reported anchor/entity identity and pre-write anchor rejection; a standard-library contract keeps machine instructions inside the blank-space prompt's copy action.",
