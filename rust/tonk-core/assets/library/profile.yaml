@@ -5747,7 +5747,7 @@ element!: &account-settings
           self.agentChoices(described?.agents ?? [], client);
           const next = self.querySelector('[data-agent-next]');
           if (next) next.disabled = false;
-          self.agentSpaces();
+          self.agentSpaces(described?.spaces);
         }, (error) => {
           self.agentError(error.status === 404 || error.status === 410
             ? 'This connection request expired. Nothing was granted. Start connecting again from your app.'
@@ -5804,32 +5804,23 @@ element!: &account-settings
         if (!self.agentChosen() && !(field?.value ?? '').trim()) { field?.focus(); return; }
         self.agentStep('spaces');
       }
-    # One row per space, a three-way choice per row: synced spaces only,
-    # since a hosted agent reaches a space through its sync remote. Right
-    # after signing in the account's spaces are still arriving, so an empty
+    # One row per space in the account's directory, a three-way choice per
+    # row; a space recorded local-only shows but cannot be chosen, since a
+    # hosted agent reaches a space through its sync remote. Right after
+    # signing in the account's directory is still arriving, so an empty
     # list is read again for a while before it is shown as empty.
     agent-spaces: |
-      async (self, attempt = 0) => {
+      async (self, listed, attempt = 0) => {
         const list = self.querySelector('[data-agent-spaces]');
-        if (!list) return;
-        let profile;
-        try { profile = await self.api('/api/profile'); } catch { profile = null; }
-        // Agents' own spaces are contacts, not spaces to grant.
-        const agents = new Set(((await self.api('/api/agents').catch(() => [])) ?? []).map((agent) => agent.key));
-        const rows = [];
-        for (const { key } of profile?.space ?? []) {
-          if (agents.has(key)) continue;
-          let label = key, synced = false;
-          try {
-            const info = await self.api(`/api/repository/${encodeURIComponent(key)}`);
-            label = info?.label || key;
-            synced = Object.keys(info?.remote ?? {}).length > 0;
-          } catch {}
-          rows.push({ key, label, synced });
+        const request = self.agentRequest();
+        if (!list || !request) return;
+        if (!listed) {
+          try { listed = (await self.api(`/api/agent/request/${encodeURIComponent(request)}`))?.spaces; } catch { listed = null; }
         }
+        const rows = (listed ?? []).map(({ key, name, synced }) => ({ key, label: name || key, synced: !!synced }));
         if (!self.isConnected) return;
-        if (!rows.length && attempt < 30) {
-          setTimeout(() => self.agentSpaces(attempt + 1), 2000);
+        if (!rows.length && attempt < 60) {
+          setTimeout(() => self.agentSpaces(null, attempt + 1), 2000);
           return;
         }
         rows.sort((a, b) => a.label.localeCompare(b.label));
@@ -5869,7 +5860,7 @@ element!: &account-settings
           if (!row.synced) {
             const why = document.createElement('small');
             why.className = 'agent-space-why';
-            why.textContent = 'Only on this device. Sync it to share it with an agent.';
+            why.textContent = 'Not synced. Sync it to share it with an agent.';
             line.append(why);
           }
           list.append(line);
