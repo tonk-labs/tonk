@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Known-good targeted edit: query-bind the existing habit, overwrite
-# its cardinality-one name.
+# its single-valued (`:last`) name.
 set -euo pipefail
 TONK="${TONK:?}"
 

@@ -79,12 +79,13 @@ tonk eval /path/to/bug.tonk
 
 ## Query bugs
 
-> **Concepts have no optional fields.** A concept query matches an entity
-> only if it carries **every** attribute in the concept's `with:` map. A
-> bug missing even one field (e.g. blank `assignee` was never asserted)
-> will NOT appear in a `bug:` query. To find such entities, query by
-> **domain** instead (an ad-hoc query that only constrains the attributes
-> you name, ignoring the rest):
+> **Fields under `with:` are required.** A concept query matches an
+> entity only if it carries every attribute in the concept's `with:` map;
+> only fields under `maybe:` may be missing (check the live declaration
+> with `tonk schema`). A bug missing even one field (e.g. blank
+> `assignee` was never asserted) will NOT appear in a `bug:` query. To find
+> such entities, query by **domain** instead (an ad-hoc query that only
+> constrains the attributes you name, ignoring the rest):
 
 ```bash
 # Domain query — matches any entity with these squash.bug/* attributes,
@@ -195,10 +196,12 @@ tonk eval -c 'squash.bug:
   dependency: ?dep'
 ```
 
-You could also `concept!:` a new concept whose `with:` is all the bug
-fields plus `dependency` — but because concepts require every field, that
-concept query will surface ONLY bugs that have a dependency. For "bugs
-with X, ignore the rest," the domain query above is usually what you want.
+You could also `concept!:` a new concept with the bug fields plus
+`dependency`. Under `with:`, `dependency` is required, so that concept's
+query surfaces ONLY bugs that have one; declare it under `maybe:` instead
+and the query returns every bug, with `dependency` bound where it is set.
+For "bugs with X, ignore the rest," the domain query above is the
+quickest.
 
 ## Gotchas
 

@@ -13,13 +13,11 @@ attribute!: &note-title
   description: "The note title"
   the: bench.note/title
   as: text
-  cardinality: one
 
 attribute!: &note-body
   description: "The note body"
   the: bench.note/body
   as: text
-  cardinality: one
 
 concept!: &note
   description: "A note"
@@ -48,12 +46,10 @@ concept!: &view
     model:
       description: "Concept this view renders"
       the: xyz.tonk.view/model
-      cardinality: one
       as: entity
     display:
       description: "HTML template for the view"
       the: xyz.tonk.view/display
-      cardinality: one
       as: text
 
 view!: &notes
