@@ -124,6 +124,7 @@ function graft(outputs) {
 export function traffic(context) {
   const started = Date.now();
   let uploads = 0;
+  let last = started;
   const seen = (request) => {
     const { pathname } = new URL(request.url());
     if (
@@ -131,10 +132,18 @@ export function traffic(context) {
       (request.method() === 'PUT' && pathname.startsWith('/object/'))
     ) {
       uploads += 1;
+      last = Date.now();
     }
   };
   context.on('request', seen);
   return {
+    /** Wait until nothing has been uploaded for `quiet` ms, at most `timeout`. */
+    async settled({ quiet = 3_000, timeout = 60_000 } = {}) {
+      const deadline = Date.now() + timeout;
+      while (Date.now() - last < quiet && Date.now() < deadline) {
+        await new Promise((done) => setTimeout(done, 250));
+      }
+    },
     stop() {
       context.off('request', seen);
       return { uploads, seconds: (Date.now() - started) / 1000 };
@@ -293,6 +302,7 @@ export async function syncedSpaces(page, names, timeout = 120_000) {
  * Locators are by role and accessible name, agreed with the approval page.
  */
 export async function approve(page, { authorizationUrl, agent, grants, signIn }) {
+  const opening = traffic(page.context());
   await page.goto(authorizationUrl.toString());
   const root = await approvalRoot(page, signIn);
   const name = root.getByRole('textbox', { name: /agent name/i });
@@ -312,6 +322,11 @@ export async function approve(page, { authorizationUrl, agent, grants, signIn })
   }
   console.log(`${agent}: spaces offered ${(Date.now() - shown) / 1000}s after continue`);
   await snap(page, `approval ${agent}`);
+  // A browser that just signed in keeps pushing its own profile and account
+  // state for a while; let that finish so the budget measures approving
+  // alone. What it pushed is logged: a sign-in should mostly download.
+  await opening.settled();
+  console.log(`${agent}: before approve ${JSON.stringify(opening.stop())}`);
   // Counted from the click: what approving costs, apart from the page.
   const cost = traffic(page.context());
   await root.getByRole('button', { name: 'approve' }).click();
