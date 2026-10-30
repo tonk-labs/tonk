@@ -180,6 +180,11 @@ pub use session::{ClientRegistry, ClientState, SiteResponse};
 mod transact;
 pub use transact::{ProfileTransactPath, TransactPath, TransactResponse};
 
+// The views a hosted peer outlines for an agent; built where `hosted` is.
+#[cfg(any(feature = "volatile-storage", test))]
+#[cfg_attr(not(feature = "volatile-storage"), allow(dead_code))]
+mod view_tree;
+
 mod transfer;
 pub use transfer::ImportResponse;
 

@@ -380,6 +380,13 @@ impl SpaceWriter {
         }
     }
 
+    /// The views `route` mounts in this writer's space (its home when
+    /// `route` is empty), read after a pull as any other read is.
+    pub async fn outline(&self, route: &str) -> Result<serde_json::Value, String> {
+        self.refresh().await?;
+        self.peer().outline(&self.space, route).await
+    }
+
     /// The spaces the agent space reaches, read from it after a pull (a
     /// read's pull: never one that would merge into a write in flight).
     ///

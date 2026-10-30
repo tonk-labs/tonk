@@ -46,10 +46,17 @@ subject as `this:`.
 
 ## Views
 
-This connection cannot render views, for you or for the person. You can author
-views with notation, but you cannot see them. Say so, and ask the person to open
-the space in Tonk at {origin} to check how it looks. Never describe a query as
-proof that something renders or that a control works.
+`tonk_open_space` shows a space to the person inline, live, where their app can
+show it; set `edit` only when they should change the space from the view.
+`tonk_outline` lists the views a space renders as a tree, each node with the
+route that shows it alone. To show one part of a larger page, such as one list,
+outline the space and pass that node's `route` to `tonk_open_space` as `view`.
+Outline records show how many items a view rendered; a node with an `error`
+did not render.
+
+You cannot see what the person sees. Showing a view does not prove it rendered
+or that a control works, and a query is not that proof either. If it matters,
+ask the person, or ask them to open the space in Tonk at {origin} to check.
 
 ## Manuals
 
