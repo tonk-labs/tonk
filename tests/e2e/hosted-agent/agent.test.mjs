@@ -40,8 +40,9 @@ const readableName = `e2e read ${run}`;
 const agent = `e2e ${run}`;
 // Writes per session, sent all at once.
 const WRITES = 8;
-// What approving may write: the agent space and its grants, not a library.
-const APPROVAL_WRITES = 100;
+// What approving may upload before it answers: the agent space and its
+// grants (about 75), not the agent's library (about 190 more).
+const APPROVAL_UPLOADS = 100;
 
 const NOTE = `attribute!: &e2e-note-label
   description: Which run, session and write made this note
@@ -131,8 +132,8 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
         const spent = cost.stop();
         console.log(`approval: ${JSON.stringify(spent)}`);
         assert.ok(
-          spent.writes <= APPROVAL_WRITES,
-          `approval made ${spent.writes} writes (budget ${APPROVAL_WRITES})`,
+          spent.uploads <= APPROVAL_UPLOADS,
+          `approval made ${spent.uploads} uploads (budget ${APPROVAL_UPLOADS})`,
         );
         assert.ok(answer.get('code'), `the callback carried no code: ${answer}`);
         // The whole callback, so the SDK checks `iss` (RFC 9207) too.
@@ -149,7 +150,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
     await step('OAuth runs to a token, approved on /settings/agent', async () => {
       token = await authorize(person, {
         name: agent,
-        grants: { [writableName]: 'Read and write', [readableName]: 'Read' },
+        grants: { [writableName]: 'read & write', [readableName]: 'read' },
       });
     });
 
@@ -250,7 +251,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
         });
         const again = await authorize(elsewhere, {
           name: `${agent} elsewhere`,
-          grants: { [readableName]: 'Read' },
+          grants: { [readableName]: 'read' },
           signIn: mail.address,
         });
         const listed = (await call(await connect(again), 'tonk_list_spaces', {})).structuredContent

@@ -116,22 +116,28 @@ function graft(outputs) {
 }
 
 /**
- * Count the requests the browser makes, the service worker's included,
- * until `stop()`: what an approval costs, which a person on a slow link
- * waits out in full.
+ * Count what the browser uploads to the service until `stop()`: `/ucan/`
+ * invocations and object PUTs, the service worker's included. Calls from
+ * the page to its own service worker are local and not counted. This is
+ * what an approval costs on a person's link, which waits out each one.
  */
 export function traffic(context) {
   const started = Date.now();
-  const counts = { requests: 0, writes: 0 };
+  let uploads = 0;
   const seen = (request) => {
-    counts.requests += 1;
-    if (request.method() === 'PUT' || request.method() === 'POST') counts.writes += 1;
+    const { pathname } = new URL(request.url());
+    if (
+      (request.method() === 'POST' && pathname.startsWith('/ucan')) ||
+      (request.method() === 'PUT' && pathname.startsWith('/object/'))
+    ) {
+      uploads += 1;
+    }
   };
   context.on('request', seen);
   return {
     stop() {
       context.off('request', seen);
-      return { ...counts, seconds: (Date.now() - started) / 1000 };
+      return { uploads, seconds: (Date.now() - started) / 1000 };
     },
   };
 }
@@ -281,7 +287,7 @@ export async function syncedSpaces(page, names, timeout = 120_000) {
 
 /**
  * Approve the agent on the page `/authorize` sent the browser to, granting
- * `grants` (space name to "Read" or "Read and write"). The page then sends
+ * `grants` (space name to "read" or "read & write"). The page then sends
  * the browser on to the client's callback.
  *
  * Locators are by role and accessible name, agreed with the approval page.
@@ -289,20 +295,26 @@ export async function syncedSpaces(page, names, timeout = 120_000) {
 export async function approve(page, { authorizationUrl, agent, grants, signIn }) {
   await page.goto(authorizationUrl.toString());
   const root = await approvalRoot(page, signIn);
-  // Before choosing: what the page offered on its own.
-  await page.waitForTimeout(5_000);
-  await snap(page, `offered ${agent}`);
   const name = root.getByRole('textbox', { name: /agent name/i });
   if (await name.count()) await name.fill(agent);
-  for (const [space, access] of Object.entries(grants)) {
-    await root
-      .getByRole('combobox', { name: space })
-      .selectOption({ label: access }, { timeout: 120_000 });
+  await root.getByRole('button', { name: 'continue' }).click();
+  const shown = Date.now();
+  try {
+    for (const [space, access] of Object.entries(grants)) {
+      await root
+        .getByRole('radiogroup', { name: space })
+        .getByRole('radio', { name: access, exact: true })
+        .click({ timeout: 120_000 });
+    }
+  } catch (error) {
+    await snap(page, `spaces missing ${agent}`);
+    throw error;
   }
-  await snap(page, 'approval');
+  console.log(`${agent}: spaces offered ${(Date.now() - shown) / 1000}s after continue`);
+  await snap(page, `approval ${agent}`);
   // Counted from the click: what approving costs, apart from the page.
   const cost = traffic(page.context());
-  await root.getByRole('button', { name: 'Approve' }).click();
+  await root.getByRole('button', { name: 'approve' }).click();
   return cost;
 }
 
@@ -319,21 +331,28 @@ export async function snap(page, name) {
 
 /** The approval page renders either in the top document or in the guest frame. */
 async function approvalRoot(page, signIn) {
-  const approve = (root) => root.getByRole('button', { name: 'Approve' });
+  // The approval page's own continue, not the account ceremony's.
+  const ready = (root) =>
+    root.getByRole('button', { name: 'continue' }).and(root.locator(':not(#tonk-register-action)'));
+  const register = page.locator('#tonk-register-email');
   const deadline = Date.now() + SETTLE;
   for (;;) {
-    if (await approve(page).count()) return page;
-    if (await approve(guest(page)).count()) return guest(page);
     // A browser with no account: the page signs the person in first,
     // then comes back to the request.
-    if (signIn && (await page.locator('#tonk-register-email').isVisible())) {
-      await page.locator('#tonk-register-email').fill(signIn);
-      const action = page.locator('#tonk-register-action:not([hidden])');
-      await action.filter({ hasText: 'log in with passkey' }).waitFor({ timeout: 30_000 });
+    if (await register.isVisible()) {
+      if (!signIn) throw new Error('the approval page asked this browser to sign in');
+      await register.fill(signIn);
+      const action = page.locator('#tonk-register-action:not([hidden]):not([disabled])');
+      await action.waitFor({ timeout: 30_000 });
+      console.log(`signing in at the approval page: "${await action.textContent()}"`);
       await action.click();
       signIn = undefined;
+      await register.waitFor({ state: 'hidden', timeout: 60_000 });
+      console.log('signed in');
     }
-    if (Date.now() > deadline) throw new Error('the approval page never offered Approve');
+    if (await ready(page).count()) return page;
+    if (await ready(guest(page)).count()) return guest(page);
+    if (Date.now() > deadline) throw new Error('the approval page never offered to continue');
     await page.waitForTimeout(500);
   }
 }

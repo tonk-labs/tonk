@@ -158,6 +158,9 @@ async fn targets(
     let mut targets = Vec::new();
     for space in spaces {
         let access = access(space)?;
+        // A space listed in the account directory but not yet on this
+        // browser is mounted now, as opening it would.
+        super::adopt::mount_on_first_use(&tonk, state, &space.key).await;
         let repository = tonk
             .profile
             .space(&space.key)
@@ -784,13 +787,13 @@ pub async fn request(
 ) -> Result<Json<serde_json::Value>, TonkWorkerError> {
     let mut described = describe_request(&origin, &handle).await?;
     let text = |key: &str| described.get(key).and_then(|v| v.as_str()).unwrap_or("");
+    let tonk = state.read().await;
     let agents = match provider(text("redirect_uri"), text("client_name")) {
-        Some(provider) => {
-            let tonk = state.read().await;
-            reusable(&tonk, provider).await?
-        }
+        Some(provider) => reusable(&tonk, provider).await?,
         None => Vec::new(),
     };
+    let spaces = grantable(&tonk).await?;
+    drop(tonk);
     if let Some(object) = described.as_object_mut() {
         object.insert(
             "agents".into(),
@@ -799,8 +802,43 @@ pub async fn request(
                 .map(|agent| serde_json::json!({ "key": agent.key, "name": agent.name }))
                 .collect(),
         );
+        object.insert("spaces".into(), spaces.into());
     }
     Ok(Json(described))
+}
+
+/// The spaces the page may offer, from the account directory rather than
+/// what this browser has mounted: a browser that just signed in has the
+/// account's spaces listed but none mounted yet, and a chosen one is
+/// mounted when the approval is checked. Each is `{key, name, synced}`;
+/// `synced` is false for one recorded local-only, which a hosted agent
+/// cannot reach. This browser's agents are left out; an agent made in
+/// another browser is only known once its space is mounted, so the
+/// approval refuses it then.
+async fn grantable(tonk: &crate::TonkState) -> Result<Vec<serde_json::Value>, TonkWorkerError> {
+    let account = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(failure)?;
+    let rows = tonk_schema::directory::spaces(account.handle(), &tonk.operator)
+        .await
+        .map_err(failure)?;
+    let mut spaces = Vec::new();
+    for row in rows {
+        if super::agents::is_agent(tonk, &row.subject).await {
+            continue;
+        }
+        let key = tonk_schema::prelude::DidExt::repo_key(&row.subject).to_owned();
+        spaces.push(serde_json::json!({
+            "key": key,
+            "name": row.name,
+            "synced": row.mountable,
+        }));
+    }
+    Ok(spaces)
 }
 
 #[derive(Deserialize)]
