@@ -465,13 +465,38 @@ async fn authorize_inner(
         },
         granted.len()
     );
-    answer(
+    let redirect = answer(
         &origin,
         &authorization.request,
         serde_json::json!({ "token": issued.token }),
     )
     .await
-    .map_err(said)
+    .map_err(said)?;
+    // A new agent's space gets its library only now, after the app has
+    // its answer: pushing the library is thousands of blocks, and the
+    // request it answers lapses in minutes. The agent can use its grants
+    // at once; concepts in its own space arrive with this sync.
+    if authorization.agent.is_none() {
+        let (state, name) = (state.clone(), authorization.name.trim().to_owned());
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(error) = super::repository::seed_space(
+                &state,
+                &name,
+                Some("An agent's own space."),
+                &key,
+                &agent_did,
+            )
+            .await
+            {
+                tonk_common::log!("agent space {key} was not seeded: {error}");
+                return;
+            }
+            if let Err(error) = super::sync::sync_repository(&state, &key).await {
+                tonk_common::log!("agent space {key} library did not sync: {error}");
+            }
+        });
+    }
+    Ok(redirect)
 }
 
 /// Make a new agent space for `authorization`: its key drawn here, the
@@ -491,14 +516,10 @@ async fn create_agent(
         .await
         .map_err(|error| format!("{error:?}"))?;
     let agent_did = agent.did();
-    let key = super::repository::create_space_from_seed(
-        state,
-        authorization.name.trim(),
-        Some("An agent's own space."),
-        seed,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    let (key, _) =
+        super::repository::create_unseeded_space_from_seed(state, authorization.name.trim(), seed)
+            .await
+            .map_err(|error| error.to_string())?;
     let remote = {
         let tonk = state.read().await;
         super::repository::account_sync_remote(&tonk).await
