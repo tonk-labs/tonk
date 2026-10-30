@@ -103,25 +103,28 @@ pub const ACCESS_ROUTE: &str = "/api/access";
 /// ([`super::SpaceWriter::admit`]).
 pub const GRANTS_HEADER: &str = "x-tonk-space-grants";
 
-/// Header on a request to a granted space's writer: where the agent
-/// space's directory says the space syncs, when it says.
+/// Header on a request to a granted space's writer: the `home.address`
+/// its grant carries, when it carries one.
 pub const ADDRESS_HEADER: &str = "x-tonk-space-address";
 
-/// Where a writer mounts a space: the address the agent space's
-/// directory names (`named`), only when its origin is `configured`'s, the
-/// access service the host is configured with; `configured` otherwise.
+/// Where a writer mounts a space: `named`, the `home.address` the space's
+/// grant carries in its signed meta, as the CLI and the web app sync a
+/// space with its recorded home; `configured`, the access service the
+/// host is configured with, when the grant names none or names an
+/// address that is not usable (`https`, or `http` on a loopback host).
 ///
-/// Anyone who can write the agent space can write its directory, the
-/// agent included, so the address is not trusted to send the writer's
-/// invocations anywhere else.
+/// The address comes from the grant, not the agent space's directory:
+/// the agent can write its directory, but not a delegation's signed meta.
 pub fn mount_address(named: Option<&str>, configured: &str) -> String {
-    let origin = |address: &str| url::Url::parse(address).ok().map(|url| url.origin());
-    match (named, origin(configured)) {
-        (Some(named), Some(trusted))
-            if origin(named).is_some_and(|origin| origin == trusted && trusted.is_tuple()) =>
-        {
-            named.to_owned()
-        }
+    let usable = |address: &str| {
+        url::Url::parse(address).is_ok_and(|url| match url.scheme() {
+            "https" => url.host().is_some(),
+            "http" => matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")),
+            _ => false,
+        })
+    };
+    match named {
+        Some(named) if usable(named) => named.to_owned(),
         _ => configured.to_owned(),
     }
 }
