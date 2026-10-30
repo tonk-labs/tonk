@@ -17,6 +17,8 @@ use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::{Container, DelegationChain};
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use tokio::sync::oneshot;
 use tonk_handler_macros::wasm_compat;
 use tonk_schema::prelude::DidExt as _;
 
