@@ -194,24 +194,35 @@ export async function syncedSpaces(page, names, timeout = 120_000) {
 export async function approve(page, { authorizationUrl, agent, grants }) {
   await page.goto(authorizationUrl.toString());
   const root = await approvalRoot(page);
+  await shot(page, 'agent');
   const name = root.getByRole('textbox', { name: /agent name/i });
   if (await name.count()) await name.fill(agent);
+  await root.getByRole('button', { name: 'continue' }).click();
   for (const [space, access] of Object.entries(grants)) {
+    const label = /write/i.test(access) ? 'read & write' : access.toLowerCase();
     await root
-      .getByRole('combobox', { name: space })
-      .selectOption({ label: access }, { timeout: 120_000 });
+      .getByRole('radiogroup', { name: space })
+      .getByRole('radio', { name: label, exact: true })
+      .click({ timeout: 120_000 });
   }
-  await root.getByRole('button', { name: 'Approve' }).click();
+  await shot(page, 'spaces');
+  await root.getByRole('button', { name: 'approve' }).click();
+}
+
+/** A screenshot of the approval at `step`, when TONK_E2E_SHOTS names a folder. */
+async function shot(page, step) {
+  const folder = process.env.TONK_E2E_SHOTS;
+  if (folder) await page.screenshot({ path: `${folder}/${step}.png`, fullPage: true });
 }
 
 /** The approval page renders either in the top document or in the guest frame. */
 async function approvalRoot(page) {
-  const approve = (root) => root.getByRole('button', { name: 'Approve' });
+  const approve = (root) => root.getByRole('button', { name: 'continue' });
   const deadline = Date.now() + SETTLE;
   for (;;) {
     if (await approve(page).count()) return page;
     if (await approve(guest(page)).count()) return guest(page);
-    if (Date.now() > deadline) throw new Error('the approval page never offered Approve');
+    if (Date.now() > deadline) throw new Error('the approval page never offered to continue');
     await page.waitForTimeout(500);
   }
 }
