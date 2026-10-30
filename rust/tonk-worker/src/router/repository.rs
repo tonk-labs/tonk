@@ -3610,7 +3610,10 @@ pub(super) async fn create_unseeded_space_from_seed(
 ) -> Result<(String, Did), RepositoryError> {
     let configuration =
         RepositoryConfiguration::default().branch("main", BranchConfiguration::default());
-    let tonk = state.write().await;
+    // A read lock: creating mutates nothing the state holds, and a write
+    // lock waits out every sync in flight, which holds its read lock
+    // across its whole pull and push.
+    let tonk = state.read().await;
     let repository = create_repository_from_seed(&tonk, name, &configuration, seed).await?;
     let subject = repository.did();
     Ok((subject.repo_key().to_owned(), subject))
@@ -3656,7 +3659,8 @@ pub(super) async fn attach_provisioned_remote(
     key: &str,
     remote: &str,
 ) -> Result<(), RepositoryError> {
-    let tonk = state.write().await;
+    // A read lock, as in `create_unseeded_space_from_seed`.
+    let tonk = state.read().await;
     let provisioned = super::customer::is_active(&tonk).await;
     enable_sync_for_repository(&tonk, key, remote, !provisioned).await
 }
