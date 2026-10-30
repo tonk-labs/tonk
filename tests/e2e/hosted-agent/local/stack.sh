@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The hosted agent on this machine: the native access service, the app
-# under `trunk serve`, and the Host Worker under `wrangler dev`, all on one
+# under `trunk serve`, and the MCP Worker under `wrangler dev`, all on one
 # origin (http://localhost:8081) through proxy.mjs. Then, in another shell:
 #
 #   cd tests/e2e/hosted-agent

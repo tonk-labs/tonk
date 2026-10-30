@@ -1,4 +1,4 @@
-//! The Host Worker: the hosted agent's `/mcp`, reached from the access
+//! The MCP Worker: the hosted agent's `/mcp`, reached from the access
 //! service over a service binding, so `/mcp` is served on the provider's
 //! own origin (the OAuth resource the authorization server issues tokens
 //! for).

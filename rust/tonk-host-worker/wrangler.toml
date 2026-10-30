@@ -1,4 +1,4 @@
-name = "tonk-host-worker"
+name = "tonk-mcp-worker-local"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
