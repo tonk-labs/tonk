@@ -75,6 +75,10 @@ const ROUTES: &[&str] = &[
     "/api/repository/{repo}/remote",
     "/api/site",
     "/api/sync",
+    // A framed MCP view's peer takes the delegation to its own key before
+    // it holds any branch of the shown space to assert a command on
+    // (plan #1200 stage 7, route A).
+    "/api/view/access",
 ];
 
 /// Every path literal passed to `.route(` in `router.rs`, sorted.
