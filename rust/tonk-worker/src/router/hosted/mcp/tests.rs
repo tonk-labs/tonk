@@ -250,7 +250,8 @@ async fn the_manuals_it_names_are_resources_it_serves() {
     assert!(read_guide("tonk://guide/missing").is_none());
     let said = instructions("https://tonk.example/");
     assert!(said.starts_with("# Working with Tonk"));
-    assert!(said.contains("Tonk at https://tonk.example to check"));
+    assert!(said.contains("Tonk at https://tonk.example."));
+    assert!(said.contains("`tonk_open_space` shows a route"));
     assert!(!said.contains("{origin}"));
     let agent = read_guide("tonk://guide/agent").unwrap();
     assert_eq!(agent["contents"][0]["text"], HOSTED);
