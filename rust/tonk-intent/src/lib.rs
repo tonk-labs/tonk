@@ -107,6 +107,12 @@ pub struct Request {
     /// (the words typed for its verb, "" when none were).
     #[serde(default)]
     pub memory: Vec<Row>,
+    /// What filled entity fields before: `intent/pick` rows, one per
+    /// entity a command run from the palette was given, with `command`,
+    /// `value` (the entity) and `time` (milliseconds). Ranks the values
+    /// listed for an argument nothing was typed for.
+    #[serde(default)]
+    pub picks: Vec<Row>,
     /// The moment of the keystroke, in milliseconds, for arguments in the
     /// `now` role. The caller's clock, so parsing stays a pure function.
     #[serde(default)]
@@ -159,6 +165,11 @@ pub struct Proposal {
     /// typed over.
     #[serde(default)]
     pub completion: Option<String>,
+    /// Whether this reading is one of the values listed for an argument
+    /// nothing was typed for. A listed reading has no claim: taking it
+    /// types its completion, and what that says is run.
+    #[serde(default)]
+    pub listed: bool,
 }
 
 /// Proposals scoring below this fraction of the best one are not shown:
@@ -166,6 +177,10 @@ pub struct Proposal {
 /// ("rename Home to [ren]") ranks an order of magnitude below the reading
 /// it is a prefix of.
 const RELEVANCE: f64 = 0.5;
+
+/// How long it takes a pick to count half as much as one made now: a
+/// week, in milliseconds.
+const HALF_LIFE: f64 = 7.0 * 24.0 * 60.0 * 60.0 * 1000.0;
 
 /// Separates a branch from a command in a verb id, so one command
 /// declared on two branches stays two verbs.
@@ -193,7 +208,7 @@ pub fn propose(request: &Request) -> Vec<Proposal> {
     defaults(&mut registry, &request.shown);
     let memory = memory(&request.memory, &registry);
     let context = labelled(&request.context, &registry);
-    parse(
+    let proposals = parse(
         &Grammar::english(),
         &registry,
         &memory,
@@ -229,6 +244,7 @@ pub fn propose(request: &Request) -> Vec<Proposal> {
             claim,
             nouns,
             completion,
+            listed: false,
         }
     })
     .scan(None, |best: &mut Option<f64>, proposal| {
@@ -236,7 +252,110 @@ pub fn propose(request: &Request) -> Vec<Proposal> {
         Some((proposal.parse.score >= best * RELEVANCE).then_some(proposal))
     })
     .flatten()
-    .collect()
+    .collect();
+    list(request, &registry, proposals)
+}
+
+/// When every reading is of one command and its best stops at an entity
+/// argument nothing was typed for, the values that argument can take,
+/// one reading each, in place of that reading: what typing on would only
+/// narrow down. Most picked first, a recent pick counting more, then by
+/// label. With readings of several commands, which one is meant comes
+/// first, so they stay as they are.
+fn list(request: &Request, registry: &Registry, mut proposals: Vec<Proposal>) -> Vec<Proposal> {
+    let Some(best) = proposals.first() else {
+        return proposals;
+    };
+    if request.input.trim().is_empty()
+        || proposals
+            .iter()
+            .any(|proposal| proposal.parse.verb != best.parse.verb)
+    {
+        return proposals;
+    }
+    let Some(verb) = registry
+        .verbs
+        .iter()
+        .find(|verb| verb.id == best.parse.verb)
+    else {
+        return proposals;
+    };
+    // The argument the completion stops at: the first one shown empty.
+    let Some(missing) = best
+        .parse
+        .display
+        .iter()
+        .position(|segment| segment.kind == SegmentKind::Missing)
+    else {
+        return proposals;
+    };
+    let role = best.parse.display[missing].role.clone();
+    let Some(argument) = verb
+        .arguments
+        .iter()
+        .find(|argument| Some(&argument.role) == role.as_ref())
+    else {
+        return proposals;
+    };
+    let Noun::Concept(concept) = &argument.noun else {
+        return proposals;
+    };
+    let candidates = registry.candidates(concept);
+    if candidates.is_empty() {
+        return proposals;
+    }
+
+    let mut ranked: Vec<(f64, &Candidate)> = candidates
+        .iter()
+        .map(|candidate| (picked(request, &best.command, &candidate.entity), candidate))
+        .collect();
+    ranked.sort_by(|(a, a_candidate), (b, b_candidate)| {
+        b.total_cmp(a)
+            .then_with(|| a_candidate.label.cmp(&b_candidate.label))
+    });
+    let best = proposals.remove(0);
+    let listed: Vec<Proposal> = ranked
+        .into_iter()
+        .take(request.max.max(1))
+        .map(|(_, candidate)| {
+            let mut proposal = best.clone();
+            if let Some(filled) = proposal
+                .parse
+                .arguments
+                .iter_mut()
+                .find(|filled| filled.role == argument.role)
+            {
+                filled.text = candidate.label.clone();
+                filled.value = Some(Value::Entity(candidate.entity.clone()));
+            }
+            let segment = &mut proposal.parse.display[missing];
+            segment.kind = SegmentKind::Argument;
+            segment.text = candidate.label.clone();
+            proposal.completion = completion(&request.input, &proposal.parse);
+            proposal.claim = None;
+            proposal.listed = true;
+            proposal
+        })
+        .collect();
+    listed.into_iter().chain(proposals).collect()
+}
+
+/// How much `entity` was picked for `command` before: each pick counts
+/// one when made at `request.now`, half that a [`HALF_LIFE`] earlier.
+/// Without a clock, every pick counts one.
+fn picked(request: &Request, command: &str, entity: &str) -> f64 {
+    request
+        .picks
+        .iter()
+        .filter(|pick| pick.text("command") == Some(command) && pick.text("value") == Some(entity))
+        .map(|pick| {
+            let time = pick.fields.get("time").and_then(serde_json::Value::as_f64);
+            match (request.now, time) {
+                (Some(now), Some(time)) => 0.5_f64.powf((now - time).max(0.0) / HALF_LIFE),
+                _ => 1.0,
+            }
+        })
+        .sum()
 }
 
 /// What can be done without saying more: every verb whose parse, from

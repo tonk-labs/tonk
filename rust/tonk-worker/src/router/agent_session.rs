@@ -158,6 +158,9 @@ async fn targets(
     let mut targets = Vec::new();
     for space in spaces {
         let access = access(space)?;
+        // A space listed in the account directory but not yet on this
+        // browser is mounted now, as opening it would.
+        super::adopt::mount_on_first_use(&tonk, state, &space.key).await;
         let repository = tonk
             .profile
             .space(&space.key)
@@ -338,8 +341,21 @@ pub(crate) async fn authorize(
     let outcome = authorize_inner(state, custodian, &authorization).await;
     let tonk = state.read().await;
     let (status, detail) = match &outcome {
-        Ok(_) => (tonk_schema::ceremony_state::DONE, String::new()),
-        Err(error) => (tonk_schema::ceremony_state::FAILED, error.clone()),
+        // Done names the request it answered, so the approval page tells
+        // its own approval's end from an earlier one's.
+        Ok(_) => (
+            tonk_schema::ceremony_state::DONE,
+            authorization.request.clone(),
+        ),
+        // A refusal's code is for the handoff reply; the page shows the
+        // words after it.
+        Err(error) => (
+            tonk_schema::ceremony_state::FAILED,
+            error
+                .split_once('\u{1f}')
+                .map_or(error.as_str(), |(_, message)| message)
+                .to_owned(),
+        ),
     };
     super::ceremony::report(
         &tonk,
@@ -351,12 +367,42 @@ pub(crate) async fn authorize(
     outcome
 }
 
+/// Report the phase an approval is in, so the page that asked shows how
+/// far it got: `agent` (the passkey opened the account; the agent is being
+/// made or reopened), `access` (its grants are being signed) and `saving`
+/// (`spaces` grants are being pushed to its space). The ceremony row is the
+/// account's, so the detail names the request it is about.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn progress(
+    state: &AppState,
+    authorization: &AgentAuthorization,
+    phase: &str,
+    spaces: usize,
+) {
+    let detail = serde_json::json!({
+        "request": authorization.request,
+        "phase": phase,
+        "spaces": spaces,
+    });
+    let tonk = state.read().await;
+    super::ceremony::report(
+        &tonk,
+        tonk_schema::ceremony::AUTHORIZE_AGENT,
+        tonk_schema::ceremony_state::WORKING,
+        &detail.to_string(),
+    )
+    .await;
+}
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn authorize_inner(
     state: &AppState,
     custodian: &tonk_identity::custodian::Custodian,
     authorization: &AgentAuthorization,
 ) -> Result<String, String> {
+    // Each step's time since the passkey, in the log, to see what the
+    // app is kept waiting on.
+    let started = js_sys::Date::now();
     let said = |error: TonkWorkerError| error.to_string();
     let origin = pending()
         .lock()
@@ -365,16 +411,6 @@ async fn authorize_inner(
         .ok_or("this approval was not started here; start connecting again from your app")?;
     let origin = RequestOrigin::parse(origin.as_str())
         .map_err(|_| "the approval's origin is unreadable".to_string())?;
-    {
-        let tonk = state.read().await;
-        super::ceremony::report(
-            &tonk,
-            tonk_schema::ceremony::AUTHORIZE_AGENT,
-            tonk_schema::ceremony_state::WORKING,
-            "",
-        )
-        .await;
-    }
     let account = super::custody::held_account(custodian).await?;
     let Signer::Ed25519(root) = account
         .signer()
@@ -390,6 +426,12 @@ async fn authorize_inner(
     if root.did() != linked {
         return Err("this passkey belongs to a different account".into());
     }
+    progress(state, authorization, "agent", 0).await;
+    tonk_common::log!(
+        "approval {}: {:.0} ms",
+        "account opened",
+        js_sys::Date::now() - started
+    );
     let name = authorization
         .agent
         .is_none()
@@ -397,12 +439,29 @@ async fn authorize_inner(
     let targets = targets(state, name, &authorization.spaces)
         .await
         .map_err(said)?;
+    tonk_common::log!(
+        "approval {}: {:.0} ms",
+        "targets checked",
+        js_sys::Date::now() - started
+    );
 
-    let (agent, key) = match &authorization.agent {
-        Some(key) => reopen(state, &root, authorization, key).await?,
-        None => create_agent(state, authorization).await?,
+    let (agent, key, pushing) = match &authorization.agent {
+        Some(key) => {
+            let (agent, key) = reopen(state, &root, authorization, key).await?;
+            (agent, key, None)
+        }
+        None => {
+            let (agent, key, pushing) = create_agent(state, authorization).await?;
+            (agent, key, Some(pushing))
+        }
     };
+    tonk_common::log!(
+        "approval {}: {:.0} ms",
+        "agent space made",
+        js_sys::Date::now() - started
+    );
     let agent_did = agent.did();
+    progress(state, authorization, "access", 0).await;
 
     let tonk = state.read().await;
     let repository = tonk
@@ -443,13 +502,36 @@ async fn authorize_inner(
         });
     }
     record_grants(&tonk, &key, &granted).await.map_err(said)?;
+    tonk_common::log!(
+        "approval {}: {:.0} ms",
+        "grants recorded",
+        js_sys::Date::now() - started
+    );
     drop(tonk);
+    progress(state, authorization, "saving", granted.len()).await;
     // The host reads the grants from the agent space's remote, and the page
     // navigates to the app's callback as soon as this answers, so push now
     // rather than leave it to the background sync the navigation cuts off.
-    super::sync::sync_repository(state, &key)
-        .await
-        .map_err(|error| format!("the agent's grants could not be saved: {error}"))?;
+    // A space made by this approval has an empty remote, so it is pushed
+    // without the pull a sync starts with; an agent connected again may
+    // have moved on since, so it is synced.
+    let saved = if authorization.agent.is_none() {
+        push_new_space(state, &key).await
+    } else {
+        super::sync::sync_repository(state, &key).await
+    };
+    if let Err(error) = saved {
+        // Left to the background sync, which retries.
+        let tonk = state.read().await;
+        tonk.sync_queue.mark_dirty(&key, js_sys::Date::now());
+        return Err(format!("the agent's grants could not be saved: {error}"));
+    }
+    drop(pushing);
+    tonk_common::log!(
+        "approval {}: {:.0} ms",
+        "grants pushed",
+        js_sys::Date::now() - started
+    );
 
     // The token is the session alone: what the agent may reach is in its
     // own space, where the host reads it like any other space's content.
@@ -465,23 +547,77 @@ async fn authorize_inner(
         },
         granted.len()
     );
-    answer(
+    let redirect = answer(
         &origin,
         &authorization.request,
         serde_json::json!({ "token": issued.token }),
     )
     .await
-    .map_err(said)
+    .map_err(said)?;
+    tonk_common::log!(
+        "approval {}: {:.0} ms",
+        "answered",
+        js_sys::Date::now() - started
+    );
+    // A new agent's space gets its library only now, after the app has
+    // its answer: pushing the library is thousands of blocks, and the
+    // request it answers lapses in minutes. The agent can use its grants
+    // at once; concepts in its own space arrive with this sync.
+    if authorization.agent.is_none() {
+        let (state, name) = (state.clone(), authorization.name.trim().to_owned());
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(error) = super::repository::seed_space(
+                &state,
+                &name,
+                Some("An agent's own space."),
+                &key,
+                &agent_did,
+            )
+            .await
+            {
+                tonk_common::log!("agent space {key} was not seeded: {error}");
+                return;
+            }
+            if let Err(error) = super::sync::sync_repository(&state, &key).await {
+                tonk_common::log!("agent space {key} library did not sync: {error}");
+            }
+        });
+    }
+    Ok(redirect)
+}
+
+/// Push `key`, a space this approval created, to its remote: nothing is
+/// there to pull, and a sync's pull and watch cost round trips the app
+/// waits on.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn push_new_space(state: &AppState, key: &str) -> Result<(), String> {
+    super::sync::ensure_session_authority(state)
+        .await
+        .map_err(|error| error.to_string())?;
+    let tonk = state.read().await;
+    tonk.reactor
+        .repository(key)
+        .branch(super::repository::CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| error.to_string())?
+        .handle()
+        .push()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 /// Make a new agent space for `authorization`: its key drawn here, the
 /// space created with it, which seals it to the account, and synced.
-/// Returns the agent's key and the space's routing key.
+/// Returns the agent's key, the space's routing key, and the space's
+/// sync lock, held until the approval has pushed it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn create_agent(
     state: &AppState,
     authorization: &AgentAuthorization,
-) -> Result<(Ed25519Signer, String), String> {
+) -> Result<(Ed25519Signer, String, tokio::sync::OwnedMutexGuard<()>), String> {
     let said = |error: TonkWorkerError| error.to_string();
     // The agent space's key: signs the session's powerline, then is
     // sealed to the account by creating the space with it.
@@ -491,27 +627,43 @@ async fn create_agent(
         .await
         .map_err(|error| format!("{error:?}"))?;
     let agent_did = agent.did();
-    let key = super::repository::create_space_from_seed(
-        state,
-        authorization.name.trim(),
-        Some("An agent's own space."),
-        seed,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    let started = js_sys::Date::now();
+    let (key, _) =
+        super::repository::create_unseeded_space_from_seed(state, authorization.name.trim(), seed)
+            .await
+            .map_err(|error| error.to_string())?;
+    // Held until the approval has pushed the space: a background sync of
+    // it meanwhile pulls an empty remote and pushes every block again,
+    // racing the approval's own push with the same writes.
+    let pushing = {
+        let tonk = state.read().await;
+        tonk.sync_queue.syncing(&key)
+    }
+    .lock_owned()
+    .await;
+    tonk_common::log!(
+        "approval {}: {:.0} ms",
+        "agent space created",
+        js_sys::Date::now() - started
+    );
     let remote = {
         let tonk = state.read().await;
         super::repository::account_sync_remote(&tonk).await
     }
     .ok_or("this account has no sync endpoint")?;
-    super::repository::enable_sync_inner(state, &key, &remote)
+    super::repository::attach_provisioned_remote(state, &key, &remote)
         .await
         .map_err(|error| error.to_string())?;
+    tonk_common::log!(
+        "approval {}: {:.0} ms",
+        "agent space remote attached",
+        js_sys::Date::now() - started
+    );
     let tonk = state.read().await;
     mark(&tonk, &key, &agent_did, authorization.provider.as_deref())
         .await
         .map_err(said)?;
-    Ok((agent, key))
+    Ok((agent, key, pushing))
 }
 
 /// Open the key of the agent at `key`, which the page chose to connect
@@ -676,13 +828,13 @@ async fn record_grants(
                 space.home.as_str(),
             ));
     }
+    // Not marked for the background sync: the approval pushes it before
+    // answering, and a second push racing it sent every block twice.
     transaction
         .commit()
         .perform(&tonk.operator)
         .await
         .map_err(failure)?;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue.mark_dirty(key, js_sys::Date::now());
     Ok(())
 }
 
@@ -763,13 +915,13 @@ pub async fn request(
 ) -> Result<Json<serde_json::Value>, TonkWorkerError> {
     let mut described = describe_request(&origin, &handle).await?;
     let text = |key: &str| described.get(key).and_then(|v| v.as_str()).unwrap_or("");
+    let tonk = state.read().await;
     let agents = match provider(text("redirect_uri"), text("client_name")) {
-        Some(provider) => {
-            let tonk = state.read().await;
-            reusable(&tonk, provider).await?
-        }
+        Some(provider) => reusable(&tonk, provider).await?,
         None => Vec::new(),
     };
+    let spaces = grantable(&tonk).await?;
+    drop(tonk);
     if let Some(object) = described.as_object_mut() {
         object.insert(
             "agents".into(),
@@ -778,8 +930,43 @@ pub async fn request(
                 .map(|agent| serde_json::json!({ "key": agent.key, "name": agent.name }))
                 .collect(),
         );
+        object.insert("spaces".into(), spaces.into());
     }
     Ok(Json(described))
+}
+
+/// The spaces the page may offer, from the account directory rather than
+/// what this browser has mounted: a browser that just signed in has the
+/// account's spaces listed but none mounted yet, and a chosen one is
+/// mounted when the approval is checked. Each is `{key, name, synced}`;
+/// `synced` is false for one recorded local-only, which a hosted agent
+/// cannot reach. This browser's agents are left out; an agent made in
+/// another browser is only known once its space is mounted, so the
+/// approval refuses it then.
+async fn grantable(tonk: &crate::TonkState) -> Result<Vec<serde_json::Value>, TonkWorkerError> {
+    let account = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(failure)?;
+    let rows = tonk_schema::directory::spaces(account.handle(), &tonk.operator)
+        .await
+        .map_err(failure)?;
+    let mut spaces = Vec::new();
+    for row in rows {
+        if super::agents::is_agent(tonk, &row.subject).await {
+            continue;
+        }
+        let key = tonk_schema::prelude::DidExt::repo_key(&row.subject).to_owned();
+        spaces.push(serde_json::json!({
+            "key": key,
+            "name": row.name,
+            "synced": row.mountable,
+        }));
+    }
+    Ok(spaces)
 }
 
 #[derive(Deserialize)]

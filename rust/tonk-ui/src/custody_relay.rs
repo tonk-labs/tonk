@@ -324,8 +324,8 @@ fn intent_label(intent: &tonk_worker_api::CustodyIntent) -> &'static str {
 fn command_action(intent: &tonk_worker_api::CustodyIntent) -> AccountAction {
     match intent {
         tonk_worker_api::CustodyIntent::PurgeAccount(_) => AccountAction::DeleteAccount,
-        tonk_worker_api::CustodyIntent::AuthorizeDevice(_)
-        | tonk_worker_api::CustodyIntent::AuthorizeAgent(_) => AccountAction::LinkCli,
+        tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => AccountAction::LinkCli,
+        tonk_worker_api::CustodyIntent::AuthorizeAgent(_) => AccountAction::AuthorizeAgent,
         tonk_worker_api::CustodyIntent::AddPasskey(_) => AccountAction::AddPasskey,
         tonk_worker_api::CustodyIntent::Enroll(_)
         | tonk_worker_api::CustodyIntent::CreateAccount(_)

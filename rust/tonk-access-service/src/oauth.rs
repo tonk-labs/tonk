@@ -83,6 +83,9 @@ pub const REQUEST_TTL: u64 = 10 * 60;
 /// How long a code lives once the page answers, in seconds.
 pub const CODE_TTL: u64 = 60;
 
+/// How much longer than its request the browser keeps a request's cookie.
+const COOKIE_GRACE: u64 = 60 * 60;
+
 /// The largest body any endpoint here reads, in bytes. Callers bound
 /// the read with it before handing the body over.
 pub const MAX_BODY: usize = 64 * 1024;
@@ -423,8 +426,11 @@ where
         Answer::redirect(format!("{}{APPROVAL_PAGE}?request={handle}", self.origin)).with(
             "Set-Cookie",
             format!(
-                "{}={browser}; Path=/; HttpOnly; SameSite=Strict; Max-Age={REQUEST_TTL}{}",
+                "{}={browser}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{}",
                 self.cookie_name(&handle),
+                // Outlives the request, so an answer after it lapses is told
+                // the request expired rather than that another browser began it.
+                REQUEST_TTL + COOKIE_GRACE,
                 if self.secure() { "; Secure" } else { "" }
             ),
         )

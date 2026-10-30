@@ -1644,7 +1644,7 @@ async fn run_connection_invite_for(
             )
             .await;
         }
-        if let Err(error) = enable_sync_for_repository(&tonk, repo, &remote).await {
+        if let Err(error) = enable_sync_for_repository(&tonk, repo, &remote, true).await {
             log!("agent invite sync setup failed: {error}");
             return publish_connection_invite(
                 &tonk,
@@ -3598,6 +3598,40 @@ pub(super) async fn create_space_from_seed(
     Ok(key)
 }
 
+/// [`create_space_from_seed`] without its standard library yet: the space
+/// is created and recorded, and [`seed_space`] installs the library
+/// later. An agent's space is made this way, so what the approval must
+/// push before it answers is the agent's grants, not the whole library.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) async fn create_unseeded_space_from_seed(
+    state: &AppState,
+    name: &str,
+    seed: Zeroizing<[u8; 32]>,
+) -> Result<(String, Did), RepositoryError> {
+    let configuration =
+        RepositoryConfiguration::default().branch("main", BranchConfiguration::default());
+    // A read lock: creating mutates nothing the state holds, and a write
+    // lock waits out every sync in flight, which holds its read lock
+    // across its whole pull and push.
+    let tonk = state.read().await;
+    let repository = create_repository_from_seed(&tonk, name, &configuration, seed).await?;
+    let subject = repository.did();
+    Ok((subject.repo_key().to_owned(), subject))
+}
+
+/// Install the standard library and the name of a space made by
+/// [`create_unseeded_space_from_seed`], and mark it initialized.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) async fn seed_space(
+    state: &AppState,
+    name: &str,
+    description: Option<&str>,
+    key: &str,
+    subject: &Did,
+) -> Result<(), RepositoryError> {
+    seed_and_initialize(state, name, description, key, subject, &["main".to_owned()]).await
+}
+
 /// Attach a sync remote to a space, idempotently, via
 /// [`ensure_remote_config`] — the same helper [`attach_remote`] uses, so
 /// the in-app path and the HTTP route converge on one implementation.
@@ -3613,7 +3647,22 @@ pub(super) async fn enable_sync_inner(
     remote: &str,
 ) -> Result<(), RepositoryError> {
     let tonk = state.write().await;
-    enable_sync_for_repository(&tonk, key, remote).await
+    enable_sync_for_repository(&tonk, key, remote, true).await
+}
+
+/// [`enable_sync_inner`] for a space just created: creating it
+/// provisioned it when the customer is active, and provisioning again is
+/// a round trip that answers the same.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) async fn attach_provisioned_remote(
+    state: &AppState,
+    key: &str,
+    remote: &str,
+) -> Result<(), RepositoryError> {
+    // A read lock, as in `create_unseeded_space_from_seed`.
+    let tonk = state.read().await;
+    let provisioned = super::customer::is_active(&tonk).await;
+    enable_sync_for_repository(&tonk, key, remote, !provisioned).await
 }
 
 /// Attach the account provider to one existing repository.
@@ -3626,6 +3675,7 @@ async fn enable_sync_for_repository(
     tonk: &TonkState,
     key: &str,
     remote: &str,
+    provision: bool,
 ) -> Result<(), RepositoryError> {
     if remote.trim().is_empty() {
         // Submitted with no URL — nothing to attach.
@@ -3667,7 +3717,12 @@ async fn enable_sync_for_repository(
     // loop hammers it forever and a link handed out against it answers
     // "you don't have this space". That refusal fails the attach.
     let own_service = remote_is_own_service(tonk, remote).await;
-    match provision_space_consumer(tonk, &repository.did()).await {
+    let provisioned = if provision {
+        provision_space_consumer(tonk, &repository.did()).await
+    } else {
+        Ok(())
+    };
+    match provisioned {
         Ok(()) => {}
         Err(error) if own_service && !super::customer::is_retryable(&error) => {
             return Err(RepositoryError::Internal(format!(
@@ -3721,7 +3776,7 @@ pub(super) async fn attach_account_remote_if_local(
         return Ok(false);
     }
 
-    enable_sync_for_repository(tonk, key, remote).await?;
+    enable_sync_for_repository(tonk, key, remote, true).await?;
     Ok(true)
 }
 

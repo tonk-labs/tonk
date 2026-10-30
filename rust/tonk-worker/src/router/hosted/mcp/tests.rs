@@ -267,11 +267,39 @@ async fn a_worker_answer_reads_as_notation_with_its_next_page() {
         "page": { "rows": 1, "next": "abc" },
     })
     .to_string();
-    let text = notation(body.as_bytes()).unwrap();
+    let text = notation(body.as_bytes(), false).unwrap();
     assert!(text.contains("Alice"), "{text}");
     assert!(!text.trim_start().starts_with('{'), "{text}");
     assert!(text.ends_with("cursor: \"abc\"\n"), "{text}");
-    assert!(notation(b"not json").is_none());
+    assert!(notation(b"not json", false).is_none());
+}
+
+#[dialog_common::test]
+async fn an_empty_write_says_it_wrote_nothing() {
+    let answer = |claims: u64| {
+        json!({
+            "revision_before": null,
+            "revision_after": null,
+            "matches_before": [],
+            "matches_after": [{
+                "label": "person",
+                "results": [
+                    { "this": "did:key:zHj", "fields": { "name": "Alice" }, "transient": false },
+                    { "this": "did:key:zHk", "fields": { "name": "Bob" }, "transient": false },
+                ],
+            }],
+            "commits": { "claims": claims, "entities": {} },
+        })
+        .to_string()
+    };
+    let read = notation(answer(0).as_bytes(), false).unwrap();
+    assert!(read.contains("Alice") && read.contains("Bob"), "{read}");
+    assert!(!read.contains("Nothing was written"), "{read}");
+
+    let pasted = notation(answer(0).as_bytes(), true).unwrap();
+    assert!(pasted.contains("Nothing was written"), "{pasted}");
+    let wrote = notation(answer(2).as_bytes(), true).unwrap();
+    assert!(!wrote.contains("Nothing was written"), "{wrote}");
 }
 
 #[dialog_common::test]

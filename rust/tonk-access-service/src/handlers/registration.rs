@@ -29,6 +29,10 @@ enum MaybeEmail {
     Ready(crate::email::Resend),
     /// Not configured; sends fail with this explanation.
     Missing(String),
+    /// Preview only: mail to a reserved `.test` address is recorded in
+    /// the test inbox ([`super::test_inbox`]) instead of sent; any other
+    /// address goes to the sender within.
+    Inbox(worker::kv::KvStore, Box<MaybeEmail>),
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -42,6 +46,10 @@ impl crate::email::EmailSender for MaybeEmail {
         match self {
             Self::Ready(resend) => resend.send_activation(email, link).await,
             Self::Missing(reason) => Err(crate::email::EmailError::Send(reason.clone())),
+            Self::Inbox(inbox, _) if super::test_inbox::reserved(email) => {
+                super::test_inbox::record(inbox, email, link).await
+            }
+            Self::Inbox(_, sender) => sender.send_activation(email, link).await,
         }
     }
 }
@@ -199,6 +207,10 @@ async fn handle_inner(
             if api_key.is_ok() { "set" } else { "missing" },
             if from.is_ok() { "set" } else { "missing" },
         )),
+    };
+    let email = match super::test_inbox::bound(env) {
+        Some(inbox) => MaybeEmail::Inbox(inbox, Box::new(email)),
+        None => email,
     };
 
     let url = req

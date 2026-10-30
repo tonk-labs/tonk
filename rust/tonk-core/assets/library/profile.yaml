@@ -642,6 +642,7 @@ view!:
       .settings-back:hover { background:var(--wash); }
       .settings-back:active { background:var(--wash-2); }
       .hub-page:has(hub-bar[path="/account"]) :is(.settings-title,.settings-back) { display:none; }
+      .hub-page:has(account-settings[data-pane="agent"]) :is(.settings-title,.settings-back) { display:none; }
       .hub-page account-settings { display:block; }
       .hub-page account-settings .s-body { min-width:0; min-height:0; max-height:none;
         overflow:visible; padding:0; background:transparent; border:0; color:var(--ink); }
@@ -2549,8 +2550,10 @@ element!: &hub-discover
         const list = self.querySelector('[data-contacts-list]');
         const status = self.querySelector('[data-contacts-status]');
         const hide = self.querySelector('style[data-agent-spaces]');
-        const key = text => String(text ?? '').replace(/[^A-Za-z0-9]/g, '');
-        if (hide) hide.textContent = agents.map(agent => `.space-card[data-space-subject$="${key(agent.key)}"]`).join(',') + (agents.length ? '{display:none}' : '');
+        // A space card carries its routing key whole (a did:key now), so
+        // match it exactly, quoted for an attribute selector.
+        const key = text => String(text ?? '').replace(/["\\]/g, '\\$&');
+        if (hide) hide.textContent = agents.map(agent => `.space-card[data-space-subject="${key(agent.key)}"]`).join(',') + (agents.length ? '{display:none}' : '');
         if (tab) tab.hidden = agents.length === 0;
         if (!agents.length && self.getAttribute('collection') === 'contacts') {
           self.querySelector('[data-collection="spaces"]')?.click();
@@ -3082,36 +3085,49 @@ view!:
                   </div>
                   <span hidden data-via-return on:finish-sign-in-via=tonk:finish-sign-in-via></span>
                 </div>
-                <div class="pane" data-pane="agent" hidden data-link-approval data-agent-approval>
-                  <h2 class="link-heading">connect an agent</h2>
-                  <dl class="link-details">
-                    <div><dt>app</dt><dd data-agent-client>…</dd></div>
-                    <div><dt>returns to</dt><dd data-agent-host>…</dd></div>
-                    <div><dt>account</dt><dd>
-                      <tonk-display model="tonk:account/registered" view="link-email">
-                        <span slot="loading">loading account…</span>
-                        <span slot="no-entity">account email unavailable</span>
-                      </tonk-display>
-                    </dd></div>
-                  </dl>
-                  <p class="expl agent-warning" data-agent-warning hidden></p>
-                  <label class="agent-field" data-agent-choice hidden><span>agent</span>
-                    <select class="agent-input" data-agent-pick aria-label="Agent"></select></label>
-                  <label class="agent-field" data-agent-name-field><span>agent name</span>
-                    <input class="agent-input" type="text" data-agent-name maxlength="80" autocomplete="off" aria-label="Agent name"></label>
-                  <div class="agent-spaces" role="group" aria-label="what it can reach">
-                    <div class="agent-spaces-head">what it can reach</div>
-                    <div data-agent-spaces><p class="expl">loading your spaces…</p></div>
-                  </div>
-                  <p class="expl">
-                    the agent has a space of its own, and can always read and write there. read
-                    lets it see a space; read and write lets it change it too. access to your
-                    spaces lasts 90 days. an agent you connect again keeps what it could reach.
-                  </p>
-                  <p class="expl agent-error" data-agent-error role="alert" hidden></p>
-                  <div class="link-foot">
-                    <button class="m-cancel" type="button" data-agent-deny>deny</button>
-                    <button class="m-go" type="button" data-agent-approve disabled>approve</button>
+                <!-- An app's OAuth request, as the FABB task dialog the hub's
+                     sign-in uses: which agent, what it can reach, the passkey,
+                     then back to the app. One step shows at a time. -->
+                <div class="pane" data-pane="agent" hidden data-agent-approval data-agent-step="agent">
+                  <div class="agent-dlg" role="group" aria-labelledby="agent-title">
+                    <div class="agent-head"><span class="agent-disc" aria-hidden="true"></span><h2 class="agent-title" id="agent-title" data-agent-title>connect an app</h2></div>
+                    <div class="agent-step" data-agent-panel="agent">
+                      <div class="agent-row"><span class="k">app</span><span class="v" data-agent-client>…</span></div>
+                      <div class="agent-row"><span class="k">returns to</span><span class="v" data-agent-host>…</span></div>
+                      <p class="agent-exp" data-agent-warning hidden></p>
+                      <div class="agent-label" data-agent-choice hidden>which agent</div>
+                      <div class="agent-options" data-agent-options role="radiogroup" aria-label="which agent" hidden></div>
+                      <label class="agent-edit" data-agent-name-field><span class="k">agent name</span>
+                        <input class="agent-input" type="text" data-agent-name maxlength="80" autocomplete="off" aria-label="Agent name"></label>
+                      <p class="agent-exp" data-agent-intro>The agent gets a space of its own, where it can always read and write.</p>
+                      <div class="agent-foot"><button class="agent-btn" type="button" data-agent-deny>deny</button><button class="agent-btn go" type="button" data-agent-next disabled>continue</button></div>
+                    </div>
+                    <div class="agent-step" data-agent-panel="spaces" hidden>
+                      <div class="agent-spaces" data-agent-spaces role="group" aria-label="what it can reach"><p class="agent-exp">loading your spaces…</p></div>
+                      <p class="agent-exp">Access lasts 90 days. You can remove it any time under your agents.</p>
+                      <div class="agent-foot"><button class="agent-btn" type="button" data-agent-back>back</button><button class="agent-btn go" type="button" data-agent-approve>approve</button></div>
+                    </div>
+                    <div class="agent-step" data-agent-panel="passkey" hidden>
+                      <div data-agent-summary></div>
+                      <p class="agent-exp"><strong>Use your passkey to approve.</strong> Your browser will ask for it now.</p>
+                      <div class="agent-foot"><button class="agent-btn wide" type="button" data-agent-deny>cancel</button></div>
+                    </div>
+                    <div class="agent-step" data-agent-panel="working" hidden>
+                      <div class="agent-row agent-phase" data-agent-phase="passkey" data-state="done"><span class="k">passkey</span><span class="v">account opened</span></div>
+                      <div class="agent-row agent-phase" data-agent-phase="agent"><span class="k">agent</span><span class="v"></span></div>
+                      <div class="agent-row agent-phase" data-agent-phase="access"><span class="k">access</span><span class="v"></span></div>
+                      <div class="agent-row agent-phase" data-agent-phase="saving"><span class="k">saving</span><span class="v">to the agent's space</span></div>
+                      <div class="agent-row agent-phase" data-agent-phase="app"><span class="k">app</span><span class="v"></span></div>
+                      <p class="agent-exp" data-agent-wait role="status">This usually takes 10 to 30 seconds. Keep this page open.</p>
+                    </div>
+                    <div class="agent-step" data-agent-panel="done" hidden>
+                      <div data-agent-summary></div>
+                      <p class="agent-exp" data-agent-returning>Returning you to the app…</p>
+                    </div>
+                    <div class="agent-step" data-agent-panel="error" hidden>
+                      <p class="agent-exp" data-agent-error role="alert"></p>
+                      <div class="agent-foot"><button class="agent-btn wide" type="button" data-agent-close>close</button></div>
+                    </div>
                   </div>
                 </div>
                 <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
@@ -5682,12 +5698,84 @@ element!: &account-settings
         if (at.path !== '/settings/agent') return null;
         return new URLSearchParams(at.search).get('request') || null;
       }
+    # The step the dialog shows, and its heading: the app's name once the
+    # request is read.
+    agent-step: |
+      (self, step) => {
+        const pane = self.querySelector('[data-agent-approval]');
+        if (!pane) return;
+        if (pane.dataset.agentStep !== step) pane.dataset.agentStep = step;
+        for (const panel of pane.querySelectorAll('[data-agent-panel]')) panel.hidden = panel.dataset.agentPanel !== step;
+        const client = self._agentClient ?? 'an app';
+        const title = {
+          agent: `connect ${client}`,
+          spaces: `what ${client} can reach`,
+          passkey: `approving ${client}`,
+          working: `connecting ${client}`,
+          done: `${client} connected`,
+          error: `connect ${client}`,
+        }[step];
+        if (title) self.text('[data-agent-title]', title);
+        if (step !== 'working') self.agentPhase(null);
+      }
+    # The approval's progress after the passkey, one row per phase the
+    # worker reports: what is done, what runs now with how long it has
+    # run, and what is left. A phase that runs past a minute says so; the
+    # approval still ends on its own, as done or with the reason it failed.
+    agent-phase: |
+      (self, phase, spaces = 0) => {
+        clearInterval(self._agentTick);
+        self._agentTick = null;
+        if (!phase) return;
+        const order = ['passkey', 'agent', 'access', 'saving', 'app'];
+        const at = order.indexOf(phase);
+        if (at < 0) return;
+        if (self._agentPhase !== phase) { self._agentPhase = phase; self._agentPhaseAt = Date.now(); }
+        const reusing = Boolean(self._agentReusing);
+        const client = self._agentClient ?? 'the app';
+        const reach = spaces ? `${spaces} space${spaces === 1 ? '' : 's'} signed` : 'its own space only';
+        const words = {
+          agent: [reusing ? 'reopening it' : 'making its space', reusing ? 'reopened' : 'its space made'],
+          access: ['signing', reach],
+          saving: ["to the agent's space", "to the agent's space"],
+          app: [`return to ${client}`, `return to ${client}`],
+        };
+        const rows = self.querySelectorAll('[data-agent-phase]');
+        const show = () => {
+          const seconds = Math.floor((Date.now() - self._agentPhaseAt) / 1000);
+          const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+          for (const row of rows) {
+            const index = order.indexOf(row.dataset.agentPhase);
+            const state = index < at ? 'done' : index === at ? 'now' : 'todo';
+            if (row.dataset.state !== state) row.dataset.state = state;
+            const said = words[row.dataset.agentPhase];
+            if (!said) continue;
+            const text = state === 'now' ? `${said[0]} · ${clock}` : state === 'done' ? said[1] : said[0];
+            const value = row.querySelector('.v');
+            if (value.textContent !== text) value.textContent = text;
+          }
+          const wait = self.querySelector('[data-agent-wait]');
+          const slow = seconds >= 60;
+          if (wait && wait.dataset.slow !== String(slow)) {
+            wait.dataset.slow = String(slow);
+            if (slow) {
+              const strong = document.createElement('strong');
+              strong.textContent = 'This is taking longer than usual.';
+              wait.replaceChildren(strong, ' Your connection to Tonk may be slow. It will finish on its own; if it fails, this page says why.');
+            } else {
+              wait.textContent = 'This usually takes 10 to 30 seconds. Keep this page open.';
+            }
+          }
+        };
+        show();
+        self._agentTick = setInterval(show, 1000);
+      }
+    # A refusal the page can still recover from shows on the step it came
+    # from; one that ends the request shows as its own step.
     agent-error: |
       (self, text) => {
-        const node = self.querySelector('[data-agent-error]');
-        if (!node) return;
-        if (node.textContent !== text) node.textContent = text;
-        node.hidden = !text;
+        self.text('[data-agent-error]', text);
+        if (text) self.agentStep('error');
       }
     # A worker error body's message, or the raw text.
     agent-reason: |
@@ -5703,29 +5791,31 @@ element!: &account-settings
         self.pane('agent');
         if (!self.linked() || self.getAttribute('data-agent-shown') === request) return true;
         self.setAttribute('data-agent-shown', request);
+        self.agentStep('agent');
         self.api(`/api/agent/request/${encodeURIComponent(request)}`).then((described) => {
           const client = described?.client_name || 'an app';
           const host = described?.redirect_host || described?.redirect_uri || '';
           self._agentClient = client;
+          self.agentStep('agent');
           self.text('[data-agent-client]', client);
           self.text('[data-agent-host]', host);
+          self.text('[data-agent-returning]', `Returning you to ${client}…`);
           const name = self.querySelector('[data-agent-name]');
           if (name && !name.value) name.value = client;
-          self.agentChoices(described?.agents ?? [], client);
           const loopback = host === 'localhost' || host === '[::1]' || /^127\./.test(host);
           const warning = self.querySelector('[data-agent-warning]');
           if (warning) {
-            warning.textContent = loopback ? `${host} is this computer. approve only if you just started ${client} here yourself.` : '';
+            warning.textContent = loopback ? `${host} is this computer. Approve only if you just started ${client} here yourself.` : '';
             warning.hidden = !loopback;
           }
-          return self.agentSpaces();
-        }).then(() => {
-          const approve = self.querySelector('[data-agent-approve]');
-          if (approve) approve.disabled = false;
+          self.agentChoices(described?.agents ?? [], client);
+          const next = self.querySelector('[data-agent-next]');
+          if (next) next.disabled = false;
+          self.agentSpaces(described?.spaces);
         }, (error) => {
-          self.agentError(error.status === 404
-            ? 'this connection request has expired. start connecting again from your app.'
-            : `this request can't be answered: ${self.agentReason(error)}`);
+          self.agentError(error.status === 404 || error.status === 410
+            ? 'This connection request expired. Nothing was granted. Start connecting again from your app.'
+            : `This request can't be answered: ${self.agentReason(error)}`);
         });
         return true;
       }
@@ -5734,123 +5824,189 @@ element!: &account-settings
     # first is chosen; a new agent is always on offer too.
     agent-choices: |
       (self, agents, client) => {
-        const choice = self.querySelector('[data-agent-choice]');
-        const pick = self.querySelector('[data-agent-pick]');
-        if (!choice || !pick) return;
-        pick.replaceChildren();
-        for (const agent of agents) {
-          const option = document.createElement('option');
-          option.value = agent.key;
-          option.textContent = agent.name || 'Unnamed agent';
-          pick.append(option);
+        const label = self.querySelector('[data-agent-choice]');
+        const options = self.querySelector('[data-agent-options]');
+        if (!label || !options) return;
+        options.replaceChildren();
+        const choices = [...agents.map((agent) => ({ key: agent.key, text: agent.name || 'Unnamed agent' })), { key: '', text: `a new agent for ${client}` }];
+        for (const [index, choice] of choices.entries()) {
+          const option = document.createElement('button');
+          option.type = 'button';
+          option.className = 'agent-opt';
+          option.setAttribute('role', 'radio');
+          option.setAttribute('aria-checked', String(index === 0));
+          option.dataset.agentKey = choice.key;
+          const disc = document.createElement('span');
+          disc.className = 'agent-disc';
+          disc.setAttribute('aria-hidden', 'true');
+          option.append(disc, document.createTextNode(choice.text));
+          options.append(option);
         }
-        const fresh = document.createElement('option');
-        fresh.value = '';
-        fresh.textContent = `a new agent for ${client}`;
-        pick.append(fresh);
-        choice.hidden = agents.length === 0;
-        const named = () => {
-          const field = self.querySelector('[data-agent-name-field]');
-          if (field) field.hidden = pick.value !== '';
-        };
-        pick.onchange = named;
-        named();
+        label.hidden = options.hidden = agents.length === 0;
+        self.agentPick(options.firstElementChild);
       }
-    # One row per space, a select per row: synced spaces only, since a
-    # hosted agent reaches a space through its sync remote.
+    agent-pick: |
+      (self, option) => {
+        if (!option) return;
+        for (const other of self.querySelectorAll('.agent-opt')) other.setAttribute('aria-checked', String(other === option));
+        const fresh = option.dataset.agentKey === '';
+        const field = self.querySelector('[data-agent-name-field]');
+        if (field) field.hidden = !fresh;
+        self.text('[data-agent-intro]', fresh
+          ? 'The agent gets a space of its own, where it can always read and write.'
+          : `Connecting ${self._agentClient ?? 'the app'} again keeps what its agent can already reach. ChatGPT and Claude never share an agent.`);
+      }
+    agent-chosen: |
+      (self) => {
+        const options = self.querySelector('[data-agent-options]');
+        if (!options || options.hidden) return '';
+        return options.querySelector('[aria-checked="true"]')?.dataset.agentKey ?? '';
+      }
+    agent-next: |
+      (self) => {
+        const field = self.querySelector('[data-agent-name]');
+        if (!self.agentChosen() && !(field?.value ?? '').trim()) { field?.focus(); return; }
+        self.agentStep('spaces');
+      }
+    # One row per space in the account's directory, a three-way choice per
+    # row; a space recorded local-only shows but cannot be chosen, since a
+    # hosted agent reaches a space through its sync remote. Right after
+    # signing in the account's directory is still arriving, so an empty
+    # list is read again for a while before it is shown as empty.
     agent-spaces: |
-      async (self) => {
+      async (self, listed, attempt = 0) => {
         const list = self.querySelector('[data-agent-spaces]');
-        const profile = await self.api('/api/profile');
-        // Agents' own spaces are contacts, not spaces to grant.
-        const agents = new Set(((await self.api('/api/agents').catch(() => [])) ?? []).map((agent) => agent.key));
-        const rows = [];
-        for (const { key } of profile?.space ?? []) {
-          if (agents.has(key)) continue;
-          let label = key, synced = false;
-          try {
-            const info = await self.api(`/api/repository/${encodeURIComponent(key)}`);
-            label = info?.label || key;
-            synced = Object.keys(info?.remote ?? {}).length > 0;
-          } catch {}
-          rows.push({ key, label, synced });
+        const request = self.agentRequest();
+        if (!list || !request) return;
+        if (!listed) {
+          try { listed = (await self.api(`/api/agent/request/${encodeURIComponent(request)}`))?.spaces; } catch { listed = null; }
+        }
+        const rows = (listed ?? []).map(({ key, name, synced }) => ({ key, label: name || key, synced: !!synced }));
+        if (!self.isConnected) return;
+        if (!rows.length && attempt < 60) {
+          setTimeout(() => self.agentSpaces(null, attempt + 1), 2000);
+          return;
         }
         rows.sort((a, b) => a.label.localeCompare(b.label));
-        if (!list) return;
+        const chosen = new Map([...list.querySelectorAll('.agent-space')].map((row) => [row.dataset.key, row.querySelector('[aria-checked="true"]')?.dataset.access]));
         list.replaceChildren();
         if (!rows.length) {
           const empty = document.createElement('p');
-          empty.className = 'expl';
-          empty.textContent = 'there are no spaces to choose from.';
+          empty.className = 'agent-exp';
+          empty.textContent = 'You have no spaces to share yet. The agent still gets its own.';
           list.append(empty);
         }
         for (const row of rows) {
-          const line = document.createElement('label');
+          const line = document.createElement('div');
           line.className = 'agent-space';
+          line.dataset.key = row.key;
+          line.dataset.testid = `space-access-${row.key}`;
+          if (!row.synced) line.classList.add('off');
           const name = document.createElement('span');
           name.className = 'agent-space-name';
           name.textContent = row.label;
-          const select = document.createElement('select');
-          select.className = 'agent-access';
-          select.dataset.key = row.key;
-          select.dataset.testid = `space-access-${row.key}`;
-          select.setAttribute('aria-label', row.label);
-          select.disabled = !row.synced;
-          for (const [value, text] of [['none', 'No access'], ['read', 'Read'], ['write', 'Read and write']]) {
-            const option = document.createElement('option');
-            option.value = value;
+          const group = document.createElement('div');
+          group.className = 'agent-seg';
+          group.setAttribute('role', 'radiogroup');
+          group.setAttribute('aria-label', row.label);
+          const current = chosen.get(row.key) ?? 'none';
+          for (const [access, text] of [['none', 'none'], ['read', 'read'], ['write', 'read & write']]) {
+            const option = document.createElement('button');
+            option.type = 'button';
+            option.setAttribute('role', 'radio');
+            option.setAttribute('aria-checked', String(access === current));
+            option.dataset.access = access;
             option.textContent = text;
-            select.append(option);
+            option.disabled = !row.synced;
+            group.append(option);
           }
-          line.append(name, select);
+          line.append(name, group);
           if (!row.synced) {
             const why = document.createElement('small');
             why.className = 'agent-space-why';
-            why.textContent = 'only on this device: sync it to let a hosted agent reach it';
+            why.textContent = 'Not synced. Sync it to share it with an agent.';
             line.append(why);
           }
           list.append(line);
         }
       }
-    agent-busy: |
-      (self, busy, text) => {
-        for (const button of self.querySelectorAll('[data-agent-approve], [data-agent-deny]')) button.disabled = busy;
-        self.status(text);
+    agent-access: |
+      (self, option) => {
+        for (const other of option.parentElement.children) other.setAttribute('aria-checked', String(other === option));
       }
     agent-approve: |
       (self) => {
         const request = self.agentRequest();
-        const field = self.querySelector('[data-agent-name]');
-        const name = (field?.value ?? '').trim();
-        const agent = self.querySelector('[data-agent-choice]')?.hidden ? '' : (self.querySelector('[data-agent-pick]')?.value ?? '');
         if (!request) return;
-        if (!agent && !name) { field?.focus(); self.agentError('give the agent a name.'); return; }
-        const spaces = [...self.querySelectorAll('select.agent-access')]
-          .filter((select) => !select.disabled && (select.value === 'read' || select.value === 'write'))
-          .map((select) => ({ key: select.dataset.key, access: select.value }));
-        self.agentError('');
-        self.agentBusy(true, 'Waiting for passkey…');
+        const name = (self.querySelector('[data-agent-name]')?.value ?? '').trim();
+        const agent = self.agentChosen();
+        const spaces = [...self.querySelectorAll('.agent-space')]
+          .map((row) => ({ key: row.dataset.key, access: row.querySelector('[aria-checked="true"]:not(:disabled)')?.dataset.access }))
+          .filter((space) => space.access === 'read' || space.access === 'write');
+        const summaries = self.querySelectorAll('[data-agent-summary]');
+        for (const summary of summaries) {
+          summary.replaceChildren();
+          const rows = spaces.length ? spaces : [{ none: true }];
+          for (const space of rows) {
+            const row = document.createElement('div');
+            row.className = 'agent-row';
+            const k = document.createElement('span');
+            k.className = 'k';
+            const v = document.createElement('span');
+            v.className = 'v';
+            if (space.none) { k.textContent = 'can reach'; v.textContent = 'its own space'; }
+            else {
+              k.textContent = self.querySelector(`.agent-space[data-key="${CSS.escape(space.key)}"] .agent-space-name`)?.textContent ?? space.key;
+              v.textContent = space.access === 'write' ? 'read & write' : 'read';
+            }
+            row.append(k, v);
+            summary.append(row);
+          }
+        }
+        self.agentStep('passkey');
+        self._agentAsked = request;
+        self._agentReusing = Boolean(agent);
+        self._agentSpaces = 0;
         // The worker asks this page's top document for the passkey; the
         // ceremony row reports how it goes, and the top page goes on to
         // the app's callback when it is done.
         const ask = agent ? { agent, spaces, request } : { name, spaces, request };
-        self.api('/api/agent/session', ask).catch((error) => {
-          self.agentBusy(false, '');
-          self.agentError(self.agentReason(error));
-        });
+        self.api('/api/agent/session', ask).catch((error) => self.agentError(self.agentReason(error)));
       }
     agent-deny: |
       (self) => {
         const request = self.agentRequest();
         if (!request) return;
-        self.agentError('');
-        self.agentBusy(true, 'telling the app you said no…');
+        for (const button of self.querySelectorAll('[data-agent-approval] button')) button.disabled = true;
         self.api('/api/agent/deny', { request }).then((response) => {
           window.tonk?.navigate?.(response.redirect);
-        }).catch((error) => {
-          self.agentBusy(false, '');
-          self.agentError(self.agentReason(error));
-        });
+        }).catch((error) => self.agentError(self.agentReason(error)));
+      }
+    # The ceremony row's word on the approval: a passkey refused goes back
+    # to the spaces, a failure ends the request, done waits for the app.
+    # The ceremony row is the account's, not this request's: it still
+    # says how an earlier approval ended. Only an approval this page asked
+    # for counts, and done only when it names this request.
+    agent-ceremony: |
+      (self, state, detail) => {
+        if (!self._agentAsked || self._agentAsked !== self.agentRequest()) return;
+        if (state === 'done' && detail !== self._agentAsked) return;
+        // Working names the request and the phase it is in.
+        if (state === 'working') {
+          let progress;
+          try { progress = JSON.parse(detail); } catch { return; }
+          if (progress?.request !== self._agentAsked) return;
+          if (progress.phase === 'saving') self._agentSpaces = progress.spaces ?? 0;
+          self.agentStep('working');
+          self.agentPhase(progress.phase, self._agentSpaces);
+        }
+        // Done waits here: the worker answers the top page's passkey
+        // handoff with the app's callback, and this page goes with it.
+        else if (state === 'done') self.agentStep('done');
+        else if (state === 'refused') self.agentStep('spaces');
+        else if (state === 'failed') self.agentError(/expired|another browser/i.test(detail)
+          ? 'This connection request expired. Nothing was granted. Start connecting again from your app.'
+          : `Connecting the agent did not finish: ${detail}`);
       }
     pane: |
       (self, name) => {
@@ -6091,9 +6247,8 @@ element!: &account-settings
             if (asking) self.setAttribute('data-passkey-requested', ''); else self.removeAttribute('data-passkey-requested');
           }
         }
-        if (which === 'authorize-agent' && (state === 'refused' || state === 'failed')) {
-          for (const button of self.querySelectorAll('[data-agent-approve], [data-agent-deny]')) button.disabled = false;
-        }
+        // The agent dialog shows its own steps rather than the status line.
+        if (which === 'authorize-agent') { self.agentCeremony(state, detail); self.status(''); return; }
         self.status(text);
       }
     # Declining hands the requester a deny on its own callback. The same
@@ -6231,6 +6386,16 @@ element!: &account-settings
             self.agentApprove();
           } else if (hit('[data-agent-deny]')) {
             self.agentDeny();
+          } else if (hit('[data-agent-next]')) {
+            self.agentNext();
+          } else if (hit('[data-agent-back]')) {
+            self.agentStep('agent');
+          } else if (hit('[data-agent-close]')) {
+            window.tonk?.navigate?.('/');
+          } else if (hit('.agent-opt')) {
+            self.agentPick(event.target.closest('.agent-opt'));
+          } else if (hit('.agent-seg [role="radio"]')) {
+            self.agentAccess(event.target.closest('[role="radio"]'));
           }
         });
         self.addEventListener('input', (event) => {
@@ -6336,6 +6501,22 @@ concept!: &intent/choice
     time:
       description: When it was run, so two runs are two choices.
       the: tonk.dialog.intent.choice/time
+      as: float
+
+concept!: &intent/pick
+  description: An entity a command run from the palette was given, for ranking the values the palette lists for that command.
+  with:
+    command:
+      description: The command that was run.
+      the: tonk.dialog.intent.pick/command
+      as: entity
+    value:
+      description: The entity one of its arguments was filled with.
+      the: tonk.dialog.intent.pick/value
+      as: entity
+    time:
+      description: When it was run, so two runs are two picks.
+      the: tonk.dialog.intent.pick/time
       as: float
 
 # The command palette's interpretation of what was typed, as session facts.
@@ -6521,8 +6702,9 @@ element!: &command-palette
         const fab = self.closest('tonk-fab');
         if (fab) fab.removeAttribute('commanding');
         self.__asked = null;
-        // The next opening is a new expression.
+        // The next opening is a new expression, and reads memory afresh.
         self.__expression = null;
+        self.__memory = null;
         self.__typed = '';
         self.__input.value = '';
         self.__proposals = [];
@@ -6724,10 +6906,42 @@ element!: &command-palette
           return false;
         };
         const subject = space ? { this: space } : {};
-        const ofExpression = { predicate: 'intent/suggest', terms: { expression, ...subject, now, max } };
+        // What was run from the palette is kept on the profile; the space
+        // ranks its own commands and their values by it too. Read once per
+        // opening.
+        const profile = self.getAttribute('profile');
+        if (space && profile && !self.__memory) {
+          const field = (name, as) => ({ the: name, as, cardinality: 'one' });
+          const recall = async (domain, extra) => {
+            const found = await window.tonk.query({
+              predicate: { with: {
+                command: field(`${domain}/command`, 'Entity'), time: field(`${domain}/time`, 'Float'), ...extra,
+              } },
+              terms: Object.fromEntries(['this', 'command', 'time', ...Object.keys(extra)]
+                .map((name) => [name, { '?': { name } }])),
+            }, { with: profile });
+            const rows = Array.isArray(found) ? found : (found && found.rows) || [];
+            return rows.map((row) => ({ this: row.this, fields: row.fields || {} }));
+          };
+          self.__memory = Promise.all([
+            recall('tonk.dialog.intent.choice', { input: field('tonk.dialog.intent.choice/input', 'Text') }),
+            recall('tonk.dialog.intent.pick', { value: field('tonk.dialog.intent.pick/value', 'Entity') }),
+          ]).then(([choices, picks]) => JSON.stringify({ choices, picks }))
+            .catch((error) => {
+              console.warn('<command-palette> memory not read', error);
+              return null;
+            });
+        }
+        const memory = space && self.__memory ? await self.__memory : null;
+        if (self.__asked !== asked) return;
+        // Only to the space: the profile reads its own.
+        const remembered = (branch) => (memory && branch !== profile ? { memory } : {});
+        const ofExpression = (branch) => ({ predicate: 'intent/suggest',
+          terms: { expression, ...subject, now, max, ...remembered(branch) } });
         // No site to interpret against, or a branch that didn't interpret
         // the line: ask with the line itself.
-        const ofLine = { predicate: 'intent/suggest', terms: { input: typed, ...subject, now, max, site } };
+        const ofLine = (branch) => ({ predicate: 'intent/suggest',
+          terms: { input: typed, ...subject, now, max, site, ...remembered(branch) } });
         const read = (branch, row) => {
           const fields = row.fields || {};
           const json = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };
@@ -6741,6 +6955,8 @@ element!: &command-palette
             nouns: json(fields.nouns, {}),
             completion: fields.completion || null,
             claim: fields.claim ? json(fields.claim, null) : null,
+            listed: Boolean(fields.listed),
+            entities: json(fields.entities, []),
           };
         };
         const answers = await Promise.all(branches.map(async (branch) => {
@@ -6750,7 +6966,7 @@ element!: &command-palette
           }) : false;
           if (self.__asked !== asked) return [];
           timing[branch] = Math.round(performance.now() - started);
-          return window.tonk.query(done ? ofExpression : ofLine, { with: branch })
+          return window.tonk.query(done ? ofExpression(branch) : ofLine(branch), { with: branch })
             .then((found) => (Array.isArray(found) ? found : (found && found.rows) || [])
               .map((row) => read(branch, row)))
             .catch((error) => {
@@ -6769,7 +6985,20 @@ element!: &command-palette
           // own: best first, and nothing under half the best.
           readings.sort((a, b) => b.score - a.score);
           const best = readings.length ? readings[0].score : 0;
-          readings = readings.filter((reading) => reading.score >= best * 0.5).slice(0, 5);
+          readings = readings.filter((reading) => reading.score >= best * 0.5);
+          // A branch lists a command's values when the line means only that
+          // command there. If the other branch reads it as more commands,
+          // which one is meant comes first: keep each command's top value.
+          if (new Set(readings.map((reading) => reading.command)).size > 1) {
+            const kept = new Set();
+            readings = readings.filter((reading) => {
+              if (!reading.listed) return true;
+              if (kept.has(reading.command)) return false;
+              kept.add(reading.command);
+              return true;
+            });
+          }
+          readings = readings.slice(0, 5);
         }
         self.__proposals = readings;
         self.__note = '';
@@ -6823,20 +7052,34 @@ element!: &command-palette
       (self, proposal) => {
         const profile = self.getAttribute('profile');
         if (!profile) return;
-        const field = (name, as) => ({ the: `tonk.dialog.intent.choice/${name}`, as });
+        const field = (domain, name, as) => ({ the: `tonk.dialog.intent.${domain}/${name}`, as });
+        const time = Date.now();
+        // The command, and each entity it was given: what ranks the values
+        // listed for it next time.
+        const picks = (proposal.entities || []).map((value) => ({ op: 'assert', application: {
+          predicate: { kind: 'durable', concept: { with: {
+            command: field('pick', 'command', 'Entity'), value: field('pick', 'value', 'Entity'),
+            time: field('pick', 'time', 'Float'),
+          } } },
+          parameters: { command: proposal.command, value, time },
+        } }));
         window.tonk.transact({ claims: [{ op: 'assert', application: {
           predicate: { kind: 'durable', concept: { with: {
-            command: field('command', 'Entity'), input: field('input', 'Text'), time: field('time', 'Float'),
+            command: field('choice', 'command', 'Entity'), input: field('choice', 'input', 'Text'),
+            time: field('choice', 'time', 'Float'),
           } } },
-          parameters: { command: proposal.command, input: proposal.input || '', time: Date.now() },
-        } }] }, { with: profile }).catch((error) => console.warn('<command-palette> not remembered', error));
+          parameters: { command: proposal.command, input: proposal.input || '', time },
+        } }, ...picks] }, { with: profile }).catch((error) => console.warn('<command-palette> not remembered', error));
       }
     run: |
       async (self) => {
         const proposal = (self.__proposals || [])[self.__index];
         if (!proposal) return;
         if (!proposal.claim) {
-          // Incomplete: take its completion and keep typing.
+          // Incomplete, or a listed value: take its completion and keep
+          // typing. A listed value is taken even after a deletion, since
+          // taking it is what choosing it means.
+          if (proposal.listed) self.__complete = true;
           self.suggest();
           self.accept();
           return;
