@@ -27,12 +27,11 @@ use tonk_notation::{Load, Syntax, Url, expand, parse_at};
 
 use crate::TonkWorkerError;
 
-/// Where library documents live, or `None` where the library has no
-/// location: a wasm test harness is not a service worker, so it has no
-/// origin to serve from. A document parsed without a location still
+/// Where library documents live: the compiled-in library's root, or `None`
+/// where it does not parse. A document parsed without a location still
 /// seeds; it just cannot include.
 pub(super) fn location() -> Option<Url> {
-    { Url::parse(tonk_library::ROOT).ok() }
+    Url::parse(tonk_library::ROOT).ok()
 }
 
 /// Loads what a library document includes, from the library directory

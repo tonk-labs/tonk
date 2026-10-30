@@ -278,7 +278,7 @@ impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
         }
         match ensure_space_mounted(&tonk, &key).await {
             Ok(true) => {
-                schedule_seed_upgrade(&tonk, self.state().clone(), &key).await;
+                schedule_seed_upgrade(&tonk, &key).await;
                 log!("ReplicateSpace '{key}': mounted");
             }
             // Not an error: the directory has no mount record for it, so
@@ -308,21 +308,11 @@ impl SeedUpgrades {
     }
 }
 
-/// Catch a mounted space's seed up with the shipped bundle, detached
-/// from the request that touched it.
+/// Catch a mounted space's seed up with the shipped bundle.
 ///
-/// Best-effort by design: the work runs off the request path (a load is
-/// never blocked on the seed source fetch), at most once per worker
-/// instance per space, and a failed attempt simply waits for the next
-/// worker to try again. On wasm the task is not tied to the fetch
-/// lifetime, so an idling worker may cut it short — the same next-boot
-/// retry covers that. Native (the single-threaded test and host builds,
-/// same as `spawn_dispatch`) runs it inline instead.
-pub(crate) async fn schedule_seed_upgrade(
-    tonk: &TonkState,
-    state: crate::router::AppState,
-    key: &str,
-) {
+/// Best-effort by design: at most once per worker instance per space, and
+/// a failed attempt simply waits for the next worker to try again.
+pub(crate) async fn schedule_seed_upgrade(tonk: &TonkState, key: &str) {
     let Some(subject) = space_subject(key) else {
         return;
     };
@@ -333,13 +323,10 @@ pub(crate) async fn schedule_seed_upgrade(
     if !tonk.seed_upgrades.begin(&key) {
         return;
     }
-    {
-        let _ = state;
-        match super::repository::upgrade_seed(tonk, &key).await {
-            Ok(true) => log!("seed upgrade: '{key}' caught up with the shipped bundle"),
-            Ok(false) => {}
-            Err(error) => log!("seed upgrade for mounted '{key}': {error}"),
-        }
+    match super::repository::upgrade_seed(tonk, &key).await {
+        Ok(true) => log!("seed upgrade: '{key}' caught up with the shipped bundle"),
+        Ok(false) => {}
+        Err(error) => log!("seed upgrade for mounted '{key}': {error}"),
     }
 }
 

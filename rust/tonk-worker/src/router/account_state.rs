@@ -759,11 +759,9 @@ pub(crate) enum Publish {
 /// link with a remote check see what the browser will have seen a
 /// moment later.
 pub(crate) async fn push_after_answer(app: crate::router::AppState) {
-    {
-        let tonk = app.read().await;
-        if let Err(error) = push_account_main(&tonk).await {
-            log!("push behind the login's answer did not land: {error}");
-        }
+    let tonk = app.read().await;
+    if let Err(error) = push_account_main(&tonk).await {
+        log!("push behind the login's answer did not land: {error}");
     }
 }
 

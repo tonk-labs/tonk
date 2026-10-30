@@ -1104,7 +1104,7 @@ pub async fn drain_sync(state: &AppState) {
 
     // Dirty repos first (push priority), then repos owed a retry, then every
     // other open repo (pull).
-    let now = current_millis();
+    let now = now_millis();
     let pending = {
         let tonk = state.read().await;
         tonk.sync_queue.drain_pending()
@@ -1262,14 +1262,6 @@ where
 #[handler]
 pub async fn drain() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true }))
-}
-
-/// A millisecond wall-clock stamp for activity priority. `Date.now()` in the SW
-/// event context (not the reactor's deterministic paths). Native builds (tests)
-/// have no clock dependency here, so they return 0 — priority ordering is moot
-/// off-wasm.
-fn current_millis() -> f64 {
-    { 0.0 }
 }
 
 #[cfg(test)]

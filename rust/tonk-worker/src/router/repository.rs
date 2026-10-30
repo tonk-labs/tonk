@@ -3391,11 +3391,6 @@ pub(crate) async fn remove_space_inner(
     } else {
         delete_space_storage_for(subject.repo_key()).await;
     }
-    // Where the space's content is on an origin of its own, that is where
-    // most of it is, and its worker is the one that can remove it.
-    if state.read().await.spaces_elsewhere() {
-        space_reach::forget(subject.repo_key()).await;
-    }
 
     // The delete ran unlocked, so a concurrent `drain_sync` could have
     // reached in and re-acquired the repo (e.g. to pull) while it was in
@@ -3687,9 +3682,7 @@ pub(crate) async fn carry_replica_rows(
 /// profile shares the storage. Logged so the leak is visible; grows a
 /// real implementation when dialog-storage grows the capability.
 async fn delete_space_storage_for(key: &str) {
-    {
-        log!("space '{key}' removed; its local storage is left behind (no native delete yet)");
-    }
+    log!("space '{key}' removed; its local storage is left behind (no native delete yet)");
 }
 
 /// The copy of the space `key` this worker's storage holds, where each
@@ -8101,7 +8094,7 @@ pub async fn get_repository(
     // turns an explainable miss into a bare 404.
     let mount = match super::adopt::ensure_space_mounted(&tonk, &name).await {
         Ok(true) => {
-            super::adopt::schedule_seed_upgrade(&tonk, state.clone(), &name).await;
+            super::adopt::schedule_seed_upgrade(&tonk, &name).await;
             None
         }
         Ok(false) => Some("the account directory holds no mountable record for it".to_string()),

@@ -1441,12 +1441,10 @@ async fn run_pending(
             let sealed = hex::decode(sealed_hex).map_err(|error| {
                 TonkWorkerError::Router(format!("queued cell is not hex: {error}"))
             })?;
-            {
-                let _ = (invocation, sealed);
-                Err(TonkWorkerError::Internal(format!(
-                    "the custody publish for {custody} drains in the worker runtime"
-                )))
-            }
+            let _ = (invocation, sealed);
+            Err(TonkWorkerError::Internal(format!(
+                "the custody publish for {custody} drains in the worker runtime"
+            )))
         }
     }
 }

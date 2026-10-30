@@ -318,17 +318,6 @@ pub(crate) fn changed(space: Option<&str>) {
     }
 }
 
-/// Have `space`'s own worker forget the space: remove everything its origin
-/// stored, and itself. For a space the person removed from this device,
-/// whose content this worker never held. Best effort, like the removal of
-/// local storage it stands in for: a worker that cannot be reached leaves
-/// bytes nothing shows, on an origin nothing opens.
-pub(crate) async fn forget(space: &str) {
-    {
-        let _ = space;
-    }
-}
-
 /// Ask the person's profile, from a space's own worker, to do what only it
 /// can: mint an invite to this worker's space, or sign the revocation of a
 /// grant on it. Answers with what the profile said back. The space's worker asks up

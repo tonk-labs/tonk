@@ -407,13 +407,10 @@ async fn existing_grant(state: &TonkState, account: &Did) -> Option<DelegationCh
     Some(chain)
 }
 
-/// This device's label, from the worker's own navigator.
-///
-/// The service worker has `WorkerNavigator` rather than `window`, and no
-/// `platform` or touch-point count, so the label is coarser than the
-/// page's — browser and OS families still come out of the user agent.
+/// This device's label. A worker knows nothing of the browser it runs in,
+/// so the label is the generic one.
 pub(crate) fn device_title() -> String {
-    { tonk_common::device_label::from_navigator("", "", 0) }
+    tonk_common::device_label::from_navigator("", "", 0)
 }
 
 /// Describe a device link as facts on the delegation's own entity.

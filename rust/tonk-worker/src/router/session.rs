@@ -260,7 +260,7 @@ pub async fn register_site_on_repo(
     // route that addresses a space by key.
     match super::adopt::ensure_space_mounted(&tonk, &path.repo).await {
         Ok(true) => {
-            super::adopt::schedule_seed_upgrade(&tonk, state.clone(), &path.repo).await;
+            super::adopt::schedule_seed_upgrade(&tonk, &path.repo).await;
         }
         Ok(false) => {}
         Err(error) => {

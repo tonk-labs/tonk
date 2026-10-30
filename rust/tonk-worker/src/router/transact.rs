@@ -87,7 +87,7 @@ pub async fn transact(
         let tonk_state = state.read().await;
         match super::adopt::ensure_space_mounted(&tonk_state, &path.repo).await {
             Ok(true) => {
-                super::adopt::schedule_seed_upgrade(&tonk_state, state.clone(), &path.repo).await;
+                super::adopt::schedule_seed_upgrade(&tonk_state, &path.repo).await;
             }
             Ok(false) => {}
             Err(error) => {

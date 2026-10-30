@@ -1315,8 +1315,6 @@ async fn perform_join_elsewhere(
     if let Err(failure) = claimed {
         if prepared.installs_replica() {
             super::space_directory::settle(&tonk, &prepared.subject).await;
-            drop(tonk);
-            super::space_reach::forget(&prepared.key).await;
         }
         return Err(failure);
     }
