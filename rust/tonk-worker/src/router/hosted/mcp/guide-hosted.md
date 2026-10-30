@@ -46,17 +46,24 @@ subject as `this:`.
 
 ## Views
 
-`tonk_open_space` shows a space to the person inline, live, where their app can
-show it; set `edit` only when they should change the space from the view.
+`tonk_open_space` shows a route of a space to the person, inline in the chat
+and live, as the space's own page renders it. Use it when the person wants to
+see or work with something in a space: pass the exact `subject` and a path,
+`/` or a route the space defines, with entity URIs read back from `tonk_query`.
+Set `edit` only when they want to change things from the view and the space is
+`read-write`. Hosts without inline views show nothing; then point the person to
+the space in Tonk at {origin}.
+
 `tonk_outline` lists the views a space renders as a tree, each node with the
 route that shows it alone. To show one part of a larger page, such as one list,
 outline the space and pass that node's `route` to `tonk_open_space` as `view`.
 Outline records show how many items a view rendered; a node with an `error`
 did not render.
 
-You cannot see what the person sees. Showing a view does not prove it rendered
-or that a control works, and a query is not that proof either. If it matters,
-ask the person, or ask them to open the space in Tonk at {origin} to check.
+You cannot see a view, whether you show it or author it with notation. Never
+claim that one rendered or that a control works, and never describe a query as
+proof of either; ask the person how it looks, or ask them to open the space in
+Tonk at {origin} to check.
 
 ## Manuals
 
