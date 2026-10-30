@@ -359,6 +359,28 @@ pub(crate) async fn authorize(
     outcome
 }
 
+/// Report the phase an approval is in, so the page that asked shows how
+/// far it got: `agent` (the passkey opened the account; the agent is being
+/// made or reopened), `access` (its grants are being signed) and `saving`
+/// (`spaces` grants are being pushed to its space). The ceremony row is the
+/// account's, so the detail names the request it is about.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn progress(state: &AppState, authorization: &AgentAuthorization, phase: &str, spaces: usize) {
+    let detail = serde_json::json!({
+        "request": authorization.request,
+        "phase": phase,
+        "spaces": spaces,
+    });
+    let tonk = state.read().await;
+    super::ceremony::report(
+        &tonk,
+        tonk_schema::ceremony::AUTHORIZE_AGENT,
+        tonk_schema::ceremony_state::WORKING,
+        &detail.to_string(),
+    )
+    .await;
+}
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn authorize_inner(
     state: &AppState,
@@ -373,16 +395,6 @@ async fn authorize_inner(
         .ok_or("this approval was not started here; start connecting again from your app")?;
     let origin = RequestOrigin::parse(origin.as_str())
         .map_err(|_| "the approval's origin is unreadable".to_string())?;
-    {
-        let tonk = state.read().await;
-        super::ceremony::report(
-            &tonk,
-            tonk_schema::ceremony::AUTHORIZE_AGENT,
-            tonk_schema::ceremony_state::WORKING,
-            "",
-        )
-        .await;
-    }
     let account = super::custody::held_account(custodian).await?;
     let Signer::Ed25519(root) = account
         .signer()
@@ -398,6 +410,7 @@ async fn authorize_inner(
     if root.did() != linked {
         return Err("this passkey belongs to a different account".into());
     }
+    progress(state, authorization, "agent", 0).await;
     let name = authorization
         .agent
         .is_none()
@@ -411,6 +424,7 @@ async fn authorize_inner(
         None => create_agent(state, authorization).await?,
     };
     let agent_did = agent.did();
+    progress(state, authorization, "access", 0).await;
 
     let tonk = state.read().await;
     let repository = tonk
@@ -452,6 +466,7 @@ async fn authorize_inner(
     }
     record_grants(&tonk, &key, &granted).await.map_err(said)?;
     drop(tonk);
+    progress(state, authorization, "saving", granted.len()).await;
     // The host reads the grants from the agent space's remote, and the page
     // navigates to the app's callback as soon as this answers, so push now
     // rather than leave it to the background sync the navigation cuts off.

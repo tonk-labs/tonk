@@ -2364,8 +2364,22 @@ account-settings button.agent-btn:focus-visible { outline: 2px solid var(--ink);
 account-settings button.agent-btn.go:focus-visible { outline-color: var(--on-ink); }
 account-settings [data-agent-step="passkey"] [data-agent-panel="passkey"] .agent-exp strong { animation: agent-wait 2.4s ease-in-out infinite; }
 @keyframes agent-wait { 50% { opacity: .55; } }
+/* Progress after the passkey: ✓ done, ● running (pulsing), ○ still to come. */
+account-settings [data-agent-step="passkey"] .agent-disc,
+account-settings [data-agent-step="working"] .agent-disc { background: var(--ink); animation: agent-wait 2.4s ease-in-out infinite; }
+account-settings [data-agent-step="done"] .agent-disc { background: var(--ink); }
+account-settings .agent-phase .k::before { display: inline-block; width: 1.2em; }
+account-settings .agent-phase[data-state="done"] .k::before { content: "✓"; }
+account-settings .agent-phase[data-state="now"] .k::before { content: "●"; }
+account-settings .agent-phase[data-state="todo"] .k::before { content: "○"; }
+account-settings .agent-phase[data-state="now"] { animation: agent-wait 2.4s ease-in-out infinite; }
+account-settings .agent-phase[data-state="now"] .k { color: var(--ink); }
+account-settings .agent-phase[data-state="todo"] { color: var(--soft); }
 @media (prefers-reduced-motion: reduce) {
-    account-settings [data-agent-step="passkey"] [data-agent-panel="passkey"] .agent-exp strong { animation: none; }
+    account-settings [data-agent-step="passkey"] [data-agent-panel="passkey"] .agent-exp strong,
+    account-settings [data-agent-step="passkey"] .agent-disc,
+    account-settings [data-agent-step="working"] .agent-disc,
+    account-settings .agent-phase[data-state="now"] { animation: none; }
 }
 @media (max-width: 600px) {
     account-settings .agent-row { grid-template-columns: 1fr; gap: 2px; }

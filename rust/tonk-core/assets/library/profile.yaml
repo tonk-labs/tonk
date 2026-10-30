@@ -3110,6 +3110,14 @@ view!:
                       <p class="agent-exp"><strong>Use your passkey to approve.</strong> Your browser will ask for it now.</p>
                       <div class="agent-foot"><button class="agent-btn wide" type="button" data-agent-deny>cancel</button></div>
                     </div>
+                    <div class="agent-step" data-agent-panel="working" hidden>
+                      <div class="agent-row agent-phase" data-agent-phase="passkey" data-state="done"><span class="k">passkey</span><span class="v">account opened</span></div>
+                      <div class="agent-row agent-phase" data-agent-phase="agent"><span class="k">agent</span><span class="v"></span></div>
+                      <div class="agent-row agent-phase" data-agent-phase="access"><span class="k">access</span><span class="v"></span></div>
+                      <div class="agent-row agent-phase" data-agent-phase="saving"><span class="k">saving</span><span class="v">to the agent's space</span></div>
+                      <div class="agent-row agent-phase" data-agent-phase="app"><span class="k">app</span><span class="v"></span></div>
+                      <p class="agent-exp" data-agent-wait role="status">This usually takes 10 to 30 seconds. Keep this page open.</p>
+                    </div>
                     <div class="agent-step" data-agent-panel="done" hidden>
                       <div data-agent-summary></div>
                       <p class="agent-exp" data-agent-returning>Returning you to the app…</p>
@@ -5701,10 +5709,64 @@ element!: &account-settings
           agent: `connect ${client}`,
           spaces: `what ${client} can reach`,
           passkey: `approving ${client}`,
+          working: `connecting ${client}`,
           done: `${client} connected`,
           error: `connect ${client}`,
         }[step];
         if (title) self.text('[data-agent-title]', title);
+        if (step !== 'working') self.agentPhase(null);
+      }
+    # The approval's progress after the passkey, one row per phase the
+    # worker reports: what is done, what runs now with how long it has
+    # run, and what is left. A phase that runs past a minute says so; the
+    # approval still ends on its own, as done or with the reason it failed.
+    agent-phase: |
+      (self, phase, spaces = 0) => {
+        clearInterval(self._agentTick);
+        self._agentTick = null;
+        if (!phase) return;
+        const order = ['passkey', 'agent', 'access', 'saving', 'app'];
+        const at = order.indexOf(phase);
+        if (at < 0) return;
+        if (self._agentPhase !== phase) { self._agentPhase = phase; self._agentPhaseAt = Date.now(); }
+        const reusing = Boolean(self._agentReusing);
+        const client = self._agentClient ?? 'the app';
+        const reach = spaces ? `${spaces} space${spaces === 1 ? '' : 's'} signed` : 'its own space only';
+        const words = {
+          agent: [reusing ? 'reopening it' : 'making its space', reusing ? 'reopened' : 'its space made'],
+          access: ['signing', reach],
+          saving: ["to the agent's space", "to the agent's space"],
+          app: [`return to ${client}`, `return to ${client}`],
+        };
+        const rows = self.querySelectorAll('[data-agent-phase]');
+        const show = () => {
+          const seconds = Math.floor((Date.now() - self._agentPhaseAt) / 1000);
+          const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+          for (const row of rows) {
+            const index = order.indexOf(row.dataset.agentPhase);
+            const state = index < at ? 'done' : index === at ? 'now' : 'todo';
+            if (row.dataset.state !== state) row.dataset.state = state;
+            const said = words[row.dataset.agentPhase];
+            if (!said) continue;
+            const text = state === 'now' ? `${said[0]} · ${clock}` : state === 'done' ? said[1] : said[0];
+            const value = row.querySelector('.v');
+            if (value.textContent !== text) value.textContent = text;
+          }
+          const wait = self.querySelector('[data-agent-wait]');
+          const slow = seconds >= 60;
+          if (wait && wait.dataset.slow !== String(slow)) {
+            wait.dataset.slow = String(slow);
+            if (slow) {
+              const strong = document.createElement('strong');
+              strong.textContent = 'This is taking longer than usual.';
+              wait.replaceChildren(strong, ' Your connection to Tonk may be slow. It will finish on its own; if it fails, this page says why.');
+            } else {
+              wait.textContent = 'This usually takes 10 to 30 seconds. Keep this page open.';
+            }
+          }
+        };
+        show();
+        self._agentTick = setInterval(show, 1000);
       }
     # A refusal the page can still recover from shows on the step it came
     # from; one that ends the request shows as its own step.
@@ -5901,6 +5963,8 @@ element!: &account-settings
         }
         self.agentStep('passkey');
         self._agentAsked = request;
+        self._agentReusing = Boolean(agent);
+        self._agentSpaces = 0;
         // The worker asks this page's top document for the passkey; the
         // ceremony row reports how it goes, and the top page goes on to
         // the app's callback when it is done.
@@ -5925,9 +5989,18 @@ element!: &account-settings
       (self, state, detail) => {
         if (!self._agentAsked || self._agentAsked !== self.agentRequest()) return;
         if (state === 'done' && detail !== self._agentAsked) return;
+        // Working names the request and the phase it is in.
+        if (state === 'working') {
+          let progress;
+          try { progress = JSON.parse(detail); } catch { return; }
+          if (progress?.request !== self._agentAsked) return;
+          if (progress.phase === 'saving') self._agentSpaces = progress.spaces ?? 0;
+          self.agentStep('working');
+          self.agentPhase(progress.phase, self._agentSpaces);
+        }
         // Done waits here: the worker answers the top page's passkey
         // handoff with the app's callback, and this page goes with it.
-        if (state === 'done') self.agentStep('done');
+        else if (state === 'done') self.agentStep('done');
         else if (state === 'refused') self.agentStep('spaces');
         else if (state === 'failed') self.agentError(/expired|another browser/i.test(detail)
           ? 'This connection request expired. Nothing was granted. Start connecting again from your app.'
