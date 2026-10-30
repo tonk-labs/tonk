@@ -24,7 +24,6 @@ const ROUTES: &[&str] = &[
     "/api/account/devices/register",
     "/api/account/devices/revoke",
     "/api/account/display-name",
-    "/api/agent/answer/{handle}",
     "/api/agent/deny",
     "/api/agent/request/{handle}",
     "/api/agent/session",
