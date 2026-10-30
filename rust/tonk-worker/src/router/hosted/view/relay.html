@@ -41,8 +41,10 @@
     // service worker is the peer, in the frame's own storage, and relays
     // the delegation to its profile's DID. Route B, everywhere else, and
     // when the frame does not answer: the peer runs in a Web Worker here.
-    // Either way the space's page renders in a sandboxed `srcdoc` frame
-    // and reaches the peer over the guest bridge.
+    // Either way the space renders in a sandboxed `srcdoc` frame and
+    // reaches the peer over the guest bridge: the entities a display
+    // names (`tonk_display`), each with its concept's own display, sized
+    // to fit.
     (() => {
       const origin = __TONK_MCP_ORIGIN__,
         framed = __TONK_VIEW_FRAME__,
@@ -330,7 +332,13 @@
         frame.contentWindow.postMessage(
           {
             tonkFrame: 'access',
-            route: { subject: route.subject, path: route.path, edit: route.edit, remote: route.remote },
+            route: {
+              subject: route.subject,
+              path: route.path,
+              items: route.items,
+              edit: route.edit,
+              remote: route.remote,
+            },
             access,
           },
           origin,
@@ -343,21 +351,41 @@
       }
 
       // ---- The space's page -------------------------------------------
+      // The host sizes the view to what the relay reports.
+      function size() {
+        parent.postMessage(
+          {
+            jsonrpc: '2.0',
+            method: 'ui/notifications/size-changed',
+            params: { height: Math.ceil(document.documentElement.getBoundingClientRect().height) },
+          },
+          '*',
+        );
+      }
       async function navigate(path) {
-        if (!path.startsWith('/') || path.startsWith('//'))
-          throw Error('Choose a route in this space.');
         port?.close();
         port = null;
-        route = { ...route, path };
-        const response = await peerFetch(base() + '/site', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ path }),
-        });
-        if (!response.ok) throw Error('Could not open this route (' + response.status + ').');
-        const { site } = await response.json();
-        route.site = site;
-        route.model = 'tonk:site';
+        if (route.items) {
+          // A display: no route to resolve, and the frame follows the
+          // displays' own height.
+          document.documentElement.style.height = document.body.style.height = 'auto';
+          frame.style.flex = 'none';
+          frame.style.minHeight = '0';
+          frame.style.height ||= '120px';
+        } else {
+          if (!path?.startsWith('/') || path.startsWith('//'))
+            throw Error('Choose a route in this space.');
+          route = { ...route, path };
+          const response = await peerFetch(base() + '/site', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ path }),
+          });
+          if (!response.ok) throw Error('Could not open this route (' + response.status + ').');
+          const { site } = await response.json();
+          route.site = site;
+          route.model = 'tonk:site';
+        }
         showError('');
         const guestPage = await fetch(origin + '/worker-guest', { credentials: 'omit' });
         if (!guestPage.ok) throw Error('Could not load the Tonk view.');
@@ -370,6 +398,7 @@
           return;
         }
         if (message.type === 'navigate') {
+          if (route.items) throw Error('Navigation is unavailable in a display.');
           const u = new URL(
               message.href,
               'https://tonk.foundation/space/' + route.subject + route.path,
@@ -508,6 +537,12 @@
           return;
         }
         if (event.source !== frame.contentWindow || !pack || !route) return;
+        // A display measures its own content; the frame and the view follow.
+        if (route.items && m?.type === 'tonk-display-size' && Number.isFinite(m.height)) {
+          frame.style.height = Math.min(Math.max(m.height, 40), 4000) + 'px';
+          size();
+          return;
+        }
         if (m?.type === 'hello' && m.v === 1 && event.ports[0]) {
           port?.close();
           port = event.ports[0];
@@ -528,19 +563,20 @@
             type: 'ready',
             context: {
               origin: 'https://tonk.foundation',
-              path: '/space/' + route.subject + route.path,
+              path: '/space/' + route.subject + (route.path ?? '/'),
               repo: route.subject,
               branch: 'main',
               with: 'main@' + route.subject,
               site: route.site,
-              this: route.view?.entity ?? route.site,
-              model: route.view?.model ?? route.model,
+              this: route.items?.[0].entity ?? route.view?.entity ?? route.site,
+              model: route.items?.[0].model ?? route.view?.model ?? route.model,
               selectionReporting: false,
             },
           });
         }
         if (m?.__tonkRuntime === 'runtime-ready') {
           send({ type: 'tonk-mount', ...route, hideFab: true });
+          if (route.items) size();
           send({
             __tonkRuntime: 'inject',
             glue: pack.glue,

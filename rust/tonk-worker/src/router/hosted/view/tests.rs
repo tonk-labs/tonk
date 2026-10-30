@@ -220,23 +220,36 @@ async fn a_space_the_agent_space_does_not_reach_is_refused() {
 }
 
 #[dialog_common::test]
-async fn opening_a_space_names_the_relay_and_the_remote() {
+async fn a_display_names_its_entities_the_relay_and_the_remote() {
     let agent = Ed25519Signer::generate().await.unwrap();
     let space = Ed25519Signer::generate().await.unwrap();
     let (verified, writer) = verified(&agent, &space, &["get"]).await;
-    let result = call(
-        OPEN,
-        &json!({ "space": space.did().to_string(), "path": "/notes" }),
-        &verified,
-        &writer,
-        "",
-        "session",
-        ORIGIN,
-        &TicketKey::derive("secret"),
-    )
-    .await
-    .unwrap();
-    assert_eq!(result["structuredContent"]["path"], "/notes");
+    let display = |items: Value| {
+        let arguments = json!({ "space": space.did().to_string(), "items": items });
+        let (verified, writer) = (&verified, &writer);
+        async move {
+            call(
+                DISPLAY,
+                &arguments,
+                verified,
+                writer,
+                "",
+                "session",
+                ORIGIN,
+                &TicketKey::derive("secret"),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let result = display(json!([
+        { "entity": "urn:e2e:note", "model": "e2e-note", "view": "e2e-note-card" }
+    ]))
+    .await;
+    assert_eq!(
+        result["structuredContent"]["items"],
+        json!([{ "entity": "urn:e2e:note", "model": "e2e-note", "view": "e2e-note-card" }])
+    );
     assert_eq!(result["structuredContent"]["edit"], false);
     assert_eq!(
         result["structuredContent"]["remote"],
@@ -244,6 +257,17 @@ async fn opening_a_space_names_the_relay_and_the_remote() {
     );
     assert_eq!(tools()[0]["_meta"]["ui"]["resourceUri"], RELAY_URI);
     assert_eq!(tools()[1]["_meta"]["ui"]["visibility"][0], "app");
+
+    for items in [
+        json!([]),
+        json!([{ "entity": "urn:e2e:note" }]),
+        json!([{ "entity": "", "model": "e2e-note" }]),
+        json!([{ "entity": 1, "model": "e2e-note" }]),
+        json!((0..21).map(|n| json!({ "entity": format!("urn:{n}"), "model": "m" })).collect::<Vec<_>>()),
+    ] {
+        let result = display(items.clone()).await;
+        assert_eq!(result["isError"], true, "{items} was displayed: {result}");
+    }
 }
 
 #[test]

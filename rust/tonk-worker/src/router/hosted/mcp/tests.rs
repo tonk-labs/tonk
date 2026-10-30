@@ -556,10 +556,10 @@ async fn a_session_id_of_another_token_is_refused() {
     assert_eq!(
         names,
         [
+            "tonk_display",
             "tonk_evaluate",
             "tonk_guide",
             "tonk_list_spaces",
-            "tonk_open_space",
             "tonk_query",
             "tonk_view_access"
         ]

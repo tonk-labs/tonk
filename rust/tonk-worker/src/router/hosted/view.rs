@@ -1,7 +1,8 @@
 //! Views for `/mcp` hosts (MCP Apps), as plan #1200 stage 7 lays out.
 //!
 //! The OAuth token stays in the host; a view never sees it. The model
-//! calls `tonk_open_space` to show a route of a space. The view (the
+//! calls `tonk_display` to show entities of a space, each with its
+//! concept's own display, as the local peer's tool does. The view (the
 //! relay page) makes its own non-extractable key and calls
 //! `tonk_view_access(space, audience)`, an app-only tool, with that key's
 //! DID; the session signs a delegation to it for that one space, read-only
@@ -46,10 +47,12 @@ impl TicketKey {
     }
 }
 
-/// The model-visible tool that shows a route of a space, as the hosted
-/// MCP server's `tonk_open_space` does (not the local peer's `tonk_show`,
-/// a live query result).
-pub const OPEN: &str = "tonk_open_space";
+/// The model-visible tool that shows entities with their concepts' own
+/// displays, as the local peer's `tonk_display` does.
+pub const DISPLAY: &str = "tonk_display";
+
+/// How many entities one view displays.
+const MAX_ITEMS: usize = 20;
 
 /// The app-only tool a view gets its delegation from.
 pub const ACCESS: &str = "tonk_view_access";
@@ -70,32 +73,54 @@ pub fn tools() -> Vec<Value> {
     });
     vec![
         json!({
-            "name": OPEN,
-            "title": "Open a Tonk space",
-            "description": "Show a route of a space inline in the chat, live, as the space's own \
-                page renders it. Use a path within the space, such as / or /notebook/<entity>; \
-                entity route parameters must be actual entity URIs returned by tonk_query, never \
-                titles or names. Set edit to let the user change the space from the view (only \
-                for a space this connection may write); otherwise the view is read-only. \
-                Showing a route does not verify that it rendered.",
+            "name": DISPLAY,
+            "title": "Display Tonk entities",
+            "description": "Render entities inline in the chat with their concept's own Tonk \
+                display (the space's view for that concept), live, exactly as Tonk renders them. \
+                Find exact entity URIs and their concept names with tonk_query first; never pass \
+                titles or names. Set edit to let the user change them from the view (only for a \
+                space this connection may write); otherwise the view is read-only. Displaying \
+                does not verify that anything rendered.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "space": space,
-                    "path": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 4096,
-                        "default": "/",
-                        "description": "A path within the space.",
+                    "items": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": MAX_ITEMS,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "entity": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 500,
+                                    "description": "Exact saved entity URI.",
+                                },
+                                "model": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 200,
+                                    "description": "Concept to display it as, such as deck/instance.",
+                                },
+                                "view": {
+                                    "type": "string",
+                                    "maxLength": 200,
+                                    "description": "A specific view concept, when the concept has several.",
+                                },
+                            },
+                            "required": ["entity", "model"],
+                            "additionalProperties": false,
+                        },
                     },
                     "edit": {
                         "type": "boolean",
                         "default": false,
-                        "description": "Let the user edit the space from the view.",
+                        "description": "Let the user edit the entities from the view.",
                     },
                 },
-                "required": ["space"],
+                "required": ["space", "items"],
                 "additionalProperties": false,
             },
             "annotations": { "readOnlyHint": true, "openWorldHint": false },
@@ -230,7 +255,7 @@ pub async fn call<W: Writers>(
     origin: &str,
     _tickets: &TicketKey,
 ) -> Option<Value> {
-    if name != OPEN && name != ACCESS {
+    if name != DISPLAY && name != ACCESS {
         return None;
     }
     let space = match arguments["space"].as_str().map(str::parse::<Did>) {
@@ -275,22 +300,29 @@ pub async fn call<W: Writers>(
         access.address.as_deref(),
         &format!("{}/ucan/", origin.trim_end_matches('/')),
     );
-    if name == OPEN {
-        let path = arguments["path"].as_str().unwrap_or("/");
-        if !path.starts_with('/')
-            || path.starts_with("//")
-            || path.chars().any(|c| c == '\\' || c.is_control())
-        {
-            return Some(error("Provide a path within the space, such as /."));
-        }
+    if name == DISPLAY {
+        let items = match display_items(&arguments["items"]) {
+            Ok(items) => items,
+            Err(message) => return Some(error(message)),
+        };
+        let listed = items
+            .iter()
+            .map(|item| {
+                let text = |key: &str| item[key].as_str().unwrap_or_default().to_owned();
+                format!("{} as {}", text("entity"), text("model"))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         return Some(json!({
             "content": [{
                 "type": "text",
-                "text": "Showing the space inline. Rendering is not verified by this response.",
+                "text": format!(
+                    "Displaying {listed}, rendered by Tonk. Rendering is not verified by this response."
+                ),
             }],
             "structuredContent": {
                 "subject": space.to_string(),
-                "path": path,
+                "items": items,
                 "edit": edit,
                 "remote": remote,
             },
@@ -354,6 +386,46 @@ pub async fn call<W: Writers>(
         })),
         Err(message) => Some(error(&message)),
     }
+}
+
+/// The entities a display names, each `{entity, model, view?}` with
+/// plain strings, or why they cannot be shown.
+fn display_items(items: &Value) -> Result<Vec<Value>, &'static str> {
+    let items = items
+        .as_array()
+        .filter(|items| !items.is_empty())
+        .ok_or("Name at least one entity, with its exact URI and concept.")?;
+    if items.len() > MAX_ITEMS {
+        return Err("Display at most 20 entities at once.");
+    }
+    let text = |item: &Value, key: &str, max: usize| -> Result<Option<String>, &'static str> {
+        match &item[key] {
+            Value::Null => Ok(None),
+            Value::String(value)
+                if !value.is_empty()
+                    && value.len() <= max
+                    && !value.chars().any(char::is_control) =>
+            {
+                Ok(Some(value.clone()))
+            }
+            _ => Err("Each entity needs an exact URI and a concept name, as tonk_query returns them."),
+        }
+    };
+    items
+        .iter()
+        .map(|item| {
+            let entity = text(item, "entity", 500)?;
+            let model = text(item, "model", 200)?;
+            let (Some(entity), Some(model)) = (entity, model) else {
+                return Err("Each entity needs an exact URI and a concept name, as tonk_query returns them.");
+            };
+            let mut shown = json!({ "entity": entity, "model": model });
+            if let Some(view) = text(item, "view", 200)? {
+                shown["view"] = json!(view);
+            }
+            Ok(shown)
+        })
+        .collect()
 }
 
 fn get(uri: &str) -> Request<Body> {
