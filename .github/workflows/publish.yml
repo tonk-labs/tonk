@@ -386,7 +386,7 @@ jobs:
             rm -rf target
           ' "$assets"
           {
-            for path in /space-runtime.json /worker-guest.html /worker-guest /view-peer/*; do
+            for path in /space-runtime.json /worker-guest.html /worker-guest /view-peer/* /library/*; do
               printf '\n%s\n  Access-Control-Allow-Origin: *\n' "$path"
             done
           } >> "$assets/_headers"

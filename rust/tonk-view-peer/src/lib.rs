@@ -84,6 +84,9 @@ impl ViewPeer {
             .collect::<Result<Vec<_>, _>>()?;
         let space: Did = space.parse().map_err(|e| error(&e))?;
         let remote = url::Url::parse(&remote).map_err(|e| error(&e))?;
+        // The library the router installs and upgrades from is the
+        // provider's, not this worker's (a `blob:` on the host's origin).
+        tonk_worker::set_asset_origin(remote.origin().ascii_serialization());
         let peer = HostedPeer::open_as(
             Directory::At(directory.clone()),
             key.signer.clone(),
