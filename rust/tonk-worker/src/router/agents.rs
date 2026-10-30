@@ -65,7 +65,7 @@ pub struct RevokeRequest {
 }
 
 /// The profile's spaces, as `GET /api/profile` lists them.
-async fn spaces(tonk: &TonkState) -> Result<Vec<Did>, TonkWorkerError> {
+pub(super) async fn spaces(tonk: &TonkState) -> Result<Vec<Did>, TonkWorkerError> {
     let session = tonk
         .reactor
         .profile_repository()
@@ -117,7 +117,7 @@ pub(super) async fn is_agent(tonk: &TonkState, did: &Did) -> bool {
         .is_ok_and(|rows| rows.iter().any(|row| row.this.to_string() == did.as_str()))
 }
 
-async fn name(tonk: &TonkState, did: &Did) -> Option<String> {
+pub(super) async fn name(tonk: &TonkState, did: &Did) -> Option<String> {
     let key = did.repo_key();
     let repository = tonk
         .profile

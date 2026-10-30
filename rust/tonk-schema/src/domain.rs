@@ -2012,14 +2012,6 @@ pub mod repo {
     pub struct Kind(pub Entity);
 }
 
-/// Attributes for the `agent/session` concept — one session key's
-/// authorization to act for an agent space.
-///
-/// The fields of [`device`] under their own namespace: a concept's
-/// identity is the attributes it reads, so sharing `xyz.tonk.device`
-/// would make every session row a device link and the reverse.
-///
-/// [`AgentSession`]: crate::AgentSession
 /// Attributes on an agent space beyond its mark.
 pub mod agent_space {
     use super::Attribute;
@@ -2032,6 +2024,14 @@ pub mod agent_space {
     pub struct Provider(pub String);
 }
 
+/// Attributes for the `agent/session` concept — one session key's
+/// authorization to act for an agent space.
+///
+/// The fields of [`device`] under their own namespace: a concept's
+/// identity is the attributes it reads, so sharing `xyz.tonk.device`
+/// would make every session row a device link and the reverse.
+///
+/// [`AgentSession`]: crate::AgentSession
 pub mod agent_session {
     use super::{Attribute, Entity};
 
