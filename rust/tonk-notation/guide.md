@@ -16,7 +16,8 @@ of entity–attribute–value facts; an assertion adds facts; `?x` is a
 logic variable; multiple expressions in one document join by
 unification, like the body clauses of a datalog rule; a concept is a
 named schema over a set of attributes. There is no update-in-place —
-a cardinality-one attribute supersedes on re-assertion, and
+an attribute read under `:last` (the default pick) supersedes on
+re-assertion, one under `:all` accumulates, and
 retraction is itself a claim invalidating an earlier one.
 
 ## Two flavours of expression
@@ -44,7 +45,7 @@ an expression operates on lives in the body.
 Names in this notation are themselves entities, in the same
 sense as Git branches and tags. A name is an entity whose only
 job is to point to another entity. Each name has at most one
-target at a time (cardinality one), but a target may be reached
+target at a time, but a target may be reached
 through any number of names.
 
 Two ways to refer to a name appear throughout the notation:
@@ -515,10 +516,10 @@ name!:
   entity: person-name
 ```
 
-### Cardinality and what `this:` is for
+### One target per name, and what `this:` is for
 
-A name has cardinality one on its target — exactly one entity
-at a time. Two consequences:
+A name has exactly one target entity at a time. Two
+consequences:
 
 - Anchors only attach to expressions that produce a single
   entity. Assertions do (one body-derived entity per
@@ -548,8 +549,8 @@ name!:
   ..: _
 ```
 
-The cardinality-one constraint ensures the old binding is auto-retracted
-when the new one is asserted.
+Because a name has one target, asserting a new one supersedes the
+old binding.
 
 ## Built-in concepts
 
@@ -622,9 +623,9 @@ concept!: &attribute
 The body field shorthands users write (`the:`, `as:`, `pick:`,
 `description:`) map to these attributes through the concept's
 `with:` map. `as: text` names the built-in type anchor `text`,
-which stands for the type entity `text:`, and `pick: all` names the
-built-in pick anchor `all`, which stands for the pick entity `all:`.
-The built-in picks are `last`, `all`, `top`, `max` and `min`.
+which stands for the type entity `text:`, and the keyword
+`pick: :all` is the pick entity `all:`. The picks are `:last` (the
+default), `:all`, `:top`, `:max` and `:min`.
 
 `description` is required on every attribute, but it does not
 participate in the attribute entity's content-derivation —
@@ -640,7 +641,7 @@ Because `attribute` is a regular concept, you can query it:
 attribute:
   this: ?a
   id:   ?selector
-  pick: all
+  pick: :all
 ```
 
 Note: the schema definition above is illustrative. In an
@@ -661,10 +662,266 @@ concept!: &person
 
 Fields:
 
-- `with` (required) — required attributes of the concept.
-  Each value is a bare symbol or a URI.
+- `with` (required) — the concept's required fields.
+- `maybe` — the concept's optional fields (see *Required and
+  optional fields* below).
 - `description` (optional but conventionally present) —
   surfaces in editor hover.
+
+Each field under `with:` or `maybe:` is either a reference to an
+attribute declared elsewhere (a bare symbol or a URI, as above) or
+the attribute declared inline, with the same `description:`,
+`the:`, `as:` and `pick:` an `attribute!:` body takes:
+
+```yaml tonk=eval
+concept!: &task
+  description: "A task"
+  with:
+    title:
+      description: "What to do"
+      the:         xyz.example.task/title
+      as:          text
+    tag:
+      description: "Labels on the task"
+      the:         xyz.example.task/tag
+      as:          text
+      pick:        :all
+  maybe:
+    due:
+      description: "When it is due, if it has a date"
+      the:         xyz.example.task/due
+      as:          text
+```
+
+#### Required and optional fields
+
+An entity is an instance of a concept when it has a value for every
+field under `with:`. A field under `maybe:` is optional: an entity
+without it is still an instance, and a query for the concept still
+returns it, with that field absent from the row. An assertion may
+leave an optional field out:
+
+```yaml tonk=eval
+concept!: &task
+  description: "A task"
+  with:
+    title:
+      description: "What to do"
+      the:         xyz.example.task/title
+      as:          text
+  maybe:
+    due:
+      description: "When it is due, if it has a date"
+      the:         xyz.example.task/due
+      as:          text
+
+task!:
+  this: id:groceries
+  title: "Buy groceries"
+
+task!:
+  this: id:taxes
+  title: "File taxes"
+  due:   "2026-04-15"
+
+# Both tasks match; ?due is bound only for the one that has a date.
+task:
+  this:  ?task
+  title: ?title
+  due:   ?due
+```
+
+Moving a field between `with:` and `maybe:` changes the concept's
+identity: it is a different concept, matching a different set of
+entities.
+
+#### Picks: one value or many
+
+A field's `pick:` says which of an entity's claims in the relation
+a read returns, and so how a write lands:
+
+- `:last` (the default) — the newest claim. The field holds one
+  value; asserting a new one supersedes it.
+- `:all` — every claim, as a set. Each assertion adds a value
+  beside the others.
+- `:max`, `:min` — the greatest or least value of an ordered type.
+- `:top` — the best ranked of a list (see *Ranked choices* below);
+  a list under `the:` or `as:` implies it, so it is rarely written.
+
+A `pick: :all` field takes several values through several
+assertions, each adding one. They can share one document:
+
+```yaml tonk=eval
+concept!: &task
+  description: "A task"
+  with:
+    title:
+      description: "What to do"
+      the:         xyz.example.task/title
+      as:          text
+    tag:
+      description: "Labels on the task"
+      the:         xyz.example.task/tag
+      as:          text
+      pick:        :all
+
+task!:
+  this: id:groceries
+  title: "Buy groceries"
+  tag:   "errand"
+
+task!:
+  this: id:groceries
+  tag:  "weekly"
+
+# One row per tag.
+task:
+  this: id:groceries
+  tag:  ?tag
+```
+
+Neither a list nor a repeated key is how a field takes several
+values: `tag: ["errand", "weekly"]` is refused, and a key repeated
+in one body keeps only its last value (YAML reads a mapping's
+repeated key as one key). Lists belong to `the:` and `as:` in a
+declaration, where they rank.
+
+`cardinality: one` and `cardinality: many` are the spelling earlier
+releases used for a pick. They still read (see *Symbols and strings*),
+with a warning; write `pick: :all` for `many`, and nothing for `one`.
+
+#### Ranked choices: listing relations or values
+
+A list under `the:` names several relations, best first. The field
+reads the first of them the entity has a value in, so one field can
+fall back from one relation to another:
+
+```yaml tonk=eval
+concept!: &contact
+  description: "Somewhere to reach a person"
+  with:
+    reach:
+      description: "The email, else the phone"
+      the:
+        - xyz.example.contact/email
+        - xyz.example.contact/phone
+      as: text
+```
+
+> **Known issue.** The declaration above is accepted, but a query
+> over a concept with a listed `the:` currently fails with
+> `could not reconstruct AttributeDescriptor: top ranks listed
+> values or relations, and none are listed`. Until that is fixed,
+> read each relation through its own field.
+
+A list under `as:` names the values the field ranks, best first, and
+the field reads the best ranked one the entity holds. With both
+`case:suspended` and `case:active` asserted, `status` reads
+`case:suspended`:
+
+```yaml tonk=eval
+concept!: &job
+  description: "A job"
+  with:
+    status:
+      description: "Where it stands: suspended over active"
+      the: xyz.example.job/status
+      as:
+        - case:suspended
+        - case:active
+```
+
+Either list makes the pick `:top`. Each listed relation is still an
+ordinary relation, written through an attribute that names it alone.
+
+#### Keyed collections: dictionaries and sequences
+
+A field can hold every entry of a domain, keyed by the name half of
+each relation, instead of one relation's value. `the:` names the
+domain (no `/name`, quoted so it is not read as an anchor), and
+`as:` names the key kind and the entry's type:
+
+- `as: {[symbol]: <type>}` — a **dictionary**: entries keyed by a
+  symbol (`ui`, `title`, `connected`, …). The view concept's `show`
+  is one, keyed by facet, and so is an element's `method`.
+- `as: {[position]: <type>}` — a **sequence**: entries keyed by a
+  position (`N1`, `N5`, …), read in position order. A notebook's
+  blocks are one.
+
+Each entry is stored as its own claim, `<domain>/<key>`, so writing
+one entry leaves the others alone, and `pick:` applies per entry.
+
+```yaml tonk=eval
+concept!: &palette
+  description: "Named colours"
+  with:
+    swatch:
+      description: "Each colour, keyed by its name"
+      the: "xyz.example.palette"
+      as:  {[symbol]: text}
+
+palette!:
+  this: id:brand
+  swatch:
+    primary: "#3355ff"
+    accent:  "#ff8800"
+
+# A literal key reads one entry.
+palette:
+  this: id:brand
+  swatch:
+    primary: ?colour
+
+# A variable key reads every entry, binding the key.
+palette:
+  this: id:brand
+  swatch: {?name: ?colour}
+
+# A blank retracts one entry and leaves the others.
+palette!:
+  this: id:brand
+  swatch:
+    accent: _
+```
+
+A sequence is written and read the same way, with positions as keys;
+entries read back in position order, whatever order they were written
+in:
+
+```yaml tonk=eval
+concept!: &playlist
+  description: "Songs in order"
+  with:
+    song:
+      description: "Each song, keyed by its position"
+      the: "xyz.example.playlist"
+      as:  {[position]: text}
+
+playlist!:
+  this: id:mix
+  song: {N5: "second"}
+
+playlist!:
+  this: id:mix
+  song: {N1: "first"}
+
+# Reads N1 "first", then N5 "second".
+playlist:
+  this: id:mix
+  song: {?at: ?song}
+```
+
+A collection is zero-or-more, so it cannot go under `maybe:` (the
+analyzer refuses it). But a concept query binds every field, and a
+collection with no entries binds nothing, so an entity whose
+collection is empty does not match a query over that concept. Keep
+a collection in a concept of its own when its entities can have
+none (the library's `notebook/blocks` beside `notebook/named` does
+this).
+
+In a view template, `{swatch}` iterates a collection's entries only
+when the field is declared `pick: :all`; under the default it renders
+as one value. Inside the iteration, `{swatch/key}` is the entry's key.
 
 The `concept` concept itself is *not* expressible in this
 notation, because its `with:` field is a dictionary (an
@@ -686,7 +943,7 @@ name!:
 Fields:
 
 - `entity` - the entity currently identified by this name.
-  Cardinality one on the underlying attribute, so each name
+  The underlying attribute is read under `:last`, so each name
   has exactly one target at a time.
 
 The schema, illustratively:

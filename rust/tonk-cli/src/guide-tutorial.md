@@ -42,7 +42,12 @@ other dynamic assert flags.
 
 1. Use the schema from `tonk show` to reuse existing concepts where possible.
 2. Define a concept with `tonk concept add <name> --field
-   <field>:<type>:<cardinality>`. The concept is immediately usable.
+   <field>:<type>:<one|many>`. The concept is immediately usable. `one`
+   declares a field holding one value (the default pick, `:last`), and
+   `many` a set of values (`pick: :all`). Optional fields (`maybe:`),
+   ranked fields (a list under `the:` or `as:`) and keyed collections
+   (`as: {[symbol]: text}`) are declared in notation through `tonk eval`;
+   see `tonk help notation`.
 3. Create or update facts with `tonk assert`; read them with `tonk query`; use
    `tonk retract` to invalidate a field or instance.
 4. Add a view with `tonk view add`. A first detail or directory view
