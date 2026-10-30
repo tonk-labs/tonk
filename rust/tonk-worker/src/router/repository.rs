@@ -3602,6 +3602,7 @@ pub(super) async fn create_space_from_seed(
 /// is created and recorded, and [`seed_space`] installs the library
 /// later. An agent's space is made this way, so what the approval must
 /// push before it answers is the agent's grants, not the whole library.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(super) async fn create_unseeded_space_from_seed(
     state: &AppState,
     name: &str,

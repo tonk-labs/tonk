@@ -2341,7 +2341,7 @@ account-settings .agent-seg button {
     cursor: pointer; font: 500 15px/1.2 var(--cond); letter-spacing: 0; text-transform: none;
 }
 account-settings .agent-seg button + button { border-left: 1.5px solid var(--ink); }
-account-settings .agent-seg button:hover:not(:disabled) { background: var(--wash-2); }
+account-settings .agent-seg button:hover:not(:disabled):not([aria-checked="true"]) { background: var(--wash-2); }
 account-settings .agent-seg button[aria-checked="true"] { background: var(--ink); color: var(--card); }
 account-settings .agent-seg button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 account-settings .agent-space.off { color: var(--soft); }
@@ -2350,7 +2350,7 @@ account-settings .agent-space.off .agent-seg button { cursor: not-allowed; }
 account-settings .agent-space-why { grid-column: 1 / -1; margin-top: -4px; font-size: 14px; color: var(--soft); }
 account-settings .agent-foot { display: grid; grid-template-columns: 1fr 1fr; }
 account-settings button.agent-btn {
-    box-sizing: border-box; display: flex; align-items: center; min-width: 0;
+    box-sizing: border-box; display: flex; align-items: center; justify-content: flex-start; min-width: 0;
     height: 48px; margin: 0; padding: 4px 18px; border: 0; border-radius: 0; box-shadow: none;
     background: color-mix(in srgb, var(--page, var(--card)) 35%, var(--card)); color: var(--ink);
     cursor: pointer; text-align: left; font: 600 17px/1.1 var(--cond); letter-spacing: 0; text-transform: none;
