@@ -272,6 +272,12 @@ namespace_id = "1001"
 [env.dev.vars]
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
+# The Host Worker that serves `/mcp` on tonk.foundation, deployed by
+# continuous integration before this environment.
+[[env.dev.services]]
+binding = "HOST_WORKER"
+service = "tonk-host-worker-dev"
+
 # Preview. Every pull request deploys this environment as a worker of its own
 # and is reached at that worker's workers.dev URL, so the environment holds no
 # route of its own. `routes = []` is load-bearing: a named
@@ -343,8 +349,8 @@ invocation_logs = false
 
 # The Host Worker that serves `/mcp` (rust/tonk-host-worker). Continuous
 # integration deploys `tonk-host-worker-pr-<N>` first and rewrites this name
-# to it. Other environments bind no Host Worker yet, so they answer `/mcp`
-# with 404.
+# to it. Dev binds `tonk-host-worker-dev`; staging and production bind no
+# Host Worker yet, so they answer `/mcp` with 404.
 [[env.preview.services]]
 binding = "HOST_WORKER"
 service = "tonk-host-worker-preview"
