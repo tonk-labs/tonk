@@ -233,6 +233,10 @@
           type: 'module',
           updateViaCache: 'none',
         });
+        // A first install keeps this document until asked to claim it, as
+        // the app's own page asks once the worker is active.
+        const registration = await navigator.serviceWorker.ready;
+        if (!navigator.serviceWorker.controller) registration.active?.postMessage({ type: 'claim' });
         await Promise.race([
           control,
           new Promise((_, reject) =>
