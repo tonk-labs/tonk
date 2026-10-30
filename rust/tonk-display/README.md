@@ -56,7 +56,7 @@ The renderer keeps a mounted-state tree so repeated frames patch the DOM in plac
 
 The plan splits into **chrome** (bindings outside the repeated element, rendered once against the lead conclusion) and a **repeat** element cloned once per subject conclusion. The repeat element is chosen by `this_repeat_root`: the outermost subject-referencing element, with a bare `{this}` marker on it if present, else the fragment root. Each clone is keyed by the conclusion's `this` and stamped `with=<this>` so the repeat boundary is inspectable; adding or removing a subject touches only its row.
 
-Inside a repeat row, cardinality-many *subject fields* iterate their values as a `MountedIteration` keyed by the value's string form, so a many-valued `{tags}` repeats a subtree within one conclusion.
+Inside a repeat row, many-valued (`pick: :all`) *subject fields* iterate their values as a `MountedIteration` keyed by the value's string form, so a many-valued `{tags}` repeats a subtree within one conclusion.
 
 A nested `<tonk-display>` inside a template mounts exactly once: rows build detached and insert with a single `insertBefore` so a move never fires a spurious `disconnected`/`connected` pair.
 
@@ -67,7 +67,7 @@ The presence of the `entity` attribute selects the mode:
 - **Detail** (`entity` set): pins `this` to that URI, resolves the model's `ui` facet, and renders a single entity. The entity subscription frame is size 0 (entity absent or removed) or 1.
 - **Directory** (`entity` absent): leaves `this` unbound, resolves the model's `directory` facet, and renders every instance. A view declared with `this: tonk:_` supplies the facet for any model that lacks its own.
 
-In both modes the query engine emits one flat row per tuple, so cardinality-many fields and multiple subjects arrive as separate rows. [`select_rows`] (in `fold`) groups rows by `this` and folds each group into one conclusion per subject, collapsing multi-valued fields to a list in first-seen order (identical values stay a scalar). Detail mode is then just a one-conclusion frame and directory mode a many-conclusion frame, rendered by the same repeat machinery.
+In both modes the query engine emits one flat row per tuple, so many-valued fields and multiple subjects arrive as separate rows. [`select_rows`] (in `fold`) groups rows by `this` and folds each group into one conclusion per subject, collapsing multi-valued fields to a list in first-seen order (identical values stay a scalar). Detail mode is then just a one-conclusion frame and directory mode a many-conclusion frame, rendered by the same repeat machinery.
 
 ## Introspection
 

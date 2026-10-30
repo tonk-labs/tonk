@@ -15,15 +15,15 @@ construction.
   `{field}`-interpolated HTML fragment; the planner turns the *bindings*
   collected from it (text nodes and attributes containing `{...}`, each
   addressed by a child-index path) into a `BindingPlan`: the render-once
-  **chrome** plus the per-conclusion **repeat** body, with cardinality-many
-  fields lowered to `PlanNode::Iteration`. This half is std-only and
+  **chrome** plus the per-conclusion **repeat** body, with many-valued
+  (`pick: :all`) fields lowered to `PlanNode::Iteration`. This half is std-only and
   target-agnostic.
 - **[`resolve`]** — the wire-query builders (`phase1_query`, `name_query`,
   `view_query`, `entity_query`, `instances_query`, `view_predicate`,
   `parse_source`) that drive the model → view → entity resolution. They
   produce `tonk_schema::query::Query`.
 - **[`fold`]** — `select_rows`, which groups flat query rows by `this` into one
-  folded `Conclusion` per subject, collapsing cardinality-many fields to
+  folded `Conclusion` per subject, collapsing many-valued fields to
   `Ipld::List`, and `show_template`, which picks one facet's template out of a
   folded `show` dictionary.
 

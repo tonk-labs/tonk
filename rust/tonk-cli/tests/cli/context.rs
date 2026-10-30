@@ -86,7 +86,7 @@ async fn it_emits_a_versioned_complete_contract() -> Result<()> {
     assert_eq!(value["concepts"].as_array().map(Vec::len), Some(0));
     assert_eq!(
         value["emptySpaceWorkflow"][0]["command"],
-        "tonk concept add note --field title:text:one --field body:text:one"
+        "tonk concept add note --field title:text --field body:text"
     );
 
     // v3 is camelCase throughout: a v1 reader must miss, not silently

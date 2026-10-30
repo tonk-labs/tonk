@@ -53,8 +53,9 @@ while a plain lowercase scalar classifies as a symbol.
 The parser is permissive. A malformed expression yields a diagnostic and the
 rest of the document still parses, so an editor can underline several problems
 at once. YAML aliases (`*name`) are rejected (use a `&anchor` plus the bare
-symbol, or a URI). Sequence-valued fields outside `when:`/`unless:` are rejected
-in favor of repeated assertions.
+symbol, or a URI). Sequence-valued fields are rejected outside `when:`/`unless:` and the listing
+fields (an attribute's ranked `the:` or `as:`, a command's `action:`); a
+`pick: :all` field takes several values through one assertion per value.
 
 ## Types and entry points
 

@@ -115,7 +115,7 @@ the most important gaps, not the only variants required.
 
 | ID | User journey and entry | Starting variants | Existing evidence | Missing or weak evidence |
 | --- | --- | --- | --- | --- |
-| `DATA-01` | Define/list a concept. | Empty/existing name; field types/cardinality; notation/dry-run/sync. | Strong authoring/process coverage. | Concurrent definition, remote conflict, malformed Unicode/large schema, crash after commit. |
+| `DATA-01` | Define/list a concept. | Empty/existing name; field types/picks; notation/dry-run/sync. | Strong authoring/process coverage. | Concurrent definition, remote conflict, malformed Unicode/large schema, crash after commit. |
 | `DATA-02` | Define/list a detail, directory, label, or title view. | Inline/file template; explicit/default anchor; entity-like anchor; blank/existing home; `--home`. | Strong authoring/render coverage, including reported anchor/entity identity and pre-write anchor rejection; a standard-library contract keeps machine instructions inside the blank-space prompt's copy action. | Template read failure, atomic home replacement under sync failure, route visibility and real clipboard behavior in a browser. |
 | `DATA-03` | Assert a new entity through schema-derived flags. | Required/optional/many fields; help; notation/dry-run/no-sync/quiet. | Strong `data_verbs` coverage. | Pipe/TTY distinctions, concurrent supersede, response loss after push. |
 | `DATA-04` | Update an existing entity. | Bookmark/URI; same values no-op; wrong concept; missing entity. | Strong data verb coverage. | Multi-writer conflict, auto-sync partial failure, durable no-op invariant. |
