@@ -564,9 +564,21 @@ async fn authorize_inner(
         "answered",
         js_sys::Date::now() - started
     );
-    // The agent joins each space's roster only now: the app is not kept
-    // waiting on it, and the approval stands whether or not a row lands.
-    put_on_rosters(state, authorization, &root.did(), &agent_did, &rostered).await;
+    // The agent joins each space's roster in the background: the app is
+    // not kept waiting on it, and the approval stands whether or not a row
+    // lands. A new agent is named as the page asked; one connected again
+    // keeps the name its space has.
+    {
+        let state = state.clone();
+        let named = authorization
+            .agent
+            .is_none()
+            .then(|| authorization.name.trim().to_owned());
+        let (inviter, agent) = (root.did(), agent_did.clone());
+        wasm_bindgen_futures::spawn_local(async move {
+            put_on_rosters(&state, named, &inviter, &agent, &rostered).await;
+        });
+    }
     // A new agent's space gets its library only now, after the app has
     // its answer: pushing the library is thousands of blocks, and the
     // request it answers lapses in minutes. The agent can use its grants
@@ -595,13 +607,14 @@ async fn authorize_inner(
 }
 
 /// Put the agent `agent`, approved by the account `inviter`, on the
-/// roster of each space it was granted, by routing key and subject. A
-/// roster row that does not land is logged and left: the grants are what
-/// let the agent in, and the row only lists it.
+/// roster of each space it was granted, by routing key and subject, as
+/// `named`, or by its own space's name when `named` is `None`. A roster
+/// row that does not land is logged and left: the grants are what let
+/// the agent in, and the row only lists it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn put_on_rosters(
     state: &AppState,
-    authorization: &AgentAuthorization,
+    named: Option<String>,
     inviter: &Did,
     agent: &Did,
     spaces: &[(String, Did)],
@@ -610,11 +623,9 @@ async fn put_on_rosters(
         return;
     }
     let tonk = state.read().await;
-    // A new agent is named as the page asked; one connected again keeps
-    // the name its space has.
-    let name = match authorization.agent {
-        None => authorization.name.trim().to_owned(),
-        Some(_) => super::agents::name(&tonk, agent)
+    let name = match named {
+        Some(name) => name,
+        None => super::agents::name(&tonk, agent)
             .await
             .unwrap_or_else(|| tonk_schema::petname(agent)),
     };
