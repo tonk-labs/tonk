@@ -21,8 +21,11 @@ const ACCESS = { subject: SPACE, command: "/", arguments: [], reason: "serve the
 // against stand-ins for a service worker's globals and for the embedder.
 // `holds` is the kernel the space already holds, if any; `shipped` is what
 // the deployment serves under `/_host/kernel/`, and `ships` what its
-// `/_host/kernel.json` says it ships.
-function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, ships = null, origin = ORIGIN, boots = true } = {}) {
+// `/_host/kernel.json` says it ships; `record` is what the site's shell keeps
+// of the kernel it pins.
+function space({
+  pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, ships = null, origin = ORIGIN, boots = true, record = null,
+} = {}) {
   const listeners = {};
   const told = [];
   const booted = [];
@@ -121,11 +124,13 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, 
     // The host's files this worker keeps; for a space that holds its
     // kernel, who it acts for, as its first start kept.
     caches: (() => {
-      const kept = new Map(
-        holds
+      const kept = new Map([
+        ...(holds
           ? [[new URL("/_host/standing.json", origin).href, Response.json({ representative: REPRESENTATIVE, persona: PERSONA })]]
-          : [],
-      );
+          : []),
+        // What the shell keeps of the kernel the site pins.
+        ...(record ? [["/__boot", Response.json(record)]] : []),
+      ]);
       const key = (request) => (typeof request === "string" ? request : request.url);
       const cache = {
         match: async (request) => kept.get(key(request))?.clone(),
@@ -336,6 +341,14 @@ test("a kernel that boots on what it kept has its request answered by the profil
   assert.equal(claimed.length, 1);
 });
 
+test("a space the shell says pins another kernel than its worker's boots it", async () => {
+  const site = space({ pinned: "bafkr4iother", holds: KERNEL, record: { v: 2, kernel: KERNEL } });
+  site.handPort();
+  const response = await site.request("/api/anything");
+  assert.notEqual(response.status, 502, "the kernel answers, not the host");
+  assert.equal(site.booted.length, 1);
+});
+
 test("a worker for another kernel than the space pins does not boot it", async () => {
   const site = space({ pinned: "bafkr4iother", holds: KERNEL });
   site.handPort();
@@ -409,6 +422,26 @@ test("the profile passes what a page asks about a space's content to that space'
     "the space's kernel is asked, not the persona",
   );
   assert.ok(!profile.handled.includes(`POST ${path}`), "the persona is not asked about the space");
+});
+
+test("a space's DID written percent-encoded still reaches that space's kernel", async () => {
+  const profile = space({ origin: "https://profile.tonk.test" });
+  const asked = [];
+  const host = {
+    postMessage: ({ call, request }) => {
+      asked.push(request);
+      queueMicrotask(() => {
+        host.onmessage({ data: { call, head: { status: 200, headers: [["content-type", "application/json"]] } } });
+        host.onmessage({ data: { call, end: true } });
+      });
+    },
+  };
+  profile.listeners.message({ data: { type: "space-port", repo: SPACE }, ports: [host], waitUntil() {} });
+  const path = `/api/repository/${encodeURIComponent(SPACE)}/branch/main/sync/status`;
+  const response = await profile.request(path);
+  assert.equal(response.status, 200);
+  assert.equal(asked.length, 1, "the space's kernel is asked, not the persona");
+  assert.ok(!profile.handled.some((line) => line.includes("sync/status")), "the persona is not asked about the space");
 });
 
 test("the persona's subscription to a space's kernel reaches it in pieces, and stops when the persona stops reading", async () => {

@@ -259,8 +259,10 @@ async function newPersona() {
     }
 }
 
-// The persona the shell keeps that the profile pins.
-async function recordedPersona() {
+// The kernel the shell keeps that the site pins: where the site moved to
+// another kernel than the one its worker was registered for, the shell
+// registers the worker for it on its next load.
+async function recordedKernel() {
     const held = await (await caches.open(BOOT_CACHE)).match(BOOT_KEY);
     const record = held ? await held.json() : null;
     return record?.v === 2 ? record.kernel : null;
@@ -294,7 +296,7 @@ async function start() {
         pinned = await wasm_bindgen.install(space, kernel);
         log("installed the kernel", pinned);
     }
-    if (pinned !== PINNED && !(PROFILE && pinned === (await recordedPersona()))) {
+    if (pinned !== PINNED && pinned !== (await recordedKernel())) {
         throw new Error(`the space pins ${pinned}, not ${PINNED}`);
     }
     let embedder;
@@ -1070,7 +1072,14 @@ const SPACE_PATH =
 
 // The space whose kernel answers `url`, or `null` for the persona.
 function spaceAsked(url) {
-    const named = SPACE_PATH.exec(url.pathname)?.[1];
+    // A page may write the space's DID percent-encoded, as a path segment.
+    let path;
+    try {
+        path = decodeURIComponent(url.pathname);
+    } catch {
+        return null;
+    }
+    const named = SPACE_PATH.exec(path)?.[1];
     if (!named) return null;
     const space = named.startsWith("did:key:") ? named : `did:key:${named}`;
     return space === profileDid ? null : space;
