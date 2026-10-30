@@ -299,11 +299,16 @@ export async function approve(page, { authorizationUrl, agent, grants, signIn })
   if (await name.count()) await name.fill(agent);
   await root.getByRole('button', { name: 'continue' }).click();
   const shown = Date.now();
-  for (const [space, access] of Object.entries(grants)) {
-    await root
-      .getByRole('radiogroup', { name: space })
-      .getByRole('radio', { name: access, exact: true })
-      .click({ timeout: 120_000 });
+  try {
+    for (const [space, access] of Object.entries(grants)) {
+      await root
+        .getByRole('radiogroup', { name: space })
+        .getByRole('radio', { name: access, exact: true })
+        .click({ timeout: 120_000 });
+    }
+  } catch (error) {
+    await snap(page, `spaces missing ${agent}`);
+    throw error;
   }
   console.log(`${agent}: spaces offered ${(Date.now() - shown) / 1000}s after continue`);
   await snap(page, `approval ${agent}`);
@@ -326,21 +331,27 @@ export async function snap(page, name) {
 
 /** The approval page renders either in the top document or in the guest frame. */
 async function approvalRoot(page, signIn) {
-  const ready = (root) => root.getByRole('button', { name: 'continue' });
+  // The approval page's own continue, not the account ceremony's.
+  const ready = (root) =>
+    root.getByRole('button', { name: 'continue' }).and(root.locator(':not(#tonk-register-action)'));
+  const register = page.locator('#tonk-register-email');
   const deadline = Date.now() + SETTLE;
   for (;;) {
-    if (await ready(page).count()) return page;
-    if (await ready(guest(page)).count()) return guest(page);
     // A browser with no account: the page signs the person in first,
     // then comes back to the request.
-    if (signIn && (await page.locator('#tonk-register-email').isVisible())) {
-      await page.locator('#tonk-register-email').fill(signIn);
-      const action = page.locator('#tonk-register-action:not([hidden])');
-      await action.filter({ hasText: 'log in with passkey' }).waitFor({ timeout: 30_000 });
+    if (await register.isVisible()) {
+      if (!signIn) throw new Error('the approval page asked this browser to sign in');
+      await register.fill(signIn);
+      const action = page.locator('#tonk-register-action:not([hidden]):not([disabled])');
+      await action.waitFor({ timeout: 30_000 });
+      console.log(`signing in at the approval page: "${await action.textContent()}"`);
       await action.click();
-      console.log('signed in at the approval page');
       signIn = undefined;
+      await register.waitFor({ state: 'hidden', timeout: 60_000 });
+      console.log('signed in');
     }
+    if (await ready(page).count()) return page;
+    if (await ready(guest(page)).count()) return guest(page);
     if (Date.now() > deadline) throw new Error('the approval page never offered to continue');
     await page.waitForTimeout(500);
   }
