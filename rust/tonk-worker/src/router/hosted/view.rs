@@ -340,6 +340,9 @@ pub async fn call<W: Writers>(
                 return Some(error("Provide a view route from tonk_outline, up to 2 KB."));
             }
             Some(route) => match tonk_render::RenderRoute::parse(route) {
+                // The home mounts on each peer's own replica; the path
+                // shows it, as the outline's empty home route means.
+                Ok(route) if super::super::view_tree::is_home(&route) => Value::Null,
                 Ok(route) => json!({
                     "model": route.model,
                     "entity": route.entity,

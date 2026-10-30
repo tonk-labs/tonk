@@ -58,6 +58,10 @@ async fn home_entity(state: &AppState, space: &Did) -> String {
 
 /// The `<tonk-display>` tree rendering `route` mounts, as the agent reads
 /// it: each node with the route that shows it alone.
+///
+/// The home mounts on this peer's own replica entity, which another peer
+/// (a view's) does not have: the home's route is answered empty, which
+/// shows the space's home wherever it is opened.
 pub(crate) async fn outline(
     state: &AppState,
     space: &Did,
@@ -67,10 +71,19 @@ pub(crate) async fn outline(
         state: state.clone(),
         space: space.clone(),
     };
-    let outline = tonk_render::outline(&backend, route)
+    let mut outline = tonk_render::outline(&backend, route)
         .await
         .map_err(|error| error.to_string())?;
+    if outline.model == HOME_MODEL {
+        outline.route = String::new();
+    }
     Ok(json!({ "space": space.to_string(), "outline": outline }))
+}
+
+/// Whether `route` names the space home, which each peer mounts on its own
+/// replica, so a view shows it by path rather than by this entity.
+pub(crate) fn is_home(route: &RenderRoute) -> bool {
+    route.model == HOME_MODEL
 }
 
 /// Queries against one space's `main` branch.

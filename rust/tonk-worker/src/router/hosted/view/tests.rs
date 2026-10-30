@@ -283,6 +283,12 @@ async fn opening_one_view_names_its_model_entity_and_facet() {
     );
     let refused = open("@tonk/list").await;
     assert_eq!(refused["isError"], true, "{refused}");
+    // The home is the writer's replica entity, which the view's peer does
+    // not have: it opens by path, on the view's own replica.
+    let home = open("urn:replica:writer@tonk/space").await;
+    assert_eq!(home["isError"], false, "{home}");
+    assert_eq!(home["structuredContent"]["view"], Value::Null);
+    assert_eq!(home["structuredContent"]["path"], "/");
 }
 
 /// A granted space's writer that answers an outline, after the agent
