@@ -558,7 +558,8 @@
           send({ __tonkRuntime: 'inject-table', table: pack.tableGrid });
         if (m?.__tonkRuntime === 'need-code')
           send({ __tonkRuntime: 'inject-code', code: pack.code });
-        if (m?.__tonkRuntime === 'error') showError('Tonk runtime could not load.');
+        if (m?.__tonkRuntime === 'error')
+          showError('Tonk runtime could not load: ' + String(m.error ?? '').split('\n')[0]);
       });
       // Answer the host first: it waits on this handshake to show the app,
       // and the runtimes are large downloads that may be slow or blocked.

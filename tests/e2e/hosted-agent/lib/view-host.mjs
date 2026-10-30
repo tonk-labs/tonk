@@ -55,19 +55,21 @@ const SANDBOX = `<!doctype html><meta charset="utf-8"><title>sandbox</title>
   };
 </script>`;
 
-// The policy a host builds from `_meta.ui.csp`, after the MCP Apps
-// default (`connect-src 'none'`, scripts and styles inline), widened by
-// the declared domains.
+// The policy a host builds from `_meta.ui.csp`, after Claude's sandbox
+// (`claudemcpcontent.com/mcp_apps`, see sw-probe/FINDINGS.md): scripts
+// inline, `eval`, `blob:` and `data:`, nothing else reachable but the
+// declared domains, and frames only `blob:`/`data:` unless the host
+// grants `frameDomains`.
 function policy(csp, frames) {
   const resources = (csp.resourceDomains ?? []).join(' ');
   return [
     "default-src 'none'",
-    `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob: ${resources}`,
+    `script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data: ${resources}`,
     `style-src 'self' 'unsafe-inline' ${resources}`,
     `img-src 'self' data: blob: ${resources}`,
     `font-src 'self' data: ${resources}`,
     `connect-src 'self' ${(csp.connectDomains ?? []).join(' ')}`,
-    `worker-src 'self' blob: ${resources}`,
+    `worker-src 'self' blob: data: ${resources}`,
     `frame-src 'self' blob: data: ${frames ? (csp.frameDomains ?? []).join(' ') : ''}`,
   ].join('; ');
 }
@@ -104,9 +106,15 @@ export async function showView({ client, result, resource, frames, headed = fals
     return client.callTool({ name, arguments: args });
   });
   const violations = [];
+  const log = [];
   page.on('console', (message) => {
-    if (/Content Security Policy/.test(message.text())) violations.push(message.text());
+    const text = message.text();
+    if (/Content Security Policy/.test(text)) violations.push(text);
+    log.push(`${message.type()}: ${text.slice(0, 500)}`);
   });
+  page.on('pageerror', (error) => log.push(`pageerror: ${error.message}`));
+  // What the view logged, for a failure to show.
+  const tail = () => log.slice(-40).join('\n');
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   const sandbox = await sandboxFrame(page);
   await sandbox.evaluate((view) => window.show(view), {
@@ -128,12 +136,12 @@ export async function showView({ client, result, resource, frames, headed = fals
         seen = await visibleText(page);
         if (texts.every((text) => seen.includes(text))) return seen;
         const error = await relayError(page);
-        if (error) throw new Error(`the view failed: ${error}`);
+        if (error) throw new Error(`the view failed: ${error}\n${tail()}`);
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
       throw new Error(
         `the view never showed ${JSON.stringify(texts.filter((t) => !seen.includes(t)))}; ` +
-          `it showed: ${seen.slice(0, 2000)}`,
+          `it showed: ${seen.slice(0, 2000)}\n${tail()}`,
       );
     },
     async close() {
