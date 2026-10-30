@@ -760,7 +760,9 @@ What it checks, in order:
    has none). Spaces are made through the app's `space/create` transact
    call, not by clicking through the hub; sign-up and approval are clicked.
 3. OAuth runs to a token. The approval grants one space read and write and
-   the other read.
+   the other read. Approving may upload at most 80 requests (`/ucan/` and
+   object PUTs) before it answers: the grants, not the agent's library,
+   which once made a slow link outlast the request.
 4. `tools/list` names the tools; `tonk_list_spaces` lists exactly the two
    granted subjects; both read; the read-only one refuses `tonk_evaluate` (a
    tool error, not a 401) and the other takes it.
@@ -770,6 +772,10 @@ What it checks, in order:
 6. A third, fresh MCP session (a new space writer, so nothing is served from
    memory) reads all 16 back. This is the dialog-db#705 check: a lost write
    is a missing record here.
+7. The same person approves a second agent from another browser holding
+   the same passkey but none of the account's local state: the page signs
+   them in, offers the account's spaces, and the new agent lists the one
+   granted (budget 180 uploads, since the chosen space is mounted there).
 
 Isolation and cleanup: every run is a fresh browser profile, a fresh passkey,
 a fresh account and fresh spaces, so no two runs share a DID and none
