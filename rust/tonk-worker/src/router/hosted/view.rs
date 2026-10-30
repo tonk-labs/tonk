@@ -156,7 +156,11 @@ pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
     let socket = origin
         .strip_prefix("https://")
         .map(|host| format!("wss://{host}"))
-        .or_else(|| origin.strip_prefix("http://").map(|host| format!("ws://{host}")));
+        .or_else(|| {
+            origin
+                .strip_prefix("http://")
+                .map(|host| format!("ws://{host}"))
+        });
     let connect: Vec<&str> = std::iter::once(origin).chain(socket.as_deref()).collect();
     let html = RELAY
         .replace("__TONK_MCP_ORIGIN__", &json!(origin).to_string())
