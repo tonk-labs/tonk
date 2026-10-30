@@ -1,0 +1,8 @@
+name = "agent-peer-worker-spike"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# The local access service (`tonk-access-local`); the peer syncs at /ucan/.
+ACCESS_SERVICE_URL = "http://127.0.0.1:8787"

@@ -1051,6 +1051,94 @@ concept!: &tonk/agents
   with:
     markdown: tonk/agents-markdown
 
+# ── Agent spaces ────────────────────────────────────────────────────
+
+# What kind of space a repository is, when it is a special one. Keyed by
+# the repository's subject DID, like `tonk/repository`, so the mark
+# travels with the space's content rather than living in one account's
+# directory.
+#
+# An agent space is an ordinary space an account provisioned and keeps
+# the key of; the mark is the only thing that tells it apart. Its DID is
+# what invites, contacts and attribution name for the agent, and the
+# sessions below act for it.
+#
+# An entity label rather than a boolean, for the reason
+# `account/device-link`'s `reason` is one: a typo cannot silently read as
+# a different kind, and a second kind needs no new attribute.
+concept!: &tonk/agent-space
+  this: tonk:agent-space
+  description: A space that is an agent's identity.
+  # ENTITY: the repository's subject DID.
+  with:
+    kind:
+      description: >
+        What kind of space this is — `case:agent` for an agent space.
+      the: xyz.tonk.repo/kind
+      as: entity
+
+# Which LLM provider's apps an agent space is for (`claude`, `chatgpt`),
+# on the same subject DID as the mark. An agent is only offered again to
+# an app of the same provider, so Claude and ChatGPT never share one.
+concept!: &tonk/agent-provider
+  this: tonk:agent-provider
+  description: Which LLM provider's apps an agent space is for.
+  with:
+    provider:
+      description: The provider, `claude` or `chatgpt`.
+      the: xyz.tonk.agent-space/provider
+      as: text
+
+# One session of an agent: the authorization one session key holds to
+# act for the agent space, and what a session list renders.
+#
+# The same shape as `account/device-link`, for the same reasons: `this`
+# IS THE DELEGATION — the agent space's powerline to the session key,
+# keyed by its blob hash as dialog keyed it when the chain was retained.
+# Dialog decomposes issuer, audience, subject and command onto that same
+# entity, so there is no `proof:` field and no session DID field; the
+# delegation's own `dialog.ucan/audience` is the session. Revoking the
+# powerline takes this row with it.
+#
+# The powerline never expires. A session reaches other spaces only
+# through invites, which do, so its expiry would bound nothing that
+# revocation does not; and renewing it would need the account, which
+# holds the agent space's key.
+#
+# The attributes are `xyz.tonk.agent-session/*` rather than reusing
+# `xyz.tonk.device/*`: a concept's identity is the attributes it
+# reads, so sharing them would make every session row a device link
+# and every device link a session.
+#
+# The session's private key is never recorded here. The token that
+# carries it holds this powerline as a proof, but only the powerline is
+# retained.
+concept!: &agent/session
+  this: tonk:agent/session
+  description: One session key's authorization to act for this agent.
+  # ENTITY: THE DELEGATION — its blob hash, as dialog keyed it when the
+  # chain was retained. Not a session DID and not an id of ours.
+  with:
+    created-at:
+      description: >
+        When the session was minted, unix seconds. The delegation has no
+        validity window to read this from: it records the act.
+      the: xyz.tonk.agent-session/created-at
+      as: natural:64
+    title:
+      description: >
+        Human label for the session — the client it was minted for, e.g.
+        "Claude". Kept here so a list renders offline.
+      the: xyz.tonk.agent-session/title
+      as: text
+    reason:
+      description: >
+        Why the delegation exists — `case:agent-session`. An entity
+        label rather than text, so a typo cannot silently read as a
+        different reason. Lets a list filter without opening envelopes.
+      the: xyz.tonk.agent-session/reason
+      as: entity
+
 # Rename the current repository. The editable banner input dispatches
 # this on commit (blur/enter); `name` reads the input's value and
 # `subject` reads the repository identity stamped on the banner so the

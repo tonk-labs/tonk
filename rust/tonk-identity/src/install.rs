@@ -165,11 +165,13 @@ async fn mediate_pair(
     Reflect::set(&message, &"type".into(), &"custody".into())?;
     // Old pages understand terminal replies only. Negotiate progress rather
     // than letting a newer worker accidentally resolve an older page early.
-    let approval = Reflect::get(&request, &"kind".into())
-        .ok()
-        .and_then(|value| value.as_string())
-        .as_deref()
-        == Some("authorize-device");
+    let approval = matches!(
+        Reflect::get(&request, &"kind".into())
+            .ok()
+            .and_then(|value| value.as_string())
+            .as_deref(),
+        Some("authorize-device" | "authorize-agent")
+    );
     Reflect::set(&message, &"progress".into(), &JsValue::from_bool(approval))?;
     Reflect::set(
         &message,

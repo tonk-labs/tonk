@@ -15,6 +15,10 @@
 //!   [`shortcut`] module)
 //! - `GET /@/{hash}` - Permanent relative redirect to the stored target, with
 //!   allowlisted public referral tags forwarded
+//! - `/.well-known/oauth-*`, `/register`, `/authorize`, `/token` - The
+//!   OAuth authorization server for `/mcp` (see the [`oauth`] module)
+//! - `/mcp` - The hosted agent's MCP endpoint, forwarded to the Host
+//!   Worker over the `MCP_WORKER` service binding
 //!
 //! ## Request Format
 //!
@@ -58,6 +62,7 @@ pub mod invitation;
 pub mod live;
 pub mod lookup;
 pub mod metering;
+pub mod oauth;
 #[cfg(target_arch = "wasm32")]
 pub mod objects;
 pub mod observability;
@@ -98,6 +103,22 @@ async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
             .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
     {
         return live::connect(req, &env).await;
+    }
+    // The OAuth authorization server for `/mcp`, matched by path so
+    // every method reaches it and it answers preflights itself.
+    #[cfg(target_arch = "wasm32")]
+    if let Some(endpoint) = oauth::Endpoint::of(&req.path()) {
+        return handlers::oauth::serve(req, env, endpoint).await;
+    }
+    // `/mcp` is the hosted agent's MCP endpoint, served by the Host
+    // Worker over the `MCP_WORKER` service binding. It is answered on
+    // this origin because this origin is the OAuth resource the
+    // authorization server issues tokens for.
+    if req.path() == "/mcp" || req.path().starts_with("/mcp/") {
+        return match env.service("MCP_WORKER") {
+            Ok(host) => host.fetch_request(req).await,
+            Err(_) => Response::error("this deployment serves no /mcp", 404),
+        };
     }
     let router = Router::new();
 
@@ -143,6 +164,9 @@ async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
         // this the router answers 405 and there is no redirect to
         // follow at all.
         .head_async("/@/:hash", handlers::shortcut::handle_get)
+        // The preview's stand-in inbox for the end to end test; 404
+        // wherever `TEST_INBOX` is unbound, which is everywhere else.
+        .get_async("/_test/emails", handlers::test_inbox::handle)
         // 404 for everything else
         .run(req, env)
         .await

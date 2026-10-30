@@ -1647,7 +1647,7 @@ async fn run_connection_invite_for(
             )
             .await;
         }
-        if let Err(error) = enable_sync_for_repository(&tonk, repo, &remote).await {
+        if let Err(error) = enable_sync_for_repository(&tonk, repo, &remote, true).await {
             log!("agent invite sync setup failed: {error}");
             return publish_connection_invite(
                 &tonk,
@@ -3547,7 +3547,7 @@ fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError
 ///
 /// Shared by both creation paths so they cannot disagree about where a
 /// space syncs.
-async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
+pub(super) async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
     super::account_state::account_remote(tonk).await.ok()
 }
 
@@ -3565,6 +3565,19 @@ pub(super) async fn create_space_inner(
     name: &str,
     description: Option<&str>,
 ) -> Result<String, RepositoryError> {
+    let mut seed = Zeroizing::new([0u8; 32]);
+    getrandom::fill(seed.as_mut())
+        .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
+    create_space_from_seed(state, name, description, seed).await
+}
+
+/// [`create_space_inner`] on a key the caller drew.
+pub(super) async fn create_space_from_seed(
+    state: &AppState,
+    name: &str,
+    description: Option<&str>,
+    seed: Zeroizing<[u8; 32]>,
+) -> Result<String, RepositoryError> {
     // A local-only `main`-branch space (the same config the button asks
     // for); a remote is attached afterwards by the handler.
     let configuration =
@@ -3575,7 +3588,7 @@ pub(super) async fn create_space_inner(
 
         // Create the repository (records the replica with status:blank).
         // `name` is the display label; the identity is freshly minted.
-        let repository = create_repository(&tonk, name, &configuration).await?;
+        let repository = create_repository_from_seed(&tonk, name, &configuration, seed).await?;
         let subject = repository.did();
         let key = subject.repo_key().to_owned();
         let branches: Vec<String> = configuration.branch.keys().cloned().collect();
@@ -3586,6 +3599,40 @@ pub(super) async fn create_space_inner(
     // the slow part; holding the lock would stall the page).
     seed_and_initialize(state, name, description, &key, &subject, &branches).await?;
     Ok(key)
+}
+
+/// [`create_space_from_seed`] without its standard library yet: the space
+/// is created and recorded, and [`seed_space`] installs the library
+/// later. An agent's space is made this way, so what the approval must
+/// push before it answers is the agent's grants, not the whole library.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) async fn create_unseeded_space_from_seed(
+    state: &AppState,
+    name: &str,
+    seed: Zeroizing<[u8; 32]>,
+) -> Result<(String, Did), RepositoryError> {
+    let configuration =
+        RepositoryConfiguration::default().branch("main", BranchConfiguration::default());
+    // A read lock: creating mutates nothing the state holds, and a write
+    // lock waits out every sync in flight, which holds its read lock
+    // across its whole pull and push.
+    let tonk = state.read().await;
+    let repository = create_repository_from_seed(&tonk, name, &configuration, seed).await?;
+    let subject = repository.did();
+    Ok((subject.repo_key().to_owned(), subject))
+}
+
+/// Install the standard library and the name of a space made by
+/// [`create_unseeded_space_from_seed`], and mark it initialized.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) async fn seed_space(
+    state: &AppState,
+    name: &str,
+    description: Option<&str>,
+    key: &str,
+    subject: &Did,
+) -> Result<(), RepositoryError> {
+    seed_and_initialize(state, name, description, key, subject, &["main".to_owned()]).await
 }
 
 /// Attach a sync remote to a space, idempotently, via
@@ -3603,7 +3650,22 @@ pub(super) async fn enable_sync_inner(
     remote: &str,
 ) -> Result<(), RepositoryError> {
     let tonk = state.write().await;
-    enable_sync_for_repository(&tonk, key, remote).await
+    enable_sync_for_repository(&tonk, key, remote, true).await
+}
+
+/// [`enable_sync_inner`] for a space just created: creating it
+/// provisioned it when the customer is active, and provisioning again is
+/// a round trip that answers the same.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) async fn attach_provisioned_remote(
+    state: &AppState,
+    key: &str,
+    remote: &str,
+) -> Result<(), RepositoryError> {
+    // A read lock, as in `create_unseeded_space_from_seed`.
+    let tonk = state.read().await;
+    let provisioned = super::customer::is_active(&tonk).await;
+    enable_sync_for_repository(&tonk, key, remote, !provisioned).await
 }
 
 /// Attach the account provider to one existing repository.
@@ -3616,6 +3678,7 @@ async fn enable_sync_for_repository(
     tonk: &TonkState,
     key: &str,
     remote: &str,
+    provision: bool,
 ) -> Result<(), RepositoryError> {
     if remote.trim().is_empty() {
         // Submitted with no URL — nothing to attach.
@@ -3657,7 +3720,12 @@ async fn enable_sync_for_repository(
     // loop hammers it forever and a link handed out against it answers
     // "you don't have this space". That refusal fails the attach.
     let own_service = remote_is_own_service(tonk, remote).await;
-    match provision_space_consumer(tonk, &repository.did()).await {
+    let provisioned = if provision {
+        provision_space_consumer(tonk, &repository.did()).await
+    } else {
+        Ok(())
+    };
+    match provisioned {
         Ok(()) => {}
         Err(error) if own_service && !super::customer::is_retryable(&error) => {
             return Err(RepositoryError::Internal(format!(
@@ -3711,7 +3779,7 @@ pub(super) async fn attach_account_remote_if_local(
         return Ok(false);
     }
 
-    enable_sync_for_repository(tonk, key, remote).await?;
+    enable_sync_for_repository(tonk, key, remote, true).await?;
     Ok(true)
 }
 
@@ -5667,6 +5735,21 @@ pub async fn create_repository(
     display_name: &str,
     configuration: &RepositoryConfiguration,
 ) -> Result<Repository, RepositoryError> {
+    let mut seed = Zeroizing::new([0u8; 32]);
+    getrandom::fill(seed.as_mut())
+        .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
+    create_repository_from_seed(tonk, display_name, configuration, seed).await
+}
+
+/// [`create_repository`] for a space whose key the caller drew: an
+/// agent space signs its first session with the same seed before it is
+/// sealed to the account here.
+pub(super) async fn create_repository_from_seed(
+    tonk: &TonkState,
+    display_name: &str,
+    configuration: &RepositoryConfiguration,
+    seed: Zeroizing<[u8; 32]>,
+) -> Result<Repository, RepositoryError> {
     // A space always delegates to an ACCOUNT: the passkey-derived root
     // once one is persisted, else this device's onboarding account,
     // which is a real account custodied locally rather than by WebAuthn
@@ -5716,13 +5799,10 @@ pub async fn create_repository(
     // repository's own `tonk/repository` concept. Generating the signer
     // first (rather than letting `.create()` mint one) is what lets the
     // name derive from the DID instead of the other way around.
-    // The seed is drawn here rather than inside `generate`, so it can be
-    // sealed to the account below; the signer imports from it the same
-    // way an account root does (non-extractable on the web target), so
+    // The seed is drawn by the caller rather than inside `generate`, so it
+    // can be sealed to the account below; the signer imports from it the
+    // same way an account root does (non-extractable on the web target), so
     // the credential the repository stores is the shape it always was.
-    let mut seed = Zeroizing::new([0u8; 32]);
-    getrandom::fill(seed.as_mut())
-        .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
     let signer = Ed25519Signer::import(&*seed)
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
