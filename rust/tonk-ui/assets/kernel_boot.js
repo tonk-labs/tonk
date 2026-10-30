@@ -249,39 +249,14 @@ async function newPersona() {
     try {
         return await deployedKernel(PINNED);
     } catch (error) {
-        const persona = await latestKernel();
+        const shipped = await hostFile(new Request(new URL("/_host/kernel.json", self.location.href)));
+        const persona = shipped.ok ? (await shipped.json()).persona : null;
         if (typeof persona !== "string" || persona === PINNED) throw error;
         log(`${error.message}: a new profile runs ${persona}, which it ships now`);
         const kernel = await deployedKernel(persona);
         await (await caches.open(BOOT_CACHE)).put(BOOT_KEY, Response.json({ v: 2, kernel: persona }));
         return kernel;
     }
-}
-
-// The kernel this deployment ships now for a site of this origin's kind: the
-// persona for a profile, the kernel for a space.
-async function latestKernel() {
-    const shipped = await hostFile(new Request(new URL("/_host/kernel.json", self.location.href)));
-    return shipped.ok ? (await shipped.json())[PROFILE ? "persona" : "kernel"] : null;
-}
-
-// Move the site to the kernel its deployment ships now, as the person asked:
-// it becomes the site's pin, and the shell's, whose next registration of this
-// worker is for it. The kernel running now serves until that worker takes
-// over. Answers the new kernel's id.
-async function update(step) {
-    step("waiting for the kernel");
-    await booting;
-    step("reading what the deployment ships");
-    const latest = await latestKernel();
-    if (typeof latest !== "string") throw new Error("this deployment names no kernel");
-    step(`fetching ${latest}`);
-    const kernel = await deployedKernel(latest);
-    step(`installing ${latest}`);
-    const installed = await wasm_bindgen.install(site, kernel);
-    await (await caches.open(BOOT_CACHE)).put(BOOT_KEY, Response.json({ v: 2, kernel: installed }));
-    log("updated to the kernel", installed);
-    return installed;
 }
 
 // The persona the shell keeps that the profile pins.
@@ -313,7 +288,6 @@ async function start() {
     // A space with no kernel of its own yet is one being created, and a
     // profile with none a new one: install the one its worker was registered
     // for.
-    site = space;
     let pinned = await wasm_bindgen.pinned(space);
     if (!pinned) {
         const kernel = PROFILE ? await newPersona() : await shippedKernel(PINNED);
@@ -351,8 +325,6 @@ function run() {
     });
 }
 let booting;
-// The space this worker's kernel takes up, once it has booted.
-let site = null;
 // Whether the last boot failed, such as for a space the person's profile
 // did not hold yet: the next request boots it again.
 let bootFailed = false;
@@ -1342,17 +1314,6 @@ self.addEventListener("message", event => {
         event.waitUntil(
             booting.then(() => created).then(
                 () => reply?.postMessage({ booted: true }),
-                error => reply?.postMessage({ error: String(error?.message ?? error) }),
-            ),
-        );
-    }
-    // The person asked to move the site to the kernel its deployment ships
-    // now.
-    else if (type === "update") {
-        const reply = event.ports[0];
-        event.waitUntil(
-            update(step => reply?.postMessage({ step })).then(
-                kernel => reply?.postMessage({ kernel }),
                 error => reply?.postMessage({ error: String(error?.message ?? error) }),
             ),
         );

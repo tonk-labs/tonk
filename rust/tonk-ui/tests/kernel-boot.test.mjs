@@ -500,27 +500,6 @@ test("a new profile whose persona the deployment no longer serves runs the one i
   assert.equal(profile.booted.length, 1, "it boots the persona the deployment ships");
 });
 
-test("asked to update, a site takes up the kernel its deployment ships now", async () => {
-  const newer = `${KERNEL}2`;
-  const profile = space({
-    origin: "https://profile.tonk.test",
-    shipped: { [KERNEL]: "WASM", [newer]: "WASM2" },
-    ships: { persona: newer },
-  });
-  await profile.started();
-  const steps = [];
-  const answer = await new Promise((resolve) =>
-    profile.listeners.message({
-      data: { type: "update" },
-      ports: [{ postMessage: (reply) => (reply.step ? steps.push(reply.step) : resolve(reply)) }],
-      waitUntil() {},
-    }),
-  );
-  assert.equal(answer.kernel, newer, "it answers with the kernel it took up");
-  assert.ok(steps.length > 0, "it says what it is doing as it goes");
-  assert.equal(profile.kept.pins.get(profile.booted[0].subject), newer, "the site pins it from now on");
-});
-
 test("a profile whose kernel the deployment no longer serves says so on its page", async () => {
   const profile = space({ origin: "https://profile.tonk.test", shipped: {} });
   const response = await profile.request("/", { mode: "navigate" });

@@ -20,12 +20,8 @@ function target() {
 
 // Run the relay as the first script of a page: framed by the app's page
 // (`"app"`), by a page of the space's own origin (`"space"`), or opened on its
-// own (`"alone"`), on a space's origin or the profile's (`origin`), at `at`. The
-// worker was registered for the kernel `running`, the shell's `record` says
-// what the site pins, and the deployment ships what `ships` says.
-function page({
-  framed = "app", origin = "https://bspace.tonk.test", at = "/", running = "bafkr4ikernel", ships = null, record = null,
-} = {}) {
+// own (`"alone"`), on a space's origin or the profile's (`origin`).
+function page({ framed = "app", origin = "https://bspace.tonk.test" } = {}) {
   const told = [];
   const toWorker = [];
   const script = { removed: false, remove() { this.removed = true; } };
@@ -41,39 +37,10 @@ function page({
           throw new Error("cross-origin");
         },
       };
-  const registered = [];
-  const went = [];
   const worker = Object.assign(target(), {
-    controller: {
-      scriptURL: `${origin}/kernel_boot.js?kernel=${running}`,
-      postMessage: (message, ports) => void toWorker.push({ message, ports }),
-    },
+    controller: { postMessage: (message, ports) => void toWorker.push({ message, ports }) },
     startMessages() {},
-    register: async (script, options) => void registered.push([script, options]),
   });
-  // What the relay puts on the page apart from the page's own elements.
-  const shown = [];
-  const element = () => {
-    const nodes = {};
-    const shadow = {
-      set innerHTML(markup) {
-        this.markup = markup;
-        nodes.span = { textContent: "" };
-        nodes.button = target();
-        nodes.button.disabled = false;
-      },
-      querySelector: (selector) => nodes[selector],
-    };
-    return { attachShadow: () => shadow, shadow, nodes };
-  };
-  document.createElement = () => element();
-  document.documentElement = { appendChild: (node) => void shown.push(node) };
-  class MessageChannel {
-    constructor() {
-      this.port1 = { onmessage: null };
-      this.port2 = { postMessage: (data) => this.port1.onmessage?.({ data }) };
-    }
-  }
   // The relay's timers, run by hand.
   const timers = [];
   vm.runInContext(SOURCE, vm.createContext({
@@ -81,21 +48,11 @@ function page({
     document,
     parent,
     navigator: { serviceWorker: worker },
-    location: Object.assign(new URL(at, origin), {
-      replace: (address) => void went.push(address),
-    }),
+    location: new URL(origin),
     setInterval: (callback, every) => void timers.push({ callback, every }),
-    URL,
-    MessageChannel,
-    // What the site's shell keeps of the kernel the site pins.
-    caches: {
-      open: async () => ({ match: async () => (record ? new Response(JSON.stringify(record)) : undefined) }),
-    },
-    fetch: async (path) =>
-      path === "/_host/kernel.json" && ships ? new Response(JSON.stringify(ships)) : new Response("", { status: 404 }),
   }));
   const tick = () => timers.forEach((timer) => timer.callback());
-  return { told, toWorker, script, window, document, worker, parent, timers, tick, shown, registered, went };
+  return { told, toWorker, script, window, document, worker, parent, timers, tick };
 }
 
 test("the relay takes its own script out of the page", () => {
@@ -169,63 +126,4 @@ test("the page keeps its own origin's worker up while it is open", () => {
   const before = site.toWorker.length;
   site.tick();
   assert.deepEqual(JSON.parse(JSON.stringify(site.toWorker.slice(before).map((posted) => posted.message))), [{ type: "keepalive" }]);
-});
-
-// Let the relay's reads of the network settle.
-const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-test("a site whose deployment ships another kernel offers to update", async () => {
-  const it = page({ ships: { kernel: "bafkr4inewer" } });
-  it.document.dispatch("DOMContentLoaded", {});
-  await settle();
-  assert.equal(it.shown.length, 1, "it offers the update");
-  assert.match(it.shown[0].shadow.markup, /new version/);
-});
-
-test("a site on the kernel its deployment ships offers nothing", async () => {
-  const it = page({ ships: { kernel: "bafkr4ikernel" } });
-  it.document.dispatch("DOMContentLoaded", {});
-  await settle();
-  assert.deepEqual(it.shown, []);
-});
-
-test("a profile is offered the persona its deployment ships", async () => {
-  const it = page({ origin: "https://profile.tonk.test", ships: { kernel: "bafkr4ikernel", persona: "bafkr4inewer" } });
-  it.document.dispatch("DOMContentLoaded", {});
-  await settle();
-  assert.equal(it.shown.length, 1);
-});
-
-test("updating has the worker take the kernel up, then goes through the site's shell back to the page", async () => {
-  const it = page({ at: "/notes?x=1", ships: { kernel: "bafkr4inewer" } });
-  it.document.dispatch("DOMContentLoaded", {});
-  await settle();
-  it.shown[0].nodes.button.dispatch("click", {});
-  const asked = it.toWorker.at(-1);
-  assert.equal(asked.message.type, "update", "it asks the worker to update");
-
-  asked.ports[0].postMessage({ step: "fetching bafkr4inewer" });
-  assert.match(it.shown[0].nodes.span.textContent, /fetching bafkr4inewer/, "it says what the worker is doing");
-  asked.ports[0].postMessage({ kernel: "bafkr4inewer" });
-  assert.deepEqual(it.went, ["/space.html#boot=%2Fnotes%3Fx%3D1"], "the shell registers the new worker");
-  assert.deepEqual(it.registered, [], "a site's page registers no worker itself");
-});
-
-test("an update that does not finish says why, and can be asked again", async () => {
-  const it = page({ ships: { kernel: "bafkr4inewer" } });
-  it.document.dispatch("DOMContentLoaded", {});
-  await settle();
-  const { span, button } = it.shown[0].nodes;
-  button.dispatch("click", {});
-  it.toWorker.at(-1).ports[0].postMessage({ error: "this deployment names no kernel" });
-  assert.match(span.textContent, /did not finish: this deployment names no kernel/);
-  assert.equal(button.disabled, false);
-  assert.deepEqual(it.registered, []);
-});
-
-test("a site that took up the kernel its deployment ships is offered nothing, whatever its worker was registered for", async () => {
-  const it = page({ running: "bafkr4ikernel", record: { v: 2, kernel: "bafkr4inewer" }, ships: { kernel: "bafkr4inewer" } });
-  it.document.dispatch("DOMContentLoaded", {});
-  await settle();
-  assert.deepEqual(it.shown, []);
 });
