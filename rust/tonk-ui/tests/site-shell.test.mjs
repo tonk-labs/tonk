@@ -112,6 +112,9 @@ function boot(
     addEventListener: (type, listener) => void (listeners[type] = listener),
     removeEventListener() {},
     postMessage() {},
+    // Its own location, which a page opened on its own reads as its
+    // parent's.
+    location,
   };
   const document = {
     body,
