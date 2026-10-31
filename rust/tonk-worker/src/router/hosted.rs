@@ -28,6 +28,22 @@ pub mod view;
 mod writer;
 pub use writer::{NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, writer_seed};
 
+async fn save_proofs(
+    state: &crate::worker::TonkState,
+    proofs: &[DelegationChain],
+) -> Result<(), TonkWorkerError> {
+    for chain in proofs {
+        state
+            .profile
+            .access()
+            .save(UcanDelegation(chain.clone()))
+            .perform(&state.operator)
+            .await
+            .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+    }
+    Ok(())
+}
+
 /// The ordinary worker router over a peer that exists for one request.
 pub struct HostedPeer {
     router: Router,
@@ -113,15 +129,7 @@ impl HostedPeer {
         if state.profile.did() != did {
             return Err(TonkWorkerError::Internal("hosted identity mismatch".into()));
         }
-        for chain in proofs {
-            state
-                .profile
-                .access()
-                .save(UcanDelegation(chain.clone()))
-                .perform(&state.operator)
-                .await
-                .map_err(|error| internal(&error))?;
-        }
+        save_proofs(&state, proofs).await?;
         let (router, state, hub) = super::api_router_with_state(state);
         Ok(Self {
             router,
@@ -129,6 +137,13 @@ impl HostedPeer {
             hub,
             directory,
         })
+    }
+
+    /// Hold `proofs` too: a renewed delegation, or another view's, for a
+    /// peer already open.
+    pub async fn grant(&self, proofs: &[DelegationChain]) -> Result<(), TonkWorkerError> {
+        let state = self.state.read().await;
+        save_proofs(&state, proofs).await
     }
 
     /// Mount `subject` as a replica of the space served at `remote`. Its

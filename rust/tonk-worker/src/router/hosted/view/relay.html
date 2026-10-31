@@ -66,9 +66,12 @@
       const base = () => '/api/repository/' + encodeURIComponent(route.subject) + '/branch/main';
 
       // ---- The view's peer, in a Web Worker ---------------------------
+      // One peer per space serves every view of it, as the app's service
+      // worker serves its pages: a SharedWorker named for the space, which
+      // syncs in the background and repaints each view from one store. A
+      // host without SharedWorker gives each view a worker of its own.
       const peerSource = `
-        let peer, key, module, claim, reused;
-        const streams = new Map();
+        let peer, key, module, claim, started, opened, following;
         function kept(mode, act) {
           return new Promise((resolve, reject) => {
             const opened = indexedDB.open('tonk-view-keys', 1);
@@ -81,11 +84,10 @@
             };
           });
         }
-        // A view's key and store are kept per space, so a view opened again
-        // signs as the same key and reads what it pulled before. One view
-        // of a space holds them at a time: a view that just closed lets go
-        // in a moment, and one still open beside it makes this one start
-        // with a fresh key and store, as every view did before.
+        // A space's key and store are kept, so a view opened again signs as
+        // the same key and pulls only what changed. One peer holds them at a
+        // time: one that just closed lets go in a moment, and one still open
+        // elsewhere makes this one start with a fresh key and store.
         async function claimFor(space) {
           const fresh = { directory: 'tonk-view-' + crypto.randomUUID() };
           try {
@@ -103,71 +105,145 @@
             return fresh;
           }
         }
-        self.onmessage = async ({ data }) => {
-          const { id, op } = data;
-          try {
-            if (op === 'claim') {
-              claim ??= claimFor(data.space);
-              postMessage({ id, did: (await claim).entry?.did });
-            } else if (op === 'start') {
-              const claimed = await claim;
-              if (!key) {
-                module = await import(data.glue);
-                await module.default({ module_or_path: data.wasm });
-                if (claimed.entry)
-                  key = await module.ViewKey.restore(claimed.entry.key).catch(() => undefined);
-                reused = Boolean(key);
-                // A kept store that its key cannot sign for is left alone.
-                if (claimed.entry && !key) claimed.directory = 'tonk-view-' + crypto.randomUUID();
-                key ??= await module.ViewKey.generate();
-                if (claimed.space && !reused) {
-                  const handles = await key.export();
-                  await kept('readwrite', (store) =>
-                    store.put({ did: key.did, key: handles }, claimed.space),
-                  ).catch(() => {});
-                }
-              }
-              postMessage({ id, did: key.did, reused, directory: claimed.directory });
-            } else if (op === 'open') {
-              if (peer) {
-                await peer.close();
-                peer.free();
-              }
-              peer = await module.ViewPeer.open(key, data.delegations, data.space, data.remote, data.directory);
-              postMessage({ id });
-            } else if (op === 'follow') {
-              peer.follow();
-              postMessage({ id });
-            } else if (op === 'fetch') {
-              const response = await peer.fetch(new Request('https://view.invalid' + data.path, data.init));
-              postMessage({ id, status: response.status, statusText: response.statusText, headers: [...response.headers] });
-              if (!response.body) return postMessage({ id, done: true });
-              const reader = response.body.getReader();
-              streams.set(id, reader);
-              for (;;) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                postMessage({ id, chunk: value }, [value.buffer]);
-              }
-              streams.delete(id);
-              postMessage({ id, done: true });
-            } else if (op === 'cancel') {
-              streams.get(data.target)?.cancel();
-              streams.delete(data.target);
-            }
-          } catch (error) {
-            postMessage({ id, error: String((error && error.message) || error) });
+        async function start(claimed, data) {
+          module = await import(data.glue);
+          await module.default({ module_or_path: data.wasm });
+          if (claimed.entry)
+            key = await module.ViewKey.restore(claimed.entry.key).catch(() => undefined);
+          const reused = Boolean(key);
+          // A kept store that its key cannot sign for is left alone.
+          if (claimed.entry && !key) claimed.directory = 'tonk-view-' + crypto.randomUUID();
+          key ??= await module.ViewKey.generate();
+          if (claimed.space && !reused) {
+            const handles = await key.export();
+            await kept('readwrite', (store) =>
+              store.put({ did: key.did, key: handles }, claimed.space),
+            ).catch(() => {});
           }
-        };`;
+          return { did: key.did, reused, directory: claimed.directory };
+        }
+        // Each view talks to the peer over a port of its own, as its own
+        // client, and holds a lock named for the port while it lives: the
+        // peer ends that view's streams once the lock is free.
+        function serve(port) {
+          const streams = new Map();
+          let client;
+          const end = () => {
+            for (const reader of streams.values()) reader.cancel().catch(() => {});
+            streams.clear();
+          };
+          port.onmessage = async ({ data }) => {
+            const { id, op } = data;
+            try {
+              if (op === 'ping') {
+                port.postMessage({ id });
+              } else if (op === 'claim') {
+                client = data.client;
+                navigator.locks?.request(data.client, end);
+                claim ??= claimFor(data.space);
+                port.postMessage({ id, did: (await claim).entry?.did });
+              } else if (op === 'start') {
+                const claimed = await claim;
+                const first = !started;
+                started ??= start(claimed, data);
+                const result = await started;
+                // A view joining a running peer finds its store already open.
+                port.postMessage({ id, ...result, reused: result.reused || !first });
+              } else if (op === 'open') {
+                // The first view opens the peer; every later one, and a
+                // renewal, hands it the delegations it was given.
+                const first = !opened;
+                opened ??= module.ViewPeer.open(key, data.delegations, data.space, data.remote, data.directory);
+                peer = await opened.catch((error) => {
+                  opened = undefined;
+                  throw error;
+                });
+                if (!first) await peer.grant(data.delegations);
+                port.postMessage({ id });
+              } else if (op === 'follow') {
+                if (!following) peer.follow();
+                following = true;
+                port.postMessage({ id });
+              } else if (op === 'fetch') {
+                const response = await peer.fetch(new Request('https://view.invalid' + data.path, data.init), client);
+                port.postMessage({ id, status: response.status, statusText: response.statusText, headers: [...response.headers] });
+                if (!response.body) return port.postMessage({ id, done: true });
+                const reader = response.body.getReader();
+                streams.set(id, reader);
+                for (;;) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  port.postMessage({ id, chunk: value }, [value.buffer]);
+                }
+                streams.delete(id);
+                port.postMessage({ id, done: true });
+              } else if (op === 'cancel') {
+                streams.get(data.target)?.cancel();
+                streams.delete(data.target);
+              }
+            } catch (error) {
+              port.postMessage({ id, error: String((error && error.message) || error) });
+            }
+          };
+          port.start?.();
+        }
+        if ('onconnect' in self) self.onconnect = ({ ports }) => serve(ports[0]);
+        else serve(self);`;
       let peerWorker,
         workerId = 0;
       const calls = new Map();
-      function startWorker() {
+      // This view, as the peer names its client. The lock it holds while
+      // the view lives tells a shared peer when the view is gone.
+      const viewClient = 'tonk-view-client:' + crypto.randomUUID();
+      const peerUrl = () =>
+        URL.createObjectURL(new Blob([peerSource], { type: 'text/javascript' }));
+      // The space's shared peer: the one already running, by the address
+      // the view that started it kept, or a new one. Undefined where the
+      // host has no SharedWorker or it does not answer.
+      function sharedPeer(space) {
+        if (typeof SharedWorker !== 'function' || !navigator.locks) return;
+        const name = 'tonk-view:' + space;
+        const answers = (url, wait) =>
+          new Promise((resolve) => {
+            let worker;
+            try {
+              worker = new SharedWorker(url, { type: 'module', name });
+            } catch {
+              return resolve();
+            }
+            const timer = setTimeout(resolve, wait);
+            worker.onerror = () => resolve(clearTimeout(timer));
+            worker.port.onmessage = () => resolve(clearTimeout(timer) ?? worker.port);
+            worker.port.postMessage({ op: 'ping' });
+          });
+        return navigator.locks
+          .request('tonk-view-start:' + space, async () => {
+            let known;
+            try {
+              known = localStorage.getItem(name);
+            } catch {}
+            const running = known && (await answers(known, 1500));
+            if (running) return running;
+            const url = peerUrl();
+            const port = await answers(url, 5000);
+            if (port)
+              try {
+                localStorage.setItem(name, url);
+              } catch {}
+            return port;
+          })
+          .catch(() => undefined);
+      }
+      async function startWorker() {
         if (peerWorker) return;
-        peerWorker = new Worker(
-          URL.createObjectURL(new Blob([peerSource], { type: 'text/javascript' })),
-          { type: 'module' },
+        await new Promise((resolve) =>
+          navigator.locks
+            ? navigator.locks.request(viewClient, () => (resolve(), new Promise(() => {})))
+            : resolve(),
         );
+        const shared = await sharedPeer(route.subject);
+        console.info('tonk view: ' + (shared ? 'shared peer' : 'own peer'));
+        peerWorker = shared ?? new Worker(peerUrl(), { type: 'module' });
         peerWorker.onmessage = ({ data }) => calls.get(data.id)?.(data);
       }
       function ask(op, message = {}) {
@@ -237,11 +313,11 @@
       }
       // Route B: the peer in a Web Worker here.
       async function connect() {
-        startWorker();
         // The runtime, the peer's wasm and the access load side by side: a
         // kept key's DID is known before its wasm is.
         const packed = loadPack();
-        const { did: keptDid } = await ask('claim', { space: route.subject });
+        await startWorker();
+        const { did: keptDid } = await ask('claim', { space: route.subject, client: viewClient });
         const early = keptDid ? grant(keptDid) : undefined;
         early?.catch(() => {});
         const started = await ask('start', {

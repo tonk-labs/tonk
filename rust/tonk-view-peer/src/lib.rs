@@ -77,8 +77,8 @@ impl ViewKey {
 #[wasm_bindgen]
 pub struct ViewPeer {
     peer: Rc<HostedPeer>,
-    /// The one guest document this peer serves, named as the service
-    /// worker names a client, so `/site` can bind it.
+    /// The guest document a request names no other for, named as the
+    /// service worker names a client, so `/site` can bind it.
     client: ClientId,
     /// Set once the view is gone, which ends the peer's watches and loops.
     stopped: Rc<Cell<bool>>,
@@ -98,14 +98,7 @@ impl ViewPeer {
         directory: String,
     ) -> Result<ViewPeer, JsError> {
         let error = |error: &dyn std::fmt::Display| JsError::new(&error.to_string());
-        let proofs = delegations
-            .iter()
-            .map(|encoded| {
-                let container =
-                    Container::decode(encoded.trim().as_bytes()).map_err(|e| error(&e))?;
-                DelegationChain::try_from(container).map_err(|e| error(&e))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let proofs = decode(&delegations)?;
         let space: Did = space.parse().map_err(|e| error(&e))?;
         let remote = url::Url::parse(&remote).map_err(|e| error(&e))?;
         // The library the router installs and upgrades from is the
@@ -127,11 +120,22 @@ impl ViewPeer {
         })
     }
 
+    /// Hold `delegations` too: a renewed one, or another view's.
+    pub async fn grant(&self, delegations: Vec<String>) -> Result<(), JsError> {
+        let proofs = decode(&delegations)?;
+        self.peer
+            .grant(&proofs)
+            .await
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
     /// Answer a request on the ordinary router, as the service worker
-    /// answers one. A subscription's response stays a stream.
-    pub fn fetch(&self, request: web_sys::Request) -> Promise {
+    /// answers one, for the guest document `client` (each view of a peer
+    /// shared by several names its own). A subscription's response stays
+    /// a stream.
+    pub fn fetch(&self, request: web_sys::Request, client: Option<String>) -> Promise {
         let peer = self.peer.clone();
-        let client = self.client.clone();
+        let client = client.map(ClientId).unwrap_or_else(|| self.client.clone());
         future_to_promise(async move {
             let mut request = RequestConversion::from(request)
                 .into_axum_request()
@@ -165,4 +169,16 @@ impl ViewPeer {
     pub async fn did(&self) -> String {
         self.peer.did().await.to_string()
     }
+}
+
+/// Delegations as `tonk_view_access` returns them: base64url containers.
+fn decode(delegations: &[String]) -> Result<Vec<DelegationChain>, JsError> {
+    let error = |error: &dyn std::fmt::Display| JsError::new(&error.to_string());
+    delegations
+        .iter()
+        .map(|encoded| {
+            let container = Container::decode(encoded.trim().as_bytes()).map_err(|e| error(&e))?;
+            DelegationChain::try_from(container).map_err(|e| error(&e))
+        })
+        .collect()
 }

@@ -322,15 +322,21 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
               // the store it pulled into before it pulls again.
               const reopened = Date.now();
               await view.again();
-              while (view.logged('tonk view:').length < 2 && Date.now() - reopened < 60_000)
+              const stores = () => view.logged('tonk view:').filter((line) => / store$/.test(line));
+              while (stores().length < 2 && Date.now() - reopened < 60_000)
                 await new Promise((resolve) => setTimeout(resolve, 100));
               assert.deepEqual(
-                view
-                  .logged('tonk view:')
+                stores()
                   .slice(1)
                   .map((line) => line.replace(/^\w+: /, '')),
                 ['tonk view: kept store'],
                 'the view shown again did not open the store it kept',
+              );
+              // Chromium has SharedWorker: every view of the space is served
+              // by the one peer.
+              assert.ok(
+                view.logged('tonk view: shared peer').length >= 2,
+                `the views did not share a peer: ${view.logged('tonk view:')}`,
               );
               await view.shows([live, theirs]);
               console.log(`route ${route}: shown again in ${Date.now() - reopened} ms`);
