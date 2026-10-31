@@ -31,7 +31,12 @@ use dialog_common::log;
 /// exist as stored data, yielding an empty result (the "Model not found" on a
 /// `<tonk-display model=…>` whose one-shot query — which does route through
 /// `QueryPlan` — resolves fine).
-pub type Engine = dialog_repository::Subscription<tonk_schema::concept::QueryPlan>;
+pub enum Engine {
+    /// Existing row subscription.
+    Rows(Box<dialog_repository::Subscription<tonk_schema::concept::QueryPlan>>),
+    /// Typed graph subscription, retained by Dialog's incremental engine.
+    Graph(Box<dialog_repository::GraphSubscription>),
+}
 
 /// The engine slot: an `Option` behind an async mutex.
 ///
@@ -80,6 +85,16 @@ impl From<&ConceptQuery> for QueryHash {
         let canonical = serde_ipld_dagjson::from_slice::<Ipld>(&json)
             .ok()
             .and_then(|ipld| serde_ipld_dagjson::to_vec(&ipld).ok());
+        Self(Blake3Hash::hash(canonical.as_deref().unwrap_or(&json)))
+    }
+}
+
+impl From<&dialog_query::graph::GraphQuery> for QueryHash {
+    fn from(query: &dialog_query::graph::GraphQuery) -> Self {
+        let json = serde_json::to_vec(&("graph", query)).expect("graph query is serializable");
+        let canonical = serde_ipld_dagjson::from_slice::<Ipld>(&json)
+            .ok()
+            .and_then(|value| serde_ipld_dagjson::to_vec(&value).ok());
         Self(Blake3Hash::hash(canonical.as_deref().unwrap_or(&json)))
     }
 }
@@ -179,6 +194,38 @@ impl Subscription {
     /// has closed is dropped.
     pub fn deliver(&mut self, snapshot_conclusions: &[Conclusion], delta_bytes: Option<&Bytes>) {
         fan_out(&mut self.subscribers, snapshot_conclusions, delta_bytes);
+    }
+
+    /// Deliver graph frames using the same pending-subscriber handshake.
+    pub fn deliver_graph(
+        &mut self,
+        graph: &dialog_query::graph::GraphResult,
+        delta: Option<&Bytes>,
+    ) {
+        let mut snapshot = None;
+        self.subscribers.retain_mut(|subscriber| {
+            let bytes = match subscriber.status {
+                Status::Pending => {
+                    if snapshot.is_none() {
+                        snapshot = serde_json::to_vec(
+                            &serde_json::json!({ "kind": "graph_snapshot", "graph": graph }),
+                        )
+                        .ok()
+                        .map(Bytes::from);
+                    }
+                    snapshot.as_ref()
+                }
+                Status::Established => delta,
+            };
+            let Some(bytes) = bytes else {
+                return true;
+            };
+            if subscriber.sender.send(bytes.clone()).is_err() {
+                return false;
+            }
+            subscriber.status = Status::Established;
+            true
+        });
     }
 }
 

@@ -315,3 +315,73 @@ fn this_term_for_query(this: &ThisIntent) -> Term<dialog_query::Any> {
         }
     }
 }
+
+/// Parse explicit graph stages without treating their fields as root bindings.
+pub(crate) fn graph_constraints(
+    query: &SyntaxApplication,
+    scope: &Scope,
+    working: &Working,
+) -> Result<Option<tonk_schema::graph::GraphConstraints>, AnalyzeError> {
+    use tonk_notation::FieldValue;
+    // A declared field always keeps its ordinary query semantics.
+    if let HeadName::Concept(name) = &query.predicate.name
+        && scope.concept(name).is_some_and(|definition| {
+            definition
+                .descriptor
+                .concept()
+                .with()
+                .iter()
+                .any(|(name, _)| name == "graph")
+        })
+    {
+        return Ok(None);
+    }
+    let Some(graph) = query.fields.iter().find(|field| field.name == "graph") else {
+        return Ok(None);
+    };
+    let invalid = |reason: &str| {
+        AnalyzeError::at(
+            AnalyzeErrorKind::InvalidGraphQuery {
+                reason: reason.into(),
+            },
+            graph.value_range,
+        )
+    };
+    let FieldValue::Nested(stages) = &graph.value else {
+        return Err(invalid("graph must contain matching and/or shaping maps"));
+    };
+    let mut constraints = tonk_schema::graph::GraphConstraints::default();
+    for stage in stages {
+        let target = match stage.name.as_str() {
+            "matching" => &mut constraints.matching,
+            "shaping" => &mut constraints.shaping,
+            _ => return Err(invalid("graph stages are matching and shaping")),
+        };
+        let FieldValue::Nested(edges) = &stage.value else {
+            return Err(invalid("each graph stage maps edges to field equalities"));
+        };
+        for edge in edges {
+            let FieldValue::Nested(fields) = &edge.value else {
+                return Err(invalid("each graph edge maps target fields to constants"));
+            };
+            let equalities = target.entry(edge.name.clone()).or_default();
+            for field in fields {
+                let value = field_value_to_term(
+                    &field.name,
+                    &field.value,
+                    field.value_range,
+                    scope,
+                    working,
+                    None,
+                )?;
+                let Term::Constant(value) = value else {
+                    return Err(invalid("graph constraints must be constants"));
+                };
+                if equalities.insert(field.name.clone(), value).is_some() {
+                    return Err(invalid("a graph equality may be stated only once"));
+                }
+            }
+        }
+    }
+    Ok(Some(constraints))
+}

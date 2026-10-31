@@ -48,6 +48,9 @@ pub struct Revision {
 /// Matches for one source-expression query.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct QueryMatchBlock {
+    /// Normalized graph for typed-edge queries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<serde_json::Value>,
     /// Display label for the source expression (`person ?alice:` → `"person"`).
     pub label: String,
     /// One entry per matched entity.

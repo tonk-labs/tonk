@@ -109,6 +109,8 @@ pub fn parse_optional(the: &ArtifactsRelation) -> Option<String> {
 /// of the concept plus the reconstructed [`ConceptDescriptor`].
 #[derive(Debug, Clone)]
 pub struct Concept {
+    /// Typed edge bookmarks collected with concept metadata.
+    pub edges: std::collections::BTreeMap<String, String>,
     /// The concept entity URI (`concept:…` or whatever entity
     /// carries the `db.concept.with/*` claims).
     pub entity: Entity,
@@ -263,14 +265,15 @@ impl ConceptByEntity {
             .await
             .map_err(|e| ConceptLookupError::query(format!("concept-with query failed: {e:?}")))?;
 
-        // The optional markers carry Boolean values, so a separate
-        // Boolean-typed query is needed — the Entity-typed `with`
-        // query above never returns them.
+        // Read optional markers and typed-edge bookmarks together. The
+        // existing entity-bound metadata scan also captures edge strings.
         let optional_claims: Vec<dialog_query::Claim> = source
-            .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::Relation>::var("the")
-                    .of(Term::from(self.entity.clone()))
-                    .is(Term::<bool>::var("flag")),
+            .select(dialog_query::AttributeQuery::new(
+                Term::var("the"),
+                Term::from(self.entity.clone()),
+                Term::var("flag"),
+                Term::blank(),
+                Some(dialog_query::Cardinality::One),
             ))
             .perform(env)
             .try_vec()
@@ -278,8 +281,20 @@ impl ConceptByEntity {
             .map_err(|e| {
                 ConceptLookupError::query(format!("concept-optional query failed: {e:?}"))
             })?;
+        let edges = optional_claims
+            .iter()
+            .filter_map(|claim| {
+                let relation: ArtifactsRelation = claim.the.clone().into();
+                let field = relation.as_str().strip_prefix("db.concept.edge/")?;
+                let dialog_artifacts::Value::String(target) = &claim.is else {
+                    return None;
+                };
+                Some((field.to_owned(), target.clone()))
+            })
+            .collect();
         let optional_fields: BTreeSet<String> = optional_claims
             .iter()
+            .filter(|claim| matches!(claim.is, dialog_artifacts::Value::Boolean(_)))
             .filter_map(|claim| {
                 let the: ArtifactsRelation = claim.the.clone().into();
                 parse_optional(&the)
@@ -319,6 +334,7 @@ impl ConceptByEntity {
         let descriptor = ConceptDescriptor::try_from(fields)
             .map_err(|e| ConceptLookupError::query(format!("invalid concept descriptor: {e:?}")))?;
         Ok(Some(Concept {
+            edges,
             entity: self.entity,
             descriptor,
         }))

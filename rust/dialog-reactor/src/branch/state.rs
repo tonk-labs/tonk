@@ -230,7 +230,9 @@ impl BranchState {
         // subscription sees ephemeral facts with no extra wiring here.
         let plan = tonk_schema::concept::QueryPlan::from(query);
         let subscription = entry.or_insert_with(|| Subscription {
-            engine: Arc::new(tokio::sync::Mutex::new(Some(self.branch.subscribe(plan)))),
+            engine: Arc::new(tokio::sync::Mutex::new(Some(
+                crate::subscription::Engine::Rows(Box::new(self.branch.subscribe(plan))),
+            ))),
             terms,
             subscribers: Vec::new(),
         });
@@ -240,6 +242,44 @@ impl BranchState {
             client,
             level,
         });
+    }
+
+    /// Register a typed graph using the same subscriber table and cleanup.
+    pub fn subscribe_graph(
+        &self,
+        query: dialog_query::graph::GraphQuery,
+        client: Option<String>,
+        level: u32,
+    ) -> Result<Subscriber, ReactorError> {
+        let hash = QueryHash::from(&query);
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let mut subs = self.subscriptions.lock();
+        if !subs.contains_key(&hash) {
+            let engine = self
+                .branch
+                .subscribe_graph(query.clone())
+                .map_err(|error| ReactorError::Graph(error.to_string()))?;
+            subs.insert(
+                hash.clone(),
+                Subscription {
+                    engine: Arc::new(tokio::sync::Mutex::new(Some(
+                        crate::subscription::Engine::Graph(Box::new(engine)),
+                    ))),
+                    terms: query.root.terms,
+                    subscribers: Vec::new(),
+                },
+            );
+        }
+        subs.get_mut(&hash)
+            .expect("registered")
+            .subscribers
+            .push(SubscriberSession {
+                sender,
+                status: Status::Pending,
+                client,
+                level,
+            });
+        Ok(Subscriber { hash, receiver })
     }
 
     /// Drop every subscriber whose `client` tag fails `keep`; an

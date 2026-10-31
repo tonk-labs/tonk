@@ -522,7 +522,8 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
         ReactorError::RepositoryNotFound { .. } | ReactorError::BranchNotFound { .. } => {
             TonkWorkerError::NotFound(err.to_string())
         }
-        ReactorError::QueryFailed(_)
+        ReactorError::Graph(_)
+        | ReactorError::QueryFailed(_)
         | ReactorError::Commit(_)
         | ReactorError::Pull(_)
         | ReactorError::Download(_)

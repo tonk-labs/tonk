@@ -125,10 +125,43 @@ impl SubscriptionPoll<'_> {
             }
         };
 
+        if let super::state::Engine::Graph(graph) = &mut engine {
+            let result = graph.poll(env).await;
+            let delta = match result {
+                Ok(delta) => delta,
+                Err(error) => {
+                    log!("[reactor] graph subscription poll failed: {error}");
+                    *slot.lock().await = Some(engine);
+                    return;
+                }
+            };
+            let delta = delta.filter(|delta| !delta.is_empty()).and_then(|delta| {
+                serde_json::to_vec(&serde_json::json!({ "kind": "graph_delta", "delta": delta }))
+                    .ok()
+                    .map(Bytes::from)
+            });
+            {
+                let mut subs = self.state.subscriptions().lock();
+                if let Some(subscription) = subs.get_mut(&self.hash) {
+                    // Recheck pending clients after poll, while holding the map
+                    // lock. No snapshot serialization on established-only polls.
+                    subscription.deliver_graph(graph.results(), delta.as_ref());
+                    if subscription.subscribers.is_empty() {
+                        subs.shift_remove(&self.hash);
+                    }
+                }
+            }
+            *slot.lock().await = Some(engine);
+            return;
+        }
+        let super::state::Engine::Rows(rows) = &mut engine else {
+            unreachable!("graph handled above")
+        };
+
         // The engine gates on both the tree revision and the branch's
         // overlay epoch, so an overlay write (which doesn't move the
         // tree) still re-evaluates on this poll — no re-seed here.
-        let poll_result = engine.poll(env).await;
+        let poll_result = rows.poll(env).await;
 
         // Project the engine's retained results while we still hold the
         // engine — the snapshot any Pending subscriber will need. Kept as
@@ -138,11 +171,8 @@ impl SubscriptionPoll<'_> {
         // no-Pending poll; deferring it to fan-out is what lets us serve a
         // subscriber that attached during the poll `await` above without
         // paying for a snapshot when there is none.
-        let snapshot_conclusions: Vec<Conclusion> = engine
-            .results()
-            .iter()
-            .map(|c| project(c, &terms))
-            .collect();
+        let snapshot_conclusions: Vec<Conclusion> =
+            rows.results().iter().map(|c| project(c, &terms)).collect();
 
         // Put the engine back before handling the poll outcome so the
         // slot is never left empty on an early return.
