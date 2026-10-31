@@ -121,11 +121,10 @@ async fn access(
     (verified, writer): &(Verified, AgentWriter),
     space: &Did,
     audience: &Did,
-    edit: bool,
 ) -> Value {
     call(
         ACCESS,
-        &json!({ "space": space.to_string(), "audience": audience.to_string(), "edit": edit }),
+        &json!({ "space": space.to_string(), "audience": audience.to_string() }),
         verified,
         writer,
         "",
@@ -149,16 +148,17 @@ fn chains(result: &Value) -> Vec<DelegationChain> {
         .collect()
 }
 
+/// A view of a space granted only read gets only its read commands.
 #[dialog_common::test]
-async fn a_read_only_view_gets_only_read_commands_of_its_space() {
+async fn a_view_of_a_read_only_space_gets_only_read_commands() {
     let agent = Ed25519Signer::generate().await.unwrap();
     let space = Ed25519Signer::generate().await.unwrap();
     let view = Ed25519Signer::generate().await.unwrap();
-    let verified = verified(&agent, &space, &["get", "put"]).await;
-    let result = access(&verified, &space.did(), &view.did(), false).await;
+    let verified = verified(&agent, &space, &["get"]).await;
+    let result = access(&verified, &space.did(), &view.did()).await;
     assert_eq!(result["isError"], false, "{result}");
     let chains = chains(&result);
-    assert_eq!(chains.len(), 3, "the three read grants, not the puts");
+    assert_eq!(chains.len(), 3, "the three read grants");
     for chain in &chains {
         assert_eq!(chain.audience(), &view.did());
         assert_eq!(chain.issuer(), &space.did(), "rooted at the space");
@@ -172,26 +172,17 @@ async fn a_read_only_view_gets_only_read_commands_of_its_space() {
     }
 }
 
+/// A view of a space the connection may write gets the puts too.
 #[dialog_common::test]
-async fn an_editing_view_gets_the_puts_too() {
+async fn a_view_of_a_writable_space_gets_the_puts_too() {
     let agent = Ed25519Signer::generate().await.unwrap();
     let space = Ed25519Signer::generate().await.unwrap();
     let view = Ed25519Signer::generate().await.unwrap();
     let verified = verified(&agent, &space, &["get", "put"]).await;
-    let result = access(&verified, &space.did(), &view.did(), true).await;
+    let result = access(&verified, &space.did(), &view.did()).await;
     let abilities: Vec<String> = chains(&result).iter().map(|c| c.ability()).collect();
     assert_eq!(abilities.len(), 6, "{abilities:?}");
     assert!(abilities.iter().any(|a| a.starts_with("/use/put/")));
-}
-
-#[dialog_common::test]
-async fn a_view_of_a_read_only_space_cannot_edit() {
-    let agent = Ed25519Signer::generate().await.unwrap();
-    let space = Ed25519Signer::generate().await.unwrap();
-    let view = Ed25519Signer::generate().await.unwrap();
-    let verified = verified(&agent, &space, &["get"]).await;
-    let result = access(&verified, &space.did(), &view.did(), true).await;
-    assert_eq!(result["isError"], true, "{result}");
 }
 
 #[dialog_common::test]
@@ -200,7 +191,7 @@ async fn the_agent_space_is_delegated_through_the_powerline() {
     let space = Ed25519Signer::generate().await.unwrap();
     let view = Ed25519Signer::generate().await.unwrap();
     let verified = verified(&agent, &space, &["get"]).await;
-    let result = access(&verified, &agent.did(), &view.did(), false).await;
+    let result = access(&verified, &agent.did(), &view.did()).await;
     let chains = chains(&result);
     assert_eq!(chains.len(), 1);
     assert_eq!(chains[0].issuer(), &agent.did());
@@ -209,7 +200,11 @@ async fn the_agent_space_is_delegated_through_the_powerline() {
         &UcanSubject::Specific(agent.did()),
         "the last hop names the agent space"
     );
-    assert_eq!(chains[0].ability(), "/use/get");
+    assert_eq!(
+        chains[0].ability(),
+        "/use",
+        "the agent may write its own space"
+    );
 }
 
 #[dialog_common::test]
@@ -219,7 +214,7 @@ async fn a_space_the_agent_space_does_not_reach_is_refused() {
     let other = Ed25519Signer::generate().await.unwrap();
     let view = Ed25519Signer::generate().await.unwrap();
     let verified = verified(&agent, &space, &["get"]).await;
-    let result = access(&verified, &other.did(), &view.did(), false).await;
+    let result = access(&verified, &other.did(), &view.did()).await;
     assert_eq!(result["isError"], true, "{result}");
 }
 
@@ -461,7 +456,7 @@ async fn a_space_hosted_where_the_view_cannot_reach_is_not_shown() {
     let said = refused["content"][0]["text"].as_str().unwrap();
     assert!(said.contains("https://elsewhere.example"), "{said}");
     let pair = (verified, writer);
-    let refused = access(&pair, &space.did(), &view.did(), false).await;
+    let refused = access(&pair, &space.did(), &view.did()).await;
     assert_eq!(refused["isError"], true, "{refused}");
 }
 
@@ -599,10 +594,9 @@ concept!: &view-note
 
         /// A view's peer of the agent space over the delegations its key
         /// was given.
-        async fn view(&self, edit: bool) -> (HostedPeer, String) {
+        async fn view(&self) -> (HostedPeer, String) {
             let (verified, writer) = &self.verified;
-            self.view_of(verified, writer, &self.agent.did(), edit)
-                .await
+            self.view_of(verified, writer, &self.agent.did()).await
         }
 
         /// A view's peer of `space`, its delegations signed by the
@@ -612,13 +606,12 @@ concept!: &view-note
             verified: &Verified,
             writers: &impl Writers,
             space: &Did,
-            edit: bool,
         ) -> (HostedPeer, String) {
             let seed = Zeroizing::new(rand::random::<[u8; 32]>());
             let key = Ed25519Signer::import(&*seed).await.unwrap();
             let result = call(
                 ACCESS,
-                &json!({ "space": space.to_string(), "audience": key.did().to_string(), "edit": edit }),
+                &json!({ "space": space.to_string(), "audience": key.did().to_string() }),
                 verified,
                 writers,
                 "",
@@ -721,9 +714,7 @@ concept!: &view-note
             .unwrap();
         let served = Served(own);
 
-        let (view, base) = fixture
-            .view_of(verified, &served, &garden.did(), false)
-            .await;
+        let (view, base) = fixture.view_of(verified, &served, &garden.did()).await;
         let (status, body) = json(
             view.call(request(Method::POST, &format!("{base}/sync/pull"), ""))
                 .await,
@@ -742,21 +733,28 @@ concept!: &view-note
         assert!(status.is_success(), "query: {status}: {body}");
         assert!(body.to_string().contains("in the garden"), "{body}");
 
-        // Editing a space granted only to read is refused.
-        let key = Ed25519Signer::generate().await.unwrap();
-        let refused = call(
-            ACCESS,
-            &json!({ "space": garden.did().to_string(), "audience": key.did().to_string(), "edit": true }),
-            verified,
-            &served,
-            "",
-            "session",
-            ORIGIN,
-            &TicketKey::derive("secret"),
+        // A view of a space granted only to read commits locally, and
+        // the remote refuses its push.
+        let (status, body) = json(
+            view.call(request(
+                Method::POST,
+                &format!("{base}/evaluate?transact=true"),
+                "view-note!:\n  this: urn:view:other\n  title: \"from the view\"\n",
+            ))
+            .await,
         )
-        .await
-        .unwrap();
-        assert_eq!(refused["isError"], true, "{refused}");
+        .await;
+        assert!(status.is_success(), "local commit: {status}: {body}");
+        let (status, body) = json(
+            view.call(request(Method::POST, &format!("{base}/sync/push"), ""))
+                .await,
+        )
+        .await;
+        assert!(
+            !status.is_success(),
+            "a read-only view's push lands: {body}"
+        );
+        assert_eq!(body["error"]["code"], "UPSTREAM_ERROR", "{body}");
         view.close().await;
         served.0.close().await;
         fixture.service.stop().await.unwrap();
@@ -803,7 +801,7 @@ concept!: &view-note
         };
         // Chains to another key are refused.
         let stranger = Ed25519Signer::generate().await.unwrap();
-        let other = access(&fixture.verified, &space, &stranger.did(), false).await;
+        let other = access(&fixture.verified, &space, &stranger.did()).await;
         let (status, body) = json(
             peer.call(accept(&other["structuredContent"]["delegations"]))
                 .await,
@@ -849,7 +847,7 @@ concept!: &view-note
     #[dialog_common::test]
     async fn a_view_reads_its_space_as_its_own_key() {
         let fixture = Fixture::start().await;
-        let (view, base) = fixture.view(false).await;
+        let (view, base) = fixture.view().await;
         let (status, body) = json(
             view.call(request(Method::POST, &format!("{base}/sync/pull"), ""))
                 .await,
@@ -872,46 +870,9 @@ concept!: &view-note
     }
 
     #[dialog_common::test]
-    async fn a_read_only_view_cannot_publish() {
-        let fixture = Fixture::start().await;
-        let (view, base) = fixture.view(false).await;
-        let (status, _) = json(
-            view.call(request(Method::POST, &format!("{base}/sync/pull"), ""))
-                .await,
-        )
-        .await;
-        assert!(status.is_success());
-        let (status, body) = json(
-            view.call(request(
-                Method::POST,
-                &format!("{base}/evaluate?transact=true"),
-                "view-note!:\n  this: urn:view:other\n  title: \"from the view\"\n",
-            ))
-            .await,
-        )
-        .await;
-        assert!(status.is_success(), "local commit: {status}: {body}");
-        let (status, body) = json(
-            view.call(request(Method::POST, &format!("{base}/sync/push"), ""))
-                .await,
-        )
-        .await;
-        assert!(
-            !status.is_success(),
-            "a read-only view's push lands: {body}"
-        );
-        // The worker reports the remote's refusal only as a failed sync;
-        // the same push from a view opened to edit lands (below), so the
-        // read-only delegation is what the remote refused.
-        assert_eq!(body["error"]["code"], "UPSTREAM_ERROR", "{body}");
-        view.close().await;
-        fixture.service.stop().await.unwrap();
-    }
-
-    #[dialog_common::test]
     async fn an_editing_view_publishes_as_its_own_key() {
         let fixture = Fixture::start().await;
-        let (view, base) = fixture.view(true).await;
+        let (view, base) = fixture.view().await;
         let (status, _) = json(
             view.call(request(Method::POST, &format!("{base}/sync/pull"), ""))
                 .await,

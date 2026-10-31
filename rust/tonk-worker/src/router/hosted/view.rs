@@ -4,8 +4,8 @@
 //! calls `tonk_open_space` to show a route of a space. The view (the
 //! relay page) makes its own non-extractable key and calls
 //! `tonk_view_access(space, audience)`, an app-only tool, with that key's
-//! DID; the session signs a delegation to it for that one space, read-only
-//! unless the view was opened to edit. The delegation is useless without
+//! DID; the session signs a delegation to it for that one space, to edit
+//! it wherever the connection may write, else to read it. The delegation is useless without
 //! the view's private key, so it is no secret: it may sit in tool results,
 //! conversation storage and logs. The view's peer then acts as its own
 //! DID, against the provider's `/ucan/` and `live.rs`, with no Host Worker
@@ -125,7 +125,6 @@ pub fn tools() -> Vec<Value> {
                         "pattern": "^did:key:[A-Za-z0-9]+$",
                         "description": "The view's key.",
                     },
-                    "edit": { "type": "boolean", "default": false },
                 },
                 "required": ["space", "audience"],
                 "additionalProperties": false,
@@ -351,19 +350,9 @@ pub async fn call<W: Writers>(
             .await,
         );
     }
-    // A shown view edits wherever the connection may write. The view
-    // asks for access with what it was shown with, which can only be
-    // narrower.
-    let edit = if name == OPEN {
-        access.agent || access.write
-    } else {
-        arguments["edit"].as_bool().unwrap_or(false)
-    };
-    if edit && !access.agent && !access.write {
-        return Some(error(
-            "This connection may only read that space, so its view cannot edit.",
-        ));
-    }
+    // A view edits wherever the connection may write, and only reads a
+    // space granted read.
+    let edit = access.agent || access.write;
     let remote = mount_address(
         access.address.as_deref(),
         &format!("{}/ucan/", origin.trim_end_matches('/')),

@@ -177,7 +177,7 @@
       async function grant(did) {
         const result = await rpc('tools/call', {
           name: 'tonk_view_access',
-          arguments: { space: route.subject, audience: did, edit: !!route.edit },
+          arguments: { space: route.subject, audience: did },
         });
         const granted = result?.structuredContent;
         if (result?.isError || !granted?.delegations?.length)
