@@ -84,13 +84,18 @@ impl HostedPeer {
             .await
             .map_err(|error| internal(&error))?;
         let did = signer.did();
-        Subject::from(did!("local:storage"))
+        let created = Subject::from(did!("local:storage"))
             .attenuate(storage_fx::Storage)
             .attenuate(Location::new(directory.clone(), "hosted"))
             .create(Credential::Signer(SignerCredential::from(signer)))
             .perform(&credentials)
-            .await
-            .map_err(|error| internal(&error))?;
+            .await;
+        // A store opened before keeps its key: reopening it reads what it
+        // already pulled, and the identity check below refuses another key.
+        match created {
+            Ok(_) | Err(storage_fx::StorageError::AlreadyExists(_)) => {}
+            Err(error) => return Err(internal(&error)),
+        }
         let registry =
             crate::device::Registry::holding("hosted".to_owned(), directory.clone(), caches);
         let storage = registry.storage().await?;

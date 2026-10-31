@@ -127,15 +127,22 @@ export async function showView({ client, result, resource, frames, headed = fals
   const tail = () => log.slice(-40).join('\n');
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   const sandbox = await sandboxFrame(page);
-  await sandbox.evaluate((view) => window.show(view), {
-    html: content.text,
-    csp,
-    result: { content: result.content, structuredContent: result.structuredContent },
-  });
+  const show = () =>
+    sandbox.evaluate((view) => window.show(view), {
+      html: content.text,
+      csp,
+      result: { content: result.content, structuredContent: result.structuredContent },
+    });
+  await show();
   return {
     page,
     calls,
     violations,
+    /** Show the view again in the same browser, as a host does when the
+     * chat is reopened: a new view document over the same storage. */
+    again: show,
+    /** The lines the view logged that contain `text`. */
+    logged: (text) => log.filter((line) => line.includes(text)),
     /** The height the view last reported to the host, if it did. */
     height: () =>
       page
