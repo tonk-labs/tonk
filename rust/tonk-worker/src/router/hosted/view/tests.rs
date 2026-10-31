@@ -247,7 +247,9 @@ async fn a_view_edits_wherever_the_connection_may_write() {
         assert_eq!(shown["structuredContent"]["edit"], edits, "{verbs:?}");
     }
     assert!(
-        tools()[0]["inputSchema"]["properties"].get("edit").is_none(),
+        tools()[0]["inputSchema"]["properties"]
+            .get("edit")
+            .is_none(),
         "the agent no longer chooses"
     );
 }
