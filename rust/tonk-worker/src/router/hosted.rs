@@ -152,7 +152,7 @@ impl HostedPeer {
         let state = self.state.read().await;
         state
             .reactor
-            .refresh_branch(&space.to_string(), "main", &state.operator)
+            .refresh_branch(space.as_ref(), "main", &state.operator)
             .await
             .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
         state.reactor.run_scheduled_polls(&state.operator).await;
