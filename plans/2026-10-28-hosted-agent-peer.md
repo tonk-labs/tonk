@@ -279,7 +279,7 @@ impossible:
 | Idle isolate (bundle, runtime) | ~2 MiB measured | none |
 | Tree node cache | 24 MiB | `HeldCaches::with_budget` |
 | Spilled values | 8 MiB per open repository; a space writer opens two (the space and its local profile), so 16 MiB | fixed |
-| Entry caches (causal verdicts, contexts, records, rules, plans) | unmeasured, estimated under 8 MiB | fixed at 2048 entries each |
+| Entry caches (causal verdicts, contexts, records, rules, plans) | on the pinned dialog v0.4.0-rc.3, contexts take about 52 bytes per origin per cached head, 100 MiB when full on 1k origins (see below); records about 1 MiB; the rest about 0 | fixed at 2048 entries each |
 | Query working set | what is left, about 70 MiB | read caps |
 | Margin | ~10 MiB | |
 
@@ -303,12 +303,71 @@ Remaining risk:
   error, and a write that had not pushed is lost but was never acknowledged, so
   the client sees a failure, not silent loss. A retried write follows the
   stage 3b retry rule.
-- Contexts are per-origin watermarks, and every MCP reconnect mints an origin, so
-  a cached context grows with the space's writer history while the cache count
-  stays at 2048. Stage 2 measures the entry caches on a space with many origins;
-  if they grow past a few MiB, #706 becomes a blocker rather than a nicety.
+- **Contexts on many origins are the largest memory risk in stage 2.** Every
+  MCP reconnect mints an origin, and on the dialog tonk pins (v0.4.0-rc.3)
+  every cached context is a full copy of the per-origin map, about 52 bytes per
+  origin, cached once per commit and per pull. On a 1k-origin space a writer
+  holds 8 MiB of contexts after about 160 commits and reaches the 96 MiB
+  recycle after about 1000. dialog main shares contexts and caches none along
+  a writer's own chain: there the 8 MiB budget holds up to about 2k origins
+  and grows about 1.7 MiB per 1000 beyond. One reconnect is one origin, so 2k
+  origins is about 2k reconnects per space over its life, which a client that
+  reconnects often reaches in weeks. The fix is to move tonk to a dialog with
+  shared contexts (no tag has them yet, only main). #706 alone does not fix
+  rc.3: at 1k origins even 256 entries would be 13 MiB. Reusing one origin per
+  agent across reconnects would remove the growth at its source.
 - The numbers above come from the spike's 20k-record space. A larger space moves
   the threshold for routing reads away, not the cache budgets.
+
+#### Entry caches on a space with many origins
+
+Measured natively with a counting allocator: the bytes clearing each cache
+frees, after a writer works a space whose history has N origins. Wasm has
+4-byte pointers, so these are an upper bound. The harness is an ignored test,
+`entry_cache_footprint` in `dialog-repository`; the patch and base commits are
+in the project files under `hosted-agent-peer/entry-cache-measure/`.
+
+"Own chain": the writer commits 4200 times on its own head. "Churn": in each
+of 2100 rounds, a new origin commits on the writer's head, the writer commits
+concurrently and merges it.
+
+| dialog | Scenario | Origins | Contexts (entries, MiB) | Records (MiB) |
+| --- | --- | --- | --- | --- |
+| v0.4.0-rc.3 (pinned) | own chain | 101 | 2048, 11.9 | 1.15 |
+| v0.4.0-rc.3 | own chain | 1001 | 2048, 101.6 | 1.15 |
+| v0.4.0-rc.3 | churn | 2201 | 2048, 214.8 | 0.7 |
+| v0.4.0-rc.3 | churn | 3101 | 2048, 319.4 | 0.7 |
+| main `becde74` | own chain | 1001 | 0, 0 | 1.15 |
+| main | churn | 2111 | 2085, 8.5 | 0.7 |
+| main | churn | 3101 | 2085, 10.1 | 0.7 |
+| main | churn | 7101 | 2085, 16.8 | 0.7 |
+
+What the numbers say:
+
+- **On rc.3 a context costs about 52 bytes per origin**, and the cache keeps
+  one per head the writer commits or pulls, up to 2048. Memory grows with
+  heads times origins, so a full cache cannot fit in a Durable Object once a
+  space has more than a few hundred origins.
+- **On main, contexts fill only from other origins' heads.** A commit on the
+  writer's own head reads its context from the tree's region and caches
+  nothing. A full cache grows about 1.7 MiB per 1000 origins, because settled
+  watermarks are shared between contexts.
+- **Records stay under 1.2 MiB** whatever the number of origins.
+- **Nothing in dialog or tonk fills the causal-verdict cache.**
+  `CausalityCache` is only reached through `Branch::causality()`, which nothing
+  calls. Rewrites fill only on a number-band rekey.
+- **Rules and plans are keyed by content**, so origins do not grow them. They
+  were not measured here.
+- **The node cache fills to whatever budget it is given.** dialog's default
+  is 128 MiB, and the harness filled it on every run. The space writer already
+  budgets it to 24 MiB (`NODE_CACHE_BUDGET` in `router/hosted/writer.rs`), so
+  only a path that opens caches without that budget would exceed the Durable
+  Object.
+
+For the budget: on rc.3 the 8 MiB entry-cache row holds only while origins
+times cached heads stays under about 160k, for example 160 heads on a
+1k-origin space. Until tonk moves to a dialog with shared contexts, the
+recycle at 96 MiB is what bounds it.
 
 ## Views in MCP Apps (later)
 
@@ -522,8 +581,9 @@ Stage 2a is in review as #1207 (on #1205): the space writer core in
 session all land, where the spike kept 1 of 5. Still to do in stage 2: the token
 front (needs #1202 to expose the session seed, or a `writer_key(mcp_session)`
 accessor), SSE, assets with `Range`, read caps and routing, recycling, skipping
-the profile bootstrap (still about 0.8 s on open), agent-level reads, and
-measuring entry caches on a space with many origins.
+the profile bootstrap (still about 0.8 s on open), and agent-level reads. Entry
+caches on a space with many origins are measured (see
+[Memory](#entry-caches-on-a-space-with-many-origins)).
 
 ### Stage 3: authorization server
 
