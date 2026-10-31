@@ -2142,6 +2142,38 @@ fn opens_in_place(url: &str) -> bool {
     matches!(Ticket::parse_url(url), Ok(Some(_))) || is_bare_space_address(url)
 }
 
+/// How the page a join ran on is sent to the space it joined.
+#[derive(Debug, PartialEq, Eq)]
+enum Redirect {
+    /// Load the space afresh, in place of the entry.
+    Replace,
+    /// Move to the space.
+    Navigate,
+}
+
+/// How the page a join from `url` ran on goes to the space, where it was
+/// `renewed` (already held) or not.
+///
+/// A space's own address (bare, or a ticket link) is already the page the
+/// join ran on. When the join installed the space, its view mounted while
+/// the space was absent, and a route change to where the page already is
+/// re-mounts nothing: the view stayed on its loading state until a manual
+/// reload. So it loads the space afresh, in place of the entry, which also
+/// keeps a ticket link's seed out of the history. A bare address of a space
+/// already held is where the page is and needs nothing: sending it there
+/// would pull back a page the person has since left. A ticket link to a
+/// space already held moves to the bare address.
+fn redirect_after_join(url: &str, renewed: bool) -> Option<Redirect> {
+    if !opens_in_place(url) {
+        return Some(Redirect::Navigate);
+    }
+    match (renewed, is_bare_space_address(url)) {
+        (false, _) => Some(Redirect::Replace),
+        (true, true) => None,
+        (true, false) => Some(Redirect::Navigate),
+    }
+}
+
 /// Drop this join's own overlay facts, and only those (scoped clear).
 ///
 /// The branch overlay is SHARED: the tab's `tonk:site` facts (path,
@@ -2258,19 +2290,14 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
                     },
                 );
             }
-            // A space's own address (bare, or a ticket link) is already
-            // the page the join ran on. When the join installed the space,
-            // its view mounted while the space was absent, and a route
-            // change to where the page already is re-mounts nothing: the
-            // view stayed on its loading state until a manual reload. Load
-            // the space afresh instead, in place of the entry, which also
-            // keeps a ticket link's seed out of the history. A space that
-            // was already here (a page that opened its own space a moment
-            // before the directory listed it) needs no reload.
-            if opens_in_place(&url) && !outcome.renewed {
-                crate::router::navigate::notify_replace(env.client(), &href);
-            } else {
-                crate::router::navigate::notify_navigate(env.client(), &href);
+            match redirect_after_join(&url, outcome.renewed) {
+                Some(Redirect::Replace) => {
+                    crate::router::navigate::notify_replace(env.client(), &href);
+                }
+                Some(Redirect::Navigate) => {
+                    crate::router::navigate::notify_navigate(env.client(), &href);
+                }
+                None => {}
             }
             log!(
                 "join: succeeded (subject {}, key {})",
@@ -2318,6 +2345,29 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
 /// sites don't need their own `cfg`s.
 pub(crate) fn notify_sync(client: Option<&crate::router::ClientId>) {
     let _ = client;
+}
+
+/// Where a join sends the page it ran on.
+#[cfg(test)]
+mod redirect_tests {
+    use super::{Redirect, redirect_after_join};
+
+    const SPACE: &str = "did:key:z6Mki8Mf2Trp2qmXqNoSihfVi9sEg8Z4aSCSnyUfadj4jB1E";
+
+    #[test]
+    fn it_leaves_a_page_on_a_space_it_already_holds_where_it_is() {
+        let bare = format!("https://tonk.space/space/{SPACE}");
+        assert_eq!(
+            redirect_after_join(&bare, true),
+            None,
+            "the page is already there, or has since moved on"
+        );
+        assert_eq!(redirect_after_join(&bare, false), Some(Redirect::Replace));
+        assert_eq!(
+            redirect_after_join("https://tonk.space/join?access=chain", true),
+            Some(Redirect::Navigate)
+        );
+    }
 }
 
 /// The inviteless-`/join` guard, pinned on every target: it decides
