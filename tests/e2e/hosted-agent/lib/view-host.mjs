@@ -37,6 +37,10 @@ const SANDBOX = `<!doctype html><meta charset="utf-8"><title>sandbox</title>
         hostCapabilities: { sandbox: { csp: shown.csp } },
         hostContext: { theme: 'light', displayMode: 'inline' },
       });
+    } else if (m.method === 'ui/notifications/size-changed') {
+      // As the hosts do: the view's frame takes the height it reports.
+      window.sized = m.params?.height;
+      app.style.height = window.sized + 'px';
     } else if (m.method === 'ui/notifications/initialized') {
       send({ method: 'ui/notifications/tool-result', params: shown.result });
     } else if (m.method === 'tools/call') {
@@ -132,6 +136,12 @@ export async function showView({ client, result, resource, frames, headed = fals
     page,
     calls,
     violations,
+    /** The height the view last reported to the host, if it did. */
+    height: () =>
+      page
+        .frames()
+        .find((frame) => new URL(frame.url()).pathname === '/sandbox')
+        ?.evaluate(() => window.sized),
     /** The frames below the view's own, where the space renders. */
     frames: () => page.frames().filter((frame) => frame !== page.mainFrame()),
     /** Resolve once some frame of the view shows every one of `texts`. */

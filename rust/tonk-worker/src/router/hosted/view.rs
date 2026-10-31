@@ -4,8 +4,8 @@
 //! calls `tonk_open_space` to show a route of a space. The view (the
 //! relay page) makes its own non-extractable key and calls
 //! `tonk_view_access(space, audience)`, an app-only tool, with that key's
-//! DID; the session signs a delegation to it for that one space, read-only
-//! unless the view was opened to edit. The delegation is useless without
+//! DID; the session signs a delegation to it for that one space, to edit
+//! it wherever the connection may write, else to read it. The delegation is useless without
 //! the view's private key, so it is no secret: it may sit in tool results,
 //! conversation storage and logs. The view's peer then acts as its own
 //! DID, against the provider's `/ucan/` and `live.rs`, with no Host Worker
@@ -82,9 +82,9 @@ pub fn tools() -> Vec<Value> {
             "description": "Show a route of a space inline in the chat, live, as the space's own \
                 page renders it. Use a path within the space, such as / or /notebook/<entity>; \
                 entity route parameters must be actual entity URIs returned by tonk_query, never \
-                titles or names. Set edit to let the user change the space from the view (only \
-                for a space this connection may write); otherwise the view is read-only. \
-                Showing a route does not verify that it rendered.",
+                titles or names. The person can change the space from the view wherever this \
+                connection may write it; a space it may only read is shown read-only. Showing \
+                a route does not verify that it rendered.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -102,11 +102,6 @@ pub fn tools() -> Vec<Value> {
                         "description": "One view of the space to show on its own, instead of \
                             the page at path: a route from tonk_outline (entity@model, \
                             entity@model!view, or a model for every instance).",
-                    },
-                    "edit": {
-                        "type": "boolean",
-                        "default": false,
-                        "description": "Let the user edit the space from the view.",
                     },
                 },
                 "required": ["space"],
@@ -130,7 +125,6 @@ pub fn tools() -> Vec<Value> {
                         "pattern": "^did:key:[A-Za-z0-9]+$",
                         "description": "The view's key.",
                     },
-                    "edit": { "type": "boolean", "default": false },
                 },
                 "required": ["space", "audience"],
                 "additionalProperties": false,
@@ -188,17 +182,7 @@ pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
         return None;
     }
     let origin = origin.trim_end_matches('/');
-    // The provider's `live.rs` socket: a policy listing only the https
-    // origin refuses a `wss:` connection to the same host.
-    let socket = origin
-        .strip_prefix("https://")
-        .map(|host| format!("wss://{host}"))
-        .or_else(|| {
-            origin
-                .strip_prefix("http://")
-                .map(|host| format!("ws://{host}"))
-        });
-    let connect: Vec<&str> = std::iter::once(origin).chain(socket.as_deref()).collect();
+    let connect = connect_domains(origin);
     let html = RELAY
         .replace("__TONK_MCP_ORIGIN__", &json!(origin).to_string())
         .replace("__TONK_VIEW_FRAME__", "false");
@@ -226,6 +210,56 @@ pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
             },
         }],
     }))
+}
+
+/// Tonk's own deployments, where most spaces live. A view may sync with
+/// these wherever it is served from. A space hosted anywhere else is
+/// refused until views can follow each grant's location.
+const TONK_ORIGINS: [&str; 3] = [
+    "https://tonk.foundation",
+    "https://tonk.network",
+    "https://tonk.spot",
+];
+
+/// The origins a view's peer may sync with: those its policy names in
+/// `connectDomains`. The provider's own, then Tonk's deployments.
+fn sync_origins(origin: &str) -> Vec<String> {
+    let origin = origin.trim_end_matches('/');
+    std::iter::once(origin)
+        .chain(TONK_ORIGINS.into_iter().filter(|known| *known != origin))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The view's `connectDomains`: each origin it syncs with, and its
+/// `live.rs` socket, which a policy listing only the https origin
+/// refuses.
+fn connect_domains(origin: &str) -> Vec<String> {
+    sync_origins(origin)
+        .into_iter()
+        .flat_map(|origin| {
+            let socket = origin
+                .strip_prefix("https://")
+                .map(|host| format!("wss://{host}"))
+                .or_else(|| {
+                    origin
+                        .strip_prefix("http://")
+                        .map(|host| format!("ws://{host}"))
+                });
+            std::iter::once(origin).chain(socket)
+        })
+        .collect()
+}
+
+/// Whether a view served from `origin` may sync with `remote`, a
+/// space's `/ucan/` address. The host enforces the view's policy, so a
+/// view of a space elsewhere would fail on its first request.
+fn view_reaches(remote: &str, origin: &str) -> bool {
+    let Ok(remote) = url::Url::parse(remote) else {
+        return false;
+    };
+    let remote = remote.origin().ascii_serialization();
+    sync_origins(origin).contains(&remote)
 }
 
 /// The agent space writer's route answering the grants in force for one
@@ -316,16 +350,23 @@ pub async fn call<W: Writers>(
             .await,
         );
     }
-    let edit = arguments["edit"].as_bool().unwrap_or(false);
-    if edit && !access.agent && !access.write {
-        return Some(error(
-            "This connection may only read that space, so its view cannot edit.",
-        ));
-    }
+    // A view edits wherever the connection may write, and only reads a
+    // space granted read.
+    let edit = access.agent || access.write;
     let remote = mount_address(
         access.address.as_deref(),
         &format!("{}/ucan/", origin.trim_end_matches('/')),
     );
+    if !view_reaches(&remote, origin) {
+        let at = url::Url::parse(&remote)
+            .map(|url| url.origin().ascii_serialization())
+            .unwrap_or(remote.clone());
+        return Some(error(&format!(
+            "This space is hosted at {at}, and a view from {} cannot reach it yet, so it \
+             cannot be shown inline. Ask the person to open it in Tonk at {at}.",
+            origin.trim_end_matches('/')
+        )));
+    }
     if name == OPEN {
         let path = arguments["path"].as_str().unwrap_or("/");
         if !path.starts_with('/')

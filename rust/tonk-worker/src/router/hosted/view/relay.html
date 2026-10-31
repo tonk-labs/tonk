@@ -177,7 +177,7 @@
       async function grant(did) {
         const result = await rpc('tools/call', {
           name: 'tonk_view_access',
-          arguments: { space: route.subject, audience: did, edit: !!route.edit },
+          arguments: { space: route.subject, audience: did },
         });
         const granted = result?.structuredContent;
         if (result?.isError || !granted?.delegations?.length)
@@ -390,6 +390,19 @@
         }
         if (message.type === 'reload') return navigate(route.path);
         if (['analytics', 'unsubscribe'].includes(message.type)) return;
+        // A view of a space this connection may only read refuses a write
+        // before the peer commits it, so nothing shows as saved that its
+        // sync would then be refused.
+        const asked =
+          message.type === 'fetch' && new URL(message.path, 'https://tonk.foundation');
+        const writes =
+          message.type === 'transact' ||
+          (message.type === 'evaluate' && message.transact !== false) ||
+          (asked &&
+            (message.method ?? 'GET').toUpperCase() !== 'GET' &&
+            /\/(transact|evaluate)(\/|$)/.test(asked.pathname) &&
+            asked.searchParams.get('transact') !== 'false');
+        if (writes && !route.edit) throw Error('This space is read-only for this connection.');
         if (message.type === 'fetch') {
           const target = new URL(message.path, 'https://tonk.foundation');
           if (target.origin !== 'https://tonk.foundation')
@@ -424,20 +437,23 @@
             headers: message.headers,
             body: message.body,
           });
-          const streaming = response.headers.get('content-type')?.includes('text/event-stream');
-          const body = streaming ? response.body : new Uint8Array(await response.arrayBuffer());
-          current.postMessage(
-            {
-              v: 1,
-              type: 'fetch-result',
-              id: message.id,
-              status: response.status,
-              statusText: response.statusText,
-              headers: [...response.headers],
-              body,
-            },
-            streaming ? [body] : [],
-          );
+          const result = {
+            v: 1,
+            type: 'fetch-result',
+            id: message.id,
+            status: response.status,
+            statusText: response.statusText,
+            headers: [...response.headers],
+          };
+          if (response.headers.get('content-type')?.includes('text/event-stream') && response.body) {
+            // WebKit cannot transfer a ReadableStream, so a stream goes over
+            // its own port, a chunk per credit the guest grants.
+            const channel = new MessageChannel();
+            current.postMessage({ ...result, streamPort: channel.port2 }, [channel.port2]);
+            streamOver(response.body, channel.port1);
+            return;
+          }
+          current.postMessage({ ...result, body: new Uint8Array(await response.arrayBuffer()) });
           return;
         }
         if (message.type === 'evaluate') {
@@ -470,6 +486,60 @@
           return;
         }
         throw Error('This host operation is unavailable: ' + String(message.type).slice(0, 40));
+      }
+      // The space's page reports its height; the frame takes it, and the
+      // host is told the view's (a framed page tells the relay instead).
+      function resize(height) {
+        if (!Number.isFinite(height)) return;
+        frame.style.minHeight = '0';
+        frame.style.flex = 'none';
+        frame.style.height = Math.min(Math.max(Math.ceil(height), 40), 4000) + 'px';
+        const view = frame.offsetHeight + (errorMessage.hidden ? 0 : errorMessage.offsetHeight);
+        if (framed) parent.postMessage({ tonkFrame: 'size', height: view }, '*');
+        else
+          parent.postMessage(
+            { jsonrpc: '2.0', method: 'ui/notifications/size-changed', params: { height: view } },
+            '*',
+          );
+      }
+      function streamOver(stream, port) {
+        const reader = stream.getReader();
+        let credit = 0,
+          pumping = false,
+          done = false;
+        const finish = (message) => {
+          done = true;
+          port.postMessage(message);
+          port.close();
+        };
+        async function pump() {
+          if (pumping) return;
+          pumping = true;
+          try {
+            while (credit > 0 && !done) {
+              const { value, done: end } = await reader.read();
+              if (end) finish({ type: 'close' });
+              else {
+                credit--;
+                const chunk = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+                port.postMessage({ type: 'chunk', chunk }, [chunk]);
+              }
+            }
+          } catch (error) {
+            if (!done) finish({ type: 'error', error: String(error?.message ?? error) });
+          }
+          pumping = false;
+        }
+        port.onmessage = (event) => {
+          if (event.data?.type === 'credit') {
+            credit += Number(event.data.n) || 1;
+            pump();
+          } else if (event.data?.type === 'cancel') {
+            done = true;
+            reader.cancel().catch(() => {});
+            port.close();
+          }
+        };
       }
       function send(value) {
         frame.contentWindow.postMessage(value, '*');
@@ -505,7 +575,8 @@
         }
         // The relay: from the provider's framed page.
         if (!framed && viewFrame && event.source === frame.contentWindow && event.origin === origin) {
-          if (m?.tonkFrame === 'loading') viewFrame.loading?.();
+          if (m?.tonkFrame === 'size') resize(m.height);
+          else if (m?.tonkFrame === 'loading') viewFrame.loading?.();
           else if (m?.tonkFrame === 'hello' && typeof m.did === 'string') {
             viewFrame.did = m.did;
             viewFrame.hello();
@@ -514,6 +585,7 @@
           return;
         }
         if (event.source !== frame.contentWindow || !pack || !route) return;
+        if (m?.type === 'tonk-view-size') return resize(m.height);
         if (m?.type === 'hello' && m.v === 1 && event.ports[0]) {
           port?.close();
           port = event.ports[0];
