@@ -2519,6 +2519,65 @@ pub(crate) mod tests {
         discard(state, &ready.key);
     }
 
+    /// The status probe asks again on every sweep while activation is
+    /// pending: an answer already on record writes nothing, so the branch
+    /// and every view reading the account stay as they are.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_writes_nothing_for_an_account_status_already_recorded() {
+        use tonk_account::customer::CustomerStatus;
+
+        let (state, service, _root, _remote) = ready_account_state(None).await;
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+        let record = |status, provider| {
+            super::super::customer::record_customer_status(
+                &state,
+                status,
+                "person@example.com",
+                provider,
+            )
+        };
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(&state.active_branch)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+
+        // The facts carry the time they were learned, in seconds: a repeat
+        // a second later is what a later sweep is.
+        let later = || tokio::time::sleep(std::time::Duration::from_millis(1100));
+        record(CustomerStatus::Registered, None).await.unwrap();
+        let registered = branch.handle().revision();
+        later().await;
+        record(CustomerStatus::Registered, None).await.unwrap();
+        assert_eq!(
+            branch.handle().revision(),
+            registered,
+            "a registration on record is not written again"
+        );
+
+        let provider = Some("http://localhost:8080/ucan/");
+        record(CustomerStatus::Active, provider).await.unwrap();
+        let activated = branch.handle().revision();
+        assert_ne!(activated, registered, "activation is recorded");
+        later().await;
+        record(CustomerStatus::Active, provider).await.unwrap();
+        assert_eq!(
+            branch.handle().revision(),
+            activated,
+            "an activation on record is not written again"
+        );
+
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
     /// Accounts enrolled before registration became a replicated fact still
     /// carry the verified address in their device-local customer record. The
     /// ordinary boot sweep promotes that record once, so settings and a newly

@@ -1224,33 +1224,47 @@ pub(crate) async fn record_customer_status(
     // Three independent facts, each written by the act that proves it and
     // never rewritten. Enrollment records the registration; activation adds
     // its own row rather than overwriting one, so two devices learning the
-    // service's answer at once cannot race for a single status slot.
+    // service's answer at once cannot race for a single status slot. The
+    // probe asks again on every sweep while activation is pending, so only
+    // what is not already on record is written: rewriting the registration
+    // with a new time moved the branch, and every view reading the account,
+    // on each sweep.
+    let recorded = account_registration(state).await;
+    let provider = provider.filter(|provider| !provider.is_empty());
     let mut transaction = state
         .reactor
         .profile_repository()
         .branch(&state.active_branch)
-        .transaction()
-        .assert(AccountRegistered::new(
+        .transaction();
+    let mut learned = false;
+    if recorded.email.as_deref() != Some(email) || recorded.provider != provider {
+        transaction = transaction.assert(AccountRegistered::new(
             account.this(),
             email.to_owned(),
             provider.unwrap_or_default(),
             at,
         ));
+        learned = true;
+    }
     // Activation is a timestamp and nothing else: where the account syncs
     // is on the registration, since that is where it was known.
-    if status == CustomerStatus::Active {
+    if status == CustomerStatus::Active && !recorded.activated {
         transaction = transaction.assert(AccountActive::new(account.this(), at));
+        learned = true;
     }
-    if status == CustomerStatus::Suspended {
+    if status == CustomerStatus::Suspended && !recorded.suspended {
         transaction = transaction.assert(AccountSuspended::new(account.this(), String::new(), at));
+        learned = true;
     }
-    transaction
-        .commit()
-        .perform(&state.operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("commit account registration facts: {error}"))
-        })?;
+    if learned {
+        transaction
+            .commit()
+            .perform(&state.operator)
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("commit account registration facts: {error}"))
+            })?;
+    }
 
     // Activation (or enrollment, or a suspension) is a new answer about
     // the address, and the registration form reads that answer from the
