@@ -26,7 +26,10 @@ use tonk_worker::{ClientId, HostedPeer};
 /// How often a watch of the space that ended is begun again.
 const REWATCH: web_time::Duration = web_time::Duration::from_secs(10);
 
-/// A view's key: generated in this worker, never exported.
+/// A view's key: generated in this worker, non-extractable. It leaves the
+/// worker only as opaque `CryptoKey` handles, which the relay keeps in
+/// IndexedDB so a view opened again signs as the same key and reads the
+/// store it pulled before.
 #[wasm_bindgen]
 pub struct ViewKey {
     signer: Ed25519Signer,
@@ -37,6 +40,27 @@ impl ViewKey {
     /// Make a new non-extractable key.
     pub async fn generate() -> Result<ViewKey, JsError> {
         let signer = Ed25519Signer::generate()
+            .await
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        Ok(Self { signer })
+    }
+
+    /// The key's `CryptoKey` handles, to keep in IndexedDB. They carry no
+    /// key material.
+    pub async fn export(&self) -> Result<JsValue, JsError> {
+        let export = self
+            .signer
+            .export()
+            .await
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        Ok(export.into())
+    }
+
+    /// The key [`export`](Self::export) handed out.
+    pub async fn restore(handles: JsValue) -> Result<ViewKey, JsError> {
+        let export = dialog_credentials::key::KeyExport::try_from(handles)
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        let signer = Ed25519Signer::import(export)
             .await
             .map_err(|error| JsError::new(&error.to_string()))?;
         Ok(Self { signer })

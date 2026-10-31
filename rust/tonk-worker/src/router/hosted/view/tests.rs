@@ -608,7 +608,21 @@ concept!: &view-note
             space: &Did,
         ) -> (HostedPeer, String) {
             let seed = Zeroizing::new(rand::random::<[u8; 32]>());
-            let key = Ed25519Signer::import(&*seed).await.unwrap();
+            self.view_in(verified, writers, space, &seed, scratch())
+                .await
+        }
+
+        /// [`view_of`](Self::view_of), as the key `seed` over the store at
+        /// `directory`, which an earlier view of it may have left.
+        async fn view_in(
+            &self,
+            verified: &Verified,
+            writers: &impl Writers,
+            space: &Did,
+            seed: &[u8; 32],
+            directory: String,
+        ) -> (HostedPeer, String) {
+            let key = Ed25519Signer::import(seed).await.unwrap();
             let result = call(
                 ACCESS,
                 &json!({ "space": space.to_string(), "audience": key.did().to_string() }),
@@ -623,8 +637,8 @@ concept!: &view-note
             .unwrap();
             assert_eq!(result["isError"], false, "{result}");
             let peer = HostedPeer::open_in(
-                Directory::At(scratch()),
-                &seed,
+                Directory::At(directory),
+                seed,
                 &chains(&result),
                 HeldCaches::new(),
             )
@@ -854,6 +868,44 @@ concept!: &view-note
         )
         .await;
         assert!(status.is_success(), "pull: {status}: {body}");
+        let (status, body) = json(
+            view.call(request(
+                Method::POST,
+                &format!("{base}/evaluate?transact=false"),
+                "view.note:\n  this: ?n\n  title: ?t\n",
+            ))
+            .await,
+        )
+        .await;
+        assert!(status.is_success(), "query: {status}: {body}");
+        assert!(body.to_string().contains("from the agent"), "{body}");
+        view.close().await;
+        fixture.service.stop().await.unwrap();
+    }
+
+    /// A view reopened as the same key over the store an earlier view of
+    /// the space left reads it before pulling anything.
+    #[dialog_common::test]
+    async fn a_reopened_view_reads_its_store_before_it_pulls() {
+        let fixture = Fixture::start().await;
+        let (verified, writer) = &fixture.verified;
+        let space = fixture.agent.did();
+        let seed = Zeroizing::new(rand::random::<[u8; 32]>());
+        let directory = scratch();
+        let (view, base) = fixture
+            .view_in(verified, writer, &space, &seed, directory.clone())
+            .await;
+        let (status, body) = json(
+            view.call(request(Method::POST, &format!("{base}/sync/pull"), ""))
+                .await,
+        )
+        .await;
+        assert!(status.is_success(), "pull: {status}: {body}");
+        view.close().await;
+
+        let (view, base) = fixture
+            .view_in(verified, writer, &space, &seed, directory)
+            .await;
         let (status, body) = json(
             view.call(request(
                 Method::POST,

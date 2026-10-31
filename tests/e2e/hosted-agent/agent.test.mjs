@@ -317,6 +317,24 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
             );
             await view.shows([theirs], LIVE);
             console.log(`route ${route}: the person's write showed in ${Date.now() - made} ms`);
+            if (!frames) {
+              // Shown again, the view signs as the key it kept and reads
+              // the store it pulled into before it pulls again.
+              const reopened = Date.now();
+              await view.again();
+              while (view.logged('tonk view:').length < 2 && Date.now() - reopened < 60_000)
+                await new Promise((resolve) => setTimeout(resolve, 100));
+              assert.deepEqual(
+                view
+                  .logged('tonk view:')
+                  .slice(1)
+                  .map((line) => line.replace(/^\w+: /, '')),
+                ['tonk view: kept store'],
+                'the view shown again did not open the store it kept',
+              );
+              await view.shows([live, theirs]);
+              console.log(`route ${route}: shown again in ${Date.now() - reopened} ms`);
+            }
           } finally {
             if (view.violations.length)
               console.log(`route ${route} CSP: ${view.violations.join('\n')}`);
