@@ -255,20 +255,17 @@
           remote: route.remote,
           directory: started.directory,
         });
-        const synced = (async () => {
-          const pulled = await peerFetch(base() + '/sync/pull', {
-            method: 'POST',
-            headers: { 'content-type': 'text/plain' },
-            body: '',
-          });
-          if (!pulled.ok) throw Error('Could not read the space (' + pulled.status + ').');
-          await ask('follow', {});
-        })();
-        // A kept store shows what it pulled before while it catches up;
-        // live updates bring the rest. A fresh one has nothing to show yet.
+        // A kept store pulls only what changed since it last pulled. It
+        // still pulls before the page is shown: a route the store lacks
+        // would leave the page unbound until the view is shown again.
         console.info('tonk view: ' + (started.reused ? 'kept store' : 'fresh store'));
-        if (started.reused) synced.catch((e) => showError(e.message));
-        else await synced;
+        const pulled = await peerFetch(base() + '/sync/pull', {
+          method: 'POST',
+          headers: { 'content-type': 'text/plain' },
+          body: '',
+        });
+        if (!pulled.ok) throw Error('Could not read the space (' + pulled.status + ').');
+        await ask('follow', {});
         await packed;
         // A delegation holds an hour; the view reopens its peer with a
         // fresh one before it runs out.

@@ -880,7 +880,6 @@ concept!: &view-note
         assert!(status.is_success(), "query: {status}: {body}");
         assert!(body.to_string().contains("from the agent"), "{body}");
         view.close().await;
-        fixture.service.stop().await.unwrap();
     }
 
     /// A view reopened as the same key over the store an earlier view of
@@ -906,6 +905,8 @@ concept!: &view-note
         let (view, base) = fixture
             .view_in(verified, writer, &space, &seed, directory)
             .await;
+        // With the service gone, what the view reads is what its store kept.
+        fixture.service.stop().await.unwrap();
         let (status, body) = json(
             view.call(request(
                 Method::POST,
@@ -918,7 +919,6 @@ concept!: &view-note
         assert!(status.is_success(), "query: {status}: {body}");
         assert!(body.to_string().contains("from the agent"), "{body}");
         view.close().await;
-        fixture.service.stop().await.unwrap();
     }
 
     #[dialog_common::test]
