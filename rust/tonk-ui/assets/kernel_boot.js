@@ -688,7 +688,7 @@ async function postPages({ client, except, message }) {
 
 // What answers `message`: `{ status, body }`.
 async function answerOf(message) {
-    if (typeof message.read === "string") return readPublic(message.read);
+    if (typeof message.read === "string") return readPublic(message.read, message.bytes === true);
     if (typeof message.ceremony === "string" && PROFILE) {
         const link = Uint8Array.from(atob(message.ceremony), char => char.charCodeAt(0));
         return { status: 200, body: await (await booting).ceremony(link) };
@@ -753,10 +753,11 @@ function toBase64(bytes) {
     return btoa(binary);
 }
 
-// The text at `url`, read as anyone would read it: no credentials, no
-// redirects, nothing kept.
-async function readPublic(url) {
+// The text at `url`, or its bytes in base64, read as anyone would read
+// it: no credentials, no redirects, nothing kept.
+async function readPublic(url, bytes) {
     const response = await fetch(url, { mode: "cors", credentials: "omit", redirect: "error", cache: "no-store" });
+    if (bytes) return { status: response.status, body64: toBase64(new Uint8Array(await response.arrayBuffer())) };
     return { status: response.status, body: await response.text() };
 }
 

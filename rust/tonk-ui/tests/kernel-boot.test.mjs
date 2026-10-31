@@ -101,6 +101,7 @@ function space({
     const path = new URL(typeof address === "string" ? address : address.url, origin).pathname;
     fetched.push(path);
     if (path === "/space.html") return new Response("<head></head>SHELL");
+    if (path === "/library/media.webp") return new Response(new Uint8Array([0, 159, 255]));
     if (path === "/_host/kernel.json" && ships) return Response.json(ships);
     const id = /^\/_host\/kernel\/(.+)\.wasm$/.exec(path)?.[1];
     if (id && shipped[id]) return new Response(shipped[id], { headers: { "content-type": "application/wasm" } });
@@ -383,6 +384,17 @@ test("a request the profile passes down is answered by the kernel", async () => 
   assert.equal(body.join(""), "not found");
   assert.equal(answer.at(-1).end, true);
   assert.deepEqual(site.handled.slice(-1), ["GET /api/roster"]);
+});
+
+test("the kernel reads public bytes through its host, in base64", async () => {
+  const site = space();
+  site.handPort();
+  await site.request("/api/anything");
+  await site.booted[0].sent(new TextEncoder().encode(JSON.stringify({ ask: 5, read: "/library/media.webp", bytes: true })));
+  for (let i = 0; i < 50 && !site.received.some((message) => message.answer === 5); i++) await new Promise((r) => setTimeout(r, 5));
+  const answer = site.received.find((message) => message.answer === 5);
+  assert.equal(answer.status, 200);
+  assert.equal(answer.body64, btoa(String.fromCharCode(0, 159, 255)), "the bytes are as served");
 });
 
 test("the kernel sends the page that asked somewhere, through its host", async () => {

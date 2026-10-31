@@ -451,8 +451,10 @@ async fn import_blob(
     bytes: Vec<u8>,
 ) -> Result<(), TonkWorkerError> {
     // Verify before writing anything, including the branch's blob index.
-    if &dialog_artifacts::Entity::from_blob(blake3::hash(&bytes).as_bytes()).map_err(internal)?
-        != expected
+    // The hash is what is compared: an older space names its media as a
+    // `blob:` and the store now names the same bytes an `asset:`.
+    let hash = expected.blob_hash();
+    if hash.as_ref().map(|hash| hash.as_slice()) != Some(blake3::hash(&bytes).as_bytes().as_slice())
     {
         return Err(internal("bundled blob hash mismatch"));
     }
@@ -462,7 +464,7 @@ async fn import_blob(
         .perform(&tonk.operator)
         .await
         .map_err(internal)?;
-    if &entity != expected {
+    if entity.blob_hash() != hash {
         return Err(internal("bundled blob hash mismatch"));
     }
     Ok(())
@@ -526,11 +528,44 @@ async fn ensure_media(
     Ok(true)
 }
 
+/// A kernel reads the media where the deployment serves its library, as
+/// anyone would: it carries no copy of its own.
+#[cfg(target_arch = "wasm32")]
+async fn fetch_media(url: &str) -> Result<Vec<u8>, TonkWorkerError> {
+    let read = tonk_kernel_world::application::read_bytes(url)
+        .await
+        .map_err(|error| internal(format!("{error:?}")))?;
+    if !(200..300).contains(&read.status) {
+        return Err(internal(format!("{url} answered {}", read.status)));
+    }
+    Ok(read.body)
+}
+
+/// A worker with no deployment to read from carries the media.
+#[cfg(not(target_arch = "wasm32"))]
 async fn fetch_media(url: &str) -> Result<Vec<u8>, TonkWorkerError> {
     match url {
         "/library/welcome-CmZq5URy2ucFKNyZCFUtHiNvEaUNK4Z8UstvzwbjREFG.webp" => Ok(include_bytes!("../../../tonk-core/assets/library/welcome-CmZq5URy2ucFKNyZCFUtHiNvEaUNK4Z8UstvzwbjREFG.webp").to_vec()),
         "/library/welcome-9hKHdfALCDKRL5z3Xkn2JUM72DWSzsSBwAvdbyaPF2sU.webp" => Ok(include_bytes!("../../../tonk-core/assets/library/welcome-9hKHdfALCDKRL5z3Xkn2JUM72DWSzsSBwAvdbyaPF2sU.webp").to_vec()),
         _ => Err(internal("unknown bundled media")),
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod media_tests {
+    use super::{bundled_media, fetch_media};
+
+    #[dialog_common::test]
+    async fn it_bundles_each_medium_as_the_blob_it_is_listed_as() {
+        for media in bundled_media().unwrap() {
+            let bytes = fetch_media(&media.url).await.unwrap();
+            assert_eq!(
+                media.entity.blob_hash().map(|hash| hash.to_vec()),
+                Some(blake3::hash(&bytes).as_bytes().to_vec()),
+                "{}",
+                media.url
+            );
+        }
     }
 }
 

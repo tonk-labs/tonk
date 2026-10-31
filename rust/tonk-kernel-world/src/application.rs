@@ -8,7 +8,9 @@
 //! - asked of the worker of a space, by the space's DID: `{ "ask": id, "to":
 //!   did, "method", "path", "body": text or null }`
 //! - asked of the embedder, to read a public text such as a seed: `{ "ask":
-//!   id, "read": url }`, where a path is on the deployment's app
+//!   id, "read": url }`, where a path is on the deployment's app; with
+//!   `"bytes": true` for public bytes, such as a library's media, answered
+//!   with `"body64"`
 //! - asked of the embedder, by the person's persona, to deliver a request to
 //!   the deployment's access service, such as an invocation it signed:
 //!   `{ "ask": id, "fetch": url, "method", "type": media type or null,
@@ -194,6 +196,19 @@ pub async fn ask_profile(request: &Value) -> Result<Value, Error> {
 /// credentials go with it, and a redirect fails it.
 pub async fn read(url: &str) -> Result<Answer, Error> {
     send(|id| json!({ "ask": id, "read": url })).await
+}
+
+/// Ask the embedder for the bytes at `url`, which anyone may read, as
+/// [`read`] asks for text.
+pub async fn read_bytes(url: &str) -> Result<Delivered, Error> {
+    let answer = send(|id| json!({ "ask": id, "read": url, "bytes": true })).await?;
+    let body = BASE64
+        .decode(answer.body)
+        .map_err(|error| Error::Invalid(format!("the answer's body is not base64: {error}")))?;
+    Ok(Delivered {
+        status: answer.status,
+        body,
+    })
 }
 
 /// Ask the embedder to deliver `method` on `url`, with `body` of the media
