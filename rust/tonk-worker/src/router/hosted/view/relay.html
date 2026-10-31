@@ -85,42 +85,53 @@
           });
         }
         // A space's key and store are kept, so a view opened again signs as
-        // the same key and pulls only what changed. One peer holds them at a
-        // time: one that just closed lets go in a moment, and one still open
-        // elsewhere makes this one start with a fresh key and store.
-        async function claimFor(space) {
-          const fresh = { directory: 'tonk-view-' + crypto.randomUUID() };
-          try {
-            await new Promise((resolve, reject) =>
-              navigator.locks
-                .request('tonk-view:' + space, { signal: AbortSignal.timeout(500) }, () => {
-                  resolve();
-                  return new Promise(() => {});
-                })
-                .catch(reject),
-            );
-            const entry = await kept('readonly', (store) => store.get(space));
-            return { space, entry, directory: 'tonk-view-' + space };
-          } catch {
-            return fresh;
-          }
+        // the same key and pulls only what changed. Where views have peers
+        // of their own they share the store: a commit on a head another
+        // peer moved is refused and retried on the new head, and each peer
+        // tells the others when it changed the store, so they read it
+        // again. Making the key is the one step taken under a lock, so two
+        // views opened at once do not make two.
+        function claimFor(space) {
+          return kept('readonly', (store) => store.get(space))
+            .then((entry) => ({ space, entry }))
+            .catch(() => ({}));
         }
         async function start(claimed, data) {
           module = await import(data.glue);
           await module.default({ module_or_path: data.wasm });
-          if (claimed.entry)
-            key = await module.ViewKey.restore(claimed.entry.key).catch(() => undefined);
-          const reused = Boolean(key);
-          // A kept store that its key cannot sign for is left alone.
-          if (claimed.entry && !key) claimed.directory = 'tonk-view-' + crypto.randomUUID();
-          key ??= await module.ViewKey.generate();
-          if (claimed.space && !reused) {
-            const handles = await key.export();
-            await kept('readwrite', (store) =>
-              store.put({ did: key.did, key: handles }, claimed.space),
-            ).catch(() => {});
-          }
-          return { did: key.did, reused, directory: claimed.directory };
+          const make = async () => {
+            const entry = claimed.space
+              ? await kept('readonly', (store) => store.get(claimed.space)).catch(() => undefined)
+              : undefined;
+            if (entry)
+              key = await module.ViewKey.restore(entry.key).catch(() => undefined);
+            if (key) return true;
+            key = await module.ViewKey.generate();
+            if (claimed.space) {
+              const handles = await key.export();
+              await kept('readwrite', (store) =>
+                store.put({ did: key.did, key: handles }, claimed.space),
+              ).catch(() => {});
+            }
+            return false;
+          };
+          const reused = claimed.space && navigator.locks
+            ? await navigator.locks.request('tonk-view-key:' + claimed.space, make)
+            : await make();
+          // A store is its key's: a key made anew starts one of its own.
+          return { did: key.did, reused, directory: 'tonk-view-' + key.did };
+        }
+        let changes;
+        function listen(space) {
+          if (changes || typeof BroadcastChannel !== 'function') return;
+          changes = new BroadcastChannel('tonk-view-changed:' + space);
+          let pending;
+          changes.onmessage = () => {
+            pending ??= Promise.resolve()
+              .then(() => peer?.refresh())
+              .catch(() => {})
+              .finally(() => (pending = undefined));
+          };
         }
         // Each view talks to the peer over a port of its own, as its own
         // client, and holds a lock named for the port while it lives: the
@@ -159,6 +170,7 @@
                   throw error;
                 });
                 if (!first) await peer.grant(data.delegations);
+                listen(data.space);
                 port.postMessage({ id });
               } else if (op === 'follow') {
                 if (!following) peer.follow();
@@ -166,6 +178,8 @@
                 port.postMessage({ id });
               } else if (op === 'fetch') {
                 const response = await peer.fetch(new Request('https://view.invalid' + data.path, data.init), client);
+                // What changes the store tells the other peers over it.
+                if ((data.init?.method ?? 'GET').toUpperCase() !== 'GET') changes?.postMessage(1);
                 port.postMessage({ id, status: response.status, statusText: response.statusText, headers: [...response.headers] });
                 if (!response.body) return port.postMessage({ id, done: true });
                 const reader = response.body.getReader();

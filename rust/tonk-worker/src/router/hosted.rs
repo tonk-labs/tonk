@@ -146,6 +146,19 @@ impl HostedPeer {
         save_proofs(&state, proofs).await
     }
 
+    /// Read `space`'s head again from the store and repaint the views over
+    /// it: another peer over the same store committed or pulled.
+    pub async fn refresh(&self, space: &Did) -> Result<(), TonkWorkerError> {
+        let state = self.state.read().await;
+        state
+            .reactor
+            .refresh_branch(&space.to_string(), "main", &state.operator)
+            .await
+            .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+        state.reactor.run_scheduled_polls(&state.operator).await;
+        Ok(())
+    }
+
     /// Mount `subject` as a replica of the space served at `remote`. Its
     /// contents arrive with the next pull.
     pub async fn mount(&self, subject: &Did, remote: &url::Url) -> Result<(), TonkWorkerError> {

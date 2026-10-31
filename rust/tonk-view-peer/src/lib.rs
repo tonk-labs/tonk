@@ -82,6 +82,8 @@ pub struct ViewPeer {
     client: ClientId,
     /// Set once the view is gone, which ends the peer's watches and loops.
     stopped: Rc<Cell<bool>>,
+    /// The space the peer shows.
+    space: Did,
 }
 
 #[wasm_bindgen]
@@ -117,7 +119,17 @@ impl ViewPeer {
             peer: Rc::new(peer),
             client: ClientId(directory),
             stopped: Rc::new(Cell::new(false)),
+            space,
         })
+    }
+
+    /// Read the space's head again from the store and repaint its views:
+    /// another view's peer over the same store committed or pulled.
+    pub async fn refresh(&self) -> Result<(), JsError> {
+        self.peer
+            .refresh(&self.space)
+            .await
+            .map_err(|error| JsError::new(&error.to_string()))
     }
 
     /// Hold `delegations` too: a renewed one, or another view's.
