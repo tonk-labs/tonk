@@ -471,6 +471,21 @@
         }
         throw Error('This host operation is unavailable: ' + String(message.type).slice(0, 40));
       }
+      // The space's page reports its height; the frame takes it, and the
+      // host is told the view's (a framed page tells the relay instead).
+      function resize(height) {
+        if (!Number.isFinite(height)) return;
+        frame.style.minHeight = '0';
+        frame.style.flex = 'none';
+        frame.style.height = Math.min(Math.max(Math.ceil(height), 40), 4000) + 'px';
+        const view = frame.offsetHeight + (errorMessage.hidden ? 0 : errorMessage.offsetHeight);
+        if (framed) parent.postMessage({ tonkFrame: 'size', height: view }, '*');
+        else
+          parent.postMessage(
+            { jsonrpc: '2.0', method: 'ui/notifications/size-changed', params: { height: view } },
+            '*',
+          );
+      }
       function send(value) {
         frame.contentWindow.postMessage(value, '*');
       }
@@ -505,7 +520,8 @@
         }
         // The relay: from the provider's framed page.
         if (!framed && viewFrame && event.source === frame.contentWindow && event.origin === origin) {
-          if (m?.tonkFrame === 'loading') viewFrame.loading?.();
+          if (m?.tonkFrame === 'size') resize(m.height);
+          else if (m?.tonkFrame === 'loading') viewFrame.loading?.();
           else if (m?.tonkFrame === 'hello' && typeof m.did === 'string') {
             viewFrame.did = m.did;
             viewFrame.hello();
@@ -514,6 +530,7 @@
           return;
         }
         if (event.source !== frame.contentWindow || !pack || !route) return;
+        if (m?.type === 'tonk-view-size') return resize(m.height);
         if (m?.type === 'hello' && m.v === 1 && event.ports[0]) {
           port?.close();
           port = event.ports[0];
