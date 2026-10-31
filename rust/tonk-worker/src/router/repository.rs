@@ -33,9 +33,9 @@ use tonk_common::log;
 use tonk_handler_macros::wasm_compat;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
-    Branch as MetaBranch, Invitation, InvitedVia, MemberKind, MemberName, MemberRole, Membership,
-    Remote, RemoteExecution, Replica, RepositoryName, SeedKind, SpaceDescription, SpaceStatus,
-    TrackingBranch,
+    Branch as MetaBranch, Invitation, InvitedBy, InvitedVia, MemberKind, MemberName, MemberRole,
+    Membership, Remote, RemoteExecution, Replica, RepositoryName, SeedKind, SpaceDescription,
+    SpaceStatus, TrackingBranch,
 };
 use url::Url;
 use zeroize::Zeroizing;
@@ -7781,115 +7781,140 @@ where
     // meta) so it syncs across replicas. If the content branch can't be
     // opened, leave the roster empty, consistent with the per-query
     // log-and-empty-vec fallbacks below.
-    let (memberships, member_names, invited_via, invitations, member_kinds) = match repository
-        .branch(CONTENT_BRANCH)
-        .open()
-        .perform(&tonk.operator)
-        .await
-    {
-        Ok(content) => {
-            // `Membership` is the spine — one row per member;
-            // `MemberName`, `InvitedVia`, and `Invitation` are joined in
-            // below to attach the display name and inviter provenance.
-            let memberships: Vec<Membership> = match content
-                .query()
-                .select(Query::<Membership> {
-                    this: Term::var("this"),
-                    subject: Term::from(repository.did().this()),
-                    member: Term::var("member"),
-                })
-                .perform(&tonk.operator)
-                .try_vec()
-                .await
-            {
-                Ok(rows) => rows,
-                Err(e) => {
-                    log!("Membership query on content failed for '{}': {:?}", key, e);
-                    Vec::new()
-                }
-            };
-            // `MemberName`/`InvitedVia` carry no subject; they are scoped
-            // implicitly by the join below on the membership entity, which
-            // the subject-scoped `Membership` query already filtered.
-            let member_names: Vec<MemberName> = match content
-                .query()
-                .select(Query::<MemberName> {
-                    this: Term::var("this"),
-                    name: Term::var("name"),
-                })
-                .perform(&tonk.operator)
-                .try_vec()
-                .await
-            {
-                Ok(rows) => rows,
-                Err(e) => {
-                    log!("MemberName query on content failed for '{}': {:?}", key, e);
-                    Vec::new()
-                }
-            };
-            let invited_via: Vec<InvitedVia> = match content
-                .query()
-                .select(Query::<InvitedVia> {
-                    this: Term::var("this"),
-                    invitation: Term::var("invitation"),
-                })
-                .perform(&tonk.operator)
-                .try_vec()
-                .await
-            {
-                Ok(rows) => rows,
-                Err(e) => {
-                    log!("InvitedVia query on content failed for '{}': {:?}", key, e);
-                    Vec::new()
-                }
-            };
-            let invitations: Vec<Invitation> = match content
-                .query()
-                .select(Query::<Invitation> {
-                    this: Term::var("this"),
-                    subject: Term::from(repository.did().this()),
-                    inviter: Term::var("inviter"),
-                    audience: Term::var("audience"),
-                })
-                .perform(&tonk.operator)
-                .try_vec()
-                .await
-            {
-                Ok(rows) => rows,
-                Err(e) => {
-                    log!("Invitation query on content failed for '{}': {:?}", key, e);
-                    Vec::new()
-                }
-            };
-            let member_kinds: Vec<MemberKind> = match content
-                .query()
-                .select(Query::<MemberKind> {
-                    this: Term::var("this"),
-                    kind: Term::var("kind"),
-                })
-                .perform(&tonk.operator)
-                .try_vec()
-                .await
-            {
-                Ok(rows) => rows,
-                Err(e) => {
-                    log!("MemberKind query on content failed for '{}': {:?}", key, e);
-                    Vec::new()
-                }
-            };
-            (
-                memberships,
-                member_names,
-                invited_via,
-                invitations,
-                member_kinds,
-            )
-        }
-        Err(e) => {
-            log!("No content branch for repository '{}' roster: {}", key, e);
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
-        }
-    };
+    let (memberships, member_names, invited_via, invitations, invited_by, member_kinds) =
+        match repository
+            .branch(CONTENT_BRANCH)
+            .open()
+            .perform(&tonk.operator)
+            .await
+        {
+            Ok(content) => {
+                // `Membership` is the spine — one row per member;
+                // `MemberName`, `InvitedVia`, and `Invitation` are joined in
+                // below to attach the display name and inviter provenance.
+                let memberships: Vec<Membership> = match content
+                    .query()
+                    .select(Query::<Membership> {
+                        this: Term::var("this"),
+                        subject: Term::from(repository.did().this()),
+                        member: Term::var("member"),
+                    })
+                    .perform(&tonk.operator)
+                    .try_vec()
+                    .await
+                {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        log!("Membership query on content failed for '{}': {:?}", key, e);
+                        Vec::new()
+                    }
+                };
+                // `MemberName`/`InvitedVia` carry no subject; they are scoped
+                // implicitly by the join below on the membership entity, which
+                // the subject-scoped `Membership` query already filtered.
+                let member_names: Vec<MemberName> = match content
+                    .query()
+                    .select(Query::<MemberName> {
+                        this: Term::var("this"),
+                        name: Term::var("name"),
+                    })
+                    .perform(&tonk.operator)
+                    .try_vec()
+                    .await
+                {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        log!("MemberName query on content failed for '{}': {:?}", key, e);
+                        Vec::new()
+                    }
+                };
+                let invited_via: Vec<InvitedVia> = match content
+                    .query()
+                    .select(Query::<InvitedVia> {
+                        this: Term::var("this"),
+                        invitation: Term::var("invitation"),
+                    })
+                    .perform(&tonk.operator)
+                    .try_vec()
+                    .await
+                {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        log!("InvitedVia query on content failed for '{}': {:?}", key, e);
+                        Vec::new()
+                    }
+                };
+                let invitations: Vec<Invitation> = match content
+                    .query()
+                    .select(Query::<Invitation> {
+                        this: Term::var("this"),
+                        subject: Term::from(repository.did().this()),
+                        inviter: Term::var("inviter"),
+                        audience: Term::var("audience"),
+                    })
+                    .perform(&tonk.operator)
+                    .try_vec()
+                    .await
+                {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        log!("Invitation query on content failed for '{}': {:?}", key, e);
+                        Vec::new()
+                    }
+                };
+                let invited_by: Vec<InvitedBy> = match content
+                    .query()
+                    .select(Query::<InvitedBy> {
+                        this: Term::var("this"),
+                        inviter: Term::var("inviter"),
+                    })
+                    .perform(&tonk.operator)
+                    .try_vec()
+                    .await
+                {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        log!("InvitedBy query on content failed for '{}': {:?}", key, e);
+                        Vec::new()
+                    }
+                };
+                let member_kinds: Vec<MemberKind> = match content
+                    .query()
+                    .select(Query::<MemberKind> {
+                        this: Term::var("this"),
+                        kind: Term::var("kind"),
+                    })
+                    .perform(&tonk.operator)
+                    .try_vec()
+                    .await
+                {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        log!("MemberKind query on content failed for '{}': {:?}", key, e);
+                        Vec::new()
+                    }
+                };
+                (
+                    memberships,
+                    member_names,
+                    invited_via,
+                    invitations,
+                    invited_by,
+                    member_kinds,
+                )
+            }
+            Err(e) => {
+                log!("No content branch for repository '{}' roster: {}", key, e);
+                (
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                )
+            }
+        };
     // membership entities stamped as agents
     let agents: std::collections::HashSet<_> = member_kinds
         .iter()
@@ -7907,8 +7932,10 @@ where
         .iter()
         .map(|i| (i.this.clone(), i.inviter.0.to_string()))
         .collect();
-    // membership entity -> inviter did:key, via the provenance stamp
-    let inviter_by_membership: HashMap<_, _> = invited_via
+    // membership entity -> inviter did:key. The `InvitedBy` stamp names
+    // the account that issued the link; members who joined before it was
+    // recorded fall back to their invitation's first-hop inviter.
+    let mut inviter_by_membership: HashMap<_, _> = invited_via
         .iter()
         .filter_map(|v| {
             inviter_by_invitation
@@ -7916,6 +7943,11 @@ where
                 .map(|inviter| (v.this.clone(), inviter.clone()))
         })
         .collect();
+    inviter_by_membership.extend(
+        invited_by
+            .iter()
+            .map(|stamp| (stamp.this.clone(), stamp.inviter.0.to_string())),
+    );
 
     let self_entity = crate::router::account::member_did(tonk)
         .await

@@ -26,10 +26,17 @@ See **Progress**. First inspected at 8d5035bea4, plus `feat/desktop-links`,
   membership; `POST /api/profile/join` takes `agent: true` (self-declared,
   sticky, stamped on renewals too); the local peer always declares it;
   `MemberInfo.is_agent`; expel retracts it and account rotation carries it.
-  Next slices: sponsor and correct inviter (the minted chain's inviting root,
-  not `Invitation.inviter`, which credits the founder on a re-shared link);
-  FAB and Desktop show the kind (Desktop currently counts every roster row as
-  a person); agent-link grants write a roster row.
+- **Roster provenance, slice 2 (who invited whom)**: on
+  `feat/roster-invited-by`, stacked on slice 1. `tonk_schema::inviting_account`
+  reads the inviting account from the minted chain (the leaf's signer, lifted
+  through its `account -> device` powerline). A claim stamps it as `InvitedBy`
+  (`xyz.tonk.membership/inviter`) beside `InvitedVia`, and the self-invite
+  check uses it, so a re-shared link credits the member who shared it, not the
+  founder `Invitation.inviter` names. The member list prefers the stamp and
+  falls back for older rows. For an agent, the stamp is "joined via Jack's
+  link". Remaining slices: FAB and Desktop show kind and inviter (Desktop
+  currently counts every roster row as a person); agent-link grants write a
+  roster row.
 
 Motivating build: a shared team agent on Pi Durable in a Cloudflare Durable
 Object, reached first through a bot in the team Discord, acting in Tonk spaces.

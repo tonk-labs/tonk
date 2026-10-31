@@ -803,6 +803,14 @@ concept!: &member
         a person: only the agent kind is stamped, and once stamped it stays.
       the: xyz.tonk.membership/kind
       as: entity
+    inviter:
+      description: >
+        The account that issued the invite the member joined through. For an
+        agent, the person it traces back to. Absent for the founder, for a
+        member who claimed an invite they issued, and for members who joined
+        before it was recorded.
+      the: xyz.tonk.membership/inviter
+      as: entity
 
 # A single roster row — the default view for `model: tonk:member`. Each
 # member is one entry in the "shared with" list: the member's display name
