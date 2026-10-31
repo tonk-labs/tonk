@@ -337,6 +337,7 @@ impl handler::Guest for Kernel {
         let method = request.method().clone();
         let answer = match site::route(request, &site) {
             Routed::Answer(answer) => answer,
+            Routed::Away(address) => away(&address),
             Routed::Pass(request) => {
                 let Ok(answer) = router.oneshot(request).await;
                 answer
@@ -475,6 +476,15 @@ const SYNC_EVERY_MS: u64 = 2_000;
 async fn take_up(state: &TonkState, space: &Space) {
     let chains = delegated(&space.subject, "to serve the space").await;
     adopt(state, &space.subject, &chains).await;
+}
+
+/// Send a whole tab to `address` in the app, which frames the site there.
+/// Until the deployment named its app, the tab gets the site's page.
+fn away(address: &str) -> axum::http::Response<axum::body::Body> {
+    match tonk_worker::app_origin() {
+        Some(app) => site::redirect(&format!("{app}{address}")),
+        None => site::page(),
+    }
 }
 
 /// Learn from the deployment's configuration, which the host reads, which

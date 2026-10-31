@@ -137,14 +137,23 @@ fn render_root(shell: &web_sys::Element) {
         .ok()
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "/".to_owned());
+    let (with, path) = shown(&path);
     let current = shell.first_element_child();
 
-    if let Some(site) = current.filter(|element| element.tag_name() == "TONK-SITE") {
+    // The profile's branch may be read after it mounted: any profile is the
+    // profile.
+    let same = |mounted: Option<String>| match mounted {
+        Some(mounted) if mounted.starts_with(SPACE) => mounted == with,
+        _ => !with.starts_with(SPACE),
+    };
+    if let Some(site) = current
+        .filter(|element| element.tag_name() == "TONK-SITE" && same(element.get_attribute("with")))
+    {
         let _ = site.set_attribute("path", &path);
         return;
     }
 
-    // The profile renders on an origin of its own, which the deployment's
+    // Each site renders on an origin of its own, which the deployment's
     // configuration names. A navigation while that is being read must not
     // mount a second site.
     if shell.has_attribute("data-mounting") {
@@ -166,17 +175,45 @@ fn render_root(shell: &web_sys::Element) {
         let Ok(site) = document.create_element("tonk-site") else {
             return;
         };
-        let _ = site.set_attribute("with", &tonk_host::bridge::profile_with());
-        let _ = site.set_attribute("allow", "*");
-        let _ = site.set_attribute("origin", &site_pattern);
         // The path may have moved while the configuration was being read.
         let path = web_sys::window()
             .and_then(|window| window.location().pathname().ok())
             .filter(|path| !path.is_empty())
             .unwrap_or_else(|| "/".to_owned());
+        let (with, path) = shown(&path);
+        // A space shown itself reaches no further than itself; the profile
+        // reaches every space it shows.
+        let allow = if with.starts_with(SPACE) {
+            with.clone()
+        } else {
+            "*".to_owned()
+        };
+        let _ = site.set_attribute("with", &with);
+        let _ = site.set_attribute("allow", &allow);
+        let _ = site.set_attribute("origin", &site_pattern);
         let _ = site.set_attribute("path", &path);
         let _ = shell.append_child(&site);
+        // A different site than the one the path names now was mounted
+        // meanwhile: put the right one in.
+        render_root(&shell);
     });
+}
+
+/// How a space shown itself is written where its site is mounted.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const SPACE: &str = "main@did:";
+
+/// The site the app's address `path` shows, and the path within it: a space
+/// itself at `/{did}/…`, and otherwise the profile of the account last
+/// signed in to.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn shown(path: &str) -> (String, String) {
+    let rest = path.trim_start_matches('/');
+    if rest.starts_with("did:") {
+        let (space, within) = rest.split_once('/').unwrap_or((rest, ""));
+        return (format!("main@{space}"), format!("/{within}"));
+    }
+    (tonk_host::bridge::profile_with(), path.to_owned())
 }
 
 /// The hostname this deployment renders each site at, with `*` where the

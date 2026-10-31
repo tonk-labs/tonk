@@ -58,7 +58,7 @@ use web_sys::{
 };
 
 use crate::space_origin::{
-    broker_port, clear_unreachable, grant_relayed_port, relay_port, requested_location,
+    broker_port, clear_unreachable, grant_relayed_port, on_top, relay_port, requested_location,
 };
 
 /// Per-portal bridge + iframe state. Held behind `Rc<RefCell<…>>` so
@@ -1420,23 +1420,29 @@ fn handle_analytics(data: &JsValue) {
 /// The guest resolves links against its synthetic per-space origin
 /// (`https://{label}.tonk.network/`), so an in-space link arrives as a bare
 /// absolute path (`/activity`). The document is really served at
-/// `/space/{did}/...`, so prefix the space segment. A guest with no space
-/// context (profile/Hub), or an already-`/space/...` path, is left as-is.
+/// `/space/{did}/...` inside the profile, or at `/{did}/...` where the app's
+/// page shows the space itself, so prefix the space segment. A guest with no
+/// space context (profile/Hub), or an already-prefixed path, is left as-is.
 fn real_href(state: &Rc<RefCell<PortalState>>, href: &str) -> String {
     let Some(space) = state.borrow().route_space() else {
         return href.to_owned();
     };
+    let shown = if on_top() {
+        format!("/{space}")
+    } else {
+        format!("/space/{space}")
+    };
     // Root of the space ("/") maps to the space's own route.
     if href == "/" {
-        return format!("/space/{space}");
+        return shown;
     }
     // A leading-slash in-space path; anything else (already absolute host
     // path, or a fragment/query) is passed through untouched.
     if let Some(rest) = href.strip_prefix('/') {
-        if rest.starts_with("space/") || is_top_level_route(rest) {
+        if rest.starts_with("space/") || rest.starts_with("did:") || is_top_level_route(rest) {
             href.to_owned()
         } else {
-            format!("/space/{space}/{rest}")
+            format!("{shown}/{rest}")
         }
     } else {
         href.to_owned()

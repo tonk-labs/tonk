@@ -14,8 +14,7 @@ const plain = (value) => JSON.parse(JSON.stringify(value));
 
 // Run the frame's bootstrap in stand-ins for the document it runs in.
 // `origin` is the frame's own: a site's, or `"null"` for a sealed frame.
-// `top` runs it with no page around it; `answers` is what its fetches find.
-function frame({ origin = "https://bspace.tonk.test", address = "/", top = false, answers = {} } = {}) {
+function frame({ origin = "https://bspace.tonk.test", address = "/" } = {}) {
   const sealed = origin === "null";
   const at = new URL(address, sealed ? "https://sealed.invalid" : origin);
   const posted = [];   // what the frame told the page around, over its port
@@ -26,21 +25,12 @@ function frame({ origin = "https://bspace.tonk.test", address = "/", top = false
   let port;
   class Channel {
     constructor() {
-      const port2 = { onmessage: null, postMessage: (message) => queueMicrotask(() => port1.onmessage?.({ data: message })) };
-      const port1 = {
-        onmessage: null,
-        postMessage: (message) => {
-          posted.push(message);
-          queueMicrotask(() => port2.onmessage?.({ data: message }));
-        },
-      };
-      this.port1 = port1;
-      this.port2 = port2;
-      port = port1;
+      this.port1 = { onmessage: null, postMessage: (message) => void posted.push(message) };
+      this.port2 = {};
+      port = this.port1;
     }
   }
   const window = {
-    get navigation() { return navigation; },
     addEventListener: noop,
     removeEventListener: noop,
     dispatchEvent: (event) => void events.push(event.type),
@@ -52,7 +42,7 @@ function frame({ origin = "https://bspace.tonk.test", address = "/", top = false
         headers: Object.fromEntries(request.headers ?? []),
         body: init?.body ?? request.bodyText,
       });
-      return new Response(JSON.stringify(answers[request.url] ?? {}));
+      return new Response("{}");
     },
   };
   // A request the frame builds keeps what the test reads back.
@@ -64,29 +54,10 @@ function frame({ origin = "https://bspace.tonk.test", address = "/", top = false
       this.bodyText = init.body;
     }
   }
-  // The browser asks the document's `navigate` listeners before a move to
-  // another address, and a listener can cancel it.
-  const navigating = [];
-  const navigation = { addEventListener: (type, listener) => void (type === "navigate" && navigating.push(listener)) };
-  const allowed = (navigationType, url) => {
-    let cancelled = false;
-    const event = {
-      cancelable: true, hashChange: false, formData: null, downloadRequest: null, navigationType,
-      destination: { url: new URL(url, at).href }, preventDefault: () => void (cancelled = true),
-    };
-    for (const listener of navigating) listener(event);
-    return !cancelled;
-  };
   const history = {
     state: null,
-    pushState: (...args) => {
-      const url = args[2];
-      if (url !== undefined && url !== null && !allowed("push", url)) return;
-      natives.push(["pushState", ...args]);
-      if (url !== undefined && url !== null) at.pathname = new URL(url, at).pathname;
-    },
+    pushState: (...args) => void natives.push(["pushState", ...args]),
     replaceState: (_state, _unused, url) => {
-      if (url !== undefined && url !== null && !allowed("replace", url)) return;
       natives.push(["replaceState", url]);
       if (url !== undefined && url !== null) at.pathname = new URL(url, at).pathname;
     },
@@ -94,14 +65,13 @@ function frame({ origin = "https://bspace.tonk.test", address = "/", top = false
     back: () => void natives.push(["back"]),
     forward: () => void natives.push(["forward"]),
   };
-  const document = {
-    addEventListener: noop, removeEventListener: noop, baseURI: `${at.origin}/`,
-    body: {}, documentElement: {}, activeElement: null, title: "",
-  };
   const context = vm.createContext({
     window,
-    document,
-    parent: top ? window : { postMessage: noop },
+    document: {
+      addEventListener: noop, removeEventListener: noop, baseURI: `${at.origin}/`,
+      body: {}, documentElement: {}, activeElement: null,
+    },
+    parent: { postMessage: noop },
     location: {
       get origin() { return origin; },
       get pathname() { return at.pathname; },
@@ -119,7 +89,7 @@ function frame({ origin = "https://bspace.tonk.test", address = "/", top = false
     KeyboardEvent: class {},
     MutationObserver: class { observe() {} disconnect() {} },
     Map, Set, Promise, URL, Response, Headers, JSON, Date, Object, Array, String, Math, Number,
-    setTimeout, clearTimeout, console: { log() {}, warn() {}, error() {} }, crypto, queueMicrotask,
+    setTimeout, clearTimeout, console: { log() {}, warn() {} }, crypto,
   });
   vm.runInContext(SOURCE, context);
   const tonk = window.tonk;
@@ -133,7 +103,7 @@ function frame({ origin = "https://bspace.tonk.test", address = "/", top = false
     sitePattern: sealed ? undefined : "*.tonk.test",
   };
   const ready = (extra = {}) => hear({ type: "ready", context: { ...context0, ...extra } });
-  return { tonk, window, document, history, posted, fetched, natives, events, hear, ready, context0, at };
+  return { tonk, window, history, posted, fetched, natives, events, hear, ready, context0, at };
 }
 
 const told = (site, type) => plain(site.posted.filter((message) => message.type === type));
@@ -314,55 +284,4 @@ test("an account task asked before anything listens stays open for what listens 
 
   profile.window.tonkAccountTaskDone("task-1", "completed");
   assert.deepEqual(plain(profile.window.tonkAccountTasksOpen()), [], "a task that ended is not handed over");
-});
-
-// A profile opened on its own, with no page around it.
-const alone = (address = "/") =>
-  frame({
-    origin: "https://profile.tonk.test",
-    address,
-    top: true,
-    answers: {
-      "/.well-known/tonk": { sites: { app: "https://tonk.test", host: "tonk.test" } },
-      "/api/profiles": { active: "main", profiles: [] },
-    },
-  });
-
-test("a profile opened on its own is its own host, from its own address", async () => {
-  const site = alone("/settings?tab=account");
-  await site.tonk.ready;
-  const context = plain(site.tonk.context);
-  assert.equal(context.sitePath, "/settings");
-  assert.equal(context.search, "?tab=account");
-  assert.equal(context.sitePattern, "*.tonk.test");
-  assert.equal(context.origin, "https://tonk.test");
-  assert.equal(context.repo, "");
-  assert.match(context.siteEntity, /^site:/);
-});
-
-test("a profile on its own moves itself, and takes its new address", async () => {
-  const site = alone("/");
-  await site.tonk.ready;
-  site.history.pushState(null, "", "/settings");
-  await settle();
-  assert.deepEqual(site.natives.at(-1), ["pushState", null, "", "/settings"], "the browser's history moves");
-  assert.equal(site.tonk.context.path, "/settings", "and is told its new address");
-  assert.ok(
-    site.posted.some((message) => message.type === "navigate" && message.href === "/settings"),
-    "the move goes to its own host",
-  );
-});
-
-test("a profile on its own titles its own tab", async () => {
-  const site = alone("/");
-  await site.tonk.ready;
-  site.tonk.setTitle("Spaces");
-  await settle();
-  assert.equal(site.document.title, "Spaces");
-});
-
-test("a profile on its own is told a delegation needs the app", async () => {
-  const site = alone("/");
-  await site.tonk.ready;
-  await assert.rejects(site.tonk.delegate({ subject: "did:key:zSpace" }), /needs the app/);
 });

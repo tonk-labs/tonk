@@ -253,6 +253,149 @@ async fn it_answers_page_loads_with_its_page() {
     }
 }
 
+/// A page load of a whole tab is sent to the app, which frames the site at
+/// an address of its own: a space at its DID, and the profile, being the
+/// account last signed in to, at the app's own. A frame's load, and an
+/// asset opened on its own, are answered as before.
+#[tokio::test(flavor = "current_thread")]
+async fn it_sends_a_whole_tab_to_the_app() {
+    let engine = engine();
+    let mut space_kernel = Kernel::load(
+        &engine,
+        tonk_components::TONK_KERNEL_BYTES,
+        scratch("whole-tab"),
+    )
+    .await
+    .unwrap();
+    let space_messages = space_kernel.messages();
+    space_kernel
+        .init(
+            &space(),
+            Standing::handed([7; 32], Some(space_to_session().await)),
+        )
+        .await
+        .unwrap();
+    let mut persona = Kernel::load(
+        &engine,
+        tonk_components::TONK_PERSONA_BYTES,
+        scratch("whole-tab-persona"),
+    )
+    .await
+    .unwrap();
+    let persona_messages = persona.messages();
+    let session = did_key(&ed25519_dalek::SigningKey::from_bytes(&[7; 32]));
+    persona.init(&session, persona_standing()).await.unwrap();
+    let (space_served, space_driver) = space_kernel.serve();
+    let (persona_served, persona_driver) = persona.serve();
+
+    let tab = |dest: &str| {
+        vec![
+            ("accept".to_owned(), b"text/html,*/*;q=0.8".to_vec()),
+            ("sec-fetch-dest".to_owned(), dest.as_bytes().to_vec()),
+        ]
+    };
+    let location = |answer: &tonk_kernel_host::kernel::Head| {
+        answer
+            .headers
+            .iter()
+            .find(|(name, _)| name == "location")
+            .map(|(_, value)| String::from_utf8_lossy(value).into_owned())
+    };
+
+    let asked = async {
+        // The kernel learns its app once it has read the configuration.
+        let mut sent = None;
+        for _ in 0..100 {
+            let answer = space_served
+                .request("GET", "/notes?x=1", tab("document"), b"")
+                .await
+                .unwrap();
+            if answer.status == 302 {
+                sent = location(&answer);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            sent,
+            Some(format!("https://tonk.test/{}/notes?x=1", space())),
+            "a space's tab goes to the space in the app"
+        );
+        let root = space_served
+            .request("GET", "/", tab("document"), b"")
+            .await
+            .unwrap();
+        assert_eq!(
+            location(&root),
+            Some(format!("https://tonk.test/{}", space()))
+        );
+
+        let framed = space_served
+            .request("GET", "/notes", tab("iframe"), b"")
+            .await
+            .unwrap();
+        assert_eq!(framed.status, 200, "a frame's load is the site's page");
+        let asset = space_served
+            .request("GET", "/asset:3mJr7AoUXx2Wqd", tab("document"), b"")
+            .await
+            .unwrap();
+        assert_ne!(
+            asset.status, 302,
+            "an asset opened on its own is not sent away"
+        );
+
+        let mut sent = None;
+        for _ in 0..100 {
+            let answer = persona_served
+                .request("GET", "/settings?tab=keys", tab("document"), b"")
+                .await
+                .unwrap();
+            if answer.status == 302 {
+                sent = location(&answer);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            sent.as_deref(),
+            Some("https://tonk.test/settings?tab=keys"),
+            "the profile's tab goes to the same address of the app"
+        );
+    };
+    let asked = tokio::time::timeout(std::time::Duration::from_secs(60), asked);
+    tokio::select! {
+        answered = asked => answered.expect("the kernels answered within a minute"),
+        () = configured(space_messages, &space_served) => panic!("the space's kernel stopped sending"),
+        () = configured(persona_messages, &persona_served) => panic!("the persona stopped sending"),
+        stopped = space_driver => panic!("the space's kernel stopped: {stopped:?}"),
+        stopped = persona_driver => panic!("the persona stopped: {stopped:?}"),
+    }
+}
+
+/// Answer what a kernel sends as its host would where the deployment's app
+/// is `https://tonk.test`: its configuration, and nothing else.
+async fn configured(
+    mut messages: futures::channel::mpsc::UnboundedReceiver<Vec<u8>>,
+    served: &tonk_kernel_host::kernel::Served,
+) {
+    use serde_json::{Value, json};
+    while let Some(message) = messages.next().await {
+        let message: Value = serde_json::from_slice(&message).unwrap();
+        let Some(id) = message["ask"].as_u64() else {
+            continue;
+        };
+        let answer = if message["read"] == "/.well-known/tonk" {
+            let config = json!({ "sites": { "app": "https://tonk.test" } });
+            json!({ "answer": id, "status": 200, "body": config.to_string() })
+        } else if message.get("fetch").is_some() {
+            json!({ "answer": id, "status": 404, "body64": "" })
+        } else {
+            json!({ "answer": id, "status": 404, "body": "" })
+        };
+        let _ = served.receive(answer.to_string().into_bytes()).await;
+    }
+}
+
 /// A persona's provisional persona merges into the account the person signs
 /// in to: the account delegates to the representative, which links this
 /// device to it, and the persona records the account as its root, from what

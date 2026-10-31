@@ -16,6 +16,38 @@
                 // yet), and tells the person why.
                 parent.postMessage({ __tonkOrigin: "shell" }, "*");
 
+                // The space whose origin `hostname` is: its label is the
+                // space's key in multibase base32, after the deployment's
+                // suffix is taken off, and the DID names the key in base58.
+                function spaceOf(hostname) {
+                    var label = /^b([a-z2-7]+)(?:-[a-z0-9]+)?$/.exec(hostname.split(".")[0]);
+                    if (!label) return null;
+                    var bytes = [], bits = 0, value = 0;
+                    for (var i = 0; i < label[1].length; i++) {
+                        value = (value << 5) | "abcdefghijklmnopqrstuvwxyz234567".indexOf(label[1][i]);
+                        bits += 5;
+                        if (bits >= 8) {
+                            bits -= 8;
+                            bytes.push((value >> bits) & 255);
+                        }
+                    }
+                    var ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+                    var digits = [];
+                    for (var j = 0; j < bytes.length; j++) {
+                        var carry = bytes[j];
+                        for (var k = 0; k < digits.length; k++) {
+                            carry += digits[k] << 8;
+                            digits[k] = carry % 58;
+                            carry = (carry / 58) | 0;
+                        }
+                        for (; carry; carry = (carry / 58) | 0) digits.push(carry % 58);
+                    }
+                    var text = "";
+                    for (var z = 0; z < bytes.length && bytes[z] === 0; z++) text += "1";
+                    for (var d = digits.length - 1; d >= 0; d--) text += ALPHABET[digits[d]];
+                    return "did:key:z" + text;
+                }
+
                 // Carries ports between this origin's worker and the frame
                 // above. A site's worker reaches the worker it answers to
                 // over a port that the frame above hands down; it loses the
@@ -237,8 +269,8 @@
 
                 // Opened on its own, not framed by the app: there is no one to
                 // ask for a document, and the app is where this site is
-                // shown. Go there; where that cannot be worked out, say what
-                // this address is.
+                // shown, at the space's DID. Go there; where that cannot be
+                // worked out, say what this address is.
                 if (parent === window) {
                     var say = function (app) {
                         var tell = function () {
@@ -256,22 +288,17 @@
                         .then(function (config) {
                             var app = config && config.sites && config.sites.app;
                             if (typeof app !== "string") throw new Error("no app is named");
-                            return app;
-                        })
-                        // The app shows a space under `/space/{id}`. Which
-                        // space this is, its worker says once it holds one;
-                        // a worker that holds none leaves a way to the app.
-                        .then(function (app) {
-                            return fetch("/api/health")
-                                .then(function (answer) { return answer.json(); })
-                                .then(function (health) {
-                                    if (!health || typeof health.space !== "string") return say(app);
-                                    var rest = location.pathname === "/" ? "" : location.pathname;
-                                    location.replace(
-                                        app + "/space/" + health.space + rest + location.search + location.hash,
-                                    );
-                                })
-                                .catch(function () { say(app); });
+                            var space = spaceOf(location.hostname);
+                            if (!space) return say(app);
+                            // The shell's own address is the one it was
+                            // starting the worker for.
+                            var address = location.pathname + location.search + location.hash;
+                            if (location.pathname === "/space.html") {
+                                address = location.hash.indexOf("#boot=") === 0
+                                    ? decodeURIComponent(location.hash.slice(6)) || "/"
+                                    : "/";
+                            }
+                            location.replace(app.replace(/\/$/, "") + "/" + space + (address === "/" ? "" : address));
                         })
                         .catch(function () { say(null); });
                     return;

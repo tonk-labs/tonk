@@ -183,7 +183,7 @@ pub fn set_app_origin(origin: String) {
 
 /// The app this kernel's deployment serves, once its host said.
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn app_origin() -> Option<String> {
+pub fn app_origin() -> Option<String> {
     APP_ORIGIN.get().cloned()
 }
 

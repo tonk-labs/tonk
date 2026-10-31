@@ -28,11 +28,9 @@ pub use worker::*;
 pub mod device;
 pub mod session;
 
-#[cfg(target_arch = "wasm32")]
-pub(crate) use device::app_origin;
-#[cfg(target_arch = "wasm32")]
-pub use device::set_app_origin;
 pub use device::{Standing, set_standing};
+#[cfg(target_arch = "wasm32")]
+pub use device::{app_origin, set_app_origin};
 
 mod r#async;
 pub use r#async::*;

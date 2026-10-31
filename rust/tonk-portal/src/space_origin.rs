@@ -328,9 +328,22 @@ fn on_profile_origin() -> bool {
         .is_some_and(|label| label.starts_with(PROFILE_LABEL))
 }
 
+/// Whether this document is the tab's own, framed by nothing.
+pub(crate) fn on_top() -> bool {
+    window().is_some_and(|window| {
+        window
+            .parent()
+            .ok()
+            .flatten()
+            .is_none_or(|parent| JsValue::from(parent) == JsValue::from(window))
+    })
+}
+
 /// Get the frame at `origin` a port to the profile's worker for `with`. The
-/// document on the profile's origin mints it; any other asks its parent,
-/// which answers with a `relay-port` that [`relay_port`] passes down.
+/// document on the profile's origin mints it; the app's page, showing a
+/// space itself, has the profile's origin mint it in a frame of its own;
+/// any other asks its parent, which answers with a `relay-port` that
+/// [`relay_port`] passes down.
 pub(crate) fn broker_port(iframe: &HtmlIFrameElement, origin: &str, with: &Location) {
     let Some(space) = with.space() else {
         return;
@@ -344,12 +357,14 @@ pub(crate) fn broker_port(iframe: &HtmlIFrameElement, origin: &str, with: &Locat
         }
         return;
     }
-    let top = window
-        .parent()
-        .ok()
-        .flatten()
-        .is_none_or(|parent| JsValue::from(parent) == JsValue::from(window.clone()));
-    if top {
+    if on_top() {
+        let (frame, origin, with) = (iframe.clone(), origin.to_owned(), with.clone());
+        let Some(pattern) = iframe.parent_element().and_then(|host| site_pattern(&host)) else {
+            return;
+        };
+        connector::mint(&pattern, &with.clone(), move |port| {
+            post_port(&frame, &origin, "port", &with, port);
+        });
         return;
     }
     let (Some(parent), Some(host)) = (window.parent().ok().flatten(), context_origin()) else {
@@ -364,6 +379,161 @@ pub(crate) fn broker_port(iframe: &HtmlIFrameElement, origin: &str, with: &Locat
         &JsValue::from_str(with.effective_branch()),
     );
     let _ = parent.post_message(&request, &host);
+}
+
+/// The profile's origin, framed unseen by the app's page while it shows a
+/// space itself: only the profile's worker answers a space's worker for the
+/// person's persona, and only a page of its origin opens a port to it. The
+/// frame comes up the first time a port is asked for, and mints each one on
+/// the page's asking.
+mod connector {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::str::FromStr;
+
+    use js_sys::{Object, Reflect};
+    use tonk_host::bridge::profile_with;
+    use tonk_host::location::Location;
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::{JsCast, JsValue};
+    use web_sys::{HtmlIFrameElement, MessageEvent, MessagePort, window};
+
+    use super::{shell_url, site_origin};
+
+    type Minted = Box<dyn FnOnce(MessagePort)>;
+
+    struct Connector {
+        iframe: HtmlIFrameElement,
+        origin: String,
+        ready: bool,
+        /// Asked before the frame was ready, to ask once it is.
+        waiting: Vec<(Location, Minted)>,
+        asked: HashMap<u32, Minted>,
+        next: u32,
+    }
+
+    thread_local! {
+        static CONNECTOR: RefCell<Option<Connector>> = const { RefCell::new(None) };
+    }
+
+    /// Have the profile's origin, where sites render at `pattern`, mint a
+    /// port to its worker for `with`, and hand it to `minted`.
+    pub(super) fn mint(pattern: &str, with: &Location, minted: impl FnOnce(MessagePort) + 'static) {
+        let minted: Minted = Box::new(minted);
+        CONNECTOR.with_borrow_mut(|connector| {
+            if connector.is_none() {
+                *connector = open(pattern);
+            }
+            let Some(connector) = connector.as_mut() else {
+                tonk_common::log!("site origin: the profile's origin could not be framed");
+                return;
+            };
+            if connector.ready {
+                ask(connector, with, minted);
+            } else {
+                connector.waiting.push((with.clone(), minted));
+            }
+        });
+    }
+
+    fn open(pattern: &str) -> Option<Connector> {
+        let profile = Location::from_str(&profile_with()).ok()?;
+        let origin = site_origin(&profile, pattern)?;
+        let document = window()?.document()?;
+        let iframe = document
+            .create_element("iframe")
+            .ok()?
+            .dyn_into::<HtmlIFrameElement>()
+            .ok()?;
+        iframe.set_hidden(true);
+        let _ = iframe.set_attribute("sandbox", "allow-scripts allow-same-origin");
+        let _ = iframe.set_attribute("title", "profile");
+        iframe.set_src(&format!("{}#connector", shell_url(&origin)));
+        hear(&iframe, &origin);
+        document.body()?.append_child(&iframe).ok()?;
+        Some(Connector {
+            iframe,
+            origin,
+            ready: false,
+            waiting: Vec::new(),
+            asked: HashMap::new(),
+            next: 0,
+        })
+    }
+
+    fn ask(connector: &mut Connector, with: &Location, minted: Minted) {
+        let Some(target) = connector.iframe.content_window() else {
+            return;
+        };
+        let id = connector.next;
+        connector.next += 1;
+        connector.asked.insert(id, minted);
+        let message = Object::new();
+        let _ = Reflect::set(&message, &"__tonkOrigin".into(), &"mint-port".into());
+        let _ = Reflect::set(&message, &"id".into(), &id.into());
+        if let Some(space) = with.space() {
+            let _ = Reflect::set(&message, &"repo".into(), &JsValue::from_str(space));
+        }
+        let _ = Reflect::set(
+            &message,
+            &"branch".into(),
+            &JsValue::from_str(with.effective_branch()),
+        );
+        let _ = target.post_message(&message, &connector.origin);
+    }
+
+    /// What the frame says: that it is ready to mint, and each port it
+    /// minted. Heard only from the frame, on the profile's origin.
+    fn hear(iframe: &HtmlIFrameElement, origin: &str) {
+        let Some(window) = window() else {
+            return;
+        };
+        let (iframe, origin) = (iframe.clone(), origin.to_owned());
+        let heard = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
+            let from_frame = iframe
+                .content_window()
+                .zip(event.source())
+                .is_some_and(|(frame, source)| JsValue::from(frame) == JsValue::from(source));
+            if !from_frame || event.origin() != origin {
+                return;
+            }
+            let data = event.data();
+            let said = Reflect::get(&data, &"__tonkOrigin".into())
+                .ok()
+                .and_then(|said| said.as_string());
+            match said.as_deref() {
+                Some("connector-ready") => CONNECTOR.with_borrow_mut(|connector| {
+                    let Some(connector) = connector.as_mut() else {
+                        return;
+                    };
+                    connector.ready = true;
+                    for (with, minted) in std::mem::take(&mut connector.waiting) {
+                        ask(connector, &with, minted);
+                    }
+                }),
+                Some("minted") => {
+                    let id = Reflect::get(&data, &"id".into())
+                        .ok()
+                        .and_then(|id| id.as_f64())
+                        .map(|id| id as u32);
+                    let port = event.ports().get(0).dyn_into::<MessagePort>().ok();
+                    let minted = id.and_then(|id| {
+                        CONNECTOR.with_borrow_mut(|connector| {
+                            connector
+                                .as_mut()
+                                .and_then(|connector| connector.asked.remove(&id))
+                        })
+                    });
+                    if let (Some(minted), Some(port)) = (minted, port) {
+                        minted(port);
+                    }
+                }
+                _ => {}
+            }
+        });
+        let _ = window.add_event_listener_with_callback("message", heard.as_ref().unchecked_ref());
+        heard.forget();
+    }
 }
 
 /// A frame this page keeps, unseen, on the origin of a space that is not on

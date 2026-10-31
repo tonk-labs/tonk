@@ -22,30 +22,6 @@
                     );
                 }
 
-                // Opened on its own, not framed by the app: the app is where a
-                // space is shown. Go there, to this space. The profile renders
-                // here, as its own host.
-                var profile = location.hostname.split(".")[0].indexOf("profile") === 0;
-                if (parent === window && !profile) {
-                    Promise.all([
-                        fetch("/.well-known/tonk").then(function (answer) { return answer.json(); }),
-                        fetch("/api/health").then(function (answer) { return answer.json(); }),
-                    ])
-                        .then(function (said) {
-                            var app = said[0] && said[0].sites && said[0].sites.app;
-                            var space = said[1] && said[1].space;
-                            if (typeof app !== "string") throw new Error("no app is named");
-                            var rest = location.pathname === "/" ? "" : location.pathname;
-                            location.replace(
-                                typeof space === "string"
-                                    ? app + "/space/" + space + rest + location.search + location.hash
-                                    : app,
-                            );
-                        })
-                        .catch(report);
-                    return;
-                }
-
                 // The app frames a profile's origin this way with no site to
                 // render: only to reach the profile's kernel, whose requests
                 // reach it over a port, which is not an event to the browser.

@@ -29,20 +29,15 @@
   // dismiss listeners already handle it. Only the fact travels: no
   // coordinates, no target, nothing the ancestor could use to observe what
   // was pressed inside a sealed guest.
-  // A page with no frame above it has nobody to tell, and a press it hears
-  // from itself is its own: only one from a frame it holds is relayed.
-  var framed=parent!==window;
   document.addEventListener("pointerdown", function(){
-    if(!framed) return;
     try{ parent.postMessage({__tonkRuntime:"press"},"*"); }catch(_){}
   }, true);
 
   window.addEventListener("message", function(e){
-    var d=e.data; if(!d||d.__tonkRuntime!=="press"||e.source===window) return;
+    var d=e.data; if(!d||d.__tonkRuntime!=="press") return;
     // Redispatch on THIS document so an overlay held open here closes, then
     // keep it travelling so every ancestor up to the top page does the same.
     document.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true}));
-    if(!framed) return;
     try{ parent.postMessage({__tonkRuntime:"press"},"*"); }catch(_){}
   });
 

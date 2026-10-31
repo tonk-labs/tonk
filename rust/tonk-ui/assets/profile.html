@@ -273,20 +273,45 @@
                     return true;
                 }
 
-                // Opened on its own, not framed by the app. On a profile's
-                // origin the profile renders here, as its own host. On the
-                // app's own origin, where the server answers with this file,
-                // there is no profile to render: say what this address is.
-                if (parent === window && location.hostname.split(".")[0].indexOf("profile") !== 0) {
-                    var tell = function () {
-                        document.body.textContent = "This address serves a Tonk site. ";
-                        var link = document.createElement("a");
-                        link.textContent = "Open it from Tonk.";
-                        link.href = "/";
-                        document.body.appendChild(link);
+                // Opened on its own, not framed by the app: there is no one to
+                // ask for a document, and the app is where this site is
+                // shown. Go there; where that cannot be worked out, say what
+                // this address is.
+                if (parent === window) {
+                    var say = function (app) {
+                        var tell = function () {
+                            document.body.textContent = "This address serves a Tonk site. ";
+                            var link = document.createElement("a");
+                            link.textContent = "Open it from Tonk.";
+                            if (app) link.href = app;
+                            document.body.appendChild(link);
+                        };
+                        if (document.body) tell();
+                        else document.addEventListener("DOMContentLoaded", tell);
                     };
-                    if (document.body) tell();
-                    else document.addEventListener("DOMContentLoaded", tell);
+                    fetch("/.well-known/tonk")
+                        .then(function (answer) { return answer.json(); })
+                        .then(function (config) {
+                            var app = config && config.sites && config.sites.app;
+                            if (typeof app !== "string") throw new Error("no app is named");
+                            return app;
+                        })
+                        // The app shows the profile at the app's own
+                        // addresses, path for path; the shell's own address
+                        // is the one it was starting the worker for. On the
+                        // app's own origin it is the app's file, which sends
+                        // nowhere.
+                        .then(function (app) {
+                            if (new URL(app, location.href).origin === location.origin) return say(app);
+                            var address = location.pathname + location.search + location.hash;
+                            if (location.pathname === "/profile.html") {
+                                address = location.hash.indexOf("#boot=") === 0
+                                    ? decodeURIComponent(location.hash.slice(6)) || "/"
+                                    : "/";
+                            }
+                            location.replace(new URL(address, app).href);
+                        })
+                        .catch(function () { say(null); });
                     return;
                 }
 
@@ -307,10 +332,36 @@
                 // the profile's worker as idle in the middle of answering. So
                 // while the app is on screen this frame keeps telling the
                 // worker it is open.
+                // The app's page showing a space itself has no profile's
+                // frame around the space to open its port to this origin's
+                // worker, so it asks this frame for each one. Only the app
+                // is heard: a port speaks for the person's persona.
+                function mintForApp() {
+                    fetch("/.well-known/tonk")
+                        .then(function (answer) { return answer.json(); })
+                        .then(function (config) {
+                            var app = config && config.sites && config.sites.app;
+                            if (typeof app !== "string") throw new Error("no app is named");
+                            app = new URL(app).origin;
+                            window.addEventListener("message", function (e) {
+                                var asked = e.data;
+                                if (e.source !== parent || e.origin !== app || !asked || asked.__tonkOrigin !== "mint-port") return;
+                                var worker = navigator.serviceWorker.controller;
+                                if (!worker) return;
+                                var channel = new MessageChannel();
+                                worker.postMessage({ type: "space-port", repo: asked.repo, branch: asked.branch }, [channel.port1]);
+                                parent.postMessage({ __tonkOrigin: "minted", id: asked.id }, app, [channel.port2]);
+                            });
+                            parent.postMessage({ __tonkOrigin: "connector-ready" }, app);
+                        })
+                        .catch(report);
+                }
+
                 if (location.hash === "#connector") {
                     control()
                         .then(function () {
                             broker();
+                            mintForApp();
                             setInterval(function () {
                                 var worker = navigator.serviceWorker.controller;
                                 if (worker && document.visibilityState === "visible") {

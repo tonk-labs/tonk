@@ -453,7 +453,10 @@ async function serveKernel(event) {
     const body = new Uint8Array(await event.request.arrayBuffer());
     // The page that asked, so the kernel can send it somewhere.
     const client = event.clientId || event.resultingClientId;
-    const headers = [...event.request.headers, ...(client ? [["x-tonk-client-id", client]] : [])];
+    // What a load is for, as the browser would say in `sec-fetch-dest`,
+    // which a worker's request does not carry: a whole tab or a frame.
+    const dest = event.request.destination ? [["sec-fetch-dest", event.request.destination]] : [];
+    const headers = [...event.request.headers, ...dest, ...(client ? [["x-tonk-client-id", client]] : [])];
     const reply = await embedder.handle(event.request.method, url.pathname + url.search, headers, body);
     const bodiless = reply.status === 204 || reply.status === 304 || event.request.method === "HEAD";
     const response = new Response(bodiless ? null : bodyOf(reply, event), {

@@ -34,6 +34,9 @@ pub enum Routed {
     Store(Request<Body>),
     /// To the worker, whose answer is the answer.
     Pass(Request<Body>),
+    /// A page load of a whole tab, which the app shows at this address of
+    /// its own: a site renders framed by the app.
+    Away(String),
     /// A page load, to the worker: its answer if it has what is asked for,
     /// otherwise the site's page where `viewed`, or a page saying what it
     /// answered.
@@ -81,6 +84,14 @@ pub fn route(request: Request<Body>, site: &Site) -> Routed {
         return Routed::Answer(health(site));
     }
     let visits = method == Method::GET && !path.starts_with("/api/") && accepts_page(&request);
+    if visits && whole_tab(&request) && asset(&path).is_none() {
+        let query = request
+            .uri()
+            .query()
+            .map(|query| format!("?{query}"))
+            .unwrap_or_default();
+        return Routed::Away(shown_at(site, &path, &query));
+    }
     let Some(space) = &site.space else {
         // The profile keeps no content: every page load is its page.
         if visits {
@@ -142,6 +153,37 @@ fn reached(request: Request<Body>, visits: bool, viewed: bool) -> Routed {
     } else {
         Routed::Pass(request)
     }
+}
+
+/// Whether `request` loads a whole tab rather than a frame, as the browser
+/// says in `sec-fetch-dest`.
+fn whole_tab(request: &Request<Body>) -> bool {
+    request
+        .headers()
+        .get("sec-fetch-dest")
+        .is_some_and(|dest| dest == "document")
+}
+
+/// The address in the app that shows `path` of `site`: a space at its DID,
+/// and the profile, being the account last signed in to, at the app's own.
+fn shown_at(site: &Site, path: &str, query: &str) -> String {
+    match &site.space {
+        Some(space) => {
+            let rest = if path == "/" { "" } else { path };
+            format!("/{space}{rest}{query}")
+        }
+        None => format!("{path}{query}"),
+    }
+}
+
+/// A redirect to `location`.
+pub fn redirect(location: &str) -> Response<Body> {
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::FOUND;
+    if let Ok(location) = HeaderValue::from_str(location) {
+        response.headers_mut().insert(header::LOCATION, location);
+    }
+    response
 }
 
 /// Whether `request` asks for a page, as a page load does.
