@@ -334,9 +334,27 @@
                 // worker it is open.
                 // The app's page showing a space itself has no profile's
                 // frame around the space to open its port to this origin's
-                // worker, so it asks this frame for each one. Only the app
-                // is heard: a port speaks for the person's persona.
-                function mintForApp() {
+                // worker, so it asks this frame for each one; and asks
+                // whether an address it was given names one of the person's
+                // accounts, which is switched to. Only the app is heard: a
+                // port speaks for the person's persona.
+                function answerApp() {
+                    var worker = function () { return navigator.serviceWorker.controller; };
+                    function account(did) {
+                        return fetch("/api/profiles")
+                            .then(function (answer) { return answer.json(); })
+                            .then(function (roster) {
+                                var entry = (roster.profiles || []).find(function (entry) { return entry.rootDid === did; });
+                                if (!entry) return false;
+                                if (entry.active) return true;
+                                return fetch("/api/profiles/activate", {
+                                    method: "POST",
+                                    headers: { "content-type": "application/json" },
+                                    body: JSON.stringify({ profile: entry.profileName }),
+                                }).then(function (answer) { return answer.ok; });
+                            })
+                            .catch(function () { return false; });
+                    }
                     fetch("/.well-known/tonk")
                         .then(function (answer) { return answer.json(); })
                         .then(function (config) {
@@ -345,12 +363,16 @@
                             app = new URL(app).origin;
                             window.addEventListener("message", function (e) {
                                 var asked = e.data;
-                                if (e.source !== parent || e.origin !== app || !asked || asked.__tonkOrigin !== "mint-port") return;
-                                var worker = navigator.serviceWorker.controller;
-                                if (!worker) return;
-                                var channel = new MessageChannel();
-                                worker.postMessage({ type: "space-port", repo: asked.repo, branch: asked.branch }, [channel.port1]);
-                                parent.postMessage({ __tonkOrigin: "minted", id: asked.id }, app, [channel.port2]);
+                                if (e.source !== parent || e.origin !== app || !asked) return;
+                                if (asked.__tonkOrigin === "mint-port" && worker()) {
+                                    var channel = new MessageChannel();
+                                    worker().postMessage({ type: "space-port", repo: asked.repo, branch: asked.branch }, [channel.port1]);
+                                    parent.postMessage({ __tonkOrigin: "answered", id: asked.id }, app, [channel.port2]);
+                                } else if (asked.__tonkOrigin === "account") {
+                                    account(asked.did).then(function (found) {
+                                        parent.postMessage({ __tonkOrigin: "answered", id: asked.id, account: found }, app);
+                                    });
+                                }
                             });
                             parent.postMessage({ __tonkOrigin: "connector-ready" }, app);
                         })
@@ -361,7 +383,7 @@
                     control()
                         .then(function () {
                             broker();
-                            mintForApp();
+                            answerApp();
                             setInterval(function () {
                                 var worker = navigator.serviceWorker.controller;
                                 if (worker && document.visibilityState === "visible") {

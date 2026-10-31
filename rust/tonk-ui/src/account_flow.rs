@@ -39,6 +39,130 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A space's DID as the app's address shows the space itself, framed by
+    /// the app with no profile around it, reaching the person's persona
+    /// through the profile's origin framed unseen beside it.
+    #[dialog_common::test]
+    async fn it_shows_a_space_itself_at_its_did(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+        let space = create_space(&driver, "Shown itself").await?;
+        let address = env.tonk_web.join(&format!("/{space}"))?;
+        goto(&driver, address.as_str()).await?;
+        driver.enter_default_frame().await?;
+        // The app first asks the profile whether the DID is an account's.
+        let started = tokio::time::Instant::now();
+        let frames = loop {
+            let frames = driver
+                .execute(
+                    r#"return [...document.querySelectorAll("iframe")].map((frame) => ({
+                         with: frame.parentElement.getAttribute("with"),
+                         hidden: frame.hidden,
+                         src: frame.src,
+                       }));"#,
+                    Vec::new(),
+                )
+                .await?
+                .json()
+                .clone();
+            let mounted = frames
+                .as_array()
+                .is_some_and(|frames| frames.iter().any(|frame| frame["with"].as_str().is_some()));
+            if mounted || started.elapsed() > Duration::from_secs(30) {
+                break frames;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        eprintln!("space mounted after {:?}", started.elapsed());
+        let frames = frames.as_array().context("the page's frames")?;
+        anyhow::ensure!(
+            frames
+                .iter()
+                .any(|frame| frame["with"] == format!("main@{space}").as_str()),
+            "the app frames the space itself: {frames:?}"
+        );
+        anyhow::ensure!(
+            frames.iter().any(|frame| frame["hidden"] == true
+                && frame["src"]
+                    .as_str()
+                    .is_some_and(|src| src.contains("#connector"))),
+            "the profile's origin is framed unseen beside it: {frames:?}"
+        );
+        enter_guest(&driver).await?;
+        wait_for_displayed(&driver, ".blank-canvas").await?;
+        driver.enter_default_frame().await?;
+        anyhow::ensure!(
+            driver.current_url().await?.path() == format!("/{space}"),
+            "the address stays the space's"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// An app address whose first segment is the DID of one of the person's
+    /// accounts shows that account's profile, switched to, at the rest of
+    /// the address.
+    #[dialog_common::test]
+    async fn it_opens_the_account_an_address_names(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "first-address@example.com").await?;
+        let profiles = get_json(&driver, "/api/profiles").await?;
+        let roster = successful_body("list profiles", &profiles);
+        let first_branch = roster["active"]
+            .as_str()
+            .context("no profile is active")?
+            .to_owned();
+        let first_account = roster["profiles"]
+            .as_array()
+            .and_then(|profiles| profiles.iter().find(|profile| profile["active"] == true))
+            .and_then(|profile| profile["rootDid"].as_str())
+            .context("the first account has no DID")?
+            .to_owned();
+
+        let added = post_json(&driver, "/api/profiles/add", serde_json::json!({})).await?;
+        successful_body("add an account", &added);
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        driver
+            .find(By::Css("[data-account-trigger]"))
+            .await?
+            .click()
+            .await?;
+        await_register_dialog(&driver).await?;
+        run_cluster_ceremony(&driver, "second-address@example.com").await?;
+        activate(&driver, &env, "second-address@example.com").await?;
+        let profiles = get_json(&driver, "/api/profiles").await?;
+        anyhow::ensure!(
+            successful_body("list profiles", &profiles)["active"] != first_branch.as_str(),
+            "the second account is the one signed in to"
+        );
+
+        let address = env.tonk_web.join(&format!("/{first_account}/"))?;
+        goto(&driver, address.as_str()).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            driver.enter_default_frame().await?;
+            if driver.current_url().await?.path() == "/" {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the address stayed at {}",
+                driver.current_url().await?
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        enter_hub(&driver).await?;
+        let profiles = get_json(&driver, "/api/profiles").await?;
+        anyhow::ensure!(
+            successful_body("list profiles", &profiles)["active"] == first_branch.as_str(),
+            "the account the address names is the one shown: {profiles}"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// Going home from a space swaps the space chrome for the Hub inside the
     /// same guest frame. The site display must see the route change before
     /// the space chrome nested in it does: otherwise the chrome loses its

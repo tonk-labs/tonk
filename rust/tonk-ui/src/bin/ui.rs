@@ -162,41 +162,94 @@ fn render_root(shell: &web_sys::Element) {
     let _ = shell.set_attribute("data-mounting", "");
     let shell = shell.clone();
     wasm_bindgen_futures::spawn_local(async move {
-        let site_pattern = site_pattern().await;
-        let _ = shell.remove_attribute("data-mounting");
-        let Some(site_pattern) = site_pattern else {
+        let Some(site_pattern) = site_pattern().await else {
+            let _ = shell.remove_attribute("data-mounting");
             show_readiness_failure();
             return;
         };
-        shell.set_inner_html("");
-        let Some(document) = shell.owner_document() else {
+        let (with, _) = shown(&current_path());
+        let Some(did) = with
+            .strip_prefix("main@")
+            .filter(|_| with.starts_with(SPACE))
+        else {
+            mount(&shell, &site_pattern);
             return;
         };
-        let Ok(site) = document.create_element("tonk-site") else {
-            return;
+        // A DID may name one of the person's accounts rather than a space:
+        // that account's profile is shown, at the rest of the address. One
+        // the profile does not answer for in time is taken for a space.
+        let once = std::rc::Rc::new(std::cell::Cell::new(false));
+        let settle = {
+            let (shell, site_pattern, once) = (shell.clone(), site_pattern.clone(), once.clone());
+            move |account: bool| {
+                if once.replace(true) {
+                    return;
+                }
+                if account {
+                    let (_, rest) = shown(&current_path());
+                    if let Some(history) =
+                        web_sys::window().and_then(|window| window.history().ok())
+                    {
+                        let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&rest));
+                    }
+                }
+                mount(&shell, &site_pattern);
+            }
         };
-        // The path may have moved while the configuration was being read.
-        let path = web_sys::window()
-            .and_then(|window| window.location().pathname().ok())
-            .filter(|path| !path.is_empty())
-            .unwrap_or_else(|| "/".to_owned());
-        let (with, path) = shown(&path);
-        // A space shown itself reaches no further than itself; the profile
-        // reaches every space it shows.
-        let allow = if with.starts_with(SPACE) {
-            with.clone()
-        } else {
-            "*".to_owned()
-        };
-        let _ = site.set_attribute("with", &with);
-        let _ = site.set_attribute("allow", &allow);
-        let _ = site.set_attribute("origin", &site_pattern);
-        let _ = site.set_attribute("path", &path);
-        let _ = shell.append_child(&site);
-        // A different site than the one the path names now was mounted
-        // meanwhile: put the right one in.
-        render_root(&shell);
+        let late = settle.clone();
+        tonk_portal::account(&site_pattern, did, settle);
+        let timeout = wasm_bindgen::closure::Closure::once_into_js(move || late(false));
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                timeout.unchecked_ref(),
+                ACCOUNT_WAIT_MS,
+            );
+        }
     });
+}
+
+/// How long the app waits to hear whether an address's DID names an
+/// account before it shows it as a space.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const ACCOUNT_WAIT_MS: i32 = 10_000;
+
+/// The app's address, as far as its path.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn current_path() -> String {
+    web_sys::window()
+        .and_then(|window| window.location().pathname().ok())
+        .filter(|path| !path.is_empty())
+        .unwrap_or_else(|| "/".to_owned())
+}
+
+/// Mount the site the app's address names in `shell`, rendered at
+/// `site_pattern`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn mount(shell: &web_sys::Element, site_pattern: &str) {
+    let _ = shell.remove_attribute("data-mounting");
+    shell.set_inner_html("");
+    let Some(document) = shell.owner_document() else {
+        return;
+    };
+    let Ok(site) = document.create_element("tonk-site") else {
+        return;
+    };
+    let (with, path) = shown(&current_path());
+    // A space shown itself reaches no further than itself; the profile
+    // reaches every space it shows.
+    let allow = if with.starts_with(SPACE) {
+        with.clone()
+    } else {
+        "*".to_owned()
+    };
+    let _ = site.set_attribute("with", &with);
+    let _ = site.set_attribute("allow", &allow);
+    let _ = site.set_attribute("origin", site_pattern);
+    let _ = site.set_attribute("path", &path);
+    let _ = shell.append_child(&site);
+    // A different site than the one the path names now was mounted
+    // meanwhile: put the right one in.
+    render_root(shell);
 }
 
 /// How a space shown itself is written where its site is mounted.

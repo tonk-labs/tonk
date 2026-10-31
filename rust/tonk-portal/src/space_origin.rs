@@ -381,11 +381,21 @@ pub(crate) fn broker_port(iframe: &HtmlIFrameElement, origin: &str, with: &Locat
     let _ = parent.post_message(&request, &host);
 }
 
+/// Whether `did`, the first segment of an app address, names one of the
+/// person's accounts, asked of the profile's origin where sites render at
+/// `pattern`. An account not signed in to is switched to first, so the
+/// profile the app shows is that account's; the frame that asked is then
+/// let go, since the profile renders as the app's site. `answered` hears
+/// `false` for anything else, a space.
+pub fn account(pattern: &str, did: &str, answered: impl FnOnce(bool) + 'static) {
+    connector::account(pattern, did, answered);
+}
+
 /// The profile's origin, framed unseen by the app's page while it shows a
 /// space itself: only the profile's worker answers a space's worker for the
 /// person's persona, and only a page of its origin opens a port to it. The
-/// frame comes up the first time a port is asked for, and mints each one on
-/// the page's asking.
+/// frame comes up the first time it is asked something, and answers each
+/// ask by its id.
 mod connector {
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -400,15 +410,15 @@ mod connector {
 
     use super::{shell_url, site_origin};
 
-    type Minted = Box<dyn FnOnce(MessagePort)>;
+    type Answered = Box<dyn FnOnce(&MessageEvent)>;
 
     struct Connector {
         iframe: HtmlIFrameElement,
         origin: String,
         ready: bool,
         /// Asked before the frame was ready, to ask once it is.
-        waiting: Vec<(Location, Minted)>,
-        asked: HashMap<u32, Minted>,
+        waiting: Vec<(Object, Answered)>,
+        asked: HashMap<u32, Answered>,
         next: u32,
     }
 
@@ -419,7 +429,46 @@ mod connector {
     /// Have the profile's origin, where sites render at `pattern`, mint a
     /// port to its worker for `with`, and hand it to `minted`.
     pub(super) fn mint(pattern: &str, with: &Location, minted: impl FnOnce(MessagePort) + 'static) {
-        let minted: Minted = Box::new(minted);
+        let message = said("mint-port");
+        if let Some(space) = with.space() {
+            let _ = Reflect::set(&message, &"repo".into(), &JsValue::from_str(space));
+        }
+        let _ = Reflect::set(
+            &message,
+            &"branch".into(),
+            &JsValue::from_str(with.effective_branch()),
+        );
+        send(pattern, message, move |event: &MessageEvent| {
+            if let Ok(port) = event.ports().get(0).dyn_into::<MessagePort>() {
+                minted(port);
+            }
+        });
+    }
+
+    /// See [`super::account`].
+    pub(super) fn account(pattern: &str, did: &str, answered: impl FnOnce(bool) + 'static) {
+        let message = said("account");
+        let _ = Reflect::set(&message, &"did".into(), &JsValue::from_str(did));
+        send(pattern, message, move |event: &MessageEvent| {
+            let account = Reflect::get(&event.data(), &"account".into())
+                .ok()
+                .and_then(|account| account.as_bool())
+                .unwrap_or(false);
+            if account {
+                close();
+            }
+            answered(account);
+        });
+    }
+
+    fn said(what: &str) -> Object {
+        let message = Object::new();
+        let _ = Reflect::set(&message, &"__tonkOrigin".into(), &JsValue::from_str(what));
+        message
+    }
+
+    fn send(pattern: &str, message: Object, answered: impl FnOnce(&MessageEvent) + 'static) {
+        let answered: Answered = Box::new(answered);
         CONNECTOR.with_borrow_mut(|connector| {
             if connector.is_none() {
                 *connector = open(pattern);
@@ -429,9 +478,9 @@ mod connector {
                 return;
             };
             if connector.ready {
-                ask(connector, with, minted);
+                ask(connector, message, answered);
             } else {
-                connector.waiting.push((with.clone(), minted));
+                connector.waiting.push((message, answered));
             }
         });
     }
@@ -461,29 +510,27 @@ mod connector {
         })
     }
 
-    fn ask(connector: &mut Connector, with: &Location, minted: Minted) {
+    /// Let the frame go: what it was asked for is no longer the app's to
+    /// ask.
+    fn close() {
+        if let Some(connector) = CONNECTOR.with_borrow_mut(Option::take) {
+            connector.iframe.remove();
+        }
+    }
+
+    fn ask(connector: &mut Connector, message: Object, answered: Answered) {
         let Some(target) = connector.iframe.content_window() else {
             return;
         };
         let id = connector.next;
         connector.next += 1;
-        connector.asked.insert(id, minted);
-        let message = Object::new();
-        let _ = Reflect::set(&message, &"__tonkOrigin".into(), &"mint-port".into());
+        connector.asked.insert(id, answered);
         let _ = Reflect::set(&message, &"id".into(), &id.into());
-        if let Some(space) = with.space() {
-            let _ = Reflect::set(&message, &"repo".into(), &JsValue::from_str(space));
-        }
-        let _ = Reflect::set(
-            &message,
-            &"branch".into(),
-            &JsValue::from_str(with.effective_branch()),
-        );
         let _ = target.post_message(&message, &connector.origin);
     }
 
-    /// What the frame says: that it is ready to mint, and each port it
-    /// minted. Heard only from the frame, on the profile's origin.
+    /// What the frame says: that it is ready to be asked, and each answer.
+    /// Heard only from the frame, on the profile's origin.
     fn hear(iframe: &HtmlIFrameElement, origin: &str) {
         let Some(window) = window() else {
             return;
@@ -507,25 +554,23 @@ mod connector {
                         return;
                     };
                     connector.ready = true;
-                    for (with, minted) in std::mem::take(&mut connector.waiting) {
-                        ask(connector, &with, minted);
+                    for (message, answered) in std::mem::take(&mut connector.waiting) {
+                        ask(connector, message, answered);
                     }
                 }),
-                Some("minted") => {
-                    let id = Reflect::get(&data, &"id".into())
+                Some("answered") => {
+                    let answered = Reflect::get(&data, &"id".into())
                         .ok()
                         .and_then(|id| id.as_f64())
-                        .map(|id| id as u32);
-                    let port = event.ports().get(0).dyn_into::<MessagePort>().ok();
-                    let minted = id.and_then(|id| {
-                        CONNECTOR.with_borrow_mut(|connector| {
-                            connector
-                                .as_mut()
-                                .and_then(|connector| connector.asked.remove(&id))
-                        })
-                    });
-                    if let (Some(minted), Some(port)) = (minted, port) {
-                        minted(port);
+                        .and_then(|id| {
+                            CONNECTOR.with_borrow_mut(|connector| {
+                                connector
+                                    .as_mut()
+                                    .and_then(|connector| connector.asked.remove(&(id as u32)))
+                            })
+                        });
+                    if let Some(answered) = answered {
+                        answered(&event);
                     }
                 }
                 _ => {}
