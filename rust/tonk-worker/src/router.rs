@@ -879,6 +879,39 @@ pub mod tests {
             .expect("member-role query")
     }
 
+    /// Query all `MemberKind` rows on `repo`'s content branch.
+    pub(crate) async fn content_member_kinds(
+        state: &super::AppState,
+        repo: &str,
+    ) -> Vec<tonk_schema::MemberKind> {
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_repository::{Branch, Repository, RepositoryExt as _};
+        let tonk = state.read().await;
+        let repository: Repository = tonk
+            .profile
+            .space(repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .expect("repo loads");
+        let content: Branch = repository
+            .branch("main")
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .expect("content branch opens");
+        content
+            .query()
+            .select(Query::<tonk_schema::MemberKind> {
+                this: Term::var("this"),
+                kind: Term::var("kind"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("member-kind query")
+    }
+
     /// Query all `MemberName` rows on `repo`'s content branch.
     pub(crate) async fn content_member_names(
         state: &super::AppState,
