@@ -131,6 +131,44 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A space the app shows itself asks the page for a delegation from the
+    /// account as it does inside the profile: the passkey prompt runs on
+    /// the page, and the profile's worker, reached through its unseen
+    /// frame, signs.
+    #[dialog_common::test]
+    async fn it_delegates_from_the_account_to_a_space_shown_itself(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "shown-itself@example.com").await?;
+        let space = create_space(&driver, "Delegating").await?;
+        goto(&driver, env.tonk_web.join(&format!("/{space}"))?.as_str()).await?;
+        driver.enter_default_frame().await?;
+        enter_guest(&driver).await?;
+        wait_for_displayed(&driver, ".blank-canvas").await?;
+        let minted = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                window.tonk.delegate({ subject: arguments[0], command: "/", audience: arguments[0] })
+                    .then(chain => done({ chain }))
+                    .catch(error => done({ error: String(error) }));
+                "#,
+                vec![serde_json::json!(space)],
+            )
+            .await?;
+        anyhow::ensure!(
+            minted.json()["chain"]
+                .as_str()
+                .is_some_and(|chain| !chain.is_empty()),
+            "the page minted no delegation: {}",
+            minted.json()
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// An app address whose first segment is the DID of one of the person's
     /// accounts shows that account's profile, switched to, at the rest of
     /// the address.

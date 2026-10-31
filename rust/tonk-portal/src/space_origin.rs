@@ -408,7 +408,7 @@ mod connector {
     use wasm_bindgen::{JsCast, JsValue};
     use web_sys::{HtmlIFrameElement, MessageEvent, MessagePort, window};
 
-    use super::{shell_url, site_origin};
+    use super::{expose_profile_worker, shell_url, site_origin};
 
     type Answered = Box<dyn FnOnce(&MessageEvent)>;
 
@@ -499,6 +499,9 @@ mod connector {
         let _ = iframe.set_attribute("title", "profile");
         iframe.set_src(&format!("{}#connector", shell_url(&origin)));
         hear(&iframe, &origin);
+        // What a passkey ceremony this page runs for the space derived is
+        // the profile's worker's to hear, through this frame.
+        expose_profile_worker(&iframe, &origin);
         document.body()?.append_child(&iframe).ok()?;
         Some(Connector {
             iframe,
