@@ -674,7 +674,7 @@ impl dialog_capability::Provider<tonk_schema::command::Load> for crate::router::
 /// this device's `(profile, subject)` on the branch — the entity `tonk/replica`
 /// and `tonk:binder` live on. Queried (not derived) so it stays correct even if
 /// tonk's and dialog's hashing drift. `None` if no replica is on the branch yet.
-async fn origin_entity(
+pub(super) async fn origin_entity(
     tonk: &crate::worker::TonkState,
     state: &dialog_reactor::BranchSession,
 ) -> Option<dialog_artifacts::Entity> {

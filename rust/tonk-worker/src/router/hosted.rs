@@ -182,6 +182,15 @@ impl HostedPeer {
         access::space_chains(&state, agent, space).await
     }
 
+    /// The tree of `<tonk-display>` elements `route` mounts in the mounted
+    /// space `space`, or its home when `route` is empty, read from the
+    /// replica here as it is now. Each node carries the route that shows it
+    /// alone. See [`super::view_tree`].
+    pub async fn outline(&self, space: &Did, route: &str) -> Result<serde_json::Value, String> {
+        let route = super::view_tree::route(&self.state, space, route).await?;
+        super::view_tree::outline(&self.state, space, &route).await
+    }
+
     /// The DID this peer signs as.
     pub async fn did(&self) -> Did {
         self.state.read().await.profile.did()

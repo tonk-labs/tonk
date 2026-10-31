@@ -54,9 +54,16 @@ Set `edit` only when they want to change things from the view and the space is
 `read-write`. Hosts without inline views show nothing; then point the person to
 the space in Tonk at {origin}.
 
+`tonk_outline` lists the views a space renders as a tree, each node with the
+route that shows it alone. To show one part of a larger page, such as one list,
+outline the space and pass that node's `route` to `tonk_open_space` as `view`.
+Outline records show how many items a view rendered; a node with an `error`
+did not render.
+
 You cannot see a view, whether you show it or author it with notation. Never
 claim that one rendered or that a control works, and never describe a query as
-proof of either; ask the person how it looks.
+proof of either; ask the person how it looks, or ask them to open the space in
+Tonk at {origin} to check.
 
 ## Manuals
 

@@ -51,9 +51,38 @@ impl RenderRoute {
     }
 }
 
+/// Writes the shorthand [`RenderRoute::parse`] reads, without the
+/// leading `/`.
+impl std::fmt::Display for RenderRoute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(entity) = &self.entity {
+            write!(f, "{entity}@")?;
+        }
+        f.write_str(&self.model)?;
+        if let Some(view) = &self.view {
+            write!(f, "!{view}")?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[dialog_common::test]
+    fn it_writes_the_shorthand_it_parses() {
+        for input in [
+            "person",
+            "alice@person",
+            "did:key:zABC@person!card",
+            "person!directory",
+        ] {
+            let route = RenderRoute::parse(input).unwrap();
+            assert_eq!(route.to_string(), input);
+            assert_eq!(RenderRoute::parse(&route.to_string()).unwrap(), route);
+        }
+    }
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]

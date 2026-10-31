@@ -330,7 +330,13 @@
         frame.contentWindow.postMessage(
           {
             tonkFrame: 'access',
-            route: { subject: route.subject, path: route.path, edit: route.edit, remote: route.remote },
+            route: {
+              subject: route.subject,
+              path: route.path,
+              view: route.view,
+              edit: route.edit,
+              remote: route.remote,
+            },
             access,
           },
           origin,

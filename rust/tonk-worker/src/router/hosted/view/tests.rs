@@ -246,6 +246,139 @@ async fn opening_a_space_names_the_relay_and_the_remote() {
     assert_eq!(tools()[1]["_meta"]["ui"]["visibility"][0], "app");
 }
 
+#[dialog_common::test]
+async fn opening_one_view_names_its_model_entity_and_facet() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let (verified, writer) = verified(&agent, &space, &["get"]).await;
+    let open = |view: &str| {
+        let arguments = json!({ "space": space.did().to_string(), "view": view });
+        let (verified, writer) = (&verified, &writer);
+        async move {
+            call(
+                OPEN,
+                &arguments,
+                verified,
+                writer,
+                "",
+                "session",
+                ORIGIN,
+                &TicketKey::derive("secret"),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let shown = open("tonk:groceries@tonk/list!card").await;
+    assert_eq!(shown["isError"], false, "{shown}");
+    assert_eq!(
+        shown["structuredContent"]["view"],
+        json!({ "model": "tonk/list", "entity": "tonk:groceries", "facet": "card" })
+    );
+    let every = open("tonk/note").await;
+    assert_eq!(
+        every["structuredContent"]["view"],
+        json!({ "model": "tonk/note", "entity": null, "facet": null }),
+        "a model alone shows every instance"
+    );
+    let refused = open("@tonk/list").await;
+    assert_eq!(refused["isError"], true, "{refused}");
+    // The home is the writer's replica entity, which the view's peer does
+    // not have: it opens by path, on the view's own replica.
+    let home = open("urn:replica:writer@tonk/space").await;
+    assert_eq!(home["isError"], false, "{home}");
+    assert_eq!(home["structuredContent"]["view"], Value::Null);
+    assert_eq!(home["structuredContent"]["path"], "/");
+}
+
+/// A granted space's writer that answers an outline, after the agent
+/// space's writer has said what the space is open to.
+struct Outlining {
+    agent: AgentWriter,
+    asked: std::sync::Mutex<Vec<(String, Option<String>)>>,
+}
+
+impl Writers for Outlining {
+    async fn call(
+        &self,
+        verified: &Verified,
+        bearer: &str,
+        mcp_session: &str,
+        space: &Did,
+        request: Request<Body>,
+    ) -> Response<Body> {
+        if space == verified.agent() {
+            return self
+                .agent
+                .call(verified, bearer, mcp_session, space, request)
+                .await;
+        }
+        assert_eq!(space, &self.agent.space, "the granted space's writer");
+        assert_eq!(request.method(), Method::GET);
+        assert_eq!(request.uri().path(), "/api/outline");
+        let grants = request
+            .headers()
+            .get(GRANTS_HEADER)
+            .map(|grants| grants.to_str().unwrap().to_owned());
+        self.asked
+            .lock()
+            .unwrap()
+            .push((request.uri().query().unwrap_or_default().to_owned(), grants));
+        Response::new(Body::from(
+            json!({ "space": space.to_string(), "outline": { "model": "tonk/space" } }).to_string(),
+        ))
+    }
+}
+
+#[dialog_common::test]
+async fn an_outline_asks_the_spaces_writer_from_the_route_given() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let (verified, writer) = verified(&agent, &space, &["get"]).await;
+    let writers = Outlining {
+        agent: writer,
+        asked: Default::default(),
+    };
+    let outline = |arguments: Value| {
+        let (verified, writers) = (&verified, &writers);
+        async move {
+            call(
+                OUTLINE,
+                &arguments,
+                verified,
+                writers,
+                "",
+                "session",
+                ORIGIN,
+                &TicketKey::derive("secret"),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let home = outline(json!({ "space": space.did().to_string() })).await;
+    assert_eq!(home["isError"], false, "{home}");
+    assert_eq!(home["structuredContent"]["outline"]["model"], "tonk/space");
+    let nested = outline(json!({
+        "space": space.did().to_string(),
+        "route": "tonk:groceries@tonk/list",
+    }))
+    .await;
+    assert_eq!(nested["isError"], false, "{nested}");
+    let asked = writers.asked.lock().unwrap().clone();
+    assert_eq!(asked[0].0, "", "no route: the home");
+    assert_eq!(asked[1].0, "route=tonk%3Agroceries%40tonk%2Flist");
+    assert!(
+        asked.iter().all(|(_, grants)| grants.is_some()),
+        "a granted space's writer is told its grants"
+    );
+    let elsewhere = outline(json!({
+        "space": Ed25519Signer::generate().await.unwrap().did().to_string(),
+    }))
+    .await;
+    assert_eq!(elsewhere["isError"], true, "a space it does not reach");
+}
+
 #[test]
 fn the_relay_is_filled_with_the_origin_it_was_reached_on() {
     let read = read_resource(RELAY_URI, "https://tonk.example/").unwrap();
