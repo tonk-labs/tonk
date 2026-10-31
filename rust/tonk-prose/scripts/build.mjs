@@ -9,6 +9,11 @@
 //                                  plugins, markdown round-trip),
 //                                  loaded on demand via dynamic import
 //                                  by the first connected element.
+//   ../tonk-core/assets/library/prose-editor/core.js
+//                                — the editor core again, for the prose
+//                                  library component's <prose-editor>,
+//                                  written as the method expression that
+//                                  returns it (see below).
 //
 // The shell stays tiny on purpose: pages that ship the bundle but
 // never render a `<tonk-prose>` element pay only for the custom
@@ -59,12 +64,30 @@ const options = {
   logLevel: "info",
 };
 
+// The library component's copy of the core. <prose-editor> is branch
+// data, with no URL to import a chunk from, so the core is one of its
+// methods: an IIFE wrapped by the banner and footer into a function that
+// evaluates the bundle and returns its exports (`createEditor`).
+/** @type {import('esbuild').BuildOptions} */
+const library = {
+  entryPoints: [resolve(root, "src-js/editor/index.ts")],
+  outfile: resolve(root, "../tonk-core/assets/library/prose-editor/core.js"),
+  bundle: true,
+  format: "iife",
+  globalName: "core",
+  target: ["es2022"],
+  minify: true,
+  banner: { js: "() => {" },
+  footer: { js: "return core;\n}" },
+  logLevel: "info",
+};
+
 const watch = process.argv.includes("--watch");
 
 if (watch) {
-  const ctx = await context(options);
-  await ctx.watch();
+  const contexts = [await context(options), await context(library)];
+  await Promise.all(contexts.map((ctx) => ctx.watch()));
   console.log("[tonk-prose] watching…");
 } else {
-  await build(options);
+  await Promise.all([build(options), build(library)]);
 }

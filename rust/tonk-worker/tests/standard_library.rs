@@ -36,7 +36,7 @@ const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profi
 /// `table.yaml` reached the seed before anything complained.
 const TABLE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/table.yaml");
 const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/notebook.yaml");
-const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose.yaml");
+const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose-editor.yaml");
 const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
 const META_LIBRARY: &str = include_str!("../../tonk-core/assets/library/meta.yaml");
 const VERSION_CONTROL_LIBRARY: &str =
@@ -1373,9 +1373,13 @@ async fn it_lowers_the_notebook_library() {
 }
 
 #[dialog_common::test]
-async fn it_lowers_the_prose_library() {
-    assert_component_library_lowers("prose library (prose.yaml)", "prose.yaml", PROSE_LIBRARY)
-        .await;
+async fn it_lowers_the_prose_editor_library() {
+    assert_component_library_lowers(
+        "prose-editor library (prose-editor.yaml)",
+        "prose-editor.yaml",
+        PROSE_LIBRARY,
+    )
+    .await;
 }
 
 #[dialog_common::test]

@@ -219,4 +219,4 @@ connect instead of wedging the runtime.
 `rust/tonk-core/assets/library/table.yaml` defines the `tonk:table`
 concept, the `table/edit` command + persistence rule, instance and
 directory views, and a seeded demo workbook — the same shape as
-`prose.yaml`.
+`prose-editor.yaml`.

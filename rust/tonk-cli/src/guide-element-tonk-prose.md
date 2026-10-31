@@ -26,8 +26,13 @@ a **versioned envelope** (markdown + HLC ETag). Store that verbatim and
 feed it back as the element's text: the element recognizes its own
 round-tripped echo by the version and drops it, so the caret is never
 disturbed. Seeding with a bare markdown string also works (no version →
-always adopted). This is the `prose` library module
-(`rust/tonk-core/assets/library/prose.yaml`).
+always adopted). The `prose-editor` library component
+(`rust/tonk-core/assets/library/prose-editor.yaml`) stores documents in
+this shape and renders them with `<prose-editor>`: this element ported to
+an `element!` in that file, carrying the same editor core, so installing
+the component needs nothing from the host. Its code blocks embed
+`<code-editor>` when the space has that component, and are plain
+monospace text otherwise.
 
 ## Attributes
 

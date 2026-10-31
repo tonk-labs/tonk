@@ -2792,7 +2792,7 @@ view!:
       {name}
 
 # The library's components a space can install, each beside the others
-# and beside the space's seed: issue, meta, notebook, prose, table,
+# and beside the space's seed: issue, meta, notebook, prose-editor, table,
 # version-control (every library file but `core.yaml`, which every space
 # runs, and `profile.yaml`, the profile's). An install is recorded like the seed's and brought up to
 # date the same way when the space mounts; installing one already there
@@ -2824,8 +2824,8 @@ library/component!:
   name: "notebook"
 
 library/component!:
-  this: tonk:library/prose
-  name: "prose"
+  this: tonk:library/prose-editor
+  name: "prose-editor"
 
 library/component!:
   this: tonk:library/table

@@ -5643,8 +5643,8 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         "/library/notebook.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/notebook.yaml").to_owned())
         }
-        "/library/prose.yaml" => {
-            Ok(include_str!("../../../tonk-core/assets/library/prose.yaml").to_owned())
+        "/library/prose-editor.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/prose-editor.yaml").to_owned())
         }
         "/library/table.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/table.yaml").to_owned())
@@ -16132,8 +16132,8 @@ mod library_quarantine_tests {
                 include_str!("../../../tonk-core/assets/library/notebook.yaml"),
             ),
             (
-                "prose",
-                include_str!("../../../tonk-core/assets/library/prose.yaml"),
+                "prose-editor",
+                include_str!("../../../tonk-core/assets/library/prose-editor.yaml"),
             ),
             (
                 "table",
