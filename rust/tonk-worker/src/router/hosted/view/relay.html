@@ -390,6 +390,19 @@
         }
         if (message.type === 'reload') return navigate(route.path);
         if (['analytics', 'unsubscribe'].includes(message.type)) return;
+        // A view of a space this connection may only read refuses a write
+        // before the peer commits it, so nothing shows as saved that its
+        // sync would then be refused.
+        const asked =
+          message.type === 'fetch' && new URL(message.path, 'https://tonk.foundation');
+        const writes =
+          message.type === 'transact' ||
+          (message.type === 'evaluate' && message.transact !== false) ||
+          (asked &&
+            (message.method ?? 'GET').toUpperCase() !== 'GET' &&
+            /\/(transact|evaluate)(\/|$)/.test(asked.pathname) &&
+            asked.searchParams.get('transact') !== 'false');
+        if (writes && !route.edit) throw Error('This space is read-only for this connection.');
         if (message.type === 'fetch') {
           const target = new URL(message.path, 'https://tonk.foundation');
           if (target.origin !== 'https://tonk.foundation')
