@@ -53,6 +53,7 @@ examine state
    status     Where you are: space, branch, sync, authority
    show       Describe the schema, a concept, an entity, or a view
    query      Read the instances of a concept
+   log        List revisions, or the changes recorded for a concept
    render     Render a view to HTML
 
 write facts
@@ -147,6 +148,36 @@ enum Command {
     /// fetches the upstream head without merging.
     #[command(after_help = "Examples:\n  tonk status\n  tonk status --json")]
     Status {
+        /// Emit versioned camelCase JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// List the revisions of main, or the changes recorded for a concept
+    ///
+    /// Every commit is a revision: who made it, its edition (causal
+    /// depth), and the revisions it built on. With a concept, lists the
+    /// claims recorded on that concept's fields instead — one row per
+    /// assert or retract, grouped by revision, newest first. Read-only;
+    /// reads the history dialog keeps in the branch's own tree, so a
+    /// pulled space carries its history with it.
+    #[command(
+        after_help = "Examples:\n  tonk log\n  tonk log task\n  tonk log task alice\n  tonk log task --revision 12@<origin>\n  tonk log task --json"
+    )]
+    Log {
+        /// Concept whose recorded changes to list.
+        #[arg(value_name = "CONCEPT")]
+        concept: Option<String>,
+        /// Entity bookmark or URI to narrow CONCEPT's changes to.
+        #[arg(value_name = "ENTITY", requires = "concept")]
+        entity: Option<String>,
+        /// Only what this one revision recorded, as `<edition>@<origin>`
+        /// from `tonk log`.
+        #[arg(long, value_name = "VERSION")]
+        revision: Option<String>,
+        /// How many revisions to list, newest first.
+        #[arg(long, value_name = "N", default_value_t = 20)]
+        limit: usize,
         /// Emit versioned camelCase JSON.
         #[arg(long)]
         json: bool,
@@ -1069,6 +1100,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Push => ("push", None),
         Command::Pull => ("pull", None),
         Command::Status { .. } => ("status", None),
+        Command::Log { .. } => ("log", None),
         Command::Invite { .. } => ("invite", None),
         Command::Join { .. } => ("join", None),
         Command::Remote { command, .. } => (
@@ -1129,6 +1161,7 @@ fn uses_active_space(command: &Command) -> bool {
             | Command::Push
             | Command::Pull
             | Command::Status { .. }
+            | Command::Log { .. }
             | Command::Invite { .. }
             | Command::Remote { .. }
             | Command::Blob { .. }
@@ -1251,6 +1284,23 @@ async fn main() {
         Command::Push => sync_op(SyncOp::Push, space.as_deref()).await,
         Command::Pull => sync_op(SyncOp::Pull, space.as_deref()).await,
         Command::Status { json } => status_op(json, space.as_deref()).await,
+        Command::Log {
+            concept,
+            entity,
+            revision,
+            limit,
+            json,
+        } => {
+            log_op(
+                concept.as_deref(),
+                entity.as_deref(),
+                revision.as_deref(),
+                limit,
+                json,
+                space.as_deref(),
+            )
+            .await
+        }
         Command::Invite {
             base_url,
             remote,
@@ -2098,6 +2148,98 @@ fn print_sync_outcome(op: SyncOp, outcome: &SyncOutcome) {
     } else {
         println!("{verb}");
     }
+}
+
+async fn log_op(
+    concept: Option<&str>,
+    entity: Option<&str>,
+    revision: Option<&str>,
+    limit: usize,
+    json: bool,
+    space: Option<&str>,
+) -> ExitCode {
+    use tonk_cli::log;
+
+    let (_, site) = match open_selected(space).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+    if concept.is_none() && revision.is_none() {
+        return match log::revisions(&site, limit).await {
+            Ok(rows) if json => print_json(&Rows::new("tonk.log.v1", rows)),
+            Ok(rows) => {
+                print_revision_log(&rows, limit);
+                ExitCode::Success
+            }
+            Err(err) => print_coded(err),
+        };
+    }
+    let filter = match log::filter_for(&site, concept, entity, revision).await {
+        Ok(filter) => filter,
+        Err(err) => return print_coded(err),
+    };
+    match log::changes(&site, &filter, limit).await {
+        Ok(rows) if json => print_json(&Rows::new("tonk.log-changes.v1", rows)),
+        Ok(rows) => {
+            print_change_log(&rows, limit);
+            ExitCode::Success
+        }
+        Err(err) => print_coded(err),
+    }
+}
+
+fn print_revision_log(rows: &[tonk_cli::log::RevisionRow], limit: usize) {
+    let mut listing = Listing::new(
+        &["VERSION", "EDITION", "ISSUER", "AUTHORITY", "PARENTS"],
+        "no revisions yet; the first write to this space creates one",
+    );
+    for row in rows {
+        listing.push([
+            row.version.clone(),
+            row.edition.to_string(),
+            row.issuer.clone(),
+            row.authority.clone(),
+            if row.parents.is_empty() {
+                listing::ABSENT.to_owned()
+            } else {
+                row.parents.join(",")
+            },
+        ]);
+    }
+    if rows.len() == limit {
+        listing.note(format!(
+            "showing the newest {limit} revisions; pass --limit to see more"
+        ));
+    }
+    println!("{}", listing.render());
+}
+
+fn print_change_log(rows: &[tonk_cli::log::ChangeRow], limit: usize) {
+    let mut listing = Listing::new(
+        &["VERSION", "CHANGE", "ENTITY", "ATTRIBUTE", "VALUE"],
+        "no recorded changes match; `tonk log` lists every revision",
+    );
+    let mut revisions = 0usize;
+    let mut last: Option<&str> = None;
+    for row in rows {
+        if last != Some(row.version.as_str()) {
+            revisions += 1;
+            last = Some(row.version.as_str());
+        }
+        listing.push([
+            row.version.clone(),
+            row.change.to_owned(),
+            row.name.clone().unwrap_or_else(|| row.entity.clone()),
+            row.attribute.clone(),
+            row.value_text.clone(),
+        ]);
+    }
+    if revisions == limit {
+        listing.note(format!(
+            "showing the changes of the newest {limit} matching revisions; pass --limit to see more"
+        ));
+    }
+    println!("{}", listing.render());
 }
 
 async fn status_op(json: bool, space: Option<&str>) -> ExitCode {
