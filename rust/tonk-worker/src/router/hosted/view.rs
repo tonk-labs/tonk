@@ -82,9 +82,9 @@ pub fn tools() -> Vec<Value> {
             "description": "Show a route of a space inline in the chat, live, as the space's own \
                 page renders it. Use a path within the space, such as / or /notebook/<entity>; \
                 entity route parameters must be actual entity URIs returned by tonk_query, never \
-                titles or names. Set edit to let the user change the space from the view (only \
-                for a space this connection may write); otherwise the view is read-only. \
-                Showing a route does not verify that it rendered.",
+                titles or names. The person can change the space from the view wherever this \
+                connection may write it; a space it may only read is shown read-only. Showing \
+                a route does not verify that it rendered.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -102,11 +102,6 @@ pub fn tools() -> Vec<Value> {
                         "description": "One view of the space to show on its own, instead of \
                             the page at path: a route from tonk_outline (entity@model, \
                             entity@model!view, or a model for every instance).",
-                    },
-                    "edit": {
-                        "type": "boolean",
-                        "default": false,
-                        "description": "Let the user edit the space from the view.",
                     },
                 },
                 "required": ["space"],
@@ -356,7 +351,14 @@ pub async fn call<W: Writers>(
             .await,
         );
     }
-    let edit = arguments["edit"].as_bool().unwrap_or(false);
+    // A shown view edits wherever the connection may write. The view
+    // asks for access with what it was shown with, which can only be
+    // narrower.
+    let edit = if name == OPEN {
+        access.agent || access.write
+    } else {
+        arguments["edit"].as_bool().unwrap_or(false)
+    };
     if edit && !access.agent && !access.write {
         return Some(error(
             "This connection may only read that space, so its view cannot edit.",

@@ -50,8 +50,8 @@ subject as `this:`.
 and live, as the space's own page renders it. Use it when the person wants to
 see or work with something in a space: pass the exact `subject` and a path,
 `/` or a route the space defines, with entity URIs read back from `tonk_query`.
-Set `edit` only when they want to change things from the view and the space is
-`read-write`. Hosts without inline views show nothing; then point the person to
+The person can change a `read-write` space from its view; a `read` space shows
+read-only. Hosts without inline views show nothing; then point the person to
 the space in Tonk at {origin}.
 
 `tonk_outline` lists the views a space renders as a tree, each node with the

@@ -223,6 +223,35 @@ async fn a_space_the_agent_space_does_not_reach_is_refused() {
     assert_eq!(result["isError"], true, "{result}");
 }
 
+/// A shown view edits wherever the connection may write, whatever the
+/// agent asked for, and stays read-only on a space granted only read.
+#[dialog_common::test]
+async fn a_view_edits_wherever_the_connection_may_write() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    for (verbs, edits) in [(&["get", "put"][..], true), (&["get"][..], false)] {
+        let (verified, writer) = verified(&agent, &space, verbs).await;
+        let shown = call(
+            OPEN,
+            &json!({ "space": space.did().to_string(), "path": "/" }),
+            &verified,
+            &writer,
+            "",
+            "session",
+            ORIGIN,
+            &TicketKey::derive("secret"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(shown["isError"], false, "{shown}");
+        assert_eq!(shown["structuredContent"]["edit"], edits, "{verbs:?}");
+    }
+    assert!(
+        tools()[0]["inputSchema"]["properties"].get("edit").is_none(),
+        "the agent no longer chooses"
+    );
+}
+
 #[dialog_common::test]
 async fn opening_a_space_names_the_relay_and_the_remote() {
     let agent = Ed25519Signer::generate().await.unwrap();
