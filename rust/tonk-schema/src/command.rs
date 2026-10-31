@@ -1151,7 +1151,7 @@ impl Command for EnrollCustomer {
 /// self-subjected `/customer/resend` invocation with its own device key.
 /// Deliberately NOT a re-enrollment — that path runs a passkey ceremony
 /// the person waiting on an email never asked for.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct ResendActivation {
     /// The command entity (a fresh id per press).
     pub this: Entity,

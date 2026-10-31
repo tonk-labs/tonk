@@ -39,6 +39,38 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// The notice of an account waiting on its activation email asks for
+    /// another, and says how that went. Whether a mail goes out is the
+    /// service's to decide: one so soon after the last sends nothing.
+    #[dialog_common::test]
+    async fn it_says_how_a_resent_activation_email_went(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        enroll_only(&driver, &env, "resend-notice@example.com").await?;
+
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_displayed(&driver, ".account-email-notice button")
+            .await?
+            .click()
+            .await?;
+        let said = wait_for_displayed(&driver, ".account-email-notice .account-resend").await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let text = said.text().await?;
+            if text.contains("Sent") {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the notice says {text:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// A space's DID as the app's address shows the space itself, framed by
     /// the app with no profile around it, reaching the person's persona
     /// through the profile's origin framed unseen beside it.

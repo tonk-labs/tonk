@@ -820,6 +820,7 @@ view!:
       .account-email-notice button { min-height:44px; padding:10px 12px; color:inherit;
         font:600 15px/1.15 var(--cond); text-decoration:underline;
         text-underline-offset:3px; white-space:nowrap; }
+      .account-email-notice .account-resend { font:400 15px/1.3 var(--cond); opacity:.8; }
       .visually-hidden { position:absolute; width:1px; height:1px; padding:0; margin:-1px;
         overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
       @media (hover:none) {
@@ -1096,7 +1097,7 @@ command!: &account/resend-activation
     at:
       description: The click timestamp, so every resend is a distinct request.
       the: xyz.tonk.resend-activation/at
-      as: natural:64
+      as: float:64
 
 # Toggle auto-sync (pause ⇄ resume) for a space. Dispatched by the FAB's
 # `<ui-sync-status onpause=…>` cap on alt/option-click. Defined here on the
@@ -4752,7 +4753,29 @@ view!:
       <aside class="account-email-notice" data-account-status={status} aria-label="account activation">
         <span>Check your email to finish setting up this account.</span>
         <button type="button" on:resend-activation=account/resend-activation>resend activation email</button>
+        <tonk-display model="tonk:account/resend" view="notice">
+          <span slot="no-entity"></span>
+          <span slot="no-model"></span>
+          <span slot="loading"></span>
+        </tonk-display>
       </aside>
+
+# How the last `account/resend-activation` went, on one entity in the
+# profile's session overlay: nothing of it is stored or synced.
+concept!: &account/resend
+  this: tonk:account/resend
+  description: How the last request for another activation email went, for the notice that offered it.
+  with:
+    said:
+      description: What to tell the person, that the email is being sent, was sent, or could not be.
+      the: xyz.tonk.account-resend/said
+      as: text
+
+view!:
+  this: tonk:account/resend
+  show:
+    notice: |
+      <span class="account-resend" role="status" data-id={this}>{said}</span>
 
 # An onboarding account that has not been handed over is interim.
 # ---------------------------------------------------------------

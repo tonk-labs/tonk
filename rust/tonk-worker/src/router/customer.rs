@@ -12,6 +12,8 @@ use axum::{
     Json,
     extract::{Extension, State},
 };
+use dialog_artifacts::Entity;
+use dialog_query::{Cardinality, the};
 use dialog_ucan_core::time::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
 use tonk_account::customer::{CustomerStatus, Receipt};
@@ -198,48 +200,72 @@ impl dialog_capability::Provider<tonk_schema::command::EnrollCustomer>
 ///
 /// No ceremony and no custody material — the enrollment's rows stand at
 /// the service, and re-enrolling to get a mail re-runs a passkey prompt
-/// the person waiting on their inbox never asked for. Outcome is the
-/// mail itself; failures are logged, and the rate limit means a silent
-/// round is the ordinary answer to an impatient second press.
+/// the person waiting on their inbox never asked for. What came of it is
+/// said where the notice that offered it shows ([`RESEND_URI`]): that it is
+/// being sent, that it was, or that it could not be.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::ResendActivation>
     for crate::router::CommandEnv
 {
     async fn execute(&self, _command: tonk_schema::command::ResendActivation) {
-        let state = self.state().read().await;
-        let account = match super::identity::root_did(&state).await {
-            Ok(account) => account,
-            Err(error) => {
-                log!("resend-activation: no account root: {error}");
-                return;
-            }
-        };
-        let device = state.profile.credential().signer().clone();
-        let body = match tonk_identity::request::build_resend_invocation(device, &account).await {
-            Ok(body) => body,
-            Err(error) => {
-                log!("resend-activation: invocation did not build: {error:#}");
-                return;
-            }
-        };
-        let origin = match service_origin() {
-            Ok(origin) => origin,
-            Err(error) => {
-                log!("resend-activation: no service origin: {error}");
-                return;
-            }
-        };
-        let endpoint = match ucan_endpoint(&origin) {
-            Ok(endpoint) => endpoint,
+        let branch = &self.origin().branch;
+        say_resent(self.state(), branch, "Sending…").await;
+        let said = match resend(self.state()).await {
+            Ok(()) => "Sent. Check your inbox.",
             Err(error) => {
                 log!("resend-activation: {error}");
-                return;
+                "It could not be sent. Try again in a moment."
             }
         };
-        if let Err(error) = post_cbor(&endpoint, &body).await {
-            log!("resend-activation: the service refused: {error}");
-        }
+        say_resent(self.state(), branch, said).await;
+    }
+}
+
+/// The entity the last `account/resend-activation` says how it went on.
+const RESEND_URI: &str = "tonk:account/resend";
+
+/// Ask the service for another activation email.
+async fn resend(state: &AppState) -> Result<(), String> {
+    let state = state.read().await;
+    let account = super::identity::root_did(&state)
+        .await
+        .map_err(|error| format!("no account root: {error}"))?;
+    let device = state.profile.credential().signer().clone();
+    let body = tonk_identity::request::build_resend_invocation(device, &account)
+        .await
+        .map_err(|error| format!("invocation did not build: {error:#}"))?;
+    let origin = service_origin().map_err(|error| format!("no service origin: {error}"))?;
+    let endpoint = ucan_endpoint(&origin).map_err(|error| error.to_string())?;
+    post_cbor(&endpoint, &body)
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("the service refused: {error}"))
+}
+
+/// Say `said` of the last resend, in the overlay of `branch`, the one the
+/// page that asked is watching: nothing of it is stored or synced.
+async fn say_resent(state: &AppState, branch: &str, said: &str) {
+    let Ok(entity) = RESEND_URI.parse::<Entity>() else {
+        return;
+    };
+    let tonk = state.read().await;
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(branch)
+        .overlay()
+        .assert(
+            the!("xyz.tonk.account-resend/said")
+                .of(entity)
+                .is(said.to_owned())
+                .cardinality(Cardinality::One),
+        )
+        .write()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("resend-activation: failed to say how it went: {error}");
     }
 }
 

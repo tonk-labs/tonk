@@ -1134,9 +1134,9 @@ pub mod command {
         /// next so the transient re-fires, and gives this command an
         /// attribute no other command carries: derived attribute
         /// `xyz.tonk.resend-activation/at`.
-        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
         #[domain("xyz.tonk.resend-activation")]
-        pub struct At(pub u64);
+        pub struct At(pub f64);
     }
 
     pub mod promote {
