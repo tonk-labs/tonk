@@ -384,7 +384,7 @@ async fn an_outline_asks_the_spaces_writer_from_the_route_given() {
 }
 
 /// A view syncs from the host's sandbox, under the policy the relay
-/// resource names, so a space hosted elsewhere is refused up front
+/// resource names, so a space hosted outside it is refused up front
 /// rather than shown as a view whose first request the host blocks.
 #[dialog_common::test]
 async fn a_space_hosted_where_the_view_cannot_reach_is_not_shown() {
@@ -408,19 +408,21 @@ async fn a_space_hosted_where_the_view_cannot_reach_is_not_shown() {
         .unwrap()
     }
 
-    writer.address = Some(format!("{ORIGIN}/ucan/"));
-    let shown = open(&verified, &writer, &subject).await;
-    assert_eq!(shown["isError"], false, "{shown}");
-    let remote = url::Url::parse(shown["structuredContent"]["remote"].as_str().unwrap()).unwrap();
     let read = read_resource(RELAY_URI, ORIGIN).unwrap();
     let allowed = &read["contents"][0]["_meta"]["ui"]["csp"]["connectDomains"];
-    assert!(
-        allowed
-            .as_array()
-            .unwrap()
-            .contains(&json!(remote.origin().ascii_serialization())),
-        "the view's policy {allowed} lets it reach {remote}"
-    );
+    // The provider's own spaces, and those on another Tonk deployment.
+    for host in [ORIGIN, "https://tonk.network"] {
+        writer.address = Some(format!("{host}/ucan/"));
+        let shown = open(&verified, &writer, &subject).await;
+        assert_eq!(shown["isError"], false, "{shown}");
+        let remote =
+            url::Url::parse(shown["structuredContent"]["remote"].as_str().unwrap()).unwrap();
+        assert_eq!(remote.origin().ascii_serialization(), host);
+        assert!(
+            allowed.as_array().unwrap().contains(&json!(host)),
+            "the view's policy {allowed} lets it reach {remote}"
+        );
+    }
 
     writer.address = Some("https://elsewhere.example/ucan/".into());
     let refused = open(&verified, &writer, &subject).await;
@@ -445,8 +447,17 @@ fn the_relay_is_filled_with_the_origin_it_was_reached_on() {
     );
     assert_eq!(
         read["contents"][0]["_meta"]["ui"]["csp"]["connectDomains"],
-        json!(["https://tonk.example", "wss://tonk.example"]),
-        "the view reaches the provider and its live socket"
+        json!([
+            "https://tonk.example",
+            "wss://tonk.example",
+            "https://tonk.foundation",
+            "wss://tonk.foundation",
+            "https://tonk.network",
+            "wss://tonk.network",
+            "https://tonk.spot",
+            "wss://tonk.spot",
+        ]),
+        "the view reaches the provider, then Tonk's deployments, each with its live socket"
     );
     assert_eq!(resources()[0]["uri"], RELAY_URI);
     assert!(read_resource("ui://tonk/other.html", ORIGIN).is_none());

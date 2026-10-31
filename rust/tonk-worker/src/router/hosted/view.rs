@@ -218,10 +218,23 @@ pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
     }))
 }
 
+/// Tonk's own deployments, where most spaces live. A view may sync with
+/// these wherever it is served from. A space hosted anywhere else is
+/// refused until views can follow each grant's location.
+const TONK_ORIGINS: [&str; 3] = [
+    "https://tonk.foundation",
+    "https://tonk.network",
+    "https://tonk.spot",
+];
+
 /// The origins a view's peer may sync with: those its policy names in
-/// `connectDomains`. Only the provider's own, for now.
+/// `connectDomains`. The provider's own, then Tonk's deployments.
 fn sync_origins(origin: &str) -> Vec<String> {
-    vec![origin.trim_end_matches('/').to_owned()]
+    let origin = origin.trim_end_matches('/');
+    std::iter::once(origin)
+        .chain(TONK_ORIGINS.into_iter().filter(|known| *known != origin))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// The view's `connectDomains`: each origin it syncs with, and its
