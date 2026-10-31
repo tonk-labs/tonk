@@ -424,20 +424,23 @@
             headers: message.headers,
             body: message.body,
           });
-          const streaming = response.headers.get('content-type')?.includes('text/event-stream');
-          const body = streaming ? response.body : new Uint8Array(await response.arrayBuffer());
-          current.postMessage(
-            {
-              v: 1,
-              type: 'fetch-result',
-              id: message.id,
-              status: response.status,
-              statusText: response.statusText,
-              headers: [...response.headers],
-              body,
-            },
-            streaming ? [body] : [],
-          );
+          const result = {
+            v: 1,
+            type: 'fetch-result',
+            id: message.id,
+            status: response.status,
+            statusText: response.statusText,
+            headers: [...response.headers],
+          };
+          if (response.headers.get('content-type')?.includes('text/event-stream') && response.body) {
+            // WebKit cannot transfer a ReadableStream, so a stream goes over
+            // its own port, a chunk per credit the guest grants.
+            const channel = new MessageChannel();
+            current.postMessage({ ...result, streamPort: channel.port2 }, [channel.port2]);
+            streamOver(response.body, channel.port1);
+            return;
+          }
+          current.postMessage({ ...result, body: new Uint8Array(await response.arrayBuffer()) });
           return;
         }
         if (message.type === 'evaluate') {
@@ -485,6 +488,45 @@
             { jsonrpc: '2.0', method: 'ui/notifications/size-changed', params: { height: view } },
             '*',
           );
+      }
+      function streamOver(stream, port) {
+        const reader = stream.getReader();
+        let credit = 0,
+          pumping = false,
+          done = false;
+        const finish = (message) => {
+          done = true;
+          port.postMessage(message);
+          port.close();
+        };
+        async function pump() {
+          if (pumping) return;
+          pumping = true;
+          try {
+            while (credit > 0 && !done) {
+              const { value, done: end } = await reader.read();
+              if (end) finish({ type: 'close' });
+              else {
+                credit--;
+                const chunk = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+                port.postMessage({ type: 'chunk', chunk }, [chunk]);
+              }
+            }
+          } catch (error) {
+            if (!done) finish({ type: 'error', error: String(error?.message ?? error) });
+          }
+          pumping = false;
+        }
+        port.onmessage = (event) => {
+          if (event.data?.type === 'credit') {
+            credit += Number(event.data.n) || 1;
+            pump();
+          } else if (event.data?.type === 'cancel') {
+            done = true;
+            reader.cancel().catch(() => {});
+            port.close();
+          }
+        };
       }
       function send(value) {
         frame.contentWindow.postMessage(value, '*');
