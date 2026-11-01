@@ -201,31 +201,56 @@
           module = await import(data.glue);
           at('starting the wasm');
           await module.default({ module_or_path: data.wasm });
-          const make = async () => {
+          // Each step under the key lock is bounded: a step that never
+          // settles (seen on iOS) would hold the lock, and so stall every
+          // later view of the space, for as long as this peer lives.
+          const within = (ms, promise, what) =>
+            Promise.race([
+              promise,
+              new Promise((_, reject) => setTimeout(() => reject(Error(what + ' took over ' + ms / 1000 + ' s')), ms)),
+            ]);
+          const make = async (space) => {
             at('reading the kept key');
-            const entry = claimed.space
-              ? await kept('readonly', (store) => store.get(claimed.space)).catch(() => undefined)
+            const entry = space
+              ? await within(3000, kept('readonly', (store) => store.get(space)), 'reading the kept key').catch((error) => {
+                  at('no kept key: ' + error.message);
+                })
               : undefined;
             if (entry) {
               at('restoring the kept key');
-              key = await module.ViewKey.restore(entry.key).catch(() => undefined);
+              key = await within(5000, module.ViewKey.restore(entry.key), 'restoring the kept key').catch((error) => {
+                at('kept key not restored: ' + ((error && error.message) || error));
+              });
             }
             if (key) return true;
             at('making a key');
-            key = await module.ViewKey.generate();
-            if (claimed.space) {
+            key = await within(10000, module.ViewKey.generate(), 'making a key');
+            if (space) {
               at('saving the key');
-              const handles = await key.export();
-              await kept('readwrite', (store) =>
-                store.put({ did: key.did, key: handles }, claimed.space),
-              ).catch(() => {});
+              await within(
+                3000,
+                key.export().then((handles) =>
+                  kept('readwrite', (store) => store.put({ did: key.did, key: handles }, space)),
+                ),
+                'saving the key',
+              ).catch((error) => at('key not kept: ' + ((error && error.message) || error)));
             }
             return false;
           };
-          if (claimed.space && navigator.locks) at('waiting for the key lock');
-          const reused = claimed.space && navigator.locks
-            ? await navigator.locks.request('tonk-view-key:' + claimed.space, make)
-            : await make();
+          let reused;
+          if (claimed.space && navigator.locks) {
+            at('waiting for the key lock');
+            // A lock another peer holds for long is one it is stuck in: this
+            // peer goes on with a key of its own, not kept, and its own store.
+            const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(5000) : undefined;
+            reused = await navigator.locks
+              .request('tonk-view-key:' + claimed.space, { signal }, () => make(claimed.space))
+              .catch(async (error) => {
+                if (error?.name !== 'AbortError' && error?.name !== 'TimeoutError') throw error;
+                at('key lock busy for 5 s; using a key that is not kept');
+                return make(undefined);
+              });
+          } else reused = await make(claimed.space);
           at('started');
           // A store is its key's: a key made anew starts one of its own.
           return { did: key.did, reused, directory: 'tonk-view-' + key.did };
@@ -269,6 +294,13 @@
                     .then((e) => lines.push('peer storage: ' + Math.round(e.usage / 1e6) + ' of ' + Math.round(e.quota / 1e6) + ' MB'))
                     .catch((error) => lines.push('peer storage: ' + ((error && error.message) || error)));
                 lines.push('peer started: ' + (started ? 'yes' : 'no') + ', opened: ' + (opened ? 'yes' : 'no') + ', peer: ' + (peer ? 'yes' : 'no'));
+                if (navigator.locks?.query)
+                  await wait(navigator.locks.query())
+                    .then(({ held = [], pending = [] }) => {
+                      const named = (list) => list.map((lock) => lock.name.replace(/:did:key:\\w+/, ':<space>')).join(', ') || 'none';
+                      lines.push('peer locks held: ' + named(held), 'peer locks waiting: ' + named(pending));
+                    })
+                    .catch((error) => lines.push('peer locks: ' + ((error && error.message) || error)));
                 lines.push('peer step: ' + step + ' for ' + ((Date.now() - since) / 1000).toFixed(1) + 's', ...steps.map((line) => 'peer ' + line));
                 port.postMessage({ id, lines });
               } else if (op === 'claim') {
