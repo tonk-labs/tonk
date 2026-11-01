@@ -22,7 +22,7 @@
 mod orchestrate;
 mod route;
 
-pub use orchestrate::render;
+pub use orchestrate::{Outline, outline, render};
 pub use route::RenderRoute;
 
 use async_trait::async_trait;

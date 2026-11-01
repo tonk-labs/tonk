@@ -294,6 +294,41 @@ concept!: &writer-note
     }
 
     #[dialog_common::test]
+    async fn an_outline_reads_the_views_of_the_space_as_it_is_now() {
+        let fixture = Fixture::start().await;
+        let writer = fixture.writer("mcp-outline").await;
+        let (status, body) = evaluate(
+            &writer,
+            "view!:\n  this: writer-note\n  show:\n    directory: \"<ul><li>{title}</li></ul>\"\n"
+                .to_owned(),
+        )
+        .await;
+        assert!(status.is_success(), "view: {status}: {body}");
+        for label in ["first", "second"] {
+            let (status, body) = evaluate(&writer, fixture.note(label)).await;
+            assert!(status.is_success(), "note: {status}: {body}");
+        }
+        // A reader in another session sees the writes, as an agent's next
+        // call would.
+        let reader = fixture.writer("mcp-outline-reader").await;
+        let outline = reader.outline("writer-note").await.unwrap();
+        assert_eq!(outline["space"], fixture.space.did().to_string());
+        assert_eq!(outline["outline"]["model"], "writer-note", "{outline}");
+        assert_eq!(outline["outline"]["route"], "writer-note");
+        assert!(
+            outline["outline"]["records"].as_u64().unwrap() >= 2,
+            "{outline}"
+        );
+        assert!(
+            reader.outline("@writer-note").await.is_err(),
+            "a malformed route is refused"
+        );
+        reader.close().await;
+        writer.close().await;
+        fixture.stop().await;
+    }
+
+    #[dialog_common::test]
     async fn parallel_writes_through_one_session_all_land() {
         let fixture = Fixture::start().await;
         let writer = fixture.writer("mcp-1").await;

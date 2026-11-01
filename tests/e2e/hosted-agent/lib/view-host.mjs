@@ -37,6 +37,10 @@ const SANDBOX = `<!doctype html><meta charset="utf-8"><title>sandbox</title>
         hostCapabilities: { sandbox: { csp: shown.csp } },
         hostContext: { theme: 'light', displayMode: 'inline' },
       });
+    } else if (m.method === 'ui/notifications/size-changed') {
+      // As the hosts do: the view's frame takes the height it reports.
+      window.sized = m.params?.height;
+      app.style.height = window.sized + 'px';
     } else if (m.method === 'ui/notifications/initialized') {
       send({ method: 'ui/notifications/tool-result', params: shown.result });
     } else if (m.method === 'tools/call') {
@@ -123,15 +127,28 @@ export async function showView({ client, result, resource, frames, headed = fals
   const tail = () => log.slice(-40).join('\n');
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   const sandbox = await sandboxFrame(page);
-  await sandbox.evaluate((view) => window.show(view), {
-    html: content.text,
-    csp,
-    result: { content: result.content, structuredContent: result.structuredContent },
-  });
+  const show = () =>
+    sandbox.evaluate((view) => window.show(view), {
+      html: content.text,
+      csp,
+      result: { content: result.content, structuredContent: result.structuredContent },
+    });
+  await show();
   return {
     page,
     calls,
     violations,
+    /** Show the view again in the same browser, as a host does when the
+     * chat is reopened: a new view document over the same storage. */
+    again: show,
+    /** The lines the view logged that contain `text`. */
+    logged: (text) => log.filter((line) => line.includes(text)),
+    /** The height the view last reported to the host, if it did. */
+    height: () =>
+      page
+        .frames()
+        .find((frame) => new URL(frame.url()).pathname === '/sandbox')
+        ?.evaluate(() => window.sized),
     /** The frames below the view's own, where the space renders. */
     frames: () => page.frames().filter((frame) => frame !== page.mainFrame()),
     /** Resolve once some frame of the view shows every one of `texts`. */

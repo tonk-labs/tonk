@@ -26,7 +26,10 @@ use tonk_worker::{ClientId, HostedPeer};
 /// How often a watch of the space that ended is begun again.
 const REWATCH: web_time::Duration = web_time::Duration::from_secs(10);
 
-/// A view's key: generated in this worker, never exported.
+/// A view's key: generated in this worker, non-extractable. It leaves the
+/// worker only as opaque `CryptoKey` handles, which the relay keeps in
+/// IndexedDB so a view opened again signs as the same key and reads the
+/// store it pulled before.
 #[wasm_bindgen]
 pub struct ViewKey {
     signer: Ed25519Signer,
@@ -37,6 +40,27 @@ impl ViewKey {
     /// Make a new non-extractable key.
     pub async fn generate() -> Result<ViewKey, JsError> {
         let signer = Ed25519Signer::generate()
+            .await
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        Ok(Self { signer })
+    }
+
+    /// The key's `CryptoKey` handles, to keep in IndexedDB. They carry no
+    /// key material.
+    pub async fn export(&self) -> Result<JsValue, JsError> {
+        let export = self
+            .signer
+            .export()
+            .await
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        Ok(export.into())
+    }
+
+    /// The key [`export`](Self::export) handed out.
+    pub async fn restore(handles: JsValue) -> Result<ViewKey, JsError> {
+        let export = dialog_credentials::key::KeyExport::try_from(handles)
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        let signer = Ed25519Signer::import(export)
             .await
             .map_err(|error| JsError::new(&error.to_string()))?;
         Ok(Self { signer })
@@ -53,11 +77,13 @@ impl ViewKey {
 #[wasm_bindgen]
 pub struct ViewPeer {
     peer: Rc<HostedPeer>,
-    /// The one guest document this peer serves, named as the service
-    /// worker names a client, so `/site` can bind it.
+    /// The guest document a request names no other for, named as the
+    /// service worker names a client, so `/site` can bind it.
     client: ClientId,
     /// Set once the view is gone, which ends the peer's watches and loops.
     stopped: Rc<Cell<bool>>,
+    /// The space the peer shows.
+    space: Did,
 }
 
 #[wasm_bindgen]
@@ -74,14 +100,7 @@ impl ViewPeer {
         directory: String,
     ) -> Result<ViewPeer, JsError> {
         let error = |error: &dyn std::fmt::Display| JsError::new(&error.to_string());
-        let proofs = delegations
-            .iter()
-            .map(|encoded| {
-                let container =
-                    Container::decode(encoded.trim().as_bytes()).map_err(|e| error(&e))?;
-                DelegationChain::try_from(container).map_err(|e| error(&e))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let proofs = decode(&delegations)?;
         let space: Did = space.parse().map_err(|e| error(&e))?;
         let remote = url::Url::parse(&remote).map_err(|e| error(&e))?;
         // The library the router installs and upgrades from is the
@@ -100,14 +119,35 @@ impl ViewPeer {
             peer: Rc::new(peer),
             client: ClientId(directory),
             stopped: Rc::new(Cell::new(false)),
+            space,
         })
     }
 
+    /// Read the space's head again from the store and repaint its views:
+    /// another view's peer over the same store committed or pulled.
+    pub async fn refresh(&self) -> Result<(), JsError> {
+        self.peer
+            .refresh(&self.space)
+            .await
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    /// Hold `delegations` too: a renewed one, or another view's.
+    pub async fn grant(&self, delegations: Vec<String>) -> Result<(), JsError> {
+        let proofs = decode(&delegations)?;
+        self.peer
+            .grant(&proofs)
+            .await
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
     /// Answer a request on the ordinary router, as the service worker
-    /// answers one. A subscription's response stays a stream.
-    pub fn fetch(&self, request: web_sys::Request) -> Promise {
+    /// answers one, for the guest document `client` (each view of a peer
+    /// shared by several names its own). A subscription's response stays
+    /// a stream.
+    pub fn fetch(&self, request: web_sys::Request, client: Option<String>) -> Promise {
         let peer = self.peer.clone();
-        let client = self.client.clone();
+        let client = client.map(ClientId).unwrap_or_else(|| self.client.clone());
         future_to_promise(async move {
             let mut request = RequestConversion::from(request)
                 .into_axum_request()
@@ -141,4 +181,16 @@ impl ViewPeer {
     pub async fn did(&self) -> String {
         self.peer.did().await.to_string()
     }
+}
+
+/// Delegations as `tonk_view_access` returns them: base64url containers.
+fn decode(delegations: &[String]) -> Result<Vec<DelegationChain>, JsError> {
+    let error = |error: &dyn std::fmt::Display| JsError::new(&error.to_string());
+    delegations
+        .iter()
+        .map(|encoded| {
+            let container = Container::decode(encoded.trim().as_bytes()).map_err(|e| error(&e))?;
+            DelegationChain::try_from(container).map_err(|e| error(&e))
+        })
+        .collect()
 }

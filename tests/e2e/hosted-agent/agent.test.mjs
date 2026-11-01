@@ -280,6 +280,11 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
             await view.shows(labels.slice(0, 3));
             console.log(`route ${route}: shown in ${Date.now() - started} ms`);
             assert.ok(view.calls.includes('tonk_view_access'), `the view called ${view.calls}`);
+            // The view sizes itself to the page: three notes, not a
+            // fixed card.
+            const height = await view.height();
+            console.log(`route ${route}: reported ${height} px`);
+            assert.ok(height >= 40 && height < 4000, `the view reported a height of ${height}`);
             const framed = view
               .frames()
               .some((frame) => frame.url().startsWith(`${origin}/view-frame`));
@@ -293,6 +298,49 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
             await call(client, 'tonk_evaluate', { space: spaces.writable, document: note(live) });
             await view.shows([live], LIVE);
             console.log(`route ${route}: a write showed in ${Date.now() - wrote} ms`);
+            // A write the person makes in their own Tonk app, which
+            // reaches the space through their browser, not the agent.
+            const theirs = `${run} theirs ${route}`;
+            await boot(person.page, origin);
+            const made = Date.now();
+            await person.page.evaluate(
+              async ([space, document]) => {
+                const response = await fetch(`/api/repository/${space}/branch/main/evaluate`, {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/yaml' },
+                  body: document,
+                });
+                if (!response.ok)
+                  throw new Error(`evaluate answered ${response.status}: ${await response.text()}`);
+              },
+              [spaces.writable, note(theirs)],
+            );
+            await view.shows([theirs], LIVE);
+            console.log(`route ${route}: the person's write showed in ${Date.now() - made} ms`);
+            if (!frames) {
+              // Shown again, the view signs as the key it kept and reads
+              // the store it pulled into before it pulls again.
+              const reopened = Date.now();
+              await view.again();
+              const stores = () => view.logged('tonk view:').filter((line) => / store$/.test(line));
+              while (stores().length < 2 && Date.now() - reopened < 60_000)
+                await new Promise((resolve) => setTimeout(resolve, 100));
+              assert.deepEqual(
+                stores()
+                  .slice(1)
+                  .map((line) => line.replace(/^\w+: /, '')),
+                ['tonk view: kept store'],
+                'the view shown again did not open the store it kept',
+              );
+              // Chromium has SharedWorker: every view of the space is served
+              // by the one peer.
+              assert.ok(
+                view.logged('tonk view: shared peer').length >= 2,
+                `the views did not share a peer: ${view.logged('tonk view:')}`,
+              );
+              await view.shows([live, theirs]);
+              console.log(`route ${route}: shown again in ${Date.now() - reopened} ms`);
+            }
           } finally {
             if (view.violations.length)
               console.log(`route ${route} CSP: ${view.violations.join('\n')}`);

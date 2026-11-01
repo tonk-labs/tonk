@@ -1674,6 +1674,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "html5gum"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3918b5f36d61861b757261da986b51be562c7a87ac4e531d4158e67e08bff72"
+dependencies = [
+ "jetscii",
+]
+
+[[package]]
 name = "http"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1942,6 +1951,12 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "jetscii"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47f142fe24a9c9944451e8349de0a56af5f3e7226dc46f3ed4d4ecc0b85af75e"
 
 [[package]]
 name = "js-sys"
@@ -3586,6 +3601,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-render"
+version = "0.6.16-rc.1"
+dependencies = [
+ "async-trait",
+ "dialog-query",
+ "html5gum",
+ "ipld-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tonk-schema",
+ "tonk-template",
+]
+
+[[package]]
 name = "tonk-router"
 version = "0.6.16-rc.1"
 
@@ -3660,6 +3690,7 @@ dependencies = [
 name = "tonk-worker"
 version = "0.6.16-rc.1"
 dependencies = [
+ "anyhow",
  "async-trait",
  "axum",
  "base58",
@@ -3702,6 +3733,7 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_ipld_dagcbor",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "thiserror 2.0.18",
  "tokio",
@@ -3717,6 +3749,7 @@ dependencies = [
  "tonk-language-server",
  "tonk-library",
  "tonk-notation",
+ "tonk-render",
  "tonk-router",
  "tonk-schema",
  "tonk-worker-api",

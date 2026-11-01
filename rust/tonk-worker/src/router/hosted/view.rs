@@ -4,8 +4,8 @@
 //! calls `tonk_open_space` to show a route of a space. The view (the
 //! relay page) makes its own non-extractable key and calls
 //! `tonk_view_access(space, audience)`, an app-only tool, with that key's
-//! DID; the session signs a delegation to it for that one space, read-only
-//! unless the view was opened to edit. The delegation is useless without
+//! DID; the session signs a delegation to it for that one space, to edit
+//! it wherever the connection may write, else to read it. The delegation is useless without
 //! the view's private key, so it is no secret: it may sit in tool results,
 //! conversation storage and logs. The view's peer then acts as its own
 //! DID, against the provider's `/ucan/` and `live.rs`, with no Host Worker
@@ -28,7 +28,10 @@ use axum::http::{Method, Request, Response};
 use http_body_util::BodyExt as _;
 
 use super::access::reaches;
-use super::mcp::{ACCESS_ROUTE, AgentAccess, SpaceAccess, Verified, Writers, mount_address};
+use super::mcp::{
+    ACCESS_ROUTE, ADDRESS_HEADER, AgentAccess, GRANTS_HEADER, SpaceAccess, Verified, Writers,
+    mount_address,
+};
 
 /// The key view tickets are bound under, derived from the host's secret
 /// under its own context, apart from the session id MAC. Unused by the
@@ -54,6 +57,10 @@ pub const OPEN: &str = "tonk_open_space";
 /// The app-only tool a view gets its delegation from.
 pub const ACCESS: &str = "tonk_view_access";
 
+/// The model-visible tool that answers the views a space renders, each
+/// with the route [`OPEN`] shows it alone by.
+pub const OUTLINE: &str = "tonk_outline";
+
 /// The relay page's resource.
 pub const RELAY_URI: &str = "ui://tonk/space-view-v2.html";
 
@@ -75,9 +82,9 @@ pub fn tools() -> Vec<Value> {
             "description": "Show a route of a space inline in the chat, live, as the space's own \
                 page renders it. Use a path within the space, such as / or /notebook/<entity>; \
                 entity route parameters must be actual entity URIs returned by tonk_query, never \
-                titles or names. Set edit to let the user change the space from the view (only \
-                for a space this connection may write); otherwise the view is read-only. \
-                Showing a route does not verify that it rendered.",
+                titles or names. The person can change the space from the view wherever this \
+                connection may write it; a space it may only read is shown read-only. Showing \
+                a route does not verify that it rendered.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -89,10 +96,12 @@ pub fn tools() -> Vec<Value> {
                         "default": "/",
                         "description": "A path within the space.",
                     },
-                    "edit": {
-                        "type": "boolean",
-                        "default": false,
-                        "description": "Let the user edit the space from the view.",
+                    "view": {
+                        "type": "string",
+                        "maxLength": 2048,
+                        "description": "One view of the space to show on its own, instead of \
+                            the page at path: a route from tonk_outline (entity@model, \
+                            entity@model!view, or a model for every instance).",
                     },
                 },
                 "required": ["space"],
@@ -116,12 +125,34 @@ pub fn tools() -> Vec<Value> {
                         "pattern": "^did:key:[A-Za-z0-9]+$",
                         "description": "The view's key.",
                     },
-                    "edit": { "type": "boolean", "default": false },
                 },
                 "required": ["space", "audience"],
                 "additionalProperties": false,
             },
             "_meta": { "ui": { "visibility": ["app"] } },
+        }),
+        json!({
+            "name": OUTLINE,
+            "title": "Outline a Tonk space's views",
+            "description": "List the views a space renders, as a tree: each node names its \
+                model and concept, its entity, how many records it shows, any error, its \
+                children, and a route that shows it alone. Without route the tree starts at the \
+                space's home. Pass a node's route to tonk_open_space as view to show just that \
+                view, for example one list from a larger page.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "space": space,
+                    "route": {
+                        "type": "string",
+                        "maxLength": 2048,
+                        "description": "A route from an earlier outline to start from.",
+                    },
+                },
+                "required": ["space"],
+                "additionalProperties": false,
+            },
+            "annotations": { "readOnlyHint": true, "openWorldHint": false },
         }),
     ]
 }
@@ -151,17 +182,7 @@ pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
         return None;
     }
     let origin = origin.trim_end_matches('/');
-    // The provider's `live.rs` socket: a policy listing only the https
-    // origin refuses a `wss:` connection to the same host.
-    let socket = origin
-        .strip_prefix("https://")
-        .map(|host| format!("wss://{host}"))
-        .or_else(|| {
-            origin
-                .strip_prefix("http://")
-                .map(|host| format!("ws://{host}"))
-        });
-    let connect: Vec<&str> = std::iter::once(origin).chain(socket.as_deref()).collect();
+    let connect = connect_domains(origin);
     let html = RELAY
         .replace("__TONK_MCP_ORIGIN__", &json!(origin).to_string())
         .replace("__TONK_VIEW_FRAME__", "false");
@@ -189,6 +210,56 @@ pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
             },
         }],
     }))
+}
+
+/// Tonk's own deployments, where most spaces live. A view may sync with
+/// these wherever it is served from. A space hosted anywhere else is
+/// refused until views can follow each grant's location.
+const TONK_ORIGINS: [&str; 3] = [
+    "https://tonk.foundation",
+    "https://tonk.network",
+    "https://tonk.spot",
+];
+
+/// The origins a view's peer may sync with: those its policy names in
+/// `connectDomains`. The provider's own, then Tonk's deployments.
+fn sync_origins(origin: &str) -> Vec<String> {
+    let origin = origin.trim_end_matches('/');
+    std::iter::once(origin)
+        .chain(TONK_ORIGINS.into_iter().filter(|known| *known != origin))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The view's `connectDomains`: each origin it syncs with, and its
+/// `live.rs` socket, which a policy listing only the https origin
+/// refuses.
+fn connect_domains(origin: &str) -> Vec<String> {
+    sync_origins(origin)
+        .into_iter()
+        .flat_map(|origin| {
+            let socket = origin
+                .strip_prefix("https://")
+                .map(|host| format!("wss://{host}"))
+                .or_else(|| {
+                    origin
+                        .strip_prefix("http://")
+                        .map(|host| format!("ws://{host}"))
+                });
+            std::iter::once(origin).chain(socket)
+        })
+        .collect()
+}
+
+/// Whether a view served from `origin` may sync with `remote`, a
+/// space's `/ucan/` address. The host enforces the view's policy, so a
+/// view of a space elsewhere would fail on its first request.
+fn view_reaches(remote: &str, origin: &str) -> bool {
+    let Ok(remote) = url::Url::parse(remote) else {
+        return false;
+    };
+    let remote = remote.origin().ascii_serialization();
+    sync_origins(origin).contains(&remote)
 }
 
 /// The agent space writer's route answering the grants in force for one
@@ -230,7 +301,7 @@ pub async fn call<W: Writers>(
     origin: &str,
     _tickets: &TicketKey,
 ) -> Option<Value> {
-    if name != OPEN && name != ACCESS {
+    if name != OPEN && name != ACCESS && name != OUTLINE {
         return None;
     }
     let space = match arguments["space"].as_str().map(str::parse::<Did>) {
@@ -265,16 +336,37 @@ pub async fn call<W: Writers>(
             "This connection's access to that space has lapsed. Ask the user to grant it again.",
         ));
     }
-    let edit = arguments["edit"].as_bool().unwrap_or(false);
-    if edit && !access.agent && !access.write {
-        return Some(error(
-            "This connection may only read that space, so its view cannot edit.",
-        ));
+    if name == OUTLINE {
+        return Some(
+            outline(
+                arguments,
+                &access,
+                writers,
+                verified,
+                bearer,
+                mcp_session,
+                &space,
+            )
+            .await,
+        );
     }
+    // A view edits wherever the connection may write, and only reads a
+    // space granted read.
+    let edit = access.agent || access.write;
     let remote = mount_address(
         access.address.as_deref(),
         &format!("{}/ucan/", origin.trim_end_matches('/')),
     );
+    if !view_reaches(&remote, origin) {
+        let at = url::Url::parse(&remote)
+            .map(|url| url.origin().ascii_serialization())
+            .unwrap_or(remote.clone());
+        return Some(error(&format!(
+            "This space is hosted at {at}, and a view from {} cannot reach it yet, so it \
+             cannot be shown inline. Ask the person to open it in Tonk at {at}.",
+            origin.trim_end_matches('/')
+        )));
+    }
     if name == OPEN {
         let path = arguments["path"].as_str().unwrap_or("/");
         if !path.starts_with('/')
@@ -283,14 +375,38 @@ pub async fn call<W: Writers>(
         {
             return Some(error("Provide a path within the space, such as /."));
         }
+        let view = match arguments["view"].as_str().map(str::trim) {
+            None | Some("") => Value::Null,
+            Some(route) if route.len() > 2048 => {
+                return Some(error("Provide a view route from tonk_outline, up to 2 KB."));
+            }
+            Some(route) => match tonk_render::RenderRoute::parse(route) {
+                // The home mounts on each peer's own replica; the path
+                // shows it, as the outline's empty home route means.
+                Ok(route) if super::super::view_tree::is_home(&route) => Value::Null,
+                Ok(route) => json!({
+                    "model": route.model,
+                    "entity": route.entity,
+                    "facet": route.view,
+                }),
+                Err(problem) => {
+                    return Some(error(&format!(
+                        "`{route}` is not a view route ({problem}). Use a route from tonk_outline."
+                    )));
+                }
+            },
+        };
+        let text = if view.is_null() {
+            "Showing the space inline. Rendering is not verified by this response."
+        } else {
+            "Showing that view inline. Rendering is not verified by this response."
+        };
         return Some(json!({
-            "content": [{
-                "type": "text",
-                "text": "Showing the space inline. Rendering is not verified by this response.",
-            }],
+            "content": [{ "type": "text", "text": text }],
             "structuredContent": {
                 "subject": space.to_string(),
                 "path": path,
+                "view": view,
                 "edit": edit,
                 "remote": remote,
             },
@@ -463,6 +579,68 @@ fn command_of(chain: &DelegationChain) -> Vec<String> {
         .filter(|segment| !segment.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+/// [`OUTLINE`]: the view tree of `space`, as its writer reads it. A
+/// granted space's request carries its grants and address, as a query's
+/// does, so its writer mounts and pulls it the same way.
+async fn outline<W: Writers>(
+    arguments: &Value,
+    access: &SpaceAccess,
+    writers: &W,
+    verified: &Verified,
+    bearer: &str,
+    mcp_session: &str,
+    space: &Did,
+) -> Value {
+    let route = arguments["route"].as_str().unwrap_or("").trim();
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    if !route.is_empty() {
+        query.append_pair("route", route);
+    }
+    let query = query.finish();
+    let uri = if query.is_empty() {
+        "/api/outline".to_owned()
+    } else {
+        format!("/api/outline?{query}")
+    };
+    let mut request = Request::builder().method(Method::GET).uri(uri);
+    if !access.agent {
+        request = request.header(GRANTS_HEADER, access.grants.join(","));
+        if let Some(address) = &access.address {
+            request = request.header(ADDRESS_HEADER, address);
+        }
+    }
+    let Ok(request) = request.body(Body::empty()) else {
+        return error("The space's directory entry is malformed.");
+    };
+    let response = writers
+        .call(verified, bearer, mcp_session, space, request)
+        .await;
+    let status = response.status();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .map(|body| body.to_bytes())
+        .unwrap_or_default();
+    if !status.is_success() {
+        let reason = serde_json::from_slice::<Value>(&body)
+            .ok()
+            .and_then(|body| body["error"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| String::from_utf8_lossy(&body).into_owned());
+        return error(&format!("Could not outline the space ({status}): {reason}"));
+    }
+    match serde_json::from_slice::<Value>(&body) {
+        Ok(outline) => json!({
+            "content": [{ "type": "text", "text": outline.to_string() }],
+            "structuredContent": outline,
+            "isError": false,
+        }),
+        Err(problem) => error(&format!(
+            "The space answered an unreadable outline: {problem}"
+        )),
+    }
 }
 
 fn error(message: &str) -> Value {

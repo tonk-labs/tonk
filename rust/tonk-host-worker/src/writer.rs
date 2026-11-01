@@ -42,6 +42,10 @@ const REMOTE: &str = "x-tonk-writer-remote";
 /// The agent space writer's grants route, relative to the space.
 const ACCESS: &str = "api/access";
 
+/// The space's view tree, relative to the space: `?route=` names the
+/// display to start from, the home when absent.
+const OUTLINE: &str = "api/outline";
+
 /// How long a request may take before the object answers it with the
 /// step it is stuck at, rather than leaving the front to time out with
 /// no word of where. Below the MCP client's own 60 s.
@@ -312,6 +316,17 @@ impl SpaceWriterObject {
         self.reach("admit");
         if let Err(error) = writer.admit(&grants).await {
             return failure(StatusCode::BAD_GATEWAY, &error.to_string());
+        }
+        if method == worker::Method::Get && path == OUTLINE {
+            let route: String = url
+                .query_pairs()
+                .find(|(name, _)| name == "route")
+                .map(|(_, route)| route.into_owned())
+                .unwrap_or_default();
+            return match writer.outline(&route).await {
+                Ok(outline) => worker::Response::from_json(&outline),
+                Err(error) => failure(StatusCode::BAD_REQUEST, &error),
+            };
         }
         let content_type = request
             .headers()
