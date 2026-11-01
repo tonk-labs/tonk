@@ -99,6 +99,31 @@
       }
       // The peer's own view of its sandbox, asked for only once the view
       // has failed; a peer that cannot answer says so.
+      // Whether this context can keep a CryptoKey in IndexedDB: a fresh
+      // non-extractable key, stored and read back in a throwaway database.
+      function storesCryptoKey() {
+        const settle = (promise) =>
+          Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve('no answer in 3 s'), 3000))]);
+        return settle(
+          crypto.subtle
+            .generateKey({ name: 'Ed25519' }, false, ['sign', 'verify'])
+            .then(
+              (pair) =>
+                new Promise((resolve) => {
+                  const opened = indexedDB.open('tonk-view-probe', 1);
+                  opened.onupgradeneeded = () => opened.result.createObjectStore('keys');
+                  opened.onerror = () => resolve('open failed: ' + opened.error?.name);
+                  opened.onsuccess = () => {
+                    const request = opened.result.transaction('keys', 'readwrite').objectStore('keys').put(pair.privateKey, 'probe');
+                    request.onsuccess = () => resolve('yes');
+                    request.onerror = () => resolve('put failed: ' + request.error?.name);
+                  };
+                }),
+            )
+            .catch((error) => 'failed: ' + ((error && error.message) || error)),
+        );
+      }
+      let pageProbe;
       let peerProbe;
       function showReport() {
         const write = (peerLines) => {
@@ -114,11 +139,15 @@
           tellSize();
         };
         write(['peer probe: asking']);
-        const probe = (peerProbe = peerWorker
-          ? ask('probe', {}, 5000)
-              .then((answer) => answer.lines)
-              .catch((error) => ['peer probe: ' + error.message])
-          : Promise.resolve(['peer probe: no peer']));
+        pageProbe ??= storesCryptoKey().then((answer) => 'page stores a CryptoKey: ' + answer);
+        const probe = (peerProbe = Promise.all([
+          pageProbe,
+          peerWorker
+            ? ask('probe', {}, 15000)
+                .then((answer) => answer.lines)
+                .catch((error) => ['peer probe: ' + error.message])
+            : ['peer probe: no peer'],
+        ]).then(([page, peer]) => [page, ...peer]));
         probe.then((lines) => probe === peerProbe && write(lines));
       }
       function showError(message) {
@@ -226,14 +255,18 @@
             at('making a key');
             key = await within(10000, module.ViewKey.generate(), 'making a key');
             if (space) {
-              at('saving the key');
-              await within(
-                3000,
-                key.export().then((handles) =>
+              try {
+                at('exporting the key');
+                const handles = await within(3000, key.export(), 'exporting the key');
+                at('storing the key');
+                await within(
+                  3000,
                   kept('readwrite', (store) => store.put({ did: key.did, key: handles }, space)),
-                ),
-                'saving the key',
-              ).catch((error) => at('key not kept: ' + ((error && error.message) || error)));
+                  'storing the key',
+                );
+              } catch (error) {
+                at('key not kept: ' + ((error && error.message) || error));
+              }
             }
             return false;
           };
@@ -254,6 +287,30 @@
           at('started');
           // A store is its key's: a key made anew starts one of its own.
           return { did: key.did, reused, directory: 'tonk-view-' + key.did };
+        }
+        // Whether this context can keep a CryptoKey in IndexedDB: a fresh
+        // non-extractable key, stored and read back in a throwaway database.
+        function storesCryptoKey() {
+          const settle = (promise) =>
+            Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve('no answer in 3 s'), 3000))]);
+          return settle(
+            crypto.subtle
+              .generateKey({ name: 'Ed25519' }, false, ['sign', 'verify'])
+              .then(
+                (pair) =>
+                  new Promise((resolve) => {
+                    const opened = indexedDB.open('tonk-view-probe', 1);
+                    opened.onupgradeneeded = () => opened.result.createObjectStore('keys');
+                    opened.onerror = () => resolve('open failed: ' + opened.error?.name);
+                    opened.onsuccess = () => {
+                      const request = opened.result.transaction('keys', 'readwrite').objectStore('keys').put(pair.privateKey, 'probe');
+                      request.onsuccess = () => resolve('yes');
+                      request.onerror = () => resolve('put failed: ' + request.error?.name);
+                    };
+                  }),
+              )
+              .catch((error) => 'failed: ' + ((error && error.message) || error)),
+          );
         }
         let changes;
         function listen(space) {
@@ -294,6 +351,7 @@
                     .then((e) => lines.push('peer storage: ' + Math.round(e.usage / 1e6) + ' of ' + Math.round(e.quota / 1e6) + ' MB'))
                     .catch((error) => lines.push('peer storage: ' + ((error && error.message) || error)));
                 lines.push('peer started: ' + (started ? 'yes' : 'no') + ', opened: ' + (opened ? 'yes' : 'no') + ', peer: ' + (peer ? 'yes' : 'no'));
+                lines.push('peer stores a CryptoKey: ' + (await storesCryptoKey()));
                 if (navigator.locks?.query)
                   await wait(navigator.locks.query())
                     .then(({ held = [], pending = [] }) => {
