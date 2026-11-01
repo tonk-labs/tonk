@@ -308,16 +308,19 @@ pub async fn put_repository(
 /// The attribute carrying the optional sync URL on a `space/create` or
 /// `space/enable-sync` transient. Kept in step with those notation
 /// commands' `remote` field `the:`.
+#[cfg(feature = "persona")]
 const REMOTE_ATTR: &str = "xyz.tonk.command.create-space/remote";
 
 /// The same field before the command took its own namespace: the DOM
 /// read path that filled it. Still asserted by any branch seeded before
 /// the migration, so both are read.
+#[cfg(feature = "persona")]
 const LEGACY_REMOTE_ATTR: &str = "dom.event.current-target.elements.remote/value";
 
 /// Optional short description carried by the new Hub create form. Kept out of
 /// the typed command shape so older profile libraries that declare only the
 /// required name continue to trigger the same provider.
+#[cfg(feature = "persona")]
 const DESCRIPTION_ATTR: &str = "xyz.tonk.command.create-space/description";
 
 /// The `space/create` transient's optional seed: the URL of a notation
@@ -325,8 +328,10 @@ const DESCRIPTION_ATTR: &str = "xyz.tonk.command.create-space/description";
 /// (see [`super::seed`]). Read from the raw facts for the same reasons as
 /// the remote: the command is matched name-only, and a URL decodes as an
 /// entity rather than as text.
+#[cfg(feature = "persona")]
 const SEED_ATTR: &str = "xyz.tonk.command.create-space/seed";
 
+#[cfg(feature = "persona")]
 const COPY_FROM_ATTR: &str = "xyz.tonk.command.create-space/copy-from";
 
 /// Read the optional remote URL from a transient's facts, tolerating
@@ -345,6 +350,7 @@ const COPY_FROM_ATTR: &str = "xyz.tonk.command.create-space/copy-from";
 /// separate problems.
 ///
 /// [`CreateSpace`]: tonk_schema::command::CreateSpace
+#[cfg(feature = "persona")]
 fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
     use dialog_artifacts::Value;
 
@@ -363,6 +369,7 @@ fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
+#[cfg(feature = "persona")]
 fn description_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
     use dialog_artifacts::Value;
 
@@ -377,6 +384,7 @@ fn description_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String>
         .filter(|value| !value.is_empty())
 }
 
+#[cfg(feature = "persona")]
 fn seed_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
     use dialog_artifacts::Value;
 
@@ -424,12 +432,15 @@ fn open_from_facts(facts: &crate::reactor::EntityFacts) -> bool {
 }
 
 /// The `tonk:enable-sync` transient's target space, read from the raw facts.
+#[cfg(feature = "persona")]
 const ENABLE_SYNC_SPACE_ATTR: &str = "xyz.tonk.enable-sync/space";
 
 /// The `tonk:enable-sync` transient's endpoint, read from the raw facts.
+#[cfg(feature = "persona")]
 const ENABLE_SYNC_REMOTE_ATTR: &str = "xyz.tonk.enable-sync/remote";
 
 /// Marker asking the handler to mint once the remote is attached.
+#[cfg(feature = "persona")]
 const ENABLE_SYNC_SHARE_ATTR: &str = "xyz.tonk.enable-sync/share";
 
 /// Read a fact's value as a string, tolerating both the `String` and
@@ -461,12 +472,14 @@ fn text_fact_any_target(facts: &crate::reactor::EntityFacts, attribute: &str) ->
 /// against the existing space labels via [`next_untitled_label`], and
 /// the user renames the space later (the FAB's inline editable /
 /// `tonk/rename-repository`).
+#[cfg(feature = "persona")]
 const UNTITLED: &str = "Untitled";
 
 /// Pick the first free untitled label: `Untitled`, then `Untitled 2`,
 /// `Untitled 3`, … — the smallest ordinal no existing label already
 /// uses. Only exact `Untitled` / `Untitled <n>` labels count as taken;
 /// anything else (user-typed names, key fallbacks) is ignored.
+#[cfg(feature = "persona")]
 fn next_untitled_label<I>(existing: I) -> String
 where
     I: IntoIterator<Item = String>,
@@ -503,6 +516,7 @@ where
 /// Best-effort: a replica whose repo can't be loaded is skipped (its
 /// [`repository_label`] key fallback wouldn't match the untitled
 /// pattern anyway), so a single broken space never blocks a create.
+#[cfg(feature = "persona")]
 async fn existing_space_labels(state: &AppState) -> Vec<String> {
     use tonk_schema::domain::replica::Profile as ProfileEntity;
 
@@ -568,6 +582,7 @@ async fn existing_space_labels(state: &AppState) -> Vec<String> {
 /// typed provider still see it.
 ///
 /// [`CreateSpace`]: tonk_schema::command::CreateSpace
+#[cfg(feature = "persona")]
 pub(crate) struct CreateSpaceRequest {
     /// The decoded command (a legacy shape arrives converted).
     command: tonk_schema::command::CreateSpace,
@@ -582,6 +597,7 @@ pub(crate) struct CreateSpaceRequest {
     copy_from: Option<String>,
 }
 
+#[cfg(feature = "persona")]
 impl crate::reactor::Decode for CreateSpaceRequest {
     fn trigger_attributes() -> Vec<String> {
         crate::reactor::Migrated::<
@@ -626,6 +642,7 @@ impl crate::reactor::Decode for CreateSpaceRequest {
     }
 }
 
+#[cfg(feature = "persona")]
 impl dialog_capability::Command for CreateSpaceRequest {
     type Input = Self;
     type Output = ();
@@ -651,12 +668,14 @@ impl dialog_capability::Command for CreateSpaceRequest {
 /// fresh space as a side effect) is refused rather than trusted.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<CreateSpaceRequest> for crate::router::CommandEnv {
     async fn execute(&self, request: CreateSpaceRequest) {
         execute_create_space(self.clone(), request).await
     }
 }
 
+#[cfg(feature = "persona")]
 async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpaceRequest) {
     let receipt = request.command.this.clone();
     let name = request.command.name.0;
@@ -889,6 +908,7 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
 
 /// Keep `reference` for the worker of the space `key` to add when it creates
 /// the space's content.
+#[cfg(feature = "persona")]
 async fn deferred_definitions(
     tonk: &TonkState,
     key: &str,
@@ -911,6 +931,7 @@ async fn deferred_definitions(
 /// content is held by a worker of its own: this worker creates the new
 /// space's identity, and its own worker is handed `source`'s content by
 /// `source`'s worker and copies it in.
+#[cfg(feature = "persona")]
 async fn create_deferred_copy(
     state: &AppState,
     name: &str,
@@ -956,6 +977,7 @@ async fn prepare_seed(reference: &str, template: bool) -> Result<tonk_notation::
 
 /// Per-command feedback is local overlay state, never account data. A fresh
 /// command entity keeps simultaneous tabs and retries from sharing a result.
+#[cfg(feature = "persona")]
 async fn report_space_creation(
     state: &AppState,
     receipt: &dialog_artifacts::Entity,
@@ -988,6 +1010,7 @@ async fn report_space_creation(
     }
 }
 
+#[cfg(feature = "persona")]
 async fn report_profile_rename(
     state: &AppState,
     receipt: &dialog_artifacts::Entity,
@@ -1177,7 +1200,7 @@ async fn execute_invite(env: crate::router::CommandEnv, request: InviteRequest) 
 /// Mint an invite to the space this worker's profile holds as `key`, as
 /// though its share control had been clicked at `time`. For a space whose own
 /// worker was asked for an invite and has passed the asking on.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
 pub(crate) async fn invite_space(state: &AppState, key: &str, time: f64) {
     let env =
         crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
@@ -1213,6 +1236,7 @@ async fn mint_invite(env: &crate::router::CommandEnv, repo_name: &str, time: f64
 /// [`text_fact`]).
 ///
 /// [`EnableSync`]: tonk_schema::command::EnableSync
+#[cfg(feature = "persona")]
 pub(crate) struct EnableSyncRequest {
     /// The decoded command (a legacy shape arrives converted).
     command: tonk_schema::command::EnableSync,
@@ -1225,6 +1249,7 @@ pub(crate) struct EnableSyncRequest {
     share: bool,
 }
 
+#[cfg(feature = "persona")]
 impl crate::reactor::Decode for EnableSyncRequest {
     fn trigger_attributes() -> Vec<String> {
         crate::reactor::Migrated::<
@@ -1939,6 +1964,7 @@ mod connection_invite_disabled_tests {
     }
 }
 
+#[cfg(feature = "persona")]
 impl dialog_capability::Command for EnableSyncRequest {
     type Input = Self;
     type Output = ();
@@ -1959,12 +1985,14 @@ impl dialog_capability::Command for EnableSyncRequest {
 /// and [`require_real_space`].
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<EnableSyncRequest> for crate::router::CommandEnv {
     async fn execute(&self, request: EnableSyncRequest) {
         execute_enable_sync(self.clone(), request).await
     }
 }
 
+#[cfg(feature = "persona")]
 async fn execute_enable_sync(env: crate::router::CommandEnv, request: EnableSyncRequest) {
     use dialog_artifacts::Entity;
     use tonk_schema::prelude::DidExt as _;
@@ -2127,6 +2155,7 @@ async fn run_invite(
             // and repair: it is this handler's next step, so it asks the
             // host to sign the person in, and the share resumes when the
             // account facts land.
+            #[cfg(feature = "persona")]
             if reason.code() == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT {
                 let tonk = env.state().read().await;
                 super::registration::sign_in(&tonk, env.client()).await;
@@ -2872,6 +2901,7 @@ fn with_referral(link: String, space_key: &str) -> String {
 /// [`ReplicaSyncEnabled`]: tonk_schema::ReplicaSyncEnabled
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<tonk_schema::command::PauseSync> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::PauseSync) {
         use tonk_schema::prelude::DidExt as _;
@@ -2944,6 +2974,7 @@ impl dialog_capability::Provider<tonk_schema::command::PauseSync> for crate::rou
 /// [`MemberName`]: tonk_schema::MemberName
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<tonk_schema::command::ProfileRename>
     for crate::router::CommandEnv
 {
@@ -2974,6 +3005,7 @@ impl dialog_capability::Provider<tonk_schema::command::ProfileRename>
 /// Split out from [`ProfileRenameHandler::run`] so the `?` early-return
 /// funnels into the single `log!` there — the command future itself
 /// returns `()`.
+#[cfg(feature = "persona")]
 async fn run_profile_rename(
     env: &crate::router::CommandEnv,
     name: &str,
@@ -3196,6 +3228,7 @@ fn rename_claim(space: &str, name: &str) -> Result<SourceClaim, TonkWorkerError>
 /// [`RemoveSpace`]: tonk_schema::command::RemoveSpace
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::RemoveSpace) {
         let receipt = command.this;
@@ -3275,6 +3308,7 @@ impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::r
     }
 }
 
+#[cfg(feature = "persona")]
 async fn report_space_removal(
     state: &AppState,
     receipt: &dialog_artifacts::Entity,
@@ -3329,6 +3363,7 @@ async fn report_space_removal(
 /// The self-replica (subject == profile) is refused: its row is hidden
 /// chrome in the Hub, and deleting the profile's own storage would take
 /// every space with it.
+#[cfg(feature = "persona")]
 pub(crate) async fn remove_space_inner(
     state: &AppState,
     subject: &Did,
@@ -3447,6 +3482,7 @@ async fn require_real_space(tonk: &TonkState, subject: &Did) -> Result<(), TonkW
 /// same reason `record_replica_in_profile` does: the Hub reads through
 /// that handle, so a commit on a separate handle would be invisible to
 /// it. Broadcasts `/api/profile` like the record path.
+#[cfg(feature = "persona")]
 async fn remove_replica_from_profile(
     tonk: &TonkState,
     subject: &Did,
@@ -3572,6 +3608,7 @@ async fn remove_replica_from_profile(
 /// [`remove_replica_from_profile`] sweeps. Asserted here before it is
 /// retracted there, so an interruption leaves the space listed twice
 /// rather than nowhere.
+#[cfg(feature = "persona")]
 pub(crate) async fn carry_replica_rows(
     tonk: &TonkState,
     from: &str,
@@ -3674,6 +3711,7 @@ pub(crate) async fn carry_replica_rows(
 /// leaked-bytes outcome the web path deliberately accepts when another
 /// profile shares the storage. Logged so the leak is visible; grows a
 /// real implementation when dialog-storage grows the capability.
+#[cfg(feature = "persona")]
 async fn delete_space_storage_for(key: &str) {
     log!("space '{key}' removed; its local storage is left behind (no native delete yet)");
 }
@@ -3724,6 +3762,7 @@ pub(crate) async fn holds_content(tonk: &TonkState, key: &str) -> bool {
 ///
 /// Split out from [`PauseSyncHandler::run`] so the `?` early-return funnels
 /// into the single `log!` there.
+#[cfg(feature = "persona")]
 async fn run_pause_sync(
     env: &crate::router::CommandEnv,
     repo: &str,
@@ -3830,6 +3869,7 @@ fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError
 ///
 /// Shared by both creation paths so they cannot disagree about where a
 /// space syncs.
+#[cfg(feature = "persona")]
 async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
     super::account_state::account_remote(tonk).await.ok()
 }
@@ -3843,6 +3883,7 @@ async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
 /// A sync remote is never wired here — it would make a remote/auth
 /// failure abort the whole create, so the space never appears.
 /// [`CreateSpaceHandler`] attaches the remote separately, after this.
+#[cfg(feature = "persona")]
 pub(super) async fn create_space_inner(
     state: &AppState,
     name: &str,
@@ -4313,6 +4354,7 @@ impl ProfileLibraryCache {
         Ok(prepared)
     }
 
+    #[cfg(feature = "persona")]
     async fn replace_input(
         &self,
         library: String,
@@ -4597,6 +4639,7 @@ impl dialog_capability::Provider<tonk_schema::command::CheckUpdate> for crate::r
 /// would still read back.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<tonk_schema::command::ForgetInvite> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::ForgetInvite) {
         let space = command.space.0.clone();
@@ -6251,6 +6294,7 @@ async fn generated_space_key(
     .map_err(|error| failed("the space's custody was not kept", &error))?;
     // Signed in, the space is the account's too: its other devices restore
     // the key from what the account holds.
+    #[cfg(feature = "persona")]
     if let Some(credential::Persona::Permanent(persona)) = tonk_kernel_world::session::persona() {
         super::merge::hold_for_account(tonk, &space, &did, Custodian::Permanent(&persona))
             .await
@@ -6341,6 +6385,7 @@ async fn defer_seed(
 
 /// Change what `subject`'s own worker is to create the space's content from.
 /// For a space this worker created and left for that worker to fill.
+#[cfg(feature = "persona")]
 async fn amend_seed(
     tonk: &TonkState,
     subject: &Did,
@@ -6397,6 +6442,7 @@ pub(crate) async fn carry_pending_seed(
 /// What `subject`'s own worker is to create its content from, or `None` when
 /// this worker created that content itself or the seed has been settled.
 #[cfg(target_arch = "wasm32")]
+#[cfg(feature = "persona")]
 pub(crate) async fn pending_seed(
     tonk: &TonkState,
     subject: &Did,
@@ -6438,6 +6484,7 @@ pub(crate) async fn pending_seed(
 /// The space's own worker has created its content: there is nothing left to
 /// hand over.
 #[cfg(target_arch = "wasm32")]
+#[cfg(feature = "persona")]
 pub(crate) async fn settle_seed(tonk: &TonkState, subject: &Did) -> Result<(), TonkWorkerError> {
     save_pending_seed(tonk, subject, Vec::new())
         .await
@@ -7389,6 +7436,7 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
     // on the branch it booted onto, and which other branches it could
     // switch to.
     super::account::publish_link(tonk).await;
+    #[cfg(feature = "persona")]
     super::profiles::publish_roster(tonk).await;
 
     // Drain the poll the bootstrap commit scheduled.
@@ -7913,6 +7961,7 @@ pub(crate) async fn reconcile_profile_library_from(
 /// Development-only asset update boundary used by hot swap. The supplied
 /// document becomes the worker's acquired input before it is reconciled, so a
 /// later account sweep cannot restore bytes cached before the edit.
+#[cfg(feature = "persona")]
 #[handler]
 pub(super) async fn update_profile_library(
     State(state): State<AppState>,

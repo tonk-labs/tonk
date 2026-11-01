@@ -136,6 +136,7 @@ fn expected_site(subject: &Did) -> String {
 /// lists a space only once it has. Kept beside the profile, like a new
 /// space's seed, so a join a restart interrupted finds it. [`settle`]d when
 /// the join ends, either way.
+#[cfg(feature = "persona")]
 pub(crate) async fn expect(
     tonk: &TonkState,
     subject: &Did,
@@ -149,12 +150,14 @@ pub(crate) async fn expect(
 /// `subject` is no longer [expected](expect): its join landed, and the
 /// directory lists it, or it failed. Best effort: what is left behind names
 /// a space the profile holds no authority to act on.
+#[cfg(feature = "persona")]
 pub(crate) async fn settle(tonk: &TonkState, subject: &Did) {
     if let Err(error) = save_expected(tonk, subject, Vec::new()).await {
         tonk_common::log!("{subject} is still expected: {error}");
     }
 }
 
+#[cfg(feature = "persona")]
 async fn save_expected(
     tonk: &TonkState,
     subject: &Did,

@@ -87,6 +87,7 @@ pub(crate) async fn post_cbor(endpoint: &Url, body: &[u8]) -> Result<HttpRespons
 
 /// GET a JSON (or other) resource from an upstream service, with the
 /// same timeout and error-envelope handling as the POST path.
+#[cfg(feature = "persona")]
 pub(crate) async fn get(endpoint: &Url) -> Result<HttpResponse, HttpError> {
     request_with_timeout("GET", endpoint, None, None, TIMEOUT).await
 }

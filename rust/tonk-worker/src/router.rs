@@ -41,13 +41,19 @@ mod claim;
 pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
 pub(crate) mod account;
+#[cfg(feature = "persona")]
 mod account_deletion;
+#[cfg(feature = "persona")]
 mod account_journey;
+#[cfg(feature = "persona")]
 mod ceremony;
 pub(crate) mod customer;
+#[cfg(feature = "persona")]
 mod link_timing;
 /// Signing in, as this profile asks the host for it.
+#[cfg(feature = "persona")]
 pub(crate) mod registration;
+#[cfg(feature = "persona")]
 mod sign_in_via;
 
 pub(crate) mod account_state;
@@ -57,20 +63,21 @@ mod http;
 
 pub(crate) mod adopt;
 /// Getting the account's encryption key onto a device that needs it.
+#[cfg(feature = "persona")]
 pub(crate) mod custody;
 /// Accreditation: rotate the onboarding account's custody to the passkey
 /// account, then retire it.
 pub(crate) mod rotation;
 
 /// Acting as the account on a kernel, once the person lets it.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
 mod authorize;
 pub(crate) mod join;
 /// Signing in on a kernel: the provisional persona merges into the
 /// permanent one.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
 mod merge;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
 pub use authorize::{authorized, delegate_asked, unauthorized};
 pub(crate) mod public_access;
 mod publication;
@@ -81,18 +88,21 @@ pub(crate) mod space_reach;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod space_worker;
 pub use join::{JoinRequest, JoinResponse};
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
 pub use merge::{failed, merged, refused};
+#[cfg(feature = "persona")]
 mod local_space_link;
 /// What a space's own worker asks of the persona, on a kernel.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
 pub mod profile_asks;
 
+#[cfg(feature = "persona")]
 pub(crate) mod account_devices;
 
 mod create_invite;
 pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
+#[cfg(any(feature = "persona", feature = "connection-invites"))]
 pub(crate) mod agent_connections;
 pub(crate) mod revoke_invite;
 
@@ -134,8 +144,10 @@ mod lsp_env;
 pub(crate) mod profile;
 pub use profile::{ProfileInfo, SpaceEntry};
 
+#[cfg(feature = "persona")]
 pub(crate) mod profiles;
 
+#[cfg(feature = "persona")]
 mod activation;
 mod profile_name;
 
@@ -166,10 +178,12 @@ pub use host::{ClientId, ViewBinding, ViewBindings};
 
 mod blob;
 
+#[cfg(feature = "persona")]
 mod migration;
 
 mod interpret;
 mod navigate;
+#[cfg(feature = "persona")]
 mod site_request;
 mod site_select;
 
@@ -303,39 +317,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
     let router = Router::new()
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
-        .route(
-            "/api/identity/root",
-            get(identity::get).post(identity::save),
-        )
-        .route("/api/account", get(account::get).delete(account::unlink))
-        .route("/api/account/deletion/plan", get(account_deletion::plan))
-        .route("/api/account/attach", post(account::link))
-        .route("/api/account/display-name", post(account::set_display_name))
-        // Customer registration with the same-origin access service.
-        .route("/api/customer", get(customer::get_state))
-        .route("/api/customer/pending", get(customer::get_pending))
-        .route("/api/custody/provision", post(customer::provision_custody))
-        .route("/api/custody/queue", post(customer::queue_custody))
-        .route("/api/account/devices", get(account_devices::list))
-        .route(
-            "/api/account/devices/register",
-            post(account_devices::register),
-        )
-        .route("/api/account/devices/revoke", post(account_devices::revoke))
         .route("/api/profile", get(profile::get_profile))
-        // Profile roster and switching — every account signed in on this
-        // browser has its own profile; these list them, swap the active
-        // one, and mint a fresh landing pad for "add account".
-        .route("/api/profiles", get(profiles::list))
-        .route("/api/profiles/activate", post(profiles::activate))
-        .route("/api/profiles/add", post(profiles::add))
-        // The profile's own repository has no routes of its own: it is
-        // reached through `/api/repository/{repo}/…` like every other,
-        // by its DID or the `profile:<name>` alias (see `profile_alias`).
-        .route(
-            "/api/profile/library",
-            post(repository::update_profile_library),
-        )
         // Register the requesting client's site (per-tab navigation state).
         // The page calls this on load and on each client-side navigation; the
         // SW asserts the tab's `tonk:site` and returns the site id. Reads never
@@ -348,29 +330,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/site",
             post(session::register_site_on_repo),
-        )
-        // Join an invite — creates a fresh replica or refreshes
-        // access on an existing one. See `router/join.rs`.
-        .route("/api/profile/join", post(join::join))
-        .route(
-            "/api/local-space-link/approve",
-            post(local_space_link::approve),
-        )
-        .route(
-            "/api/local-space-link/describe",
-            post(local_space_link::describe),
-        )
-        .route(
-            "/api/local-space-link/provision",
-            post(local_space_link::provision),
-        )
-        .route(
-            "/api/local-space-link/complete",
-            post(local_space_link::complete),
-        )
-        .route(
-            "/api/migrate/repo-vs-profile",
-            get(migration::repo_vs_profile),
         )
         // Repository lifecycle
         .route(
@@ -389,11 +348,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             post(revoke_invite::revoke),
         )
         .route("/api/repository/{repo}/invites", get(revoke_invite::list))
-        .route("/api/account/connections", get(agent_connections::list))
-        .route(
-            "/api/account/connections/{id}/revoke",
-            post(agent_connections::revoke),
-        )
         // Opt-in remote attach — wires a remote (and branch upstream)
         // onto an existing repo, idempotently. See
         // `router/repository.rs::attach_remote`.
@@ -525,7 +479,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/inspect/repository/{repo}/remote/{remote}/archive/index/{hash}",
             get(inspect::archive::inspect_remote_archive_block),
-        )
+        );
+    #[cfg(feature = "persona")]
+    let router = persona_routes(router);
+    let router = router
         .with_state(state.clone())
         // LSP routes carry their own state (`Extension<LspHub>`) so
         // they don't need to know about `AppState`. Merging keeps
@@ -542,4 +499,72 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .fallback_service(router)
         .layer(middleware::from_fn_with_state(state, profile_alias));
     (router, lsp_hub)
+}
+
+/// `router` with what only the person's own worker serves: their identity,
+/// account, customer registration, profiles, and the joins and links they
+/// make from their profile. A space's own worker has none of these.
+#[cfg(feature = "persona")]
+fn persona_routes(router: Router<AppState>) -> Router<AppState> {
+    router
+        .route(
+            "/api/identity/root",
+            get(identity::get).post(identity::save),
+        )
+        .route("/api/account", get(account::get).delete(account::unlink))
+        .route("/api/account/deletion/plan", get(account_deletion::plan))
+        .route("/api/account/attach", post(account::link))
+        .route("/api/account/display-name", post(account::set_display_name))
+        // Customer registration with the same-origin access service.
+        .route("/api/customer", get(customer::get_state))
+        .route("/api/customer/pending", get(customer::get_pending))
+        .route("/api/custody/provision", post(customer::provision_custody))
+        .route("/api/custody/queue", post(customer::queue_custody))
+        .route("/api/account/devices", get(account_devices::list))
+        .route(
+            "/api/account/devices/register",
+            post(account_devices::register),
+        )
+        .route("/api/account/devices/revoke", post(account_devices::revoke))
+        .route("/api/account/connections", get(agent_connections::list))
+        .route(
+            "/api/account/connections/{id}/revoke",
+            post(agent_connections::revoke),
+        )
+        // Profile roster and switching — every account signed in on this
+        // browser has its own profile; these list them, swap the active
+        // one, and mint a fresh landing pad for "add account".
+        .route("/api/profiles", get(profiles::list))
+        .route("/api/profiles/activate", post(profiles::activate))
+        .route("/api/profiles/add", post(profiles::add))
+        // The profile's own repository has no routes of its own: it is
+        // reached through `/api/repository/{repo}/…` like every other,
+        // by its DID or the `profile:<name>` alias (see `profile_alias`).
+        .route(
+            "/api/profile/library",
+            post(repository::update_profile_library),
+        )
+        // Join an invite — creates a fresh replica or refreshes
+        // access on an existing one. See `router/join.rs`.
+        .route("/api/profile/join", post(join::join))
+        .route(
+            "/api/local-space-link/approve",
+            post(local_space_link::approve),
+        )
+        .route(
+            "/api/local-space-link/describe",
+            post(local_space_link::describe),
+        )
+        .route(
+            "/api/local-space-link/provision",
+            post(local_space_link::provision),
+        )
+        .route(
+            "/api/local-space-link/complete",
+            post(local_space_link::complete),
+        )
+        .route(
+            "/api/migrate/repo-vs-profile",
+            get(migration::repo_vs_profile),
+        )
 }

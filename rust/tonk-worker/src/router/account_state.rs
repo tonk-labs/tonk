@@ -18,7 +18,10 @@ use tonk_account::{
     AccountStateStatus, CreateGenesis, RemotePresence, probe_remote_main, publish_genesis_if_absent,
 };
 use tonk_common::log;
-use tonk_schema::{AccountSealedInbox, Replica, SecretMessage, SeedKind, prelude::DidExt as _};
+use tonk_schema::{AccountSealedInbox, Replica, prelude::DidExt as _};
+#[cfg(feature = "persona")]
+use tonk_schema::{SecretMessage, SeedKind};
+#[cfg(feature = "persona")]
 use zeroize::Zeroizing;
 
 use crate::worker::TonkState;
@@ -129,6 +132,7 @@ async fn account_configured(tonk: &TonkState) -> bool {
 }
 
 /// Current durable account-state status, without a network request.
+#[cfg(feature = "persona")]
 pub(crate) async fn status(tonk: &TonkState) -> AccountStateStatus {
     let Ok(root) = super::identity::local_root(tonk).await else {
         return AccountStateStatus::Unconfigured;
@@ -211,6 +215,7 @@ async fn resolve_account_keys(tonk: &TonkState) -> HashSet<String> {
 }
 
 /// The account replica rows the profile repository indexes.
+#[cfg(feature = "persona")]
 async fn account_replicas(tonk: &TonkState) -> Result<Vec<Replica>, TonkWorkerError> {
     let meta = tonk
         .reactor
@@ -247,6 +252,7 @@ async fn account_replicas(tonk: &TonkState) -> Result<Vec<Replica>, TonkWorkerEr
 /// `Err` is a transient index read failure, distinct from a readable
 /// "no replica"; callers with a stored attachment may fall back to it
 /// rather than signing the profile out on a flaky read.
+#[cfg(feature = "persona")]
 pub(crate) async fn linked_account(
     tonk: &TonkState,
 ) -> Result<Option<dialog_varsig::Did>, TonkWorkerError> {
@@ -747,6 +753,7 @@ pub(crate) enum Publish {
     /// Push before answering.
     Now,
     /// Answer first; the caller or the heartbeat pushes.
+    #[cfg(feature = "persona")]
     Later,
 }
 
@@ -758,6 +765,7 @@ pub(crate) enum Publish {
 /// the answer has gone out; awaited natively, so the tests that follow a
 /// link with a remote check see what the browser will have seen a
 /// moment later.
+#[cfg(feature = "persona")]
 pub(crate) async fn push_after_answer(app: crate::router::AppState) {
     let tonk = app.read().await;
     if let Err(error) = push_account_main(&tonk).await {
@@ -831,6 +839,7 @@ async fn sync_ready(tonk: &TonkState, _key: &str, publish: Publish) -> Result<()
             .await
             .map(|_| ())
             .map_err(|error| format!("account push failed: {error}")),
+        #[cfg(feature = "persona")]
         Publish::Later => Ok(()),
     };
     finish_account_sweep(reconciliation, push)
@@ -847,6 +856,7 @@ async fn sync_ready(tonk: &TonkState, _key: &str, publish: Publish) -> Result<()
 /// same work with its outcome reported. This is the form a page waits on, so
 /// it answers once the local state is converged and leaves the push to the
 /// heartbeat ([`Publish::Later`]).
+#[cfg(feature = "persona")]
 pub(crate) async fn ensure_account_state(tonk: &TonkState) -> AccountStateStatus {
     let (status, swept) = sweep_account_state(tonk, Publish::Later).await;
     if let Err(error) = swept {
@@ -944,6 +954,7 @@ async fn sweep_account_state(
                     let reconciliation = super::repository::reconcile_profile_library(tonk).await;
                     let pushed = match publish {
                         Publish::Now => push_account_main(tonk).await,
+                        #[cfg(feature = "persona")]
                         Publish::Later => Ok(()),
                     };
                     (
@@ -999,6 +1010,7 @@ pub(crate) async fn require_ready_account_state(
 /// keyed on the custody DID its PRF output derives, which is the `to` of the
 /// `secret:message` this account sealed to it. So the account is reached by
 /// the message's `sender`, and no row carries a second copy of it.
+#[cfg(feature = "persona")]
 async fn read_passkeys(
     tonk: &TonkState,
     ready: &ReadyAccountBranch,
@@ -1069,6 +1081,7 @@ async fn read_passkeys(
 /// must not fail because a hidden system repository is mid-hydration. Every
 /// `None` that is not simply "no fact" is logged, so an unreadable branch is
 /// visible rather than silent.
+#[cfg(feature = "persona")]
 pub(crate) async fn passkey_facts(tonk: &TonkState) -> Option<tonk_worker_api::PasskeyMetadata> {
     // No readiness gate: these are display facts the enrolling device
     // itself wrote on profile main, so they are answerable the moment
@@ -1343,6 +1356,7 @@ pub(crate) async fn seed_sealed_inbox(tonk: &TonkState) -> bool {
 /// Best-effort, like [`retain_space_delegation`]: the subject is usable
 /// the moment its signer exists locally, so a failure is logged rather than
 /// failing the caller.
+#[cfg(feature = "persona")]
 pub(crate) async fn custody_seed(
     tonk: &TonkState,
     subject: &dialog_varsig::Did,
@@ -1501,6 +1515,7 @@ pub(crate) async fn converge_account_state(_tonk: &TonkState) -> Result<(), Tonk
     Ok(())
 }
 
+#[cfg(feature = "persona")]
 fn account_state_unavailable() -> TonkWorkerError {
     TonkWorkerError::AccountStateUnavailable(
         "Finish or retry account setup at /account before changing the linked account name"
@@ -1508,6 +1523,7 @@ fn account_state_unavailable() -> TonkWorkerError {
     )
 }
 
+#[cfg(feature = "persona")]
 async fn adopt_account_display_name(
     tonk: &TonkState,
     name: &str,
@@ -1541,6 +1557,7 @@ async fn adopt_account_display_name(
 
 /// Seed the authoritative name from this device's current profile name when
 /// the account repository is ready and still unnamed.
+#[cfg(feature = "persona")]
 pub(crate) async fn initialize_display_name(
     tonk: &TonkState,
 ) -> Result<tonk_worker_api::AccountDisplayNameResponse, TonkWorkerError> {
@@ -1585,6 +1602,7 @@ pub(crate) async fn initialize_display_name(
 
 /// Apply the display-name flow used by both the result-bearing HTTP endpoint
 /// and the legacy transient command handler.
+#[cfg(feature = "persona")]
 pub(crate) async fn rename_display_name(
     tonk: &TonkState,
     name: &str,
@@ -1603,6 +1621,7 @@ pub(crate) async fn rename_display_name(
         }
         let response = adopt_account_display_name(tonk, name).await?;
         // Roster upkeep: the switcher row shows the new name.
+        #[cfg(feature = "persona")]
         super::profiles::upsert_active_entry(tonk, None).await;
         return Ok(Some(response));
     }
@@ -1624,6 +1643,7 @@ pub(crate) async fn rename_display_name(
     // root when there is one, else on the device.
 
     // Roster upkeep: the switcher row shows the new name.
+    #[cfg(feature = "persona")]
     super::profiles::upsert_active_entry(tonk, None).await;
 
     Ok(Some(AccountDisplayNameResponse {

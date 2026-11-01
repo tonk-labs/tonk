@@ -85,6 +85,7 @@ impl<'a> SpacePeer<'a> {
     /// That worker's own profile branch, which runs any command, naming the
     /// space. For what is a device's and not the space's: whether this
     /// device syncs it.
+    #[cfg(feature = "persona")]
     pub(crate) fn profile(&self) -> PeerBranchReference<'static> {
         PeerRepositoryReference::new(PROFILE_REPOSITORY).branch(PROFILE_BRANCH)
     }
@@ -290,10 +291,12 @@ pub(crate) async fn run(
 }
 
 /// The name a worker answers for its own profile under.
+#[cfg(feature = "persona")]
 const PROFILE_REPOSITORY: &str = "profile:tonk";
 
 /// The branch a space's own worker keeps its profile on. It has one profile,
 /// made on its origin's first boot, and never another branch of it.
+#[cfg(feature = "persona")]
 const PROFILE_BRANCH: &str = "main";
 
 /// Tell the worker of `space`, or of every space with `None`, that what its

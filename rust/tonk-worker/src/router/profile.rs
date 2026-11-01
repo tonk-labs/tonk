@@ -171,6 +171,7 @@ pub(crate) async fn active_branch_name(
 /// replica held by another peer, and that replica's subject is the
 /// account. A branch that follows nothing is signed out, so absence is
 /// the signal rather than a flag free to disagree with the branch.
+#[cfg(feature = "persona")]
 pub(crate) async fn active_account(tonk: &crate::worker::TonkState) -> Option<Entity> {
     let active = active_branch(tonk).await?;
     account_followed_by(tonk, &active).await
@@ -180,6 +181,7 @@ pub(crate) async fn active_account(tonk: &crate::worker::TonkState) -> Option<En
 ///
 /// The traversal `meta.yaml` declares as the `account` rule, walked here
 /// because the worker needs the answer on `meta`, where no rule runs.
+#[cfg(feature = "persona")]
 async fn account_followed_by(tonk: &crate::worker::TonkState, branch: &Entity) -> Option<Entity> {
     upstream_replica(tonk, branch)
         .await
@@ -187,6 +189,7 @@ async fn account_followed_by(tonk: &crate::worker::TonkState, branch: &Entity) -
 }
 
 /// The account a branch follows, as a DID.
+#[cfg(feature = "persona")]
 pub(crate) async fn account_of_branch(
     tonk: &crate::worker::TonkState,
     branch: &Entity,
@@ -200,6 +203,7 @@ pub(crate) async fn account_of_branch(
 /// peer holding the upstream's replica, as the endpoint a UCAN remote
 /// dials. `None` for a branch following nothing, or one whose peer
 /// recorded no address.
+#[cfg(feature = "persona")]
 pub(crate) async fn provider_of_branch(
     tonk: &crate::worker::TonkState,
     branch: &Entity,
@@ -237,6 +241,7 @@ pub(crate) async fn provider_of_branch(
 
 /// The replica a branch's upstream lives on: `branch -> upstream ->
 /// branch/replica`, read off `meta`. `None` for a branch following nothing.
+#[cfg(feature = "persona")]
 async fn upstream_replica(
     tonk: &crate::worker::TonkState,
     branch: &Entity,
@@ -333,6 +338,7 @@ pub(crate) async fn local_branches(tonk: &crate::worker::TonkState) -> Vec<(Stri
 ///
 /// Signing back in returns to the branch that was signed in to that
 /// account before, spaces and all, rather than attaching a second one.
+#[cfg(feature = "persona")]
 pub(crate) async fn branch_following(
     tonk: &crate::worker::TonkState,
     account: &Did,
@@ -352,6 +358,7 @@ pub(crate) async fn branch_following(
 ///
 /// Only a branch `meta` enumerates: activating a name nothing recorded
 /// would boot the next state onto a branch with no bookkeeping.
+#[cfg(feature = "persona")]
 pub(crate) async fn set_active_branch(
     tonk: &crate::worker::TonkState,
     name: &str,
@@ -393,6 +400,7 @@ pub(crate) async fn set_active_branch(
 /// an existing rootless local workspace, or create one. Nothing is
 /// emptied and no branch is deleted, so the account branch keeps its
 /// spaces and signing back in returns to them.
+#[cfg(feature = "persona")]
 pub(crate) async fn leave_account(tonk: &crate::worker::TonkState) {
     use tonk_schema::{Branch as MetaBranch, BranchUpstream, ReplicaActiveBranch};
 
@@ -497,6 +505,7 @@ pub struct SpaceEntry {
 /// this profile's branches. Used when nothing on the branch is worth
 /// returning to: the account it followed was deleted, or what it held
 /// moved to the account a sign-in came back to.
+#[cfg(feature = "persona")]
 pub(crate) async fn forget_branch(tonk: &crate::worker::TonkState, name: &str) {
     use tonk_schema::{Branch as MetaBranch, BranchUpstream};
 

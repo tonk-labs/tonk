@@ -8,25 +8,36 @@
 //! deployment serving this page — so endpoints derive from the request
 //! origin and the service DID comes from `/.well-known/tonk`.
 
+#[cfg(feature = "persona")]
 use axum::{
     Json,
     extract::{Extension, State},
 };
+#[cfg(feature = "persona")]
 use dialog_artifacts::Entity;
+#[cfg(feature = "persona")]
 use dialog_query::{Cardinality, the};
 use dialog_ucan_core::time::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
-use tonk_account::customer::{CustomerStatus, Receipt};
+use tonk_account::customer::CustomerStatus;
+#[cfg(feature = "persona")]
+use tonk_account::customer::Receipt;
 use tonk_account::pending::{PendingQueue, PendingWork};
 use tonk_account::{CUSTOMER_CREDENTIAL_SITE, PENDING_WORK_CREDENTIAL_SITE};
 use tonk_common::log;
+#[cfg(feature = "persona")]
 use tonk_identity::request::build_enroll_invocation;
+#[cfg(feature = "persona")]
 use tonk_macros::handler;
 use url::Url;
 
+#[cfg(feature = "persona")]
 use super::AppState;
-use super::http::{HttpError, get, post_cbor};
+#[cfg(feature = "persona")]
+use super::http::get;
+use super::http::{HttpError, post_cbor};
 use crate::TonkWorkerError;
+#[cfg(feature = "persona")]
 use crate::axum::RequestOrigin;
 
 /// What this device recorded about its account's customer registration.
@@ -45,6 +56,7 @@ pub struct CustomerRecord {
 /// The answer to a customer state read: the service's view when it has
 /// one, and the locally recorded enrollment either way.
 #[derive(Debug, Serialize)]
+#[cfg(feature = "persona")]
 pub struct CustomerState {
     /// The account root DID the customer registration is keyed by.
     pub customer: String,
@@ -71,6 +83,7 @@ pub struct CustomerState {
 /// ceremony is at hand, so the service is offered a device-issued set
 /// chained through the `root -> device` grant instead.
 #[allow(dead_code)]
+#[cfg(feature = "persona")]
 pub(crate) async fn enroll_customer(
     state: &crate::worker::TonkState,
     origin: &url::Url,
@@ -132,6 +145,7 @@ pub(crate) async fn enroll_customer(
 /// Record what the service answered enrolling this profile's account with
 /// `email`: the customer record, the ledger grant, and the account's
 /// status as a fact.
+#[cfg(feature = "persona")]
 pub(crate) async fn enrolled(
     state: &crate::worker::TonkState,
     receipt: &Receipt,
@@ -177,6 +191,7 @@ pub(crate) async fn enrolled(
 /// the account's recorded address.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<tonk_schema::command::EnrollCustomer>
     for crate::router::CommandEnv
 {
@@ -205,6 +220,7 @@ impl dialog_capability::Provider<tonk_schema::command::EnrollCustomer>
 /// being sent, that it was, or that it could not be.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<tonk_schema::command::ResendActivation>
     for crate::router::CommandEnv
 {
@@ -223,9 +239,11 @@ impl dialog_capability::Provider<tonk_schema::command::ResendActivation>
 }
 
 /// The entity the last `account/resend-activation` says how it went on.
+#[cfg(feature = "persona")]
 const RESEND_URI: &str = "tonk:account/resend";
 
 /// Ask the service for another activation email.
+#[cfg(feature = "persona")]
 async fn resend(state: &AppState) -> Result<(), String> {
     let state = state.read().await;
     let account = super::identity::root_did(&state)
@@ -245,6 +263,7 @@ async fn resend(state: &AppState) -> Result<(), String> {
 
 /// Say `said` of the last resend, in the overlay of `branch`, the one the
 /// page that asked is watching: nothing of it is stored or synced.
+#[cfg(feature = "persona")]
 async fn say_resent(state: &AppState, branch: &str, said: &str) {
     let Ok(entity) = RESEND_URI.parse::<Entity>() else {
         return;
@@ -272,6 +291,7 @@ async fn say_resent(state: &AppState, branch: &str, said: &str) {
 /// Ask the service at `origin` how this profile's account stands, and
 /// record what it says: the customer record, the account facts, and the
 /// ledger grant. `None` when the service has no customer for it.
+#[cfg(feature = "persona")]
 pub(crate) async fn probe(
     state: &crate::worker::TonkState,
     origin: &url::Url,
@@ -334,6 +354,7 @@ pub(crate) async fn probe(
 
 /// GET `/api/customer` → the account's registration state: the service's
 /// live answer joined with the locally recorded enrollment.
+#[cfg(feature = "persona")]
 #[handler]
 pub async fn get_state(
     State(state): State<AppState>,
@@ -359,6 +380,7 @@ pub async fn get_state(
 /// minted for `/provider/add`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(feature = "persona")]
 pub struct ProvisionCustodyRequest {
     /// The custody space's subject.
     pub custody: String,
@@ -379,6 +401,7 @@ fn decode_custody_consent(
 /// this profile's account. The page runs the enrollment ceremony and
 /// hands the consent here; the call is idempotent, and retryable — the
 /// published cell, not this row, is the account's durability.
+#[cfg(feature = "persona")]
 #[handler]
 pub async fn provision_custody(
     State(state): State<AppState>,
@@ -398,6 +421,7 @@ pub async fn provision_custody(
 /// not be published yet.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(feature = "persona")]
 pub struct QueueCustodyRequest {
     /// The custody space whose cell is waiting.
     pub custody: String,
@@ -412,6 +436,7 @@ pub struct QueueCustodyRequest {
     pub invocation_hex: String,
 }
 
+#[cfg(feature = "persona")]
 fn custody_pending_batch(request: &QueueCustodyRequest) -> Vec<PendingWork> {
     let mut work = Vec::with_capacity(2);
     if let Some(consent_hex) = &request.consent_hex {
@@ -437,6 +462,7 @@ fn custody_pending_batch(request: &QueueCustodyRequest) -> Vec<PendingWork> {
 /// this itself — no page, no assertion. The cell is also recorded on
 /// profile main right away: the account's own sync is the durability
 /// channel, and the vault copy only bootstraps a brand-new browser.
+#[cfg(feature = "persona")]
 #[handler]
 pub async fn queue_custody(
     State(state): State<AppState>,
@@ -473,6 +499,7 @@ pub async fn queue_custody(
 /// Record `custody`'s sealed cell on profile main, so the account's own
 /// sync carries the recovery envelope to every device that holds the
 /// profile.
+#[cfg(feature = "persona")]
 pub(crate) async fn record_custody_cell(
     state: &crate::worker::TonkState,
     custody: &str,
@@ -689,6 +716,7 @@ pub(crate) async fn record_space_provider(
 /// back to local-only. Called when deprovisioning succeeds and when the
 /// sync engine observes the gate refusing the subject with a denial
 /// retrying cannot clear. Best-effort, like the record.
+#[cfg(feature = "persona")]
 pub(crate) async fn retract_space_provider(
     state: &crate::worker::TonkState,
     consumer: &dialog_varsig::Did,
@@ -793,6 +821,7 @@ pub(crate) async fn space_provider_recorded(
 /// Deprovision `consumer` at `origin`: the device-signed
 /// `/provider/remove` that deletes the hosted space. Authority is the
 /// account's own chain — any linked device may exercise it.
+#[cfg(feature = "persona")]
 pub(crate) async fn deprovision_consumer(
     state: &crate::worker::TonkState,
     origin: &Url,
@@ -910,6 +939,7 @@ async fn load_customer(
 /// Best-effort, like the space retain it mirrors: the ledger is
 /// metering the account reads, not authority it needs to operate, so a
 /// failure here must not fail the enrollment that carried it.
+#[cfg(feature = "persona")]
 pub(crate) async fn retain_ledger(state: &crate::worker::TonkState, receipt: &Receipt) {
     let Some(ledger) = &receipt.ledger else {
         return;
@@ -1031,6 +1061,7 @@ pub(crate) async fn record_activation(state: &crate::worker::TonkState) {
         log!("account activation not recorded: {error}");
     }
     // A sign-in that waited for the emailed link is over.
+    #[cfg(feature = "persona")]
     super::registration::activated(state).await;
     // Activation is what the deferred work was waiting on: the custody
     // publish the ceremony pre-signed, and any space provisioned while
@@ -1265,6 +1296,7 @@ pub(crate) async fn record_customer_status(
                 TonkWorkerError::Internal(format!("commit account registration facts: {error}"))
             })?;
     }
+    #[cfg(feature = "persona")]
     if status == CustomerStatus::Active && !recorded.activated {
         super::registration::activated(state).await;
     }
@@ -1272,6 +1304,7 @@ pub(crate) async fn record_customer_status(
     Ok(())
 }
 
+#[cfg(feature = "persona")]
 pub(super) async fn save_customer(
     state: &crate::worker::TonkState,
     record: &CustomerRecord,
@@ -1473,6 +1506,7 @@ async fn run_pending(
 /// `GET /api/customer/pending` → the queued work still waiting: the
 /// account panel reads this to say a backup is on its way; the worker
 /// itself drains it.
+#[cfg(feature = "persona")]
 #[handler]
 pub async fn get_pending(
     State(state): State<AppState>,
@@ -1481,7 +1515,7 @@ pub async fn get_pending(
     Ok(Json(load_pending(&state).await?))
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
 pub(crate) async fn clear_customer(
     state: &crate::worker::TonkState,
 ) -> Result<(), TonkWorkerError> {

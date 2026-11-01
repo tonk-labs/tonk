@@ -1,12 +1,18 @@
 //! Persist and validate the provider-neutral local passkey root.
 
+#[cfg(feature = "persona")]
 use axum::{Json, extract::State};
+#[cfg(feature = "persona")]
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "persona")]
 use tonk_macros::handler;
-use tonk_worker_api::{PasskeyMetadata, RootStatus, SaveRootRequest};
+use tonk_worker_api::PasskeyMetadata;
+#[cfg(feature = "persona")]
+use tonk_worker_api::{RootStatus, SaveRootRequest};
 
+#[cfg(feature = "persona")]
 use super::AppState;
 use crate::TonkWorkerError;
 use crate::worker::DefaultProfile;
@@ -31,14 +37,17 @@ pub(crate) struct LocalRoot {
     /// Passkey-derived root DID.
     pub root_did: dialog_varsig::Did,
     /// Current device DID.
+    #[cfg(feature = "persona")]
     pub device_did: dialog_varsig::Did,
     /// Opaque passkey credential ID.
+    #[cfg(feature = "persona")]
     pub credential_id: String,
     /// Exact root → device delegation.
     pub delegation: DelegationChain,
     /// Exact serialized delegation bytes.
     pub bytes: Vec<u8>,
     /// Informational creation details recorded by the creating browser.
+    #[cfg(feature = "persona")]
     pub passkey: Option<PasskeyMetadata>,
     /// The account's X25519 recipient, when the ceremony that wrote this
     /// record held the secret. Published to the account space by
@@ -136,10 +145,13 @@ pub(crate) async fn local_root(state: &TonkState) -> Result<LocalRoot, TonkWorke
         .transpose()?;
     Ok(LocalRoot {
         root_did: delegation.issuer().clone(),
+        #[cfg(feature = "persona")]
         device_did,
+        #[cfg(feature = "persona")]
         credential_id: record.credential_id,
         delegation,
         bytes: record.delegation,
+        #[cfg(feature = "persona")]
         passkey: record.passkey,
         encryption_key,
     })
@@ -174,6 +186,7 @@ pub(crate) async fn root_did(state: &TonkState) -> Result<dialog_varsig::Did, To
     Ok(local_root(state).await?.root_did)
 }
 
+#[cfg(feature = "persona")]
 fn status(root: LocalRoot) -> RootStatus {
     RootStatus::Ready {
         root_did: root.root_did.to_string(),
@@ -187,6 +200,7 @@ fn status(root: LocalRoot) -> RootStatus {
 }
 
 /// `GET /api/identity/root`.
+#[cfg(feature = "persona")]
 #[handler]
 pub async fn get(State(state): State<AppState>) -> Result<Json<RootStatus>, TonkWorkerError> {
     let state = state.read().await;
@@ -210,6 +224,7 @@ pub(crate) async fn linked_without_key(state: &TonkState) -> bool {
 /// Signing out ends here, after the grant is retracted and its
 /// revocation published, so the next sign-in has to reopen the passkey
 /// to mint a new one. Idempotent, like the retract it performs.
+#[cfg(feature = "persona")]
 pub(crate) async fn forget_root(state: &TonkState) -> Result<(), TonkWorkerError> {
     state
         .profile
@@ -221,6 +236,7 @@ pub(crate) async fn forget_root(state: &TonkState) -> Result<(), TonkWorkerError
         .map_err(|error| TonkWorkerError::Internal(format!("failed to forget local root: {error}")))
 }
 
+#[cfg(feature = "persona")]
 pub(crate) async fn persist_root(
     state: &TonkState,
     request: SaveRootRequest,
@@ -413,6 +429,7 @@ fn parse_encryption_key(did: &str) -> Result<dialog_varsig::Did, TonkWorkerError
 }
 
 /// `POST /api/identity/root`.
+#[cfg(feature = "persona")]
 #[handler]
 pub async fn save(
     State(state): State<AppState>,

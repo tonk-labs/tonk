@@ -303,6 +303,7 @@ pub(crate) async fn admit_member(
 /// that signature. Unparseable fields skip with a log.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<tonk_schema::command::PromoteMember>
     for crate::router::CommandEnv
 {

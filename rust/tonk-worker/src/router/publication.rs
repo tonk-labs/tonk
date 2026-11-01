@@ -11,19 +11,25 @@
 //! `/use` could sign the delegation, but could never revoke it, so the
 //! space would stay public until an admin noticed.
 
+#[cfg(feature = "persona")]
 use dialog_capability::Subject;
+#[cfg(feature = "persona")]
 use dialog_effects::{Use, method};
 use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{RepositoryExt as _, SiteAddress};
+#[cfg(feature = "persona")]
 use dialog_ucan::UcanDelegation;
 use dialog_varsig::Did;
 use tonk_common::log;
+#[cfg(feature = "persona")]
 use tonk_invite::{Ticket, home_address_meta};
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{Invitation, InvitationExecution};
 
-use super::create_invite::{RemoteRequirement, explain_refusal, resolve_remote_url};
+#[cfg(feature = "persona")]
+use super::create_invite::explain_refusal;
+use super::create_invite::{RemoteRequirement, resolve_remote_url};
 use super::revoke_invite::{account_authority, leaf_cid, publish_revocation, retract_leaf};
 use crate::{TonkState, TonkWorkerError};
 
@@ -44,6 +50,7 @@ const READ_COMMAND: &str = "/use/get";
 /// [`TonkWorkerError::Forbidden`] when this account holds no `/` chain
 /// on the space; [`TonkWorkerError::Conflict`] when the space has no sync
 /// service to publish through, or the service does not keep the ticket.
+#[cfg(feature = "persona")]
 pub(crate) async fn publish(tonk: &TonkState, repo: &str) -> Result<String, TonkWorkerError> {
     if tonk.spaces_elsewhere() {
         return publish_elsewhere(tonk, repo).await;
@@ -129,6 +136,7 @@ pub(crate) async fn publish(tonk: &TonkState, repo: &str) -> Result<String, Tonk
 /// [`publish`], where the space is held by a worker of its own: this worker
 /// holds the authority, so it mints the publication and has the space keep
 /// its ticket, and hands that worker the publication to record.
+#[cfg(feature = "persona")]
 async fn publish_elsewhere(tonk: &TonkState, repo: &str) -> Result<String, TonkWorkerError> {
     let repository = super::repository::space_named(tonk, repo).await?;
     let subject = repository.did();
@@ -438,6 +446,7 @@ async fn publications(
 /// [`PublishSpace`]: tonk_schema::command::PublishSpace
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<tonk_schema::command::PublishSpace> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::PublishSpace) {
         let Ok(space) = command.space.0.to_string().parse::<Did>() else {

@@ -2,14 +2,18 @@
 //! name the account repository that root owns.
 
 use crate::worker::DefaultProfile;
+#[cfg(feature = "persona")]
 use axum::{Extension, Json, extract::State};
 use tonk_account::AccountProviderRecord;
 use tonk_common::log;
+#[cfg(feature = "persona")]
 use tonk_macros::handler;
+#[cfg(feature = "persona")]
 use tonk_worker_api::{
     AccountDisplayNameRequest, AccountDisplayNameResponse, AccountLinkRequest, AccountStatus,
 };
 
+#[cfg(feature = "persona")]
 use super::AppState;
 use crate::TonkWorkerError;
 
@@ -18,6 +22,7 @@ const ACCOUNT_PROVIDER_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SI
 /// Map an attachment failure onto the router's error taxonomy. A rejected
 /// descriptor is the caller presenting the wrong account's bytes, not a local
 /// fault, so it answers 403 rather than 500.
+#[cfg(feature = "persona")]
 fn provider_error(error: tonk_account::AccountProviderError) -> TonkWorkerError {
     use tonk_account::AccountProviderError as E;
     match error {
@@ -62,6 +67,7 @@ async fn load_provider_from(
     })
 }
 
+#[cfg(feature = "persona")]
 async fn save_provider(
     state: &crate::worker::TonkState,
     record: &AccountProviderRecord,
@@ -221,6 +227,7 @@ pub(crate) async fn current_account(
 ///   `establish_repository` upgrades it.
 /// - A transient index read failure falls back to the stored attachment
 ///   instead of signing the profile out on a flaky read.
+#[cfg(feature = "persona")]
 async fn linked(state: &crate::worker::TonkState) -> bool {
     match super::account_state::linked_account(state).await {
         Ok(Some(_)) => true,
@@ -239,6 +246,7 @@ async fn linked(state: &crate::worker::TonkState) -> bool {
 #[allow(dead_code)]
 pub(crate) const TEST_ACCOUNT_REMOTE: &str = "https://accounts.tonk.xyz/ucan/";
 
+#[cfg(feature = "persona")]
 async fn status(state: &crate::worker::TonkState) -> Result<AccountStatus, TonkWorkerError> {
     let device_did = state.profile.did().to_string();
     let root = match super::identity::local_root(state).await {
@@ -294,6 +302,7 @@ async fn status(state: &crate::worker::TonkState) -> Result<AccountStatus, TonkW
 }
 
 /// Return local-root and provider attachment state.
+#[cfg(feature = "persona")]
 #[handler]
 pub async fn get(State(state): State<AppState>) -> Result<Json<AccountStatus>, TonkWorkerError> {
     let state = state.read().await;
@@ -301,6 +310,7 @@ pub async fn get(State(state): State<AppState>) -> Result<Json<AccountStatus>, T
 }
 
 /// Commit a display name through the linked-account authority when present.
+#[cfg(feature = "persona")]
 #[handler]
 pub async fn set_display_name(
     State(state): State<AppState>,
@@ -318,6 +328,7 @@ pub async fn set_display_name(
 /// Validate that provider ceremony metadata exactly matches the local root,
 /// then store provider metadata and the account repository descriptor without
 /// changing authority.
+#[cfg(feature = "persona")]
 pub(crate) async fn persist_link(
     state: &crate::worker::TonkState,
     request: &AccountLinkRequest,
@@ -396,6 +407,7 @@ pub(crate) async fn publish_link(state: &crate::worker::TonkState) {
 
 /// Attach provider services and finish bounded backup/restore before reporting
 /// the account as linked.
+#[cfg(feature = "persona")]
 #[handler]
 pub async fn link(
     State(state): State<AppState>,
@@ -426,6 +438,7 @@ pub async fn link(
 /// the authoritative display name into the local profile synchronously instead
 /// of leaving it to a later background sweep. Callers must not report login
 /// complete after only writing the provider record.
+#[cfg(feature = "persona")]
 pub(crate) async fn finish_link(
     state: &crate::worker::TonkState,
 ) -> Result<AccountStatus, TonkWorkerError> {
@@ -464,6 +477,7 @@ pub(crate) async fn finish_link(
 }
 
 /// Disconnect provider services while preserving the local root and spaces.
+#[cfg(feature = "persona")]
 pub(crate) async fn disconnect(
     state: &crate::worker::TonkState,
 ) -> Result<AccountStatus, TonkWorkerError> {
@@ -495,6 +509,7 @@ pub(crate) async fn disconnect(
 
 /// Disconnect this account, then leave its retained spaces behind by
 /// promoting another signed-in profile or a rootless local workspace.
+#[cfg(feature = "persona")]
 #[handler]
 pub async fn unlink(
     State(state): State<AppState>,

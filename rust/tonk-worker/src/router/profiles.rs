@@ -315,6 +315,7 @@ async fn activate_named(
 /// [`AddProfile`]: tonk_schema::command::AddProfile
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<tonk_schema::command::AddProfile> for crate::router::CommandEnv {
     async fn execute(&self, _command: tonk_schema::command::AddProfile) {
         if let Err(error) = add_profile(self.state(), self.client()).await {
@@ -362,6 +363,7 @@ impl dialog_capability::Provider<tonk_schema::command::AddProfile> for crate::ro
 /// [`SwitchProfile`]: tonk_schema::command::SwitchProfile
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<tonk_schema::command::SwitchProfile>
     for crate::router::CommandEnv
 {
@@ -674,6 +676,7 @@ async fn promote(
 /// the empty branch is active.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<tonk_schema::command::SignOut> for crate::router::CommandEnv {
     async fn execute(&self, _command: tonk_schema::command::SignOut) {
         match sign_out(self.state(), self.client()).await {

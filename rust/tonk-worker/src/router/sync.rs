@@ -26,6 +26,7 @@ use crate::TonkWorkerError;
 
 /// Stamp a specific `tonk/sync` `status` value into the `state:here` overlay
 /// (e.g. `offline` on a fetch failure, where there is no `SyncState` to map).
+#[cfg(feature = "persona")]
 pub async fn publish_sync_status_attr(
     tonk: &crate::worker::TonkState,
     repo: &str,
@@ -65,6 +66,7 @@ pub async fn publish_sync_status_attr(
 /// just-paused replica without waiting for a status sweep (which a paused
 /// replica skips). Called by the pause-sync command handler after it commits
 /// the durable preference.
+#[cfg(feature = "persona")]
 pub async fn publish_paused_status(tonk: &crate::worker::TonkState, repo: &str, branch: &str) {
     publish_sync_status_attr(tonk, repo, branch, tonk_schema::Replica::paused_status()).await;
 }
@@ -149,6 +151,7 @@ pub async fn publish_session_account(
 /// both consult before pulling/pushing. Keyed on the replica entity (derived
 /// from `(profile, subject)`) rather than the `state:here` singleton, so the
 /// preference is this device's own.
+#[cfg(feature = "persona")]
 pub async fn is_sync_enabled(tonk: &crate::worker::TonkState, repo: &str, branch: &str) -> bool {
     use dialog_query::{Output as _, Query, Term};
     use tonk_schema::{Replica, ReplicaSyncEnabled};
@@ -1054,6 +1057,7 @@ impl SyncQueue {
     /// survive the reactor's [`evict`](crate::Reactor::evict) and, on the
     /// next [`drain_sync`], get folded into the union that `sync_repository`
     /// reconciles — re-acquiring (resurrecting) the just-removed repo.
+    #[cfg(feature = "persona")]
     pub(crate) fn forget(&self, repo: &str) {
         if let Ok(mut dirty) = self.dirty.lock() {
             dirty.remove(repo);
@@ -1159,7 +1163,9 @@ pub async fn drain_sync(state: &AppState) {
     // reactor entry — represents in the pull population above. Sweep it
     // explicitly each drain, unless a dirty mark already routed it
     // through `sync_repository` — sweeping twice per heartbeat is the
-    // exact duplication the dedicated path exists to avoid.
+    // exact duplication the dedicated path exists to avoid. A space's own
+    // worker holds no account to sweep.
+    #[cfg(feature = "persona")]
     let account_already_swept = {
         let tonk = state.read().await;
         let mut swept = false;
@@ -1171,6 +1177,7 @@ pub async fn drain_sync(state: &AppState) {
         }
         swept
     };
+    #[cfg(feature = "persona")]
     if !account_already_swept {
         let tonk = state.read().await;
         let (status, swept) = super::account_state::ensure_account_state_swept(&tonk).await;

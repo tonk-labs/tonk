@@ -17,6 +17,7 @@ use dialog_peer::{Peer, Session};
 use dialog_storage::provider::storage::Storage;
 #[cfg(target_arch = "wasm32")]
 use dialog_varsig::Did;
+#[cfg(feature = "persona")]
 use tokio::sync::Mutex;
 
 /// Default storage type — filesystem on native.
@@ -123,6 +124,7 @@ pub struct TonkState {
     pub(crate) registry: crate::device::Registry,
     /// Serializes every replacement of the active profile, whether explicit
     /// or selected automatically by an account ceremony.
+    #[cfg(feature = "persona")]
     pub(crate) profile_transition: Arc<Mutex<()>>,
     /// Monotonic active-profile context. Browser clients bind to the value
     /// they first use and become stale when a profile promotion advances it.
@@ -201,7 +203,7 @@ impl TonkState {
     /// Delegate `space` to `audience`, the credential of the session of the
     /// space's own worker, as the person's persona grants what that worker
     /// claims: the chain from the space down to `audience`, encoded.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "persona"))]
     pub async fn delegate_space(
         &self,
         space: &str,
@@ -253,7 +255,7 @@ impl TonkState {
     /// What the space's own worker is to create `space`'s content from, as
     /// JSON, or `None` when there is nothing left to hand over: the seed this
     /// persona kept as it created the space.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "persona"))]
     pub async fn pending_seed(
         &self,
         space: &str,
@@ -272,7 +274,7 @@ impl TonkState {
 
     /// The space's own worker created `space`'s content from its seed:
     /// there is nothing left to hand over.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "persona"))]
     pub async fn settle_seed(&self, space: &str) -> Result<(), crate::TonkWorkerError> {
         let space: Did = space
             .parse()
@@ -481,6 +483,7 @@ pub(crate) async fn boot_state_with_profile_library(
         account_keys: Default::default(),
         profile_library,
         registry,
+        #[cfg(feature = "persona")]
         profile_transition: Arc::new(Mutex::new(())),
         context_generation: Arc::new(AtomicU64::new(0)),
     };

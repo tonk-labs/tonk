@@ -45,13 +45,16 @@ pub enum Routed {
         viewed: bool,
     },
     /// What the space, by its DID, is to be created from.
+    #[cfg(feature = "persona")]
     Seed(String),
     /// The space, by its DID, was created from its seed.
+    #[cfg(feature = "persona")]
     Settle(String),
     /// The space, by its DID, for another to be made a copy of.
     Snapshot(String),
     /// What the kernel of the space, by its DID, asks the persona to do for
     /// it, and the request.
+    #[cfg(feature = "persona")]
     SpaceAsk {
         space: String,
         ask: SpaceAsk,
@@ -60,6 +63,7 @@ pub enum Routed {
 }
 
 /// What a space's kernel asks the persona to do for the space.
+#[cfg(feature = "persona")]
 pub enum SpaceAsk {
     /// Mint an invite to it.
     Invite,
@@ -97,6 +101,7 @@ pub fn route(request: Request<Body>, site: &Site) -> Routed {
         if visits {
             return Routed::Answer(page());
         }
+        #[cfg(feature = "persona")]
         if let Some(rest) = path.strip_prefix("/_kernel/space/")
             && let Some((space, asked)) = rest.split_once('/')
         {
@@ -115,6 +120,7 @@ pub fn route(request: Request<Body>, site: &Site) -> Routed {
                 };
             }
         }
+        #[cfg(feature = "persona")]
         if let Some(rest) = path.strip_prefix("/_kernel/seed/") {
             match (rest.strip_suffix("/settled"), method) {
                 (Some(space), Method::POST) => return Routed::Settle(space.to_owned()),

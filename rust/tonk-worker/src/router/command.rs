@@ -183,8 +183,15 @@ impl Default for CommandProviders {
 /// `cfg` sits on that leaf (`delete_space_storage_for`,
 /// `worker_origin`, the `navigate` client messaging), never on a
 /// registration.
+///
+/// A space's own worker, built without the feature `persona`, has no
+/// profile to run commands on: its profile vocabulary is empty.
 pub fn command_providers() -> CommandProviders {
-    CommandProviders::new(profile_commands(), space_commands())
+    #[cfg(feature = "persona")]
+    let profile = profile_commands();
+    #[cfg(not(feature = "persona"))]
+    let profile = CommandRegistry::new();
+    CommandProviders::new(profile, space_commands())
 }
 
 /// The profile branch's vocabulary: everything.
@@ -209,6 +216,7 @@ pub fn command_providers() -> CommandProviders {
 /// [`CreateSpaceRequest`]: super::repository::CreateSpaceRequest
 /// [`InviteRequest`]: super::repository::InviteRequest
 /// [`EnableSyncRequest`]: super::repository::EnableSyncRequest
+#[cfg(feature = "persona")]
 fn profile_commands() -> CommandRegistry<CommandEnv> {
     CommandRegistry::new()
         .command::<super::repository::CreateSpaceRequest>()

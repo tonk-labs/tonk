@@ -4,6 +4,7 @@ use super::{
     create_invite::{RemoteRequirement, generate_ephemeral, resolve_remote_url},
 };
 use crate::{TonkState, TonkWorkerError, axum::RequestOrigin};
+#[cfg(feature = "persona")]
 use axum::{
     Json,
     extract::{Path, State},
@@ -24,6 +25,7 @@ use tonk_invite::connection::{
     AgentInvite, DEFAULT_GRANT_TTL_SECONDS, SpaceGrantBundle, candidate_build_scopes, grant_set_id,
     require_grant_deadline,
 };
+#[cfg(feature = "persona")]
 use tonk_macros::handler;
 use tonk_schema::{AgentGrantGroup, AgentGrantRevocation, agent_connection as fields};
 use tonk_worker_api::{
@@ -668,6 +670,7 @@ fn reported_installations(
         .collect()
 }
 
+#[cfg(feature = "persona")]
 #[handler]
 pub async fn list(
     State(state): State<AppState>,
@@ -684,6 +687,7 @@ pub async fn list(
 // The ordinary invitation publisher requires `/` over the space. A member
 // holding `/use` can withdraw their own issued leaf without gaining that right:
 // sign as its issuer, or delegate the account's withdrawal of its witnessed path.
+#[cfg(feature = "persona")]
 async fn publish_target(
     tonk: &TonkState,
     group: &PublicGroup,
@@ -728,6 +732,7 @@ async fn publish_target(
     Ok(receipt)
 }
 
+#[cfg(feature = "persona")]
 #[handler]
 pub async fn revoke(
     State(state): State<AppState>,
@@ -757,6 +762,7 @@ pub async fn revoke(
     Ok(Json(result))
 }
 
+#[cfg(feature = "persona")]
 async fn revoke_group<F, Fut>(
     tonk: &TonkState,
     group: &PublicGroup,

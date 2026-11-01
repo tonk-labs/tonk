@@ -168,6 +168,7 @@ async fn ask_page(
 /// Run `tonk:add-passkey`: seal the account under a second passkey.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::router::CommandEnv {
     async fn execute(&self, _command: tonk_schema::command::AddPasskey) {
         let addition = {
@@ -263,6 +264,7 @@ fn decode_authorization(
 /// undeliverable callback is refused before anyone touches a passkey.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<AuthorizeDeviceRequest> for crate::router::CommandEnv {
     async fn execute(&self, command: AuthorizeDeviceRequest) {
         let authorization = command.0;

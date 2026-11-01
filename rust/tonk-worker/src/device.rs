@@ -11,15 +11,22 @@
 //! the thing it points at could not be read before opening it.
 
 use dialog_effects::storage::{Directory, Location};
+#[cfg(feature = "persona")]
 use dialog_query::{Output as _, Query, Term};
+#[cfg(feature = "persona")]
 use dialog_repository::{Branch, Repository};
 use dialog_storage::provider::storage::Storage;
-use dialog_varsig::{Did, Principal as _};
+#[cfg(feature = "persona")]
+use dialog_varsig::Did;
+use dialog_varsig::Principal as _;
 use tonk_common::log;
+#[cfg(feature = "persona")]
 use tonk_schema::DeviceProfile;
 
 use crate::TonkWorkerError;
-use crate::worker::{DefaultOperator, DefaultProfile, DefaultSpace};
+#[cfg(feature = "persona")]
+use crate::worker::DefaultOperator;
+use crate::worker::{DefaultProfile, DefaultSpace};
 
 /// The profile that holds the pointer to the active one. Fixed, because
 /// boot has to find it without being told where to look.
@@ -35,12 +42,14 @@ const ACTIVE_PROFILE_SITE: &str = "tonk-active-profile-v1";
 
 /// How many times recording the active profile is tried again after its
 /// publish lost to another commit on the registry's branch.
+#[cfg(feature = "persona")]
 const SAVE_RETRY_LIMIT: usize = 4;
 
 /// Whether a save failed because the head moved between its read and its
 /// publish. Matched on the rendered error, as the reactor does for its
 /// own commits: the `VersionMismatch` leaf renders its text through the
 /// chain.
+#[cfg(feature = "persona")]
 fn is_head_moved(error: &impl std::fmt::Display) -> bool {
     let error = error.to_string();
     // A native store refuses a write at once while another holds the
@@ -56,6 +65,7 @@ fn is_head_moved(error: &impl std::fmt::Display) -> bool {
 /// Never upstreamed, so it stays on this device: the registry profile's
 /// `main` is an account branch that syncs, and the roster is not the
 /// account's business.
+#[cfg(feature = "persona")]
 const ROSTER_BRANCH: &str = "roster";
 
 /// One profile this browser knows about, as the switcher renders it.
@@ -64,6 +74,7 @@ const ROSTER_BRANCH: &str = "roster";
 /// replaces it with the live display name and attachment facts before serving
 /// the switcher response.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(feature = "persona")]
 pub(crate) struct RosterEntry {
     /// Storage name the profile opens under.
     pub profile_name: String,
@@ -482,6 +493,7 @@ impl Registry {
     /// Callers repoint only after the target profile opened (and its
     /// state built) successfully, so a failed activation never strands
     /// the next boot on a profile that does not work.
+    #[cfg(feature = "persona")]
     pub(crate) async fn set_active(
         &self,
         storage: &Storage<DefaultSpace>,
@@ -526,6 +538,7 @@ impl Registry {
     /// derived from. Local reads and commits are not authorized against
     /// the branch's subject, and the roster belongs to the device, not to
     /// whichever profile happens to be active.
+    #[cfg(feature = "persona")]
     async fn roster_branch(
         &self,
         storage: &Storage<DefaultSpace>,
@@ -558,6 +571,7 @@ impl Registry {
     /// open it with. A row's label, address and link state live on that
     /// profile's own account branch, and the caller fills them in for the
     /// profiles it opens.
+    #[cfg(feature = "persona")]
     pub(crate) async fn read_roster(
         &self,
         storage: &Storage<DefaultSpace>,
@@ -604,6 +618,7 @@ impl Registry {
     /// handle updates the entry in place rather than leaving a second one
     /// behind. Nothing else is written: a row's label, address and link
     /// state belong to that profile's account branch.
+    #[cfg(feature = "persona")]
     pub(crate) async fn upsert_roster(
         &self,
         storage: &Storage<DefaultSpace>,

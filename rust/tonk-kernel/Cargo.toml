@@ -14,7 +14,7 @@ crate-type = ["cdylib"]
 # which serves their profile and delegates to their other workers what their
 # hosts ask for.
 # Without it, a space's own worker, for `sapling:kernel/kernel`.
-persona = []
+persona = ["tonk-worker/persona"]
 # Agents and tools connect to a space through an invitation, as the worker
 # of a deployment that offers it does.
 connection-invites = ["tonk-worker/connection-invites"]
@@ -27,6 +27,7 @@ http-body-util = { workspace = true }
 serde_json = { workspace = true }
 tonk-common = { workspace = true }
 tonk-kernel-world = { workspace = true }
-tonk-worker = { workspace = true }
+# A space's kernel leaves out the worker's persona; see the feature above.
+tonk-worker = { path = "../tonk-worker", default-features = false }
 tower = { workspace = true, features = ["util"] }
 wit-bindgen = { workspace = true, features = ["inter-task-wakeup"] }

@@ -117,7 +117,11 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
         );
         return;
     }
+    // A space's own worker holds no onboarding account to retire.
+    #[cfg(feature = "persona")]
     retire_onboarding(tonk, &onboarding).await;
+    #[cfg(not(feature = "persona"))]
+    let _ = onboarding;
 }
 
 /// Bring what a signed-out workspace holds under the account this profile
@@ -952,6 +956,7 @@ async fn install_prefix(
 /// itself and published best-effort: the grant was only ever presented
 /// to services the account space already lists, and a service that
 /// never saw it has nothing to revoke.
+#[cfg(feature = "persona")]
 async fn retire_onboarding(tonk: &TonkState, onboarding: &Did) {
     match crate::onboarding::grant_device(tonk).await {
         Ok(grant) => match crate::onboarding::signer(tonk).await {
@@ -988,6 +993,7 @@ async fn retire_onboarding(tonk: &TonkState, onboarding: &Did) {
 /// finished, so the fact only invites sealing to an unopenable
 /// recipient — and the device-link row describing its just-revoked
 /// grant, so the devices panel stops listing a retired account.
+#[cfg(feature = "persona")]
 async fn retract_onboarding_facts(
     tonk: &TonkState,
     onboarding: &Did,
@@ -1060,6 +1066,7 @@ async fn retract_onboarding_facts(
 
 /// Entities of every retained delegation issued by `issuer` — for the
 /// onboarding account, exactly its device grant.
+#[cfg(feature = "persona")]
 async fn issued_link_entities(
     tonk: &TonkState,
     branch: &dialog_repository::Branch,

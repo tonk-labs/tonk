@@ -57,7 +57,9 @@ use axum::Router;
 use axum::http::StatusCode;
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
-use site::{Routed, Site, SpaceAsk};
+#[cfg(feature = "persona")]
+use site::SpaceAsk;
+use site::{Routed, Site};
 use tonk_kernel_world::application::Told;
 use tonk_kernel_world::boot;
 use tonk_kernel_world::guest::HandleLayer;
@@ -217,6 +219,7 @@ impl lifecycle::Guest for Kernel {
     /// has to the representative, which links this device to it, and the
     /// worker records the account and carries the provisional persona's
     /// spaces over to it.
+    #[cfg(feature = "persona")]
     async fn merge(
         provisional: &PersonaAuthority,
         permanent: &PersonaAuthority,
@@ -241,12 +244,28 @@ impl lifecycle::Guest for Kernel {
 
     /// The person let this worker act as their permanent persona, lent as
     /// `persona`, for what the command that asked put in `context`.
+    #[cfg(feature = "persona")]
     async fn authorize(persona: &PersonaAuthority, context: Vec<u8>) -> Result<(), Error> {
         let state =
             state().ok_or_else(|| Error::Unavailable("the persona has not booted".into()))?;
         tonk_worker::authorized(&state, persona, &context)
             .await
             .map_err(|error| Error::Denied(error.to_string()))
+    }
+
+    /// A space's kernel is no persona: it has none to merge.
+    #[cfg(not(feature = "persona"))]
+    async fn merge(
+        _provisional: &PersonaAuthority,
+        _permanent: &PersonaAuthority,
+    ) -> Result<(), Error> {
+        Err(Error::Unavailable("a space's kernel is no persona".into()))
+    }
+
+    /// A space's kernel is no persona: it acts as none.
+    #[cfg(not(feature = "persona"))]
+    async fn authorize(_persona: &PersonaAuthority, _context: Vec<u8>) -> Result<(), Error> {
+        Err(Error::Unavailable("a space's kernel is no persona".into()))
     }
 
     async fn shutdown(_deadline_ms: u32) {}
@@ -264,18 +283,29 @@ impl channel::Guest for Kernel {
                     wit_bindgen::spawn_local(async move { renew(&state, &subject).await });
                 }
             }
+            #[cfg(feature = "persona")]
             Told::Refused { kind, name } => tonk_worker::refused(&state, &kind, &name).await,
+            #[cfg(feature = "persona")]
             Told::Failed {
                 kind,
                 code,
                 message,
             } => tonk_worker::failed(&state, &kind, code.as_deref(), &message).await,
+            #[cfg(feature = "persona")]
             Told::Delegate {
                 subject,
                 command,
                 audience,
             } => tonk_worker::delegate_asked(subject, command, audience).await,
+            #[cfg(feature = "persona")]
             Told::Unauthorized { message } => tonk_worker::unauthorized(&state, &message).await,
+            // What the host tells a persona of its ceremonies, a space's
+            // kernel has none of.
+            #[cfg(not(feature = "persona"))]
+            Told::Refused { .. }
+            | Told::Failed { .. }
+            | Told::Delegate { .. }
+            | Told::Unauthorized { .. } => {}
         }
         Ok(())
     }
@@ -350,9 +380,12 @@ impl handler::Guest for Kernel {
                 let Ok(answer) = router.oneshot(request).await;
                 site::stored(answer).await
             }
+            #[cfg(feature = "persona")]
             Routed::Seed(space) => seed_of(&space).await,
+            #[cfg(feature = "persona")]
             Routed::Settle(space) => settle(&space).await,
             Routed::Snapshot(space) => snapshot(&space).await,
+            #[cfg(feature = "persona")]
             Routed::SpaceAsk {
                 space,
                 ask,
@@ -392,6 +425,7 @@ impl handler::Guest for Kernel {
 /// answer is `{ invited }`, `{ authority }`, `{ receipt }` or
 /// `{ withdrawn }`, as a profile's worker answered the same asks in a
 /// browser.
+#[cfg(feature = "persona")]
 async fn space_ask(
     space: &str,
     ask: SpaceAsk,
@@ -657,6 +691,7 @@ async fn pinned(space: &Space) -> Result<Option<([u8; 32], u64)>, String> {
 
 /// What the space `space` is to be created from: the seed this persona kept
 /// as it created it, or `null`.
+#[cfg(feature = "persona")]
 async fn seed_of(space: &str) -> axum::http::Response<axum::body::Body> {
     let Some(state) = state() else {
         return site::answer(StatusCode::SERVICE_UNAVAILABLE, &json!("booting"));
@@ -678,6 +713,7 @@ async fn seed_of(space: &str) -> axum::http::Response<axum::body::Body> {
 }
 
 /// The space `space` was created from its seed.
+#[cfg(feature = "persona")]
 async fn settle(space: &str) -> axum::http::Response<axum::body::Body> {
     let Some(state) = state() else {
         return site::answer(StatusCode::SERVICE_UNAVAILABLE, &json!("booting"));

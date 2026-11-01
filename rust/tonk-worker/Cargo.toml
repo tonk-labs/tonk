@@ -11,6 +11,10 @@ path = "src/bin/hosted.rs"
 required-features = ["native-host"]
 
 [features]
+default = ["persona"]
+# The person's own worker: their profile, their account, and what they do
+# across spaces. Without it, only what a space's own worker serves.
+persona = []
 native-host = ["axum/tokio", "axum/http1", "tokio/net", "tokio/rt-multi-thread", "tokio/macros", "tokio/signal"]
 # Local opt-in until a compatible CLI is published.
 connection-invites = []

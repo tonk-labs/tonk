@@ -54,6 +54,7 @@
 //! [`JoinFailure`] both redact, and failure copy is fixed text chosen
 //! from a closed set rather than anything an upstream response said.
 
+#[cfg(feature = "persona")]
 use ::axum::{Json, extract::State, http::StatusCode};
 use dialog_artifacts::{ArtifactSelector, Changes, Entity, Relation, Statement as _, Value};
 use dialog_capability::access::{AuthorizeError, Prove, Retain};
@@ -70,23 +71,32 @@ use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "persona")]
+#[cfg(feature = "persona")]
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
+#[cfg(feature = "persona")]
 use tonk_invite::{Invite, InviteAudience, Ticket};
+#[cfg(feature = "persona")]
 use tonk_macros::handler;
+#[cfg(feature = "persona")]
+use tonk_schema::SeedKind;
 use tonk_schema::{
     Invitation, InvitationExecution, InvitedVia, MemberName, MemberRole, Membership, Replica,
-    RepositoryName, SeedKind, prelude::DidExt as _,
+    RepositoryName, prelude::DidExt as _,
 };
 use tonk_worker_api::JoinFailureKind;
+#[cfg(feature = "persona")]
 use zeroize::Zeroizing;
 
+#[cfg(feature = "persona")]
 use super::AppState;
 use super::repository::{
     BranchConfiguration, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
-    UpstreamConfiguration, build_repository_info, record_initialized_replica_in_profile,
-    record_replica_local_meta,
+    UpstreamConfiguration, record_replica_local_meta,
 };
+#[cfg(feature = "persona")]
+use super::repository::{build_repository_info, record_initialized_replica_in_profile};
 use crate::{TonkWorkerError, worker::TonkState};
 
 /// Default upstream branch wired up when the invite carries a
@@ -235,6 +245,7 @@ impl JoinFailure {
         Self::new(JoinFailureKind::ClaimFailed, detail)
     }
 
+    #[cfg(feature = "persona")]
     fn private(detail: impl Into<String>) -> Self {
         Self::new(JoinFailureKind::Private, detail)
     }
@@ -405,6 +416,7 @@ mod failure_vocabulary {
 ///
 /// Holds the invite, whose open form carries a bearer seed, so it
 /// deliberately has no derived `Debug`.
+#[cfg(feature = "persona")]
 pub(crate) struct PreparedJoin {
     invite: Invite,
     /// Derived from the chain *as parsed*, before any redelegation
@@ -430,6 +442,7 @@ pub(crate) struct PreparedJoin {
     existing: bool,
 }
 
+#[cfg(feature = "persona")]
 impl std::fmt::Debug for PreparedJoin {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -441,6 +454,7 @@ impl std::fmt::Debug for PreparedJoin {
     }
 }
 
+#[cfg(feature = "persona")]
 impl PreparedJoin {
     /// Whether the remote has to honour the candidate chain before
     /// anything durable changes.
@@ -473,6 +487,7 @@ impl PreparedJoin {
 }
 
 /// Redeem an invite URL to this device's account.
+#[cfg(feature = "persona")]
 #[handler]
 pub async fn join(
     State(state): State<AppState>,
@@ -489,6 +504,7 @@ pub async fn join(
 }
 
 /// Load the committed replica and shape the route's success body.
+#[cfg(feature = "persona")]
 async fn joined_response(
     tonk: &TonkState,
     outcome: JoinOutcome,
@@ -517,6 +533,7 @@ async fn joined_response(
 /// Deliberately repository-free so the concrete `Repository<R>` type
 /// (which differs between the load and create paths) doesn't leak into
 /// the signature — callers re-load by key if they need the handle.
+#[cfg(feature = "persona")]
 pub(crate) struct JoinOutcome {
     /// The routing/storage key (subject DID suffix).
     pub key: String,
@@ -540,6 +557,7 @@ pub(crate) struct JoinOutcome {
 /// failed [`perform_join`] leaves behind — a hidden unindexed replica,
 /// unreferenced content-addressed blocks, an unused candidate chain —
 /// is invisible, resumable, and reclaimed by pruning.
+#[cfg(feature = "persona")]
 pub(crate) async fn join_invite(state: &AppState, url: &str) -> Result<JoinOutcome, JoinFailure> {
     // Per-phase wall clock, logged on success: the perform phase is the
     // network-bound one (pull + validation + roster reads against the
@@ -581,6 +599,7 @@ pub(crate) async fn join_invite(state: &AppState, url: &str) -> Result<JoinOutco
 ///
 /// [`JoinFailure::private`] when the space keeps no public ticket and
 /// the account holds no access to it.
+#[cfg(feature = "persona")]
 async fn open_space(tonk: &TonkState, ticket: Ticket) -> Result<JoinOutcome, JoinFailure> {
     let subject = ticket.subject().clone();
     let key = subject.repo_key().to_owned();
@@ -655,6 +674,7 @@ async fn open_space(tonk: &TonkState, ticket: Ticket) -> Result<JoinOutcome, Joi
 
 /// Claim the ticket a space keeps for the public principal, signed as
 /// that principal, or [`JoinFailure::private`] when it keeps none.
+#[cfg(feature = "persona")]
 async fn claim_public_ticket(ticket: &Ticket) -> Result<DelegationChain, JoinFailure> {
     let holder = ticket
         .holder()
@@ -679,6 +699,7 @@ async fn claim_public_ticket(ticket: &Ticket) -> Result<DelegationChain, JoinFai
 
 /// Run the ordinary join pipeline for a browser-approved local-space link.
 /// The wrapper keeps the join's private diagnostic type inside this module.
+#[cfg(feature = "persona")]
 pub(crate) async fn join_for_local_space_link(
     state: &AppState,
     url: &str,
@@ -707,6 +728,7 @@ pub(crate) async fn join_for_local_space_link(
 /// Takes the state and not a guard over it: the space's own worker asks this
 /// one for its delegation while it is being asked to commit the claim, so
 /// nothing may be held across asking it.
+#[cfg(feature = "persona")]
 async fn perform(state: &AppState, prepared: PreparedJoin) -> Result<JoinOutcome, JoinFailure> {
     {
         // Alone with the state while it commits here: what else writes the
@@ -723,6 +745,7 @@ async fn perform(state: &AppState, prepared: PreparedJoin) -> Result<JoinOutcome
 /// Replace a browser-approved local-space join's invite authority with its
 /// direct space-to-account prefix. The ordinary join needs the narrower invite
 /// while pulling; the direct prefix is the durable ownership authority.
+#[cfg(feature = "persona")]
 pub(crate) async fn save_local_space_root_authority(
     tonk: &TonkState,
     subject: &Did,
@@ -736,10 +759,12 @@ pub(crate) async fn save_local_space_root_authority(
 /// Parse the invite, verify it is addressed to this identity, and build
 /// the candidate chain. Reads only, except that a device joining before
 /// it has any account mints its onboarding account here.
+#[cfg(feature = "persona")]
 async fn prepare_join(tonk: &TonkState, url: &str) -> Result<PreparedJoin, JoinFailure> {
     prepare_parsed_join(tonk, parse_invite(url).await?).await
 }
 
+#[cfg(feature = "persona")]
 async fn parse_invite(url: &str) -> Result<Invite, JoinFailure> {
     if let Some(ticket) = Ticket::parse_url(url)
         .map_err(|error| JoinFailure::malformed(format!("invite did not parse: {error}")))?
@@ -754,6 +779,7 @@ async fn parse_invite(url: &str) -> Result<Invite, JoinFailure> {
 /// Fetch the ticket a ticket link's space keeps for the link's key, and
 /// read it as the open invite it is. From here a ticket link joins the
 /// way an `access=` link does.
+#[cfg(feature = "persona")]
 async fn claim_ticket(ticket: Ticket) -> Result<Invite, JoinFailure> {
     let holder = ticket
         .holder()
@@ -782,6 +808,7 @@ async fn claim_ticket(ticket: Ticket) -> Result<Invite, JoinFailure> {
         .map_err(|error| JoinFailure::malformed(format!("ticket did not redeem: {error}")))
 }
 
+#[cfg(feature = "persona")]
 async fn prepare_parsed_join(
     tonk: &TonkState,
     invite: Invite,
@@ -859,6 +886,7 @@ async fn prepare_parsed_join(
 /// A renewal is the same flow on the already-mounted replica: the pull
 /// is dialog's normal merge of the remote into the local head, which is
 /// exactly what every later sync tick does.
+#[cfg(feature = "persona")]
 async fn perform_join(
     tonk: &TonkState,
     prepared: PreparedJoin,
@@ -1134,6 +1162,7 @@ fn decode_chain(what: &str, encoded: &str) -> Result<DelegationChain, JoinFailur
         .map_err(|error| JoinFailure::malformed(format!("{what} did not decode: {error}")))
 }
 
+#[cfg(feature = "persona")]
 fn encode_chain(what: &str, chain: &DelegationChain) -> Result<String, JoinFailure> {
     chain
         .to_bytes()
@@ -1263,6 +1292,7 @@ async fn take_claim(
 /// A join that fails leaves nothing a person can see, as before: the space is
 /// listed only after the claim lands, and a worker brought up for a space
 /// that was not joined is told to forget it.
+#[cfg(feature = "persona")]
 async fn perform_join_elsewhere(
     state: &AppState,
     prepared: PreparedJoin,
@@ -1366,6 +1396,7 @@ async fn perform_join_elsewhere(
 /// How long the worker that holds a space is given to say what came of a
 /// claim. It pulls the space first, and a space brought to this device for
 /// the first time is fetched whole.
+#[cfg(feature = "persona")]
 const CLAIM_ANSWER_WAIT: web_time::Duration = web_time::Duration::from_secs(180);
 
 /// Hand `claim` to the worker that holds the space `key`, and read what came
@@ -1377,6 +1408,7 @@ const CLAIM_ANSWER_WAIT: web_time::Duration = web_time::Duration::from_secs(180)
 /// first frame that carries it.
 ///
 /// [`ClaimMembership`]: tonk_schema::command::ClaimMembership
+#[cfg(feature = "persona")]
 async fn hand_claim(key: &str, claim: &MembershipClaim) -> Result<(), JoinFailure> {
     use dialog_query::ConceptQuery;
     use futures_util::StreamExt as _;
@@ -1532,6 +1564,7 @@ pub(super) async fn retain_claim_authority(tonk: &TonkState, key: &str, chain: &
 /// re-saving an extended one adds a fresh proof. Either way the
 /// recipient's effective access can only grow, never shrink, by joining.
 ///
+#[cfg(feature = "persona")]
 async fn save_authority(
     tonk: &TonkState,
     subject: &Did,
@@ -2023,6 +2056,7 @@ pub(crate) async fn find_replica_for_subject(
 /// The fixed entity the in-flight join status lives at. Both the handler
 /// (writes overlay status) and the `/join` view (`entity=tonk:join/status`)
 /// agree on this URI, so there's no per-attempt id to thread.
+#[cfg(feature = "persona")]
 const JOIN_STATUS_URI: &str = "tonk:join/status";
 
 /// Run the [`Join`] command.
@@ -2037,6 +2071,7 @@ const JOIN_STATUS_URI: &str = "tonk:join/status";
 /// [`Join`]: tonk_schema::command::Join
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::Join) {
         // A short link (`/@/{hash}#seed`) resolves to the long form
@@ -2072,7 +2107,7 @@ impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::
 /// A kernel on WASI has no HTTP client: the capability that would carry
 /// this through the host is not designed yet (`plan/kernel-capabilities.md`,
 /// `services`).
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
 async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
     Err(format!(
         "this host gives the kernel no way to resolve {short_url}"
@@ -2114,6 +2149,7 @@ async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
 ///
 /// A ticket link is a space's address with a seed for a fragment (see
 /// [`Ticket`]); the same address without one is just the space.
+#[cfg(feature = "persona")]
 fn carries_invite(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|parsed| {
         parsed
@@ -2125,6 +2161,7 @@ fn carries_invite(url: &str) -> bool {
 /// Whether a URL is a space's own page, `/space/...`: where a join is
 /// mounted to pick up a ticket link, and where finding none is no
 /// reason to leave.
+#[cfg(feature = "persona")]
 fn is_space_address(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|parsed| parsed.path().starts_with("/space/"))
 }
@@ -2132,18 +2169,21 @@ fn is_space_address(url: &str) -> bool {
 /// Whether a URL is a space's address with no ticket beside it: a visit,
 /// which opens the space if it is readable and otherwise leaves the page
 /// to say it is private.
+#[cfg(feature = "persona")]
 fn is_bare_space_address(url: &str) -> bool {
     matches!(Ticket::public_for_url(url), Ok(Some(_)))
 }
 
 /// Whether `url` is a space's own address, bare or as a ticket link: the
 /// page a join from it runs on is already that space's page.
+#[cfg(feature = "persona")]
 fn opens_in_place(url: &str) -> bool {
     matches!(Ticket::parse_url(url), Ok(Some(_))) || is_bare_space_address(url)
 }
 
 /// How the page a join ran on is sent to the space it joined.
 #[derive(Debug, PartialEq, Eq)]
+#[cfg(feature = "persona")]
 enum Redirect {
     /// Load the space afresh, in place of the entry.
     Replace,
@@ -2163,6 +2203,7 @@ enum Redirect {
 /// already held is where the page is and needs nothing: sending it there
 /// would pull back a page the person has since left. A ticket link to a
 /// space already held moves to the bare address.
+#[cfg(feature = "persona")]
 fn redirect_after_join(url: &str, renewed: bool) -> Option<Redirect> {
     if !opens_in_place(url) {
         return Some(Redirect::Navigate);
@@ -2183,6 +2224,7 @@ fn redirect_after_join(url: &str, renewed: bool) -> Option<Redirect> {
 /// display lost its entity, fell back to its pending spinner, and
 /// nothing downstream ever rendered. Scope the clear to the join's own
 /// entities, exactly as the site re-stamp does with its own.
+#[cfg(feature = "persona")]
 fn clear_join_overlay(session: &dialog_reactor::BranchSession, status: &dialog_artifacts::Entity) {
     let status = status.clone();
     session
@@ -2196,6 +2238,7 @@ fn clear_join_overlay(session: &dialog_reactor::BranchSession, status: &dialog_a
 /// [`clear_join_overlay`] so the rule can be tested off-wasm: it is the
 /// whole contract, and getting it backwards is invisible until a page
 /// silently stops rendering.
+#[cfg(feature = "persona")]
 fn retains_overlay_entity(
     overlaid: &dialog_artifacts::Entity,
     status: &dialog_artifacts::Entity,
@@ -2206,6 +2249,7 @@ fn retains_overlay_entity(
 /// Run the join operation from the command's full URL and drive the
 /// overlay-only join status. Always leaves the overlay in a terminal state
 /// (status retracted on success, `failed` on error).
+#[cfg(feature = "persona")]
 async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command::Join) {
     use std::sync::Arc;
     use tonk_schema::command::{JoinFailure as JoinFailureFact, JoinStatus};
@@ -2343,6 +2387,7 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
 /// the host's own drain) picks the commit up on its ordinary cadence.
 /// Mirrors the native arm of `broadcast` — structural parity so commit
 /// sites don't need their own `cfg`s.
+#[cfg(feature = "persona")]
 pub(crate) fn notify_sync(client: Option<&crate::router::ClientId>) {
     let _ = client;
 }

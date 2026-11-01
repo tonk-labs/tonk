@@ -17,9 +17,11 @@
 
 #[cfg(target_arch = "wasm32")]
 use dialog_artifacts::Asset;
+#[cfg(feature = "persona")]
 use dialog_capability::Subject;
 use dialog_common::Blake3Hash;
 use dialog_credentials::DidKeyResolver;
+#[cfg(feature = "persona")]
 use dialog_effects::{Use, method};
 use dialog_repository::{RepositoryExt as _, Upstream, codec};
 use dialog_ucan::UcanDelegation;
@@ -30,20 +32,29 @@ use dialog_ucan_core::{
 use dialog_varsig::Did;
 use dialog_varsig::signature::AnySignature;
 use ipld_core::ipld::Ipld;
+#[cfg(feature = "persona")]
 use std::collections::BTreeMap;
 use tonk_common::log;
-use tonk_invite::{HOME_ADDRESS, home_address_meta};
+use tonk_invite::HOME_ADDRESS;
+#[cfg(feature = "persona")]
+use tonk_invite::home_address_meta;
 #[cfg(target_arch = "wasm32")]
 use tonk_schema::SpaceKernel;
 use tonk_schema::prelude::DidExt as _;
+#[cfg(feature = "persona")]
 use url::Url;
 
-use super::account::{act_for, acts_for, member_did};
+#[cfg(feature = "persona")]
+use super::account::member_did;
+use super::account::{act_for, acts_for};
+#[cfg(feature = "persona")]
 use super::adopt::ensure_space_mounted;
+#[cfg(feature = "persona")]
 use super::create_invite::{
     ConfiguredRemoteRequirement, resolve_configured_remote_url, resolve_configured_remote_url_with,
 };
 use super::join::mount_replica;
+#[cfg(feature = "persona")]
 use super::profile_name::resolve_display_name;
 use super::repository::{CONTENT_BRANCH, record_initialized_replica_in_profile};
 use super::sync::publish_session_account;
@@ -51,10 +62,12 @@ use crate::{TonkWorkerError, worker::TonkState};
 
 /// How long a space worker's delegation lasts. It asks for a new one before
 /// this runs out, so a lapsed grant costs at most one boot's request.
+#[cfg(feature = "persona")]
 pub(crate) const DELEGATION_TTL_SECONDS: u64 = 12 * 60 * 60;
 
 /// A delegation for a space worker: the chain from the space to its profile.
 /// Where the space syncs and which account it is for are signed into it.
+#[cfg(feature = "persona")]
 pub(crate) struct Grant {
     /// The encoded chain, from the space down to the space worker's profile.
     pub(crate) chain: Vec<u8>,
@@ -68,6 +81,7 @@ pub(crate) struct Grant {
 /// is handed this by a page on its own origin, where the space's author code
 /// runs too, so what tells it where to sync has to be something that code
 /// cannot make: only the person's profile can sign for the space.
+#[cfg(feature = "persona")]
 pub(crate) async fn delegate(
     tonk: &TonkState,
     space: &Did,
@@ -140,6 +154,7 @@ impl Terms {
     /// These terms as the meta of the delegation that carries them: the
     /// remote where an invite names a space's endpoint, so a chain says where
     /// its space syncs the same way whoever it was minted for.
+    #[cfg(feature = "persona")]
     fn signed(&self) -> Result<BTreeMap<String, Ipld>, TonkWorkerError> {
         let mut meta =
             BTreeMap::from([(ACTS_FOR.to_owned(), Ipld::String(self.account.to_string()))]);
@@ -187,6 +202,7 @@ impl Terms {
 }
 
 /// The [`Terms`] the person's profile holds for `space` now.
+#[cfg(feature = "persona")]
 pub(crate) async fn terms(tonk: &TonkState, space: &Did) -> Result<Terms, TonkWorkerError> {
     let remote = match where_it_syncs(tonk, space).await? {
         ConfiguredRemoteRequirement::Ready(remote) => Some(remote.access_url.to_string()),
@@ -210,6 +226,7 @@ pub(crate) async fn terms(tonk: &TonkState, space: &Did) -> Result<Terms, TonkWo
 /// published one, is in no directory: the profile mounts it to read it, and
 /// its mount says. A host with one database reads it from the space it has
 /// mounted, mounting it from the directory first if it has not.
+#[cfg(feature = "persona")]
 async fn where_it_syncs(
     tonk: &TonkState,
     space: &Did,

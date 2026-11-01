@@ -517,6 +517,7 @@ pub(crate) async fn describe_device_link(
 /// `dialog.ucan/*` facts and consults no revocation, so a published
 /// revocation alone would leave this device proving with a grant every
 /// access service refuses.
+#[cfg(feature = "persona")]
 pub(crate) async fn retract_device_delegation(
     state: &TonkState,
     branch: &dialog_reactor::BranchSession,
@@ -773,6 +774,7 @@ async fn probe_signing(custodian: &Ed25519Signer) -> Result<Signing, TonkWorkerE
 /// reports as "already accredited", which is exactly the state that must
 /// never be mistaken for "no onboarding account yet" — that would mint a
 /// second onboarding account on top of an accredited device.
+#[cfg(feature = "persona")]
 pub(crate) async fn retire(state: &TonkState) -> Result<(), TonkWorkerError> {
     retire_on(state, &state.active_branch).await
 }
@@ -783,6 +785,7 @@ pub(crate) async fn retire(state: &TonkState) -> Result<(), TonkWorkerError> {
 ///
 /// The custodian is kept beside the profile under the branch's name, so
 /// it is forgotten without opening that branch.
+#[cfg(feature = "persona")]
 pub(crate) async fn retire_on(state: &TonkState, branch: &str) -> Result<(), TonkWorkerError> {
     let at = Place {
         profile: &state.profile,

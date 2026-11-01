@@ -17,18 +17,18 @@ use crate::detach;
 
 /// On a kernel, its embedder holds the pages: it is told where the page that
 /// asked is to go.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
 pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
     tell_navigate(client, href, false);
 }
 
 /// [`notify_navigate`] as a fresh load replacing the page's history entry.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
 pub(crate) fn notify_replace(client: Option<&crate::router::ClientId>, href: &str) {
     tell_navigate(client, href, true);
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
 fn tell_navigate(client: Option<&crate::router::ClientId>, href: &str, replace: bool) {
     let Some(client) = client else {
         log!("navigate: no originating client; skipping redirect");
@@ -65,7 +65,7 @@ pub(crate) fn notify_profile_changed(_except: Option<&crate::router::ClientId>) 
 
 /// On a kernel, its embedder holds the pages: it is told to post the reload
 /// to every page but `except`.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
 pub(crate) fn notify_profile_changed(except: Option<&crate::router::ClientId>) {
     tell_post(
         None,
@@ -98,7 +98,7 @@ fn tell_post(
 pub(crate) fn notify_profile_changed_to(_client: Option<&crate::router::ClientId>) {}
 
 /// [`notify_profile_changed_to`], told to a kernel's embedder.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
 pub(crate) fn notify_profile_changed_to(client: Option<&crate::router::ClientId>) {
     let Some(client) = client else {
         log!("profile change: no originating client; nothing to reload");
@@ -141,6 +141,7 @@ pub(crate) fn notify_analytics(
 /// A WebAuthn ceremony needs a top-level document, and this host has
 /// none: refused rather than stubbed, so callers report the refusal
 /// instead of silently succeeding.
+#[cfg(feature = "persona")]
 pub(crate) async fn request_webauthn_with(
     client: &crate::router::ClientId,
     request: tonk_worker_api::WebAuthnKind,
@@ -156,6 +157,7 @@ pub(crate) async fn request_webauthn_with(
 /// Go home: send the page that asked back to the hub.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<tonk_schema::command::Home> for crate::router::CommandEnv {
     async fn execute(&self, _command: tonk_schema::command::Home) {
         notify_navigate(self.client(), "/");
