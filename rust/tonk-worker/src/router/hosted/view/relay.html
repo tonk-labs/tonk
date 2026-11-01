@@ -114,12 +114,12 @@
           tellSize();
         };
         write(['peer probe: asking']);
-        peerProbe ??= peerWorker
+        const probe = (peerProbe = peerWorker
           ? ask('probe', {}, 5000)
               .then((answer) => answer.lines)
               .catch((error) => ['peer probe: ' + error.message])
-          : Promise.resolve(['peer probe: no peer']);
-        peerProbe.then(write);
+          : Promise.resolve(['peer probe: no peer']));
+        probe.then((lines) => probe === peerProbe && write(lines));
       }
       function showError(message) {
         errorMessage.textContent = message;
@@ -134,14 +134,26 @@
       // where it stopped rather than staying blank.
       let stage = 'waiting for the chat to hand over the view',
         peerKind = '';
-      const stalled = setTimeout(() => {
-        if (stage) showError('The view is stuck ' + stage + (peerKind ? ' (' + peerKind + ')' : '') + '.');
-      }, 20000);
+      // A stage that takes 20 s says so; the view goes on waiting, and
+      // the note goes once a later stage is reached.
+      let stalled, stuck;
+      function watch() {
+        clearTimeout(stalled);
+        stalled = setTimeout(() => {
+          if (!stage) return;
+          stuck = 'The view is stuck ' + stage + (peerKind ? ' (' + peerKind + ')' : '') + '.';
+          showError(stuck);
+        }, 20000);
+      }
+      watch();
       function reached(next) {
         if (next) note(next);
         else if (stage) note('shown');
         stage = next;
-        if (!next) clearTimeout(stalled);
+        if (stuck && errorMessage.textContent === stuck) showError('');
+        stuck = undefined;
+        if (next) watch();
+        else clearTimeout(stalled);
       }
       const base = () => '/api/repository/' + encodeURIComponent(route.subject) + '/branch/main';
 
@@ -176,18 +188,33 @@
             .then((entry) => ({ space, entry }))
             .catch(() => ({}));
         }
+        // How far starting got, and since when, for a view's report.
+        let step = 'not started', since = Date.now(), began = Date.now();
+        const steps = [];
+        function at(next) {
+          steps.push(((Date.now() - began) / 1000).toFixed(1) + 's ' + next);
+          step = next;
+          since = Date.now();
+        }
         async function start(claimed, data) {
+          at('importing the runtime');
           module = await import(data.glue);
+          at('starting the wasm');
           await module.default({ module_or_path: data.wasm });
           const make = async () => {
+            at('reading the kept key');
             const entry = claimed.space
               ? await kept('readonly', (store) => store.get(claimed.space)).catch(() => undefined)
               : undefined;
-            if (entry)
+            if (entry) {
+              at('restoring the kept key');
               key = await module.ViewKey.restore(entry.key).catch(() => undefined);
+            }
             if (key) return true;
+            at('making a key');
             key = await module.ViewKey.generate();
             if (claimed.space) {
+              at('saving the key');
               const handles = await key.export();
               await kept('readwrite', (store) =>
                 store.put({ did: key.did, key: handles }, claimed.space),
@@ -195,9 +222,11 @@
             }
             return false;
           };
+          if (claimed.space && navigator.locks) at('waiting for the key lock');
           const reused = claimed.space && navigator.locks
             ? await navigator.locks.request('tonk-view-key:' + claimed.space, make)
             : await make();
+          at('started');
           // A store is its key's: a key made anew starts one of its own.
           return { did: key.did, reused, directory: 'tonk-view-' + key.did };
         }
@@ -240,6 +269,7 @@
                     .then((e) => lines.push('peer storage: ' + Math.round(e.usage / 1e6) + ' of ' + Math.round(e.quota / 1e6) + ' MB'))
                     .catch((error) => lines.push('peer storage: ' + ((error && error.message) || error)));
                 lines.push('peer started: ' + (started ? 'yes' : 'no') + ', opened: ' + (opened ? 'yes' : 'no') + ', peer: ' + (peer ? 'yes' : 'no'));
+                lines.push('peer step: ' + step + ' for ' + ((Date.now() - since) / 1000).toFixed(1) + 's', ...steps.map((line) => 'peer ' + line));
                 port.postMessage({ id, lines });
               } else if (op === 'claim') {
                 client = data.client;
@@ -249,7 +279,10 @@
               } else if (op === 'start') {
                 const claimed = await claim;
                 const first = !started;
-                started ??= start(claimed, data);
+                started ??= start(claimed, data).catch((error) => {
+                  started = undefined;
+                  throw error;
+                });
                 const result = await started;
                 // A view joining a running peer finds its store already open.
                 port.postMessage({ id, ...result, reused: result.reused || !first });
@@ -302,6 +335,9 @@
       // This view, as the peer names its client. The lock it holds while
       // the view lives tells a shared peer when the view is gone.
       const viewClient = 'tonk-view-client:' + crypto.randomUUID();
+      // Set once a shared peer stalled starting, so later views do not wait
+      // on one again.
+      const STALLED_SHARED = 'tonk-view-shared-stalled';
       const peerUrl = () =>
         URL.createObjectURL(new Blob([peerSource], { type: 'text/javascript' }));
       // The space's shared peer: the one already running, by the address
@@ -309,6 +345,12 @@
       // host has no SharedWorker or it does not answer.
       function sharedPeer(space) {
         if (typeof SharedWorker !== 'function' || !navigator.locks) return note('no shared peer here');
+        let skipped;
+        try {
+          skipped = localStorage.getItem(STALLED_SHARED);
+        } catch {}
+        if (Date.now() - Number(skipped) < 86400000)
+          return note('shared peer skipped: one stalled starting in the last day');
         const name = 'tonk-view:' + space;
         const answers = (url, wait) =>
           new Promise((resolve) => {
@@ -454,14 +496,25 @@
         const early = keptDid ? grant(keptDid) : undefined;
         early?.catch(() => {});
         reached('loading the view\'s peer');
-        const started = await ask(
-          'start',
-          {
-            glue: origin + '/view-peer/tonk_view_peer.js',
-            wasm: origin + '/view-peer/tonk_view_peer_bg.wasm',
-          },
-          120000,
-        );
+        const runtime = {
+          glue: origin + '/view-peer/tonk_view_peer.js',
+          wasm: origin + '/view-peer/tonk_view_peer_bg.wasm',
+        };
+        let started;
+        try {
+          started = await ask('start', runtime, peerKind === 'shared peer' ? 30000 : 120000);
+        } catch (error) {
+          // A shared peer that does not finish starting (seen on iOS): this
+          // view, and later ones, run a peer of their own.
+          if (peerKind !== 'shared peer') throw error;
+          try {
+            localStorage.setItem(STALLED_SHARED, String(Date.now()));
+          } catch {}
+          useWorker(new Worker(peerUrl(), { type: 'module' }), 'own peer, shared one stalled');
+          reached('loading the view\'s own peer');
+          await ask('claim', claim, 10000);
+          started = await ask('start', runtime, 120000);
+        }
         reached('getting access to the space');
         access = await (started.did === keptDid ? early : grant(started.did));
         reached('opening the space');
