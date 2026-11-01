@@ -17,8 +17,18 @@
       padding: 12px;
       font: 14px system-ui;
     }
-    #error[hidden] {
+    #error[hidden],
+    #report[hidden] {
       display: none;
+    }
+    #report {
+      margin: 0 12px 12px;
+      font: 12px ui-monospace, monospace;
+    }
+    #report pre {
+      white-space: pre-wrap;
+      user-select: all;
+      -webkit-user-select: all;
     }
     iframe {
       flex: 1;
@@ -28,6 +38,7 @@
     }
   </style>
   <p id="error" role="alert" hidden></p>
+  <details id="report" hidden><summary>Details for a bug report</summary><pre></pre></details>
   <iframe title="Tonk space" sandbox="allow-scripts allow-forms"></iframe>
   <script>
     // The relay between an MCP Apps host and a space's page (plan #1200,
@@ -47,7 +58,8 @@
       const origin = __TONK_MCP_ORIGIN__,
         framed = __TONK_VIEW_FRAME__,
         frame = document.querySelector('iframe'),
-        errorMessage = document.querySelector('#error');
+        errorMessage = document.querySelector('#error'),
+        report = document.querySelector('#report');
       let route, pack, port, access, renewalTimer, viewFrame, rpcId = 0;
       const pending = new Map(),
         encode = new TextEncoder(),
@@ -59,9 +71,77 @@
           parent.postMessage({ jsonrpc: '2.0', id, method, params }, '*');
         });
       }
+      // What the view did and when, shown under an error so a host with
+      // no console (a phone) still says where and how the view failed.
+      const began = Date.now(),
+        trace = [];
+      function note(text) {
+        trace.push(((Date.now() - began) / 1000).toFixed(1) + 's ' + text);
+        console.info('tonk view: ' + text);
+      }
+      function capabilities() {
+        let storage = 'yes';
+        try {
+          localStorage.getItem('tonk-view-probe');
+        } catch (error) {
+          storage = 'no (' + error.name + ')';
+        }
+        return [
+          'agent: ' + navigator.userAgent,
+          'origin: ' + location.origin,
+          'SharedWorker: ' + typeof SharedWorker,
+          'Worker: ' + typeof Worker,
+          'locks: ' + (navigator.locks ? 'yes' : 'no'),
+          'indexedDB: ' + typeof indexedDB,
+          'BroadcastChannel: ' + typeof BroadcastChannel,
+          'localStorage: ' + storage,
+        ];
+      }
+      // The peer's own view of its sandbox, asked for only once the view
+      // has failed; a peer that cannot answer says so.
+      let peerProbe;
+      function showReport() {
+        const write = (peerLines) => {
+          report.querySelector('pre').textContent = [
+            'stage: ' + (stage || 'shown'),
+            'peer: ' + (peerKind || 'none'),
+            ...capabilities(),
+            ...peerLines,
+            '',
+            ...trace,
+          ].join('\n');
+          report.hidden = false;
+          tellSize();
+        };
+        write(['peer probe: asking']);
+        peerProbe ??= peerWorker
+          ? ask('probe', {}, 5000)
+              .then((answer) => answer.lines)
+              .catch((error) => ['peer probe: ' + error.message])
+          : Promise.resolve(['peer probe: no peer']);
+        peerProbe.then(write);
+      }
       function showError(message) {
         errorMessage.textContent = message;
         errorMessage.hidden = !message;
+        if (message) {
+          note('error: ' + message);
+          showReport();
+        } else report.hidden = true;
+        tellSize();
+      }
+      // What the view is waiting on, so one that never shows its page says
+      // where it stopped rather than staying blank.
+      let stage = 'waiting for the chat to hand over the view',
+        peerKind = '';
+      const stalled = setTimeout(() => {
+        if (stage) showError('The view is stuck ' + stage + (peerKind ? ' (' + peerKind + ')' : '') + '.');
+      }, 20000);
+      function reached(next) {
+        if (next) note(next);
+        else if (stage) note('shown');
+        stage = next;
+        if (!next) clearTimeout(stalled);
       }
       const base = () => '/api/repository/' + encodeURIComponent(route.subject) + '/branch/main';
 
@@ -148,6 +228,19 @@
             try {
               if (op === 'ping') {
                 port.postMessage({ id });
+              } else if (op === 'probe') {
+                const lines = ['peer indexedDB: ' + typeof indexedDB, 'peer locks: ' + (navigator.locks ? 'yes' : 'no')];
+                const wait = (promise) =>
+                  Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(Error('no answer in 3 s')), 3000))]);
+                await wait(kept('readonly', (store) => store.count()))
+                  .then((count) => lines.push('peer key store: ' + count + ' kept'))
+                  .catch((error) => lines.push('peer key store: ' + ((error && error.message) || error)));
+                if (navigator.storage?.estimate)
+                  await wait(navigator.storage.estimate())
+                    .then((e) => lines.push('peer storage: ' + Math.round(e.usage / 1e6) + ' of ' + Math.round(e.quota / 1e6) + ' MB'))
+                    .catch((error) => lines.push('peer storage: ' + ((error && error.message) || error)));
+                lines.push('peer started: ' + (started ? 'yes' : 'no') + ', opened: ' + (opened ? 'yes' : 'no') + ', peer: ' + (peer ? 'yes' : 'no'));
+                port.postMessage({ id, lines });
               } else if (op === 'claim') {
                 client = data.client;
                 navigator.locks?.request(data.client, end);
@@ -215,18 +308,19 @@
       // the view that started it kept, or a new one. Undefined where the
       // host has no SharedWorker or it does not answer.
       function sharedPeer(space) {
-        if (typeof SharedWorker !== 'function' || !navigator.locks) return;
+        if (typeof SharedWorker !== 'function' || !navigator.locks) return note('no shared peer here');
         const name = 'tonk-view:' + space;
         const answers = (url, wait) =>
           new Promise((resolve) => {
             let worker;
             try {
               worker = new SharedWorker(url, { type: 'module', name });
-            } catch {
+            } catch (error) {
+              note('shared peer refused: ' + error.message);
               return resolve();
             }
-            const timer = setTimeout(resolve, wait);
-            worker.onerror = () => resolve(clearTimeout(timer));
+            const timer = setTimeout(() => resolve(note('shared peer silent ' + wait + ' ms')), wait);
+            worker.onerror = () => resolve(clearTimeout(timer) ?? note('shared peer failed to load'));
             worker.port.onmessage = () => resolve(clearTimeout(timer) ?? worker.port);
             worker.port.postMessage({ op: 'ping' });
           });
@@ -246,7 +340,7 @@
               } catch {}
             return port;
           })
-          .catch(() => undefined);
+          .catch((error) => note('shared peer: ' + error.message));
       }
       async function startWorker() {
         if (peerWorker) return;
@@ -256,15 +350,28 @@
             : resolve(),
         );
         const shared = await sharedPeer(route.subject);
-        console.info('tonk view: ' + (shared ? 'shared peer' : 'own peer'));
-        peerWorker = shared ?? new Worker(peerUrl(), { type: 'module' });
+        useWorker(shared ?? new Worker(peerUrl(), { type: 'module' }), shared ? 'shared peer' : 'own peer');
+      }
+      function useWorker(worker, kind) {
+        peerKind = kind;
+        note(kind);
+        peerWorker = worker;
+        if (worker instanceof Worker)
+          worker.onerror = (event) => note('peer failed: ' + (event.message || 'could not load'));
         peerWorker.onmessage = ({ data }) => calls.get(data.id)?.(data);
       }
-      function ask(op, message = {}) {
+      // A peer that does not answer in `wait` ms is reported by the step it
+      // missed, not waited on for ever.
+      function ask(op, message = {}, wait = 30000) {
         return new Promise((resolve, reject) => {
           const id = ++workerId;
+          const timer = setTimeout(() => {
+            calls.delete(id);
+            reject(Error('The view\'s peer (' + peerKind + ') did not answer "' + op + '".'));
+          }, wait);
           calls.set(id, (data) => {
             calls.delete(id);
+            clearTimeout(timer);
             data.error ? reject(Error(data.error)) : resolve(data);
           });
           peerWorker.postMessage({ ...message, id, op });
@@ -330,15 +437,34 @@
         // The runtime, the peer's wasm and the access load side by side: a
         // kept key's DID is known before its wasm is.
         const packed = loadPack();
+        reached('starting the view\'s peer');
         await startWorker();
-        const { did: keptDid } = await ask('claim', { space: route.subject, client: viewClient });
+        const claim = { space: route.subject, client: viewClient };
+        let kept;
+        try {
+          kept = await ask('claim', claim, 10000);
+        } catch (error) {
+          // A shared peer the host starts but never runs: this view runs
+          // one of its own over the same store.
+          if (peerKind !== 'shared peer') throw error;
+          useWorker(new Worker(peerUrl(), { type: 'module' }), 'own peer, shared one silent');
+          kept = await ask('claim', claim, 10000);
+        }
+        const keptDid = kept.did;
         const early = keptDid ? grant(keptDid) : undefined;
         early?.catch(() => {});
-        const started = await ask('start', {
-          glue: origin + '/view-peer/tonk_view_peer.js',
-          wasm: origin + '/view-peer/tonk_view_peer_bg.wasm',
-        });
+        reached('loading the view\'s peer');
+        const started = await ask(
+          'start',
+          {
+            glue: origin + '/view-peer/tonk_view_peer.js',
+            wasm: origin + '/view-peer/tonk_view_peer_bg.wasm',
+          },
+          120000,
+        );
+        reached('getting access to the space');
         access = await (started.did === keptDid ? early : grant(started.did));
+        reached('opening the space');
         await ask('open', {
           delegations: access.delegations,
           space: route.subject,
@@ -348,7 +474,8 @@
         // A kept store pulls only what changed since it last pulled. It
         // still pulls before the page is shown: a route the store lacks
         // would leave the page unbound until the view is shown again.
-        console.info('tonk view: ' + (started.reused ? 'kept store' : 'fresh store'));
+        note(started.reused ? 'kept store' : 'fresh store');
+        reached('syncing the space');
         const pulled = await peerFetch(base() + '/sync/pull', {
           method: 'POST',
           headers: { 'content-type': 'text/plain' },
@@ -356,7 +483,9 @@
         });
         if (!pulled.ok) throw Error('Could not read the space (' + pulled.status + ').');
         await ask('follow', {});
+        reached('loading the Tonk runtime');
         await packed;
+        reached('rendering the page');
         // A delegation holds an hour; the view reopens its peer with a
         // fresh one before it runs out.
         clearTimeout(renewalTimer);
@@ -643,7 +772,15 @@
         frame.style.minHeight = '0';
         frame.style.flex = 'none';
         frame.style.height = Math.min(Math.max(Math.ceil(height), 40), 4000) + 'px';
-        const view = frame.offsetHeight + (errorMessage.hidden ? 0 : errorMessage.offsetHeight);
+        tellSize();
+      }
+      // The host sizes the view from what it is told, so an error shown
+      // before the page reports its height is still in sight.
+      function tellSize() {
+        const view =
+          frame.offsetHeight +
+          (errorMessage.hidden ? 0 : errorMessage.offsetHeight) +
+          (report.hidden ? 0 : report.offsetHeight + 12);
         if (framed) parent.postMessage({ tonkFrame: 'size', height: view }, '*');
         else
           parent.postMessage(
@@ -707,7 +844,8 @@
             initialized
               .then(async (result) => {
                 route = m.params.structuredContent;
-                if (hostFrames(result) && (await tryFrame())) return offer();
+                note('view handed over');
+                if (hostFrames(result) && (await tryFrame())) return note('framed'), offer();
                 if (viewFrame !== undefined) restoreSandbox();
                 await connect();
                 await navigate(route.path);
@@ -734,7 +872,10 @@
           return;
         }
         if (event.source !== frame.contentWindow || !pack || !route) return;
-        if (m?.type === 'tonk-view-size') return resize(m.height);
+        if (m?.type === 'tonk-view-size') {
+          reached('');
+          return resize(m.height);
+        }
         if (m?.type === 'hello' && m.v === 1 && event.ports[0]) {
           port?.close();
           port = event.ports[0];
@@ -797,6 +938,7 @@
             appCapabilities: {},
             protocolVersion: '2026-01-26',
           }).then((result) => {
+            note('host answered');
             parent.postMessage(
               { jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} },
               '*',

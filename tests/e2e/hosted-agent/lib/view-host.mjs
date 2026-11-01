@@ -83,9 +83,17 @@ function policy(csp, frames) {
  * relay resource `resource` (from `resources/read`), in a fresh
  * browser. With `frames`, the host declares the resource's
  * `frameDomains` to the view and lets its policy frame them (route A);
- * without, it declares none and frames nothing (route B).
+ * without, it declares none and frames nothing (route B). Without
+ * `shared`, the browser offers no SharedWorker, as some hosts' do not.
  */
-export async function showView({ client, result, resource, frames, headed = false }) {
+export async function showView({
+  client,
+  result,
+  resource,
+  frames,
+  shared = true,
+  headed = false,
+}) {
   const [content] = resource.contents;
   const csp = { ...(content._meta?.ui?.csp ?? {}) };
   if (!frames) delete csp.frameDomains;
@@ -104,6 +112,7 @@ export async function showView({ client, result, resource, frames, headed = fals
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const browser = await chromium.launch({ headless: !headed });
   const page = await browser.newPage();
+  if (!shared) await page.addInitScript(() => delete window.SharedWorker);
   const calls = [];
   await page.exposeFunction('hostCall', async (name, args) => {
     calls.push(name);

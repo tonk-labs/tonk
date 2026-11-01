@@ -248,11 +248,14 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
     // A view, as a host shows `tonk_open_space`: first as a host that
     // frames nothing (route B, the view's own peer in a Web Worker), then
     // as one that frames the provider (route A, the provider's page with
-    // its service worker as the peer). Each must show what the agent
-    // wrote, then a write it makes while the view is open.
-    for (const [route, frames] of [
-      ['B', false],
-      ['A', true],
+    // its service worker as the peer). Route B runs again in a browser
+    // with no SharedWorker, where each view runs a peer of its own over
+    // the one store. Each must show what the agent wrote, then a write it
+    // makes while the view is open.
+    for (const [route, frames, shared] of [
+      ['B', false, true],
+      ['B without SharedWorker', false, false],
+      ['A', true, true],
     ]) {
       await step(
         `a shown view renders the space and follows a write (route ${route})`,
@@ -273,6 +276,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
             result,
             resource,
             frames,
+            shared,
             headed: !!process.env.TONK_E2E_HEADED,
           });
           try {
@@ -332,11 +336,12 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
                 ['tonk view: kept store'],
                 'the view shown again did not open the store it kept',
               );
-              // Chromium has SharedWorker: every view of the space is served
-              // by the one peer.
+              // With SharedWorker every view of the space is served by the
+              // one peer; without, each runs its own.
+              const kind = shared ? 'tonk view: shared peer' : 'tonk view: own peer';
               assert.ok(
-                view.logged('tonk view: shared peer').length >= 2,
-                `the views did not share a peer: ${view.logged('tonk view:')}`,
+                view.logged(kind).length >= 2,
+                `the views did not use the expected peers: ${view.logged('tonk view:')}`,
               );
               await view.shows([live, theirs]);
               console.log(`route ${route}: shown again in ${Date.now() - reopened} ms`);
