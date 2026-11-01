@@ -28,6 +28,22 @@ pub mod view;
 mod writer;
 pub use writer::{NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, writer_seed};
 
+async fn save_proofs(
+    state: &crate::worker::TonkState,
+    proofs: &[DelegationChain],
+) -> Result<(), TonkWorkerError> {
+    for chain in proofs {
+        state
+            .profile
+            .access()
+            .save(UcanDelegation(chain.clone()))
+            .perform(&state.operator)
+            .await
+            .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+    }
+    Ok(())
+}
+
 /// The ordinary worker router over a peer that exists for one request.
 pub struct HostedPeer {
     router: Router,
@@ -84,13 +100,18 @@ impl HostedPeer {
             .await
             .map_err(|error| internal(&error))?;
         let did = signer.did();
-        Subject::from(did!("local:storage"))
+        let created = Subject::from(did!("local:storage"))
             .attenuate(storage_fx::Storage)
             .attenuate(Location::new(directory.clone(), "hosted"))
             .create(Credential::Signer(SignerCredential::from(signer)))
             .perform(&credentials)
-            .await
-            .map_err(|error| internal(&error))?;
+            .await;
+        // A store opened before keeps its key: reopening it reads what it
+        // already pulled, and the identity check below refuses another key.
+        match created {
+            Ok(_) | Err(storage_fx::StorageError::AlreadyExists(_)) => {}
+            Err(error) => return Err(internal(&error)),
+        }
         let registry =
             crate::device::Registry::holding("hosted".to_owned(), directory.clone(), caches);
         let storage = registry.storage().await?;
@@ -108,15 +129,7 @@ impl HostedPeer {
         if state.profile.did() != did {
             return Err(TonkWorkerError::Internal("hosted identity mismatch".into()));
         }
-        for chain in proofs {
-            state
-                .profile
-                .access()
-                .save(UcanDelegation(chain.clone()))
-                .perform(&state.operator)
-                .await
-                .map_err(|error| internal(&error))?;
-        }
+        save_proofs(&state, proofs).await?;
         let (router, state, hub) = super::api_router_with_state(state);
         Ok(Self {
             router,
@@ -124,6 +137,26 @@ impl HostedPeer {
             hub,
             directory,
         })
+    }
+
+    /// Hold `proofs` too: a renewed delegation, or another view's, for a
+    /// peer already open.
+    pub async fn grant(&self, proofs: &[DelegationChain]) -> Result<(), TonkWorkerError> {
+        let state = self.state.read().await;
+        save_proofs(&state, proofs).await
+    }
+
+    /// Read `space`'s head again from the store and repaint the views over
+    /// it: another peer over the same store committed or pulled.
+    pub async fn refresh(&self, space: &Did) -> Result<(), TonkWorkerError> {
+        let state = self.state.read().await;
+        state
+            .reactor
+            .refresh_branch(space.as_ref(), "main", &state.operator)
+            .await
+            .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+        state.reactor.run_scheduled_polls(&state.operator).await;
+        Ok(())
     }
 
     /// Mount `subject` as a replica of the space served at `remote`. Its
