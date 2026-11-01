@@ -165,28 +165,22 @@ test('settings asks the worker on its own origin, not the app page\'s', async ()
 });
 
 // The hub's door, with the page stood in for: where it is, whether an
-// account is linked, and whether the worker holds a stage of the panel.
+// account is linked, and whether the host is signing the person in.
 function door({ path, linked = false, staged = false, linking = false }) {
   const calls = [];
-  const seat = attributes({
-    toggleAttribute(name, on) { if (on) this.setAttribute(name, ''); else this.removeAttribute(name); },
-  });
   const self = attributes({
     linked: () => linked,
     unlinked: () => !linked,
     staged: () => staged,
     viaRequest: () => null,
-    viaAsk: () => false,
     context: () => ({ path }),
     connectionsRefresh: () => calls.push('connections'),
-    openRegistration: () => calls.push('open'),
-    openSignInVia: () => calls.push('open-via'),
-    leaveRegistration: () => calls.push('leave'),
+    signIn: () => calls.push('sign-in'),
     unlink: () => calls.push('unlink'),
   });
   if (linking) self.setAttribute('data-linking', 'true');
   const before = { document: globalThis.document, window: globalThis.window };
-  globalThis.document = { querySelector: (selector) => selector === '.registration-seat' ? seat : null };
+  globalThis.document = { querySelector: () => null };
   globalThis.window = { tonk: { navigate: (to) => calls.push(`navigate ${to}`) } };
   try {
     method('account-settings', 'door')(self);
@@ -194,15 +188,15 @@ function door({ path, linked = false, staged = false, linking = false }) {
     globalThis.document = before.document;
     globalThis.window = before.window;
   }
-  return { calls, shown: !seat.hasAttribute('hidden') };
+  return calls;
 }
 
-test('a stage left from another visit is not shown off the account page, and nothing is asked of the worker', () => {
-  assert.deepEqual(door({ path: '/', staged: true }), { calls: [], shown: false });
-  assert.deepEqual(door({ path: '/', linked: true, staged: true }), { calls: [], shown: false });
+test('off the account page a sign-in the host is running asks nothing of the worker', () => {
+  assert.deepEqual(door({ path: '/', staged: true }), []);
+  assert.deepEqual(door({ path: '/', linked: true, staged: true }), []);
 });
 
-test('the account page shows the panel, and opens it when none is up', () => {
-  assert.deepEqual(door({ path: '/account', staged: true, linking: true }), { calls: [], shown: true });
-  assert.deepEqual(door({ path: '/account' }), { calls: ['open'], shown: true });
+test('the account page asks the host for a sign-in once, while none is asked for', () => {
+  assert.deepEqual(door({ path: '/account', staged: true, linking: true }), []);
+  assert.deepEqual(door({ path: '/account' }), ['sign-in']);
 });

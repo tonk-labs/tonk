@@ -481,9 +481,9 @@ impl Kernel {
         self.store.data_mut().origin = (scheme.to_owned(), authority.to_owned());
     }
 
-    /// The addresses the guest kernel's provisional persona asks to merge
-    /// into, from now on, as it asks.
-    pub fn merges(&mut self) -> mpsc::UnboundedReceiver<String> {
+    /// Each merge the guest kernel's provisional persona asks for, from now
+    /// on, as it asks.
+    pub fn merges(&mut self) -> mpsc::UnboundedReceiver<()> {
         let (merges, asked) = mpsc::unbounded();
         self.store.data_mut().merges = Some(merges);
         asked

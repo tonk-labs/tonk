@@ -36,6 +36,9 @@ async fn main() {
     // page must never look like one.
     tonk_identity::install();
     tonk_ui::custody_relay::install();
+    // Signing in is this page's too: the profile's worker asks it, and so
+    // does a space this page shows itself that needs the account.
+    tonk_ui::sign_in::install();
     // The panel that adds an account is the profile frame's own; what a
     // frame still asks of this page is where to seat the passkey rows a
     // settings command raised, beside the column that asked.
@@ -49,16 +52,26 @@ async fn main() {
         }
     });
     // A delegation from the account is signed by the worker that holds the
-    // account, behind a passkey this page asks for.
+    // account, behind a passkey this page asks for. A person known to have
+    // no account signs in first.
     tonk_portal::on_delegate(|request, reply| {
-        tonk_ui::custody_relay::delegate(
-            tonk_worker_api::RootDelegation {
-                subject: request.subject,
-                command: request.command,
-                audience: request.audience,
-            },
-            move |answer| reply.finish(answer),
-        );
+        let delegation = tonk_worker_api::RootDelegation {
+            subject: request.subject,
+            command: request.command,
+            audience: request.audience,
+        };
+        if !SIGNED_OUT.get() {
+            tonk_ui::custody_relay::delegate(delegation, move |answer| reply.finish(answer));
+            return;
+        }
+        tonk_ui::sign_in::open(move |signed_in| {
+            if signed_in {
+                SIGNED_OUT.set(false);
+                tonk_ui::custody_relay::delegate(delegation, move |answer| reply.finish(answer));
+            } else {
+                reply.finish(Err("The person did not sign in.".to_owned()));
+            }
+        });
     });
     // An account task is the profile frame's to answer. One that reaches
     // this page has no panel here to open.
@@ -192,6 +205,10 @@ fn render_root(shell: &web_sys::Element) {
                     {
                         let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&rest));
                     }
+                } else {
+                    tonk_portal::signed_in(&site_pattern, |signed_in| {
+                        SIGNED_OUT.set(!signed_in);
+                    });
                 }
                 mount(&shell, &site_pattern);
             }
@@ -206,6 +223,13 @@ fn render_root(shell: &web_sys::Element) {
             );
         }
     });
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+thread_local! {
+    /// Whether the person is known to have no account, as the profile said
+    /// when the app showed a space itself.
+    static SIGNED_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// How long the app waits to hear whether an address's DID names an

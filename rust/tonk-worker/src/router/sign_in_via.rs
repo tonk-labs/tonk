@@ -411,19 +411,8 @@ impl dialog_capability::Provider<SignInVia> for super::CommandEnv {
     async fn execute(&self, command: SignInVia) {
         let tonk = self.state().read().await;
         match start(&tonk, &command.via.0).await {
-            Ok(approval) => {
-                super::registration::record(&tonk, None).await;
-                super::navigate::notify_navigate(self.client(), &approval)
-            }
+            Ok(approval) => super::navigate::notify_navigate(self.client(), &approval),
             Err(error) => {
-                super::registration::record(
-                    &tonk,
-                    Some(super::registration::Stage::Failed {
-                        kind: tonk_schema::registration::kind::SIGN_IN_VIA,
-                        message: error.clone(),
-                    }),
-                )
-                .await;
                 super::ceremony::report(
                     &tonk,
                     ceremony::SIGN_IN_VIA,

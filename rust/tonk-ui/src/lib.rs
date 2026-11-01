@@ -7,6 +7,11 @@
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod custody_relay;
 
+/// Signing in, on the host's page: the address, the account's name and the
+/// passkey.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod sign_in;
+
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 /// PostHog wiring for the shell page: panic hook, pageviews, and
 /// DOM-event listeners. Wasm-only — depends on `tonk_analytics::web`,

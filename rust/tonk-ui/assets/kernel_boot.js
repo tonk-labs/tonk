@@ -763,19 +763,23 @@ async function readPublic(url, bytes) {
 
 // ---- Signing in ---------------------------------------------------------
 //
-// The persona's provisional persona asks to merge into the persona an
-// address names (`provisional-persona.merge`). This host looks the address
-// up, to know whether the person signs up or logs in, and asks the page
-// that asked for the passkey ceremony, as the browser's worker did:
-// `{ type: "webauthn", request: "custody", intent }`. The page runs it, and
-// hands over what the passkey derived, `{ type: "custody", credentialId,
-// key, kek }` with a port to answer on, or that the person refused it,
-// `{ type: "ceremony-refused", kind, name }`. The embedder creates or opens
-// the account with it and merges the persona into it; inside that merge the
-// kernel asks what the ceremony made of the account (`{ ask, ceremony }`)
-// and, for one it created, to enroll it (`{ ask, enroll }`). The persona
-// then boots as the account, through its delegation to this device, which
-// this host keeps with its files.
+// The persona's provisional persona asks to merge (`provisional-persona
+// .merge`), and this host asks the page that asked this origin something
+// to sign the person in: `{ type: "sign-in" }`. The page asks who they are,
+// looks the address up, and runs the passkey ceremony: a new passkey for an
+// address with no account, the account's own for one with. It hands over
+// what the passkey derived, `{ type: "custody", credentialId, key, kek,
+// request }` with a port to answer on, the request naming the ceremony,
+// address, account name, device and remote. The page may sign the person in
+// without the persona asking, as it does for a space it shows itself; the
+// hand-off is the same. A person who puts the page's panel away, or whose
+// browser refuses the ceremony, is told as `{ type: "ceremony-refused",
+// kind, name }`. The embedder creates or opens the account with it and
+// merges the persona into it; inside that merge the kernel asks what the
+// ceremony made of the account (`{ ask, ceremony }`) and, for one it
+// created, to enroll it (`{ ask, enroll }`). The persona then boots as the
+// account, through its delegation to this device, which this host keeps
+// with its files.
 
 const PERSONA_REQUEST = new Request(new URL("/_host/persona.json", self.location.href));
 async function keptPersona() {
@@ -795,59 +799,49 @@ async function keepPersona({ persona, link }) {
     await cache.put(PERSONA_REQUEST, new Response(body, { headers: { "content-type": "application/json" } }));
 }
 
-// The sign-in the persona asked for, while the page runs its ceremony.
-let signing = null;
-// The page that last asked this origin something: the one that asked to
-// sign in.
+// The page that last asked this origin something: the one to ask to sign
+// the person in.
 let lastPage = null;
 
-// Whether the account at `address` exists, as the deployment's directory of
-// addresses says: a log-in, or else a sign-up.
-async function ceremonyFor(app, address) {
-    const [local, domain] = address.split("@");
-    if (!local || !domain) return "log-in";
-    try {
-        const answer = await fetch(new URL(`/customer/${encodeURIComponent(domain)}/${encodeURIComponent(local)}/did.json`, app), {
-            credentials: "omit",
-            cache: "no-store",
-        });
-        return answer.status === 404 ? "create" : "log-in";
-    } catch {
-        return "create";
-    }
+// The page to ask to sign the person in: the one they are looking at, of
+// the pages open on this origin, and else the one that last asked something.
+async function pageInView() {
+    const pages = await self.clients.matchAll({ type: "window" });
+    return pages.find(page => page.focused)
+        ?? pages.find(page => page.visibilityState === "visible")
+        ?? (lastPage && pages.find(page => page.id === lastPage))
+        ?? pages[0];
 }
 
-async function askedToMerge(address) {
+async function askedToMerge() {
     try {
-        const app = (await siteOrigins())?.app ?? self.location.origin;
-        const kind = await ceremonyFor(app, address);
-        const deviceName = wasm_bindgen.deviceLabel(self.navigator.userAgent);
-        const remote = new URL("/ucan/", app).href;
-        const intent =
-            kind === "create"
-                ? { kind: "create-account", email: address, deviceName, remote, provider: remote, createdOn: deviceName }
-                : { kind: "login", deviceName, endpoint: remote, provider: remote };
-        signing = { kind, email: address, deviceName, remote };
-        const page = (lastPage && (await self.clients.get(lastPage))) ?? (await self.clients.matchAll({ type: "window" }))[0];
-        if (!page) throw new Error("no page is open to ask for a passkey");
-        page.postMessage({ type: "webauthn", request: "custody", intent });
+        const page = await pageInView();
+        if (!page) throw new Error("no page is open to sign anyone in");
+        page.postMessage({ type: "sign-in" });
     } catch (error) {
         log("the sign-in could not be asked for:", error);
-        await tellKernel({ tell: "failed", kind: signing?.kind ?? "create", code: null, message: "This page could not be asked for a passkey." });
-        signing = null;
+        await tellKernel({ tell: "refused", kind: "log-in", name: "NotSupportedError" });
     }
 }
 
-// What the page derived with a passkey: sign the person in with it, and
-// answer the page on `port`.
-async function signIn(handoff, port) {
-    const asked = signing;
-    if (!asked) {
-        port?.postMessage({ error: "no sign-in was asked for" });
-        return;
+// What a sign-in hand-off asks for, off its request: the ceremony, the
+// address, what to call an account it creates, this device's name, and
+// where the account syncs. Null for a hand-off that is no sign-in.
+function signInAsked(request) {
+    if (request?.kind === "create-account") {
+        return { kind: "create", email: request.email ?? "", name: request.displayName ?? null, deviceName: request.deviceName, remote: request.remote };
     }
+    if (request?.kind === "login") {
+        return { kind: "log-in", email: request.email ?? "", name: null, deviceName: request.deviceName, remote: request.endpoint };
+    }
+    return null;
+}
+
+// What the page derived with a passkey for the sign-in `asked`: sign the
+// person in with it, and answer the page on `port`.
+async function signIn(handoff, port, asked) {
     try {
-        const merged = await (await booting).signIn(handoff, asked.kind, asked.email, asked.deviceName, asked.remote);
+        const merged = await (await booting).signIn(handoff, asked.kind, asked.email, asked.name, asked.deviceName, asked.remote);
         await keepPersona(merged);
         port?.postMessage({ ok: {} });
     } catch (error) {
@@ -856,8 +850,6 @@ async function signIn(handoff, port) {
         port?.postMessage({ error: message, ...(error?.code ? { code: error.code } : {}) });
         await tellKernel({ tell: "failed", kind: asked.kind, code: error?.code ?? null, message });
         if (error?.code === "awaiting-activation") resumeSignIn();
-    } finally {
-        if (signing === asked) signing = null;
     }
 }
 
@@ -938,15 +930,16 @@ async function authorize(handoff, context, port, answers = true) {
 }
 
 // The custody hand-off a page posted, with `port` to answer it on: for the
-// sign-in or the authorization asked for, or a page's own ask to delegate.
+// authorization asked for, a sign-in, or a page's own ask to delegate.
 function custodyFrom(handoff, port) {
-    if (signing) return signIn(handoff, port);
     if (authorizing) {
         const { context } = authorizing;
         authorizing = null;
         return authorize(handoff, context, port);
     }
     const request = handoff?.request;
+    const asked = signInAsked(request);
+    if (asked) return signIn(handoff, port, asked);
     if (request?.kind === "delegate") {
         delegating = { handoff, port };
         return tellKernel({ tell: "delegate", subject: request.subject, command: request.command, audience: request.audience });
@@ -1314,7 +1307,6 @@ self.addEventListener("message", event => {
         return;
     }
     if (PROFILE && type === "ceremony-refused") {
-        signing = null;
         event.waitUntil(tellKernel({ tell: "refused", kind: event.data.kind, name: event.data.name }));
         return;
     }

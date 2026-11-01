@@ -6216,7 +6216,6 @@ dependencies = [
  "tonk-invite",
  "tonk-kernel-world",
  "tonk-portal",
- "tonk-schema",
  "tonk-worker",
  "tonk-worker-api",
  "url",

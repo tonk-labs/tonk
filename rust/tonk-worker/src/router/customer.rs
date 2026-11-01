@@ -1030,7 +1030,7 @@ pub(crate) async fn record_activation(state: &crate::worker::TonkState) {
     {
         log!("account activation not recorded: {error}");
     }
-    // A panel waiting for the emailed link has nothing left to wait for.
+    // A sign-in that waited for the emailed link is over.
     super::registration::activated(state).await;
     // Activation is what the deferred work was waiting on: the custody
     // publish the ceremony pre-signed, and any space provisioned while
@@ -1265,26 +1265,7 @@ pub(crate) async fn record_customer_status(
                 TonkWorkerError::Internal(format!("commit account registration facts: {error}"))
             })?;
     }
-
-    // Activation (or enrollment, or a suspension) is a new answer about
-    // the address, and the registration form reads that answer from the
-    // overlay rather than from this row. Without writing it here an
-    // address asked about BEFORE registering keeps its `unregistered`
-    // answer forever, and the form goes on offering to create an
-    // account for one that has just finished activating.
-    //
-    // Gated exactly as `mod email_status` is: the lookup it shares this
-    // row with is the worker's own, so the module is not built for a
-    // native non-test target and neither is the call into it.
-    #[cfg(test)]
-    super::email_status::record(
-        state,
-        email,
-        super::email_status::state_for_customer(status),
-    )
-    .await;
-    // A panel waiting for the emailed link has nothing left to wait for.
-    if status == CustomerStatus::Active {
+    if status == CustomerStatus::Active && !recorded.activated {
         super::registration::activated(state).await;
     }
 

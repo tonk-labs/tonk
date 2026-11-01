@@ -68,15 +68,11 @@ pub use sync::*;
 pub mod account;
 pub use account::{
     AccountActive, AccountDisplayName, AccountLink, AccountLinking, AccountRegistered,
-    AccountSealedInbox, AccountSuspended, CeremonyStatus, EmailStatus, ceremony, ceremony_state,
-    email_state,
+    AccountSealedInbox, AccountSuspended, CeremonyStatus, ceremony, ceremony_state,
 };
 
 pub mod registration;
-pub use registration::{
-    RegistrationAddress, RegistrationCeremony, RegistrationConfirming, RegistrationFailed,
-    RegistrationNaming, RegistrationVia,
-};
+pub use registration::SigningIn;
 
 pub mod custody;
 pub use custody::{Replacement, SecretMessage, SecretPrincipal, SeedKind};

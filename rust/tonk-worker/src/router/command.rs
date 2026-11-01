@@ -225,21 +225,15 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<super::ceremony::AuthorizeDeviceRequest>()
         // Signing in through another deployment is new, so neither half
         // has a legacy shape to migrate.
-        // Adding an account to this profile, stage by stage.
-        .command::<tonk_schema::command::OpenRegistration>()
-        .command::<tonk_schema::command::StartRegistration>()
-        .command::<tonk_schema::command::CreateAccount>()
-        .command::<tonk_schema::command::LogIn>()
-        .command::<tonk_schema::command::OpenSignInVia>()
+        // Signing in, which the host runs.
+        .command::<tonk_schema::command::SignIn>()
         .command::<tonk_schema::command::ActivateAccount>()
-        .command::<tonk_schema::command::DismissRegistration>()
         .command::<tonk_schema::command::SignInVia>()
         .command::<tonk_schema::command::FinishSignInVia>()
         .migrated::<tonk_schema::command::AddPasskey, tonk_schema::command::legacy::AddPasskey>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RemoveSpace, tonk_schema::command::legacy::RemoveSpace>()
         .migrated::<tonk_schema::command::Join, tonk_schema::command::legacy::Join>()
-        .migrated::<tonk_schema::command::CheckEmail, tonk_schema::command::legacy::CheckEmail>()
         .migrated::<tonk_schema::command::PauseSync, tonk_schema::command::legacy::PauseSync>()
         .migrated::<tonk_schema::command::ProfileRename, tonk_schema::command::legacy::ProfileRename>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()

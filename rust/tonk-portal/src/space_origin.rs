@@ -391,6 +391,13 @@ pub fn account(pattern: &str, did: &str, answered: impl FnOnce(bool) + 'static) 
     connector::account(pattern, did, answered);
 }
 
+/// Whether the person is signed in to an account, asked of the profile's
+/// origin where sites render at `pattern`: what a space the app shows
+/// itself needs before it asks the account for anything.
+pub fn signed_in(pattern: &str, answered: impl FnOnce(bool) + 'static) {
+    connector::signed_in(pattern, answered);
+}
+
 /// The profile's origin, framed unseen by the app's page while it shows a
 /// space itself: only the profile's worker answers a space's worker for the
 /// person's persona, and only a page of its origin opens a port to it. The
@@ -458,6 +465,18 @@ mod connector {
                 close();
             }
             answered(account);
+        });
+    }
+
+    /// See [`super::signed_in`].
+    pub(super) fn signed_in(pattern: &str, answered: impl FnOnce(bool) + 'static) {
+        send(pattern, said("signed-in"), move |event: &MessageEvent| {
+            answered(
+                Reflect::get(&event.data(), &"signedIn".into())
+                    .ok()
+                    .and_then(|signed_in| signed_in.as_bool())
+                    .unwrap_or(false),
+            );
         });
     }
 

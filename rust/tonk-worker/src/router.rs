@@ -45,9 +45,8 @@ mod account_deletion;
 mod account_journey;
 mod ceremony;
 pub(crate) mod customer;
-mod email_status;
 mod link_timing;
-/// The panel that adds an account to this profile, stage by stage.
+/// Signing in, as this profile asks the host for it.
 pub(crate) mod registration;
 mod sign_in_via;
 

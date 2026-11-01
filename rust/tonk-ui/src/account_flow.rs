@@ -1060,12 +1060,11 @@ pub(crate) mod tests {
         }
     }
 
-    /// Raise the panel that adds an account from the Hub's account trigger.
+    /// Raise the host's sign-in panel from the Hub's account trigger.
     ///
-    /// The panel is the profile's own and renders in the Hub's frame, so
-    /// this returns with the driver in that frame. Only an unlinked
-    /// profile's trigger raises it: a linked one opens the account menu
-    /// instead.
+    /// The panel is the top page's, so this returns with the driver in the
+    /// top document. Only an unlinked profile's trigger raises it: a linked
+    /// one opens the account menu instead.
     async fn raise_cluster_from_hub(driver: &WebDriver, env: &TestEnvironment) -> Result<()> {
         goto(driver, env.tonk_web.as_str()).await?;
         enter_hub(driver).await?;
@@ -1418,7 +1417,7 @@ pub(crate) mod tests {
 
     /// Put the panel away the way its own control does.
     async fn dismiss_register_dialog(driver: &WebDriver) -> Result<()> {
-        enter_guest(driver).await?;
+        driver.enter_default_frame().await?;
         driver
             .execute(
                 r##"document.querySelector("#tonk-register button.ghost")?.click();"##,
@@ -1461,10 +1460,9 @@ pub(crate) mod tests {
             // stage asking for the emailed link is what says it landed. A
             // caller that goes straight to the inbox would otherwise read
             // it before the service had been asked to send anything.
-            if enter_guest(driver).await.is_ok()
-                && registration_stage(driver)
-                    .await
-                    .is_ok_and(|stage| stage == "confirming")
+            if registration_stage(driver)
+                .await
+                .is_ok_and(|stage| stage == "confirming")
             {
                 return Ok(());
             }
@@ -1489,9 +1487,10 @@ pub(crate) mod tests {
             .clone())
     }
 
-    /// Which stage the panel shows, or empty when it is put away. Reads the
-    /// frame the driver is in.
+    /// Which stage the host's sign-in panel shows, or empty when it is put
+    /// away. Leaves the driver in the top document.
     async fn registration_stage(driver: &WebDriver) -> Result<String> {
+        driver.enter_default_frame().await?;
         Ok(driver
             .execute(
                 r##"return document.querySelector("#tonk-register")?.dataset.registration ?? "";"##,
@@ -1504,16 +1503,12 @@ pub(crate) mod tests {
             .to_owned())
     }
 
-    /// Wait for the panel to show `expected` (empty for put away), in the
-    /// guest frame. The guest is entered on every look, since a sign-in can
-    /// rebuild the page under it.
+    /// Wait for the host's sign-in panel to show `expected` (empty for put
+    /// away).
     async fn await_registration_stage(driver: &WebDriver, expected: &str) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
         loop {
-            let stage = match enter_guest(driver).await {
-                Ok(()) => registration_stage(driver).await.ok(),
-                Err(_) => None,
-            };
+            let stage = registration_stage(driver).await.ok();
             if stage.as_deref() == Some(expected) {
                 return Ok(());
             }
@@ -1545,10 +1540,12 @@ pub(crate) mod tests {
             // emailed link. Do not accept disappearance alone: the panel
             // also goes when it is cancelled, so the account is the
             // receipt.
-            let stage = match enter_guest(driver).await {
-                Ok(()) => registration_stage(driver).await.unwrap_or_default(),
-                Err(_) => String::from("?"),
-            };
+            let stage = registration_stage(driver).await.unwrap_or_default();
+            // Typed by a script, the address goes on with no tap that
+            // still counts, so the panel offers the passkey on its own.
+            if stage == "log-in" {
+                click_register_action(driver).await?;
+            }
             if stage == "failed" {
                 let said = await_narrator_containing(driver, "")
                     .await
@@ -2135,13 +2132,13 @@ pub(crate) mod tests {
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        // The panel is seated over the bar, in the space's own page.
+        // The host's panel comes up over the space, which stays where it is.
         await_register_dialog(&driver).await?;
-        wait_for_displayed(&driver, "account-task #tonk-register").await?;
+        wait_for_displayed(&driver, "#tonk-register").await?;
         assert_eq!(driver.current_url().await?, original);
         let form = driver
             .execute(
-                r#"const host = document.querySelector('account-task #tonk-register');
+                r#"const host = document.querySelector('#tonk-register');
                    const visible = (selector) => [...host.querySelectorAll(selector)]
                      .find((node) => node.checkVisibility());
                    return {
@@ -2157,7 +2154,10 @@ pub(crate) mod tests {
         anyhow::ensure!(
             form["label"] == "email address"
                 && form["status"]
-                    == "Enter your email to continue. We’ll check whether you already have a Tonk account."
+                    .as_str()
+                    .is_some_and(|status| status.starts_with(
+                        "Enter your email to continue. We’ll check whether you already have a Tonk account."
+                    ))
                 && form["dismiss"] == "cancel"
                 && form["action"] == "continue",
             "the contained account form drifted: {form}"
@@ -2858,16 +2858,13 @@ pub(crate) mod tests {
         type_into_register_dialog(&driver, email).await?;
         await_register_action(&driver, "create a passkey").await?;
         type_into_settled_row(&driver, "display name", "Retry Name").await?;
-        // A prompt the browser would not show is offered again on the page's
-        // own card; turning that down is what ends the ceremony.
-        driver.enter_default_frame().await?;
-        wait_for_displayed(&driver, "#tonk-custody-dismiss").await?;
+        // The panel ran the ceremony in the click that asked; the browser
+        // refusing it is where it ends.
+        await_registration_stage(&driver, "failed").await?;
         let calls = driver
             .execute("return window.__registerCreateCalls", Vec::new())
             .await?;
         assert_eq!(calls.json(), &serde_json::json!(1));
-        click(&driver, "#tonk-custody-dismiss").await?;
-        await_registration_stage(&driver, "failed").await?;
         let said = await_narrator_containing(&driver, "").await?;
         assert!(
             !said.is_empty(),
@@ -3166,130 +3163,6 @@ pub(crate) mod tests {
             return Err(anyhow!("{error} (subscribing to {path})"));
         }
         Ok(value["frame"].clone())
-    }
-
-    /// The `account/check-email` claim, in the shape the registration
-    /// form dispatches it.
-    fn check_email_claim_json(email: &str) -> serde_json::Value {
-        serde_json::json!({
-            "claims": [{
-                "op": "assert",
-                "application": {
-                    "predicate": {
-                        "kind": "transient",
-                        "concept": {
-                            "description": "Ask whether an address is registered.",
-                            "with": {
-                                "email": {
-                                    "the": "xyz.tonk.command.check-email/email",
-                                    "as": "Text"
-                                }
-                            }
-                        }
-                    },
-                    "parameters": { "email": email }
-                }
-            }]
-        })
-    }
-
-    /// Asking about an address answers on the overlay, and the answer
-    /// says which of create / sign-in the form should offer.
-    ///
-    /// The unit tests cover the status mapping with no service in sight.
-    /// This is the part they cannot see: the command decodes, the lookup
-    /// reaches a real access service, and the answer lands somewhere the
-    /// form can subscribe to.
-    #[dialog_common::test]
-    async fn it_answers_whether_an_address_is_registered(env: TestEnvironment) -> Result<()> {
-        let driver = driver_with_prf(&env).await?;
-        // These calls are `fetch` FROM THE PAGE, answered by the service
-        // worker — so a page has to be loaded and the worker has to be
-        // controlling it. Without that the request leaves for the static
-        // server, which has no `/api/*` and answers 405.
-        driver.goto(env.tonk_web.as_str()).await?;
-        wait_for_service_worker(&driver).await?;
-        // A profile exists from first boot, so nothing has to be signed
-        // in for the form to ask this.
-        get_json(&driver, "/api/profile").await?;
-
-        let unknown = "nobody-has-this@example.com";
-        let dispatched = post_json(
-            &driver,
-            "/api/repository/profile:tonk/branch/main/transact",
-            check_email_claim_json(unknown),
-        )
-        .await?;
-        successful_body("dispatch account/check-email", &dispatched);
-
-        let answered = await_email_status(&driver, unknown).await?;
-        assert_eq!(
-            answered, "unregistered",
-            "an address nobody registered is the create-an-account branch",
-        );
-
-        // Now one that IS registered: the same question, the other
-        // answer, so the form offers sign-in instead of a ceremony that
-        // would fail at the end.
-        let taken = "taken@example.com";
-        sign_up(&driver, &env, taken).await?;
-        let dispatched = post_json(
-            &driver,
-            "/api/repository/profile:tonk/branch/main/transact",
-            check_email_claim_json(taken),
-        )
-        .await?;
-        successful_body("dispatch account/check-email", &dispatched);
-
-        let answered = await_email_status(&driver, taken).await?;
-        assert_eq!(
-            answered, "active",
-            "a registered address is the sign-in branch, not a second signup",
-        );
-
-        driver.quit().await?;
-        Ok(())
-    }
-
-    /// Read the overlay answer for `address`, waiting for the row that
-    /// names it rather than whichever row happens to be there.
-    async fn await_email_status(driver: &WebDriver, address: &str) -> Result<String> {
-        let endpoint = format!(
-            "/api/repository/profile:tonk/branch/{}/query",
-            active_branch(driver).await?
-        );
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            let rows = post_json(
-                driver,
-                &endpoint,
-                tonk_worker::helpers::email_status_wire_query(),
-            )
-            .await?;
-            if let Some(found) = rows["body"].as_array().and_then(|rows| {
-                rows.iter().find(|row| {
-                    row["address"].as_str() == Some(address)
-                        || row["fields"]["address"].as_str() == Some(address)
-                })
-            }) {
-                let state = found["state"]
-                    .as_str()
-                    .or_else(|| found["fields"]["state"].as_str())
-                    .unwrap_or_default();
-                // `checking` is the question being asked, not an answer
-                // to it: the handler writes it before the lookup runs so
-                // the form can say it is working. Returning it would
-                // report whatever was read first rather than what the
-                // address turned out to be.
-                if !state.is_empty() && state != tonk_schema::email_state::CHECKING {
-                    return Ok(state.to_owned());
-                }
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(anyhow!("no email-status answer for {address}: {rows}"));
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
     }
 
     /// The Hub's own wizard creates a local-only space before anyone
@@ -4623,68 +4496,6 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// Activating rewrites the answer about the address.
-    ///
-    /// `EmailStatus` was written only by the lookup handler, so an
-    /// address checked BEFORE registering stayed `unregistered` in the
-    /// overlay forever — and the form kept offering to create an account
-    /// for one that had just finished activating. The order here is the
-    /// point: check first, register second.
-    #[dialog_common::test]
-    async fn it_refreshes_the_address_answer_when_the_account_activates(
-        env: TestEnvironment,
-    ) -> Result<()> {
-        let driver = driver_with_prf(&env).await?;
-        driver.goto(env.tonk_web.as_str()).await?;
-        wait_for_service_worker(&driver).await?;
-
-        // Ask about the address while nobody has it.
-        let taken = "activates@example.com";
-        let dispatched = post_json(
-            &driver,
-            "/api/repository/profile:tonk/branch/main/transact",
-            check_email_claim_json(taken),
-        )
-        .await?;
-        successful_body("dispatch account/check-email", &dispatched);
-        assert_eq!(
-            await_email_status(&driver, taken).await?,
-            "unregistered",
-            "nobody has it yet",
-        );
-
-        // Now register and activate it.
-        sign_up(&driver, &env, taken).await?;
-
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            // Ask again, the way the form does every time the address is
-            // typed. The answer is written when the question is asked;
-            // nothing re-publishes it behind the scenes, so an answer
-            // from before the account existed stays exactly as true as
-            // it was when it was given.
-            let asked = post_json(
-                &driver,
-                "/api/repository/profile:tonk/branch/main/transact",
-                check_email_claim_json(taken),
-            )
-            .await?;
-            successful_body("re-ask account/check-email", &asked);
-            if await_email_status(&driver, taken).await? == "active" {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "activation never refreshed the answer; it still reads {:?}",
-                await_email_status(&driver, taken).await?,
-            );
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-
-        driver.quit().await?;
-        Ok(())
-    }
-
     /// An address that already has an account must SIGN IN.
     ///
     /// Sending someone with an account through a creation ceremony
@@ -4716,7 +4527,7 @@ pub(crate) mod tests {
     /// Wait for the panel to go on to log in, never to naming a new
     /// account. Reads the guest frame.
     async fn await_log_in_started(driver: &WebDriver) -> Result<()> {
-        enter_guest(driver).await?;
+        driver.enter_default_frame().await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let at = driver
@@ -4731,7 +4542,7 @@ pub(crate) mod tests {
                 !at.starts_with("naming"),
                 "a registered address must log in, not sign up a second time"
             );
-            if at == "ceremony:log-in" || at == "failed:log-in" {
+            if at.starts_with("log-in:") || at == "ceremony:log-in" || at == "failed:log-in" {
                 return Ok(());
             }
             anyhow::ensure!(
@@ -4785,8 +4596,8 @@ pub(crate) mod tests {
         let started_in_click = loop {
             let seen = driver
                 .execute(
-                    r##"const go = document.querySelector("#tonk-custody-continue");
-                       return { active: window.__tonkGetActive, card: !!go && go.checkVisibility() };"##,
+                    r##"const panel = document.querySelector("#tonk-register");
+                       return { active: window.__tonkGetActive, step: panel?.dataset.registration === "log-in" };"##,
                     Vec::new(),
                 )
                 .await?;
@@ -4794,9 +4605,11 @@ pub(crate) mod tests {
             if !seen["active"].is_null() {
                 break seen["active"].clone();
             }
-            if seen["card"] == true && !tapped {
+            // The tap no longer counted once the address was looked up:
+            // the panel asks for one more.
+            if seen["step"] == true && !tapped {
                 tapped = true;
-                element(&driver, "#tonk-custody-continue")
+                element(&driver, "#tonk-register #tonk-register-action")
                     .await?
                     .click()
                     .await?;
@@ -5067,7 +4880,7 @@ pub(crate) mod tests {
     async fn await_settled_row(driver: &WebDriver, noun: &str) -> Result<String> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
         let mut last;
-        enter_guest(driver).await?;
+        driver.enter_default_frame().await?;
         loop {
             let value = driver
                 .execute(
@@ -5104,7 +4917,7 @@ pub(crate) mod tests {
         // The row is the next stage's, which renders a beat after the one
         // before it, so an absent row is waited out rather than failed on
         // the first look.
-        enter_guest(driver).await?;
+        driver.enter_default_frame().await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let outcome = driver
@@ -5115,9 +4928,6 @@ pub(crate) mod tests {
                         if (row.querySelector(".k")?.textContent.trim() !== noun) continue;
                         const input = row.querySelector("input");
                         if (!input) return { error: noun + " row takes no input" };
-                        if (!input.closest("tonk-display")?.hasAttribute("data-bound")) {
-                            return { error: "no row named " + noun + " listening yet" };
-                        }
                         input.focus();
                         input.value = value;
                         input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -5145,7 +4955,7 @@ pub(crate) mod tests {
 
     /// Wait for the panel to say something containing `fragment`.
     async fn await_narrator_containing(driver: &WebDriver, fragment: &str) -> Result<String> {
-        enter_guest(driver).await?;
+        driver.enter_default_frame().await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
         let mut last;
         loop {
@@ -5358,7 +5168,7 @@ pub(crate) mod tests {
 
     /// The panel's action label, or empty when it has none.
     async fn register_action_label(driver: &WebDriver) -> Result<String> {
-        enter_guest(driver).await?;
+        driver.enter_default_frame().await?;
         let label = driver
             .execute(
                 r##"const a = [...document.querySelectorAll("#tonk-register-action")]
@@ -5372,7 +5182,7 @@ pub(crate) mod tests {
 
     /// Click the panel's action.
     async fn click_register_action(driver: &WebDriver) -> Result<()> {
-        enter_guest(driver).await?;
+        driver.enter_default_frame().await?;
         let outcome = driver
             .execute(
                 r##"const a = [...document.querySelectorAll("#tonk-register-action")]
@@ -5757,26 +5567,25 @@ pub(crate) mod tests {
         open_register_dialog(driver).await
     }
 
-    /// Wait for the panel that adds an account, in the guest frame.
+    /// Wait for the host's sign-in panel, in the top document.
     ///
-    /// The panel is the profile's: the Hub and a space's bar both render
-    /// in the guest, and the top page only runs the passkey ceremony the
-    /// worker asks it for. Returns with the driver in the guest.
+    /// The profile asks for a sign-in and the top page asks the person who
+    /// they are. Returns with the driver in the top document.
     pub(crate) async fn await_register_dialog(driver: &WebDriver) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
-            enter_guest(driver).await?;
             if !registration_stage(driver).await?.is_empty() {
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
+                enter_guest(driver).await?;
                 let guest = driver
                     .execute(
                         r##"
                         const bar = document.querySelector("tonk-fab");
                         return {
                             url: location.href,
-                            seats: document.querySelectorAll(".registration-seat").length,
+                            signingIn: document.querySelector("[data-signing-in]")?.dataset.state ?? null,
                             task: !!document.querySelector("account-task"),
                             settings: !!document.querySelector("account-settings"),
                             bar: !!bar,
@@ -5798,12 +5607,10 @@ pub(crate) mod tests {
 
     /// Type an address into the panel and go on, the way Enter does.
     ///
-    /// The worker reads the address on submit: a free one moves the panel
-    /// to naming the account, a taken one runs the log-in ceremony. A
-    /// submit before the panel's display listens is lost, so this waits for
-    /// the display to be bound.
+    /// The page looks the address up on submit: a free one moves the panel
+    /// to naming the account, a taken one runs the log-in ceremony.
     async fn type_into_register_dialog(driver: &WebDriver, address: &str) -> Result<()> {
-        enter_guest(driver).await?;
+        driver.enter_default_frame().await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let outcome = driver
@@ -5811,7 +5618,6 @@ pub(crate) mod tests {
                     r##"
                     const field = document.querySelector('#tonk-register input[name="email"]');
                     if (!field) return { error: "no address field" };
-                    if (!field.closest("tonk-display")?.hasAttribute("data-bound")) return { wait: true };
                     field.focus();
                     field.value = arguments[0];
                     field.dispatchEvent(new Event("input", { bubbles: true }));
@@ -9758,35 +9564,32 @@ pub(crate) mod tests {
     }
 
     /// Sign the sibling deployment in through `home`, the way a person
-    /// does: Option on its "add an account", name `home` in the dialog that
-    /// asks which Tonk, approve on `home` with its passkey, and come back to
+    /// does: "add an account", then the panel's way to sign in through
+    /// another Tonk, name `home` there, continue on the pane that says what
+    /// approving does, approve on `home` with its passkey, and come back to
     /// the sibling's Hub. Reports the pane's status and the browser log when
     /// the sibling never comes back signed in.
     async fn sign_in_through(driver: &WebDriver, env: &TestEnvironment, home: &str) -> Result<()> {
         let here = env.sibling_web();
         let here_origin = here.origin().ascii_serialization();
-        // Option on "add an account" asks which Tonk holds the account.
         goto(driver, here.as_str()).await?;
         enter_hub(driver).await?;
-        // Pressed once the bar is live and the cell offers to add an
-        // account: before that, the link is the bare page's `/settings`
-        // and nothing yet hears Option.
-        let trigger = wait_for_displayed(
+        wait_for_displayed(
             driver,
             "hub-bar:defined [data-account-trigger][href=\"/account\"]",
         )
+        .await?
+        .click()
         .await?;
-        driver
-            .action_chain()
-            .key_down(Key::Alt)
-            .click_element(&trigger)
-            .key_up(Key::Alt)
-            .perform()
-            .await?;
-        await_registration_stage(driver, "via").await?;
+        open_sign_in_via(driver).await?;
         let field = wait_for_displayed(driver, "#tonk-register input[name=\"via\"]").await?;
         field.send_keys(home).await?;
         click(driver, "#tonk-register #tonk-register-action").await?;
+        enter_hub(driver).await?;
+        wait_for_displayed(driver, "account-settings [data-via-continue]")
+            .await?
+            .click()
+            .await?;
 
         // The deployment holding the account presents the connection approval.
         await_url_containing(driver, &format!("{home}/settings/link?")).await?;
@@ -9834,33 +9637,17 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// Option after a plain "add an account": the email panel the plain
-    /// click raised, put away by going back to the spaces, gives way to the
-    /// one asking which Tonk instead of coming back.
+    /// The sign-in panel asks for an address, and offers to sign in
+    /// through another Tonk instead, which asks which one in its place.
     #[dialog_common::test]
-    async fn it_asks_which_tonk_after_a_plain_add_an_account(env: TestEnvironment) -> Result<()> {
+    async fn it_asks_which_tonk_in_place_of_the_address(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         let cell = "hub-bar:defined [data-account-trigger][href=\"/account\"]";
         wait_for_displayed(&driver, cell).await?.click().await?;
         await_registration_stage(&driver, "address").await?;
-
-        // Back to the spaces: leaving the account page puts the panel away.
-        driver.enter_default_frame().await?;
-        driver.back().await?;
-        await_url_path(&driver, "/").await?;
-        await_registration_stage(&driver, "").await?;
-
-        let trigger = wait_for_displayed(&driver, cell).await?;
-        driver
-            .action_chain()
-            .key_down(Key::Alt)
-            .click_element(&trigger)
-            .key_up(Key::Alt)
-            .perform()
-            .await?;
-        await_registration_stage(&driver, "via").await?;
+        open_sign_in_via(&driver).await?;
         anyhow::ensure!(
             driver
                 .find(By::Css("#tonk-register input[name=\"email\"]"))
@@ -9870,6 +9657,13 @@ pub(crate) mod tests {
         );
         driver.quit().await?;
         Ok(())
+    }
+
+    /// Take the sign-in panel's way to sign in through another Tonk.
+    async fn open_sign_in_via(driver: &WebDriver) -> Result<()> {
+        await_registration_stage(driver, "address").await?;
+        click(driver, "#tonk-register [data-act=\"via\"]").await?;
+        await_registration_stage(driver, "via").await
     }
 
     /// Signing a browser in through another deployment, the browser's

@@ -576,13 +576,6 @@ view!:
       .settings-back:active { background:var(--wash-2); }
       .hub-page:has(hub-bar[path="/account"]) :is(.settings-title,.settings-back) { display:none; }
       .hub-page account-settings { display:block; }
-      /* A modal over the spaces: the page behind is dimmed and takes no
-         clicks. Its surface is the app's raised one, not the hub's card. */
-      .registration-seat #tonk-register { position:fixed; inset:0; z-index:20; background:var(--dim);
-        --card:#fcfbfb; --anchor-top:79px; --anchor-left:0px; --anchor-width:calc(100vw - 42px); }
-      @media (prefers-color-scheme: dark){ .registration-seat #tonk-register { --card:#261f20; } }
-      #tonk-register[data-kind="sign-in-via"] [data-retry="registration"],
-      #tonk-register:not([data-kind="sign-in-via"]) [data-retry="sign-in-via"] { display:none; }
       .hub-page account-settings .s-body { min-width:0; min-height:0; max-height:none;
         overflow:visible; padding:0; background:transparent; border:0; color:var(--ink); }
       .hub-page account-settings .pane[hidden] { display:none; }
@@ -2780,36 +2773,16 @@ element!: &hub-bar
           }
         }
       }
-    # Option (Alt) on "add an account" signs in through another Tonk: for
-    # that one click the link points at `/account?via`, and it is put back
-    # after. The window sees a click before the guest's relay at the
-    # document reads the link, so the click routes there the ordinary way.
-    option-account: |
-      (self, event) => {
-        if (!event.altKey) return;
-        const trigger = event.target?.closest?.('[data-account-trigger]');
-        if (!trigger || !self.contains(trigger)) return;
-        if (trigger.getAttribute('href') !== '/account') return;
-        trigger.setAttribute('href', '/account?via');
-        setTimeout(() => {
-          if (trigger.getAttribute('href') === '/account?via') trigger.setAttribute('href', '/account');
-        }, 0);
-      }
     connected: |
       (self) => {
         self.route();
         const moved = () => self.route();
         window.addEventListener('tonk:context', moved);
         self._moved = moved;
-        if (self._option) window.removeEventListener('click', self._option, true);
-        self._option = (event) => self.optionAccount(event);
-        window.addEventListener('click', self._option, true);
       }
     disconnected: |
       (self) => {
         if (self._moved) window.removeEventListener('tonk:context', self._moved);
-        if (self._option) window.removeEventListener('click', self._option, true);
-        self._option = null;
       }
     released: |
       (self) => self.disconnected()
@@ -2888,16 +2861,9 @@ view!:
           </nav>
         </hub-bar>
         </header>
-        <!-- The panel that adds an account: whichever stage it is at, under
-             the bar. Each display draws nothing until its stage is there. -->
-        <div class="registration-seat">
-          <tonk-display model="tonk:registration/address" view="panel"></tonk-display>
-          <tonk-display model="tonk:registration/via" view="panel"></tonk-display>
-          <tonk-display model="tonk:registration/naming" view="panel"></tonk-display>
-          <tonk-display model="tonk:registration/ceremony" view="panel"></tonk-display>
-          <tonk-display model="tonk:registration/confirming" view="panel"></tonk-display>
-          <tonk-display model="tonk:registration/failed" view="panel"></tonk-display>
-        </div>
+        <!-- Whether the host is signing the person in, which the account
+             page waits on: the host's page asks who they are. -->
+        <tonk-display hidden model="tonk:sign-in/asked" view="flag" data-signing-in></tonk-display>
         <main class="hubcol">
         <h1 class="visually-hidden">Spaces</h1>
         <hub-discover data-spaces-view collection="spaces" catalog-url="https://goblinoats.github.io/honky-tonks/catalog.json">
@@ -2995,9 +2961,7 @@ view!:
                   </div>
                   <span hidden data-via-return on:finish-sign-in-via=tonk:finish-sign-in-via></span>
                 </div>
-                <span hidden data-open-registration on:open-registration=tonk:open-registration></span>
-                <span hidden data-open-sign-in-via on:open-sign-in-via=tonk:open-sign-in-via></span>
-                <span hidden data-leave-registration on:leave-registration=tonk:dismiss-registration></span>
+                <span hidden data-sign-in on:sign-in=tonk:sign-in></span>
                 <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
                 <tonk-display model="state:ceremony" entity="state:ceremony" view="settings">
                   <span slot="no-entity" hidden></span>
@@ -3965,31 +3929,14 @@ view!:
         tonk-view:has(> tonk-display[data-state="no-model"]):not(:has([data-presence="case:replicated"])) > tonk-site,
         tonk-view:has(> tonk-display[data-state="no-model"]):not(:has([data-presence="case:replicated"])) > tonk-fab { display: none; }
         .space-unknown:has([data-presence="case:replicated"]) { display: none; }
-        /* The panel that adds an account, where the bar was: the account
-           task seats it at the bar's anchor. */
-        .registration-over-space { --anchor-top:16px; --anchor-left:0px; --anchor-width:calc(100vw - 16px); }
-        .registration-over-space #tonk-register { position:fixed; inset:0; z-index:30; background:var(--dim);
-          backdrop-filter:blur(3px); --card:#fcfbfb; }
-        @media (prefers-color-scheme: dark){ .registration-over-space #tonk-register { --card:#261f20; } }
-        .registration-over-space[data-up] #tonk-register .ocol { top:auto; bottom:var(--anchor-bottom, 16px); }
-        .registration-over-space #tonk-register[data-kind="sign-in-via"] [data-retry="registration"],
-        .registration-over-space #tonk-register:not([data-kind="sign-in-via"]) [data-retry="sign-in-via"] { display:none; }
       </style>
       <tonk-site data-space-preview with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
       <tonk-fab with="{profile-branch}@profile:tonk" space={id}>
         <command-palette slot="command" space={id} profile="{profile-branch}@profile:tonk"></command-palette>
       </tonk-fab>
       <account-task>
-        <div class="registration-seat registration-over-space">
-          <tonk-display model="tonk:registration/address" view="panel"></tonk-display>
-          <tonk-display model="tonk:registration/via" view="panel"></tonk-display>
-          <tonk-display model="tonk:registration/naming" view="panel"></tonk-display>
-          <tonk-display model="tonk:registration/ceremony" view="panel"></tonk-display>
-          <tonk-display model="tonk:registration/confirming" view="panel"></tonk-display>
-          <tonk-display model="tonk:registration/failed" view="panel"></tonk-display>
-        </div>
-        <span hidden data-open-registration on:open-registration=tonk:open-registration></span>
-        <span hidden data-leave-registration on:leave-registration=tonk:dismiss-registration></span>
+        <tonk-display hidden model="tonk:sign-in/asked" view="flag" data-signing-in></tonk-display>
+        <span hidden data-sign-in on:sign-in=tonk:sign-in></span>
         <tonk-display hidden model="state:account-link" view="label" data-account-link></tonk-display>
       </account-task>
       <tonk-display with={id} entity={id} model=tonk:repository view=title>
@@ -4037,9 +3984,9 @@ view!:
               <div class="space-unknown-wall">
                 <h1 class="space-unknown-statement">open this space</h1>
                 <p class="space-unknown-narrator">Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
-                <!-- Signing in opens the panel that adds an account. -->
+                <!-- Signing in is the host's: its page asks who they are. -->
                 <div class="space-unknown-run">
-                  <button type="button" class="space-unknown-home" on:retry-registration=tonk:open-registration>sign in<span aria-hidden="true">&#9656;</span></button>
+                  <button type="button" class="space-unknown-home" on:ask-sign-in=tonk:sign-in>sign in<span aria-hidden="true">&#9656;</span></button>
                 </div>
                 <p class="space-unknown-narrator">New to this space? Ask someone in it to send you an invite link from <strong>share</strong>.</p>
                 <a class="space-unknown-back" href="/">go to home</a>
@@ -4068,9 +4015,9 @@ view!:
               <div class="space-unknown-wall">
                 <h1 class="space-unknown-statement">this space is private</h1>
                 <p class="space-unknown-narrator">Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
-                <!-- Signing in opens the panel that adds an account. -->
+                <!-- Signing in is the host's: its page asks who they are. -->
                 <div class="space-unknown-run">
-                  <button type="button" class="space-unknown-home" on:retry-registration=tonk:open-registration>sign in<span aria-hidden="true">&#9656;</span></button>
+                  <button type="button" class="space-unknown-home" on:ask-sign-in=tonk:sign-in>sign in<span aria-hidden="true">&#9656;</span></button>
                 </div>
                 <p class="space-unknown-narrator">New to this space? Opening it takes an invite: ask someone in it to send you a link from <strong>share</strong>.</p>
                 <a class="space-unknown-back" href="/">go to home</a>
@@ -4283,357 +4230,48 @@ view!:
     label: |
       <span data-account-link-row data-of={this}><span data-account-linked hidden></span><tonk-display model="tonk:account/name" entity={account} view="directory"><span slot="no-entity"></span></tonk-display></span>
 
-# Adding an account to this profile, one stage at a time. Each stage is a
-# concept of its own on the profile's overlay, all on `state:registration`,
-# and the worker records at most one at a time: a view draws the stage it
-# matches. No stage is the panel put away; a finished account is what the
-# account's own facts say. Overlay only: the panel is this device's.
-concept!: &registration/address
-  this: tonk:registration/address
-  description: The panel that adds an account asks for an address.
-  # ENTITY: state:registration.
+# Signing in is the host's: its page asks the person who they are and runs
+# the passkey. The profile asks for a sign-in (`account/sign-in`), which the
+# provisional persona asks the host to merge, and records that it asked
+# until the host merges the persona or says the person did not sign in.
+# Overlay only: a sign-in is this device's.
+concept!: &sign-in/asked
+  this: tonk:sign-in/asked
+  description: The host is signing the person in, as this profile asked.
+  # ENTITY: state:sign-in.
   with:
-    email:
-      description: The address typed so far, empty at first.
-      the: xyz.tonk.registration-address/email
-      as: text
+    asked:
+      description: When the sign-in was asked for, unix milliseconds.
+      the: xyz.tonk.sign-in/asked
+      as: float
 
-concept!: &registration/via
-  this: tonk:registration/via
-  description: The panel asks which Tonk holds the account, to sign this browser in through it.
-  # ENTITY: state:registration.
-  with:
-    origin:
-      description: The address typed so far, empty at first.
-      the: xyz.tonk.registration-via/origin
-      as: text
-
-concept!: &registration/naming
-  this: tonk:registration/naming
-  description: The address is free, and the panel asks what to call the account.
-  # ENTITY: state:registration.
-  with:
-    email:
-      description: The address the account will have.
-      the: xyz.tonk.registration-naming/email
-      as: text
-
-concept!: &registration/ceremony
-  this: tonk:registration/ceremony
-  description: The page has been asked for the passkey.
-  # ENTITY: state:registration.
-  with:
-    kind:
-      description: "`create` for a new passkey, `log-in` for one the account has."
-      the: xyz.tonk.registration-ceremony/kind
-      as: text
-
-concept!: &registration/confirming
-  this: tonk:registration/confirming
-  description: The account waits for its emailed link to be opened.
-  # ENTITY: state:registration.
-  with:
-    kind:
-      description: "Which ceremony brought the account here: `create` or `log-in`."
-      the: xyz.tonk.registration-confirming/kind
-      as: text
-
-concept!: &registration/failed
-  this: tonk:registration/failed
-  description: The last step of adding an account did not finish.
-  # ENTITY: state:registration.
-  with:
-    kind:
-      description: "Which step failed: `create`, `log-in` or `sign-in-via`."
-      the: xyz.tonk.registration-failed/kind
-      as: text
-    message:
-      description: What went wrong, in words a person can act on.
-      the: xyz.tonk.registration-failed/message
-      as: text
-
-command!: &account/open-registration
-  this: tonk:open-registration
-  description: Raise the panel that adds an account to this profile.
+command!: &account/sign-in
+  this: tonk:sign-in
+  description: Ask the host to sign the person in, or up when they have no account.
   with:
     time:
       description: The activation's timestamp, so each click is its own command.
-      the: xyz.tonk.command.open-registration/time
+      the: xyz.tonk.command.sign-in/time
       as: float
 
-command!: &account/check-email
-  this: tonk:check-email
-  description: Ask the access service whether an address already has an account.
-  with:
-    email:
-      description: The address to look up.
-      the: xyz.tonk.command.check-email/email
-      as: text
-
-command!: &account/start-registration
-  this: tonk:start-registration
-  description: >
-    Go on with the address typed into the panel: name a new account for a
-    free address, or log in to the one an address already has.
-  with:
-    email:
-      description: The address given.
-      the: xyz.tonk.command.start-registration/email
-      as: text
-
-command!: &account/create
-  this: tonk:create-account
-  description: Create the account for a free address, with a new passkey.
-  with:
-    email:
-      description: The account's address.
-      the: xyz.tonk.command.create-account/email
-      as: text
-    name:
-      description: What to call the account.
-      the: xyz.tonk.command.create-account/name
-      as: text
-
-command!: &account/log-in
-  this: tonk:log-in
-  description: >
-    Log in with a passkey the person picks: the browser lists this site's
-    passkeys, and the one picked names the account.
-  with:
-    time:
-      description: The activation's timestamp, so each click is its own command.
-      the: xyz.tonk.command.log-in/time
-      as: float
-
-command!: &account/open-sign-in-via
-  this: tonk:open-sign-in-via
-  description: Raise the panel that signs this browser in through another Tonk.
-  with:
-    time:
-      description: The activation's timestamp, so each click is its own command.
-      the: xyz.tonk.command.open-sign-in-via/time
-      as: float
-
-command!: &account/dismiss-registration
-  this: tonk:dismiss-registration
-  description: Put the panel that adds an account away, wherever it got to.
-  with:
-    time:
-      description: The activation's timestamp, so each click is its own command.
-      the: xyz.tonk.command.dismiss-registration/time
-      as: float
-
-# The address check's answer, which the panel shows under the address.
-# Written by `account/check-email` and `account/start-registration`.
-concept!: &account/email-status
-  this: tonk:email-status
-  description: What the access service said about an address typed into the panel.
-  # ENTITY: state:email-status.
-  with:
-    address:
-      description: The address the answer is about.
-      the: xyz.tonk.email-status/address
-      as: text
-    state:
-      description: >
-        `checking`, `unregistered`, `active`, `pending`, `suspended`,
-        `invalid` or `unavailable`.
-      the: xyz.tonk.email-status/state
-      as: text
-
-# The page opens the panel when it lands on the account page with no
-# account, by dispatching this on its hidden trigger.
-event!: &on/open-registration
-  type: "tonk-open-registration"
+# The page asks for a sign-in on its hidden trigger: the account page with
+# no account, and a task a space's bar raised.
+event!: &on/sign-in
+  type: "tonk-sign-in"
   where:
     time: ".timeStamp"
 
-event!: &on/open-sign-in-via
-  type: "tonk-open-sign-in-via"
-  where:
-    time: ".timeStamp"
-
-event!: &on/retry-sign-in-via
+event!: &on/ask-sign-in
   type: "click"
   prevent-default: true
   where:
     time: ".timeStamp"
 
-# The Tonk typed into the panel, as the worker reads it: a bare host or an
-# address.
-event!: &on/sign-in-via-typed
-  type: "submit"
-  prevent-default: true
-  where:
-    via: ".currentTarget.elements.via.value"
-
-event!: &on/retry-registration
-  type: "click"
-  prevent-default: true
-  where:
-    time: ".timeStamp"
-
-# The address as typed, once typing pauses: `<registration-address>` raises
-# this on the field.
-event!: &on/check-email
-  type: "tonk-check-email"
-  where:
-    email: ".currentTarget.value"
-
-event!: &on/start-registration
-  type: "submit"
-  prevent-default: true
-  where:
-    email: ".currentTarget.elements.email.value"
-
-event!: &on/create-account
-  type: "submit"
-  prevent-default: true
-  where:
-    email: ".currentTarget.dataset.email"
-    name: ".currentTarget.elements.name.value"
-
-event!: &on/log-in
-  type: "click"
-  prevent-default: true
-  where:
-    time: ".timeStamp"
-
-event!: &on/dismiss-registration
-  type: "click"
-  prevent-default: true
-  where:
-    time: ".timeStamp"
-
-# The page leaves the account page with the panel up: put it away.
-event!: &on/leave-registration
-  type: "tonk-leave-registration"
-  where:
-    time: ".timeStamp"
-
-# The panel, one view per stage. Each is the same card, under the bar;
-# what it asks for is the stage's.
 view!:
-  this: tonk:registration/address
+  this: tonk:sign-in/asked
   show:
-    panel: |
-      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="address">
-        <registration-address>
-        <form class="ocol" on:start-registration=tonk:start-registration>
-          <div class="ostack">
-            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
-            <div class="orow mblk editing">
-              <span class="k">email address</span>
-              <span class="v"><input class="ed" name="email" type="email" inputmode="email" enterkeyhint="go"
-                autocomplete="email" aria-label="email address" value={email} required
-                on:check-email=tonk:check-email></span>
-            </div>
-          </div>
-          <div class="oexp mblk">
-            <p aria-live="polite" data-address-says>Enter your email to continue. We’ll check whether you already have a Tonk account.</p>
-            <tonk-display model="tonk:email-status" view="hint"></tonk-display>
-          </div>
-          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
-          <button class="obtn" id="tonk-register-action" type="submit" disabled>continue</button>
-        </form>
-        </registration-address>
-      </div>
-
-view!:
-  this: tonk:registration/via
-  show:
-    panel: |
-      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="via">
-        <form class="ocol" on:sign-in-via-typed=tonk:sign-in-via>
-          <div class="ostack">
-            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
-            <div class="orow mblk editing">
-              <span class="k">tonk address</span>
-              <span class="v"><input class="ed" name="via" type="text" inputmode="url" enterkeyhint="go"
-                autocomplete="url" spellcheck="false" aria-label="tonk address" placeholder="tonk.network"
-                value={origin} required></span>
-            </div>
-          </div>
-          <div class="oexp mblk"><p aria-live="polite">Enter the address of the Tonk that holds your account. You’ll approve this browser there with your passkey.</p></div>
-          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
-          <button class="obtn" id="tonk-register-action" type="submit">continue</button>
-        </form>
-      </div>
-
-view!:
-  this: tonk:registration/naming
-  show:
-    panel: |
-      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="naming">
-        <form class="ocol" data-email={email} on:create-account=tonk:create-account>
-          <div class="ostack">
-            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
-            <div class="orow mblk"><span class="k">email</span><span class="v">{email}</span></div>
-            <div class="orow mblk editing">
-              <span class="k">display name</span>
-              <span class="v"><input class="ed" name="name" type="text" enterkeyhint="go" autocomplete="name"
-                aria-label="display name" required maxlength="50"></span>
-            </div>
-          </div>
-          <div class="oexp mblk"><p aria-live="polite">What should people see when you share a space? Your passkey comes next.</p></div>
-          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
-          <button class="obtn" id="tonk-register-action" type="submit">create a passkey</button>
-        </form>
-      </div>
-
-view!:
-  this: tonk:registration/ceremony
-  show:
-    panel: |
-      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="ceremony" data-kind={kind}>
-        <div class="ocol">
-          <div class="ostack">
-            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
-          </div>
-          <div class="oexp mblk"><p aria-live="polite">Waiting for your passkey…</p></div>
-          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
-          <button class="obtn wait" id="tonk-register-action" type="button" disabled aria-busy="true">waiting for device</button>
-        </div>
-      </div>
-
-view!:
-  this: tonk:registration/confirming
-  show:
-    panel: |
-      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="confirming" data-kind={kind}>
-        <div class="ocol">
-          <div class="ostack">
-            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
-            <div class="orow mblk"><span class="k">email</span><span class="v">awaiting confirmation</span></div>
-          </div>
-          <div class="oexp mblk"><p aria-live="polite">Open the confirmation link we emailed you to finish. You can leave this page open.</p></div>
-          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>close</button>
-        </div>
-      </div>
-
-view!:
-  this: tonk:registration/failed
-  show:
-    panel: |
-      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="failed" data-kind={kind}>
-        <div class="ocol">
-          <div class="ostack">
-            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
-          </div>
-          <div class="oexp mblk"><p aria-live="polite">{message}</p></div>
-          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
-          <button class="obtn" id="tonk-register-action" type="button" data-retry="registration" on:retry-registration=tonk:open-registration>try again</button>
-          <button class="obtn" id="tonk-register-action" type="button" data-retry="sign-in-via" on:retry-sign-in-via=tonk:open-sign-in-via>try again</button>
-        </div>
-      </div>
-
-# What the address check said, under the address. Only the answers that
-# stop the panel need words: the others move it on.
-view!:
-  this: tonk:email-status
-  show:
-    hint: |
-      <span hidden data-email-status data-state={state} data-address={address}></span>
+    flag: |
+      <span hidden data-signing-in-asked></span>
 
 concept!: &account/active
   this: tonk:account/active
@@ -6007,95 +5645,28 @@ element!: &space-arrival
     disconnected: |
       (self) => { self._watching = false; }
 
-element!: &registration-address
-  description: >
-    The address step of the panel that adds an account: asks about the
-    address once typing pauses, and offers what the answer allows.
-  method:
-    # What the service said about the address as it is typed now. An answer
-    # about an address since edited away says nothing.
-    answer: |
-      (self) => {
-        const typed = self.querySelector('input[name="email"]')?.value.trim() ?? '';
-        const status = self.querySelector('[data-email-status]');
-        return typed && status?.dataset.address === typed ? status.dataset.state : '';
-      }
-    offer: |
-      (self) => {
-        const action = self.querySelector('#tonk-register-action');
-        const says = self.querySelector('[data-address-says]');
-        if (!action || !says) return;
-        const [label, ready, text] = ({
-          unregistered: ['create a passkey', true, 'No account has this address yet. Create one with a passkey.'],
-          active: ['log in with passkey', true, 'This address has an account. Log in with its passkey.'],
-          pending: ['log in with passkey', true, 'This address has an account. Log in with its passkey.'],
-          checking: ['checking…', false, 'Checking this address…'],
-          invalid: ['continue', false, 'That doesn’t look like an email address.'],
-          suspended: ['continue', false, 'This account is suspended. Contact support to restore it.'],
-          unavailable: ['continue', false, 'We couldn’t reach the account service. Check your connection and try again.'],
-        })[self.answer()] ?? ['continue', false, 'Enter your email to continue. We’ll check whether you already have a Tonk account.'];
-        if (action.textContent !== label) action.textContent = label;
-        action.disabled = !ready;
-        if (says.textContent !== text) says.textContent = text;
-      }
-    ask: |
-      (self) => {
-        const field = self.querySelector('input[name="email"]');
-        if (field?.value.trim()) field.dispatchEvent(new Event('tonk-check-email', { bubbles: true }));
-      }
-    connected: |
-      (self) => {
-        self._typed = () => {
-          self.offer();
-          clearTimeout(self._pause);
-          self._pause = setTimeout(() => self.ask(), 350);
-        };
-        self.addEventListener('input', self._typed);
-        self._answered = new MutationObserver(() => self.offer());
-        self._answered.observe(self, { subtree: true, childList: true, attributes: true,
-          attributeFilter: ['data-state', 'data-address'] });
-        self.offer();
-        self.querySelector('input[name="email"]')?.focus();
-      }
-    disconnected: |
-      (self) => {
-        clearTimeout(self._pause);
-        if (self._typed) self.removeEventListener('input', self._typed);
-        self._answered?.disconnect();
-      }
-
 element!: &account-task
-  description: Seats the panel that adds an account over a space's bar, and says how it ended.
+  description: Asks the host to sign the person in for a space's bar, and says how it ended.
   method:
-    seat: |
-      (self, presentation) => {
-        const anchor = presentation?.anchor;
-        const seat = self.querySelector('.registration-seat');
-        if (!anchor || !seat) return;
-        seat.style.setProperty('--anchor-left', `${anchor.left}px`);
-        seat.style.setProperty('--anchor-width', `${anchor.width}px`);
-        seat.style.setProperty('--anchor-top', `${anchor.top}px`);
-        seat.style.setProperty('--anchor-bottom', `${window.innerHeight - anchor.bottom}px`);
-        seat.toggleAttribute('data-up', presentation.vertical === 'bottom');
-      }
     linked: |
       (self) => {
         const state = self.querySelector('[data-account-link]')?.getAttribute('data-state');
         return !!state && state !== 'empty' && state !== 'no-entity' && state !== 'no-model';
       }
     open: |
-      (self) => !!self.querySelector('.registration-seat tonk-display:not([data-state="empty"])')
+      (self) => !!self.querySelector('[data-signing-in]:not([data-state="empty"])')
+    # The host's page runs the sign-in, over whatever is on screen, so a
+    # task has nothing here to seat, hide or show.
     task: |
       (self, detail) => {
         if (detail.action === 'open') {
           self._task = detail.requestId;
           self._shown = false;
-          self.seat(detail.presentation);
           // Once the display around the trigger listens: an event raised
           // before that has nobody to hear it.
-          const trigger = self.querySelector('[data-open-registration]');
+          const trigger = self.querySelector('[data-sign-in]');
           const display = trigger?.closest('tonk-display');
-          const ask = () => trigger?.dispatchEvent(new Event('tonk-open-registration', { bubbles: true }));
+          const ask = () => trigger?.dispatchEvent(new Event('tonk-sign-in', { bubbles: true }));
           if (!display || display.hasAttribute('data-bound')) {
             ask();
           } else {
@@ -6106,23 +5677,13 @@ element!: &account-task
             });
             bound.observe(display, { attributes: true, attributeFilter: ['data-bound'] });
           }
-        } else if (detail.requestId !== self._task) {
-          return;
-        } else if (detail.action === 'reseat') {
-          self.seat(detail.presentation);
-        } else if (detail.action === 'suspend') {
-          self.querySelector('.registration-seat')?.setAttribute('hidden', '');
-        } else if (detail.action === 'show') {
-          self.querySelector('.registration-seat')?.removeAttribute('hidden');
-        } else if (detail.action === 'dismiss') {
+        } else if (detail.requestId === self._task && detail.action === 'dismiss') {
           self._task = null;
-          self.querySelector('[data-leave-registration]')?.dispatchEvent(new Event('tonk-leave-registration', { bubbles: true }));
         }
       }
-    # The panel shows a stage until the worker records none: then the task
-    # is over, and an account linked meanwhile is what it was for. One stage
-    # gives way to the next across two displays, so the panel is taken for
-    # gone only once the displays have settled with none showing.
+    # The sign-in is under way until the host merges the persona or says
+    # the person did not sign in: then the task is over, and an account
+    # linked meanwhile is what it was for.
     watch: |
       (self) => {
         if (!self._task) return;
@@ -6439,13 +6000,6 @@ element!: &account-settings
         const deliverable = target.protocol === 'https:' && !!target.hostname
           && !target.username && !target.password && !target.hash;
         return deliverable ? target.origin : null;
-      }
-    # A bare `via` on the location, naming no Tonk: asking which one to sign
-    # in through.
-    via-ask: |
-      (self) => {
-        const params = new URLSearchParams(self.context().search);
-        return params.has('via') && !(params.get('via') ?? '').trim();
       }
     # This browser asking another deployment to sign it in, the browser's
     # `tonk account login --via`: `/settings/link?via=<origin>` asks, and
@@ -6844,9 +6398,9 @@ element!: &account-settings
       (self) => !!document.querySelector('[data-account-linked], [data-account-name]')
     unlinked: |
       (self) => !self.linked() && document.querySelector('[data-account-link]')?.dataset.state === 'empty'
-    # The panel is up: the flag is an attribute so a re-render keeps it.
+    # A sign-in is asked for: the flag is an attribute so a re-render keeps it.
     unlink: |
-      (self) => { self._shown = null; self._linking = null; self._staged = false; self.setAttribute('data-linking', 'false'); }
+      (self) => { self._shown = null; self._staged = false; self.setAttribute('data-linking', 'false'); }
     # The link state the account page's rows are keyed on, and the door:
     # the account page or the settings page with no account opens the
     # panel that adds one once the link display has resolved empty.
@@ -6875,33 +6429,18 @@ element!: &account-settings
         }
         if (changed && linked === 'true' && path === '/settings') self.connectionsRefresh();
         // Signing in through another deployment needs no passkey here, so
-        // its page raises no ceremony of its own. A bare `?via` (Option on
-        // "add an account") raises the one that asks which Tonk to go
-        // through, in place of the email. One already up for the other
-        // gives way: a ceremony suspended on a route change must not come
-        // back as the face this visit did not ask for.
-        if (account && self.unlinked() && !self.viaRequest()) {
-          const via = self.viaAsk();
-          if (!linking || (self._linking === 'sign-in-via') !== via) {
-            if (via) self.openSignInVia();
-            else self.openRegistration();
-          }
-        }
-        // A stage the worker still holds from another visit would show
-        // wherever this page loads. Off the account page nothing here
-        // asked for it, so its seat is not shown there. Not a command: one
-        // could land after the person opens the panel, and close it.
-        document.querySelector('.registration-seat')?.toggleAttribute('hidden', !account && !linking);
-        // Leaving the account page puts the panel away.
+        // its page asks the host for no sign-in.
+        if (account && self.unlinked() && !self.viaRequest() && !linking) self.signIn();
+        // Leaving the account page lets the sign-in go on in the host,
+        // with nothing here waiting on it.
         const shown = account ? 'show' : 'suspend';
         if (linking && self._shown !== shown) {
           self._shown = shown;
-          if (shown === 'suspend') self.leaveRegistration();
+          if (shown === 'suspend') self.unlink();
         }
-        // The panel went away on the account page, however it ended: back
-        // to the spaces, or it would only open again. One stage gives way to
-        // the next across two displays, so it is taken for gone once they
-        // have settled with none showing.
+        // The sign-in ended on the account page, however it ended: back to
+        // the spaces, or it would only be asked for again. It is taken for
+        // over once the flag has settled with none showing.
         if (!linking) return;
         if (self.staged()) { self._staged = true; clearTimeout(self._unstaged); self._unstaged = null; return; }
         if (!self._staged || self._unstaged) return;
@@ -6931,27 +6470,14 @@ element!: &account-settings
         bound.observe(display, { attributes: true, attributeFilter: ['data-bound'] });
       }
     staged: |
-      (self) => !!document.querySelector('.registration-seat tonk-display:not([data-state="empty"])')
-    # The panel that adds an account is views of the worker's stages: open
-    # it by command, once per visit to the account page.
-    open-registration: |
+      (self) => !!document.querySelector('[data-signing-in]:not([data-state="empty"])')
+    # Signing in is the host's: ask for it by command, once per visit to
+    # the account page.
+    sign-in: |
       (self) => {
         self.setAttribute('data-linking', 'true');
         self._shown = 'show';
-        self._linking = 'needs-account';
-        self.fire('[data-open-registration]', 'tonk-open-registration');
-      }
-    open-sign-in-via: |
-      (self) => {
-        self.setAttribute('data-linking', 'true');
-        self._shown = 'show';
-        self._linking = 'sign-in-via';
-        self.fire('[data-open-sign-in-via]', 'tonk-open-sign-in-via');
-      }
-    leave-registration: |
-      (self) => {
-        self.unlink();
-        self.fire('[data-leave-registration]', 'tonk-leave-registration');
+        self.fire('[data-sign-in]', 'tonk-sign-in');
       }
     connected: |
       (self) => {

@@ -2124,19 +2124,12 @@ async fn run_invite(
             // Whether to issue a link or get an account first is the
             // worker's call, not the caller's. A share that needs an
             // account is not a failure the control should interpret
-            // and repair: it is this handler's next step, so it opens
-            // the panel that adds an account, and the share resumes
-            // when the account facts land.
+            // and repair: it is this handler's next step, so it asks the
+            // host to sign the person in, and the share resumes when the
+            // account facts land.
             if reason.code() == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT {
-                super::registration::opened(env.client());
                 let tonk = env.state().read().await;
-                super::registration::record(
-                    &tonk,
-                    Some(super::registration::Stage::Address {
-                        email: String::new(),
-                    }),
-                )
-                .await;
+                super::registration::sign_in(&tonk, env.client()).await;
             }
 
             // `not-synced` is not a refusal either: the account has a

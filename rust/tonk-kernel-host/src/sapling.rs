@@ -55,7 +55,7 @@ pub struct KernelHost {
     pub(crate) replicas: Vec<Replica>,
     /// What takes the address a provisional persona asks to merge into, as
     /// it asks.
-    pub merges: Option<UnboundedSender<String>>,
+    pub merges: Option<UnboundedSender<()>>,
     /// What takes each authorization a permanent persona asks for, as it
     /// asks: the reason to show the person, and the context to pass back.
     pub authorizations: Option<UnboundedSender<(String, Vec<u8>)>>,

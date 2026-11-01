@@ -60,8 +60,8 @@ interface lifecycle {
   init: async func(boot: boot) -> result<_, error>;
   /// One or more watched cells of peers changed.
   sync: async func(changes: list<cell-change>) -> result<_, error>;
-  /// The person signed in, after `provisional-persona.merge`: `provisional`
-  /// merges into `permanent`. The guest kernel moves what it holds for the
+  /// The person signed in, after `provisional-persona.merge` or through the
+  /// embedder on their own: `provisional` merges into `permanent`. The guest kernel moves what it holds for the
   /// provisional persona to the permanent one, and has the permanent one
   /// delegate to its representative. Both keys are gone when this returns.
   merge: async func(provisional: borrow<persona-authority>, permanent: borrow<persona-authority>)

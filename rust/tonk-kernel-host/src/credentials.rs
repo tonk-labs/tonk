@@ -828,11 +828,11 @@ impl credential::HostProvisionalPersona for KernelHost {
         self.persona_of(persona.rep()).did
     }
 
-    fn merge(&mut self, _persona: Resource<ProvisionalPersona>, id: String) {
+    fn merge(&mut self, _persona: Resource<ProvisionalPersona>) {
         let taken = self
             .merges
             .as_ref()
-            .is_some_and(|merges| merges.unbounded_send(id).is_ok());
+            .is_some_and(|merges| merges.unbounded_send(()).is_ok());
         if !taken {
             crate::platform::log("kernel", "a merge was asked for, and no one takes it", true);
         }

@@ -49,11 +49,13 @@ impl Kind {
 }
 
 /// What a sign-in was asked for: the ceremony, the address the person signs
-/// in as, what this device is called, and where the account syncs.
+/// in as, what to call an account it creates, what this device is called,
+/// and where the account syncs.
 #[derive(Clone)]
 pub struct Asked {
     pub kind: Kind,
     pub email: String,
+    pub name: Option<String>,
     pub device_name: String,
     pub remote: String,
 }
@@ -63,6 +65,7 @@ pub struct Asked {
 struct Signing {
     kind: Kind,
     email: String,
+    name: Option<String>,
     device_name: String,
     remote: String,
     custodian: Custodian,
@@ -246,6 +249,7 @@ impl SignIn {
         let Asked {
             kind,
             email,
+            name,
             device_name,
             remote,
         } = asked;
@@ -256,6 +260,7 @@ impl SignIn {
         *self.signing.borrow_mut() = Some(Signing {
             kind,
             email,
+            name,
             device_name,
             remote,
             custodian,
@@ -302,6 +307,8 @@ impl SignIn {
         });
         let answer = json!({
             "kind": kind.name(),
+            "email": signing.email,
+            "name": signing.name,
             "credentialId": custodian.credential_id().map(hex::encode).unwrap_or_default(),
             "remote": signing.remote,
             "encryptionKey": account.secret().did().to_string(),

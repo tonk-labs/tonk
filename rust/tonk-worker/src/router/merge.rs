@@ -1,9 +1,9 @@
 //! Signing in, on a kernel: the provisional persona merges into the
 //! permanent persona the person signs in as.
 //!
-//! The panel's `CreateAccount` or `LogIn` asks the provisional persona to
-//! merge into the persona its address names. The embedder runs the passkey
-//! ceremony, and creates or opens the account with it, then lends this
+//! `account/sign-in` asks the provisional persona to merge. The embedder
+//! asks the person who they are, runs the passkey ceremony, and creates or
+//! opens the account with it, then lends this
 //! worker both personas' keys for one call of `lifecycle.merge`. In that
 //! call the permanent persona delegates to the representative, which links
 //! this device to the account; the embedder says what the ceremony made of
@@ -12,7 +12,6 @@
 //! recorded it.
 
 use std::rc::Rc;
-use std::sync::{Mutex, PoisonError};
 
 use dialog_repository::{Repository, secrets};
 use dialog_ucan_core::DelegationChain;
@@ -37,27 +36,13 @@ use crate::router::AppState;
 use crate::worker::TonkState;
 use crate::{TonkWorkerError, detach};
 
-/// What the panel asked to sign in to, while the embedder runs the
-/// ceremony.
-struct Pending {
-    address: String,
-    name: Option<String>,
-}
-
-static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
-
-/// Ask the provisional persona to merge into the persona `address` names,
-/// for the ceremony `kind`, naming a new account `name`. An error, for the
-/// person, when this worker cannot.
-pub(crate) fn ask(kind: &str, address: &str, name: Option<String>) -> Result<(), String> {
+/// Ask the provisional persona to merge into the persona the person signs
+/// in as. An error, for the person, when this worker cannot.
+pub(crate) fn ask() -> Result<(), String> {
     match session::persona() {
         Some(Persona::Provisional(persona)) => {
-            log!("merge: asking to {kind} as {address}");
-            *PENDING.lock().unwrap_or_else(PoisonError::into_inner) = Some(Pending {
-                address: address.to_owned(),
-                name,
-            });
-            persona.merge(address);
+            log!("merge: asking the host to sign the person in");
+            persona.merge();
             Ok(())
         }
         Some(Persona::Permanent(_)) => Err("This profile is signed in already.".to_owned()),
@@ -72,6 +57,12 @@ struct Ceremony {
     /// `create` for an account the ceremony created, `log-in` for one it
     /// opened.
     kind: String,
+    /// The address the person signed in as.
+    #[serde(default)]
+    email: String,
+    /// What the person called an account the ceremony created.
+    #[serde(default)]
+    name: Option<String>,
     /// The passkey's credential, in hex.
     credential_id: String,
     /// Where the account syncs.
@@ -96,10 +87,6 @@ pub async fn merged(
     provisional: &PersonaAuthority,
     permanent: &PersonaAuthority,
 ) -> Result<(), TonkWorkerError> {
-    let pending = PENDING
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take();
     let unavailable = |error| TonkWorkerError::Internal(format!("the embedder: {error:?}"));
     let answer = application::ceremony(&link).await.map_err(unavailable)?;
     let ceremony: Ceremony = serde_json::from_str(&answer.body).map_err(|error| {
@@ -112,10 +99,7 @@ pub async fn merged(
         .issuer()
         .clone();
     let delegation_hex = hex::encode(&link);
-    let address = pending
-        .as_ref()
-        .map(|pending| pending.address.clone())
-        .unwrap_or_default();
+    let address = ceremony.email.clone();
 
     // Signing in to an account a branch of this profile already follows
     // goes back to that branch, and what was made while signed out follows.
@@ -144,7 +128,7 @@ pub async fn merged(
     )
     .await?;
     if created {
-        if let Some(name) = pending.and_then(|pending| pending.name) {
+        if let Some(name) = ceremony.name.clone().filter(|name| !name.trim().is_empty()) {
             tonk.reactor
                 .profile_repository()
                 .branch(&tonk.active_branch)
@@ -186,8 +170,9 @@ pub async fn merged(
     if let Some(signed_out) = &signed_out {
         carry_workspace(&tonk, signed_out, Custodian::Persona(permanent), &root).await;
     }
+    let served = served(&tonk).await;
+    registration::settle(&tonk, kind, Ok(served)).await;
     drop(tonk);
-    registration::settle(state, kind, Ok(())).await;
     if !created {
         let state = state.clone();
         detach(async move {
@@ -333,29 +318,39 @@ async fn carry_space(
 /// The person refused the passkey ceremony `kind` a merge asked for, as the
 /// browser names the refusal: `name`.
 pub async fn refused(state: &AppState, kind: &str, name: &str) {
-    PENDING
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take();
     let tonk = state.read().await;
-    registration::ceremony_refused(&tonk, kind, name).await;
+    registration::refused(&tonk, kind, name).await;
 }
 
 /// The sign-in the passkey ceremony `kind` began failed, saying `message`,
-/// with the custody service's `code` for a refusal it knows: the panel waits
-/// for the emailed link, or says why.
+/// with the custody service's `code` for a refusal it knows. The host says
+/// so to the person.
 pub async fn failed(state: &AppState, kind: &str, code: Option<&str>, message: &str) {
-    PENDING
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take();
     let kind = if kind == kind::CREATE {
         kind::CREATE
     } else {
         kind::LOG_IN
     };
     log!("merge: the {kind} sign-in failed: {message}");
-    registration::settle(state, kind, Err((code, message))).await;
+    let tonk = state.read().await;
+    registration::settle(&tonk, kind, Err(code)).await;
+}
+
+/// Whether the account this profile holds is served, as the service says
+/// now: right after a login the account's own facts have not synced here
+/// yet, so they cannot say.
+async fn served(tonk: &TonkState) -> bool {
+    use tonk_account::customer::CustomerStatus;
+
+    let Some(origin) =
+        super::repository::app_origin().and_then(|origin| url::Url::parse(&origin).ok())
+    else {
+        return false;
+    };
+    matches!(
+        customer::probe(tonk, &origin).await,
+        Ok(Some(CustomerStatus::Active))
+    )
 }
 
 /// Tell the embedder whom the profile acts for on the branch it is on now:

@@ -289,6 +289,16 @@
                         if (document.body) tell();
                         else document.addEventListener("DOMContentLoaded", tell);
                     };
+                    // Whether the profile is signed in to an account: its
+                    // active branch names one.
+                    function signedIn() {
+                        return fetch("/api/profiles")
+                            .then(function (answer) { return answer.json(); })
+                            .then(function (roster) {
+                                return (roster.profiles || []).some(function (entry) { return entry.active && !!entry.rootDid; });
+                            })
+                            .catch(function () { return false; });
+                    }
                     fetch("/.well-known/tonk")
                         .then(function (answer) { return answer.json(); })
                         .then(function (config) {
@@ -336,8 +346,9 @@
                 // frame around the space to open its port to this origin's
                 // worker, so it asks this frame for each one; and asks
                 // whether an address it was given names one of the person's
-                // accounts, which is switched to. Only the app is heard: a
-                // port speaks for the person's persona.
+                // accounts, which is switched to, and whether the person is
+                // signed in at all. Only the app is heard: a port speaks for
+                // the person's persona.
                 function answerApp() {
                     var worker = function () { return navigator.serviceWorker.controller; };
                     function account(did) {
@@ -352,6 +363,16 @@
                                     headers: { "content-type": "application/json" },
                                     body: JSON.stringify({ profile: entry.profileName }),
                                 }).then(function (answer) { return answer.ok; });
+                            })
+                            .catch(function () { return false; });
+                    }
+                    // Whether the profile is signed in to an account: its
+                    // active branch names one.
+                    function signedIn() {
+                        return fetch("/api/profiles")
+                            .then(function (answer) { return answer.json(); })
+                            .then(function (roster) {
+                                return (roster.profiles || []).some(function (entry) { return entry.active && !!entry.rootDid; });
                             })
                             .catch(function () { return false; });
                     }
@@ -371,6 +392,10 @@
                                 } else if (asked.__tonkOrigin === "account") {
                                     account(asked.did).then(function (found) {
                                         parent.postMessage({ __tonkOrigin: "answered", id: asked.id, account: found }, app);
+                                    });
+                                } else if (asked.__tonkOrigin === "signed-in") {
+                                    signedIn().then(function (signedIn) {
+                                        parent.postMessage({ __tonkOrigin: "answered", id: asked.id, signedIn: signedIn }, app);
                                     });
                                 }
                             });

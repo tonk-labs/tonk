@@ -140,7 +140,7 @@ pub async fn pinned(subject: String) -> Result<Option<String>, JsError> {
 /// persona's delegation to it as `link`.
 ///
 /// Each message the kernel sends its embedder goes to `message`, as bytes,
-/// each address its provisional persona asks to merge into to `merge`, and
+/// each merge its provisional persona asks for to `merge`, and
 /// each authorization its permanent persona asks for to `authorize`, as the
 /// reason to show the person and the context, bytes, to pass back.
 #[wasm_bindgen(js_name = bootPersona)]
@@ -237,8 +237,8 @@ async fn run(
     if let Some((merge, authorize)) = persona {
         let mut asked = kernel.merges();
         wasm_bindgen_futures::spawn_local(async move {
-            while let Some(address) = asked.next().await {
-                if let Err(error) = merge.call1(&JsValue::UNDEFINED, &address.into()) {
+            while asked.next().await.is_some() {
+                if let Err(error) = merge.call0(&JsValue::UNDEFINED) {
                     platform::log("kernel", &format!("a merge was not taken: {error:?}"), true);
                 }
             }
@@ -394,7 +394,8 @@ impl Embedder {
 
     /// Sign the person in with what the page derived with a passkey,
     /// `handoff` as `{ credentialId, key, kek }`, for the ceremony `kind`,
-    /// `create` or `log-in`, as `email`, from this device named
+    /// `create` or `log-in`, as `email`, naming an account it creates
+    /// `name`, from this device named
     /// `deviceName`, to an account that syncs through `remote`: the
     /// persona's provisional persona merges into the account. Resolves to
     /// `{ persona, link }`, the account's DID and its delegation to this
@@ -406,6 +407,7 @@ impl Embedder {
         handoff: JsValue,
         kind: String,
         email: String,
+        name: Option<String>,
         device_name: String,
         remote: String,
     ) -> Result<Promise, JsError> {
@@ -428,6 +430,7 @@ impl Embedder {
                     Asked {
                         kind,
                         email,
+                        name,
                         device_name,
                         remote,
                     },
