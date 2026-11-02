@@ -220,7 +220,10 @@ pub type AppState = Arc<crate::StateLock<TonkState>>;
 
 fn is_profile_scoped_path(path: &str) -> bool {
     path.starts_with("/api/")
-        && !matches!(path, "/api/identify" | "/api/health" | "/api/diagnostics")
+        && !matches!(
+            path,
+            "/api/identify" | "/api/health" | "/api/inspect/diagnostics"
+        )
 }
 
 async fn profile_context_fence(
@@ -343,7 +346,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
         .route(
-            "/api/diagnostics",
+            "/api/inspect/diagnostics",
             get(diagnostics::read).delete(diagnostics::reset),
         )
         .route(

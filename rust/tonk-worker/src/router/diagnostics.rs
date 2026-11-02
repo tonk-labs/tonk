@@ -1,4 +1,4 @@
-//! `/api/diagnostics`: the worker's own counters and durations.
+//! `/api/inspect/diagnostics`: the worker's own counters and durations.
 //!
 //! The page cannot reach the service worker's globals, so this route is how
 //! a test, a trace capture or a person reads what the worker recorded in

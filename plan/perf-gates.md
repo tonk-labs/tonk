@@ -106,7 +106,7 @@ list trace capture and the gates key on.
   `globalThis.__tonkDiagnostics` with `snapshot()` and `reset()`. Guest
   frames are separate realms, so a scenario reads each frame's registry
   (Playwright and CDP can evaluate in sealed frames). The service worker
-  answers `GET /api/diagnostics` with its snapshot and `DELETE` resets it;
+  answers `GET /api/inspect/diagnostics` with its snapshot and `DELETE` resets it;
   neither takes the state lock.
 - **Guest boots** are counted in `<tonk-site>` by cause: `mount`, `remount`
   (the same element removed and re-inserted) and `navigation` (a changed
