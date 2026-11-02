@@ -91,7 +91,34 @@ pub struct Outline {
     /// The displays this one nests, in document order.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Outline>,
+    /// For a display of every instance, the records it rendered in
+    /// place, each with a route that shows that one record through the
+    /// same facet, so it looks and acts as it does in the list. Records
+    /// a nested display already shows are left out: that display's node
+    /// is their route. At most [`ITEM_LIMIT`]; `records` says how many
+    /// there are.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<OutlineItem>,
 }
+
+/// One record a display of every instance rendered.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct OutlineItem {
+    /// The record as `entity@model!facet`, which renders it alone.
+    pub route: String,
+    /// The record's entity URI.
+    pub entity: String,
+    /// The record's scalar fields, to tell records apart. Long text is
+    /// cut short.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, serde_json::Value>,
+}
+
+/// Most records an outline node lists as items.
+pub const ITEM_LIMIT: usize = 100;
+
+/// Longest text an item field keeps, in characters.
+const FIELD_TEXT_LIMIT: usize = 120;
 
 impl Outline {
     fn new(route: &RenderRoute) -> Self {
@@ -107,6 +134,7 @@ impl Outline {
             portal: false,
             error: None,
             children: Vec::new(),
+            items: Vec::new(),
         }
     }
 }
@@ -219,12 +247,71 @@ async fn render_at_depth<B: QueryBackend>(
     let mut roots = crate::parse_fragment(&view.display);
     let bindings = crate::collect_bindings(&mut roots);
     let repeat_root = this_repeat_root(&bindings);
+    // A list repeats part of its template once per record; those are
+    // the records an outline lists. A template with no repeat renders
+    // once, so its records are not shown in place.
+    if walk.lenient && entity_uri.is_none() && repeat_root.is_some() {
+        node.items = items(route, facet, &folded);
+    }
     let plan = split_plan_with_scalars(bindings, repeat_root, &scalar_fields);
     let html = crate::render(&roots, &plan, &conclusions);
 
     // 7. Recursively render nested <tonk-display> elements before
-    //    returning.
-    expand_nested(backend, html, depth, walk, &mut node.children).await
+    //    returning. A record a nested display shows has that node as
+    //    its route, so it is not listed again as an item.
+    let html = expand_nested(backend, html, depth, walk, &mut node.children).await?;
+    let concept = node.concept.clone();
+    let children = &node.children;
+    node.items.retain(|item| {
+        !children
+            .iter()
+            .any(|child| child.entity.as_deref() == Some(&item.entity) && child.concept == concept)
+    });
+    Ok(html)
+}
+
+/// The records a display of every instance rendered, each routed to
+/// `facet` with its own entity. A record whose route would not read
+/// back as itself (an entity URI holding `@` or `!`) is left out.
+fn items(route: &RenderRoute, facet: &str, folded: &[Conclusion]) -> Vec<OutlineItem> {
+    folded
+        .iter()
+        .take(ITEM_LIMIT)
+        .filter_map(|record| {
+            let item = RenderRoute {
+                model: route.model.clone(),
+                entity: Some(record.this.clone()),
+                view: Some(facet.to_owned()),
+            };
+            let text = item.to_string();
+            (RenderRoute::parse(&text).ok()? == item).then(|| OutlineItem {
+                route: text,
+                entity: record.this.clone(),
+                fields: record
+                    .fields
+                    .iter()
+                    .filter_map(|(name, value)| Some((name.clone(), scalar(value)?)))
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
+/// A scalar field value as JSON, text cut to [`FIELD_TEXT_LIMIT`].
+fn scalar(value: &Ipld) -> Option<serde_json::Value> {
+    Some(match value {
+        Ipld::String(text) if text.chars().count() > FIELD_TEXT_LIMIT => {
+            let cut: String = text.chars().take(FIELD_TEXT_LIMIT).collect();
+            serde_json::Value::String(format!("{cut}..."))
+        }
+        Ipld::String(text) => serde_json::Value::String(text.clone()),
+        Ipld::Bool(flag) => serde_json::Value::Bool(*flag),
+        Ipld::Integer(number) => i64::try_from(*number)
+            .map(serde_json::Value::from)
+            .unwrap_or_else(|_| serde_json::Value::String(number.to_string())),
+        Ipld::Float(number) => serde_json::Number::from_f64(*number)?.into(),
+        _ => return None,
+    })
 }
 
 /// The host attributes a `<tonk-display>` would carry, as

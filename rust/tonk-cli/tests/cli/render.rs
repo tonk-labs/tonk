@@ -241,7 +241,7 @@ concept!: &todo
             r#"view!:
   this: todo
   show:
-    directory: "<ul><li>{task}</li></ul>"
+    directory: "<ul><li><label><input type=\"checkbox\"> {task}</label></li></ul>"
 "#,
         )
         .await?;
@@ -276,6 +276,77 @@ concept!: &todo
             "{html}"
         );
         assert!(!html.contains("Lisbon"), "{html}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_lists_each_record_of_a_list_with_a_route_to_it_alone() -> Result<()> {
+        let test = trip_planner().await?;
+        let tree = render::outline(&test.site, &RenderRoute::parse("lisbon@trip")?).await?;
+
+        let todo = &tree.children[0];
+        assert_eq!(todo.items.len(), 2, "{todo:#?}");
+        let flights = todo
+            .items
+            .iter()
+            .find(|item| item.fields.values().any(|v| v == "Book flights"))
+            .expect("the flights record is listed");
+        assert_eq!(flights.route, format!("{}@todo!directory", flights.entity));
+
+        // The record renders alone through the list's own template, so
+        // it keeps the same control.
+        let html = render::render(&test.site, &RenderRoute::parse(&flights.route)?).await?;
+        assert!(html.contains("Book flights"), "{html}");
+        assert!(html.contains("type=\"checkbox\""), "{html}");
+        assert!(!html.contains("Pack"), "{html}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_routes_records_through_the_facet_the_list_used() -> Result<()> {
+        let test = trip_planner().await?;
+        test.eval_inline(
+            r#"view!:
+  this: todo
+  show:
+    ui: "<label><input type=\"checkbox\"> {task}</label>"
+    directory: "<section><h2>To do</h2><tonk-display model=\"todo\" view=\"ui\"></tonk-display></section>"
+"#,
+        )
+        .await?;
+        let tree = render::outline(&test.site, &RenderRoute::parse("todo")?).await?;
+
+        // The list itself rendered no records in place.
+        assert!(tree.items.is_empty(), "{tree:#?}");
+        let rows = &tree.children[0];
+        assert_eq!(rows.view.as_deref(), Some("ui"));
+        assert_eq!(rows.items.len(), 2, "{rows:#?}");
+        for item in &rows.items {
+            assert_eq!(item.route, format!("{}@todo!ui", item.entity));
+            let html = render::render(&test.site, &RenderRoute::parse(&item.route)?).await?;
+            assert!(!html.contains("To do"), "{html}");
+            assert!(html.contains("type=\"checkbox\""), "{html}");
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_does_not_list_records_a_nested_display_already_shows() -> Result<()> {
+        let test = trip_planner().await?;
+        test.eval_inline(
+            r#"view!:
+  this: todo
+  show:
+    ui: "<label><input type=\"checkbox\"> {task}</label>"
+    directory: "<ul><li><tonk-display entity=\"{this}\" model=\"todo\"></tonk-display></li></ul>"
+"#,
+        )
+        .await?;
+        let tree = render::outline(&test.site, &RenderRoute::parse("todo")?).await?;
+
+        assert!(tree.items.is_empty(), "{tree:#?}");
+        assert_eq!(tree.children.len(), 2, "{tree:#?}");
+        assert!(tree.children.iter().all(|child| child.entity.is_some()));
         Ok(())
     }
 
