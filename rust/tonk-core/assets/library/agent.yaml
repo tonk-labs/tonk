@@ -36,7 +36,6 @@
 # They used to be three concepts (`tonk/repository`, `tonk/agent-space`,
 # `tonk/agent-provider`); an agent asking "who am I" should get one row.
 concept!: &agent
-  this: tonk:agent
   description: An agent, identified by its space's DID.
   with:
     name:
@@ -71,7 +70,6 @@ concept!: &agent
 # that seals the agent's key and delegates to it. That is a fact about
 # custody, not about a role, so it does not move if the roster does.
 concept!: &agent/principal
-  this: tonk:agent/principal
   description: The account an agent acts for and answers to.
   with:
     account:
@@ -90,7 +88,6 @@ concept!: &agent/principal
 # agent itself (`tonk:agent`). The agent being a member of its own space
 # is what lets it appear wherever members are listed or picked.
 concept!: &member
-  this: tonk:member
   description: A member of a space.
   with:
     member:
@@ -125,7 +122,6 @@ concept!: &member
 #
 # Replaces `agent/session` in `core.yaml`, which nothing ever wrote.
 concept!: &agent/peer
-  this: tonk:agent/peer
   description: One LLM host's authorization to act as this agent.
   # ENTITY: THE DELEGATION.
   with:
@@ -149,7 +145,6 @@ concept!: &agent/peer
 # Recorded the first time the writer writes, so an agent can recognise
 # its own past writes and say which session made them.
 concept!: &agent/writer
-  this: tonk:agent/writer
   description: The key one MCP session of a peer signs with.
   with:
     peer:
@@ -171,7 +166,6 @@ concept!: &agent/writer
 # issuer the account, audience the agent, subject the space); this row
 # only names the space and says where it syncs.
 concept!: &agent/grant
-  this: tonk:agent/grant
   description: A space this agent was granted.
   with:
     name:
@@ -189,7 +183,6 @@ concept!: &agent/grant
 # ENTITY: the delegation's blob hash — the entity `agent/peer` hangs its
 # fields on.
 concept!: &ucan/delegation
-  this: ucan:delegation
   description: A delegation retained on this branch.
   with:
     issuer:
@@ -231,7 +224,6 @@ concept!: &ucan/delegation
 # ENTITY: content-addressed, or whatever the author chooses; a skill is
 # not keyed by anything but itself.
 concept!: &skill
-  this: tonk:skill
   description: >
     Instructions an agent keeps. List them at the start of a
     conversation to remember how you work.
@@ -249,7 +241,6 @@ concept!: &skill
 #
 # ENTITY: the skill.
 concept!: &skill/command
-  this: tonk:skill/command
   description: A command a skill tells agents how to use.
   with:
     command:
@@ -262,7 +253,6 @@ concept!: &skill/command
 #
 # ENTITY: the skill.
 concept!: &skill/concept
-  this: tonk:skill/concept
   description: A concept a skill is about.
   with:
     concept:
