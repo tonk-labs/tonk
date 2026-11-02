@@ -3130,6 +3130,42 @@ view!:
                     </div>
                   </div>
                 </div>
+                <!-- An agent joining a space from a link pasted into a chat
+                     with it. The chat's card opens this page; the account
+                     joins the space and lets the agent in through it. -->
+                <div class="pane" data-pane="agent-join" hidden data-agent-join data-join-step="ask">
+                  <div class="agent-dlg" role="group" aria-labelledby="join-title">
+                    <div class="agent-head"><span class="agent-disc" aria-hidden="true"></span><h2 class="agent-title" id="join-title">let your agent join</h2></div>
+                    <div class="agent-step" data-join-panel="ask">
+                      <div class="agent-row"><span class="k">agent</span><span class="v" data-join-agent>…</span></div>
+                      <div class="agent-row"><span class="k">space</span><span class="v">the one in the link from your chat</span></div>
+                      <p class="agent-exp">You join this space too. The agent joins through you, as itself, under its own name.</p>
+                      <div class="agent-label">what it may do</div>
+                      <div class="agent-seg" role="radiogroup" aria-label="what it may do">
+                        <button type="button" role="radio" aria-checked="true" data-access="read">read</button>
+                        <button type="button" role="radio" aria-checked="false" data-access="write">read &amp; write</button>
+                      </div>
+                      <p class="agent-exp">Access lasts 90 days, or less if the link ends sooner. You can remove it any time under your agents.</p>
+                      <div class="agent-foot"><button class="agent-btn" type="button" data-join-cancel>cancel</button><button class="agent-btn go" type="button" data-join-go>join</button></div>
+                    </div>
+                    <div class="agent-step" data-join-panel="joining" hidden>
+                      <p class="agent-exp" role="status">Joining the space…</p>
+                    </div>
+                    <div class="agent-step" data-join-panel="passkey" hidden>
+                      <p class="agent-exp"><strong>Use your passkey to let it in.</strong> Your browser will ask for it now.</p>
+                    </div>
+                    <div class="agent-step" data-join-panel="working" hidden>
+                      <p class="agent-exp" role="status">Letting the agent in. Keep this page open.</p>
+                    </div>
+                    <div class="agent-step" data-join-panel="done" hidden>
+                      <p class="agent-exp" data-join-done role="status"></p>
+                    </div>
+                    <div class="agent-step" data-join-panel="error" hidden>
+                      <p class="agent-exp" data-join-error role="alert"></p>
+                      <div class="agent-foot"><button class="agent-btn" type="button" data-join-cancel>close</button><button class="agent-btn go" type="button" data-join-back>back</button></div>
+                    </div>
+                  </div>
+                </div>
                 <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
                 <tonk-display model="state:ceremony" entity="state:ceremony" view="settings">
                   <span slot="no-entity" hidden></span>
@@ -5782,6 +5818,96 @@ element!: &account-settings
       (self, error) => {
         try { return JSON.parse(error.message)?.error?.message ?? error.message; } catch { return error.message; }
       }
+    # An agent joining a space from a link pasted into a chat with it: the
+    # chat's card opens `/settings/agent-join#agent=<key>&link=<link>`. The
+    # link is in the fragment, so no server is sent it.
+    agent-join-request: |
+      (self) => {
+        const at = self.context();
+        if (at.path !== '/settings/agent-join') return null;
+        const fields = new URLSearchParams((at.hash ?? '').replace(/^#/, ''));
+        const agent = fields.get('agent');
+        const link = fields.get('link');
+        return agent && link ? { agent, link } : null;
+      }
+    agent-join-step: |
+      (self, step) => {
+        const pane = self.querySelector('[data-agent-join]');
+        if (!pane) return;
+        if (pane.dataset.joinStep !== step) pane.dataset.joinStep = step;
+        for (const panel of pane.querySelectorAll('[data-join-panel]')) panel.hidden = panel.dataset.joinPanel !== step;
+        for (const button of pane.querySelectorAll('button')) button.disabled = step !== 'ask' && step !== 'error';
+      }
+    agent-join-error: |
+      (self, text) => {
+        self._joinAsked = false;
+        self.text('[data-join-error]', text);
+        self.agentJoinStep('error');
+      }
+    # Show the pane; once this browser has an account, name the agent,
+    # once per link.
+    agent-join-show: |
+      (self) => {
+        if (self.context().path !== '/settings/agent-join') return false;
+        self.pane('agent-join');
+        const request = self.agentJoinRequest();
+        if (!request) {
+          self.agentJoinError('This page needs the link from your chat. Open it again from the card there.');
+          return true;
+        }
+        const shown = `${request.agent} ${request.link}`;
+        if (!self.linked() || self._joinShown === shown) return true;
+        self._joinShown = shown;
+        self.agentJoinStep('ask');
+        self.api('/api/agents').then((agents) => {
+          const agent = (agents ?? []).find((each) => each.key === request.agent);
+          if (!agent) {
+            self.agentJoinError("That agent is not this account's. Sign in to the account that connected it, then open the link from the chat again.");
+            return;
+          }
+          self._joinAgent = agent.name || 'your agent';
+          self.text('[data-join-agent]', self._joinAgent);
+        }).catch((error) => self.agentJoinError(self.agentReason(error)));
+        return true;
+      }
+    # Join: the worker claims the link for the account, then asks this
+    # page's top document for the passkey, which signs the agent's grant.
+    # The ceremony row reports how that goes.
+    agent-join-go: |
+      (self) => {
+        const request = self.agentJoinRequest();
+        if (!request) return;
+        const chosen = self.querySelector('[data-agent-join] .agent-seg [aria-checked="true"]');
+        const access = chosen?.dataset.access === 'write' ? 'write' : 'read';
+        self._joinAsked = true;
+        self._joinSpace = null;
+        self._joinAccess = access;
+        self.agentJoinStep('joining');
+        self.api(`/api/agents/${encodeURIComponent(request.agent)}/join`, { link: request.link, access })
+          .then((answer) => {
+            self._joinSpace = answer?.space ?? null;
+            if (self.querySelector('[data-agent-join]')?.dataset.joinStep === 'joining') self.agentJoinStep('passkey');
+          })
+          .catch((error) => self.agentJoinError(self.agentReason(error)));
+      }
+    # The ceremony row's word on the join. The row is the account's, so it
+    # may still say how an earlier one ended: done counts only when it
+    # names the space this page joined.
+    agent-join-ceremony: |
+      (self, state, detail) => {
+        if (!self._joinAsked) return;
+        if (state === 'working') self.agentJoinStep('working');
+        else if (state === 'done') {
+          if (!self._joinSpace || detail !== self._joinSpace) return;
+          self._joinAsked = false;
+          const words = self._joinAccess === 'write' ? 'read and change' : 'read';
+          self.text('[data-join-done]', `${self._joinAgent ?? 'Your agent'} can now ${words} the space. Go back to the chat: the agent sees it there.`);
+          self.agentJoinStep('done');
+        } else if (state === 'refused') {
+          self._joinAsked = false;
+          self.agentJoinStep('ask');
+        } else if (state === 'failed') self.agentJoinError(`Letting the agent in did not finish: ${detail}`);
+      }
     # Show the pane; once this browser has an account, read the request
     # and the spaces it could reach, once per request.
     agent-show: |
@@ -6027,6 +6153,7 @@ element!: &account-settings
         if (self.localLinkShow()) return;
         if (self.viaShow()) return;
         if (self.agentShow()) return;
+        if (self.agentJoinShow()) return;
         const request = self.linkRequest();
         if (!request) {
           self.pane('account');
@@ -6223,6 +6350,7 @@ element!: &account-settings
           'add-passkey': 'Adding the passkey',
           'sign-in-via': 'Signing in',
           'authorize-agent': 'Approving the agent',
+          'grant-agent': 'Letting the agent in',
         }[which];
         if (!subject) return;
         const done = {
@@ -6249,6 +6377,7 @@ element!: &account-settings
         }
         // The agent dialog shows its own steps rather than the status line.
         if (which === 'authorize-agent') { self.agentCeremony(state, detail); self.status(''); return; }
+        if (which === 'grant-agent') { self.agentJoinCeremony(state, detail); self.status(''); return; }
         self.status(text);
       }
     # Declining hands the requester a deny on its own callback. The same
@@ -6332,6 +6461,7 @@ element!: &account-settings
         }
         if (changed && linked === 'true' && path === '/settings') self.connectionsRefresh();
         if (changed && linked === 'true' && path === '/settings/agent') self.agentShow();
+        if (changed && linked === 'true' && path === '/settings/agent-join') self.agentJoinShow();
         // Signing in through another deployment needs no passkey here, so
         // its page raises no ceremony of its own. A bare `?via` (Option on
         // "add an account") raises the one that asks which Tonk to go
@@ -6391,6 +6521,12 @@ element!: &account-settings
           } else if (hit('[data-agent-back]')) {
             self.agentStep('agent');
           } else if (hit('[data-agent-close]')) {
+            window.tonk?.navigate?.('/');
+          } else if (hit('[data-join-go]')) {
+            self.agentJoinGo();
+          } else if (hit('[data-join-back]')) {
+            self.agentJoinStep('ask');
+          } else if (hit('[data-join-cancel]')) {
             window.tonk?.navigate?.('/');
           } else if (hit('.agent-opt')) {
             self.agentPick(event.target.closest('.agent-opt'));

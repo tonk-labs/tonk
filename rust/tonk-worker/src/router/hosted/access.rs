@@ -369,6 +369,7 @@ pub async fn adopt_agent_access(
 }
 
 /// One granted space's directory entry in the agent space.
+#[cfg(test)]
 #[derive(Debug)]
 pub(crate) struct DirectoryEntry {
     pub space: Did,
@@ -382,6 +383,7 @@ pub(crate) struct DirectoryEntry {
 /// retains `space -> account`, and record each entry of `directory` as
 /// [`tonk_schema::SpaceName`] and [`tonk_schema::SpaceHomeAddress`] on
 /// the space's entity. The caller pushes.
+#[cfg(test)]
 pub(crate) async fn retain_agent_grants(
     tonk: &TonkState,
     agent: &Did,

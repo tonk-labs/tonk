@@ -114,6 +114,7 @@ pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 pub(crate) mod agent_connections;
 mod agent_session;
 mod agents;
+mod join_for_agent;
 mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
@@ -435,6 +436,9 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // The account's agents and what each can reach, for the hub.
         .route("/api/agents", get(agents::list))
         .route("/api/agents/{key}/revoke", post(agents::revoke))
+        // An agent joins a space from a link: the account claims it and
+        // signs the agent's grant behind the passkey.
+        .route("/api/agents/{key}/join", post(join_for_agent::join))
         .route(
             "/api/account/connections/{id}/revoke",
             post(agent_connections::revoke),

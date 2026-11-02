@@ -1,46 +1,48 @@
 //! Joining a space from the chat: the agent reads an invite link the
-//! person pasted, and the person lets it join, with the access they
-//! choose, in a card the host shows inline (MCP Apps).
+//! person pasted, and the person lets it in from Tonk, through them.
 //!
 //! - `tonk_join_space` (the model's) reads the link and changes nothing.
-//!   Its result renders the join card.
-//! - `tonk_join_accept` (the card's, app-only) joins: the link's key
-//!   delegates to the agent space only the scopes of the chosen access,
-//!   and the agent space's writer retains the chains and a directory
-//!   entry for the space, as the approval page does.
+//!   Its result renders the join card, which carries the Tonk page that
+//!   joins (`/settings/agent-join`, the link in its fragment).
+//! - On that page the person's account claims the link, as any join
+//!   does, and signs the agent's grant with its own key behind the
+//!   passkey (`router::join_for_agent`). The grant runs
+//!   `space -> ... -> link key -> account -> agent space`, so the person
+//!   can revoke it, and an admin who removes the person removes it too.
+//! - `tonk_join_status` (the card's, app-only) asks the agent space
+//!   whether the grant has arrived, so the card can tell the model.
 //!
-//! The access holds because access is what the retained chains prove: a
-//! read-only join holds only `/use/get/...` leaves, so the access service
-//! refuses a write whatever the model asks for. The model cannot choose
-//! the access itself, since the host does not offer it an app-only tool.
-//! A host that ignored that could still never exceed what the link
-//! allows, which is what any holder of the link may do.
+//! Only the person's browser holds their keys, which is why the join
+//! leaves the chat: the card runs on the host's origin and can reach
+//! neither the account's key nor its passkey.
 
 use axum::body::Body;
 use axum::http::{Method, Request, header};
 use dialog_ucan_core::time::Timestamp;
-use dialog_ucan_core::{Container, DelegationChain, Tag};
 use dialog_varsig::Did;
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
-use tonk_invite::connection::{AgentAccess as Level, DEFAULT_GRANT_TTL_SECONDS};
-use tonk_invite::{Invite, InviteAudience};
+use tonk_invite::Invite;
+use tonk_schema::prelude::DidExt as _;
 
-use super::access::{DirectoryEntry, reaches};
+use super::access::reaches;
 use super::mcp::{ACCESS_ROUTE, AgentAccess, Verified, Writers};
 
 /// The model-visible tool that reads an invite link and shows the card.
 pub const JOIN: &str = "tonk_join_space";
 
-/// The app-only tool the card joins with.
-pub const ACCEPT: &str = "tonk_join_accept";
+/// The app-only tool the card asks with whether the agent has joined.
+pub const STATUS: &str = "tonk_join_status";
+
+/// The Tonk page that joins: the account claims the link and lets the
+/// agent in. Its fragment carries the agent space's key and the link.
+pub const JOIN_PAGE: &str = "/settings/agent-join";
 
 /// The join card's resource.
 pub const CARD_URI: &str = "ui://tonk/join-v1.html";
 
-/// The agent space writer's route that reads a link, and joins with it
-/// when asked (`POST`, a [`LinkRequest`] as JSON, answered with a
-/// [`LinkAnswer`]).
+/// The agent space writer's route that reads a link (`POST`, a
+/// [`LinkRequest`] as JSON, answered with a [`LinkAnswer`]).
 pub const LINK_ROUTE: &str = "/api/access/link";
 
 /// The MIME type MCP Apps hosts render.
@@ -55,7 +57,6 @@ const MAX_LINK: usize = 4096;
 /// What a link offers the agent: the space, and whether it may write.
 #[derive(Debug)]
 pub struct Offer {
-    invite: Invite,
     /// The space the link opens.
     pub subject: Did,
     /// The space's name, as the invitation records it.
@@ -69,19 +70,14 @@ pub struct Offer {
 impl Offer {
     /// Read a parsed `invite` as what it offers an agent.
     ///
+    /// An invite addressed to one person is offered too: the person
+    /// claims it in Tonk, and Tonk refuses it there if it is not theirs.
+    ///
     /// # Errors
     ///
-    /// When the invite is addressed to someone else (only an open invite
-    /// can be redelegated to the agent), names no place to sync, has run
-    /// out, or grants not even reading.
+    /// When the invite names no place to sync, has run out, or grants not
+    /// even reading.
     pub fn of(invite: Invite) -> Result<Self, String> {
-        if !matches!(invite.audience, InviteAudience::Open { .. }) {
-            return Err(
-                "This invitation is addressed to one person, so an agent cannot join with it. \
-                 Ask for a share link instead."
-                    .into(),
-            );
-        }
         let chain = &invite.chain;
         let now = Timestamp::now().to_unix();
         if chain.expiration().is_some_and(|at| at.to_unix() <= now) {
@@ -107,54 +103,7 @@ impl Offer {
             name: invite.space_name.clone(),
             write: allows("put"),
             remote,
-            invite,
         })
-    }
-
-    /// The chains that let `agent` reach the space with `access`: the
-    /// link's key delegates each scope of `access` to `agent`, expiring
-    /// when the link does or after 90 days, whichever is first.
-    ///
-    /// # Errors
-    ///
-    /// When `access` asks to write and the link allows only reading, or a
-    /// delegation does not build.
-    pub async fn grant(
-        &self,
-        agent: &Did,
-        access: Level,
-        now: Timestamp,
-    ) -> Result<Vec<DelegationChain>, String> {
-        if access == Level::ReadWrite && !self.write {
-            return Err("This invitation lets an agent read the space, not change it.".into());
-        }
-        let signer = self
-            .invite
-            .signer()
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "This invitation cannot be passed on to an agent.".to_owned())?;
-        let scopes = tonk_invite::connection::agent_grant_scopes(&self.subject, access);
-        let lifetime = now.to_unix() + DEFAULT_GRANT_TTL_SECONDS;
-        let until = self
-            .invite
-            .chain
-            .expiration()
-            .map_or(lifetime, |at| at.to_unix().min(lifetime));
-        let expires = Timestamp::try_from(i128::from(until)).map_err(|error| error.to_string())?;
-        let ancestors = vec![self.invite.chain.clone(); scopes.len()];
-        let bundle = super::super::agent_connections::issue_to_recipient(
-            agent,
-            signer.into(),
-            ancestors,
-            &scopes,
-            &self.remote,
-            now,
-            expires,
-        )
-        .await
-        .map_err(|error| format!("The invitation could not be passed on: {error}"))?;
-        Ok(bundle.chains().to_vec())
     }
 }
 
@@ -228,83 +177,6 @@ async fn landing(url: &str) -> Option<String> {
     Some(response.url())
 }
 
-/// What a join keeps in the agent space.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct GrantBody {
-    /// The space.
-    pub space: String,
-    /// Its name, for the agent space's directory.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    /// Where it syncs.
-    pub address: String,
-    /// Each chain `space -> ... -> agent space`, a base64url container.
-    pub chains: Vec<String>,
-}
-
-impl GrantBody {
-    /// The body for `chains` that reach the space `offer` names.
-    pub fn new(offer: &Offer, chains: &[DelegationChain]) -> Result<Self, String> {
-        let chains = chains
-            .iter()
-            .map(|chain| {
-                let bytes = Container::from(chain)
-                    .encode(Tag::Base64Url)
-                    .map_err(|error| error.to_string())?;
-                String::from_utf8(bytes).map_err(|error| error.to_string())
-            })
-            .collect::<Result<_, _>>()?;
-        Ok(Self {
-            space: offer.subject.to_string(),
-            name: offer.name.clone(),
-            address: offer.remote.to_string(),
-            chains,
-        })
-    }
-
-    /// The chains and directory entry, checked: every chain reaches
-    /// `agent`, and grants the space named and no other.
-    ///
-    /// # Errors
-    ///
-    /// When a chain does not decode, is addressed elsewhere, or grants
-    /// another space or the agent space itself.
-    pub(crate) fn open(
-        &self,
-        agent: &Did,
-    ) -> Result<(Vec<DelegationChain>, DirectoryEntry), String> {
-        let space: Did = self
-            .space
-            .parse()
-            .map_err(|_| "the space is not a DID".to_owned())?;
-        if &space == agent {
-            return Err("the agent space is not granted to itself".into());
-        }
-        if self.chains.is_empty() {
-            return Err("no grants".into());
-        }
-        let mut chains = Vec::new();
-        for encoded in &self.chains {
-            let container = Container::decode(encoded.as_bytes())
-                .map_err(|error| format!("a grant does not decode: {error}"))?;
-            let chain = DelegationChain::try_from(container)
-                .map_err(|error| format!("a grant is not a chain: {error}"))?;
-            if chain.audience() != agent || chain.subject() != Some(&space) {
-                return Err("a grant is not this space's to the agent".into());
-            }
-            chains.push(chain);
-        }
-        Ok((
-            chains,
-            DirectoryEntry {
-                space,
-                name: self.name.clone(),
-                address: Some(self.address.clone()),
-            },
-        ))
-    }
-}
-
 /// Tools appended to `tools/list`.
 pub fn tools() -> Vec<Value> {
     let link = json!({
@@ -318,11 +190,12 @@ pub fn tools() -> Vec<Value> {
             "name": JOIN,
             "title": "Join a Tonk space",
             "description": "Ask the person to let you join a Tonk space from an invite link \
-                they gave you. Shows a card in the chat where they choose your access (read, \
-                or read and write) and join; you are the one who joins, as this connection's \
-                agent, not as them. This call joins nothing. When they join, the card tells \
-                you, and the space is in tonk_list_spaces. If the host shows no card, ask \
-                the person to grant you the space in Tonk instead.",
+                they gave you. Shows a card in the chat that opens Tonk, where the person \
+                joins the space and lets you in through them, with the access they choose \
+                (read, or read and write). You join as this connection's agent, not as them. \
+                This call joins nothing. When they are done, the card tells you, and the \
+                space is in tonk_list_spaces. If the host shows no card, give the person \
+                the join page in this result's structured content (open).",
             "inputSchema": {
                 "type": "object",
                 "properties": { "link": link },
@@ -337,23 +210,31 @@ pub fn tools() -> Vec<Value> {
             },
         }),
         json!({
-            "name": ACCEPT,
-            "description": "Join the space with the access the person chose. Called by the card.",
+            "name": STATUS,
+            "description": "Whether the agent has joined a space yet. Called by the card.",
             "inputSchema": {
                 "type": "object",
-                "properties": {
-                    "link": link,
-                    "access": { "type": "string", "enum": ["read", "write"] },
-                },
-                "required": ["link", "access"],
+                "properties": { "space": { "type": "string", "maxLength": 256 } },
+                "required": ["space"],
                 "additionalProperties": false,
             },
+            "annotations": { "readOnlyHint": true },
             "_meta": {
                 "ui": { "visibility": ["app"] },
                 "openai/visibility": "private",
             },
         }),
     ]
+}
+
+/// The Tonk page at `origin` where the person lets `agent` in with
+/// `link`. The link stays in the fragment, which no server is sent.
+pub fn join_page(origin: &str, agent: &Did, link: &str) -> String {
+    let fragment = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("agent", agent.repo_key())
+        .append_pair("link", link.trim())
+        .finish();
+    format!("{}{JOIN_PAGE}#{fragment}", origin.trim_end_matches('/'))
 }
 
 /// Resources served by `resources/list`.
@@ -387,10 +268,11 @@ pub fn read_resource(uri: &str) -> Option<Value> {
 
 /// The result of the join tool `name`, or `None` when it is not one.
 ///
-/// The link is read, and joined, by the agent space's own writer
-/// ([`LINK_ROUTE`]): it reaches the access service the way every write
-/// does, which a front serving a request the access service forwarded
-/// cannot (its claim answered `404`).
+/// The link is read by the agent space's own writer ([`LINK_ROUTE`]): it
+/// reaches the access service the way every write does, which a front
+/// serving a request the access service forwarded cannot (its claim
+/// answered `404`).
+#[allow(clippy::too_many_arguments)]
 pub async fn call<W: Writers>(
     name: &str,
     arguments: &Value,
@@ -398,26 +280,43 @@ pub async fn call<W: Writers>(
     writers: &W,
     bearer: &str,
     mcp_session: &str,
+    origin: &str,
 ) -> Option<Value> {
-    if name != JOIN && name != ACCEPT {
+    if name != JOIN && name != STATUS {
         return None;
+    }
+    let agent = verified.agent().clone();
+    let ask = |request: Request<Body>| writers.call(verified, bearer, mcp_session, &agent, request);
+    let held = || async { answer::<AgentAccess>(ask(get(ACCESS_ROUTE)).await).await };
+    if name == STATUS {
+        let Some(space) = arguments["space"]
+            .as_str()
+            .and_then(|space| space.parse::<Did>().ok())
+        else {
+            return Some(error("Name the space as space."));
+        };
+        let held = match held().await {
+            Ok(access) => access,
+            Err(message) => return Some(error(&message)),
+        };
+        let joined = joined(&held, &space);
+        return Some(json!({
+            "content": [{
+                "type": "text",
+                "text": match joined {
+                    Some(access) => format!("Joined space {space} with {access} access."),
+                    None => format!("Not joined to space {space} yet."),
+                },
+            }],
+            "structuredContent": { "space": space.to_string(), "joined": joined },
+            "isError": false,
+        }));
     }
     let Some(link) = arguments["link"].as_str() else {
         return Some(error("Provide the whole invite link as link."));
     };
-    let access = if name == ACCEPT {
-        match arguments["access"].as_str() {
-            Some(access @ ("read" | "write")) => Some(access.to_owned()),
-            _ => return Some(error("Choose read or write access.")),
-        }
-    } else {
-        None
-    };
-    let agent = verified.agent().clone();
-    let ask = |request: Request<Body>| writers.call(verified, bearer, mcp_session, &agent, request);
     let body = serde_json::to_string(&LinkRequest {
         link: link.to_owned(),
-        access,
     })
     .expect("a link request serializes");
     let request = Request::builder()
@@ -440,26 +339,7 @@ pub async fn call<W: Writers>(
         .name
         .clone()
         .unwrap_or_else(|| "this space".to_owned());
-    if let Some(granted) = &offer.granted {
-        let words = if granted == "write" {
-            "read and write"
-        } else {
-            "read"
-        };
-        return Some(json!({
-            "content": [{
-                "type": "text",
-                "text": format!("Joined {label} with {words} access. Use space {}.", offer.space),
-            }],
-            "structuredContent": {
-                "space": offer.space,
-                "name": offer.name,
-                "access": granted,
-            },
-            "isError": false,
-        }));
-    }
-    let held = match answer::<AgentAccess>(ask(get(ACCESS_ROUTE)).await).await {
+    let held = match held().await {
         Ok(access) => access,
         Err(message) => return Some(error(&message)),
     };
@@ -467,14 +347,12 @@ pub async fn call<W: Writers>(
         .space
         .parse::<Did>()
         .ok()
-        .and_then(|space| held.get(&space).cloned())
-        .filter(|access| access.read)
-        .map(|access| if access.write { "write" } else { "read" });
+        .and_then(|space| joined(&held, &space));
     let me = held.get(&agent).and_then(|own| own.name.clone());
     let text = match joined {
         Some("read") if offer.write => format!(
             "You already have read access to {label}, space {}. The card lets the person \
-             give you read and write access too; you do not have it until they do.",
+             give you read and write access too, in Tonk; you do not have it until they do.",
             offer.space
         ),
         Some(access) => format!(
@@ -487,23 +365,32 @@ pub async fn call<W: Writers>(
             offer.space
         ),
         None => format!(
-            "Showing the invitation to {label}. You have not joined: the person chooses \
-             your access in the card and joins from there. When they do, use space {}.",
+            "Showing the invitation to {label}. You have not joined: the card opens Tonk, \
+             where the person joins the space and lets you in through them, with the access \
+             they choose. When they do, use space {}.",
             offer.space
         ),
     };
     Some(json!({
         "content": [{ "type": "text", "text": text }],
         "structuredContent": {
-            "link": link,
             "space": offer.space,
             "name": offer.name,
             "write": offer.write,
             "joined": joined,
+            "open": join_page(origin, &agent, link),
             "agent": { "did": agent.to_string(), "name": me },
         },
         "isError": false,
     }))
+}
+
+/// The access the agent holds to `space`: `read`, `write` for read and
+/// write, or none.
+fn joined(held: &AgentAccess, space: &Did) -> Option<&'static str> {
+    held.get(space)
+        .filter(|access| access.read)
+        .map(|access| if access.write { "write" } else { "read" })
 }
 
 /// What a front asks the agent space's writer about a link.
@@ -511,10 +398,6 @@ pub async fn call<W: Writers>(
 pub struct LinkRequest {
     /// The link, as the person pasted it.
     pub link: String,
-    /// `read` or `write` to join with that access; absent to only read
-    /// what the link offers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub access: Option<String>,
 }
 
 /// What the agent space's writer answers about a link.
@@ -527,9 +410,6 @@ pub struct LinkAnswer {
     pub name: Option<String>,
     /// Whether the link allows writing.
     pub write: bool,
-    /// The access just granted, when the request asked to join.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub granted: Option<String>,
 }
 
 /// The reason a writer gives for refusing, as its `error`.

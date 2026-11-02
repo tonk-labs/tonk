@@ -102,7 +102,7 @@ pub(crate) async fn receive(
             .ok()
             .and_then(|value| value.as_string())
             .as_deref(),
-        Some("authorize-device" | "authorize-agent")
+        Some("authorize-device" | "authorize-agent" | "grant-agent")
     );
     let progress_requested = js_sys::Reflect::get(&data, &"progress".into())
         .ok()
@@ -197,7 +197,8 @@ async fn complete_authorization<T>(
     let intent = serde_wasm_bindgen::from_value::<tonk_worker_api::CustodyIntent>(request.clone());
     if let Ok(
         intent @ (tonk_worker_api::CustodyIntent::AuthorizeDevice(_)
-        | tonk_worker_api::CustodyIntent::AuthorizeAgent(_)),
+        | tonk_worker_api::CustodyIntent::AuthorizeAgent(_)
+        | tonk_worker_api::CustodyIntent::GrantAgent(_)),
     ) = intent
     {
         let report = async {
@@ -207,6 +208,15 @@ async fn complete_authorization<T>(
                     super::ceremony::report_authorization(
                         &tonk,
                         authorization,
+                        tonk_schema::ceremony_state::FAILED,
+                        error,
+                    )
+                    .await
+                }
+                tonk_worker_api::CustodyIntent::GrantAgent(_) => {
+                    super::ceremony::report(
+                        &tonk,
+                        tonk_schema::ceremony::GRANT_AGENT,
                         tonk_schema::ceremony_state::FAILED,
                         error,
                     )
@@ -474,6 +484,9 @@ async fn perform(
         tonk_worker_api::CustodyIntent::AuthorizeAgent(authorization) => {
             let target = super::agent_session::authorize(&state, &custodian, authorization).await?;
             navigate_reply(&target)
+        }
+        tonk_worker_api::CustodyIntent::GrantAgent(grant) => {
+            super::join_for_agent::authorize(&state, &custodian, grant).await
         }
     }
 }

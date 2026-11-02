@@ -27,6 +27,7 @@ import {
   createSpace,
   syncedSpaces,
   approve,
+  letIn,
 } from './lib/browser.mjs';
 import { showView } from './lib/view-host.mjs';
 
@@ -245,10 +246,11 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       assert.deepEqual(lost, [], `${lost.length} of ${labels.length} writes were lost`);
     });
 
-    // A link the person shares in the chat, joined as the card joins it:
-    // `tonk_join_space` only reads the link, and `tonk_join_accept` (the
-    // card's app-only tool) joins with the access the person chose.
-    await step('the agent joins a shared space from a link, read only', async () => {
+    // A link the person shares in the chat. `tonk_join_space` only reads
+    // it; the card opens Tonk, where the person's account lets the agent
+    // in through it, signed with the passkey. The grant runs through the
+    // account, so revoking it in Tonk refuses the agent at the service.
+    await step('the agent joins a shared space through the person, then is revoked', async () => {
       const name = `e2e join ${run}`;
       await boot(person.page, origin);
       await createSpace(person.page, { origin, name });
@@ -267,20 +269,33 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       const tools = (await client.listTools()).tools;
       const join = tools.find((tool) => tool.name === 'tonk_join_space');
       assert.ok(join?._meta?.ui?.resourceUri, 'tonk_join_space shows no card');
-      const accept = tools.find((tool) => tool.name === 'tonk_join_accept');
-      assert.deepEqual(accept?._meta?.ui?.visibility, ['app'], 'the accept tool is the model’s');
+      const status = tools.find((tool) => tool.name === 'tonk_join_status');
+      assert.deepEqual(status?._meta?.ui?.visibility, ['app'], 'the status tool is the model’s');
+      assert.ok(
+        !tools.some((tool) => tool.name === 'tonk_join_accept'),
+        'a tool still joins with the link’s key',
+      );
 
       const offer = (await call(client, 'tonk_join_space', { link })).structuredContent;
       assert.equal(offer.space, subject);
       assert.equal(offer.name, name);
       assert.equal(offer.write, true, 'a member link offers writing');
       assert.equal(offer.joined ?? null, null, 'reading the link joined');
-      const before = (await call(client, 'tonk_list_spaces', {})).structuredContent.spaces;
-      assert.ok(!before.some((space) => space.subject === subject), 'listed before joining');
+      const page = new URL(offer.open);
+      assert.equal(page.origin, new URL(origin).origin);
+      assert.equal(page.pathname, '/settings/agent-join');
+      assert.equal(page.search, '', 'the link left the fragment');
+      const agentKey = new URLSearchParams(page.hash.slice(1)).get('agent');
 
-      const joined = (await call(client, 'tonk_join_accept', { link, access: 'read' }))
-        .structuredContent;
-      assert.deepEqual(joined, { space: subject, name, access: 'read' });
+      await letIn(person.page, { open: offer.open, access: 'read' });
+      // The card asks until the grant reaches the agent space.
+      let joined = null;
+      for (let tries = 0; tries < 40 && !joined; tries++) {
+        joined = (await call(client, 'tonk_join_status', { space: subject })).structuredContent
+          .joined;
+        if (!joined) await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
+      assert.equal(joined, 'read');
       const listed = (await call(client, 'tonk_list_spaces', {})).structuredContent.spaces;
       assert.deepEqual(
         listed
@@ -295,8 +310,26 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
         arguments: { space: subject, document: NOTE },
       });
       assert.equal(refused.isError, true, `${name} was joined read only but took a write`);
-      const again = (await call(client, 'tonk_join_space', { link })).structuredContent;
-      assert.equal(again.joined, 'read');
+
+      // Revoked from "your agents": the access service refuses the agent.
+      await person.page.evaluate(
+        async ({ key, space }) => {
+          const response = await fetch(`/api/agents/${encodeURIComponent(key)}/revoke`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ space }),
+          });
+          if (!response.ok)
+            throw new Error(`revoke answered ${response.status}: ${await response.text()}`);
+        },
+        { key: agentKey, space: subject },
+      );
+      const after = await connect();
+      const denied = await after.callTool({
+        name: 'tonk_query',
+        arguments: { space: subject, document: 'concept:\n' },
+      });
+      assert.equal(denied.isError, true, `${name} still read after the revocation`);
     });
 
     // A view, as a host shows `tonk_open_space`: first as a host that

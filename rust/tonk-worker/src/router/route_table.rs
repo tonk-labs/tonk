@@ -28,6 +28,7 @@ const ROUTES: &[&str] = &[
     "/api/agent/request/{handle}",
     "/api/agent/session",
     "/api/agents",
+    "/api/agents/{key}/join",
     "/api/agents/{key}/revoke",
     "/api/custody/provision",
     "/api/custody/queue",

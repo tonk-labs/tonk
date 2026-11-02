@@ -538,11 +538,17 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 }
                 answer
             }
-            super::join::JOIN | super::join::ACCEPT => {
-                super::join::call(name, arguments, verified, self.writers, bearer, session)
-                    .await
-                    .unwrap_or_else(|| tool_result(json!("Tool unavailable."), true))
-            }
+            super::join::JOIN | super::join::STATUS => super::join::call(
+                name,
+                arguments,
+                verified,
+                self.writers,
+                bearer,
+                session,
+                self.origin,
+            )
+            .await
+            .unwrap_or_else(|| tool_result(json!("Tool unavailable."), true)),
             _ => match super::view::call(
                 name,
                 arguments,

@@ -563,8 +563,8 @@ async fn a_session_id_of_another_token_is_refused() {
         [
             "tonk_evaluate",
             "tonk_guide",
-            "tonk_join_accept",
             "tonk_join_space",
+            "tonk_join_status",
             "tonk_list_spaces",
             "tonk_open_space",
             "tonk_outline",

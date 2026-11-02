@@ -117,6 +117,23 @@ pub enum CustodyIntent {
     /// the chosen spaces with the account this passkey holds, and send
     /// the page to the app's callback.
     AuthorizeAgent(AgentAuthorization),
+    /// Let one of the account's agents into a space the account holds:
+    /// sign its grant with the account this passkey holds, so the grant
+    /// runs `space -> ... -> account -> agent` and the account can revoke
+    /// it.
+    GrantAgent(AgentGrant),
+}
+
+/// The grant [`CustodyIntent::GrantAgent`] carries. It names the space
+/// by its routing key: the link the account joined it from, a secret,
+/// never travels with the passkey request.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentGrant {
+    /// The agent space's routing key.
+    pub agent: String,
+    /// The space, and how the agent may use it.
+    pub space: AgentSpaceChoice,
 }
 
 /// The approval [`CustodyIntent::AuthorizeAgent`] carries: what the

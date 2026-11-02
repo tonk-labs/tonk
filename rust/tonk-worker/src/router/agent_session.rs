@@ -83,7 +83,12 @@ fn pending() -> &'static Mutex<HashMap<String, url::Url>> {
 }
 
 fn access(choice: &AgentSpaceChoice) -> Result<AgentAccess, TonkWorkerError> {
-    match choice.access.as_str() {
+    access_of(&choice.access)
+}
+
+/// `read`, or `write` for read and write.
+pub(super) fn access_of(access: &str) -> Result<AgentAccess, TonkWorkerError> {
+    match access {
         "read" => Ok(AgentAccess::Read),
         "write" => Ok(AgentAccess::ReadWrite),
         other => Err(TonkWorkerError::Router(format!(
@@ -124,16 +129,16 @@ pub(crate) fn provider(redirect_uri: &str, client_name: &str) -> Option<&'static
     not(all(target_arch = "wasm32", target_os = "unknown")),
     allow(dead_code)
 )]
-struct Target {
-    subject: Did,
-    access: AgentAccess,
-    remote: url::Url,
-    label: String,
+pub(super) struct Target {
+    pub(super) subject: Did,
+    pub(super) access: AgentAccess,
+    pub(super) remote: url::Url,
+    pub(super) label: String,
 }
 
 /// Check the ask before anything is created, so a refusal leaves no agent
 /// space behind.
-async fn targets(
+pub(super) async fn targets(
     state: &AppState,
     name: Option<&str>,
     spaces: &[AgentSpaceChoice],
@@ -775,11 +780,11 @@ async fn mark(
 
 /// One space granted to an agent, as its space records it.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-struct Granted {
-    subject: Did,
-    name: String,
-    home: url::Url,
-    chains: Vec<dialog_ucan_core::DelegationChain>,
+pub(super) struct Granted {
+    pub(super) subject: Did,
+    pub(super) name: String,
+    pub(super) home: url::Url,
+    pub(super) chains: Vec<dialog_ucan_core::DelegationChain>,
 }
 
 /// Record in the agent space what it may reach, the way the account
@@ -789,7 +794,7 @@ struct Granted {
 /// `xyz.tonk.space/home-address` on the space's entity). What the agent
 /// may do there is read off the chains themselves.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-async fn record_grants(
+pub(super) async fn record_grants(
     tonk: &crate::TonkState,
     key: &str,
     granted: &[Granted],

@@ -43,6 +43,21 @@ pub struct AgentSummary {
     spaces: Vec<AgentSpaceAccess>,
 }
 
+#[cfg(test)]
+impl AgentSummary {
+    pub(super) fn did(&self) -> &Did {
+        &self.did
+    }
+
+    /// The access listed for `space`, if it is listed.
+    pub(super) fn access_to(&self, space: &Did) -> Option<&'static str> {
+        self.spaces
+            .iter()
+            .find(|entry| &entry.subject == space)
+            .map(|entry| entry.access)
+    }
+}
+
 /// One space an agent can reach, and how.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,6 +132,20 @@ pub(super) async fn is_agent(tonk: &TonkState, did: &Did) -> bool {
         .is_ok_and(|rows| rows.iter().any(|row| row.this.to_string() == did.as_str()))
 }
 
+/// The agent space at routing key `key`, when it is one of this
+/// account's spaces and carries the agent-space mark.
+pub(super) async fn find(tonk: &TonkState, key: &str) -> Result<Did, TonkWorkerError> {
+    let agent = spaces(tonk)
+        .await?
+        .into_iter()
+        .find(|did| did.repo_key() == key)
+        .ok_or_else(|| TonkWorkerError::NotFound(format!("no agent {key}")))?;
+    if !is_agent(tonk, &agent).await {
+        return Err(TonkWorkerError::NotFound(format!("no agent {key}")));
+    }
+    Ok(agent)
+}
+
 /// The name the agent space `agent` gives `space` in its directory.
 async fn directory_name(tonk: &TonkState, agent: &Did, space: &Did) -> Option<String> {
     let session = tonk
@@ -161,7 +190,7 @@ pub(super) async fn name(tonk: &TonkState, did: &Did) -> Option<String> {
 /// page keeps them today, or the agent's own space, where the agreed
 /// design keeps them.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Held {
+pub(super) enum Held {
     Profile,
     AgentSpace,
 }
@@ -201,8 +230,8 @@ async fn retained(
 /// the agent joined from the chat (`hosted::join`), which the person may
 /// hold no proof to revoke. A link's grant is removed by dropping it from
 /// the agent space, the only place the hosted agent finds it.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Issued {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Issued {
     Here,
     Link,
 }
@@ -210,7 +239,7 @@ enum Issued {
 /// The live grants to `agent`, each a one-certificate chain as retained,
 /// read from both places a grant may be held: those this profile issued,
 /// and those a share link issued into the agent space.
-async fn grants(
+pub(super) async fn grants(
     tonk: &TonkState,
     agent: &Did,
 ) -> Result<Vec<(DelegationChain, Held, Issued)>, TonkWorkerError> {
@@ -307,14 +336,7 @@ pub async fn revoke(
     Json(request): Json<RevokeRequest>,
 ) -> Result<Json<()>, TonkWorkerError> {
     let tonk = state.read().await;
-    let agent = spaces(&tonk)
-        .await?
-        .into_iter()
-        .find(|did| did.repo_key() == key)
-        .ok_or_else(|| TonkWorkerError::NotFound(format!("no agent {key}")))?;
-    if !is_agent(&tonk, &agent).await {
-        return Err(TonkWorkerError::NotFound(format!("no agent {key}")));
-    }
+    let agent = find(&tonk, &key).await?;
     let (leaves, links): (Vec<_>, Vec<_>) = grants(&tonk, &agent)
         .await?
         .into_iter()
@@ -368,6 +390,7 @@ pub async fn revoke(
         }
     };
     let profile = tonk.profile.did();
+    let from_agent_space = leaves.iter().any(|(_, held, _)| *held == Held::AgentSpace);
     for (leaf, held, _) in leaves {
         let target = *leaf
             .proof_cids()
@@ -403,13 +426,19 @@ pub async fn revoke(
             .await
             .map_err(failure)?;
     }
+    // The hosted agent lists its spaces from the agent space: send the
+    // removal there too. The access service already refuses the grant.
+    if from_agent_space {
+        tonk.sync_queue
+            .mark_dirty(agent.repo_key(), super::sync::now_millis());
+    }
     tonk_common::log!("agent {} access to {} revoked", agent, request.space);
     Ok(Json(()))
 }
 
 /// The profile's own proof for the scope `leaf` was issued under: the
 /// path a revocation of `leaf` is witnessed by.
-async fn ancestor(
+pub(super) async fn ancestor(
     tonk: &TonkState,
     profile: &Did,
     subject: &Did,
@@ -563,10 +592,11 @@ mod tests {
         }
         drop(tonk);
 
-        // A space the agent joined from a share link in the chat: its
-        // grant was issued by the link's key into the agent space, for a
-        // space this person may not belong to. It lists under the agent
-        // space's directory name, and revoking drops it from there.
+        // A space the agent joined from a share link in the chat before the
+        // account was put in the chain: its grant was issued by the link's
+        // key into the agent space, for a space this person may not belong
+        // to. It lists under the agent space's directory name, and revoking
+        // drops it from there.
         let shared = Ed25519Signer::generate().await?;
         let seed: [u8; 32] = rand::random();
         let link_key = Ed25519Signer::import(&seed).await?;
@@ -578,17 +608,21 @@ mod tests {
             .meta(tonk_invite::home_address_meta(&remote))
             .try_build()
             .await?;
-        let invite = tonk_invite::Invite::new(
-            DelegationChain::new(root),
-            tonk_invite::InviteAudience::Open { seed },
-            Some(remote.clone()),
+        // A join from the chat before the account was in the chain: the
+        // link's key delegated straight to the agent space.
+        let scopes = tonk_invite::connection::agent_grant_scopes(&shared.did(), AgentAccess::Read);
+        let chains = super::super::agent_connections::issue_to_recipient(
+            &agent,
+            dialog_credentials::Signer::from(link_key),
+            vec![DelegationChain::new(root); scopes.len()],
+            &scopes,
+            &remote,
+            now,
+            expires,
         )
-        .await?;
-        let offer = super::super::hosted::join::Offer::of(invite).map_err(anyhow::Error::msg)?;
-        let chains = offer
-            .grant(&agent, AgentAccess::Read, now)
-            .await
-            .map_err(anyhow::Error::msg)?;
+        .await?
+        .chains()
+        .to_vec();
         {
             let tonk = state.read().await;
             super::super::hosted::access::retain_agent_grants(

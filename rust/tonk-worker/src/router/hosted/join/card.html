@@ -137,50 +137,8 @@
         margin: 0;
         overflow-wrap: anywhere;
       }
-      .tonk-choice {
-        margin: 0;
-        padding: 0 var(--tonk-pad) 6px;
-        border: 0;
-        display: grid;
-        gap: 4px;
-      }
-      .tonk-choice legend {
-        padding: 0 0 2px;
-        color: var(--tonk-fg-soft);
-        font-size: 13px;
-      }
-      .tonk-option {
-        display: grid;
-        grid-template-columns: 18px minmax(0, 1fr);
-        align-items: baseline;
-        gap: 6px;
-        padding: 5px 8px;
-        border-radius: 6px;
-        box-shadow: inset 0 0 0 1px var(--tonk-line);
-        cursor: pointer;
-      }
-      .tonk-option:hover {
-        background: var(--tonk-wash);
-      }
-      .tonk-option:has(input:checked) {
-        box-shadow: inset 0 0 0 1.5px var(--tonk-fg);
-      }
-      .tonk-option:has(input:disabled) {
-        opacity: 0.45;
-        cursor: not-allowed;
-      }
-      .tonk-option:has(input:disabled):hover {
-        background: none;
-      }
-      .tonk-option input {
-        margin: 0;
-        accent-color: var(--tonk-paper);
-      }
-      .tonk-option b {
-        font-weight: 600;
-      }
-      .tonk-option span span {
-        color: var(--tonk-fg-soft);
+      .tonk-fine a {
+        color: var(--tonk-fg);
       }
       .tonk-fine {
         margin: 0;
@@ -269,9 +227,6 @@
         .tonk-head {
           min-height: 40px;
         }
-        .tonk-option {
-          padding: 10px 8px;
-        }
       }
       @media (max-width: 480px) {
         .tonk-ledger {
@@ -299,28 +254,23 @@
       <p class="tonk-say">Let <span data-agent></span><span class="tonk-bot">bot</span> join <span data-name></span></p>
       <dl class="tonk-ledger">
         <dt>who joins</dt>
-        <dd><span data-agent></span><span class="tonk-bot">bot</span>, this chat's agent, not you</dd>
+        <dd><span data-agent></span><span class="tonk-bot">bot</span>, this chat's agent, through you</dd>
+        <dt>you</dt>
+        <dd id="you">join the space too, in Tonk</dd>
         <dt>access to</dt>
-        <dd>the whole space</dd>
+        <dd>the whole space: read, or read and write if the link allows it</dd>
       </dl>
-      <fieldset class="tonk-choice">
-        <legend>what it may do</legend>
-        <label class="tonk-option">
-          <input type="radio" name="access" value="read" checked />
-          <span><b>read</b> <span>· see and search the space</span></span>
-        </label>
-        <label class="tonk-option" id="write">
-          <input type="radio" name="access" value="write" />
-          <span><b>read and write</b> <span>· also add and change content</span></span>
-        </label>
-      </fieldset>
       <p class="tonk-fine" id="fine">
-        It acts as itself, under its own name. Remove it any time from your agents in Tonk.
+        Tonk opens. There you choose what it may do and confirm with your passkey. It acts as
+        itself, under its own name. Remove it any time from your agents in Tonk.
       </p>
       <div class="tonk-acts">
-        <button type="submit" class="tonk-btn" id="join">let it join</button>
+        <button type="submit" class="tonk-btn" id="join">open Tonk</button>
         <button type="button" class="tonk-btn tonk-btn--ring" id="no">not now</button>
       </div>
+      <p class="tonk-fine" id="manual" hidden>
+        Tonk did not open. <a id="page" target="_blank" rel="noopener noreferrer">Open it here</a>.
+      </p>
     </form>
 
     <section class="tonk tonk-strip" id="done" hidden aria-live="polite">
@@ -403,12 +353,6 @@
             } catch {}
         }
 
-        // Which options the person may pick: write only where the link
-        // allows it, read only where the agent does not hold it already.
-        function choose() {
-          $('#write input').disabled = !offer.write;
-          $('input[value="read"]').disabled = !!offer.upgrade;
-        }
         function present(data) {
           offer = data;
           const space = data.name || 'this space',
@@ -416,57 +360,74 @@
           fill('[data-name]', space);
           fill('[data-agent]', agent);
           // Already in: nothing to ask unless the link allows more than
-          // the agent holds, which the person may grant here.
+          // the agent holds, which the person may grant in Tonk.
           const upgrade = data.joined === 'read' && data.write;
           if (data.joined && !upgrade) {
             const words = data.joined === 'write' ? 'read and write' : 'read';
             return strip(['already in ' + space + ' · ' + words + ' · as ', ...bot(agent)]);
           }
           offer.upgrade = upgrade;
-          choose();
-          if (upgrade) {
-            $('#write input').checked = true;
-            $('#join').textContent = 'let it write';
-            $('#fine').textContent =
-              'It can read this space now. Writing lets it add and change content too, ' +
-              'under its own name. Remove it any time from your agents in Tonk.';
-          }
+          $('#join').textContent = upgrade ? 'let it write in Tonk' : 'open Tonk';
+          if (upgrade) $('#you').textContent = 'already let it read';
           if (!data.write)
             $('#fine').textContent =
-              'This link lets an agent read the space, not change it. It acts as itself, ' +
-              'under its own name. Remove it any time from your agents in Tonk.';
+              'Tonk opens. This link lets you and the agent read the space, not change it. ' +
+              'Confirm with your passkey there. Remove it any time from your agents in Tonk.';
           show(ask);
           $('#join').focus({ preventScroll: true });
         }
 
-        ask.addEventListener('submit', async (event) => {
-          event.preventDefault();
-          const access = new FormData(ask).get('access') === 'write' ? 'write' : 'read',
-            space = offer.name || 'the space',
-            agent = offer.agent?.name || 'Your agent',
-            words = access === 'write' ? 'read and write' : 'read';
-          for (const control of ask.elements) control.disabled = true;
-          ask.querySelector('.tonk-disc').dataset.state = 'saving';
+        // The person lets the agent in from Tonk: only their browser holds
+        // the key that signs its grant. Here we wait for the grant to reach
+        // the agent's own space, then tell the model.
+        const POLL_MS = 3000,
+          GIVE_UP_MS = 10 * 60 * 1000;
+        async function await_join(started) {
+          const space = offer.name || 'the space',
+            agent = offer.agent?.name || 'Your agent';
+          let joined;
           try {
             const result = await rpc('tools/call', {
-              name: 'tonk_join_accept',
-              arguments: { link: offer.link, access },
+              name: 'tonk_join_status',
+              arguments: { space: offer.space },
             });
-            if (result?.isError || !result?.structuredContent?.space)
-              throw Error(result?.content?.[0]?.text || 'The space did not answer.');
-            const joined = result.structuredContent;
+            if (!result?.isError) joined = result?.structuredContent?.joined;
+          } catch {}
+          const done_before = offer.upgrade ? joined === 'write' : !!joined;
+          if (done_before) {
+            const words = joined === 'write' ? 'read and write' : 'read';
             strip(['joined ' + space + ' · ' + words + ' · as ', ...bot(agent)]);
             await tellModel(
-              'The person let you join ' + space + ' (space ' + joined.space + ') with ' +
-                words + ' access. It is in tonk_list_spaces now.',
+              'The person let you join ' + space + ' (space ' + offer.space + ') through ' +
+                'them, with ' + words + ' access. It is in tonk_list_spaces now.',
               'I let you join ' + space + ' with ' + words + ' access.',
             );
-          } catch (error) {
-            for (const control of ask.elements) control.disabled = false;
-            choose();
-            ask.querySelector('.tonk-disc').dataset.state = 'hollow';
-            problem(String(error?.message || error), true);
+            return;
           }
+          if (Date.now() - started > GIVE_UP_MS) {
+            problem(
+              'Tonk has not let the agent in yet. Finish in Tonk, then try again here.',
+              true,
+            );
+            return;
+          }
+          setTimeout(() => await_join(started), POLL_MS);
+        }
+
+        ask.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          for (const control of ask.elements) control.disabled = true;
+          ask.querySelector('.tonk-disc').dataset.state = 'saving';
+          const page = $('#page');
+          page.href = offer.open;
+          try {
+            const result = await rpc('ui/open-link', { url: offer.open });
+            if (result?.isError) throw Error('refused');
+          } catch {
+            $('#manual').hidden = false;
+          }
+          $('#join').textContent = 'waiting for Tonk';
+          await_join(Date.now());
         });
         $('#no').addEventListener('click', async () => {
           const space = offer.name || 'the space';
@@ -476,7 +437,12 @@
               'unless they bring it up.',
           );
         });
-        $('#again').addEventListener('click', () => present(offer));
+        $('#again').addEventListener('click', () => {
+          for (const control of ask.elements) control.disabled = false;
+          ask.querySelector('.tonk-disc').dataset.state = 'hollow';
+          $('#manual').hidden = true;
+          present(offer);
+        });
 
         addEventListener('message', (event) => {
           const m = event.data;
@@ -487,7 +453,7 @@
             m.error ? p.reject(Error(m.error.message)) : p.resolve(m.result);
           } else if (m.method === 'ui/notifications/tool-result') {
             const data = m.params?.structuredContent;
-            if (m.params?.isError || !data?.link)
+            if (m.params?.isError || !data?.open)
               problem(m.params?.content?.[0]?.text || 'This invitation could not be read.');
             else present(data);
           }

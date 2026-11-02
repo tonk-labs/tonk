@@ -170,7 +170,7 @@ async fn mediate_pair(
             .ok()
             .and_then(|value| value.as_string())
             .as_deref(),
-        Some("authorize-device" | "authorize-agent")
+        Some("authorize-device" | "authorize-agent" | "grant-agent")
     );
     Reflect::set(&message, &"progress".into(), &JsValue::from_bool(approval))?;
     Reflect::set(
