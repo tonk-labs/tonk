@@ -13,8 +13,8 @@
 #
 # A peer is one authorization of an LLM host (an OAuth session): its own
 # key, holding a powerline from the agent space. Each MCP session of a
-# peer signs its writes with a writer key derived from the peer's seed
-# and the session id (agent/writer, here).
+# peer is an agent/session: it signs its writes with its own key, derived
+# from the peer's seed and the session id.
 #
 # This file replaces `core.yaml` in an agent space. It declares only what
 # describes the agent, so an agent reading its own schema finds itself,
@@ -120,7 +120,8 @@ concept!: &member
 # The powerline never expires: a peer reaches other spaces only through
 # grants, which do, and renewing it would need the account.
 #
-# Replaces `agent/session` in `core.yaml`, which nothing ever wrote.
+# Replaces `core.yaml`'s `agent/session`, which described the powerline
+# and which nothing ever wrote; that name now means one MCP session.
 concept!: &agent/peer
   description: One LLM host's authorization to act as this agent.
   # ENTITY: THE DELEGATION.
@@ -138,35 +139,36 @@ concept!: &agent/peer
       the: xyz.tonk.agent-peer/title
       as: text
 
-# One writer of a peer: the key one MCP session signs its writes with.
+# One session of a peer: one MCP session, which signs its writes with
+# its own key.
 #
-# ENTITY: the writer's DID.
+# ENTITY: the session's DID — the key it signs with.
 #
-# Recorded the first time the writer writes, so an agent can recognise
+# Recorded the first time the session writes, so an agent can recognise
 # its own past writes and say which session made them.
-concept!: &agent/writer
-  description: The key one MCP session of a peer signs with.
+concept!: &agent/session
+  description: One MCP session of a peer, by the key it signs with.
   with:
     peer:
-      description: The `agent/peer` (its delegation) this writer belongs to.
-      the: xyz.tonk.agent-writer/peer
+      description: The `agent/peer` (its delegation) this session belongs to.
+      the: xyz.tonk.agent-session/peer
       as: entity
     first-seen:
-      description: When this writer first wrote, unix seconds.
-      the: xyz.tonk.agent-writer/first-seen
+      description: When this session first wrote, unix seconds.
+      the: xyz.tonk.agent-session/first-seen
       as: natural:64
 
 # ── What the agent can reach ────────────────────────────────────────
 
-# A space granted to the agent: the directory entry approval writes.
+# A space the agent has access to: the directory entry approval writes.
 #
-# ENTITY: the granted space's subject DID.
+# ENTITY: the space's subject DID.
 #
 # The access itself is the delegation chain (`ucan/delegation` below,
 # issuer the account, audience the agent, subject the space); this row
 # only names the space and says where it syncs.
-concept!: &agent/grant
-  description: A space this agent was granted.
+concept!: &space
+  description: A space this agent has access to.
   with:
     name:
       description: The space's name as the account knows it.
