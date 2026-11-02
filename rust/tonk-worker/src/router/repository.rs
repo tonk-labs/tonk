@@ -1316,7 +1316,7 @@ async fn run_agent_handoff(
 // overlay. The marker also excludes matching facts supplied by space content.
 #[cfg(feature = "connection-invites")]
 struct ReadyConnectionInvite {
-    state: std::sync::Weak<tokio::sync::RwLock<TonkState>>,
+    state: std::sync::Weak<crate::StateLock<TonkState>>,
     subject: Did,
     issuer: [u8; 32],
     link: [u8; 32],
@@ -9247,7 +9247,7 @@ mod invite_chain_tests {
         )
         .await
         .expect("the root persists with a recipient");
-        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let state: crate::router::AppState = std::sync::Arc::new(crate::StateLock::new(tonk));
 
         let key = create_space_inner(&state, "Invite Chain", None)
             .await

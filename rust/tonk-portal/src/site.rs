@@ -53,6 +53,32 @@ pub(crate) struct TonkSite {
     /// The self-heal subscription on this site's own `tonk:site` stamp.
     /// Held for the element's lifetime; its `Drop` cancels upstream.
     heal: Rc<RefCell<Option<Subscription>>>,
+    /// Whether this element has been connected before, so a later connect
+    /// is counted as a remount rather than a first mount.
+    connected_before: bool,
+}
+
+/// Why `<tonk-site>` is resolving its route, so a guest frame it builds is
+/// counted under the cause that made it build one.
+#[derive(Clone, Copy)]
+enum Trigger {
+    /// The element was connected for the first time.
+    Mount,
+    /// The element was connected again after being disconnected.
+    Remount,
+    /// `path`, `with` or `allow` changed on a connected element.
+    Navigation,
+}
+
+impl Trigger {
+    fn guest_boot(self) -> &'static str {
+        use tonk_common::diagnostics::names;
+        match self {
+            Trigger::Mount => names::SITE_GUEST_BOOT_MOUNT,
+            Trigger::Remount => names::SITE_GUEST_BOOT_REMOUNT,
+            Trigger::Navigation => names::SITE_GUEST_BOOT_NAVIGATION,
+        }
+    }
 }
 
 impl CustomElement for TonkSite {
@@ -67,7 +93,13 @@ impl CustomElement for TonkSite {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        resolve_and_render(this, self.inner.clone());
+        let trigger = if self.connected_before {
+            Trigger::Remount
+        } else {
+            Trigger::Mount
+        };
+        self.connected_before = true;
+        resolve_and_render(this, self.inner.clone(), trigger);
         install_self_heal(this, self.heal.clone());
         // Navigation is just a `path` attribute change, handled by
         // `attribute_changed_callback`. The element never reads `window.location`;
@@ -111,7 +143,7 @@ impl CustomElement for TonkSite {
             _ => false,
         };
         if re_route {
-            resolve_and_render(this, self.inner.clone());
+            resolve_and_render(this, self.inner.clone(), Trigger::Navigation);
         }
     }
 }
@@ -197,7 +229,7 @@ fn render_site_error(host: &HtmlElement, message: &str) {
 /// bring up the sealed iframe rendering the matched route. A missing or
 /// malformed `with`/`allow` renders a visible error; a failed registration
 /// leaves the element empty rather than throwing.
-fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
+fn resolve_and_render(this: &HtmlElement, cell: StateCell, trigger: Trigger) {
     let host = this.clone();
 
     // Attribute callbacks fire on `setAttribute` even before the element is
@@ -301,8 +333,10 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
     let host_for_task = host.clone();
     spawn_local(async move {
         if !reuse {
+            tonk_common::diagnostics::count(trigger.guest_boot());
             render_in_iframe(&host_for_task, &cell, &site, with, allow);
         } else if let Some(state) = cell.borrow().as_ref() {
+            tonk_common::diagnostics::count(tonk_common::diagnostics::names::SITE_REROUTE);
             crate::bridge::refresh_context(&host_for_task, state);
         }
         if let Err(error) =
@@ -535,6 +569,9 @@ fn render_in_iframe(
 /// since `<tonk-site>` owns sealed iframes that hand-shake and request the
 /// element runtime through it.
 pub fn register() {
+    // Expose this realm's counters as `globalThis.__tonkDiagnostics`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    tonk_common::diagnostics::install_global();
     crate::bridge::install_message_listener();
     if let Some(win) = window()
         && win.custom_elements().get("tonk-site").is_undefined()

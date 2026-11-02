@@ -2637,7 +2637,7 @@ mod invite_name_tests {
 
         let (owner, _service, _root, remote) =
             crate::router::account_state::tests::ready_account_state(None).await;
-        let owner: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(owner));
+        let owner: crate::router::AppState = std::sync::Arc::new(crate::StateLock::new(owner));
         let key = super::super::repository::create_space_inner(&owner, "Elsewhere", None)
             .await
             .expect("the space creates");
@@ -4126,7 +4126,7 @@ mod renewal_tests {
         )
         .await
         .expect("the root persists");
-        let state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let state: AppState = std::sync::Arc::new(crate::StateLock::new(tonk));
         let key = super::super::repository::create_space_inner(&state, "Renewed", None)
             .await
             .expect("the space creates");

@@ -2645,7 +2645,7 @@ pub(crate) mod tests {
         let (home, _service, _root, _remote) = ready_account_state(None).await;
         let key = require_ready_account_state(&home).await.unwrap().key;
         let transition = std::sync::Arc::clone(&home.profile_transition);
-        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(home));
+        let state: crate::router::AppState = std::sync::Arc::new(crate::StateLock::new(home));
 
         let switching = transition.lock().await;
         let deferred = crate::router::sync_repository(&state, &key).await;
@@ -2946,7 +2946,6 @@ pub(crate) mod tests {
         use dialog_artifacts::{Artifact, Instruction, Value};
         use dialog_varsig::Principal as _;
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         const RENAMED: &str = "Renamed on the other device";
 
@@ -2989,7 +2988,7 @@ pub(crate) mod tests {
         assert_eq!(status, AccountStateStatus::Ready);
         swept.unwrap();
 
-        let device = Arc::new(RwLock::new(device));
+        let device = Arc::new(crate::StateLock::new(device));
         super::super::profiles::sign_out(&device, None)
             .await
             .unwrap();
@@ -3028,7 +3027,6 @@ pub(crate) mod tests {
     #[dialog_common::test]
     async fn it_retracts_its_device_rows_from_the_account_on_sign_out() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         async fn listed(state: &TonkState) -> Vec<String> {
             let main = state
@@ -3061,7 +3059,7 @@ pub(crate) mod tests {
             "the other device is listed once it links"
         );
 
-        let device = Arc::new(RwLock::new(device));
+        let device = Arc::new(crate::StateLock::new(device));
         super::super::profiles::sign_out(&device, None)
             .await
             .unwrap();
