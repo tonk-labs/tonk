@@ -853,7 +853,6 @@
             u.pathname.startsWith(prefix + '/') ? u.pathname.slice(prefix.length) : u.pathname,
           );
         }
-        if (message.type === 'reload') return navigate(route.path);
         if (['analytics', 'unsubscribe'].includes(message.type)) return;
         // A view of a space this connection may only read refuses a write
         // before the peer commits it, so nothing shows as saved that its

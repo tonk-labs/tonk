@@ -815,7 +815,7 @@ test("a page without a waiting successor opens its IO at once", async () => {
   assert.equal(result.frames.length, 0);
 });
 
-test("a successor with the same page build remounts guests instead of reloading", async () => {
+test("a successor with the same page build keeps the document and its guests", async () => {
   const page = "a".repeat(16);
   const result = pageHarness({ mode: "warm-update", pageBuild: page, successorPageBuild: page });
   await new Promise(setImmediate);
@@ -823,7 +823,7 @@ test("a successor with the same page build remounts guests instead of reloading"
   await result.ready();
   for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
   assert.equal(result.reloads(), 0);
-  assert.deepEqual(result.remounts, ["remove:site", "insert:site"]);
+  assert.deepEqual(result.remounts, [], "a deploy must not rebuild a running guest");
   assert.equal(result.storage.has("tonk:sw-upgrade-reload"), false);
 });
 
@@ -869,7 +869,7 @@ test("a first-install document adopts a later successor", async () => {
   await result.serviceWorkers.dispatch("controllerchange");
   for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
   assert.equal(result.reloads(), 0);
-  assert.deepEqual(result.remounts, ["remove:site", "insert:site"]);
+  assert.deepEqual(result.remounts, [], "a deploy must not rebuild a running guest");
 });
 
 test("an installed successor asks the incumbent to release its streams", async () => {

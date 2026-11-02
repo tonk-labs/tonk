@@ -1625,10 +1625,12 @@ pub(crate) mod tests {
     }
 
     /// A deploy that changed only worker and guest code keeps the open
-    /// document: the new worker takes over, the page remounts its guest from
-    /// it, and nothing reloads.
+    /// document and its running guest: the new worker takes over, the
+    /// guest's frame is neither torn down nor rebuilt, and its subscriptions
+    /// keep rendering the same data from the new worker. The new guest code
+    /// waits for the next time a navigation or a load builds the guest.
     #[dialog_common::test]
-    async fn it_remounts_guests_without_reloading_when_the_page_is_unchanged(
+    async fn it_keeps_running_guests_when_the_page_is_unchanged(
         env: TestEnvironment,
     ) -> Result<()> {
         let (generation_a, generation_b) = prepare_guest_only_generation(&env)?;
@@ -1652,6 +1654,14 @@ pub(crate) mod tests {
             }
         };
         let before = documents(&driver).await?;
+        // Mark the live guest frame, so a rebuilt one is told apart from it.
+        driver.enter_default_frame().await?;
+        driver
+            .execute(
+                r#"document.querySelector("tonk-site > iframe").__tonkTestKept = true;"#,
+                vec![],
+            )
+            .await?;
 
         promote_second_generation(&env)?;
         let started = driver
@@ -1672,13 +1682,33 @@ pub(crate) mod tests {
             started.json()
         );
 
-        wait_for_guest_generation(&driver, "B").await?;
-        let health = worker_health(&driver).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            let health = worker_health(&driver).await?;
+            if health["body"]["build"].as_str() == Some(generation_b.build.as_str()) {
+                break;
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for the successor worker: {health}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        // The page has adopted the successor once it serves this document.
+        driver.enter_default_frame().await?;
+        let kept = driver
+            .execute(
+                r#"return document.querySelector("tonk-site > iframe")?.__tonkTestKept === true;"#,
+                vec![],
+            )
+            .await?;
         assert_eq!(
-            health["body"]["build"].as_str(),
-            Some(generation_b.build.as_str()),
-            "{health}"
+            kept.json(),
+            &Value::Bool(true),
+            "the guest frame must not be rebuilt"
         );
+        wait_for_guest_generation(&driver, "A").await?;
         assert_eq!(
             documents(&driver).await?,
             before,
@@ -1691,7 +1721,7 @@ pub(crate) mod tests {
             )
             .await?;
         assert!(guard.json().is_null(), "no alignment reload was requested");
-        // The remounted guest renders the same live data from the new worker.
+        // The running guest renders the same live data from the new worker.
         assert_eq!(settled_guest_text(&driver).await?, rendered);
 
         driver.quit().await?;
