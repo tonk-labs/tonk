@@ -671,16 +671,69 @@ fn failure(status: StatusCode, code: &str, message: &str) -> Response<Body> {
     response
 }
 
-#[cfg(test)]
 impl SpaceWriter {
-    /// Grant the agent space, as the approval does: retain `chains` and
-    /// record `directory` in this writer's space (the agent space), under
-    /// the lock, and push. See [`super::access::retain_agent_grants`].
-    pub(crate) async fn approve(
+    /// Keep what a join from the chat grants the agent space (see
+    /// [`super::join`]): the chains in `body`, each checked to reach the
+    /// agent space and grant the space named, and the space's directory
+    /// entry.
+    pub(crate) async fn keep_grant(&self, body: &super::join::GrantBody) -> Result<(), String> {
+        let (chains, entry) = body.open(&self.agent)?;
+        self.retain_grants(&chains, &[entry]).await
+    }
+
+    /// Read an invite link the person pasted, and when `request` names an
+    /// access, join with it: the link's key delegates that access to the
+    /// agent space, which keeps it (see [`super::join`]). Only the agent
+    /// space's own writer answers. A refusal is a sentence for the person.
+    pub async fn join_link(
+        &self,
+        request: &super::join::LinkRequest,
+    ) -> Result<super::join::LinkAnswer, String> {
+        use tonk_invite::connection::AgentAccess as Level;
+        if self.space != self.agent {
+            return Err("Only the agent's own space joins spaces.".into());
+        }
+        let offer = super::join::read_link(&request.link).await?;
+        let granted = match request.access.as_deref() {
+            None => None,
+            Some(access) => {
+                let level = match access {
+                    "read" => Level::Read,
+                    "write" => Level::ReadWrite,
+                    _ => return Err("Choose read or write access.".into()),
+                };
+                let chains = offer
+                    .grant(&self.agent, level, dialog_ucan_core::time::Timestamp::now())
+                    .await?;
+                let body = super::join::GrantBody::new(&offer, &chains)?;
+                self.keep_grant(&body)
+                    .await
+                    .map_err(|error| format!("Could not join: {error}"))?;
+                Some(access.to_owned())
+            }
+        };
+        Ok(super::join::LinkAnswer {
+            space: offer.subject.to_string(),
+            name: offer.name.clone(),
+            write: offer.write,
+            granted,
+        })
+    }
+
+    /// Grant the agent space a space, as the approval does: retain
+    /// `chains` and record `directory` in this writer's space (the agent
+    /// space), under the lock, and push. See
+    /// [`super::access::retain_agent_grants`].
+    ///
+    /// Only the agent space's own writer keeps grants.
+    pub(crate) async fn retain_grants(
         &self,
         chains: &[DelegationChain],
         directory: &[super::access::DirectoryEntry],
     ) -> Result<(), String> {
+        if self.space != self.agent {
+            return Err("only the agent space's writer keeps its grants".into());
+        }
         let _turn = self.lock.lock().await;
         let peer = self.peer();
         self.sync(&peer, "pull").await?;
@@ -690,7 +743,30 @@ impl SpaceWriter {
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        self.push(&peer).await
+        if let Err(error) = self.push(&peer).await {
+            if self.landed(&peer).await {
+                return Ok(());
+            }
+            if let Err(reopen) = self.reopen().await {
+                self.stale.store(true, Ordering::SeqCst);
+                return Err(format!(
+                    "{error}; the writer reopens before its next write: {reopen}"
+                ));
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Grant the agent space, as the approval does. See
+    /// [`Self::retain_grants`].
+    #[cfg(test)]
+    pub(crate) async fn approve(
+        &self,
+        chains: &[DelegationChain],
+        directory: &[super::access::DirectoryEntry],
+    ) -> Result<(), String> {
+        self.retain_grants(chains, directory).await
     }
 }
 
