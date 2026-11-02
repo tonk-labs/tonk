@@ -747,6 +747,74 @@ mod tests {
         );
     }
 
+    /// Count the iframes added under `site`, through a JS `MutationObserver`
+    /// (its records arrive as microtasks, which `flush` drains).
+    fn count_iframe_builds(site: &HtmlElement) -> Object {
+        let observe = Function::new_with_args(
+            "site",
+            "const box = {n: 0};\
+             new MutationObserver((records) => {\
+               for (const record of records)\
+                 for (const node of record.addedNodes)\
+                   if (node.tagName === 'IFRAME') box.n += 1;\
+             }).observe(site, {childList: true});\
+             return box;",
+        );
+        observe
+            .call1(&JsValue::NULL, site)
+            .expect("observer installed")
+            .dyn_into()
+            .expect("counter object")
+    }
+
+    fn builds(counter: &Object) -> f64 {
+        Reflect::get(counter, &"n".into())
+            .ok()
+            .and_then(|n| n.as_f64())
+            .unwrap_or(0.0)
+    }
+
+    /// A space-to-space switch writes `with`, `allow` and `path` one
+    /// attribute at a time, all in one turn. The site must boot ONE guest
+    /// for it: deciding reuse per attribute judged each write against the
+    /// state from before any of them ran, and booted two or three guests,
+    /// each tearing down the one before (a blank frame and the pulsing dot
+    /// for every extra boot).
+    #[dialog_common::test]
+    async fn it_boots_one_guest_for_a_space_switch() {
+        register();
+        let fake = FakeHost::install();
+        let host: HtmlElement = document()
+            .create_element("tonk-site")
+            .expect("site")
+            .dyn_into()
+            .expect("html element");
+        let _ = host.set_attribute("with", "main@did:key:zSpaceA");
+        let _ = host.set_attribute("allow", "main@did:key:zSpaceA");
+        let counter = count_iframe_builds(&host);
+        fake.container.append_child(&host).expect("attach site");
+        flush().await;
+        assert_eq!(builds(&counter), 1.0, "connecting boots the first guest");
+
+        let _ = host.set_attribute("with", "main@did:key:zSpaceB");
+        let _ = host.set_attribute("allow", "main@did:key:zSpaceB");
+        let _ = host.set_attribute("path", "/inspector");
+        flush().await;
+        assert_eq!(
+            builds(&counter),
+            2.0,
+            "one space switch boots exactly one more guest"
+        );
+
+        // A pure path change keeps the live guest.
+        let _ = host.set_attribute("path", "/");
+        flush().await;
+        assert_eq!(builds(&counter), 2.0, "a path change re-routes in place");
+
+        host.remove();
+        fake.container.remove();
+    }
+
     #[dialog_common::test]
     fn it_paints_the_site_surface_before_the_guest_document_loads() {
         let iframe = document()
