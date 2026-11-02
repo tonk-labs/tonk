@@ -167,7 +167,7 @@ concept!: &agent/session
 # The access itself is the delegation chain (`ucan/delegation` below,
 # issuer the account, audience the agent, subject the space); this row
 # only names the space and says where it syncs.
-concept!: &space
+concept!: &agent/space
   description: A space this agent has access to.
   with:
     name:
