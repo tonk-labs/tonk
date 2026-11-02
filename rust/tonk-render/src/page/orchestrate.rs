@@ -258,14 +258,17 @@ async fn render_at_depth<B: QueryBackend>(
 
     // 7. Recursively render nested <tonk-display> elements before
     //    returning. A record a nested display shows has that node as
-    //    its route, so it is not listed again as an item.
+    //    its route, so it is not listed again as an item; a nested
+    //    display that failed shows nothing, so the item stays.
     let html = expand_nested(backend, html, depth, walk, &mut node.children).await?;
     let concept = node.concept.clone();
     let children = &node.children;
     node.items.retain(|item| {
-        !children
-            .iter()
-            .any(|child| child.entity.as_deref() == Some(&item.entity) && child.concept == concept)
+        !children.iter().any(|child| {
+            child.error.is_none()
+                && child.entity.as_deref() == Some(&item.entity)
+                && child.concept == concept
+        })
     });
     Ok(html)
 }

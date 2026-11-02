@@ -351,6 +351,28 @@ concept!: &todo
     }
 
     #[dialog_common::test]
+    async fn it_keeps_a_records_route_when_its_nested_display_fails() -> Result<()> {
+        let test = trip_planner().await?;
+        test.eval_inline(
+            r#"view!:
+  this: todo
+  show:
+    directory: "<ul><li>{task}<tonk-display entity=\"{this}\" model=\"todo\" view=\"missing\"></tonk-display></li></ul>"
+"#,
+        )
+        .await?;
+        let tree = render::outline(&test.site, &RenderRoute::parse("todo")?).await?;
+
+        assert_eq!(tree.children.len(), 2, "{tree:#?}");
+        assert!(
+            tree.children.iter().all(|child| child.error.is_some()),
+            "{tree:#?}"
+        );
+        assert_eq!(tree.items.len(), 2, "{tree:#?}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_keeps_a_broken_display_in_place_with_its_error() -> Result<()> {
         let test = trip_planner().await?;
         let tree = render::outline(&test.site, &RenderRoute::parse("lisbon@trip")?).await?;
