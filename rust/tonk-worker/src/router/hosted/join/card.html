@@ -403,17 +403,34 @@
             } catch {}
         }
 
+        // Which options the person may pick: write only where the link
+        // allows it, read only where the agent does not hold it already.
+        function choose() {
+          $('#write input').disabled = !offer.write;
+          $('input[value="read"]').disabled = !!offer.upgrade;
+        }
         function present(data) {
           offer = data;
           const space = data.name || 'this space',
             agent = data.agent?.name || 'Your agent';
           fill('[data-name]', space);
           fill('[data-agent]', agent);
-          if (data.joined) {
+          // Already in: nothing to ask unless the link allows more than
+          // the agent holds, which the person may grant here.
+          const upgrade = data.joined === 'read' && data.write;
+          if (data.joined && !upgrade) {
             const words = data.joined === 'write' ? 'read and write' : 'read';
             return strip(['already in ' + space + ' · ' + words + ' · as ', ...bot(agent)]);
           }
-          $('#write input').disabled = !data.write;
+          offer.upgrade = upgrade;
+          choose();
+          if (upgrade) {
+            $('#write input').checked = true;
+            $('#join').textContent = 'let it write';
+            $('#fine').textContent =
+              'It can read this space now. Writing lets it add and change content too, ' +
+              'under its own name. Remove it any time from your agents in Tonk.';
+          }
           if (!data.write)
             $('#fine').textContent =
               'This link lets an agent read the space, not change it. It acts as itself, ' +
@@ -446,7 +463,7 @@
             );
           } catch (error) {
             for (const control of ask.elements) control.disabled = false;
-            $('#write input').disabled = !offer.write;
+            choose();
             ask.querySelector('.tonk-disc').dataset.state = 'hollow';
             problem(String(error?.message || error), true);
           }

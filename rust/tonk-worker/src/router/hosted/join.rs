@@ -420,9 +420,13 @@ pub async fn call<W: Writers>(
             .map(|access| if access.write { "write" } else { "read" });
         let me = held.get(&agent).and_then(|own| own.name.clone());
         let text = match joined {
+            Some("read") if offer.write => format!(
+                "You already have read access to {label}, space {}. The card lets the person \
+                 give you read and write access too; you do not have it until they do.",
+                offer.subject
+            ),
             Some(access) => format!(
-                "You already have {} access to {label}, space {}. The card lets the person \
-                 change it.",
+                "You already have {} access to {label}, space {}. Nothing to ask.",
                 if access == "write" {
                     "read and write"
                 } else {

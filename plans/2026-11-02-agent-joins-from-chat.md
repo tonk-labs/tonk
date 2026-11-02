@@ -39,6 +39,16 @@ Mocks: `tonk-labs/gooey` `in-agent/` (the "asks" card, `.tonk--ask`).
   visibility could let the model call it; it still cannot exceed what the
   link allows, which is what any holder of the link can do.
 
+## Changing and removing access
+
+- An agent that holds read access and gets a link that allows writing is
+  offered the upgrade in the card; read stays as it is.
+- "Your agents" lists a link's grants beside the person's own, named from
+  the agent space's directory. The person may hold no proof for that space,
+  so revoking a link's grant drops it from the agent space and queues the
+  agent space to sync; the hosted front reads access from there on every
+  call. Grants the profile issued are still revoked at the access service.
+
 ## Not in this change
 
 - Admin access for an agent (invite others). Agents get read or read and
