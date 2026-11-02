@@ -5899,8 +5899,33 @@ element!: &account-settings
             // answer arrives, while the space was not yet known: read the
             // row again rather than wait for a change that already came.
             self.describe();
+            self.agentJoinWatch(request.agent, answer?.subject, Date.now());
           })
           .catch((error) => self.agentJoinError(self.agentReason(error)));
+      }
+    # Whether the agent holds the space yet, read off the grants as "your
+    # agents" lists them: what the join is for, so the page does not hang
+    # on a ceremony row that does not show its last state.
+    agent-join-watch: |
+      (self, agent, subject, started) => {
+        if (!self._joinAsked || !subject) return;
+        const again = () => setTimeout(() => self.agentJoinWatch(agent, subject, started), 1500);
+        self.api('/api/agents').then((agents) => {
+          if (!self._joinAsked) return;
+          const held = (agents ?? []).find((each) => each.key === agent)
+            ?.spaces?.find((space) => space.subject === subject);
+          if (held) self.agentJoinDone(held.access);
+          else if (Date.now() - started > 5 * 60 * 1000)
+            self.agentJoinError('The agent was not let in. Try again from the chat.');
+          else again();
+        }).catch(again);
+      }
+    agent-join-done: |
+      (self, access) => {
+        self._joinAsked = false;
+        const words = access === 'write' ? 'read and change' : 'read';
+        self.text('[data-join-done]', `${self._joinAgent ?? 'Your agent'} can now ${words} the space. Go back to the chat: the agent sees it there.`);
+        self.agentJoinStep('done');
       }
     # The ceremony row's word on the join. The row is the account's, so it
     # may still say how an earlier one ended: done counts only when it
@@ -5911,10 +5936,7 @@ element!: &account-settings
         if (state === 'working') self.agentJoinStep('working');
         else if (state === 'done') {
           if (!self._joinSpace || detail !== self._joinSpace) return;
-          self._joinAsked = false;
-          const words = self._joinAccess === 'write' ? 'read and change' : 'read';
-          self.text('[data-join-done]', `${self._joinAgent ?? 'Your agent'} can now ${words} the space. Go back to the chat: the agent sees it there.`);
-          self.agentJoinStep('done');
+          self.agentJoinDone(self._joinAccess);
         } else if (state === 'refused') {
           self._joinAsked = false;
           self.agentJoinStep('ask');

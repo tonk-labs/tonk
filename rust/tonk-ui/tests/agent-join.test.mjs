@@ -27,6 +27,7 @@ function fixture(answer) {
   const texts = {};
   let release;
   const answered = new Promise((resolve) => { release = resolve; });
+  let listed = [];
   const self = {
     setAttribute: (key, value) => attributes.set(key, value),
     getAttribute: (key) => attributes.get(key),
@@ -40,9 +41,10 @@ function fixture(answer) {
     ceremonyTarget: () => 'state:ceremony',
     text: (selector, value) => { texts[selector] = value; },
     status() {},
-    api: () => answered.then(() => answer),
+    api: (path) => path === '/api/agents' ? Promise.resolve(listed) : answered.then(() => answer),
+    list(agents) { listed = agents; },
   };
-  for (const name of ['agent-join-request', 'agent-join-step', 'agent-join-error', 'agent-join-go', 'agent-join-ceremony', 'describe']) {
+  for (const name of ['agent-join-request', 'agent-join-step', 'agent-join-error', 'agent-join-go', 'agent-join-ceremony', 'agent-join-watch', 'agent-join-done', 'describe']) {
     self[name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = (...args) => method(name)(self, ...args);
   }
   self._joinAgent = 'Claude';
@@ -50,7 +52,7 @@ function fixture(answer) {
 }
 
 test('a ceremony that ends before the join answers still shows done', async () => {
-  const { self, pane, row, texts, release } = fixture({ pending: true, space: SPACE });
+  const { self, pane, row, texts, release } = fixture({ pending: true, space: SPACE, subject: SPACE });
   self.agentJoinGo();
   assert.equal(pane.dataset.joinStep, 'joining');
   // The passkey and the grant finish while the request is still out.
@@ -64,10 +66,26 @@ test('a ceremony that ends before the join answers still shows done', async () =
 });
 
 test('an earlier join of another space does not count as done', async () => {
-  const { self, pane, row, release } = fixture({ pending: true, space: SPACE });
+  const { self, pane, row, release } = fixture({ pending: true, space: SPACE, subject: SPACE });
   Object.assign(row.dataset, { ceremonyState: 'done', ceremonyDetail: 'did:key:z6MkOther' });
   self.agentJoinGo();
   release();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(pane.dataset.joinStep, 'passkey');
+  // Leave the page: the watch for the grant stops.
+  self._joinAsked = false;
+});
+
+// The ceremony row may never show done; the page still finishes once the
+// agent holds the space.
+test('the page finishes when the agent holds the space, without a done row', async () => {
+  const { self, pane, row, texts, release } = fixture({ pending: true, space: SPACE, subject: SPACE });
+  self.list([{ key: 'did:key:z6MkAgent', spaces: [{ subject: SPACE, access: 'read' }] }]);
+  Object.assign(row.dataset, { ceremonyState: 'working', ceremonyDetail: SPACE });
+  self.agentJoinGo();
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(pane.dataset.joinStep, 'done');
+  assert.match(texts['[data-join-done]'], /Claude can now read the space/);
 });
