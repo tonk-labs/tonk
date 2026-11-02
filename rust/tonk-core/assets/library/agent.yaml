@@ -215,3 +215,58 @@ concept!: &ucan/delegation
       description: Unix seconds, absent when the delegation never expires.
       the: dialog.ucan/expiration
       as: natural
+
+# ── What the agent knows ────────────────────────────────────────────
+
+# A skill: instructions the agent keeps for itself, carried from one
+# conversation to the next. What it has learned about a space, a
+# workflow it follows, a mistake not to repeat.
+#
+# Borrowed from the tonk-team space, where `skill` is instructions a
+# space gives the agents working in it, over the same attributes. So a
+# skill reads the same wherever it is written: one a space hands an
+# agent, and one the agent writes down for itself, are the same shape,
+# and the agent can copy one into the other.
+#
+# ENTITY: content-addressed, or whatever the author chooses; a skill is
+# not keyed by anything but itself.
+concept!: &skill
+  this: tonk:skill
+  description: >
+    Instructions an agent keeps. List them at the start of a
+    conversation to remember how you work.
+  with:
+    title:
+      description: What the skill is for, in a few words.
+      the: xyz.tonk.skill/title
+      as: text
+    body:
+      description: The instructions, as Markdown.
+      the: xyz.tonk.skill/body
+      as: text
+
+# A command a skill tells the agent how to use. Many per skill.
+#
+# ENTITY: the skill.
+concept!: &skill/command
+  this: tonk:skill/command
+  description: A command a skill tells agents how to use.
+  with:
+    command:
+      description: The command.
+      the: xyz.tonk.skill/command
+      as: entity
+      pick: :all
+
+# A concept a skill is about. Many per skill.
+#
+# ENTITY: the skill.
+concept!: &skill/concept
+  this: tonk:skill/concept
+  description: A concept a skill is about.
+  with:
+    concept:
+      description: The concept.
+      the: xyz.tonk.skill/concept
+      as: entity
+      pick: :all
