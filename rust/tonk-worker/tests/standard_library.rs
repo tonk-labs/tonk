@@ -1006,8 +1006,14 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     // and both resolve to the hub itself: one view for `/` and the
     // settings path, so moving between them is a path change the view
     // re-renders in place rather than a page swap. The bar carries the
-    // path and picks the section that shows.
-    for route in ["/settings", "/settings/link"] {
+    // path and picks the section that shows. An app's OAuth approval and
+    // an agent joining from a chat link are panes of the same page.
+    for route in [
+        "/settings",
+        "/settings/link",
+        "/settings/agent",
+        "/settings/agent-join",
+    ] {
         let definition = PROFILE_LIBRARY
             .split(&format!("path: \"{route}\"\n"))
             .nth(1)

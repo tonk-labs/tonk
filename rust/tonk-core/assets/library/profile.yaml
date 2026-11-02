@@ -3224,6 +3224,14 @@ route!: &route/settings/agent
   path: "/settings/agent"
   concept: tonk:hub
 
+# `/settings/agent-join` is the same page too: a chat's join card opens it
+# with the agent and the invite link in the fragment, and the settings
+# panel lets the account join and let the agent in through it.
+route!: &route/settings/agent-join
+  this: id:tonk:route/settings/agent-join
+  path: "/settings/agent-join"
+  concept: tonk:hub
+
 # The /join route: redeem an invite. The shell's top-level `<tonk-site>`
 # routes every path against this table, so without an entry `/join` matched
 # nothing and the site rendered an empty `tonk:site` ("required attribute

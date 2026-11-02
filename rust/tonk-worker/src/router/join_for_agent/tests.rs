@@ -198,3 +198,11 @@ async fn it_refuses_write_for_a_read_only_link() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// A shortened link is followed before it is read; a long one is not.
+#[dialog_common::test]
+fn it_tells_a_shortened_link_from_a_long_one() {
+    assert!(is_shortcut("https://tonk.example/@/AbC123#seed"));
+    assert!(!is_shortcut("https://tonk.example/join?access=abc#seed"));
+    assert!(!is_shortcut("not a link"));
+}

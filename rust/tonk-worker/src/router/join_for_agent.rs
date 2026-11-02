@@ -128,7 +128,8 @@ pub(super) async fn claim(
         super::agents::find(&tonk, agent_key).await?
     };
     let access = super::agent_session::access_of(&request.access)?;
-    let invite = super::join::parse_invite(request.link.trim())
+    let link = expand(request.link.trim()).await?;
+    let invite = super::join::parse_invite(&link)
         .await
         .map_err(TonkWorkerError::from)?;
     let subject = invite.subject().clone();
@@ -145,7 +146,7 @@ pub(super) async fn claim(
     // the membership, which retracts the hop it came in through.
     if !held {
         let tonk = state.write().await;
-        let outcome = super::join::join_invite(&tonk, request.link.trim()).await?;
+        let outcome = super::join::join_invite(&tonk, &link).await?;
         tonk_common::log!(
             "agent {agent}: the account joined {} to let it in",
             outcome.subject
@@ -178,6 +179,23 @@ pub(super) async fn claim(
         },
         subject,
     ))
+}
+
+/// The long form of `link`: a shortened `/@/` link is followed to where
+/// it lands, its fragment (the key) put back; any other is as given.
+async fn expand(link: &str) -> Result<String, TonkWorkerError> {
+    if !is_shortcut(link) {
+        return Ok(link.to_owned());
+    }
+    super::join::resolve_shortcut(link).await.map_err(|error| {
+        tonk_common::log!("agent join: the short link did not resolve: {error}");
+        TonkWorkerError::Router("Could not open the shortened link. Ask for the full one.".into())
+    })
+}
+
+/// Whether `link` is a shortened `/@/` invite link.
+fn is_shortcut(link: &str) -> bool {
+    url::Url::parse(link).is_ok_and(|parsed| parsed.path().starts_with("/@/"))
 }
 
 /// When the agent's grant lapses: in 90 days, or sooner when the
