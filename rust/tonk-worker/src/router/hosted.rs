@@ -23,6 +23,7 @@ use super::{AppState, LspHub};
 use crate::TonkWorkerError;
 
 pub mod access;
+pub mod join;
 pub mod mcp;
 pub mod view;
 mod writer;

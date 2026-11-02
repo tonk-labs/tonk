@@ -18,6 +18,17 @@ A write to a `read` space is refused: ask the person to grant read and write
 rather than retrying or writing somewhere else. If you need a space that is not
 listed, ask the person to grant it to you.
 
+## Joining a space from a link
+
+When the person gives you a Tonk invite link (`/space/...#...`, `/@/...`, or
+one with `access=`), call `tonk_join_space` with the whole link. It joins
+nothing: it shows a card where the person chooses your access, read or read and
+write, and lets you join. You join as yourself, this connection's agent, not as
+the person; say so when you ask. Do not call it again or claim you joined until
+the card tells you; then the space is in `tonk_list_spaces`. If the host shows
+no card, ask the person to grant you the space in Tonk at {origin}. A link is a
+key to the space: never repeat it back or write it into a space.
+
 ## Reading and writing
 
 `tonk_query` reads and never changes anything. `tonk_evaluate` writes: it

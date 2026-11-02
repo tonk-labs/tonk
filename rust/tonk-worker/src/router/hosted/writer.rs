@@ -671,16 +671,30 @@ fn failure(status: StatusCode, code: &str, message: &str) -> Response<Body> {
     response
 }
 
-#[cfg(test)]
 impl SpaceWriter {
-    /// Grant the agent space, as the approval does: retain `chains` and
-    /// record `directory` in this writer's space (the agent space), under
-    /// the lock, and push. See [`super::access::retain_agent_grants`].
-    pub(crate) async fn approve(
+    /// Keep what a join from the chat grants the agent space (see
+    /// [`super::join`]): the chains in `body`, each checked to reach the
+    /// agent space and grant the space named, and the space's directory
+    /// entry.
+    pub async fn keep_grant(&self, body: &super::join::GrantBody) -> Result<(), String> {
+        let (chains, entry) = body.open(&self.agent)?;
+        self.retain_grants(&chains, &[entry]).await
+    }
+
+    /// Grant the agent space a space, as the approval does: retain
+    /// `chains` and record `directory` in this writer's space (the agent
+    /// space), under the lock, and push. See
+    /// [`super::access::retain_agent_grants`].
+    ///
+    /// Only the agent space's own writer keeps grants.
+    pub(crate) async fn retain_grants(
         &self,
         chains: &[DelegationChain],
         directory: &[super::access::DirectoryEntry],
     ) -> Result<(), String> {
+        if self.space != self.agent {
+            return Err("only the agent space's writer keeps its grants".into());
+        }
         let _turn = self.lock.lock().await;
         let peer = self.peer();
         self.sync(&peer, "pull").await?;
@@ -690,7 +704,30 @@ impl SpaceWriter {
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        self.push(&peer).await
+        if let Err(error) = self.push(&peer).await {
+            if self.landed(&peer).await {
+                return Ok(());
+            }
+            if let Err(reopen) = self.reopen().await {
+                self.stale.store(true, Ordering::SeqCst);
+                return Err(format!(
+                    "{error}; the writer reopens before its next write: {reopen}"
+                ));
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Grant the agent space, as the approval does. See
+    /// [`Self::retain_grants`].
+    #[cfg(test)]
+    pub(crate) async fn approve(
+        &self,
+        chains: &[DelegationChain],
+        directory: &[super::access::DirectoryEntry],
+    ) -> Result<(), String> {
+        self.retain_grants(chains, directory).await
     }
 }
 

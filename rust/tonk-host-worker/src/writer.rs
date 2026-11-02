@@ -300,6 +300,19 @@ impl SpaceWriterObject {
                 Err(error) => failure(StatusCode::BAD_GATEWAY, &error.to_string()),
             };
         }
+        if method == worker::Method::Post
+            && path == tonk_worker::agent_join::GRANT_ROUTE.trim_start_matches('/')
+        {
+            self.reach("grant");
+            let body: tonk_worker::agent_join::GrantBody = match request.json().await {
+                Ok(body) => body,
+                Err(error) => return failure(StatusCode::BAD_REQUEST, &error.to_string()),
+            };
+            return match writer.keep_grant(&body).await {
+                Ok(()) => worker::Response::from_json(&serde_json::json!({})),
+                Err(error) => failure(StatusCode::BAD_GATEWAY, &error),
+            };
+        }
         // The grants the front found for this space: one new to the
         // writer makes it pull the agent space's grants again.
         let grants: Vec<String> = request

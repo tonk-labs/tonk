@@ -245,6 +245,60 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       assert.deepEqual(lost, [], `${lost.length} of ${labels.length} writes were lost`);
     });
 
+    // A link the person shares in the chat, joined as the card joins it:
+    // `tonk_join_space` only reads the link, and `tonk_join_accept` (the
+    // card's app-only tool) joins with the access the person chose.
+    await step('the agent joins a shared space from a link, read only', async () => {
+      const name = `e2e join ${run}`;
+      await boot(person.page, origin);
+      await createSpace(person.page, { origin, name });
+      const subject = (await syncedSpaces(person.page, [name]))[name];
+      const link = await person.page.evaluate(async (space) => {
+        const response = await fetch(`/api/repository/${space}/invite`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        });
+        if (!response.ok)
+          throw new Error(`invite answered ${response.status}: ${await response.text()}`);
+        return (await response.json()).url;
+      }, subject);
+      const client = await connect();
+      const tools = (await client.listTools()).tools;
+      const join = tools.find((tool) => tool.name === 'tonk_join_space');
+      assert.ok(join?._meta?.ui?.resourceUri, 'tonk_join_space shows no card');
+      const accept = tools.find((tool) => tool.name === 'tonk_join_accept');
+      assert.deepEqual(accept?._meta?.ui?.visibility, ['app'], 'the accept tool is the model’s');
+
+      const offer = (await call(client, 'tonk_join_space', { link })).structuredContent;
+      assert.equal(offer.space, subject);
+      assert.equal(offer.name, name);
+      assert.equal(offer.write, true, 'a member link offers writing');
+      assert.equal(offer.joined ?? null, null, 'reading the link joined');
+      const before = (await call(client, 'tonk_list_spaces', {})).structuredContent.spaces;
+      assert.ok(!before.some((space) => space.subject === subject), 'listed before joining');
+
+      const joined = (await call(client, 'tonk_join_accept', { link, access: 'read' }))
+        .structuredContent;
+      assert.deepEqual(joined, { space: subject, name, access: 'read' });
+      const listed = (await call(client, 'tonk_list_spaces', {})).structuredContent.spaces;
+      assert.deepEqual(
+        listed
+          .filter((space) => space.subject === subject)
+          .map(({ name, access }) => ({ name, access })),
+        [{ name, access: 'read' }],
+        `listed ${JSON.stringify(listed)}`,
+      );
+      await call(client, 'tonk_query', { space: subject, document: 'concept:\n' });
+      const refused = await client.callTool({
+        name: 'tonk_evaluate',
+        arguments: { space: subject, document: NOTE },
+      });
+      assert.equal(refused.isError, true, `${name} was joined read only but took a write`);
+      const again = (await call(client, 'tonk_join_space', { link })).structuredContent;
+      assert.equal(again.joined, 'read');
+    });
+
     // A view, as a host shows `tonk_open_space`: first as a host that
     // frames nothing (route B, the view's own peer in a Web Worker), then
     // as one that frames the provider (route A, the provider's page with
