@@ -5895,6 +5895,10 @@ element!: &account-settings
           .then((answer) => {
             self._joinSpace = answer?.space ?? null;
             if (self.querySelector('[data-agent-join]')?.dataset.joinStep === 'joining') self.agentJoinStep('passkey');
+            // A quick passkey can finish the whole ceremony before this
+            // answer arrives, while the space was not yet known: read the
+            // row again rather than wait for a change that already came.
+            self.describe();
           })
           .catch((error) => self.agentJoinError(self.agentReason(error)));
       }
