@@ -38,9 +38,10 @@ pub const ACCEPT: &str = "tonk_join_accept";
 /// The join card's resource.
 pub const CARD_URI: &str = "ui://tonk/join-v1.html";
 
-/// The agent space writer's route that retains grants for one space
-/// (`POST`, a [`GrantBody`] as JSON).
-pub const GRANT_ROUTE: &str = "/api/access/grant";
+/// The agent space writer's route that reads a link, and joins with it
+/// when asked (`POST`, a [`LinkRequest`] as JSON, answered with a
+/// [`LinkAnswer`]).
+pub const LINK_ROUTE: &str = "/api/access/link";
 
 /// The MIME type MCP Apps hosts render.
 const CARD_MIME: &str = "text/html;profile=mcp-app";
@@ -227,7 +228,7 @@ async fn landing(url: &str) -> Option<String> {
     Some(response.url())
 }
 
-/// What the card's join asks the agent space's writer to keep.
+/// What a join keeps in the agent space.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct GrantBody {
     /// The space.
@@ -385,6 +386,11 @@ pub fn read_resource(uri: &str) -> Option<Value> {
 }
 
 /// The result of the join tool `name`, or `None` when it is not one.
+///
+/// The link is read, and joined, by the agent space's own writer
+/// ([`LINK_ROUTE`]): it reaches the access service the way every write
+/// does, which a front serving a request the access service forwarded
+/// cannot (its claim answered `404`).
 pub async fn call<W: Writers>(
     name: &str,
     arguments: &Value,
@@ -399,100 +405,145 @@ pub async fn call<W: Writers>(
     let Some(link) = arguments["link"].as_str() else {
         return Some(error("Provide the whole invite link as link."));
     };
-    let offer = match read_link(link).await {
-        Ok(offer) => offer,
-        Err(message) => return Some(error(&message)),
+    let access = if name == ACCEPT {
+        match arguments["access"].as_str() {
+            Some(access @ ("read" | "write")) => Some(access.to_owned()),
+            _ => return Some(error("Choose read or write access.")),
+        }
+    } else {
+        None
     };
     let agent = verified.agent().clone();
     let ask = |request: Request<Body>| writers.call(verified, bearer, mcp_session, &agent, request);
-    let held = match answer::<AgentAccess>(ask(get(ACCESS_ROUTE)).await).await {
-        Ok(access) => access,
-        Err(message) => return Some(error(&message)),
+    let body = serde_json::to_string(&LinkRequest {
+        link: link.to_owned(),
+        access,
+    })
+    .expect("a link request serializes");
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(LINK_ROUTE)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body))
+        .expect("static request");
+    let response = ask(request).await;
+    let offer: LinkAnswer = if response.status().is_success() {
+        match answer(response).await {
+            Ok(offer) => offer,
+            Err(message) => return Some(error(&message)),
+        }
+    } else {
+        // The writer's refusal is a sentence for the person.
+        return Some(error(&refusal(response).await));
     };
     let label = offer
         .name
         .clone()
         .unwrap_or_else(|| "this space".to_owned());
-    if name == JOIN {
-        let joined = held
-            .get(&offer.subject)
-            .filter(|access| access.read)
-            .map(|access| if access.write { "write" } else { "read" });
-        let me = held.get(&agent).and_then(|own| own.name.clone());
-        let text = match joined {
-            Some("read") if offer.write => format!(
-                "You already have read access to {label}, space {}. The card lets the person \
-                 give you read and write access too; you do not have it until they do.",
-                offer.subject
-            ),
-            Some(access) => format!(
-                "You already have {} access to {label}, space {}. Nothing to ask.",
-                if access == "write" {
-                    "read and write"
-                } else {
-                    "read"
-                },
-                offer.subject
-            ),
-            None => format!(
-                "Showing the invitation to {label}. You have not joined: the person chooses \
-                 your access in the card and joins from there. When they do, use space {}.",
-                offer.subject
-            ),
+    if let Some(granted) = &offer.granted {
+        let words = if granted == "write" {
+            "read and write"
+        } else {
+            "read"
         };
         return Some(json!({
-            "content": [{ "type": "text", "text": text }],
+            "content": [{
+                "type": "text",
+                "text": format!("Joined {label} with {words} access. Use space {}.", offer.space),
+            }],
             "structuredContent": {
-                "link": link,
-                "space": offer.subject.to_string(),
+                "space": offer.space,
                 "name": offer.name,
-                "write": offer.write,
-                "joined": joined,
-                "agent": { "did": agent.to_string(), "name": me },
+                "access": granted,
             },
             "isError": false,
         }));
     }
-    let access = match arguments["access"].as_str() {
-        Some("read") => Level::Read,
-        Some("write") => Level::ReadWrite,
-        _ => return Some(error("Choose read or write access.")),
-    };
-    let chains = match offer.grant(&agent, access, Timestamp::now()).await {
-        Ok(chains) => chains,
+    let held = match answer::<AgentAccess>(ask(get(ACCESS_ROUTE)).await).await {
+        Ok(access) => access,
         Err(message) => return Some(error(&message)),
     };
-    let body = match GrantBody::new(&offer, &chains)
-        .and_then(|body| serde_json::to_string(&body).map_err(|error| error.to_string()))
-    {
-        Ok(body) => body,
-        Err(message) => return Some(error(&message)),
-    };
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(GRANT_ROUTE)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body))
-        .expect("static request");
-    if let Err(message) = answer::<Value>(ask(request).await).await {
-        return Some(error(&format!("Could not join {label}: {message}")));
-    }
-    let (access, words) = match access {
-        Level::Read => ("read", "read"),
-        Level::ReadWrite => ("write", "read and write"),
+    let joined = offer
+        .space
+        .parse::<Did>()
+        .ok()
+        .and_then(|space| held.get(&space).cloned())
+        .filter(|access| access.read)
+        .map(|access| if access.write { "write" } else { "read" });
+    let me = held.get(&agent).and_then(|own| own.name.clone());
+    let text = match joined {
+        Some("read") if offer.write => format!(
+            "You already have read access to {label}, space {}. The card lets the person \
+             give you read and write access too; you do not have it until they do.",
+            offer.space
+        ),
+        Some(access) => format!(
+            "You already have {} access to {label}, space {}. Nothing to ask.",
+            if access == "write" {
+                "read and write"
+            } else {
+                "read"
+            },
+            offer.space
+        ),
+        None => format!(
+            "Showing the invitation to {label}. You have not joined: the person chooses \
+             your access in the card and joins from there. When they do, use space {}.",
+            offer.space
+        ),
     };
     Some(json!({
-        "content": [{
-            "type": "text",
-            "text": format!("Joined {label} with {words} access. Use space {}.", offer.subject),
-        }],
+        "content": [{ "type": "text", "text": text }],
         "structuredContent": {
-            "space": offer.subject.to_string(),
+            "link": link,
+            "space": offer.space,
             "name": offer.name,
-            "access": access,
+            "write": offer.write,
+            "joined": joined,
+            "agent": { "did": agent.to_string(), "name": me },
         },
         "isError": false,
     }))
+}
+
+/// What a front asks the agent space's writer about a link.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct LinkRequest {
+    /// The link, as the person pasted it.
+    pub link: String,
+    /// `read` or `write` to join with that access; absent to only read
+    /// what the link offers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
+}
+
+/// What the agent space's writer answers about a link.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct LinkAnswer {
+    /// The space the link opens.
+    pub space: String,
+    /// Its name, as the invitation records it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Whether the link allows writing.
+    pub write: bool,
+    /// The access just granted, when the request asked to join.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granted: Option<String>,
+}
+
+/// The reason a writer gives for refusing, as its `error`.
+async fn refusal(response: axum::http::Response<Body>) -> String {
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .map(|body| body.to_bytes())
+        .unwrap_or_default();
+    serde_json::from_slice::<Value>(&body)
+        .ok()
+        .and_then(|value| value["error"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| "The agent's own space did not answer. Try again.".to_owned())
 }
 
 fn get(uri: &str) -> Request<Body> {

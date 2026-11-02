@@ -301,16 +301,16 @@ impl SpaceWriterObject {
             };
         }
         if method == worker::Method::Post
-            && path == tonk_worker::agent_join::GRANT_ROUTE.trim_start_matches('/')
+            && path == tonk_worker::agent_join::LINK_ROUTE.trim_start_matches('/')
         {
-            self.reach("grant");
-            let body: tonk_worker::agent_join::GrantBody = match request.json().await {
+            self.reach("link");
+            let body: tonk_worker::agent_join::LinkRequest = match request.json().await {
                 Ok(body) => body,
                 Err(error) => return failure(StatusCode::BAD_REQUEST, &error.to_string()),
             };
-            return match writer.keep_grant(&body).await {
-                Ok(()) => worker::Response::from_json(&serde_json::json!({})),
-                Err(error) => failure(StatusCode::BAD_GATEWAY, &error),
+            return match writer.join_link(&body).await {
+                Ok(answer) => worker::Response::from_json(&answer),
+                Err(error) => failure(StatusCode::UNPROCESSABLE_ENTITY, &error),
             };
         }
         // The grants the front found for this space: one new to the

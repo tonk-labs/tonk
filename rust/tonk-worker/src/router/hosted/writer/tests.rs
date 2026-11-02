@@ -947,11 +947,10 @@ concept!: &writer-note
     /// lands.
     #[dialog_common::test]
     async fn a_join_from_the_chat_grants_only_the_access_chosen() {
-        use super::super::super::join::{GrantBody, Offer};
+        use super::super::super::join::{GrantBody, LinkRequest, Offer};
         use tonk_invite::connection::AgentAccess as Level;
 
         let fixture = Fixture::start().await;
-        let agent = fixture.space.did();
         let mut shared = Vec::new();
         for _ in 0..2 {
             let space = Ed25519Signer::generate().await.unwrap();
@@ -978,16 +977,40 @@ concept!: &writer-note
 
         let session = session(&fixture.space, "mcp-join", &fixture.remote).await;
         let own = fixture.writer_for(&session).await;
-        for (space, level) in [(read_only, Level::Read), (writable, Level::ReadWrite)] {
-            let offer = Offer::of(share_link(space, &fixture.remote).await).unwrap();
+        // Through the agent writer's link route, as the tools reach it:
+        // an `access=` link, which needs no ticket fetched. Reading the
+        // link joins nothing; joining keeps only the access asked for.
+        let base = fixture.remote.origin().ascii_serialization();
+        for (space, access) in [(read_only, "read"), (writable, "write")] {
+            let link = share_link(space, &fixture.remote)
+                .await
+                .to_url(&base)
+                .unwrap();
+            let offer = own
+                .join_link(&LinkRequest {
+                    link: link.clone(),
+                    access: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(offer.space, space.did().to_string());
             assert!(offer.write, "a member's link allows writing");
-            let chains = offer
-                .grant(&agent, level, dialog_ucan_core::time::Timestamp::now())
+            assert_eq!(offer.granted, None);
+            assert!(
+                own.agent_access()
+                    .await
+                    .unwrap()
+                    .get(&space.did())
+                    .is_none()
+            );
+            let joined = own
+                .join_link(&LinkRequest {
+                    link,
+                    access: Some(access.into()),
+                })
                 .await
                 .unwrap();
-            own.keep_grant(&GrantBody::new(&offer, &chains).unwrap())
-                .await
-                .unwrap();
+            assert_eq!(joined.granted.as_deref(), Some(access));
         }
         let access = own.agent_access().await.unwrap();
         let entry = access.get(&read_only.did()).expect("the read join");

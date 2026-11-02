@@ -24,8 +24,14 @@ Mocks: `tonk-labs/gooey` `in-agent/` (the "asks" card, `.tonk--ask`).
    space only the scopes of the chosen access
    (`agent_grant_scopes` + `issue_to_recipient`, as the approval page does),
    expiring at the link's own expiry or 90 days, whichever is first. The
-   agent space's writer retains the chains and the directory entry
-   (`POST /api/access/grant`) and pushes.
+   agent space's writer retains the chains and the directory entry and
+   pushes.
+
+The agent space's writer (a Durable Object) does all of the link's network
+work, reading and joining, through `POST /api/access/link`. The front only
+forwards: on the preview, a claim the front sent to the access service that
+had forwarded its request answered `404`, where the writers reach the same
+service without trouble.
 4. The card shows the joined strip and tells the model
    (`ui/update-model-context`). The space is now in `tonk_list_spaces`.
 
