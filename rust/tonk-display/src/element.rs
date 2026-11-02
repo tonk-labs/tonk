@@ -1862,6 +1862,17 @@ fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
         if s.disposed || (!s.default_slide && !s.slides.is_empty()) {
             return;
         }
+        // Two view frames that both lack the facet each spawn this
+        // fallback before either mounts. The first one to land shows the
+        // default; a later one with the same template must leave it be,
+        // or every row is removed and inserted again for nothing.
+        if s.default_slide
+            && s.slides
+                .get("__default__")
+                .is_some_and(|slide| slide.display == display)
+        {
+            return;
+        }
         // Replace any prior slides with the single default slide.
         for (_, slide) in std::mem::take(&mut s.slides) {
             if let Some(parent) = slide.item.parent_node() {
@@ -6657,6 +6668,76 @@ mod tests {
             assert!(
                 !chain.contains("did:key:zModel"),
                 "the default slide must not claim the model itself: {chain}",
+            );
+        }
+
+        // Two view frames that both lack the facet, arriving before the
+        // first fallback lands, must not tear the default down and build it
+        // again: the rows the first one rendered stay in place.
+        #[dialog_common::test]
+        async fn it_keeps_the_default_view_when_a_second_frame_lacks_the_facet() {
+            let dictionary = || {
+                show_rows(
+                    "tonk:_",
+                    &[("directory", "<ul><li data-id={this}>{title}</li></ul>")],
+                )
+            };
+            let host = FakeHost::install_with_model(
+                vec![name_row("did:key:zModel"), dictionary(), dictionary()],
+                Some(directory_model_frame()),
+            );
+            let display = mount_directory(&host, "item");
+            // Count every rendered row the display takes down.
+            let removed = Rc::new(RefCell::new(0usize));
+            let observer = {
+                let removed = removed.clone();
+                Closure::<dyn FnMut(js_sys::Array)>::new(move |records: js_sys::Array| {
+                    for record in records.iter() {
+                        let record: web_sys::MutationRecord = record.unchecked_into();
+                        let gone = record.removed_nodes();
+                        for i in 0..gone.length() {
+                            if let Some(node) = gone.item(i)
+                                && let Ok(el) = node.dyn_into::<Element>()
+                            {
+                                if el.matches("li[data-id]").unwrap_or(false) {
+                                    *removed.borrow_mut() += 1;
+                                }
+                                *removed.borrow_mut() += el
+                                    .query_selector_all("li[data-id]")
+                                    .map(|list| list.length() as usize)
+                                    .unwrap_or(0);
+                            }
+                        }
+                    }
+                })
+            };
+            let watch = web_sys::MutationObserver::new(observer.as_ref().unchecked_ref()).unwrap();
+            let options = web_sys::MutationObserverInit::new();
+            options.set_child_list(true);
+            options.set_subtree(true);
+            watch.observe_with_options(&display, &options).unwrap();
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame(
+                "entity",
+                &rows(&[("did:key:zItem1", &[("title", "Hello")])]),
+            );
+            host.push_frame("view", &rows(&[]));
+            host.push_frame("view", &rows(&[]));
+            await_selector(&display, "li[data-id]")
+                .await
+                .expect("the default directory template renders the instances");
+            // Let the second fallback finish its query and land.
+            sleep(100).await;
+            watch.disconnect();
+            assert_eq!(
+                *removed.borrow(),
+                0,
+                "the second frame rebuilt the default view instead of keeping it",
             );
         }
 
