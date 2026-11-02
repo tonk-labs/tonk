@@ -1,0 +1,217 @@
+# The agent library: what an agent's own space is about.
+#
+# DRAFT. Not seeded anywhere yet; see BUG-218 in tonk-team.
+#
+# An agent is a space. Its subject DID is the agent wherever an account
+# DID could stand: a member, an assignee, an author, an audience. The
+# account that provisioned it keeps its key, delegated to it, and is
+# responsible for what it does. The two relate the way an account and its
+# devices do:
+#
+#   account       ->  device       (account/device-link, profile.yaml)
+#   agent space   ->  peer         (agent/peer, here)
+#
+# A peer is one authorization of an LLM host (an OAuth session): its own
+# key, holding a powerline from the agent space. Each MCP session of a
+# peer signs its writes with a writer key derived from the peer's seed
+# and the session id (agent/writer, here).
+#
+# This file replaces `core.yaml` in an agent space. It declares only what
+# describes the agent, so an agent reading its own schema finds itself,
+# and nothing about workspaces, boards or notes it never uses.
+#
+# Every attribute below is one something already writes, or one the
+# provisioning in BUG-218 writes. Where a fact is already stored under an
+# existing attribute, this file reads that attribute rather than coining a
+# new one, so existing agent spaces match without a migration.
+
+# ── The agent ──────────────────────────────────────────────────────
+
+# The agent itself.
+#
+# ENTITY: the agent space's subject DID — the agent's DID.
+#
+# One concept over the facts provisioning already writes on that DID:
+# the space's name, its kind mark, and the provider whose apps it serves.
+# They used to be three concepts (`tonk/repository`, `tonk/agent-space`,
+# `tonk/agent-provider`); an agent asking "who am I" should get one row.
+concept!: &agent
+  this: tonk:agent
+  description: An agent, identified by its space's DID.
+  with:
+    name:
+      description: >
+        What the agent is called, e.g. "Claude". The space's display
+        name; the same fact `tonk/repository` reads.
+      the: xyz.tonk.repo/name
+      as: text
+    kind:
+      description: What kind of space this is — `case:agent`.
+      the: xyz.tonk.repo/kind
+      as: entity
+    provider:
+      description: >
+        The LLM provider whose apps this agent serves, `claude` or
+        `chatgpt`. An agent is only offered again to an app of the same
+        provider.
+      the: xyz.tonk.agent-space/provider
+      as: text
+  maybe:
+    description:
+      description: A short description of what this agent is for.
+      the: xyz.tonk.repo/description
+      as: text
+
+# Who the agent acts for: the account responsible for its work.
+#
+# ENTITY: the agent's DID, like `agent`.
+#
+# Its own record, not a field of `agent`, and stored rather than derived
+# from the roster. It is written once, at provisioning, from the account
+# that seals the agent's key and delegates to it. That is a fact about
+# custody, not about a role, so it does not move if the roster does.
+concept!: &agent/principal
+  this: tonk:agent/principal
+  description: The account an agent acts for and answers to.
+  with:
+    account:
+      description: >
+        The account's DID: the issuer of every `account -> agent` grant
+        and the founder of this space.
+      the: xyz.tonk.agent/principal
+      as: entity
+
+# ── Members ─────────────────────────────────────────────────────────
+
+# A member of this space. The same concept, over the same attributes, as
+# `core.yaml`'s, so a roster reads an agent space like any other.
+#
+# An agent space has two: its founding account (`tonk:founder`) and the
+# agent itself (`tonk:agent`). The agent being a member of its own space
+# is what lets it appear wherever members are listed or picked.
+concept!: &member
+  this: tonk:member
+  description: A member of a space.
+  with:
+    member:
+      description: The member's DID.
+      the: xyz.tonk.membership/member
+      as: entity
+    role:
+      description: >
+        `tonk:founder` for the account that created the space,
+        `tonk:agent` for the agent itself, `tonk:member` for anyone
+        invited.
+      the: xyz.tonk.membership/role
+      as: entity
+    name:
+      description: The member's display name in this space.
+      the: xyz.tonk.membership/name
+      as: text
+
+# ── Peers ───────────────────────────────────────────────────────────
+
+# One peer of the agent: an LLM host's authorization to act as it.
+#
+# The same shape as `account/device-link`, for the same reasons. `this`
+# IS THE DELEGATION: the agent space's powerline to the peer's key, keyed
+# by its blob hash as dialog keyed it when the chain was retained. The
+# peer's DID is that delegation's own audience, read here from dialog's
+# decomposition on the same entity rather than copied, so the row cannot
+# disagree with the proof. Revoking the powerline takes the row with it.
+#
+# The powerline never expires: a peer reaches other spaces only through
+# grants, which do, and renewing it would need the account.
+#
+# Replaces `agent/session` in `core.yaml`, which nothing ever wrote.
+concept!: &agent/peer
+  this: tonk:agent/peer
+  description: One LLM host's authorization to act as this agent.
+  # ENTITY: THE DELEGATION.
+  with:
+    peer:
+      description: The peer's DID — the powerline's audience.
+      the: dialog.ucan/audience
+      as: text
+    created-at:
+      description: When the peer was authorized, unix seconds.
+      the: xyz.tonk.agent-peer/created-at
+      as: natural:64
+    title:
+      description: The host it was authorized for, e.g. "Claude".
+      the: xyz.tonk.agent-peer/title
+      as: text
+
+# One writer of a peer: the key one MCP session signs its writes with.
+#
+# ENTITY: the writer's DID.
+#
+# Recorded the first time the writer writes, so an agent can recognise
+# its own past writes and say which session made them.
+concept!: &agent/writer
+  this: tonk:agent/writer
+  description: The key one MCP session of a peer signs with.
+  with:
+    peer:
+      description: The `agent/peer` (its delegation) this writer belongs to.
+      the: xyz.tonk.agent-writer/peer
+      as: entity
+    first-seen:
+      description: When this writer first wrote, unix seconds.
+      the: xyz.tonk.agent-writer/first-seen
+      as: natural:64
+
+# ── What the agent can reach ────────────────────────────────────────
+
+# A space granted to the agent: the directory entry approval writes.
+#
+# ENTITY: the granted space's subject DID.
+#
+# The access itself is the delegation chain (`ucan/delegation` below,
+# issuer the account, audience the agent, subject the space); this row
+# only names the space and says where it syncs.
+concept!: &agent/grant
+  this: tonk:agent/grant
+  description: A space this agent was granted.
+  with:
+    name:
+      description: The space's name as the account knows it.
+      the: xyz.tonk.space/name
+      as: text
+    home:
+      description: Where the space syncs.
+      the: xyz.tonk.space/home-address
+      as: text
+
+# A delegation this space retained: the proof itself, as dialog stores it.
+# The same concept as `profile.yaml`'s.
+#
+# ENTITY: the delegation's blob hash — the entity `agent/peer` hangs its
+# fields on.
+concept!: &ucan/delegation
+  this: ucan:delegation
+  description: A delegation retained on this branch.
+  with:
+    issuer:
+      description: Who signed it.
+      the: dialog.ucan/issuer
+      as: text
+    audience:
+      description: Who receives the authority.
+      the: dialog.ucan/audience
+      as: text
+    subject:
+      description: >
+        What the authority is over. A powerline carries the any-subject
+        DID rather than being absent.
+      the: dialog.ucan/subject
+      as: text
+    command:
+      description: The delegated command path, e.g. `/use/get`.
+      the: dialog.ucan/command
+      as: text
+  maybe:
+    expiration:
+      description: Unix seconds, absent when the delegation never expires.
+      the: dialog.ucan/expiration
+      as: natural
