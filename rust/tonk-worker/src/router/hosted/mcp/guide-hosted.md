@@ -69,7 +69,11 @@ the space in Tonk at {origin}.
 route that shows it alone. To show one part of a larger page, such as one list,
 outline the space and pass that node's `route` to `tonk_open_space` as `view`.
 Outline records show how many items a view rendered; a node with an `error`
-did not render.
+did not render. A list's node also has `items`: each record it rendered, with
+its fields and a `route` that shows that one record as it looks in the list,
+controls included. To show one record, such as one to-do, pass its item's
+`route` as `view`. A record that a nested view shows has that view's node as
+its route instead.
 
 You cannot see a view, whether you show it or author it with notation. Never
 claim that one rendered or that a control works, and never describe a query as

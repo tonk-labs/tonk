@@ -136,9 +136,12 @@ pub fn tools() -> Vec<Value> {
             "title": "Outline a Tonk space's views",
             "description": "List the views a space renders, as a tree: each node names its \
                 model and concept, its entity, how many records it shows, any error, its \
-                children, and a route that shows it alone. Without route the tree starts at the \
-                space's home. Pass a node's route to tonk_open_space as view to show just that \
-                view, for example one list from a larger page.",
+                children, and a route that shows it alone. A list's node also has items: each \
+                record it rendered, with its fields and a route that shows that one record as \
+                it looks in the list, controls included. Without route the tree starts at the \
+                space's home. Pass a node's or an item's route to tonk_open_space as view to \
+                show just that part, for example one list from a larger page or one to-do \
+                from a list.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
