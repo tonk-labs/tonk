@@ -748,7 +748,7 @@ async fn prepare_join(tonk: &TonkState, url: &str) -> Result<PreparedJoin, JoinF
     prepare_parsed_join(tonk, parse_invite(url).await?).await
 }
 
-async fn parse_invite(url: &str) -> Result<Invite, JoinFailure> {
+pub(crate) async fn parse_invite(url: &str) -> Result<Invite, JoinFailure> {
     if let Some(ticket) = Ticket::parse_url(url)
         .map_err(|error| JoinFailure::malformed(format!("invite did not parse: {error}")))?
     {
