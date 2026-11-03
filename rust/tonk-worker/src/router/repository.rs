@@ -3006,6 +3006,13 @@ pub(crate) async fn remove_space_inner(
     state: &AppState,
     subject: &Did,
 ) -> Result<(), RepositoryError> {
+    // Syncs hold no guard over the state across their round trips, so the
+    // write guards below no longer wait for one of this space to finish.
+    // Its gate does: closing it waits out every pull, push and sync of the
+    // space in flight, and keeps a new one from starting until the space
+    // is gone. Only this space's syncs wait; nothing else does.
+    let gate = state.read().await.sync_queue.gate(subject.repo_key());
+    let _closed = gate.write().await;
     {
         let tonk = state.write().await;
         if let Err(error) = require_real_space(&tonk, subject).await
@@ -9804,30 +9811,32 @@ route!: &foreign-profile-route
         let session = crate::session::open(&profile)
             .await
             .expect("test session opens");
-        TonkState {
-            seed_upgrades: Default::default(),
-            profile: profile.clone(),
-            operator: session.operator,
-            storage,
-            session_expires_at: session.expires_at,
-            profile_name: name.clone(),
-            active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
-            reactor: crate::Reactor::new(profile.credential().clone()),
-            admission: Default::default(),
-            reject_admission_content_reads: Default::default(),
-            retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            view_bindings: Default::default(),
-            bridges: Default::default(),
-            sync_queue: Default::default(),
-            commands: crate::router::command_providers(),
-            clients: Default::default(),
-            account_keys: Default::default(),
-            profile_library: Default::default(),
-            registry: crate::device::Registry::new(name, directory),
-            profile_transition: Default::default(),
-            context_generation: Default::default(),
-            profile_swaps: Default::default(),
-        }
+        TonkState::from_parts(
+            session.operator,
+            session.expires_at,
+            crate::worker::TonkShared {
+                seed_upgrades: Default::default(),
+                profile: profile.clone(),
+                storage,
+                profile_name: name.clone(),
+                active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
+                reactor: crate::Reactor::new(profile.credential().clone()),
+                admission: Default::default(),
+                reject_admission_content_reads: Default::default(),
+                retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                view_bindings: Default::default(),
+                bridges: Default::default(),
+                sync_queue: Default::default(),
+                commands: crate::router::command_providers(),
+                clients: Default::default(),
+                account_keys: Default::default(),
+                profile_library: Default::default(),
+                registry: crate::device::Registry::new(name, directory),
+                profile_transition: Default::default(),
+                context_generation: Default::default(),
+                profile_swaps: Default::default(),
+            },
+        )
     }
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -10103,7 +10112,7 @@ route!: &foreign-profile-route
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
         while subscriber.receiver.try_recv().is_ok() {}
 
-        tonk.profile_library = Default::default();
+        tonk.shared_mut().profile_library = Default::default();
         let outcome = reconcile_profile_library(&tonk)
             .await
             .expect("profile library reconciles");
@@ -10263,7 +10272,7 @@ route!: &foreign-profile-route
             .await
             .expect("retained definition is damaged");
 
-        tonk.profile_library = Default::default();
+        tonk.shared_mut().profile_library = Default::default();
         let outcome = reconcile_profile_library(&tonk)
             .await
             .expect("damaged retained definition reconciles");
@@ -10400,7 +10409,7 @@ route!: &foreign-profile-route
         );
 
         let mut switched = test_state().await;
-        switched.profile_library = tonk.profile_library.clone();
+        switched.shared_mut().profile_library = tonk.profile_library.clone();
         reconcile_profile_library(&switched)
             .await
             .expect("a switched profile uses the running worker input");
