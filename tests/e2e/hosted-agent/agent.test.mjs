@@ -191,12 +191,15 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       for (;;) {
         const result = await client.callTool({ name, arguments: args });
         const ms = Date.now() - since;
-        if (result.isError) return { ms, text: JSON.stringify(result.content) };
-        if (ms >= budget)
+        const text = JSON.stringify(result.content);
+        // Past the budget fails whether this call was refused or not: a
+        // refusal that arrives late is a late revocation.
+        if (ms > budget)
           assert.fail(
-            `${name} was still answered ${ms} ms after the revocation: ` +
-              JSON.stringify(result.content).slice(0, 400),
+            `${name} was ${result.isError ? 'refused only' : 'still answered'} ${ms} ms ` +
+              `after the revocation (budget ${budget} ms): ${text.slice(0, 400)}`,
           );
+        if (result.isError) return { ms, text };
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
     };
