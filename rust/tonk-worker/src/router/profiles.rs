@@ -612,11 +612,11 @@ async fn promote(
             current.profile_swaps.clone(),
         )
     };
-    new_state.retiring = retiring;
-    new_state.profile_transition = profile_transition;
-    new_state.context_generation = context_generation;
-    new_state.clients = clients;
-    new_state.profile_swaps = profile_swaps.clone();
+    new_state.shared_mut().retiring = retiring;
+    new_state.shared_mut().profile_transition = profile_transition;
+    new_state.shared_mut().context_generation = context_generation;
+    new_state.shared_mut().clients = clients;
+    new_state.shared_mut().profile_swaps = profile_swaps.clone();
     if new_state.is_retiring() {
         new_state.reactor.shutdown();
     }

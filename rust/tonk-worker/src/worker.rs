@@ -375,28 +375,79 @@ pub type DefaultOperator = Peer<DefaultSpace, Session>;
 pub type DefaultProfile = Peer<DefaultSpace>;
 
 /// Application state containing the profile and operator.
+///
+/// Cheap to clone: everything but the operator and its expiry sits
+/// behind one shared [`TonkShared`], which a `TonkState` derefs to. A
+/// request that waits on the network clones the state out of its guard
+/// rather than holding the guard across the round trip, so a writer
+/// (a profile switch, a session renewal, removing a space) never queues
+/// behind a slow remote, and no reader queues behind that writer.
+#[derive(Clone)]
 pub struct TonkState {
-    /// The user's persistent profile.
-    pub profile: DefaultProfile,
     /// The operator derived from the profile — the key that signs
     /// presign invocations. Rotated by
     /// [`session`](crate::session) before its delegation lapses, so it
     /// is not stable for the life of the worker.
     pub operator: DefaultOperator,
+    /// When the current operator's delegation stops being valid, unix
+    /// seconds. Consulted by the sync drain, which rotates the session
+    /// as this approaches.
+    pub session_expires_at: u64,
     /// The branch of the profile repository this state is on: the
     /// account's branch when signed in, an upstream-less one when not.
     /// Read from `meta` at boot; a switch records a new active branch
     /// there and rebuilds the state, so it is fixed for one state's life.
     pub active_branch: String,
+    shared: Arc<TonkShared>,
+}
+
+impl TonkState {
+    /// A state over `shared` on `active_branch`, acting as `operator`
+    /// until `session_expires_at`.
+    pub fn from_parts(
+        operator: DefaultOperator,
+        session_expires_at: u64,
+        active_branch: String,
+        shared: TonkShared,
+    ) -> Self {
+        Self {
+            operator,
+            session_expires_at,
+            active_branch,
+            shared: Arc::new(shared),
+        }
+    }
+
+    /// The shared part, to rewire a state no clone has been taken of
+    /// yet (one just built, before it is installed).
+    ///
+    /// # Panics
+    ///
+    /// If a clone of this state is alive.
+    pub fn shared_mut(&mut self) -> &mut TonkShared {
+        Arc::get_mut(&mut self.shared).expect("the state is not shared yet")
+    }
+}
+
+impl std::ops::Deref for TonkState {
+    type Target = TonkShared;
+
+    fn deref(&self) -> &TonkShared {
+        &self.shared
+    }
+}
+
+/// What a [`TonkState`] shares with its clones: everything but the
+/// operator, which a session renewal replaces, and the small values
+/// beside it.
+pub struct TonkShared {
+    /// The user's persistent profile.
+    pub profile: DefaultProfile,
     /// The storage pool every space is mounted in. Held so a rotated
     /// operator can be built over the *same* pool: a replacement with
     /// its own would leave the reactor's cached repository and branch
     /// handles talking to the retired one.
     pub storage: Storage<DefaultSpace>,
-    /// When the current operator's delegation stops being valid, unix
-    /// seconds. Consulted by the sync drain, which rotates the session
-    /// as this approaches.
-    pub session_expires_at: u64,
     /// Display name the profile was opened under. `Profile` does
     /// not retain this internally, so we carry it here for routes
     /// that report it back to the UI (e.g. `GET /api/profile`).
@@ -1901,31 +1952,33 @@ async fn open_state(
         (branch, session)
     };
 
-    Ok(TonkState {
-        profile,
-        operator: session.operator,
+    Ok(TonkState::from_parts(
+        session.operator,
+        session.expires_at,
         active_branch,
-        storage,
-        session_expires_at: session.expires_at,
-        profile_name,
-        reactor,
-        admission: Default::default(),
-        #[cfg(any(test, feature = "helpers"))]
-        reject_admission_content_reads: Default::default(),
-        retiring: Arc::new(AtomicBool::new(false)),
-        view_bindings: Default::default(),
-        bridges: Default::default(),
-        commands: crate::router::command_providers(),
-        sync_queue: Default::default(),
-        clients: Default::default(),
-        seed_upgrades: Default::default(),
-        account_keys: Default::default(),
-        profile_library,
-        registry,
-        profile_transition: Arc::new(Mutex::new(())),
-        context_generation: Arc::new(AtomicU64::new(0)),
-        profile_swaps: Default::default(),
-    })
+        crate::worker::TonkShared {
+            profile,
+            storage,
+            profile_name,
+            reactor,
+            admission: Default::default(),
+            #[cfg(any(test, feature = "helpers"))]
+            reject_admission_content_reads: Default::default(),
+            retiring: Arc::new(AtomicBool::new(false)),
+            view_bindings: Default::default(),
+            bridges: Default::default(),
+            commands: crate::router::command_providers(),
+            sync_queue: Default::default(),
+            clients: Default::default(),
+            seed_upgrades: Default::default(),
+            account_keys: Default::default(),
+            profile_library,
+            registry,
+            profile_transition: Arc::new(Mutex::new(())),
+            context_generation: Arc::new(AtomicU64::new(0)),
+            profile_swaps: Default::default(),
+        },
+    ))
 }
 
 /// The main Tonk service worker that handles browser fetch events.
