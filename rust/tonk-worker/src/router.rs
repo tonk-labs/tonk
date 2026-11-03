@@ -5852,6 +5852,119 @@ mod approval_stall_diagnosis {
         );
     }
 
+    /// Creating a space provisions it with the access service, a round trip
+    /// to that service. The create used to make it under the write guard,
+    /// so every other request waited on the service, up to its timeout. It
+    /// now provisions with no guard held: while the service is silent, a
+    /// writer could take the guard and a read answers.
+    #[test]
+    fn creating_a_space_holds_no_guard_while_it_provisions() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(creation_during_a_stalled_provision());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    /// Make `tonk` an active customer served by `provider`, so a create
+    /// provisions there.
+    async fn served_by(tonk: &crate::worker::TonkState, provider: &str) {
+        use dialog_credentials::Ed25519Signer;
+        use tonk_schema::prelude::DidExt as _;
+
+        let root = Ed25519Signer::import(&[79; 32]).await.unwrap();
+        let grant = tonk_identity::delegation::mint_device_delegation(root, &tonk.profile.did())
+            .await
+            .unwrap();
+        super::identity::persist_root(
+            tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "provisioning-stall".into(),
+                delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await
+        .unwrap();
+        let root = super::identity::local_root(tonk).await.unwrap().root_did;
+        let record = tonk_account::AccountProviderRecord::attach(provider, 1).unwrap();
+        tonk.profile
+            .secrets()
+            .site(tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE)
+            .save(record.encode().unwrap())
+            .perform(&tonk.profile)
+            .await
+            .unwrap();
+        tonk.reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .transaction()
+            .assert(tonk_schema::AccountRegistered::new(
+                root.this(),
+                "stalled@example.test".into(),
+                provider.into(),
+                1,
+            ))
+            .assert(tonk_schema::AccountActive::new(root.this(), 2))
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(super::customer::is_active(tonk).await);
+    }
+
+    async fn creation_during_a_stalled_provision() {
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider = format!("http://{}/ucan/", listener.local_addr().unwrap());
+        let tonk = test_state().await;
+        served_by(&tonk, &provider).await;
+        let (app, state, _lsp) = super::api_router_with_state(tonk);
+
+        let mut creating = Box::pin(put_repo(&app, "provisioned-while-the-service-stalls"));
+        let socket = tokio::select! {
+            accepted = listener.accept() => accepted.unwrap().0,
+            _ = &mut creating => panic!("the create answered without provisioning"),
+            _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                panic!("the create never reached the access service")
+            }
+        };
+
+        assert!(
+            state.try_write().is_ok(),
+            "a create waiting on the access service holds a guard over the state"
+        );
+        let profile = tokio::time::timeout(
+            Duration::from_secs(2),
+            super::profile::get_profile(axum::extract::State(state.clone())),
+        )
+        .await;
+        assert!(profile.is_ok(), "a read waited on a create's provisioning");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut creating)
+                .await
+                .is_err(),
+            "the create is still waiting on the access service"
+        );
+
+        // A service that hangs up leaves the space local-only: the create
+        // still answers.
+        drop(socket);
+        drop(listener);
+        tokio::time::timeout(Duration::from_secs(30), creating)
+            .await
+            .expect("the create answers once the service hangs up");
+    }
+
     /// What used to keep a sync from writing into a space being removed
     /// was the write guard the removal took, which waited out every sync.
     /// A sync now holds no guard, so the space's own gate does it: removing
