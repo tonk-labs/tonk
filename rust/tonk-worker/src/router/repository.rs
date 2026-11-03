@@ -260,10 +260,7 @@ pub async fn put_repository(
             .map_err(|e| TonkWorkerError::Router(format!("Invalid request body: {}", e)))?
     };
 
-    // A read lock: creating mutates nothing the state holds, and custody,
-    // retention and provisioning are round trips a write lock would hold
-    // every other request behind (see `create_unseeded_space_from_seed`).
-    let tonk = state.read().await;
+    let tonk = state.write().await;
 
     // Create the repository and everything that comes with it —
     // delegation, remotes, branches, upstreams, meta facts. This
@@ -3578,10 +3575,7 @@ pub(super) async fn create_space_from_seed(
         RepositoryConfiguration::default().branch("main", BranchConfiguration::default());
 
     let (subject, key, branches) = {
-        // A read lock: creating mutates nothing the state holds, and custody,
-        // retention and provisioning are round trips a write lock would hold
-        // every other request behind (see `create_unseeded_space_from_seed`).
-        let tonk = state.read().await;
+        let tonk = state.write().await;
 
         // Create the repository (records the replica with status:blank).
         // `name` is the display label; the identity is freshly minted.

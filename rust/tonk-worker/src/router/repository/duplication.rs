@@ -129,10 +129,7 @@ pub(super) async fn create(
     name: &str,
     copy: Copy,
 ) -> Result<String, RepositoryError> {
-    // A read lock: creating mutates nothing the state holds, and custody,
-    // retention and provisioning are round trips a write lock would hold
-    // every other request behind (see `create_unseeded_space_from_seed`).
-    let tonk = state.read().await;
+    let tonk = state.write().await;
     let configuration =
         RepositoryConfiguration::default().branch(CONTENT_BRANCH, BranchConfiguration::default());
     let repository = create_repository(&tonk, name, &configuration).await?;

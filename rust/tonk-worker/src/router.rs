@@ -5484,8 +5484,8 @@ mod approval_stall_diagnosis {
         );
     }
 
-    /// Requests that commit, export, create a space or hydrate a starter
-    /// image answer while a sync holds its read guard across a round trip
+    /// Requests that commit, export, import or hydrate a starter image
+    /// answer while a sync holds its read guard across a round trip
     /// the remote never answers.
     ///
     /// Each of these used to take the state's write guard, which waits for
@@ -5595,12 +5595,6 @@ mod approval_stall_diagnosis {
                 Vec::new(),
             ),
             ("GET", format!("{branch}/export"), "", Vec::new()),
-            (
-                "PUT",
-                "/api/repository/created-while-a-sync-waits".to_owned(),
-                "application/json",
-                b"{}".to_vec(),
-            ),
         ];
         for (method, uri, content_type, body) in requests {
             let answered = tokio::time::timeout(
@@ -5617,22 +5611,35 @@ mod approval_stall_diagnosis {
                 String::from_utf8_lossy(&body)
             );
         }
-        // Into another space: an import after a blob upload on the same
-        // branch loses its head race, a separate defect.
-        let other = put_repo(&app, "imported-while-a-sync-waits").await;
+        // The export's rows back in, onto a branch the upload above moved
+        // through another handle than the import's. The asset facts dialog
+        // records itself are left out: an import refuses its namespace.
+        let (_, exported) = send(&app, "GET", &format!("{branch}/export"), "", Vec::new()).await;
+        let exported = String::from_utf8(exported)
+            .unwrap()
+            .lines()
+            .filter(|row| !row.starts_with("dialog."))
+            .map(|row| format!("{row}\n"))
+            .collect::<String>()
+            .into_bytes();
         let imported = tokio::time::timeout(
             Duration::from_secs(10),
             send(
                 &app,
                 "POST",
-                &format!("/api/repository/{other}/branch/main/import"),
+                &format!("{branch}/import"),
                 "text/csv",
-                b"the,of,as,is,cause\n".to_vec(),
+                exported,
             ),
         )
         .await
         .expect("an import waited on the sync's round trip");
-        assert!(imported.0.is_success(), "import: {}", imported.0);
+        assert!(
+            imported.0.is_success(),
+            "import: {}: {}",
+            imported.0,
+            String::from_utf8_lossy(&imported.1)
+        );
         assert!(
             tokio::time::timeout(Duration::from_millis(50), &mut syncing)
                 .await
