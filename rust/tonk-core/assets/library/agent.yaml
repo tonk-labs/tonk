@@ -1,6 +1,7 @@
 # The agent library: what an agent's own space is about.
 #
-# DRAFT. Not seeded anywhere yet; see BUG-218 in tonk-team.
+# Seeded into every agent space in place of `core.yaml`; see BUG-218 in
+# tonk-team.
 #
 # An agent is a space. Its subject DID is the agent wherever an account
 # DID could stand: a member, an assignee, an author, an audience. The
@@ -58,6 +59,25 @@ concept!: &agent
   maybe:
     description:
       description: A short description of what this agent is for.
+      the: xyz.tonk.repo/description
+      as: text
+
+# The space's own name, as every space carries it. The same concept as
+# `core.yaml`'s, over the same attributes: the hosted MCP guide tells an
+# agent to read a space's name with `tonk/repository:`, and that must
+# work in the agent's own space too.
+#
+# ENTITY: the space's subject DID — here, the agent's DID.
+concept!: &tonk/repository
+  description: A space's display name, carried in the space itself.
+  with:
+    name:
+      description: The space's display name.
+      the: xyz.tonk.repo/name
+      as: text
+  maybe:
+    description:
+      description: A short description written by the space owner.
       the: xyz.tonk.repo/description
       as: text
 

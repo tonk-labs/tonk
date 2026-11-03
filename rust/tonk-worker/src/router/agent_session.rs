@@ -566,7 +566,7 @@ async fn authorize_inner(
     if authorization.agent.is_none() {
         let (state, name) = (state.clone(), authorization.name.trim().to_owned());
         wasm_bindgen_futures::spawn_local(async move {
-            if let Err(error) = super::repository::seed_space(
+            if let Err(error) = super::repository::seed_agent_space(
                 &state,
                 &name,
                 Some("An agent's own space."),

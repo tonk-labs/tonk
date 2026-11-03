@@ -3592,11 +3592,11 @@ pub(super) async fn create_space_from_seed(
     Ok(key)
 }
 
-/// [`create_space_from_seed`] without its standard library yet: the space
-/// is created and recorded, and [`seed_space`] installs the library
+/// [`create_space_from_seed`] without its library yet: the space is
+/// created and recorded, and [`seed_agent_space`] installs the library
 /// later. An agent's space is made this way, so what the approval must
 /// push before it answers is the agent's grants, not the whole library.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(super) async fn create_unseeded_space_from_seed(
     state: &AppState,
     name: &str,
@@ -3613,17 +3613,30 @@ pub(super) async fn create_unseeded_space_from_seed(
     Ok((subject.repo_key().to_owned(), subject))
 }
 
-/// Install the standard library and the name of a space made by
+/// Install the agent library and the name of an agent space made by
 /// [`create_unseeded_space_from_seed`], and mark it initialized.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(super) async fn seed_space(
+///
+/// The agent library (`agent.yaml`) replaces the standard one here: it
+/// declares what describes the agent, and the space records it as its
+/// seed, so later upgrades follow it rather than `core.yaml`.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+pub(super) async fn seed_agent_space(
     state: &AppState,
     name: &str,
     description: Option<&str>,
     key: &str,
     subject: &Did,
 ) -> Result<(), RepositoryError> {
-    seed_and_initialize(state, name, description, key, subject, &["main".to_owned()]).await
+    seed_from_and_initialize(
+        state,
+        AGENT_LIBRARY_URL,
+        name,
+        description,
+        key,
+        subject,
+        &["main".to_owned()],
+    )
+    .await
 }
 
 /// Attach a sync remote to a space, idempotently, via
@@ -3914,6 +3927,29 @@ async fn seed_and_initialize(
     subject: &Did,
     branches: &[String],
 ) -> Result<(), RepositoryError> {
+    seed_from_and_initialize(
+        state,
+        STANDARD_LIBRARY_URL,
+        display_name,
+        description,
+        key,
+        subject,
+        branches,
+    )
+    .await
+}
+
+/// [`seed_and_initialize`] with the library served at `source`, which the
+/// space records and from then on upgrades from.
+async fn seed_from_and_initialize(
+    state: &AppState,
+    source: &str,
+    display_name: &str,
+    description: Option<&str>,
+    key: &str,
+    subject: &Did,
+    branches: &[String],
+) -> Result<(), RepositoryError> {
     // The seed can run long after the replica record was asserted (the
     // detached `spawn_seed` path, or just a slow library fetch on the
     // awaited create path), leaving a window for the user to remove the
@@ -3930,11 +3966,9 @@ async fn seed_and_initialize(
     }
 
     if !branches.is_empty() {
-        let scaffold = fetch_standard_library(STANDARD_LIBRARY_URL)
+        let scaffold = fetch_standard_library(source)
             .await
-            .map_err(|e| {
-                RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}"))
-            })?;
+            .map_err(|e| RepositoryError::Internal(format!("fetch '{source}': {e}")))?;
 
         // The name rides the record commit, not the install commit: an
         // upgrade reverts the install commit, and the name is the space's
@@ -3943,7 +3977,7 @@ async fn seed_and_initialize(
         let name = repository_name_claims(subject, display_name, description)?;
         let tonk = state.read().await;
         for branch_name in branches {
-            install_fresh_seed(&tonk, key, branch_name, &scaffold, &name)
+            install_fresh_from(&tonk, key, branch_name, source, &scaffold, &name)
                 .await
                 .map_err(|e| RepositoryError::Internal(format!("seed '{branch_name}': {e}")))?;
             log!(
@@ -3982,6 +4016,11 @@ const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 /// workspace/board/sheet library it never reads. Only referenced from
 /// the SW-scoped profile seed path.
 const PROFILE_LIBRARY_URL: &str = "/library/profile.yaml";
+
+/// URL of the agent library, seeded onto an agent space's content branch
+/// in place of the standard library: the concepts that describe an agent,
+/// and nothing about workspaces it never uses.
+const AGENT_LIBRARY_URL: &str = "/library/agent.yaml";
 
 /// Result of reconciling the system-owned profile library.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4903,6 +4942,7 @@ async fn install_seed(
 /// one commit, the record and `own` in the next, both published at once, so
 /// the space never shows without its name and the next upgrade can revert
 /// the install commit without touching the name.
+#[cfg(test)]
 pub(super) async fn install_fresh_seed(
     tonk: &TonkState,
     key: &str,
@@ -5632,6 +5672,9 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         }
         PROFILE_LIBRARY_URL => {
             Ok(include_str!("../../../tonk-core/assets/library/profile.yaml").to_owned())
+        }
+        AGENT_LIBRARY_URL => {
+            Ok(include_str!("../../../tonk-core/assets/library/agent.yaml").to_owned())
         }
         // The components a space can install (`library::COMPONENTS`).
         "/library/issue.yaml" => {
@@ -16256,6 +16299,104 @@ mod meta_migration_tests {
                 .await
                 .expect("the layout is read"),
             "the meta branch is in this release's format"
+        );
+    }
+}
+
+#[cfg(test)]
+mod agent_library_tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    async fn test_state() -> TonkState {
+        super::profile_library_tests::test_state().await
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    async fn test_state() -> TonkState {
+        crate::router::tests::test_state_without_root().await
+    }
+
+    /// The names of the concepts `key`'s content branch declares.
+    async fn concept_names(tonk: &TonkState, key: &str) -> Vec<String> {
+        let response = super::super::evaluate::evaluate_body(
+            tonk,
+            key,
+            CONTENT_BRANCH,
+            "concept:\n  this: ?concept\n  name: ?name\n".to_owned(),
+            false,
+        )
+        .await
+        .expect("the concepts query evaluates");
+        response
+            .matches_after
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .filter_map(|row| row.fields.get("name")?.as_str().map(str::to_owned))
+            .collect()
+    }
+
+    /// An agent space is provisioned with the agent library, which
+    /// describes the agent, and not with the standard library, which
+    /// brings workspaces, boards and notes an agent never uses and whose
+    /// `space` concept reads replica rows an agent space never holds.
+    ///
+    /// Provisioned the way agent approval provisions one: created with
+    /// its own seed, then seeded.
+    #[dialog_common::test]
+    async fn it_provisions_an_agent_space_with_the_agent_library() {
+        let state: AppState = Arc::new(RwLock::new(test_state().await));
+        let mut seed = Zeroizing::new([0u8; 32]);
+        getrandom::fill(seed.as_mut()).expect("a seed draws");
+        let (key, subject) = create_unseeded_space_from_seed(&state, "Claude", seed)
+            .await
+            .expect("the agent space creates");
+        seed_agent_space(
+            &state,
+            "Claude",
+            Some("An agent's own space."),
+            &key,
+            &subject,
+        )
+        .await
+        .expect("the agent space seeds");
+
+        let tonk = state.read().await;
+        let (_, _, running) = installed_seed(&tonk, &key)
+            .await
+            .expect("the seed record reads")
+            .expect("the agent space runs a recorded seed");
+        assert_eq!(
+            running.source, AGENT_LIBRARY_URL,
+            "the agent space runs, and so upgrades from, the agent library"
+        );
+
+        let names = concept_names(&tonk, &key).await;
+        for expected in [
+            "agent",
+            "agent/principal",
+            "agent/peer",
+            "agent/session",
+            "agent/space",
+            "member",
+            "ucan/delegation",
+            "skill",
+            "tonk/repository",
+        ] {
+            assert!(
+                names.iter().any(|name| name == expected),
+                "the agent space declares `{expected}`; it declares {names:?}"
+            );
+        }
+        assert!(
+            !names.iter().any(|name| name == "intent"),
+            "the standard library is not installed in an agent space"
         );
     }
 }
