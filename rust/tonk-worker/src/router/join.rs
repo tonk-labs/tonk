@@ -592,6 +592,11 @@ pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutco
 /// the public principal, so the next open finds it here rather than
 /// claiming again.
 ///
+/// A space that keeps a ticket for this device's account, left there by
+/// `space/invite-email`, is joined with it instead: that ticket is a scoped
+/// invite to the account, so its redeemer becomes a member who writes, the
+/// way following the invite's link would make them one.
+///
 /// [`JoinFailure::private`] when the space keeps no public ticket and
 /// the account holds no access to it.
 async fn open_space(tonk: &TonkState, ticket: Ticket) -> Result<JoinOutcome, JoinFailure> {
@@ -608,6 +613,13 @@ async fn open_space(tonk: &TonkState, ticket: Ticket) -> Result<JoinOutcome, Joi
             subject,
             renewed: true,
         });
+    }
+
+    if !super::public_access::can_read(tonk, &subject).await
+        && let Some(invite) = claim_account_ticket(tonk, &ticket).await?
+    {
+        let prepared = prepare_parsed_join(tonk, invite).await?;
+        return perform_join(tonk, prepared).await;
     }
 
     let (account, device_grant) = crate::router::account::current_account(tonk)
@@ -709,6 +721,51 @@ async fn claim_public_ticket(ticket: &Ticket) -> Result<DelegationChain, JoinFai
         .accept(&fetched)
         .await
         .map_err(|error| JoinFailure::malformed(format!("public ticket: {error}")))
+}
+
+/// Claim the ticket a space keeps for this device's account, signed by
+/// this device under the account's grant to it, and read it as the scoped
+/// invite it is; `None` when the device has no account, the space keeps
+/// no ticket for it, or the claim could not be answered, so opening the
+/// space goes on to its public ticket.
+async fn claim_account_ticket(
+    tonk: &TonkState,
+    ticket: &Ticket,
+) -> Result<Option<Invite>, JoinFailure> {
+    let Ok(root) = super::identity::local_root(tonk).await else {
+        return Ok(None);
+    };
+    let fetched = match tonk_account::ticket::claim(
+        ticket.remote(),
+        tonk.profile.credential().signer().clone(),
+        &root.root_did,
+        Some(&root.delegation),
+        ticket.subject(),
+    )
+    .await
+    {
+        Ok(Some(fetched)) => fetched,
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            log!("join: the account's ticket could not be claimed: {error}");
+            return Ok(None);
+        }
+    };
+    let chain = DelegationChain::try_from(fetched.as_slice())
+        .map_err(|error| JoinFailure::malformed(format!("account ticket: {error}")))?;
+    if chain.audience() != &root.root_did || chain.subject() != Some(ticket.subject()) {
+        return Err(JoinFailure::malformed(
+            "the account's ticket grants another account or another space",
+        ));
+    }
+    let remote = tonk_invite::home_address(&chain)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| ticket.remote().clone());
+    Invite::new(chain, InviteAudience::Scoped, Some(remote))
+        .await
+        .map(Some)
+        .map_err(|error| JoinFailure::malformed(format!("account ticket: {error}")))
 }
 
 /// Run the ordinary join pipeline for a browser-approved local-space link.

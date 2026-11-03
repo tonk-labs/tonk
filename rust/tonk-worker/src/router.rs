@@ -102,6 +102,7 @@ mod local_peer;
 pub use local_peer::{LocalPeer, try_lock as try_lock_peer};
 pub(crate) mod public_access;
 mod publication;
+mod space_invite;
 pub use join::{JoinRequest, JoinResponse};
 mod local_space_link;
 

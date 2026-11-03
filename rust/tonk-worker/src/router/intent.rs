@@ -762,6 +762,77 @@ async fn it_says_publishing_in_the_palette() {
     }
 }
 
+/// "invite" on a space's page says either of two commands: naming one
+/// of the account's agents lets that agent in, anything else is taken
+/// as the address of an account to let in. Both are said of the space
+/// the page shows, and both run as they are.
+#[dialog_common::test]
+async fn it_says_inviting_an_agent_or_an_address_in_the_palette() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let branch = state.read().await.active_branch.clone();
+    let profile = format!("/api/repository/profile:tonk/branch/{branch}");
+    for library in [CORE, PROFILE] {
+        send(
+            &app,
+            "POST",
+            &format!("{profile}/evaluate"),
+            "application/yaml",
+            library.into(),
+        )
+        .await;
+    }
+    let space = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+    let agent = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH";
+    send(
+        &app,
+        "POST",
+        &format!("{profile}/evaluate"),
+        "application/yaml",
+        format!(
+            "space!:\n  this: {space}\n  subject: {space}\n  kind: tonk:repository\n  name: \"little writer\"\n\n\
+             space!:\n  this: {agent}\n  subject: {agent}\n  kind: tonk:repository\n  name: \"Claude\"\n\n\
+             agent-space!:\n  this: {agent}\n  kind: case:agent\n"
+        ),
+    )
+    .await;
+
+    let site = "site:7d1e0c2a-4b5f-4e8a-9c3d-2f6a8b0e1d4c";
+    for (n, (said, text, nouns, value)) in [
+        (
+            "invite Claude",
+            "invite [Claude] to [little writer]",
+            r#"{"goal":"space","object":"agent"}"#,
+            agent,
+        ),
+        (
+            "invite bob@example.com",
+            "invite [bob@example.com] to [little writer]",
+            r#"{"goal":"space"}"#,
+            "bob@example.com",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let expression = format!("intent:test-invite-{n}");
+        interpreted(&app, &profile, &expression, said, site, 1.0 + n as f64).await;
+        let rows = readings(&app, &profile, &expression, space).await;
+        let top = rows
+            .first()
+            .unwrap_or_else(|| panic!("{said:?} is suggested: {rows:?}"));
+        assert_eq!(field(top, "text"), text, "{rows:?}");
+        assert_eq!(field(top, "nouns"), nouns, "{rows:?}");
+        let claim = field(top, "claim")
+            .as_str()
+            .unwrap_or_else(|| panic!("{said:?} runs as it is: {top:?}"));
+        assert!(claim.contains(value), "{said:?} carries {value}: {claim}");
+        assert!(
+            claim.contains(space),
+            "{said:?} is said of the space: {claim}"
+        );
+    }
+}
+
 /// A space the palette offers is shown by its `label` facet, `{name}`,
 /// even when the directory row carries a description too: the space
 /// commands' object reads "little writer", not the space's blurb.

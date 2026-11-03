@@ -1334,6 +1334,69 @@ command!: &space/unpublish
     space: unpublish/space
     time: unpublish/time
 
+# Letting someone into a space from the palette: `invite <agent>` or
+# `invite <email>`, said of the space the page shows ("to <space>"
+# anywhere else). Both make the invitee a writer, and neither hands
+# anyone a link.
+#
+# An agent's grant is kept in the agent's own space, where the hosted
+# agent lists the spaces it can reach, so it finds this one the next time
+# it looks. An address is resolved to the account registered under it,
+# the way signing in resolves one, and the grant is left in the space as
+# that account's ticket, the way publishing leaves the public one: any
+# device of that account opening the space's address claims it.
+attribute!: &invite-agent/agent
+  description: The agent to let in, by its agent space's DID.
+  the: xyz.tonk.invite-agent/agent
+  as: entity
+  role: :object
+
+attribute!: &invite-agent/space
+  description: The space to let it into.
+  the: xyz.tonk.invite-agent/space
+  as: entity
+  role: :goal
+
+attribute!: &invite-agent/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.invite-agent/time
+  as: float:64
+  role: :now
+
+command!: &space/invite-agent
+  description: Let one of your agents read and write a space.
+  action: ["invite", "invite agent"]
+  with:
+    agent: invite-agent/agent
+    space: invite-agent/space
+    time: invite-agent/time
+
+attribute!: &invite-email/email
+  description: The address of the account to let in.
+  the: xyz.tonk.invite-email/email
+  as: text
+  role: :object
+
+attribute!: &invite-email/space
+  description: The space to let it into.
+  the: xyz.tonk.invite-email/space
+  as: entity
+  role: :goal
+
+attribute!: &invite-email/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.invite-email/time
+  as: float:64
+  role: :now
+
+command!: &space/invite-email
+  description: Let the account registered under an email address read and write a space.
+  action: ["invite", "invite by email"]
+  with:
+    email: invite-email/email
+    space: invite-email/space
+    time: invite-email/time
+
 attribute!: &home/time
   description: The moment it was asked; makes each dispatch a distinct transient.
   the: xyz.tonk.command.home/time
@@ -6676,6 +6739,81 @@ rule!:
       where: { this: ?this, command: space/unpublish }
     - assert: space
       where: { this: ?space }
+
+rule!:
+  description: A space on this account is one "invite" from the palette can let an agent into.
+  assert: invite-agent/space
+  when:
+    - assert: intent
+      where: { this: ?this, command: space/invite-agent }
+    - assert: space
+      where: { this: ?space }
+
+rule!:
+  description: A space on this account is one "invite" from the palette can let an account into.
+  assert: invite-email/space
+  when:
+    - assert: intent
+      where: { this: ?this, command: space/invite-email }
+    - assert: space
+      where: { this: ?space }
+
+# The agent-space mark, as the profile holds it: the same fact the agent
+# space carries on its own content branch (`tonk/agent-space` in
+# core.yaml), written here too on the agent space's directory entity, so
+# what is on the profile can tell an agent from a space. The worker writes
+# it when it makes an agent, and again whenever it lists the account's
+# agents, which brings an agent made before this mark existed in.
+concept!: &agent-space
+  this: tonk:agent-space
+  description: A space on this account that is an agent's identity.
+  with:
+    kind:
+      description: >
+        What kind of space this is — `case:agent` for an agent space.
+      the: xyz.tonk.repo/kind
+      as: entity
+
+# An agent of this account, by its DID, named as its space is: what
+# "invite" can be said of. Derived on query from the mark and the
+# directory row, so nothing is stored and a renamed agent reads by its
+# new name.
+concept!: &agent
+  description: An agent of this account, by its DID.
+  with:
+    name:
+      description: The agent's name, its space's name.
+      the: xyz.tonk.agent/name
+      as: text
+
+rule!:
+  description: A marked space on this account is an agent, named by its space.
+  assert: agent
+  when:
+    - assert: agent-space
+      where: { this: ?this, kind: ?kind }
+    - assert: ==
+      where: { this: ?kind, is: case:agent }
+    - assert: space
+      where: { this: ?this, name: ?named }
+    # The hub's agents tab says the same of an agent with no name.
+    - assert: coalesce
+      where: { source: ?named, fallback: "Unnamed agent", is: ?name }
+
+view!:
+  this: agent
+  show:
+    label: |
+      {name}
+
+rule!:
+  description: An agent of this account is one "invite" from the palette can name.
+  assert: invite-agent/agent
+  when:
+    - assert: intent
+      where: { this: ?this, command: space/invite-agent }
+    - assert: agent
+      where: { this: ?agent }
 
 rule!:
   description: A space on this account is one "rename space" from the palette can name.
