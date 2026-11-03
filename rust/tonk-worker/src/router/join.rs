@@ -2011,7 +2011,8 @@ fn is_space_address(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|parsed| parsed.path().starts_with("/space/"))
 }
 
-/// Whether a URL is a space's address with no ticket beside it: a visit,
+/// Whether a URL is a space's address (its root or any route of it) with
+/// no ticket beside it: a visit,
 /// which opens the space if it is readable and otherwise leaves the page
 /// to say it is private.
 fn is_bare_space_address(url: &str) -> bool {
@@ -2332,8 +2333,15 @@ mod invite_presence_tests {
         assert!(!is_bare_space_address(&format!(
             "https://tonk.space/space/{space}#{seed}"
         )));
-        assert!(!is_bare_space_address(&format!(
+        // A link into one of the space's pages is a visit to the space
+        // too: the page an absent space renders mounts the join on every
+        // route of it, and one that is not opened stays on its wall.
+        assert!(is_bare_space_address(&format!(
             "https://tonk.space/space/{space}/inspector"
+        )));
+        assert!(is_bare_space_address(&format!(
+            "https://tonk.space/space/{}/notebook/notebook%3A5d314db6-4bea-4c04-bd8a-0ef2be8a0b5d",
+            space.replace(':', "%3A")
         )));
     }
 
@@ -2353,13 +2361,12 @@ mod invite_presence_tests {
             format!("https://tonk.space/space/{encoded}"),
             format!("https://tonk.space/space/{space}#{seed}"),
             format!("https://tonk.space/space/{encoded}#{seed}"),
+            format!("https://tonk.space/space/{space}/inspector"),
+            format!("https://tonk.space/space/{encoded}/notebook/notebook%3Ax"),
         ] {
             assert!(opens_in_place(&address), "{address}");
         }
         assert!(!opens_in_place("https://tonk.space/join?access=abc"));
-        assert!(!opens_in_place(&format!(
-            "https://tonk.space/space/{space}/inspector"
-        )));
     }
 }
 
