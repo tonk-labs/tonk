@@ -88,7 +88,10 @@ pub async fn transact(
     // re-ran the stamp, so the site never resolved its route and the
     // page sat on its loading placeholder for good.
     {
-        let tonk_state = state.read().await;
+        // A clone, not a guard: mounting can pull the space over the
+        // network, and a guard held across that keeps every writer, and
+        // every reader queued behind one, waiting on the remote.
+        let tonk_state = state.read().await.clone();
         super::adopt::mount_on_first_use(&tonk_state, &state, &path.repo).await;
     }
     // A read lock on `TonkState` — concurrent transactions and syncs don't

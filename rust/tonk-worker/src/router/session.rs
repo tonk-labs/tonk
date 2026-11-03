@@ -224,7 +224,8 @@ pub async fn register_site_on_repo(
     }
     let (site, client) = client_site(&request)?;
     let body = read_site_request(request).await?;
-    let tonk = state.read().await;
+    // A clone, not a guard: a first-use mount can pull over the network.
+    let tonk = state.read().await.clone();
     // The stamp acquires the branch; a directory-listed space this
     // device has not pulled yet is mounted first, as on every other
     // route that addresses a space by key.

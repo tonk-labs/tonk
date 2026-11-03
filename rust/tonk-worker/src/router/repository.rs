@@ -293,7 +293,9 @@ pub async fn put_repository(
     //
     // The spawned task takes an owned `AppState` (the lock is released
     // when `tonk` drops at the end of this scope) and re-acquires it.
+    let created = (*tonk).clone();
     drop(tonk);
+    provision_created_space(&created, &subject).await;
     let branches: Vec<String> = configuration.branch.keys().cloned().collect();
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     spawn_seed(state, display_name, key, subject, branches);
@@ -3581,6 +3583,7 @@ pub(super) async fn create_space_from_seed(
     let configuration =
         RepositoryConfiguration::default().branch("main", BranchConfiguration::default());
 
+    let provisioning;
     let (subject, key, branches) = {
         let tonk = state.write().await;
 
@@ -3590,8 +3593,10 @@ pub(super) async fn create_space_from_seed(
         let subject = repository.did();
         let key = subject.repo_key().to_owned();
         let branches: Vec<String> = configuration.branch.keys().cloned().collect();
+        provisioning = (*tonk).clone();
         (subject, key, branches)
     };
+    provision_created_space(&provisioning, &subject).await;
 
     // Seed + flip to initialized once the lock is released (seeding is
     // the slow part; holding the lock would stall the page).
@@ -3617,6 +3622,9 @@ pub(super) async fn create_unseeded_space_from_seed(
     let tonk = state.read().await;
     let repository = create_repository_from_seed(&tonk, name, &configuration, seed).await?;
     let subject = repository.did();
+    let created = (*tonk).clone();
+    drop(tonk);
+    provision_created_space(&created, &subject).await;
     Ok((subject.repo_key().to_owned(), subject))
 }
 
@@ -5884,30 +5892,10 @@ pub(super) async fn create_repository_from_seed(
     // access by pulling the account rather than by fetching an artifact.
     super::account_state::retain_space_delegation(tonk, &prefix).await;
 
-    // The billing half of the same act: provision the new space as a
-    // consumer of the access service, depositing the powerline as its
-    // consent. Best effort for the same reason retain is — a space is
-    // usable the moment its delegations exist locally.
-    //
-    // Only for an ACTIVE customer. A device has an account from first
-    // boot (the onboarding account), so "an account exists" says nothing
-    // about whether the access service will serve this subject: until
-    // the user enrols an email and confirms it, `/provider/add` refuses
-    // and the space would be left wired to a remote that answers 403 on
-    // every presign. A space created in that window is local-only by
-    // design, and the share button provisions it on demand.
-    if super::customer::is_active(tonk).await {
-        if let Err(error) =
-            super::customer::provision_or_defer(tonk, &repository.did(), &prefix, None).await
-        {
-            log!("consumer provisioning skipped: {error}");
-        }
-    } else {
-        log!(
-            "space '{}' created local-only: no active customer to provision it under",
-            repository.did()
-        );
-    }
+    // The billing half of the same act, provisioning the space with the
+    // access service, is a round trip to that service, so it is not done
+    // here: a caller holds the state guard across this function. Each
+    // caller runs [`provision_created_space`] once it has let go.
 
     let prefix_bytes = prefix.to_bytes().map_err(|error| {
         RepositoryError::Internal(format!(
@@ -5940,6 +5928,37 @@ pub(super) async fn create_repository_from_seed(
     .await?;
 
     Ok(repository)
+}
+
+/// Provision a space [`create_repository`] just made as a consumer of the
+/// access service, depositing its root delegation as the consent.
+///
+/// A round trip to that service, so the caller passes a clone of the state
+/// rather than a guard over it: a create that held the guard here kept
+/// every other request waiting on the service, as long as its timeout.
+///
+/// Only for an ACTIVE customer. A device has an account from first boot
+/// (the onboarding account), so "an account exists" says nothing about
+/// whether the access service will serve this subject: until the user
+/// enrols an email and confirms it, `/provider/add` refuses and the space
+/// would be left wired to a remote that answers 403 on every presign. A
+/// space created in that window is local-only by design, and the share
+/// button provisions it on demand.
+///
+/// Best effort, as the rest of the create is not: a space is usable the
+/// moment its delegations exist locally, and a retryable refusal is queued.
+pub(crate) async fn provision_created_space(tonk: &TonkState, subject: &Did) {
+    if !super::customer::is_active(tonk).await {
+        log!("space '{subject}' created local-only: no active customer to provision it under");
+        return;
+    }
+    let prefix = match space_root_prefix(tonk, subject).await {
+        Ok(prefix) => prefix,
+        Err(error) => return log!("consumer provisioning skipped: {error}"),
+    };
+    if let Err(error) = super::customer::provision_or_defer(tonk, subject, &prefix, None).await {
+        log!("consumer provisioning skipped: {error}");
+    }
 }
 
 /// Provision owned `subject` under this profile's account, repairing a stale
@@ -7391,7 +7410,8 @@ pub async fn get_repository(
     }
     log!("GET /api/repository/{}", name);
 
-    let tonk = state.read().await;
+    // A clone, not a guard: a first-use mount can pull over the network.
+    let tonk = state.read().await.clone();
 
     // First use of a directory-listed space this device has not
     // replicated mounts it on demand — same lazy adoption the query
