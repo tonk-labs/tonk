@@ -36,6 +36,7 @@ use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
 use super::HostedPeer;
+use super::telemetry::Steps;
 use crate::TonkWorkerError;
 
 mod caps;
@@ -291,10 +292,24 @@ impl SpaceWriter {
     /// own, sent once the push has landed. A write whose push failed is
     /// answered with `502` and `WRITE_NOT_LANDED`, and is gone: the next
     /// write commits on the remote's head, without it.
+    ///
+    /// Every answer carries the time of each step in `Server-Timing`:
+    /// `lock` (waiting for the write before it), `reopen`, `pull`, `eval`,
+    /// `push` and `landed`, each when it ran.
     pub async fn write(&self, request: Request<Body>) -> Response<Body> {
+        let mut steps = Steps::start();
+        let mut response = self.write_timed(request, &mut steps).await;
+        steps.insert(response.headers_mut());
+        response
+    }
+
+    async fn write_timed(&self, request: Request<Body>, steps: &mut Steps) -> Response<Body> {
         let _turn = self.lock.lock().await;
+        steps.lap("lock");
         if self.stale.load(Ordering::SeqCst) {
-            if let Err(error) = self.reopen().await {
+            let reopened = self.reopen().await;
+            steps.lap("reopen");
+            if let Err(error) = reopened {
                 return failure(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "WRITER_UNAVAILABLE",
@@ -304,11 +319,14 @@ impl SpaceWriter {
             self.stale.store(false, Ordering::SeqCst);
         }
         let peer = self.peer();
-        if let Err(error) = self.sync(&peer, "pull").await {
+        let pulled = self.sync(&peer, "pull").await;
+        steps.lap("pull");
+        if let Err(error) = pulled {
             return failure(StatusCode::BAD_GATEWAY, "PULL_FAILED", &error);
         }
         let response = peer.call(self.on_branch(request)).await;
         if !response.status().is_success() {
+            steps.lap("eval");
             return response;
         }
         let (parts, body) = response.into_parts();
@@ -322,10 +340,15 @@ impl SpaceWriter {
                 );
             }
         };
-        if let Err(error) = self.push(&peer).await {
+        steps.lap("eval");
+        let pushed = self.push(&peer).await;
+        steps.lap("push");
+        if let Err(error) = pushed {
             // A push can fail after its publish reached the remote, when
             // only the answer was lost: then the write did land.
-            if self.landed(&peer).await {
+            let landed = self.landed(&peer).await;
+            steps.lap("landed");
+            if landed {
                 return Response::from_parts(parts, Body::from(body));
             }
             if let Err(reopen) = self.reopen().await {
@@ -351,7 +374,18 @@ impl SpaceWriter {
     /// A `query` or `evaluate` answers at most the writer's [`ReadCaps`],
     /// and is refused over them unless it asks for a page with `limit`
     /// and `cursor` (see [`caps`]).
+    ///
+    /// Every answer carries the time of each step in `Server-Timing`:
+    /// `pull` (including waiting for a pull another read began) and
+    /// `eval`.
     pub async fn read(&self, request: Request<Body>) -> Response<Body> {
+        let mut steps = Steps::start();
+        let mut response = self.read_timed(request, &mut steps).await;
+        steps.insert(response.headers_mut());
+        response
+    }
+
+    async fn read_timed(&self, request: Request<Body>, steps: &mut Steps) -> Response<Body> {
         let (mut parts, body) = request.into_parts();
         let page = match caps::Page::take(&parts.uri) {
             Ok((page, uri)) => {
@@ -368,16 +402,21 @@ impl SpaceWriter {
                 "this route can commit; send it as a write",
             );
         }
-        if let Err(error) = self.refresh().await {
+        steps.skip();
+        let refreshed = self.refresh().await;
+        steps.lap("pull");
+        if let Err(error) = refreshed {
             return failure(StatusCode::BAD_GATEWAY, "PULL_FAILED", &error);
         }
         let capped = request.method() == Method::POST;
         let response = self.peer().call(self.on_branch(request)).await;
-        if capped {
+        let response = if capped {
             caps::cap(response, self.caps, &page).await
         } else {
             response
-        }
+        };
+        steps.lap("eval");
+        response
     }
 
     /// The views `route` mounts in this writer's space (its home when
