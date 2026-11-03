@@ -322,7 +322,7 @@ impl SpaceWriter {
         let pulled = self.sync(&peer, "pull").await;
         steps.lap("pull");
         if let Err(error) = pulled {
-            return failure(StatusCode::BAD_GATEWAY, "PULL_FAILED", &error);
+            return error.answer("PULL_FAILED");
         }
         let response = peer.call(self.on_branch(request)).await;
         if !response.status().is_success() {
@@ -353,13 +353,12 @@ impl SpaceWriter {
             }
             if let Err(reopen) = self.reopen().await {
                 self.stale.store(true, Ordering::SeqCst);
-                return failure(
-                    StatusCode::BAD_GATEWAY,
+                return error.answer_with(
                     "WRITE_NOT_LANDED",
                     &format!("{error}; the writer reopens before its next write: {reopen}"),
                 );
             }
-            return failure(StatusCode::BAD_GATEWAY, "WRITE_NOT_LANDED", &error);
+            return error.answer("WRITE_NOT_LANDED");
         }
         Response::from_parts(parts, Body::from(body))
     }
@@ -406,7 +405,7 @@ impl SpaceWriter {
         let refreshed = self.refresh().await;
         steps.lap("pull");
         if let Err(error) = refreshed {
-            return failure(StatusCode::BAD_GATEWAY, "PULL_FAILED", &error);
+            return error.answer("PULL_FAILED");
         }
         let capped = request.method() == Method::POST;
         let response = self.peer().call(self.on_branch(request)).await;
@@ -437,7 +436,9 @@ impl SpaceWriter {
                 "only the agent space's writer reads its grants".into(),
             ));
         }
-        self.refresh().await.map_err(TonkWorkerError::Internal)?;
+        self.refresh()
+            .await
+            .map_err(SyncFailure::into_worker_error)?;
         self.peer().agent_access(&self.agent).await
     }
 
@@ -450,7 +451,9 @@ impl SpaceWriter {
                 "only the agent space's writer reads its grants".into(),
             ));
         }
-        self.refresh().await.map_err(TonkWorkerError::Internal)?;
+        self.refresh()
+            .await
+            .map_err(SyncFailure::into_worker_error)?;
         self.peer().space_chains(&self.agent, space).await
     }
 
@@ -531,7 +534,7 @@ impl SpaceWriter {
         .map_err(|error| error.to_string())?;
         if let Err(error) = self.sync(&peer, "pull").await {
             peer.close().await;
-            return Err(error);
+            return Err(error.into());
         }
         let old = std::mem::replace(&mut *self.peer.write(), Arc::new(peer));
         // A read still on the old peer fails rather than answer from it.
@@ -561,7 +564,7 @@ impl SpaceWriter {
 
     /// Pull for a read that is about to begin, unless a pull that began
     /// after it already landed or a write holds the lock.
-    async fn refresh(&self) -> Result<(), String> {
+    async fn refresh(&self) -> Result<(), SyncFailure> {
         let read = self.reads.fetch_add(1, Ordering::SeqCst);
         let _pulling = self.pulls.lock().await;
         if read < self.pulled_for.load(Ordering::SeqCst) {
@@ -576,22 +579,22 @@ impl SpaceWriter {
         Ok(())
     }
 
-    async fn push(&self, peer: &HostedPeer) -> Result<(), String> {
+    async fn push(&self, peer: &HostedPeer) -> Result<(), SyncFailure> {
         #[cfg(test)]
         if self.refuse_push.swap(false, Ordering::SeqCst) {
-            return Err("push: refused by the test".into());
+            return Err(SyncFailure::local("push: refused by the test"));
         }
         self.sync(peer, "push").await
     }
 
     /// Pull or push the space's branch.
-    async fn sync(&self, peer: &HostedPeer, operation: &str) -> Result<(), String> {
+    async fn sync(&self, peer: &HostedPeer, operation: &str) -> Result<(), SyncFailure> {
         let request = Request::builder()
             .method(Method::POST)
             .uri(format!("{}/sync/{operation}", self.base))
             .header(header::CONTENT_TYPE, "text/plain")
             .body(Body::empty())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| SyncFailure::local(error.to_string()))?;
         let response = peer.call(request).await;
         let status = response.status();
         if status.is_success() {
@@ -603,10 +606,87 @@ impl SpaceWriter {
             .await
             .map(|body| body.to_bytes())
             .unwrap_or_default();
-        Err(format!(
-            "{operation}: {status}: {}",
-            String::from_utf8_lossy(&body)
-        ))
+        Err(SyncFailure::answered(operation, status, &body))
+    }
+}
+
+/// The code a pull or push answers when the access service refused it
+/// because a grant it proves through was revoked.
+pub const CREDENTIAL_REVOKED: &str = "CREDENTIAL_REVOKED";
+
+/// A pull or push that did not succeed, with the reason the branch's
+/// sync route gave, so a revocation is answered as one rather than as a
+/// failed sync.
+#[derive(Debug, Clone)]
+pub struct SyncFailure {
+    /// The sync route's error code (`error.code` in its body).
+    code: Option<String>,
+    message: String,
+}
+
+impl SyncFailure {
+    fn local(message: impl Into<String>) -> Self {
+        Self {
+            code: None,
+            message: message.into(),
+        }
+    }
+
+    /// The failure a sync route answered with `status` and `body`.
+    pub fn answered(operation: &str, status: StatusCode, body: &[u8]) -> Self {
+        let code = serde_json::from_slice::<serde_json::Value>(body)
+            .ok()
+            .and_then(|body| body["error"]["code"].as_str().map(str::to_owned));
+        Self {
+            code,
+            message: format!("{operation}: {status}: {}", String::from_utf8_lossy(body)),
+        }
+    }
+
+    /// Whether the access service refused it for a revoked grant.
+    pub fn revoked(&self) -> bool {
+        self.code.as_deref() == Some(CREDENTIAL_REVOKED)
+    }
+
+    /// The writer's answer: `403` and [`CREDENTIAL_REVOKED`] for a
+    /// revocation, `502` and `code` otherwise.
+    fn answer(&self, code: &str) -> Response<Body> {
+        self.answer_with(code, &self.message)
+    }
+
+    /// [`answer`](Self::answer), with `message`.
+    fn answer_with(&self, code: &str, message: &str) -> Response<Body> {
+        if self.revoked() {
+            failure(StatusCode::FORBIDDEN, CREDENTIAL_REVOKED, message)
+        } else {
+            failure(StatusCode::BAD_GATEWAY, code, message)
+        }
+    }
+
+    /// As a worker error: [`TonkWorkerError::Upstream`] with `403` for a
+    /// revocation, so a caller can tell it from a failure.
+    fn into_worker_error(self) -> TonkWorkerError {
+        if self.revoked() {
+            TonkWorkerError::Upstream {
+                status: StatusCode::FORBIDDEN.as_u16(),
+                code: self.code,
+                message: self.message,
+            }
+        } else {
+            TonkWorkerError::Internal(self.message)
+        }
+    }
+}
+
+impl std::fmt::Display for SyncFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl From<SyncFailure> for String {
+    fn from(failure: SyncFailure) -> Self {
+        failure.message
     }
 }
 
@@ -792,7 +872,7 @@ impl SpaceWriter {
                     "{error}; the writer reopens before its next write: {reopen}"
                 ));
             }
-            return Err(error);
+            return Err(error.into());
         }
         Ok(())
     }

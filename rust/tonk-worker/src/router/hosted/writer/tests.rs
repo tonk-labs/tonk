@@ -94,6 +94,34 @@ fn only_routes_that_cannot_commit_are_reads() {
 }
 
 #[dialog_common::test]
+async fn a_revoked_sync_is_answered_as_a_refusal() {
+    let revoked = SyncFailure::answered(
+        "pull",
+        StatusCode::FORBIDDEN,
+        br#"{"error":{"kind":"upstream","code":"CREDENTIAL_REVOKED","message":"remote access has been revoked"}}"#,
+    );
+    assert!(revoked.revoked());
+    let answer = revoked.answer("PULL_FAILED");
+    assert_eq!(answer.status(), StatusCode::FORBIDDEN);
+    let body: serde_json::Value =
+        serde_json::from_slice(&answer.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["code"], CREDENTIAL_REVOKED);
+    assert!(matches!(
+        revoked.into_worker_error(),
+        TonkWorkerError::Upstream { status: 403, .. }
+    ));
+
+    // Any other failed sync is still a failed sync.
+    let failed = SyncFailure::answered("pull", StatusCode::SERVICE_UNAVAILABLE, b"down");
+    assert!(!failed.revoked());
+    let answer = failed.answer("PULL_FAILED");
+    assert_eq!(answer.status(), StatusCode::BAD_GATEWAY);
+    let body: serde_json::Value =
+        serde_json::from_slice(&answer.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["code"], "PULL_FAILED");
+}
+
+#[dialog_common::test]
 fn a_page_is_taken_off_the_route() {
     let take = |uri: &str| caps::Page::take(&uri.parse::<Uri>().unwrap());
     let (page, uri) = take("/evaluate?transact=false&limit=3&cursor=6.abc").unwrap();

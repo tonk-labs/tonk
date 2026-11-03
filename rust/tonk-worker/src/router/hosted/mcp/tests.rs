@@ -764,6 +764,16 @@ concept!: &mcp-note
             if parts.uri.path() == ACCESS_ROUTE {
                 return match writer.agent_access().await {
                     Ok(access) => rpc(StatusCode::OK, serde_json::to_value(access).unwrap()),
+                    // As the Host Worker does: an upstream refusal keeps
+                    // its status and code.
+                    Err(crate::TonkWorkerError::Upstream {
+                        status,
+                        code: Some(code),
+                        message,
+                    }) => rpc(
+                        StatusCode::from_u16(status).unwrap(),
+                        json!({ "error": message, "code": code }),
+                    ),
                     Err(error) => plain(StatusCode::BAD_GATEWAY, &error.to_string()),
                 };
             }
@@ -857,7 +867,7 @@ concept!: &mcp-note
         name: Option<&str>,
         home: Option<&url::Url>,
         address: &str,
-    ) {
+    ) -> Vec<DelegationChain> {
         let chains = grants(space, &agent.did(), verbs, None, home).await;
         let session = owner(agent, remote, "approval").await;
         let writer = SpaceWriter::open(&scratch_root(), &session, &agent.did(), remote)
@@ -875,6 +885,7 @@ concept!: &mcp-note
             .await
             .unwrap();
         writer.close().await;
+        chains
     }
 
     struct Client<'a> {
@@ -905,6 +916,83 @@ concept!: &mcp-note
             let value = serde_json::from_str(&text).unwrap_or(json!(text));
             (value, error)
         }
+    }
+
+    #[dialog_common::test]
+    async fn a_revoked_grant_refuses_the_next_call_as_revoked() {
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let agent = Ed25519Signer::import(&rand::random::<[u8; 32]>())
+            .await
+            .unwrap();
+        let notes = Ed25519Signer::generate().await.unwrap();
+        for subject in [agent.did(), notes.did()] {
+            service
+                .address
+                .provision_subject(subject.as_ref())
+                .await
+                .unwrap();
+        }
+        let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+        let chains = approve(
+            &agent,
+            &remote,
+            &notes,
+            &["get", "put"],
+            Some("Notes"),
+            None,
+            remote.as_str(),
+        )
+        .await;
+
+        let writers = NativeWriters {
+            remote: remote.clone(),
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let events = Events::default();
+        let sink = events.sink();
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = recording(&key, &tickets, &writers, &sink);
+        let client = Client::connect(&endpoint, token(&agent, &remote).await).await;
+        let subject = notes.did().to_string();
+        let (result, error) = client
+            .call(
+                "tonk_evaluate",
+                json!({ "space": subject, "document": SCHEMA }),
+            )
+            .await;
+        assert!(!error, "evaluate before the revocation: {result}");
+
+        // The space's owner revokes every grant it gave, at the service.
+        for chain in &chains {
+            let leaf = crate::router::revoke_invite::leaf_cid(chain).unwrap();
+            let revocation =
+                tonk_identity::revocation::mint_root_revocation(notes.clone(), chain, &leaf)
+                    .await
+                    .unwrap();
+            crate::router::http::post_cbor(&remote, &revocation)
+                .await
+                .unwrap();
+        }
+
+        // The writer is warm and the agent space still lists the grant, so
+        // the front lets the call through; the writer's pull is refused.
+        let (result, error) = client
+            .call(
+                "tonk_evaluate",
+                json!({ "space": subject, "document": SCHEMA }),
+            )
+            .await;
+        assert!(error, "evaluate after the revocation: {result}");
+        let refused = events.last();
+        assert_eq!(
+            (refused.outcome, refused.kind.as_deref()),
+            (telemetry::Outcome::Refused, Some("credential_revoked")),
+            "{result}"
+        );
     }
 
     #[dialog_common::test]
@@ -1335,4 +1423,73 @@ fn a_rejected_request_is_invalid_and_a_refused_one_refused() {
         writer_outcome(StatusCode::GATEWAY_TIMEOUT),
         telemetry::Outcome::Error
     );
+}
+
+/// Writers whose every answer is a revoked refusal, as the writers answer
+/// once the session's grant is revoked.
+struct Revoked;
+
+impl Writers for Revoked {
+    async fn call(
+        &self,
+        _verified: &Verified,
+        _bearer: &str,
+        _mcp_session: &str,
+        _space: &Did,
+        _request: Request<Body>,
+    ) -> Response<Body> {
+        rpc(
+            StatusCode::FORBIDDEN,
+            json!({ "error": "pull: 403: revoked", "code": "CREDENTIAL_REVOKED" }),
+        )
+    }
+}
+
+#[dialog_common::test]
+async fn a_revoked_grant_is_recorded_as_a_refusal_not_a_failure() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let events = Events::default();
+    let sink = events.sink();
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let bearer = token(&agent, &home()).await;
+
+    // The session's own space: the agent space's writer refuses the read
+    // of its grants.
+    let endpoint = recording(&key, &tickets, &Revoked, &sink);
+    let session = connect(&endpoint, &bearer).await;
+    let (_, error) = call_tool(&endpoint, &bearer, &session, "tonk_list_spaces", json!({})).await;
+    assert!(error);
+    let event = events.last();
+    assert_eq!(event.outcome, telemetry::Outcome::Refused);
+    assert_eq!(event.kind.as_deref(), Some("credential_revoked"));
+
+    // A granted space: the front still lists the grant, and the space's
+    // writer is refused at its pull.
+    let writers = Scripted {
+        agent: agent.did(),
+        access: writable(&agent.did(), &space.did()),
+        answer: || {
+            rpc(
+                StatusCode::FORBIDDEN,
+                json!({ "error": "pull: 403: revoked", "code": "CREDENTIAL_REVOKED" }),
+            )
+        },
+        traces: Default::default(),
+    };
+    let endpoint = recording(&key, &tickets, &writers, &sink);
+    let session = connect(&endpoint, &bearer).await;
+    let (_, error) = call_tool(
+        &endpoint,
+        &bearer,
+        &session,
+        "tonk_evaluate",
+        json!({ "space": space.did().to_string(), "document": "x!: {}" }),
+    )
+    .await;
+    assert!(error);
+    let event = events.last();
+    assert_eq!(event.outcome, telemetry::Outcome::Refused);
+    assert_eq!(event.kind.as_deref(), Some("credential_revoked"));
 }
