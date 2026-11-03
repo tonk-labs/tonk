@@ -110,15 +110,22 @@ long-term rates (see open questions).
 
 ### 4. Tests and the field
 
-- **End-to-end test.** Write each step's times and the response
-  `Server-Timing` to a JSON file and save it as a CI artifact. Add a revoke
-  step for both grant kinds: revoke, then call until refused, within the
-  budget. Read `display.entity.*` from the person's page during the agent
-  writes.
-- **Variance.** Run the e2e test 8 times on one commit before any timing
-  becomes a gate, as `plan/perf-gates.md` says.
-- **tonk-perf.** Add the `/mcp`, `/oauth/*`, `/register`, `/authorize`,
-  `/token` and `/ucan/revoke` kinds to `classify` (`rust/tonk-perf/src/analyze.rs`).
+The general harness is the work of `plan/perf-gates.md`, which is under way:
+the diagnostics registry and its read-outs, trace capture, the stability and
+cost scenarios, the variance study, baselines, the delta report, and the
+`tonk-perf` proxy and analyzer. This plan assumes that work and adds only
+what is particular to the MCP routes:
+
+- **End-to-end test.** Add a revoke step for both grant kinds: revoke, then
+  call until refused, within the budget. Record each call's trace id and
+  `Server-Timing` with the step times, through whatever artifact the
+  baseline harness writes. Read `display.entity.*` from the person's page
+  during the agent writes.
+- **Gates.** The MCP's step counts and times go through the baseline's
+  variance study, baselines and delta report, not a harness of their own.
+  Request kinds for `/mcp`, `/oauth/*` and `/ucan/revoke` are added to
+  `tonk-perf` only if the baseline's classification does not already
+  separate them.
 - **Canary.** A scheduled agent with its own test account connects, lists,
   reads, writes, reads back and revokes, against staging and production, a
   few times an hour. It gives a success rate and times over days, which the
@@ -140,11 +147,13 @@ Each item is a separate pull request.
    code fails the budget (see the share-link note below), record today's
    value as a ratchet.
 4. **OAuth and approval events**, including `ConnectAgent` with times.
-5. **E2E timing artifact, tonk-perf kinds and the variance study.**
+5. **The MCP scenarios in the baseline gates:** the hosted-agent e2e
+   steps and their step times, read through the perf-gates harness.
 6. **Canary and field queries.**
 
 Items 1 to 3 are the minimum before reliability or speed can be stated as
-numbers. Items 4 to 6 turn the numbers into trends and alerts.
+numbers. Items 4 to 6 turn the numbers into trends and alerts. Item 5 waits
+for the perf-gates harness.
 
 ## Known gap that the measures will show
 
