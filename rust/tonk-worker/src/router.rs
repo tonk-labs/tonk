@@ -11,7 +11,6 @@ use ::axum::{
     routing::post,
     routing::put,
 };
-use tokio::sync::RwLock;
 
 use crate::worker::TonkState;
 
@@ -204,6 +203,8 @@ mod navigate;
 mod site_request;
 mod site_select;
 
+mod diagnostics;
+
 mod command;
 pub use command::{CommandEnv, CommandOrigin, CommandProviders, command_providers, dispatch};
 
@@ -215,10 +216,14 @@ mod route_table;
 mod wire_compat;
 
 /// Shared application state containing profile and operator.
-pub type AppState = Arc<RwLock<TonkState>>;
+pub type AppState = Arc<crate::StateLock<TonkState>>;
 
 fn is_profile_scoped_path(path: &str) -> bool {
-    path.starts_with("/api/") && !matches!(path, "/api/identify" | "/api/health")
+    path.starts_with("/api/")
+        && !matches!(
+            path,
+            "/api/identify" | "/api/health" | "/api/inspect/diagnostics"
+        )
 }
 
 async fn profile_context_fence(
@@ -312,7 +317,7 @@ async fn root(State(_state): State<AppState>) -> &'static str {
 /// the SW entry point can call [`LspHub::shutdown`] when a newer
 /// worker version begins installing.
 pub fn api_router(state: TonkState) -> (Router, Arc<LspHub>) {
-    api_router_from_state(Arc::new(RwLock::new(state)))
+    api_router_from_state(Arc::new(crate::StateLock::new(state)))
 }
 
 /// Largest accepted `POST …/blob` body. The handler buffers the whole
@@ -327,7 +332,7 @@ pub const BLOB_UPLOAD_LIMIT: usize = 64 * 1024 * 1024;
 /// request path, before deciding whether to dispatch into the
 /// router or pass a fetch through to the network.
 pub fn api_router_with_state(state: TonkState) -> (Router, AppState, Arc<LspHub>) {
-    let state = Arc::new(RwLock::new(state));
+    let state = Arc::new(crate::StateLock::new(state));
     let (router, hub) = api_router_from_state(state.clone());
     (router, state, hub)
 }
@@ -340,6 +345,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
     let router = Router::new()
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
+        .route(
+            "/api/inspect/diagnostics",
+            get(diagnostics::read).delete(diagnostics::reset),
+        )
         .route(
             "/api/identity/root",
             get(identity::get).post(identity::save),
@@ -2323,10 +2332,9 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_sweeps_a_tagged_repo_with_no_upstream_branches_as_a_no_op() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
         let repo = "test-bgsync-noupstream";
 
@@ -2344,10 +2352,9 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_treats_a_tag_for_an_unknown_repo_as_a_no_op() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
 
         // Nothing to retry for a repo that does not exist, so the
         // sweep resolves rather than rejecting.
@@ -2416,10 +2423,9 @@ pub mod tests {
     /// Returns the router for driving the HTTP surface.
     async fn repo_with_sibling_upstream(label: &str) -> (Router, String) {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
         let repo = put_repo(&app, label).await;
         let repo = repo.as_str();
@@ -4159,11 +4165,10 @@ employee:
     async fn it_reads_one_shot_via_the_reactor_query_effect() {
         use dialog_query::{ConceptQuery, Query as ConceptPattern};
         use std::sync::Arc;
-        use tokio::sync::RwLock;
         use tonk_schema::meta::Name;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-query-effect";
@@ -4482,10 +4487,9 @@ employee:
     #[dialog_common::test]
     async fn it_skips_broadcast_when_repoll_is_unchanged() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-noop-repoll";
@@ -4530,10 +4534,9 @@ employee:
     #[dialog_common::test]
     async fn it_prunes_dropped_subscriber_on_change() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-prune";
@@ -4586,12 +4589,11 @@ employee:
     #[dialog_common::test]
     async fn it_polls_outer_levels_before_nested_ones() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
         use tokio::sync::mpsc::unbounded_channel;
         use tonk_schema::query::Query as WireQuery;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
         let (repo, subject) = put_repo_info(&app, "test-reactor-poll-order").await;
 
@@ -4671,10 +4673,9 @@ employee:
     #[dialog_common::test]
     async fn it_records_the_level_a_subscription_request_names() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
         let repo = "test-reactor-level";
         let key = put_repo(&app, repo).await;
@@ -4724,10 +4725,9 @@ employee:
     #[dialog_common::test]
     async fn a_subscription_to_a_branch_an_earlier_release_wrote_opens_with_the_upgrading_frame() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
         let repo = "test-upgrading-frame";
         let key = put_repo(&app, repo).await;
@@ -4856,10 +4856,9 @@ employee:
     #[dialog_common::test]
     async fn it_keeps_subscription_live_across_pull() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-pull";
@@ -4939,10 +4938,9 @@ employee:
     #[dialog_common::test]
     async fn it_releases_sse_subscribers_on_shutdown() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-shutdown-releases";
