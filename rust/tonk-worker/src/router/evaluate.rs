@@ -175,7 +175,9 @@ pub async fn evaluate(
         // (its own per-branch locks) and never mutates `TonkState`, so shared access
         // suffices — same as `query`/`transact`/`sync`. The committing path serializes
         // on the branch transactor itself (see `evaluate_on_branch`).
-        let tonk_state = state.read().await;
+        // A clone rather than the guard itself: mounting a space on first use
+        // can pull it over the network, and no guard is held across that.
+        let tonk_state = state.read().await.clone();
         super::adopt::mount_on_first_use(&tonk_state, &state, &path.repo).await;
         let tonk_branch = tonk_state
             .reactor
