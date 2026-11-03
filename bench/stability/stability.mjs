@@ -258,6 +258,7 @@ for (const r of results) {
     ...r.vacuous.map((v) => `VACUOUS ${v.metric}=${v.value} (needs ${v.op} ${v.target})`),
     ...(r.observed.error ? [`ERROR ${r.observed.error}`] : []),
   ];
-  console.log(`${marks.length ? "x" : "ok"} ${r.scenario}${marks.map((m) => `\n    ${m}`).join("")}`);
+  const bad = r.failures.length || r.vacuous.length || r.observed.error;
+  console.log(`${bad ? "x" : "ok"} ${r.scenario}${marks.map((m) => `\n    ${m}`).join("")}`);
 }
 process.exit(failed.length && !recording ? 1 : 0);

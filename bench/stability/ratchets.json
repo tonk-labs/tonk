@@ -8,7 +8,11 @@
     "harness.unsettled": 1
   },
   "restart-then-stall": {
-    "display.entity.emptied": 1,
+    "display.entity.emptied": 2,
+    "harness.unsettled": 1
+  },
+  "stall-while-viewing": {
+    "display.entity.emptied": 2,
     "harness.unsettled": 1
   }
 }
