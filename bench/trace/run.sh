@@ -2,15 +2,22 @@
 # Trace the interface through the cases that make it reload or stall.
 #
 #   1. start the access service, the logging front proxy (bench/perf's
-#      tonk-perf proxy, which serves the trunk dist), and a gate in front
-#      of it that the trace switches between open, slow, offline and stalled
+#      tonk-perf proxy, which serves the trunk dist), and shaped links
+#      (`tonk-perf link`) in front of both: `page` before the proxy and
+#      `ucan` before the access service, which the browser syncs through.
+#      The trace switches them between open, slow, offline and stalled
+#      through the links' control server
 #   2. seed two spaces from a CLI "other device" and mint an invite to each
 #   3. run trace.mjs: join both in a fresh browser, then reload, switch,
 #      restart the worker, write remotely, and repeat under bad networks
 #
 # Output in bench/trace/runs/<stamp>/: events.jsonl (every DOM and network
 # event, per frame), summary.json (per scenario counts), screenshots, and
-# the proxy's requests.jsonl.
+# the proxy's requests.jsonl, and links.jsonl: every HTTP exchange that
+# crossed a link, with its kind, bytes and timing as the browser saw them.
+#
+# TRACE_PROFILE names the network the links start as (default lan; see
+# `tonk-perf profiles`); a scenario's `open` returns to it.
 #
 # Usage: bench/trace/run.sh [--dist DIR] [--notes N]
 # Expects release builds of tonk-access-local, tonk and tonk-perf (or their
@@ -36,7 +43,13 @@ echo "trace: run dir $RUN_DIR" >&2
 
 PROXY_PORT="${TRACE_PROXY_PORT:-8798}"
 GATE_PORT="${TRACE_GATE_PORT:-8799}"
+UCAN_PORT="${TRACE_UCAN_PORT:-8800}"
+CONTROL_PORT="${TRACE_CONTROL_PORT:-8801}"
+PROFILE="${TRACE_PROFILE:-lan}"
 BASE="http://127.0.0.1:$GATE_PORT"
+CONTROL="http://127.0.0.1:$CONTROL_PORT"
+# The remote the browser syncs with: the access service, through its link.
+REMOTE="http://127.0.0.1:$UCAN_PORT"
 TONK="${TRACE_TONK:-$ROOT/target/release/tonk}"
 PERF="${TRACE_PERF:-$ROOT/target/release/tonk-perf}"
 ACCESS_LOCAL="${TRACE_ACCESS_LOCAL:-$ROOT/target/release/tonk-access-local}"
@@ -46,13 +59,15 @@ done
 
 cleanup() {
   [ -n "${TRACE_KEEP:-}" ] && return 0
-  for pid in gate proxy provisioner access; do
+  for pid in links proxy provisioner access; do
     [ -f "$RUN_DIR/$pid.pid" ] && kill "$(cat "$RUN_DIR/$pid.pid")" 2>/dev/null || true
   done
 }
 trap cleanup EXIT INT TERM
 
-"$ACCESS_LOCAL" > "$RUN_DIR/access.log" 2>&1 &
+# The service's object permits must name the link, or the browser's
+# block reads and writes go around it.
+ACCESS_PUBLIC_ENDPOINT="$REMOTE" "$ACCESS_LOCAL" > "$RUN_DIR/access.log" 2>&1 &
 echo $! > "$RUN_DIR/access.pid"
 ACCESS_URL=""
 for _ in $(seq 1 60); do
@@ -79,13 +94,21 @@ echo $! > "$RUN_DIR/provisioner.pid"
 "$PERF" proxy --listen "$PROXY_PORT" --ucan "$ACCESS_URL" --root "$DIST" \
   --latency-ms 0 --bandwidth-kbps 0 --log "$RUN_DIR/requests.jsonl" > "$RUN_DIR/proxy.log" 2>&1 &
 echo $! > "$RUN_DIR/proxy.pid"
-node "$ROOT/bench/trace/gate.mjs" "$GATE_PORT" "http://127.0.0.1:$PROXY_PORT" > "$RUN_DIR/gate.log" 2>&1 &
-echo $! > "$RUN_DIR/gate.pid"
 for _ in $(seq 1 20); do
-  grep -q PROXY_READY "$RUN_DIR/proxy.log" 2>/dev/null && grep -q GATE_READY "$RUN_DIR/gate.log" && break
+  grep -q PROXY_READY "$RUN_DIR/proxy.log" 2>/dev/null && break
   sleep 0.5
 done
-curl -fso /dev/null "$BASE/" || { echo "trace: gate not serving" >&2; exit 1; }
+"$PERF" link --profile "$PROFILE" --control "$CONTROL_PORT" \
+  --link "page=$GATE_PORT:127.0.0.1:$PROXY_PORT" \
+  --link "ucan=$UCAN_PORT:$ACCESS_URL" \
+  --log "$RUN_DIR/links.jsonl" > "$RUN_DIR/links.log" 2>&1 &
+echo $! > "$RUN_DIR/links.pid"
+for _ in $(seq 1 20); do
+  grep -q LINK_CONTROL "$RUN_DIR/links.log" 2>/dev/null && break
+  sleep 0.5
+done
+curl -fso /dev/null "$BASE/" || { echo "trace: links not serving" >&2; exit 1; }
+echo "trace: network $PROFILE, control $CONTROL" >&2
 
 # The CLI is a second device with no account: a device-rooted space is
 # enough to seed, push and invite. Keep its state inside the run.
@@ -98,15 +121,19 @@ seed_space() { # seed_space <name> -> prints DID
   did="$(printf '%s\n' "$out" | sed -n 's/^DID: //p' | head -1)"
   curl -fso /dev/null -X POST "$ACCESS_URL/_test/provision" \
     -H 'Content-Type: application/json' -d "{\"subject\":\"$did\"}"
+  # The CLI is another device on another network: it pushes to the
+  # service directly, so a stalled link never holds up a remote write.
+  # Its invites name the link, the address the browser syncs through.
   TONK_SPACE="$name" "$TONK" remote add origin "$ACCESS_URL/ucan/" >&2
+  TONK_SPACE="$name" "$TONK" remote add browser "$REMOTE/ucan/" >&2
   TONK_SPACE="$name" "$TONK" remote set-upstream origin >&2
   TONK_SPACE="$name" TONK="$TONK" PERF_NOTES="$NOTES" "$ROOT/bench/perf/seed.sh" >&2
   TONK_SPACE="$name" "$TONK" push >&2 || { echo "trace: push of $name failed" >&2; exit 1; }
   printf '%s' "$did"
 }
-invite() { # invite <name> -> invite URL on the gate's origin
+invite() { # invite <name> -> invite URL on the page link's origin
   local url
-  url="$(TONK_SPACE="$1" "$TONK" invite --remote origin | tr -d '[:space:]')"
+  url="$(TONK_SPACE="$1" "$TONK" invite --remote browser | tr -d '[:space:]')"
   printf '%s%s' "$BASE" "$(printf '%s' "$url" | sed -E 's#^https?://[^/]+##')"
 }
 DID_A="$(seed_space trace-a)" || exit 1
@@ -114,7 +141,7 @@ DID_B="$(seed_space trace-b)" || exit 1
 echo "trace: seeded $DID_A and $DID_B" >&2
 
 jq -n \
-  --arg out "$RUN_DIR" --arg base "$BASE" --arg gate "$BASE" \
+  --arg out "$RUN_DIR" --arg base "$BASE" --arg gate "$CONTROL" \
   --arg invite "$(invite trace-a)" --arg inviteB "$(invite trace-b)" \
   --arg a "$DID_A" --arg b "$DID_B" --arg tonk "$TONK" \
   --arg state "$TONK_SPACES_STATE" \
