@@ -337,14 +337,21 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       );
       assert.equal(removal.pending, true, 'a link grant asks for the passkey');
       assert.deepEqual(removal, { pending: true, removed: true }, JSON.stringify(removal));
-      // Here the hosted agent has already pulled the retraction, so it
-      // refuses on its own list. That the access service refuses cached
-      // copies of the grants is checked natively in
+      // Not necessarily on the next call: an open session reuses the
+      // access service's read permits for a few minutes (dialog's permit
+      // cache), and the hosted agent drops the space from its own list
+      // once the retraction syncs. Refusal of cached grants by the access
+      // service itself is checked natively in
       // `the_account_withdraws_a_link_grant_as_its_agent`.
-      const denied = await client.callTool({
-        name: 'tonk_query',
-        arguments: { space: subject, document: 'concept:\n' },
-      });
+      let denied;
+      const deadline = Date.now() + 60_000;
+      do {
+        denied = await client.callTool({
+          name: 'tonk_query',
+          arguments: { space: subject, document: 'concept:\n' },
+        });
+        if (!denied.isError) await new Promise((resolve) => setTimeout(resolve, 3000));
+      } while (!denied.isError && Date.now() < deadline);
       assert.equal(denied.isError, true, `${name} still read after the revocation`);
     });
 
