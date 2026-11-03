@@ -57,6 +57,9 @@ await cdp.send("ServiceWorker.enable");
 let topLoads = 0;
 page.on("load", () => topLoads++);
 
+// What the last unsettled sample saw, for a scenario that never settles.
+let lastUnsettled = null;
+
 // Content in a guest and no loading pulse anywhere for `quiet` ms.
 async function settled(limit = 60_000, quiet = 1_000) {
   const t0 = Date.now();
@@ -77,6 +80,7 @@ async function settled(limit = 60_000, quiet = 1_000) {
         ).catch(() => ({ pulse: false, text: 0 })),
       ),
     );
+    lastUnsettled = { pulsing: state.flatMap((s, i) => (s.pulse ? [i ? `guest:${i}` : "top"] : [])), guest_text: state.slice(1).map((s) => s.text) };
     if (!state.some((s) => s.pulse) && state.slice(1).some((s) => s.text > 0)) {
       quietSince ??= Date.now();
       if (Date.now() - quietSince >= quiet) return quietSince - t0;
@@ -130,6 +134,9 @@ async function scenario(name, body) {
   const collector = new Collector(page);
   await collector.reset();
   topLoads = 0;
+  // Sample once before the body runs, so a realm the body destroys at once
+  // (the worker a restart stops) is seen at least once.
+  await collector.sample();
   collector.start();
   let observed = {};
   try {
@@ -189,7 +196,8 @@ for (const [name, mode] of [
     await network(mode);
     await page.waitForTimeout(Number(process.env.STABILITY_OUTAGE_MS ?? 20_000));
     await network("shaped");
-    return { settled_ms: await settled(60_000) };
+    const settled_ms = await settled(60_000);
+    return settled_ms === null ? { settled_ms, unsettled: lastUnsettled } : { settled_ms };
   });
 }
 
