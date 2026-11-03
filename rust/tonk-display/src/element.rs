@@ -1964,6 +1964,7 @@ fn mount_notation_fallback(host: &Element, state: &Rc<RefCell<Inner>>, conclusio
     if s.disposed || s.default_slide || !s.slides.is_empty() {
         return;
     }
+    state::replace_retained(host);
     let _ = host.append_child(&notation);
     s.slides.insert(
         "__notation__".to_owned(),
@@ -2051,6 +2052,7 @@ fn mount_portal_slide(host: &Element, inner: &Inner, display: &str) -> Option<Sl
             &JsValue::from_str(descriptor),
         );
     }
+    state::replace_retained(host);
     let _ = host.append_child(&portal);
     Some(Slide {
         display: display.to_owned(),
@@ -2878,6 +2880,7 @@ fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool
         s.notation_item = Some(item);
     }
 
+    state::replace_retained(host);
     let _ = host.append_child(&carousel);
     s.carousel = Some(carousel);
 }
@@ -3155,6 +3158,7 @@ fn mount_view_slide(
         // No carousel chrome — the slide *is* the `<tonk-view>`.
         // `item` is the same element as `view_el` so removal /
         // identity checks elsewhere work uniformly.
+        state::replace_retained(host);
         let _ = host.append_child(&view_el);
         view_el.clone()
     };

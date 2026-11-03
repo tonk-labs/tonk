@@ -172,9 +172,11 @@ const RETAINED_ATTR: &str = "data-tonk-display-retained";
 ///
 /// Every rendered child (not an embedder's `[slot]` child) is marked
 /// retained and made `inert`, since it may belong to the subject the
-/// display no longer shows, and the host is marked `aria-busy`. The next
-/// state other than loading or upgrading drops them: [`set`],
-/// [`set_absence`] and [`set_error`] all do. Returns how many children
+/// display no longer shows, and the host is marked `aria-busy`. They go
+/// when the restarted flow mounts content of its own
+/// ([`replace_retained`]) or reaches a state other than loading or
+/// upgrading ([`set`], [`set_absence`], [`set_error`]), whichever is
+/// first. Returns how many children
 /// are retained.
 #[cfg(target_arch = "wasm32")]
 pub fn retain_rendered(host: &Element) -> usize {
@@ -199,6 +201,16 @@ pub fn retain_rendered(host: &Element) -> usize {
 #[cfg(target_arch = "wasm32")]
 fn has_retained(host: &Element) -> bool {
     host.has_attribute(RETAINED_ATTR)
+}
+
+/// Remove the children [`retain_rendered`] kept because the restarted flow
+/// is about to mount its own content in their place. Called right before
+/// that content is appended, so the two never sit side by side: a second
+/// copy of a page's controls, even an inert one, is still the first match
+/// for anything that looks them up in the document.
+#[cfg(target_arch = "wasm32")]
+pub fn replace_retained(host: &Element) {
+    drop_retained(host, State::Ready);
 }
 
 /// Remove the children [`retain_rendered`] kept, now that the flow has
