@@ -651,7 +651,7 @@ pub(crate) mod tests {
             // Install the registry on the state so `dispatch` sees it.
             {
                 let mut tonk = state.write().await;
-                tonk.commands = CommandProviders::new(
+                tonk.shared_mut().commands = CommandProviders::new(
                     CommandRegistry::new().command::<Ping>(),
                     CommandRegistry::new(),
                 );
@@ -681,7 +681,7 @@ pub(crate) mod tests {
             let (state, _env) = env().await;
             {
                 let mut tonk = state.write().await;
-                tonk.commands = CommandProviders::new(
+                tonk.shared_mut().commands = CommandProviders::new(
                     CommandRegistry::new().command::<Ping>(),
                     CommandRegistry::new(),
                 );
@@ -733,11 +733,11 @@ pub(crate) mod tests {
             let state = TonkState::from_parts(
                 session.operator,
                 session.expires_at,
+                crate::router::repository::PROFILE_BRANCH.to_owned(),
                 crate::worker::TonkShared {
                     profile,
                     storage,
                     profile_name: name.clone(),
-                    active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
                     reactor,
                     admission: Default::default(),
                     reject_admission_content_reads: Default::default(),

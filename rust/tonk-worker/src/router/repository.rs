@@ -9814,12 +9814,12 @@ route!: &foreign-profile-route
         TonkState::from_parts(
             session.operator,
             session.expires_at,
+            crate::router::repository::PROFILE_BRANCH.to_owned(),
             crate::worker::TonkShared {
                 seed_upgrades: Default::default(),
                 profile: profile.clone(),
                 storage,
                 profile_name: name.clone(),
-                active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
                 reactor: crate::Reactor::new(profile.credential().clone()),
                 admission: Default::default(),
                 reject_admission_content_reads: Default::default(),

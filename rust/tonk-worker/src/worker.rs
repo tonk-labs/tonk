@@ -393,19 +393,27 @@ pub struct TonkState {
     /// seconds. Consulted by the sync drain, which rotates the session
     /// as this approaches.
     pub session_expires_at: u64,
+    /// The branch of the profile repository this state is on: the
+    /// account's branch when signed in, an upstream-less one when not.
+    /// Read from `meta` at boot; a switch records a new active branch
+    /// there and rebuilds the state, so it is fixed for one state's life.
+    pub active_branch: String,
     shared: Arc<TonkShared>,
 }
 
 impl TonkState {
-    /// A state over `shared`, acting as `operator` until `session_expires_at`.
+    /// A state over `shared` on `active_branch`, acting as `operator`
+    /// until `session_expires_at`.
     pub fn from_parts(
         operator: DefaultOperator,
         session_expires_at: u64,
+        active_branch: String,
         shared: TonkShared,
     ) -> Self {
         Self {
             operator,
             session_expires_at,
+            active_branch,
             shared: Arc::new(shared),
         }
     }
@@ -430,15 +438,11 @@ impl std::ops::Deref for TonkState {
 }
 
 /// What a [`TonkState`] shares with its clones: everything but the
-/// operator, which a session renewal replaces.
+/// operator, which a session renewal replaces, and the small values
+/// beside it.
 pub struct TonkShared {
     /// The user's persistent profile.
     pub profile: DefaultProfile,
-    /// The branch of the profile repository this state is on: the
-    /// account's branch when signed in, an upstream-less one when not.
-    /// Read from `meta` at boot; a switch records a new active branch
-    /// there and rebuilds the state, so it is fixed for one state's life.
-    pub active_branch: String,
     /// The storage pool every space is mounted in. Held so a rotated
     /// operator can be built over the *same* pool: a replacement with
     /// its own would leave the reactor's cached repository and branch
@@ -1951,9 +1955,9 @@ async fn open_state(
     Ok(TonkState::from_parts(
         session.operator,
         session.expires_at,
+        active_branch,
         crate::worker::TonkShared {
             profile,
-            active_branch,
             storage,
             profile_name,
             reactor,

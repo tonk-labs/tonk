@@ -79,12 +79,12 @@ pub async fn test_state_without_root() -> TonkState {
     TonkState::from_parts(
         session.operator,
         session.expires_at,
+        crate::router::repository::PROFILE_BRANCH.to_owned(),
         crate::worker::TonkShared {
             seed_upgrades: Default::default(),
             profile,
             storage,
             profile_name,
-            active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
             reactor,
             admission: Default::default(),
             reject_admission_content_reads: Default::default(),
