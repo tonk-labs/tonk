@@ -1,14 +1,5 @@
 {
   "switch-spaces": {
-    "display.removed.restart": 4,
-    "site.guest_boot.navigation": 4
-  },
-  "remote-write-while-viewing": {
-    "display.entity.emptied": 2,
-    "harness.unsettled": 1
-  },
-  "restart-then-stall": {
-    "display.entity.emptied": 1,
-    "harness.unsettled": 1
+    "display.removed.restart": 4
   }
 }
