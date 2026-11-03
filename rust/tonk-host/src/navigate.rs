@@ -211,11 +211,18 @@ pub fn navigate_to(href: &str) {
     }
 }
 
-/// Reload the top page, forwarding through every sealed guest boundary.
+/// Reload the top page.
 ///
 /// Unlike [`navigate_to`], this deliberately refreshes an unchanged route.
 /// Account-profile activation swaps the service worker's entire active state;
 /// rebuilding the page is what drops subscriptions owned by the old profile.
+///
+/// Only the page reloads itself, when the worker reports a profile change.
+/// The guest bridge has no `reload`, so in a guest [`page_effect::forward`]
+/// finds nothing to call and drops the reload: no guest, including content
+/// from a shared space, can reload the whole app.
+///
+/// [`page_effect::forward`]: crate::page_effect::forward
 pub fn reload_page() {
     if crate::page_effect::forward("reload", "") {
         return;
@@ -465,16 +472,16 @@ mod tests {
         );
     }
 
-    /// A profile switch initiated inside a sealed Hub must reload the top
-    /// page, not the opaque guest document that requested it.
+    /// A guest cannot reload the app: its bridge has no `reload`, so the
+    /// request is dropped, neither performed on the guest nor passed up.
     #[dialog_common::test]
-    async fn it_forwards_a_reload_from_a_guest_instead_of_reloading_it() {
+    async fn it_drops_a_reload_from_a_guest() {
         let before = window()
             .expect("a window in the test harness")
             .location()
             .href()
             .expect("a location href");
-        let calls = install_effect_stub("reload");
+        let calls = install_effect_stub("navigate");
 
         reload_page();
 
@@ -485,8 +492,7 @@ mod tests {
             .expect("a location href");
         clear_tonk();
 
-        assert_eq!(calls.length(), 1, "the parent should be called once");
-        assert_eq!(calls.get(0).as_string().as_deref(), Some(""));
-        assert_eq!(before, after, "a forwarded reload must spare this guest");
+        assert_eq!(calls.length(), 0, "nothing should reach the parent");
+        assert_eq!(before, after, "a guest must not reload itself");
     }
 }

@@ -493,7 +493,10 @@ pub async fn join(
     State(state): State<AppState>,
     Json(body): Json<JoinRequest>,
 ) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
-    let tonk = state.write().await;
+    // A read guard, as the page's join command takes: the join is network
+    // bound (a pull, validation and roster reads against the remote), and
+    // a write guard held across it stalls every other request.
+    let tonk = state.read().await;
     let outcome = join_invite_as(&tonk, &body.url, body.agent).await?;
     log!(
         "POST /api/profile/join -> subject {} (key {})",
@@ -769,7 +772,7 @@ async fn prepare_join(tonk: &TonkState, url: &str) -> Result<PreparedJoin, JoinF
     prepare_parsed_join(tonk, parse_invite(url).await?).await
 }
 
-async fn parse_invite(url: &str) -> Result<Invite, JoinFailure> {
+pub(crate) async fn parse_invite(url: &str) -> Result<Invite, JoinFailure> {
     if let Some(ticket) = Ticket::parse_url(url)
         .map_err(|error| JoinFailure::malformed(format!("invite did not parse: {error}")))?
     {
@@ -991,30 +994,53 @@ async fn perform_join(
     }
 
     // Every claim, including a renewal, lands its roster/provenance/name
-    // facts as an ordinary commit; the next sync tick pushes them.
-    let (changes, _already_claimed) = claim_changes(
-        tonk,
-        &branch,
-        &tonk.operator,
-        &prepared.invitation,
-        &prepared.invitation_execution,
-        &prepared.inviter,
-        &prepared.member,
-        &prepared.subject,
-        agent,
-    )
-    .await?;
-    if !changes.is_empty() {
-        branch
+    // facts as an ordinary commit; the next sync tick pushes them. Nothing
+    // holds other writers of this branch off meanwhile (a space's seeding
+    // commits into it in the background), so a commit that loses the
+    // head's race is computed again on the head that won.
+    const CLAIM_ATTEMPTS: usize = 4;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let (changes, _already_claimed) = claim_changes(
+            tonk,
+            &branch,
+            &tonk.operator,
+            &prepared.invitation,
+            &prepared.invitation_execution,
+            &prepared.inviter,
+            &prepared.member,
+            &prepared.subject,
+            agent,
+        )
+        .await?;
+        if changes.is_empty() {
+            break;
+        }
+        match branch
             .transaction()
             .assert(changes)
             .commit()
             .publish()
             .perform(&tonk.operator)
             .await
-            .map_err(|error| {
-                JoinFailure::claim_failed(format!("failed to commit the claim: {error}"))
-            })?;
+        {
+            Ok(_) => break,
+            Err(dialog_repository::CommitError::Publish(
+                dialog_repository::PublishError::VersionMismatch { .. },
+            )) if attempt < CLAIM_ATTEMPTS => {
+                branch.refresh(&tonk.operator).await.map_err(|error| {
+                    JoinFailure::claim_failed(format!(
+                        "failed to read the content branch again: {error}"
+                    ))
+                })?;
+            }
+            Err(error) => {
+                return Err(JoinFailure::claim_failed(format!(
+                    "failed to commit the claim: {error}"
+                )));
+            }
+        }
     }
 
     // The reactor may hold a handle from an earlier attempt at this key;
@@ -2710,7 +2736,7 @@ mod invite_name_tests {
 
         let (owner, _service, _root, remote) =
             crate::router::account_state::tests::ready_account_state(None).await;
-        let owner: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(owner));
+        let owner: crate::router::AppState = std::sync::Arc::new(crate::StateLock::new(owner));
         let key = super::super::repository::create_space_inner(&owner, "Elsewhere", None)
             .await
             .expect("the space creates");
@@ -4344,7 +4370,7 @@ mod renewal_tests {
         )
         .await
         .expect("the root persists");
-        let state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let state: AppState = std::sync::Arc::new(crate::StateLock::new(tonk));
         let key = super::super::repository::create_space_inner(&state, "Renewed", None)
             .await
             .expect("the space creates");

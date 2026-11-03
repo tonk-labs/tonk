@@ -286,6 +286,70 @@ jobs:
           SHARD_RESULT: '${{ needs.e2e-shard.result }}'
         run: test "$SHARD_RESULT" = success
 
+  # bench/stability: browser scenarios (space switch, worker restart, remote
+  # write, stall, offline) that check the diagnostics counters against fixed
+  # invariants and the ratchets in bench/stability/ratchets.json. Not a
+  # required check while its run-to-run spread on CI runners is measured.
+  stability:
+    if: inputs.version == ''
+    name: 'Stability scenarios'
+    needs: ['e2e-cli-build', 'e2e-browser-build']
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha || github.sha }}
+      - uses: wimpysworld/nothing-but-nix@main
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-cli
+          path: e2e-cli
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-browser
+          path: e2e-browser
+      - name: Restore the CLI, the web build and the native stack
+        shell: bash
+        run: |
+          gzip -dc e2e-cli/closure.nar.gz | nix-store --import
+          cat e2e-cli/paths.env >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/tonk-ui"
+          tar -xzf e2e-browser/e2e-browser.tar.gz -C "$RUNNER_TEMP/tonk-ui"
+          time nix build --accept-flake-config --print-build-logs --no-link .#tonk-bench-stack
+          stack="$(nix eval --raw .#tonk-bench-stack.outPath)"
+          echo "TRACE_ACCESS_LOCAL=$stack/bin/tonk-access-local" >> "$GITHUB_ENV"
+          echo "TRACE_PERF=$stack/bin/tonk-perf" >> "$GITHUB_ENV"
+      - name: Run the stability scenarios
+        shell: bash
+        run: |
+          nix develop --accept-flake-config .#ci --command bash -c '
+            set -euo pipefail
+            npm install --prefix "$RUNNER_TEMP/pw" --no-save --no-audit --no-fund playwright@1.63.0
+            export NODE_PATH="$RUNNER_TEMP/pw/node_modules" PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+            export TRACE_TONK="$TONK_BIN" TRACE_DRIVER=bench/stability/stability.mjs DO_NOT_TRACK=1
+            bench/trace/run.sh --dist "$RUNNER_TEMP/tonk-ui"
+          '
+      - name: Upload the stability results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stability
+          path: |
+            bench/trace/runs/*/stability.json
+            bench/trace/runs/*/*.png
+            bench/trace/runs/*/*.log
+            bench/trace/runs/*/requests.jsonl
+          if-no-files-found: ignore
+          retention-days: 14
+
   service-worker:
     name: 'Service-worker lifecycle tests'
     runs-on: 'ubuntu-latest'

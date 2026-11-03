@@ -18,6 +18,17 @@ A write to a `read` space is refused: ask the person to grant read and write
 rather than retrying or writing somewhere else. If you need a space that is not
 listed, ask the person to grant it to you.
 
+## Joining a space from a link
+
+When the person gives you a Tonk invite link (`/space/...#...`, `/@/...`, or
+one with `access=`), call `tonk_join_space` with the whole link. It joins
+nothing: it shows a card where the person chooses your access, read or read and
+write, and lets you join. You join as yourself, this connection's agent, not as
+the person; say so when you ask. Do not call it again or claim you joined until
+the card tells you; then the space is in `tonk_list_spaces`. If the host shows
+no card, ask the person to grant you the space in Tonk at {origin}. A link is a
+key to the space: never repeat it back or write it into a space.
+
 ## Reading and writing
 
 `tonk_query` reads and never changes anything. `tonk_evaluate` writes: it
@@ -46,10 +57,28 @@ subject as `this:`.
 
 ## Views
 
-This connection cannot render views, for you or for the person. You can author
-views with notation, but you cannot see them. Say so, and ask the person to open
-the space in Tonk at {origin} to check how it looks. Never describe a query as
-proof that something renders or that a control works.
+`tonk_open_space` shows a route of a space to the person, inline in the chat
+and live, as the space's own page renders it. Use it when the person wants to
+see or work with something in a space: pass the exact `subject` and a path,
+`/` or a route the space defines, with entity URIs read back from `tonk_query`.
+The person can change a `read-write` space from its view; a `read` space shows
+read-only. Hosts without inline views show nothing; then point the person to
+the space in Tonk at {origin}.
+
+`tonk_outline` lists the views a space renders as a tree, each node with the
+route that shows it alone. To show one part of a larger page, such as one list,
+outline the space and pass that node's `route` to `tonk_open_space` as `view`.
+Outline records show how many items a view rendered; a node with an `error`
+did not render. A list's node also has `items`: each record it rendered, with
+its fields and a `route` that shows that one record as it looks in the list,
+controls included. To show one record, such as one to-do, pass its item's
+`route` as `view`. A record that a nested view shows has that view's node as
+its route instead.
+
+You cannot see a view, whether you show it or author it with notation. Never
+claim that one rendered or that a control works, and never describe a query as
+proof of either; ask the person how it looks, or ask them to open the space in
+Tonk at {origin} to check.
 
 ## Manuals
 

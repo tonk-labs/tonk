@@ -2770,7 +2770,7 @@ mod push_conflict_tests {
     /// long as it ran; the swap now tells it to give way.
     #[dialog_common::test]
     async fn it_releases_a_held_state_guard_when_a_profile_swap_begins() {
-        let state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let state: AppState = std::sync::Arc::new(crate::StateLock::new(test_state().await));
         let held = {
             let state = state.clone();
             tokio::spawn(async move {

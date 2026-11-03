@@ -605,7 +605,7 @@ mod store_tests {
         waiting_on(&state, "r1").await;
 
         let delivered = answer(&state, &callback("r1", &encoded)).await.unwrap();
-        let app_state = std::sync::Arc::new(tokio::sync::RwLock::new(state));
+        let app_state = std::sync::Arc::new(crate::StateLock::new(state));
         let state = adopt(&app_state, None, delivered).await.unwrap();
 
         let root = super::super::identity::local_root(&state).await.unwrap();
@@ -715,7 +715,7 @@ mod store_tests {
         let (encoded, _) = delivery_for(74, &state.profile.did()).await;
         waiting_on(&state, "r1").await;
         let delivered = answer(&state, &callback("r1", &encoded)).await.unwrap();
-        let app_state = std::sync::Arc::new(tokio::sync::RwLock::new(state));
+        let app_state = std::sync::Arc::new(crate::StateLock::new(state));
         let state = adopt(&app_state, None, delivered).await.unwrap();
 
         // What the account's branch brings once it syncs in: the key its
@@ -809,8 +809,7 @@ mod store_tests {
 
     #[dialog_common::test]
     async fn it_refuses_a_grant_addressed_to_another_device() {
-        let app_state =
-            std::sync::Arc::new(tokio::sync::RwLock::new(test_state_without_root().await));
+        let app_state = std::sync::Arc::new(crate::StateLock::new(test_state_without_root().await));
         let device = app_state.read().await.profile.did();
         let (valid, _) = delivery_for(73, &device).await;
         let selected = adopt(&app_state, None, decode_delivery(&valid).unwrap())
