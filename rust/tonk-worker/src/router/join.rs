@@ -484,7 +484,10 @@ pub async fn join(
     State(state): State<AppState>,
     Json(body): Json<JoinRequest>,
 ) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
-    let tonk = state.write().await;
+    // A read guard, as the page's join command takes: the join is network
+    // bound (a pull, validation and roster reads against the remote), and
+    // a write guard held across it stalls every other request.
+    let tonk = state.read().await;
     let outcome = join_invite(&tonk, &body.url).await?;
     log!(
         "POST /api/profile/join -> subject {} (key {})",

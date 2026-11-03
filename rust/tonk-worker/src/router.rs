@@ -5484,6 +5484,186 @@ mod approval_stall_diagnosis {
         );
     }
 
+    /// Requests that commit, export, create a space or hydrate a starter
+    /// image answer while a sync holds its read guard across a round trip
+    /// the remote never answers.
+    ///
+    /// Each of these used to take the state's write guard, which waits for
+    /// every reader to finish. With a sync in flight that is the whole
+    /// round trip, and while the writer waits, every request after it waits
+    /// too. The remote here accepts the connection and never answers, so a
+    /// route that still took the write guard would never answer at all.
+    #[test]
+    fn writing_routes_answer_while_a_sync_waits_on_its_remote() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(writing_routes_during_a_stalled_sync());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn writing_routes_during_a_stalled_sync() {
+        use super::repository::{
+            BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
+        };
+        use dialog_remote_ucan::UcanAddress;
+        use dialog_repository::SiteAddress;
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/ucan/", listener.local_addr().unwrap());
+        let (app, state, _lsp) = super::api_router_with_state(test_state().await);
+        let repo = put_repo(&app, "stalled-sync-writers").await;
+        let config = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(&endpoint))),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        let attached = send(
+            &app,
+            "POST",
+            &format!("/api/repository/{repo}/remote"),
+            "application/json",
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .await;
+        assert_eq!(attached.0, StatusCode::OK);
+
+        let syncing = super::sync::sync(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(super::sync::SyncPath {
+                repo: repo.clone(),
+                branch: "main".into(),
+            }),
+        );
+        tokio::pin!(syncing);
+        // Drive the sync until it waits on the remote with its read guard
+        // held, keeping every connection it opens unanswered.
+        let mut sockets = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            tokio::select! {
+                accepted = listener.accept() => sockets.push(accepted.unwrap().0),
+                result = &mut syncing => panic!("sync returned before reaching remote: {result:?}"),
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                    if !sockets.is_empty() && state.try_write().is_err() {
+                        break;
+                    }
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "the sync never waited on its remote holding its read guard"
+                    );
+                }
+            }
+        }
+
+        let branch = format!("/api/repository/{repo}/branch/main");
+        let requests: Vec<(&str, String, &str, Vec<u8>)> = vec![
+            (
+                "POST",
+                format!("{branch}/claim/assert/test:stalled/test/name"),
+                "text/plain",
+                b"asserted".to_vec(),
+            ),
+            (
+                "POST",
+                format!("{branch}/claim/retract/test:stalled/test/name"),
+                "text/plain",
+                b"asserted".to_vec(),
+            ),
+            (
+                "POST",
+                format!("{branch}/blob"),
+                "text/plain",
+                b"uploaded while a sync waits".to_vec(),
+            ),
+            (
+                "GET",
+                format!("{branch}/blob/blob:CmZq5URy2ucFKNyZCFUtHiNvEaUNK4Z8UstvzwbjREFG"),
+                "",
+                Vec::new(),
+            ),
+            ("GET", format!("{branch}/export"), "", Vec::new()),
+            (
+                "PUT",
+                "/api/repository/created-while-a-sync-waits".to_owned(),
+                "application/json",
+                b"{}".to_vec(),
+            ),
+        ];
+        for (method, uri, content_type, body) in requests {
+            let answered = tokio::time::timeout(
+                Duration::from_secs(10),
+                send(&app, method, &uri, content_type, body),
+            )
+            .await;
+            let Ok((status, body)) = answered else {
+                panic!("{method} {uri} waited on the sync's round trip");
+            };
+            assert!(
+                status.is_success(),
+                "{method} {uri}: {status}: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        // Into another space: an import after a blob upload on the same
+        // branch loses its head race, a separate defect.
+        let other = put_repo(&app, "imported-while-a-sync-waits").await;
+        let imported = tokio::time::timeout(
+            Duration::from_secs(10),
+            send(
+                &app,
+                "POST",
+                &format!("/api/repository/{other}/branch/main/import"),
+                "text/csv",
+                b"the,of,as,is,cause\n".to_vec(),
+            ),
+        )
+        .await
+        .expect("an import waited on the sync's round trip");
+        assert!(imported.0.is_success(), "import: {}", imported.0);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut syncing)
+                .await
+                .is_err(),
+            "the sync is still waiting on its remote"
+        );
+    }
+
+    async fn send(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> (StatusCode, Vec<u8>) {
+        let mut request = Request::builder().uri(uri).method(method);
+        if !content_type.is_empty() {
+            request = request.header("content-type", content_type);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, body.to_vec())
+    }
+
     #[dialog_common::test]
     async fn completed_authorization_returns_before_the_status_lock_is_available() {
         use dialog_query::{Output as _, Query};

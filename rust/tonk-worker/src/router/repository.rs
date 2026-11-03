@@ -260,7 +260,10 @@ pub async fn put_repository(
             .map_err(|e| TonkWorkerError::Router(format!("Invalid request body: {}", e)))?
     };
 
-    let tonk = state.write().await;
+    // A read lock: creating mutates nothing the state holds, and custody,
+    // retention and provisioning are round trips a write lock would hold
+    // every other request behind (see `create_unseeded_space_from_seed`).
+    let tonk = state.read().await;
 
     // Create the repository and everything that comes with it —
     // delegation, remotes, branches, upstreams, meta facts. This
@@ -3575,7 +3578,10 @@ pub(super) async fn create_space_from_seed(
         RepositoryConfiguration::default().branch("main", BranchConfiguration::default());
 
     let (subject, key, branches) = {
-        let tonk = state.write().await;
+        // A read lock: creating mutates nothing the state holds, and custody,
+        // retention and provisioning are round trips a write lock would hold
+        // every other request behind (see `create_unseeded_space_from_seed`).
+        let tonk = state.read().await;
 
         // Create the repository (records the replica with status:blank).
         // `name` is the display label; the identity is freshly minted.
@@ -3640,7 +3646,11 @@ pub(super) async fn enable_sync_inner(
     key: &str,
     remote: &str,
 ) -> Result<(), RepositoryError> {
-    let tonk = state.write().await;
+    // A read guard, as the other callers of the lock-free core take: the
+    // attach provisions the space with the access service and records the
+    // mount in the account directory, both round trips, and a write guard
+    // held across them stalls every other request.
+    let tonk = state.read().await;
     enable_sync_for_repository(&tonk, key, remote, true).await
 }
 
@@ -8221,7 +8231,9 @@ pub async fn attach_remote(
             .map_err(|e| TonkWorkerError::Router(format!("Invalid request body: {e}")))?
     };
 
-    let tonk = state.write().await;
+    // A read guard: provisioning is a round trip to the access service,
+    // and the remote configuration commits serialize on their branch.
+    let tonk = state.read().await;
 
     let repository = tonk
         .profile
