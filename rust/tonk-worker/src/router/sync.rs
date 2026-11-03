@@ -1661,6 +1661,14 @@ impl SyncQueue {
             .unwrap_or_default()
     }
 
+    /// Whether `repo` is waiting to sync.
+    #[cfg(test)]
+    pub fn is_dirty(&self, repo: &str) -> bool {
+        self.dirty
+            .lock()
+            .is_ok_and(|dirty| dirty.contains_key(repo))
+    }
+
     /// Record that `repo` has un-pushed local commits. `now` is a caller-
     /// supplied monotonic-ish timestamp (the SW stamps `Date.now()` at the
     /// event boundary — the reactor's deterministic paths can't read a clock).
