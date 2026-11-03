@@ -701,16 +701,14 @@ async fn reopen(
 /// `PRINCIPAL_KEY` are its own, and nothing it makes public opens a held
 /// key, so they are copied here as dialog's own tests copy them; the
 /// test `it_opens_a_held_agent_key_with_the_account` fails if they drift.
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 const DIALOG_SPACE_KEY: &str = "dialog.space/key";
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 const DIALOG_PRINCIPAL_KEY: &str = "dialog.principal/key";
 
 /// Open the key of `agent`, which this browser's peer holds sealed to
 /// the account `root`, as the account: what lets the agent sign a new
-/// session without its key ever being sealed to anyone else.
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-async fn open_held(
+/// session, or withdraw grants issued to it, without its key ever being
+/// sealed to anyone else.
+pub(super) async fn open_held(
     tonk: &crate::TonkState,
     root: &Ed25519Signer,
     agent: &Did,
@@ -754,7 +752,7 @@ async fn open_held(
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 /// Mark the agent space as one, and note which provider's apps it is for.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-async fn mark(
+pub(super) async fn mark(
     tonk: &crate::TonkState,
     key: &str,
     agent: &Did,

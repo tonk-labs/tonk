@@ -29,6 +29,8 @@ use super::{
 };
 use crate::{TonkState, TonkWorkerError};
 
+pub(crate) mod withdraw;
+
 /// One agent and the spaces it can reach.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
