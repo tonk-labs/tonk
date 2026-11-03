@@ -1120,9 +1120,13 @@ fn clear_host(host: &Element, inner: &mut Inner, reason: &'static str) {
 
 /// Forget every mounted slide and chrome as [`clear_host`] does, but leave
 /// what they rendered on screen until the restarted flow reaches a state
-/// of its own (see [`state::retain_rendered`]). A subject change, a model
-/// frame and a renamed referent all restart the flow this way, so a
-/// switch replaces what the person sees instead of emptying it first.
+/// of its own (see [`state::retain_rendered`]). Only a subject change
+/// (`entity`/`model`/`view`) restarts this way, so a switch replaces what
+/// the person sees instead of emptying it first. A model frame or a
+/// renamed referent still clears: those land while the person is acting
+/// on the page (an account promotes a fresh profile, a concept is
+/// redefined), and kept content would leave a second, live copy of its
+/// components, whose own teardown then runs late, behind the new ones.
 fn retire_host(host: &Element, inner: &mut Inner) {
     inner.slides.clear();
     inner.carousel = None;
@@ -1134,6 +1138,11 @@ fn retire_host(host: &Element, inner: &mut Inner) {
 /// Remove every direct child of `host` that the renderer mounted,
 /// keeping the embedder's authored `[slot]` children. Replaces a blanket
 /// `set_inner_html("")` so state-slot content survives a restart.
+///
+/// Content a subject change kept on screen ([`retire_host`]) is left too:
+/// the new subject's first model frame clears the host, and that must not
+/// take the old subject's content down before the new one has a
+/// replacement. The state transition that follows removes it.
 fn remove_rendered_children(host: &Element) -> usize {
     // Walk the element children once, collecting the rendered ones (no
     // `slot` attribute) before removing — removing mid-walk would break
@@ -1142,7 +1151,7 @@ fn remove_rendered_children(host: &Element) -> usize {
     let mut cursor = host.first_element_child();
     while let Some(child) = cursor {
         cursor = child.next_element_sibling();
-        if !child.has_attribute("slot") {
+        if !child.has_attribute("slot") && !child.has_attribute(state::RETAINED_ATTR) {
             to_remove.push(child);
         }
     }
@@ -1347,7 +1356,7 @@ async fn start_downstream(
         let mut s = state.borrow_mut();
         s.view_sub.take();
         s.entity_sub.take();
-        retire_host(host, &mut s);
+        clear_host(host, &mut s, names::DISPLAY_REMOVED_MODEL);
         // Subscriptions can deliver their first frame before subscribe returns.
         // Publish the complete rendering context before opening either stream.
         s.directory = directory;
@@ -1535,7 +1544,7 @@ fn handle_name_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
         s.downstream_generation = s.downstream_generation.wrapping_add(1);
         s.last_frame.clear();
         s.retained.clear();
-        retire_host(host, &mut s);
+        clear_host(host, &mut s, names::DISPLAY_REMOVED_NAME);
     }
     state::set(host, State::Loading);
     start_flows(host, state.clone());

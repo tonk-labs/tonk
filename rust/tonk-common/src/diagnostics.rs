@@ -55,8 +55,8 @@ pub mod names {
     pub const SITE_REROUTE: &str = "site.reroute";
 
     /// `<tonk-display>` removed content it had kept through a restart (a
-    /// changed attribute, a model frame, a renamed referent) because the
-    /// restarted flow ended in an error state instead of something to show.
+    /// changed `entity`, `model` or `view` attribute) because the restarted
+    /// flow ended in an error state instead of something to show.
     pub const DISPLAY_REMOVED_RESTART: &str = "display.removed.restart";
     /// `<tonk-display>` replaced content it had kept through a restart with
     /// what the restarted flow shows, with no empty moment between them.

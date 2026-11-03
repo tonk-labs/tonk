@@ -165,7 +165,7 @@ const ERROR_CALLOUT_ATTR: &str = "data-tonk-display-error";
 /// Marks a rendered child a restarted flow kept on screen until it has a
 /// replacement. See [`retain_rendered`].
 #[cfg(target_arch = "wasm32")]
-const RETAINED_ATTR: &str = "data-tonk-display-retained";
+pub(crate) const RETAINED_ATTR: &str = "data-tonk-display-retained";
 
 /// Keep what `host` renders on screen while its flow restarts, instead of
 /// removing it before the new flow has anything to show.
