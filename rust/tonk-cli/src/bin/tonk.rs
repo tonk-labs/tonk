@@ -2105,9 +2105,16 @@ async fn status_op(json: bool, space: Option<&str>) -> ExitCode {
         Ok(opened) => opened,
         Err(code) => return code,
     };
+    // The upstream fetch below is the one live check status makes: when the
+    // access service refuses this device's authority (revoked or expired),
+    // say so instead of reporting the stored grant as if it still worked.
+    let mut access_rejected = None;
     let sync = match sync::status_with_hash(&site).await {
         Ok(status) => sync_context(status),
         Err(error) => {
+            if let sync::SyncError::Rejected { reason, .. } = &error {
+                access_rejected = Some(reason.clone());
+            }
             eprintln!("warning: upstream status unavailable: {error}");
             match sync::status_offline(&site).await {
                 Ok(sync) => sync,
@@ -2152,9 +2159,17 @@ async fn status_op(json: bool, space: Option<&str>) -> ExitCode {
             sync,
             authority,
             access_kind,
+            access_rejected,
         });
     }
-    println!("access: {access_kind} (remote validity is checked when used)");
+    match &access_rejected {
+        Some(reason) => {
+            println!("access: {access_kind}, rejected by the access service: {reason}")
+        }
+        None => println!(
+            "access: {access_kind} (from the stored grant; the access service checks it on each sync)"
+        ),
+    }
     if let Some(authority) = &authority {
         println!(
             "authority: {} for {} (recipient {})",
@@ -2175,6 +2190,10 @@ struct StatusReport {
     sync: context::SyncContext,
     #[serde(skip_serializing_if = "Option::is_none")]
     authority: Option<ScopedAuthorityReport>,
+    /// The access service's refusal from this run's upstream fetch, when it
+    /// refused. Absent means no refusal was seen, not that access is valid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    access_rejected: Option<String>,
 }
 
 #[derive(serde::Serialize)]
