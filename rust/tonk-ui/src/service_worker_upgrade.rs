@@ -589,6 +589,22 @@ pub(crate) mod tests {
     }
 
     /// Which guest runtime the mounted top-level site is running.
+    /// Wait until the worker serving this page reports `build`.
+    async fn wait_for_worker_build(driver: &WebDriver, build: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            let health = worker_health(driver).await?;
+            if health["body"]["build"].as_str() == Some(build) {
+                return Ok(());
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for the successor worker: {health}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     async fn wait_for_guest_generation(driver: &WebDriver, generation: &str) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         let mut last = Value::Null;
@@ -1682,18 +1698,7 @@ pub(crate) mod tests {
             started.json()
         );
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-        loop {
-            let health = worker_health(&driver).await?;
-            if health["body"]["build"].as_str() == Some(generation_b.build.as_str()) {
-                break;
-            }
-            ensure!(
-                tokio::time::Instant::now() < deadline,
-                "timed out waiting for the successor worker: {health}"
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        wait_for_worker_build(&driver, &generation_b.build).await?;
 
         // The page has adopted the successor once it serves this document.
         driver.enter_default_frame().await?;
@@ -1818,7 +1823,9 @@ pub(crate) mod tests {
             "failed to start the update: {}",
             started.json()
         );
-        wait_for_guest_generation(&driver, "B").await?;
+        // Running guests are kept across a deploy, so the successor shows in
+        // the worker's own health, not in a rebuilt guest.
+        wait_for_worker_build(&driver, &generation_b.build).await?;
         let health = worker_health(&driver).await?;
         assert_eq!(
             health["body"]["build"].as_str(),
