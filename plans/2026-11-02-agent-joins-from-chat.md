@@ -55,6 +55,9 @@ service without trouble.
   so revoking a link's grant drops it from the agent space and queues the
   agent space to sync; the hosted front reads access from there on every
   call. Grants the profile issued are still revoked at the access service.
+  (Superseded by [recipient revocation](2026-11-03-agent-recipient-revocation.md):
+  the agent now revokes a link's grants at the access service, with its key
+  opened by the passkey.)
 
 ## Not in this change
 

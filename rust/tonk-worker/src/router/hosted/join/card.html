@@ -315,7 +315,9 @@
         </label>
       </fieldset>
       <p class="tonk-fine" id="fine">
-        It acts as itself, under its own name. Remove it any time from your agents in Tonk.
+        It acts as itself, under its own name. Remove it any time from your agents in Tonk,
+        with your passkey. Removing it does not end this link: whoever has the link can still
+        use it.
       </p>
       <div class="tonk-acts">
         <button type="submit" class="tonk-btn" id="join">let it join</button>
@@ -403,6 +405,11 @@
             } catch {}
         }
 
+        // What removing the agent does, and what it leaves alone.
+        const REMOVAL =
+          'Remove it any time from your agents in Tonk, with your passkey. Removing it does ' +
+          'not end this link: whoever has the link can still use it.';
+
         // Which options the person may pick: write only where the link
         // allows it, read only where the agent does not hold it already.
         function choose() {
@@ -429,12 +436,12 @@
             $('#join').textContent = 'let it write';
             $('#fine').textContent =
               'It can read this space now. Writing lets it add and change content too, ' +
-              'under its own name. Remove it any time from your agents in Tonk.';
+              'under its own name. ' + REMOVAL;
           }
           if (!data.write)
             $('#fine').textContent =
               'This link lets an agent read the space, not change it. It acts as itself, ' +
-              'under its own name. Remove it any time from your agents in Tonk.';
+              'under its own name. ' + REMOVAL;
           show(ask);
           $('#join').focus({ preventScroll: true });
         }

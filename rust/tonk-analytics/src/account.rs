@@ -38,7 +38,7 @@ closed_enum! {
         SwitchProfile, SignOut, LoadDeletionPlan, DeleteAccount, DeleteSpace, RevokeDevice,
         FinishAccountBackup, ActivateAccount, WatchActivation, SaveInitialDisplayName,
         CopyInvite, FinishPreviousAction, SettleAccount, LoadAccountSpaces, PullAccountSpace,
-        OpenAccountDeletion, OpenSpaceDeletion, SyncAccount, AuthorizeAgent
+        OpenAccountDeletion, OpenSpaceDeletion, SyncAccount, AuthorizeAgent, RevokeAgent
     }
 }
 
