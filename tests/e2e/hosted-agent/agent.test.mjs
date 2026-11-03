@@ -69,7 +69,10 @@ const LIVE = 30_000;
 // which the writer's next pull meets; a grant from a share link is only
 // dropped from the agent space, which background sync then pushes. Both
 // are today's measures with room to spare, to tighten once the numbers
-// are known.
+// are known. `revoking_refuses_reads_and_writes` in
+// rust/tonk-worker/src/router/hosted/mcp/tests.rs runs the same scenario
+// against a local access service with the same budgets: keep the two in
+// step.
 const REVOKE_BUDGET = 30_000;
 const LINK_REVOKE_BUDGET = 60_000;
 
@@ -186,10 +189,11 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       return result;
     };
     // Call `name` until the agent is refused, from `since` for at most
-    // `budget` ms: how long the refusal took, and what it said.
+    // `budget` ms: how long the refusal took, and what it said. `args` is
+    // called for each attempt.
     const refused = async (client, name, args, { since, budget }) => {
       for (;;) {
-        const result = await client.callTool({ name, arguments: args });
+        const result = await client.callTool({ name, arguments: args() });
         const ms = Date.now() - since;
         const text = JSON.stringify(result.content);
         // Past the budget fails whether this call was refused or not: a
@@ -593,9 +597,17 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
         const since = Date.now();
         await revoke(person.page, { agent, space: subject });
         console.log(`revoke ${kind}: answered in ${Date.now() - since} ms`);
-        const { ms, text } = await refused(client, 'tonk_query', read, { since, budget });
-        console.log(`revoke ${kind}: refused after ${ms} ms: ${text.slice(0, 300)}`);
-        assert.match(text, /revoked|no access/i, `refused for another reason: ${text}`);
+        // A read, then a write that needs a fresh upload: both must be
+        // refused, each timed from the moment the person asked.
+        let probe = 0;
+        for (const [name, args] of [
+          ['tonk_query', () => read],
+          ['tonk_evaluate', () => ({ space: subject, document: note(`${run} probe ${probe++}`) })],
+        ]) {
+          const { ms, text } = await refused(client, name, args, { since, budget });
+          console.log(`revoke ${kind}: ${name} refused after ${ms} ms: ${text.slice(0, 300)}`);
+          assert.match(text, /revoked|no access/i, `refused for another reason: ${text}`);
+        }
       });
     }
   } finally {
