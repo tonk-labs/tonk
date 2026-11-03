@@ -10084,8 +10084,11 @@ route!: &foreign-profile-route
         let tonk = test_state().await;
         install_recorded(&tonk, PROFILE_LIBRARY_URL, CURRENT).await;
 
-        let wire = tonk_template::resolve::view_bindings_query("tonk:space")
-            .expect("bindings query builds");
+        // The Hub view binds sign-out declaratively; the
+        // space list's own forms all dispatch through receipt-aware
+        // elements, so it carries no bindings to read.
+        let wire =
+            tonk_template::resolve::view_bindings_query("tonk:hub").expect("bindings query builds");
         let query = wire
             .into_concept_query()
             .expect("bindings query is a concept query");
@@ -10100,7 +10103,7 @@ route!: &foreign-profile-route
         let rendered = serde_json::to_string(&rows).expect("rows serialize");
         assert!(
             !rows.is_empty(),
-            "the space view carries compiled bindings: {rendered}",
+            "the hub view carries compiled bindings: {rendered}",
         );
     }
 
