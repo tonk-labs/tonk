@@ -1041,7 +1041,6 @@ mod tests {
     use super::*;
     use dialog_effects::storage::Directory;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
 
     /// A token minted the way the approval page's request mints one is
     /// one the hosted front accepts, with the access that was chosen.
@@ -1056,7 +1055,7 @@ mod tests {
         let registry = crate::device::Registry::new("agent-session".into(), location);
         let tonk =
             crate::worker::boot_state(storage, "agent-session".into(), profile, registry).await?;
-        let state: AppState = Arc::new(RwLock::new(tonk));
+        let state: AppState = Arc::new(crate::StateLock::new(tonk));
 
         let mut keys = Vec::new();
         for name in ["Notes", "Plans"] {
@@ -1143,7 +1142,7 @@ mod tests {
         let registry = crate::device::Registry::new("agent-grants".into(), location);
         let tonk =
             crate::worker::boot_state(storage, "agent-grants".into(), profile, registry).await?;
-        let state: AppState = Arc::new(RwLock::new(tonk));
+        let state: AppState = Arc::new(crate::StateLock::new(tonk));
 
         let mut keys = Vec::new();
         for name in ["Notes", "Plans"] {
@@ -1342,7 +1341,7 @@ mod tests {
         )
         .await?;
         tonk_account::peer::hand_over(&tonk.profile, &union).await?;
-        let state: AppState = Arc::new(RwLock::new(tonk));
+        let state: AppState = Arc::new(crate::StateLock::new(tonk));
 
         let mut agents = Vec::new();
         for (name, byte, provider) in [
