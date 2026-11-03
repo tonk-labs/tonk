@@ -742,7 +742,7 @@ fn install_method_delegates(host: &Element, state: &Rc<RefCell<Inner>>) {
 /// so until the rows arrive, in place of a bare loading state.
 ///
 /// `pending` says the branch is not here yet. A display that already shows
-/// rows for that subscription keeps them: the rows follow on the same
+/// something keeps it: the rows follow on the same
 /// stream, so clearing now would only delete what is about to be inserted
 /// again. One with nothing yet treats it as the empty set it was sent
 /// before, which lands it in its absence state (`no-model`, `no-entity`),
@@ -754,13 +754,10 @@ fn on_notice(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts:
     match control.as_deref() {
         Some("upgrading") => state::set_upgrading(host),
         Some("pending") => {
-            let shows_rows = read_tag(&opts).is_some_and(|tag| {
-                state
-                    .borrow()
-                    .retained
-                    .get(&tag)
-                    .is_some_and(|rows| !rows.is_empty())
-            });
+            let shows_rows = {
+                let s = state.borrow();
+                !s.slides.is_empty() || !s.last_frame.is_empty()
+            };
             if !shows_rows {
                 on_reset(host, state, js_sys::Array::new().into(), opts);
             }
@@ -5814,20 +5811,6 @@ mod tests {
                 let _ = reset.call2(&consumer, conclusions, &opts);
             }
 
-            fn push_pending(&self, tag: &str) {
-                let consumer = self.state.borrow().subs.get(tag).cloned();
-                let Some(consumer) = consumer else { return };
-                let opts = Object::new();
-                let _ = Reflect::set(&opts, &"tag".into(), &JsValue::from_str(tag));
-                let payload = Object::new();
-                let _ = Reflect::set(&payload, &"control".into(), &"pending".into());
-                let notice: Function = Reflect::get(&consumer, &"notice".into())
-                    .unwrap()
-                    .dyn_into()
-                    .unwrap();
-                let _ = notice.call2(&consumer, &payload, &opts);
-            }
-
             fn push_update(&self, tag: &str, delta: &JsValue) {
                 let consumer = self.state.borrow().subs.get(tag).cloned();
                 let Some(consumer) = consumer else { return };
@@ -6188,7 +6171,15 @@ mod tests {
                 }
                 sleep(5).await;
             }
-            host.push_pending("model");
+            let payload = Object::new();
+            let _ = Reflect::set(&payload, &"control".into(), &"pending".into());
+            let opts = Object::new();
+            let _ = Reflect::set(&opts, &"tag".into(), &"model".into());
+            let notice: Function = Reflect::get(&display, &"notice".into())
+                .unwrap()
+                .dyn_into()
+                .unwrap();
+            let _ = notice.call2(&display, &payload, &opts);
             for _ in 0..200 {
                 if display.get_attribute("data-state").as_deref() == Some("no-model") {
                     break;
@@ -6199,6 +6190,30 @@ mod tests {
                 display.get_attribute("data-state").as_deref(),
                 Some("no-model"),
                 "a fresh display reads `pending` as absent",
+            );
+
+            // The space arrives: the model subscription pushes a non-empty
+            // frame, the downstream view + entity subs open, and a view +
+            // entity frame render the row live.
+            host.push_frame("model", &model_concept_frame());
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"view".to_owned())
+                    && host.subscribe_tags().contains(&"entity".to_owned())
+                {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("view", &view_frame("<p>{count}</p>"));
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "7")])]));
+
+            assert!(
+                await_selector(&display, "tonk-view").await.is_some(),
+                "the display recovers and renders once the concept lands",
+            );
+            assert!(
+                display.query_selector("wa-callout").unwrap().is_none(),
+                "recovery leaves no latched callout behind",
             );
         }
 
@@ -6234,8 +6249,17 @@ mod tests {
                 .await
                 .expect("the row renders");
 
-            host.push_pending("entity");
-            host.push_pending("model");
+            for tag in ["entity", "model"] {
+                let payload = Object::new();
+                let _ = Reflect::set(&payload, &"control".into(), &"pending".into());
+                let opts = Object::new();
+                let _ = Reflect::set(&opts, &"tag".into(), &tag.into());
+                let notice: Function = Reflect::get(&display, &"notice".into())
+                    .unwrap()
+                    .dyn_into()
+                    .unwrap();
+                let _ = notice.call2(&display, &payload, &opts);
+            }
             sleep(100).await;
             assert!(
                 display.query_selector("li[data-id]").unwrap().is_some(),
@@ -6245,6 +6269,7 @@ mod tests {
                 display.get_attribute("data-state").as_deref(),
                 Some("no-model"),
             );
+            host.container.remove();
         }
 
         // The fix for the latched red box on a still-seeding space: when
