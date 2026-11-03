@@ -825,6 +825,9 @@ view!:
       .space-menu tonk-share[data-share-state="copied"] [data-share-copy-label="copied"],
       .space-menu tonk-share[data-share-state="blocked"] [data-share-copy-label="failed"],
       .space-menu tonk-share[data-share-state="failed"] [data-share-copy-label="failed"] { display:inline; }
+      /* a signed-out share is refused for want of an account: say so */
+      .space-menu tonk-share[data-share-state="blocked"][data-share-blocked="needs-account"] [data-share-copy-label="failed"] { display:none; }
+      .space-menu tonk-share[data-share-state="blocked"][data-share-blocked="needs-account"] [data-share-copy-label="sign-in"] { display:inline; }
       /* creation is the collection's final card and the header's primary action */
       space-create { display:block; }
       [data-space-duplicate]:not([busy]) [data-duplicating-label],
@@ -998,7 +1001,7 @@ view!:
                   aria-expanded="false" aria-controls="space-menu-{subject}">more</button>
               </span>
               <hub-menu id="space-menu-{subject}" class="space-menu" role="menu">
-                <tonk-share space={subject}><button type="button" role="menuitem"><span data-share-copy-label="idle">copy link</span><span data-share-copy-label="copying">copying…</span><span data-share-copy-label="copied">copied</span><span data-share-copy-label="failed">couldn't copy</span></button></tonk-share>
+                <tonk-share space={subject}><button type="button" role="menuitem" aria-live="polite"><span data-share-copy-label="idle">copy link</span><span data-share-copy-label="copying">copying…</span><span data-share-copy-label="copied">copied</span><span data-share-copy-label="failed">couldn't copy</span><span data-share-copy-label="sign-in">sign in to share</span></button></tonk-share>
                 <button type="button" role="menuitem" data-space-rename-open>rename</button>
                 <button type="button" role="menuitem" data-space-duplicate-open>duplicate</button>
                 <space-remove data-space-subject={subject} data-space-name={name}
@@ -4962,6 +4965,25 @@ element!: &space-actions
   method:
     close: |
       (self, restoreFocus) => self.querySelector('hub-menu')?.close?.(restoreFocus)
+    # The copy-link row answers in place, so the menu stays open until
+    # it does: a copy closes it once "copied" has shown, and a refusal or
+    # failure stays on screen until the person dismisses the menu.
+    watch-share: |
+      (self, share) => {
+        self.__shareWatch?.disconnect();
+        clearTimeout(self.__shareClose);
+        const settle = () => {
+          const state = share.getAttribute('data-share-state');
+          if (state === 'copied') {
+            self.__shareWatch?.disconnect();
+            self.__shareClose = setTimeout(() => self.close(false), 900);
+          } else if (state === 'failed' || state === 'blocked') {
+            self.__shareWatch?.disconnect();
+          }
+        };
+        self.__shareWatch = new MutationObserver(settle);
+        self.__shareWatch.observe(share, { attributes: true, attributeFilter: ['data-share-state'] });
+      }
     validate: |
       (self, event) => {
         const form = event.target;
@@ -5018,6 +5040,11 @@ element!: &space-actions
             });
             return;
           }
+          const share = event.target?.closest?.('tonk-share');
+          if (share) {
+            self.watchShare(share);
+            return;
+          }
           if (event.target?.closest?.('[role=menuitem]')
               && !event.target?.closest?.('[data-space-remove-open]')) self.close(false);
         });
@@ -5027,7 +5054,11 @@ element!: &space-actions
         document.addEventListener('pointerdown', self._outside, true);
       }
     disconnected: |
-      (self) => document.removeEventListener('pointerdown', self._outside, true)
+      (self) => {
+        document.removeEventListener('pointerdown', self._outside, true);
+        self.__shareWatch?.disconnect();
+        clearTimeout(self.__shareClose);
+      }
     released: |
       (self) => self.disconnected()
 

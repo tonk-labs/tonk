@@ -1259,6 +1259,10 @@ fn handle_blocked(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, block
     if blocked.code == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT {
         abandon(state, &blocked.detail);
         set_state(host, ShareState::Blocked);
+        // Outside the bar (the Hub's card menu) nothing hears the event
+        // below, so the host names the refusal for its own stylesheet to
+        // word. `set_state` clears it on the next state.
+        let _ = host.set_attribute(BLOCKED_ATTRIBUTE, &blocked.code);
         if let Some(fab) = host
             .closest("tonk-fab")
             .ok()
@@ -1487,11 +1491,16 @@ fn read_link_field(row: &JsValue) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// The refusal code a `blocked` host names, so a surface with no bar to
+/// act on it (the Hub) can still word it. Today only `needs-account`.
+const BLOCKED_ATTRIBUTE: &str = "data-share-blocked";
+
 /// Stamp the state on the host. The view stylesheet keys the label and spinner
 /// off `data-share-state`, so the element owns the state machine and the
 /// stylesheet owns the appearance.
 fn set_state(host: &HtmlElement, state: ShareState) {
     let _ = host.set_attribute("data-share-state", state.as_str());
+    let _ = host.remove_attribute(BLOCKED_ATTRIBUTE);
     // The row the user actually sees is a sibling in the bar's share stack —
     // this element is headless there. Stamp the state onto it too so the row
     // can answer in place ("copy link" → "copying…" → "copied"), which is the
