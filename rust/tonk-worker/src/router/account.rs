@@ -608,7 +608,6 @@ mod tests {
     use super::*;
     use axum::extract::State;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
     use crate::router::tests::{
@@ -622,21 +621,21 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_reports_an_unregistered_local_root_without_an_account() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_account().await));
         let Json(status) = get(State(state)).await.unwrap();
         assert!(matches!(status, AccountStatus::Unregistered { .. }));
     }
 
     #[dialog_common::test]
     async fn it_reports_a_missing_root_separately() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let Json(status) = get(State(state)).await.unwrap();
         assert!(matches!(status, AccountStatus::RootMissing { .. }));
     }
 
     #[dialog_common::test]
     async fn it_attaches_a_provider_without_replacing_the_root_grant() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_account().await));
         let before = {
             let state = state.read().await;
             super::super::identity::local_root(&state)
@@ -668,7 +667,7 @@ mod tests {
     /// survives and still names the handle to open.
     #[dialog_common::test]
     async fn it_keeps_the_roster_entry_across_link_and_unlink() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_account().await));
         let request = {
             let state = state.read().await;
             matching_request(&state).await
@@ -704,7 +703,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_reads_linked_state_from_the_replica_signal() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_account().await));
         let request = {
             let state = state.read().await;
             matching_request(&state).await
@@ -722,7 +721,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_finishes_an_unmounted_attachment_at_status_time() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_account().await));
         // Persist the attachment record directly, without the mount that
         // link performs: the state a crash mid-link leaves behind, and
         // also the ordinary mid-enrollment window between a ceremony's
@@ -754,7 +753,7 @@ mod tests {
     /// reads them as a link.
     #[dialog_common::test]
     async fn it_keeps_the_account_branch_rows_but_drops_the_provider_on_unlink() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_account().await));
         let request = {
             let state = state.read().await;
             matching_request(&state).await
@@ -881,7 +880,7 @@ mod tests {
     /// stays, the authority goes.
     #[dialog_common::test]
     async fn it_withdraws_the_grant_without_rotating_the_device() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_account().await));
         let before = state.read().await.profile.did();
         let request = {
             let state = state.read().await;

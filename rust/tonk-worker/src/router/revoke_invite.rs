@@ -563,7 +563,7 @@ mod tests {
         )
         .await
         .expect("the root persists");
-        let state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let state: AppState = std::sync::Arc::new(crate::StateLock::new(tonk));
         let key = super::super::repository::create_space_inner(&state, "Sibling", None)
             .await
             .expect("the space creates");
@@ -710,7 +710,7 @@ mod tests {
         )
         .await
         .expect("the root persists");
-        let state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let state: AppState = std::sync::Arc::new(crate::StateLock::new(tonk));
         let key = super::super::repository::create_space_inner(&state, "Reinvited", None)
             .await
             .expect("the space creates");

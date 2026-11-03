@@ -25,6 +25,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use tonk_common::diagnostics::{self, names};
+
 use crate::resolve::{ParsedSource, name_query, parse_source, phase1_query};
 use custom_elements::CustomElement;
 use ipld_core::ipld::Ipld;
@@ -148,6 +150,10 @@ struct Inner {
     /// drop every instance but the first. The lead conclusion (for
     /// notation / the result event) is `last_frame.first()`.
     last_frame: Vec<Conclusion>,
+    /// Set when an empty entity frame emptied rows this display had
+    /// rendered, and cleared by the next frame with rows, which is then
+    /// counted as content deleted and inserted again.
+    emptied: bool,
     /// The last full row set seen per subscription tag
     /// (`model` / `view` / `entity`), retained so an incremental
     /// `update` delta can be applied to the correct tag's set and the
@@ -273,6 +279,7 @@ impl Inner {
             view_sub: None,
             entity_sub: None,
             last_frame: Vec::new(),
+            emptied: false,
             retained: BTreeMap::new(),
             carousel: None,
             slides: BTreeMap::new(),
@@ -629,7 +636,7 @@ impl CustomElement for TonkDisplay {
             s.retained.clear();
             // Tear down any mounted slide / carousel chrome so the
             // restart starts from a clean host.
-            clear_host(&host, &mut s);
+            clear_host(&host, &mut s, names::DISPLAY_REMOVED_RESTART);
         }
         state::set(&host, State::Loading);
         start_flows(&host, state);
@@ -1041,7 +1048,7 @@ fn start_flows(host: &Element, state: Rc<RefCell<Inner>>) {
 fn fail(host: &Element, state: &Rc<RefCell<Inner>>, err: ErrorDetail) {
     {
         let mut inner = state.borrow_mut();
-        clear_host(host, &mut inner);
+        clear_host(host, &mut inner, names::DISPLAY_REMOVED_ERROR);
     }
     let loud = loud_state(&err);
     state::set_error(host, loud, state::state_title(loud, err.kind), &err.message);
@@ -1078,18 +1085,24 @@ fn loud_state(err: &ErrorDetail) -> State {
 /// `slot="no-model"` etc. on a flow restart, so a later absence state
 /// couldn't find them and would fall back to the built-in callout even
 /// though the embedder provided content.
-fn clear_host(host: &Element, inner: &mut Inner) {
+///
+/// `reason` names why the content goes, and is counted when anything that
+/// was rendered is actually removed.
+fn clear_host(host: &Element, inner: &mut Inner, reason: &'static str) {
+    let had_slides = !inner.slides.is_empty();
     inner.slides.clear();
     inner.carousel = None;
     inner.notation_source = None;
     inner.notation_item = None;
-    remove_rendered_children(host);
+    if remove_rendered_children(host) > 0 || had_slides {
+        diagnostics::count(reason);
+    }
 }
 
 /// Remove every direct child of `host` that the renderer mounted,
 /// keeping the embedder's authored `[slot]` children. Replaces a blanket
 /// `set_inner_html("")` so state-slot content survives a restart.
-fn remove_rendered_children(host: &Element) {
+fn remove_rendered_children(host: &Element) -> usize {
     // Walk the element children once, collecting the rendered ones (no
     // `slot` attribute) before removing — removing mid-walk would break
     // the sibling chain.
@@ -1101,9 +1114,11 @@ fn remove_rendered_children(host: &Element) {
             to_remove.push(child);
         }
     }
+    let removed = to_remove.len();
     for child in to_remove {
         child.remove();
     }
+    removed
 }
 
 /// Bail if this flow's generation has been superseded or the
@@ -1300,7 +1315,7 @@ async fn start_downstream(
         let mut s = state.borrow_mut();
         s.view_sub.take();
         s.entity_sub.take();
-        clear_host(host, &mut s);
+        clear_host(host, &mut s, names::DISPLAY_REMOVED_MODEL);
         // Subscriptions can deliver their first frame before subscribe returns.
         // Publish the complete rendering context before opening either stream.
         s.directory = directory;
@@ -1488,7 +1503,7 @@ fn handle_name_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
         s.downstream_generation = s.downstream_generation.wrapping_add(1);
         s.last_frame.clear();
         s.retained.clear();
-        clear_host(host, &mut s);
+        clear_host(host, &mut s, names::DISPLAY_REMOVED_NAME);
     }
     state::set(host, State::Loading);
     start_flows(host, state.clone());
@@ -1664,6 +1679,9 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
         // stale; drop it so the fallback can take its place (the
         // notation path refuses to mount over an existing slide).
         if !s.default_slide {
+            if !s.slides.is_empty() {
+                diagnostics::count(names::DISPLAY_REMOVED_VIEW_ABSENT);
+            }
             for (_, slide) in std::mem::take(&mut s.slides) {
                 if let Some(parent) = slide.item.parent_node() {
                     let _: Result<Node, _> = parent.remove_child(&slide.item);
@@ -2490,6 +2508,7 @@ fn apply_entity_frame(
             reconnect && !s.last_frame.is_empty()
         };
         if held {
+            diagnostics::count(names::DISPLAY_ENTITY_HELD);
             let serial = state.borrow().entity_serial;
             let host = host.clone();
             let state = state.clone();
@@ -2504,6 +2523,10 @@ fn apply_entity_frame(
         }
 
         let mut s = state.borrow_mut();
+        if !s.last_frame.is_empty() {
+            diagnostics::count(names::DISPLAY_ENTITY_EMPTIED);
+            s.emptied = true;
+        }
         s.last_frame = Vec::new();
         // An empty frame means no rows matched — zero instances in a
         // collection, or a single entity whose row has not landed yet
@@ -2561,6 +2584,9 @@ fn apply_entity_frame(
     // notation + the result event.
     s.entity_serial += 1;
     let first = frame[0].clone();
+    if std::mem::take(&mut s.emptied) {
+        diagnostics::count(names::DISPLAY_ENTITY_REFILLED);
+    }
     s.last_frame = frame.clone();
     // Each slide sees the whole frame, augmented with the host's own
     // attributes under `dom.host/*`; notation, caching, and the result

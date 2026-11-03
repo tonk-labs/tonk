@@ -339,7 +339,6 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use dialog_repository::{Blob, RepositoryExt as _};
     use futures_util::stream;
-    use tokio::sync::RwLock;
     use tower::ServiceExt;
 
     use crate::api_router_from_state;
@@ -347,7 +346,7 @@ mod tests {
 
     /// Read back what the branch holds under `attribute` for `entity`.
     async fn fact(
-        app_state: &Arc<RwLock<crate::TonkState>>,
+        app_state: &Arc<crate::StateLock<crate::TonkState>>,
         repo: &str,
         attribute: &str,
         entity: &str,
@@ -406,7 +405,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_records_an_upload_with_the_asset_attributes() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-asset-attributes").await;
 
@@ -446,7 +445,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_keeps_a_legacy_name_on_a_nameless_re_upload() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-legacy-name").await;
         let payload = b"\x89PNG\r\n\x1a\nlegacy".to_vec();
@@ -498,7 +497,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_serves_blob_bytes_with_the_asserted_content_type() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-serve").await;
 
@@ -571,7 +570,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_uploads_bytes_and_serves_them_back() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-upload").await;
 
@@ -668,7 +667,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_accepts_an_upload_at_the_buffered_limit() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-large").await;
 
@@ -700,7 +699,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_defaults_the_name_fact_to_the_entity_when_no_header_is_sent() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-name-default").await;
 
@@ -732,7 +731,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_preserves_an_existing_name_on_a_headerless_reupload() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-name-keep").await;
         let payload = b"%PDF-1.4 named".to_vec();
@@ -780,7 +779,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_rejects_a_non_blob_entity() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-reject").await;
 

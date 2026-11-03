@@ -96,6 +96,34 @@ runs requests concurrently, so counts may wobble by a request or two. Before
 choosing any tolerance, run each scenario 8 times on one commit and measure
 the spread, as dialog-db did in its #653.
 
+## Instrumentation as built
+
+The counters live in `tonk_common::diagnostics`, one registry per realm; the
+names, with what each one counts, are in its `names` module, which is the
+list trace capture and the gates key on.
+
+- **Read-out.** The page and each guest frame expose
+  `globalThis.__tonkDiagnostics` with `snapshot()` and `reset()`. Guest
+  frames are separate realms, so a scenario reads each frame's registry
+  (Playwright and CDP can evaluate in sealed frames). The service worker
+  answers `GET /api/inspect/diagnostics` with its snapshot and `DELETE` resets it;
+  neither takes the state lock.
+- **Guest boots** are counted in `<tonk-site>` by cause: `mount`, `remount`
+  (the same element removed and re-inserted) and `navigation` (a changed
+  `with` or `allow`, or a dead frame). An in-place re-route is `site.reroute`.
+- **Content removals** are counted in `<tonk-display>` by reason, only when
+  something rendered was actually removed. `display.entity.emptied` counts an
+  empty frame applied over rendered rows, and `display.entity.refilled` the
+  rows coming back after one: content deleted and inserted again.
+- **The state lock** is `StateLock` (`rust/tonk-worker/src/state_lock.rs`),
+  the same tokio lock with waits and holds recorded per acquiring source
+  line, under `snapshot().sites`.
+- **Worker restarts** show as a new `instance` in the worker's snapshot.
+
+Not counted in the page, on purpose: reloads (the registry dies with the
+page, so the harness counts navigations) and remote requests by kind (the
+`tonk-perf` proxy already logs every request with its kind and size).
+
 ## Assumptions worth challenging
 
 - **"It only improves" cannot mean wall-clock in CI.** Shared runners vary by
