@@ -472,9 +472,17 @@ async fn direction(
                 };
                 if conn.is_forgotten() {
                     // Nothing crosses a forgotten connection, not even its
-                    // close: keep reading so the sender is not held up.
-                    if segment.is_none() {
+                    // close: keep reading so the sender is not held up, and
+                    // log what it sent, which is what it will wait on.
+                    let Some(segment) = segment else {
                         return;
+                    };
+                    if direction == Direction::Up {
+                        let mut exchanges = lock(&conn.exchanges);
+                        if let Some(ended) = exchanges.sent(&segment, now_ms()) {
+                            link.record(ended);
+                        }
+                        exchanges.lose();
                     }
                     continue;
                 }

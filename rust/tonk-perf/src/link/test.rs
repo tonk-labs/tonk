@@ -160,6 +160,13 @@ async fn a_quiet_connection_is_forgotten_after_the_idle_cut() {
             .is_none(),
         "nothing crosses a forgotten connection, and nothing says so"
     );
+    let lost: Vec<_> = link
+        .handle()
+        .inflight()
+        .into_iter()
+        .filter(|exchange| exchange.lost)
+        .collect();
+    assert!(lost.is_empty(), "raw bytes are no request: {lost:?}");
 }
 
 #[tokio::test]
@@ -348,4 +355,51 @@ async fn a_request_left_unanswered_is_listed_in_flight() {
     assert_eq!(pending[0].kind, "ucan");
     assert_eq!(pending[0].first_byte_ms, None, "never answered");
     assert!(link.exchanges().is_empty(), "nothing has ended");
+}
+
+#[tokio::test]
+async fn a_request_on_a_forgotten_connection_is_listed_as_lost() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buffer = [0u8; 1024];
+        while let Ok(n) = stream.read(&mut buffer).await {
+            if n == 0 {
+                return;
+            }
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
+                .await;
+        }
+    });
+    let link = Link::start_with(
+        Options {
+            name: "ucan".into(),
+            listen: 0,
+            upstream,
+            shape: Shape {
+                idle_cut: Duration::from_millis(200),
+                ..Shape::default()
+            },
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    let mut stream = connect(&link).await;
+    let request = b"POST /ucan/ HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\n";
+    stream.write_all(request).await.unwrap();
+    let mut answer = [0u8; 40];
+    stream.read_exact(&mut answer).await.unwrap();
+
+    // The connection goes quiet past the cut, then is used again, as a
+    // browser reuses a pooled connection.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    stream.write_all(request).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let pending = link.handle().inflight();
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert!(pending[0].lost, "{pending:?}");
+    assert_eq!(pending[0].kind, "ucan");
 }

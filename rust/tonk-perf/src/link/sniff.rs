@@ -28,6 +28,10 @@ pub struct Exchange {
     pub t1: u64,
     pub req_bytes: u64,
     pub resp_bytes: u64,
+    /// Sent on a connection the link had forgotten (its idle cut): it
+    /// never reached the server and will never be answered.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub lost: bool,
 }
 
 /// What a request is for. The worker reaches the page origin (assets and
@@ -128,6 +132,7 @@ impl Exchanges {
                 t1: now,
                 req_bytes: segment.len() as u64,
                 resp_bytes: 0,
+                lost: false,
             });
             return ended;
         }
@@ -135,6 +140,13 @@ impl Exchanges {
             current.req_bytes += segment.len() as u64;
         }
         None
+    }
+
+    /// The exchange open now was sent where it will never arrive.
+    pub(crate) fn lose(&mut self) {
+        if let Some(current) = &mut self.current {
+            current.lost = true;
+        }
     }
 
     /// `segment` of the answer reached the client at `now`.
