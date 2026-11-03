@@ -51,6 +51,12 @@ pub mod names {
     /// `<tonk-site>` rebuilt its guest frame because `with` or `allow`
     /// changed, or the frame it had was gone: a space switch.
     pub const SITE_GUEST_BOOT_NAVIGATION: &str = "site.guest_boot.navigation";
+    /// `<tonk-site>` built a guest frame again because the person asked a
+    /// site that failed to load to try again.
+    pub const SITE_GUEST_BOOT_RETRY: &str = "site.guest_boot.retry";
+    /// `<tonk-site>` showed that its page could not load: the guest did not
+    /// answer the handshake in time, or its `tonk:load` claim failed twice.
+    pub const SITE_LOAD_FAILED: &str = "site.load_failed";
     /// `<tonk-site>` re-routed a live guest frame in place, with no rebuild.
     pub const SITE_REROUTE: &str = "site.reroute";
 
