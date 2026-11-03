@@ -4785,6 +4785,30 @@ employee:
         );
     }
 
+    /// A branch that is not here yet has no answer, so a subscription to
+    /// it opens with the `pending` notice, never with an empty set: an
+    /// empty set says "nothing matched", and a page that already shows
+    /// rows (a reconnect, a worker restart) would delete them only to
+    /// insert them again when the branch arrives.
+    #[dialog_common::test]
+    async fn a_subscription_to_a_branch_not_here_yet_opens_pending_not_empty() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let mut body = open_subscription_with_query(
+            &app,
+            "test-not-here-yet",
+            "main",
+            named_concept_wire_query(),
+        )
+        .await;
+        let first = body.next_event().await.expect("a first frame");
+        assert_eq!(
+            first,
+            serde_json::json!({ "control": "pending" }),
+            "the stream opens with the pending notice"
+        );
+    }
+
     /// One-shot `/query` projects every term named in the
     /// query's `terms` map into [`Conclusion::fields`]. The
     /// `Name` view binds `this` (the `id:<n>` name entity) and
