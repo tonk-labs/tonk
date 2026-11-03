@@ -123,6 +123,12 @@ const UPGRADING_CONTROL: &str = "upgrading";
 /// consumer's `error` method as an `upgrade` error, with the reason.
 const UPGRADE_FAILED_CONTROL: &str = "upgrade-failed";
 
+/// The control frame the worker sends when the branch a page asked for is
+/// not here yet. It is not an answer, so the consumer hears nothing: a
+/// fresh one stays loading and one that already shows rows keeps them
+/// until the branch arrives and the rows follow on the same stream.
+const PENDING_CONTROL: &str = "pending";
+
 /// Handle a control frame on a subscription stream. Returns `true` when the
 /// frame was a control message (consumed here, not delivered as rows).
 ///
@@ -166,6 +172,7 @@ fn handle_control_frame(
             );
             invoke_method(consumer, "error", &error_to_js(&detail), None);
         }
+        PENDING_CONTROL => {}
         _ => {}
     }
     true
