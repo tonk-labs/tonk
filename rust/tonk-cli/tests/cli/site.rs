@@ -1392,9 +1392,15 @@ mod when_a_device_has_no_account {
             panic!("a device with no account cannot create a space");
         };
         let rendered = format!("{error:#}");
+        // No CLI command links an account, and `tonk join` installs scoped
+        // credentials rather than one, so the refusal must say the CLI cannot
+        // fix it and offer joining only for an existing space.
         assert!(
-            rendered.contains("tonk join <URL>") && !rendered.contains("tonk account login"),
-            "the refusal must name the command that fixes it: {rendered}"
+            rendered.contains("cannot link an account")
+                && rendered.contains("existing space")
+                && rendered.contains("tonk join <URL>")
+                && !rendered.contains("tonk account login"),
+            "the refusal must be honest about what fixes it: {rendered}"
         );
         Ok(())
     }

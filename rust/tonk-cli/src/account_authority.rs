@@ -123,7 +123,7 @@ impl AccountBoundOperator {
                 detail: error.to_string(),
             })?
             .ok_or_else(|| AuthorizeError::Malformed {
-                detail: "no active account; connect this CLI with a tool invitation from Tonk (`tonk join <URL>`) before accessing a remote".to_string(),
+                detail: "this remote needs a Tonk account linked to this CLI, which the CLI cannot do itself any more; to work on an existing space here, import a tool invitation for it with `tonk join <URL>`".to_string(),
             })
     }
 
