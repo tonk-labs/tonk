@@ -196,3 +196,212 @@ async fn it_errors_on_an_unknown_model() -> Result<()> {
     );
     Ok(())
 }
+
+mod when_outlining_a_page {
+    use super::*;
+
+    /// A trip whose view nests the to-do list and a display of a model
+    /// that does not exist.
+    async fn trip_planner() -> Result<TestSite> {
+        let test = TestSite::new().await?;
+        test.eval_inline(
+            r#"attribute!: &trip-title
+  description: "trip title"
+  the: xyz.tonk.trip/title
+  as: text
+  cardinality: :one
+
+concept!: &trip
+  description: "a trip being planned"
+  with:
+    title: trip-title
+
+attribute!: &todo-task
+  description: "what to do"
+  the: xyz.tonk.todo/task
+  as: text
+  cardinality: :one
+
+concept!: &todo
+  description: "something to do before leaving"
+  with:
+    task: todo-task
+"#,
+        )
+        .await?;
+        test.eval_inline(
+            r#"view!:
+  this: trip
+  show:
+    ui: "<section><h1>{title}</h1><tonk-display model=\"todo\"></tonk-display><tonk-display model=\"missing\"></tonk-display></section>"
+"#,
+        )
+        .await?;
+        test.eval_inline(
+            r#"view!:
+  this: todo
+  show:
+    directory: "<ul><li><label><input type=\"checkbox\"> {task}</label></li></ul>"
+"#,
+        )
+        .await?;
+        test.eval_inline("trip!: &lisbon\n  title: Lisbon\n")
+            .await?;
+        test.eval_inline("todo!: &flights\n  task: Book flights\n")
+            .await?;
+        test.eval_inline("todo!: &pack\n  task: Pack\n").await?;
+        Ok(test)
+    }
+
+    #[dialog_common::test]
+    async fn it_lists_each_nested_display_as_a_renderable_node() -> Result<()> {
+        let test = trip_planner().await?;
+        let tree = render::outline(&test.site, &RenderRoute::parse("lisbon@trip")?).await?;
+
+        assert_eq!(tree.model, "trip");
+        assert_eq!(tree.description.as_deref(), Some("a trip being planned"));
+        assert_eq!(tree.records, 1);
+        assert_eq!(tree.children.len(), 2, "{tree:#?}");
+
+        let todo = &tree.children[0];
+        assert_eq!(todo.route, "todo");
+        assert_eq!(todo.entity, None);
+        assert_eq!(todo.records, 2);
+        assert_eq!(todo.error, None);
+
+        // The node renders on its own, without the trip around it.
+        let html = render::render(&test.site, &RenderRoute::parse(&todo.route)?).await?;
+        assert!(
+            html.contains("Book flights") && html.contains("Pack"),
+            "{html}"
+        );
+        assert!(!html.contains("Lisbon"), "{html}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_lists_each_record_of_a_list_with_a_route_to_it_alone() -> Result<()> {
+        let test = trip_planner().await?;
+        let tree = render::outline(&test.site, &RenderRoute::parse("lisbon@trip")?).await?;
+
+        let todo = &tree.children[0];
+        assert_eq!(todo.items.len(), 2, "{todo:#?}");
+        let flights = todo
+            .items
+            .iter()
+            .find(|item| item.fields.values().any(|v| v == "Book flights"))
+            .expect("the flights record is listed");
+        assert_eq!(flights.route, format!("{}@todo!directory", flights.entity));
+
+        // The record renders alone through the list's own template, so
+        // it keeps the same control.
+        let html = render::render(&test.site, &RenderRoute::parse(&flights.route)?).await?;
+        assert!(html.contains("Book flights"), "{html}");
+        assert!(html.contains("type=\"checkbox\""), "{html}");
+        assert!(!html.contains("Pack"), "{html}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_routes_records_through_the_facet_the_list_used() -> Result<()> {
+        let test = trip_planner().await?;
+        test.eval_inline(
+            r#"view!:
+  this: todo
+  show:
+    ui: "<label><input type=\"checkbox\"> {task}</label>"
+    directory: "<section><h2>To do</h2><tonk-display model=\"todo\" view=\"ui\"></tonk-display></section>"
+"#,
+        )
+        .await?;
+        let tree = render::outline(&test.site, &RenderRoute::parse("todo")?).await?;
+
+        // The list itself rendered no records in place.
+        assert!(tree.items.is_empty(), "{tree:#?}");
+        let rows = &tree.children[0];
+        assert_eq!(rows.view.as_deref(), Some("ui"));
+        assert_eq!(rows.items.len(), 2, "{rows:#?}");
+        for item in &rows.items {
+            assert_eq!(item.route, format!("{}@todo!ui", item.entity));
+            let html = render::render(&test.site, &RenderRoute::parse(&item.route)?).await?;
+            assert!(!html.contains("To do"), "{html}");
+            assert!(html.contains("type=\"checkbox\""), "{html}");
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_does_not_list_records_a_nested_display_already_shows() -> Result<()> {
+        let test = trip_planner().await?;
+        test.eval_inline(
+            r#"view!:
+  this: todo
+  show:
+    ui: "<label><input type=\"checkbox\"> {task}</label>"
+    directory: "<ul><li><tonk-display entity=\"{this}\" model=\"todo\"></tonk-display></li></ul>"
+"#,
+        )
+        .await?;
+        let tree = render::outline(&test.site, &RenderRoute::parse("todo")?).await?;
+
+        assert!(tree.items.is_empty(), "{tree:#?}");
+        assert_eq!(tree.children.len(), 2, "{tree:#?}");
+        assert!(tree.children.iter().all(|child| child.entity.is_some()));
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_a_records_route_when_its_nested_display_fails() -> Result<()> {
+        let test = trip_planner().await?;
+        test.eval_inline(
+            r#"view!:
+  this: todo
+  show:
+    directory: "<ul><li>{task}<tonk-display entity=\"{this}\" model=\"todo\" view=\"missing\"></tonk-display></li></ul>"
+"#,
+        )
+        .await?;
+        let tree = render::outline(&test.site, &RenderRoute::parse("todo")?).await?;
+
+        assert_eq!(tree.children.len(), 2, "{tree:#?}");
+        assert!(
+            tree.children.iter().all(|child| child.error.is_some()),
+            "{tree:#?}"
+        );
+        assert_eq!(tree.items.len(), 2, "{tree:#?}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_a_broken_display_in_place_with_its_error() -> Result<()> {
+        let test = trip_planner().await?;
+        let tree = render::outline(&test.site, &RenderRoute::parse("lisbon@trip")?).await?;
+
+        let missing = &tree.children[1];
+        assert_eq!(missing.model, "missing");
+        assert!(
+            missing
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("no concept matched")),
+            "{missing:#?}"
+        );
+        // Rendering the page still fails on it, as before.
+        assert!(
+            render::render(&test.site, &RenderRoute::parse("lisbon@trip")?)
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_fails_when_the_root_does_not_render() -> Result<()> {
+        let test = trip_planner().await?;
+        let error = render::outline(&test.site, &RenderRoute::parse("missing")?)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("no concept matched"), "{error}");
+        Ok(())
+    }
+}

@@ -230,7 +230,10 @@ pub async fn upload(
         .map(|s| s.to_string());
     let size = body.len();
 
-    let tonk = state.write().await;
+    // A read guard: the blob commit takes the branch's write lock and the
+    // metadata commit its transactor, so nothing here needs the state to
+    // itself, and a write guard would queue behind any sync in flight.
+    let tonk = state.read().await;
 
     // Ingest bytes into the content-addressed store. Direct branch access
     // (as `serve` reads from) — the blob store isn't part of the claim/fact
@@ -339,7 +342,6 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use dialog_repository::{Blob, RepositoryExt as _};
     use futures_util::stream;
-    use tokio::sync::RwLock;
     use tower::ServiceExt;
 
     use crate::api_router_from_state;
@@ -347,7 +349,7 @@ mod tests {
 
     /// Read back what the branch holds under `attribute` for `entity`.
     async fn fact(
-        app_state: &Arc<RwLock<crate::TonkState>>,
+        app_state: &Arc<crate::StateLock<crate::TonkState>>,
         repo: &str,
         attribute: &str,
         entity: &str,
@@ -406,7 +408,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_records_an_upload_with_the_asset_attributes() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-asset-attributes").await;
 
@@ -446,7 +448,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_keeps_a_legacy_name_on_a_nameless_re_upload() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-legacy-name").await;
         let payload = b"\x89PNG\r\n\x1a\nlegacy".to_vec();
@@ -498,7 +500,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_serves_blob_bytes_with_the_asserted_content_type() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-serve").await;
 
@@ -571,7 +573,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_uploads_bytes_and_serves_them_back() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-upload").await;
 
@@ -668,7 +670,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_accepts_an_upload_at_the_buffered_limit() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-large").await;
 
@@ -700,7 +702,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_defaults_the_name_fact_to_the_entity_when_no_header_is_sent() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-name-default").await;
 
@@ -732,7 +734,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_preserves_an_existing_name_on_a_headerless_reupload() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-name-keep").await;
         let payload = b"%PDF-1.4 named".to_vec();
@@ -780,7 +782,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_rejects_a_non_blob_entity() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-reject").await;
 
@@ -823,9 +825,7 @@ async fn import_blob(
     bytes: Vec<u8>,
 ) -> Result<(), TonkWorkerError> {
     // Verify before writing anything, including the branch's blob index.
-    if &dialog_artifacts::Entity::from_blob(blake3::hash(&bytes).as_bytes()).map_err(internal)?
-        != expected
-    {
+    if expected.blob_hash() != Some(*blake3::hash(&bytes).as_bytes()) {
         return Err(internal("bundled blob hash mismatch"));
     }
     let chunks = futures_util::stream::iter(vec![Ok::<_, dialog_effects::blob::BlobError>(bytes)]);
@@ -834,7 +834,9 @@ async fn import_blob(
         .perform(&tonk.operator)
         .await
         .map_err(internal)?;
-    if &entity != expected {
+    // Compared by hash: the import names what it stored `asset:<hash>`,
+    // while older Welcome spaces reference it as `blob:<hash>`.
+    if entity.blob_hash() != expected.blob_hash() {
         return Err(internal("bundled blob hash mismatch"));
     }
     Ok(())
@@ -846,11 +848,44 @@ async fn hydrate_media(
     branch_name: &str,
     entity: &dialog_artifacts::Entity,
 ) -> Result<(), TonkWorkerError> {
-    if !bundled_media()?.iter().any(|media| &media.entity == entity) {
+    // By hash: older Welcome spaces name their images `blob:<hash>`, and
+    // dialog now names content `asset:<hash>`.
+    let Some(media) = bundled_media()?.into_iter().find(|media| {
+        media.entity.blob_hash().is_some() && media.entity.blob_hash() == entity.blob_hash()
+    }) else {
+        return Ok(());
+    };
+    // Read guards only, never the write one. This runs on every request
+    // for a starter image, and a writer queues behind any sync holding its
+    // read guard across a round trip, then stalls every request that
+    // arrives after it. The import needs no exclusion of its own: the
+    // commit recording the asset takes the branch's write lock, and
+    // recording an asset the branch already records mints nothing.
+    {
+        let tonk = state.read().await;
+        let branch = media_branch(&tonk, key, branch_name).await?;
+        if has_media(&tonk, &branch, entity).await? {
+            return Ok(());
+        }
+    }
+    // No guard while the bytes are fetched: on a cache miss they come
+    // over the network.
+    let bytes = fetch_media(&media.url).await?;
+    let tonk = state.read().await;
+    let branch = media_branch(&tonk, key, branch_name).await?;
+    if has_media(&tonk, &branch, entity).await? {
         return Ok(());
     }
-    // Blob imports advance the branch index; serialize with other writer routes.
-    let tonk = state.write().await;
+    import_blob(&tonk, &branch, entity, bytes).await
+}
+
+/// The branch a starter image is hydrated into, moved to this release's
+/// storage format first (see [`migrate_once`]).
+async fn media_branch(
+    tonk: &TonkState,
+    key: &str,
+    branch_name: &str,
+) -> Result<dialog_repository::Branch, TonkWorkerError> {
     let repository = tonk
         .profile
         .space(key)
@@ -858,44 +893,35 @@ async fn hydrate_media(
         .perform(&tonk.operator)
         .await
         .map_err(internal)?;
-    migrate_once(&tonk, key, branch_name).await?;
-    let branch = repository
+    migrate_once(tonk, key, branch_name).await?;
+    repository
         .branch(branch_name)
         .open()
         .perform(&tonk.operator)
         .await
-        .map_err(internal)?;
-    ensure_media(&tonk, &branch, entity).await?;
-    Ok(())
+        .map_err(internal)
 }
 
-/// Only this immutable, compiled-in allowlist can fill a missing starter image.
-/// The caller has already resolved its authorized repository and branch. Bytes
-/// become ordinary branch blobs, so export/sync and later offline reads work.
-async fn ensure_media(
+/// Whether `branch` already holds the starter image `entity`. Only this
+/// immutable, compiled-in allowlist is ever filled in: the caller has
+/// resolved its authorized repository and branch, and the bytes become
+/// ordinary branch blobs, so export/sync and later offline reads work.
+async fn has_media(
     tonk: &TonkState,
     branch: &dialog_repository::Branch,
     entity: &dialog_artifacts::Entity,
 ) -> Result<bool, TonkWorkerError> {
-    let Some(media) = bundled_media()?
-        .into_iter()
-        .find(|media| &media.entity == entity)
-    else {
-        return Ok(false);
-    };
     match Blob::from(entity.clone())
         .read(branch.blobs())
         .perform(&tonk.operator)
         .await
     {
-        Ok(_) => return Ok(true),
+        Ok(_) => Ok(true),
         Err(dialog_repository::CommitError::Blob(dialog_effects::blob::BlobError::NotFound(_))) => {
+            Ok(false)
         }
-        Err(error) => return Err(internal(error)),
+        Err(error) => Err(internal(error)),
     }
-    let bytes = fetch_media(&media.url).await?;
-    import_blob(tonk, branch, entity, bytes).await?;
-    Ok(true)
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

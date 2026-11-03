@@ -576,10 +576,9 @@ pub(crate) mod tests {
         use crate::router::AppState;
         use crate::router::tests::test_state;
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         async fn env() -> (AppState, CommandEnv) {
-            let state: AppState = Arc::new(RwLock::new(test_state().await));
+            let state: AppState = Arc::new(crate::StateLock::new(test_state().await));
             let env = CommandEnv::new(state.clone(), CommandOrigin::default());
             (state, env)
         }
@@ -758,7 +757,7 @@ pub(crate) mod tests {
             crate::router::repository::bootstrap_profile(&state)
                 .await
                 .unwrap();
-            std::sync::Arc::new(tokio::sync::RwLock::new(state))
+            std::sync::Arc::new(crate::StateLock::new(state))
         }
 
         /// The subject DIDs of every user-space replica the profile

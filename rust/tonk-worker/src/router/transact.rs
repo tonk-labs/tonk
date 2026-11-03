@@ -354,7 +354,6 @@ mod profile_write_boundary {
 
     use axum::{Extension, body::Bytes, http::HeaderMap};
     use std::sync::Arc;
-    use tokio::sync::RwLock;
     use tonk_schema::claim::TransactRequest;
 
     use super::{transact, transact_profile};
@@ -367,7 +366,7 @@ mod profile_write_boundary {
     /// Returns the state and the `ClientId` of that client.
     async fn test_state_with_view_bound_client() -> (AppState, ClientId) {
         let state = crate::router::tests::test_state().await;
-        let app_state: AppState = Arc::new(RwLock::new(state));
+        let app_state: AppState = Arc::new(crate::StateLock::new(state));
         let client_id = ClientId("sealed-guest-test".to_owned());
         let bindings = app_state.read().await.view_bindings.clone();
         bindings.write().await.insert(

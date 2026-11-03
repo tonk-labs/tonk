@@ -244,11 +244,28 @@ pub struct Metadata {
     client_name: Option<String>,
     redirect_uris: Option<Vec<String>>,
     token_endpoint_auth_method: Option<String>,
+    /// Every method a metadata document's client can use, where it names
+    /// more than its preferred one (ChatGPT's does).
+    token_endpoint_auth_methods_supported: Option<Vec<String>>,
     grant_types: Option<Vec<String>>,
     response_types: Option<Vec<String>>,
 }
 
 impl Metadata {
+    /// Whether the client can act as a public one. A document may prefer
+    /// another method and still offer `none`: this service advertises only
+    /// `none`, so such a client redeems its code with PKCE alone.
+    fn public(&self) -> Result<(), ClientError> {
+        let offers_none = self
+            .token_endpoint_auth_methods_supported
+            .as_ref()
+            .is_some_and(|methods| methods.iter().any(|method| method == "none"));
+        if offers_none {
+            return Ok(());
+        }
+        public_client(self.token_endpoint_auth_method.as_deref())
+    }
+
     /// The grant and response types, when given, must include the one
     /// flow this server runs. Others (`refresh_token`, most often) are
     /// dropped rather than refused: the answer says what was granted.
@@ -401,7 +418,7 @@ pub fn from_document(url: &Url, body: &[u8]) -> Result<Client, ClientError> {
             "the client metadata document names a different client_id".into(),
         ));
     }
-    public_client(metadata.token_endpoint_auth_method.as_deref())?;
+    metadata.public()?;
     metadata.runs_authorization_code()?;
     let redirect_uris = redirect_uris(metadata.redirect_uris)?;
     let host = url.host_str().unwrap_or_default();
@@ -558,6 +575,39 @@ mod tests {
             )
             .is_err(),
             "a document for another client_id"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_reads_a_document_that_prefers_a_key_but_offers_none() {
+        // ChatGPT's document, as served at its client_id.
+        let url = document_url("https://chatgpt.com/oauth/client.json").unwrap();
+        let client = from_document(
+            &url,
+            br#"{"client_id":"https://chatgpt.com/oauth/client.json","client_uri":"https://chatgpt.com/",
+                "redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],
+                "token_endpoint_auth_method":"private_key_jwt",
+                "token_endpoint_auth_methods_supported":["none","private_key_jwt"],
+                "grant_types":["authorization_code","refresh_token"],"response_types":["code"],
+                "client_name":"ChatGPT","token_endpoint_auth_signing_alg":"RS256",
+                "jwks_uri":"https://chatgpt.com/oauth/jwks.json"}"#,
+        )
+        .unwrap();
+        assert_eq!(client.name, "ChatGPT");
+        assert!(client.accepts("https://chatgpt.com/connector_platform_oauth_redirect"));
+
+        assert!(
+            matches!(
+                from_document(
+                    &url,
+                    br#"{"client_id":"https://chatgpt.com/oauth/client.json",
+                        "redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],
+                        "token_endpoint_auth_method":"private_key_jwt",
+                        "token_endpoint_auth_methods_supported":["private_key_jwt"]}"#,
+                ),
+                Err(ClientError::InvalidMetadata(_))
+            ),
+            "a document that only authenticates with a key"
         );
     }
 

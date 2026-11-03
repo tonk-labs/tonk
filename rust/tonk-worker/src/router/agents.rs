@@ -197,6 +197,32 @@ pub(super) async fn is_agent(tonk: &TonkState, did: &Did) -> bool {
         .is_ok_and(|rows| rows.iter().any(|row| row.this.to_string() == did.as_str()))
 }
 
+/// The name the agent space `agent` gives `space` in its directory.
+async fn directory_name(tonk: &TonkState, agent: &Did, space: &Did) -> Option<String> {
+    let session = tonk
+        .reactor
+        .repository(agent.repo_key())
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .ok()?;
+    let rows: Vec<tonk_schema::SpaceName> = session
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::SpaceName> {
+            this: Term::from(space.this()),
+            name: Term::var("name"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .ok()?;
+    rows.into_iter()
+        .next()
+        .map(|row| row.name.0)
+        .filter(|name| !name.trim().is_empty())
+}
+
 pub(super) async fn name(tonk: &TonkState, did: &Did) -> Option<String> {
     let key = did.repo_key();
     let repository = tonk
@@ -250,12 +276,24 @@ async fn retained(
         .map_err(failure)
 }
 
-/// The live grants this profile issued to `agent`, each a one-certificate
-/// chain as retained, read from both places a grant may be held.
+/// Who issued a grant: this profile or its account root, which can
+/// revoke it at the space's access service, or the key of a share link
+/// the agent joined from the chat (`hosted::join`), which the person may
+/// hold no proof to revoke. A link's grant is removed by dropping it from
+/// the agent space, the only place the hosted agent finds it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Issued {
+    Here,
+    Link,
+}
+
+/// The live grants to `agent`, each a one-certificate chain as retained,
+/// read from both places a grant may be held: those this profile issued,
+/// and those a share link issued into the agent space.
 async fn grants(
     tonk: &TonkState,
     agent: &Did,
-) -> Result<Vec<(DelegationChain, Held)>, TonkWorkerError> {
+) -> Result<Vec<(DelegationChain, Held, Issued)>, TonkWorkerError> {
     let now = Timestamp::now().to_unix();
     // The approval page issues from the profile today; the agreed design
     // issues from the account root, behind a passkey.
@@ -268,14 +306,20 @@ async fn grants(
     for held in [Held::AgentSpace, Held::Profile] {
         for delegation in retained(tonk, agent, held).await? {
             let chain = delegation.0;
-            if !issuers.contains(chain.issuer())
-                || chain.subject().is_none_or(|subject| subject == agent)
+            let issued = if issuers.contains(chain.issuer()) {
+                Issued::Here
+            } else if held == Held::AgentSpace {
+                Issued::Link
+            } else {
+                continue;
+            };
+            if chain.subject().is_none_or(|subject| subject == agent)
                 || chain.expiration().is_some_and(|at| at.to_unix() <= now)
                 || !seen.insert(*chain.proof_cids().last().unwrap())
             {
                 continue;
             }
-            found.push((chain, held));
+            found.push((chain, held, issued));
         }
     }
     Ok(found)
@@ -290,7 +334,7 @@ pub async fn list(
     let mut agents = Vec::new();
     for did in agent_spaces(&tonk).await? {
         let mut by_space = std::collections::BTreeMap::<String, (Did, bool, Option<u64>)>::new();
-        for (chain, _) in grants(&tonk, &did).await? {
+        for (chain, _, _) in grants(&tonk, &did).await? {
             let subject = chain.subject().unwrap().clone();
             let write = chain.ability().starts_with("/use/put");
             let expires = chain.expiration().map(|at| at.to_unix());
@@ -305,9 +349,15 @@ pub async fn list(
         }
         let mut spaces = Vec::new();
         for (_, (subject, write, expires_at)) in by_space {
+            // A space joined from a link may not be one of the person's:
+            // the agent space's directory names it then.
+            let name = match name(&tonk, &subject).await {
+                Some(name) => Some(name),
+                None => directory_name(&tonk, &did, &subject).await,
+            };
             spaces.push(AgentSpaceAccess {
                 key: subject.repo_key().to_owned(),
-                name: name(&tonk, &subject).await,
+                name,
                 subject,
                 access: if write { "write" } else { "read" },
                 expires_at,
@@ -339,6 +389,43 @@ pub async fn revoke(
         .into_iter()
         .find(|did| did.repo_key() == key)
         .ok_or_else(|| TonkWorkerError::NotFound(format!("no agent {key}")))?;
+    let (leaves, links): (Vec<_>, Vec<_>) = grants(&tonk, &agent)
+        .await?
+        .into_iter()
+        .filter(|(chain, _, _)| chain.subject() == Some(&request.space))
+        .partition(|(_, _, issued)| *issued == Issued::Here);
+    if leaves.is_empty() && links.is_empty() {
+        return Err(TonkWorkerError::NotFound(
+            "the agent holds no access to that space".into(),
+        ));
+    }
+    if !links.is_empty() {
+        // Dropped from the agent space, which the hosted agent reads its
+        // access from on every call, then sent there by the background
+        // sync, which retries.
+        let session = tonk
+            .reactor
+            .repository(agent.repo_key())
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .map_err(failure)?;
+        for (leaf, _, _) in links {
+            session
+                .handle()
+                .delegations()
+                .retract(UcanDelegation(leaf))
+                .perform(&tonk.operator)
+                .await
+                .map_err(failure)?;
+        }
+        tonk.sync_queue
+            .mark_dirty(agent.repo_key(), super::sync::now_millis());
+    }
+    if leaves.is_empty() {
+        tonk_common::log!("agent {} link access to {} removed", agent, request.space);
+        return Ok(Json(()));
+    }
     let repository = tonk
         .profile
         .space(request.space.repo_key())
@@ -354,18 +441,8 @@ pub async fn revoke(
             ));
         }
     };
-    let leaves: Vec<_> = grants(&tonk, &agent)
-        .await?
-        .into_iter()
-        .filter(|(chain, _)| chain.subject() == Some(&request.space))
-        .collect();
-    if leaves.is_empty() {
-        return Err(TonkWorkerError::NotFound(
-            "the agent holds no access to that space".into(),
-        ));
-    }
     let profile = tonk.profile.did();
-    for (leaf, held) in leaves {
+    for (leaf, held, _) in leaves {
         let target = *leaf
             .proof_cids()
             .last()
@@ -460,7 +537,6 @@ mod tests {
     use dialog_effects::storage::Directory;
     use dialog_varsig::Principal as _;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
     use tonk_invite::connection::{AgentAccess, DEFAULT_GRANT_TTL_SECONDS};
 
     /// A marked space with grants retained to it lists as an agent, with
@@ -473,7 +549,7 @@ mod tests {
         let (storage, profile) = crate::device::open_profile_at("agents", location.clone()).await?;
         let registry = crate::device::Registry::new("agents".into(), location);
         let tonk = crate::worker::boot_state(storage, "agents".into(), profile, registry).await?;
-        let state: AppState = Arc::new(RwLock::new(tonk));
+        let state: AppState = Arc::new(crate::StateLock::new(tonk));
 
         let mut keys = Vec::new();
         for name in ["Notes", "Plans"] {
@@ -556,7 +632,7 @@ mod tests {
         // with the grant on its end.
         let tonk = state.read().await;
         let profile = tonk.profile.did();
-        for (leaf, _) in grants(&tonk, &agent).await? {
+        for (leaf, _, _) in grants(&tonk, &agent).await? {
             let subject = leaf.subject().unwrap().clone();
             let path = ancestor(&tonk, &profile, &subject, &leaf).await?;
             assert_eq!(path.audience(), leaf.issuer());
@@ -564,6 +640,74 @@ mod tests {
             assert_eq!(path.subject(), Some(&subject));
             assert_eq!(path.audience(), &agent);
         }
+        drop(tonk);
+
+        // A space the agent joined from a share link in the chat: its
+        // grant was issued by the link's key into the agent space, for a
+        // space this person may not belong to. It lists under the agent
+        // space's directory name, and revoking drops it from there.
+        let shared = Ed25519Signer::generate().await?;
+        let seed: [u8; 32] = rand::random();
+        let link_key = Ed25519Signer::import(&seed).await?;
+        let root = dialog_ucan_core::DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(shared.clone()))
+            .audience(&link_key.did())
+            .subject(dialog_ucan_core::subject::Subject::Specific(shared.did()))
+            .command(vec![])
+            .meta(tonk_invite::home_address_meta(&remote))
+            .try_build()
+            .await?;
+        let invite = tonk_invite::Invite::new(
+            DelegationChain::new(root),
+            tonk_invite::InviteAudience::Open { seed },
+            Some(remote.clone()),
+        )
+        .await?;
+        let offer = super::super::hosted::join::Offer::of(invite).map_err(anyhow::Error::msg)?;
+        let chains = offer
+            .grant(&agent, AgentAccess::Read, now)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        {
+            let tonk = state.read().await;
+            super::super::hosted::access::retain_agent_grants(
+                &tonk,
+                &agent,
+                &chains,
+                &[super::super::hosted::access::DirectoryEntry {
+                    space: shared.did(),
+                    name: Some("Family trip".into()),
+                    address: Some(remote.to_string()),
+                }],
+            )
+            .await?;
+        }
+        let Json(agents) = list(State(state.clone())).await?;
+        let joined = agents[0]
+            .spaces
+            .iter()
+            .find(|space| space.subject == shared.did())
+            .expect("the space joined from a link is listed");
+        assert_eq!(joined.name.as_deref(), Some("Family trip"));
+        assert_eq!(joined.access, "read");
+
+        let Json(()) = revoke(
+            State(state.clone()),
+            Path(agent_key.clone()),
+            Json(RevokeRequest {
+                space: shared.did(),
+            }),
+        )
+        .await?;
+        let Json(agents) = list(State(state.clone())).await?;
+        assert!(
+            agents[0]
+                .spaces
+                .iter()
+                .all(|space| space.subject != shared.did()),
+            "the link's grant is gone"
+        );
+        assert_eq!(agents[0].spaces.len(), 2, "the person's own grants stay");
         Ok(())
     }
 
