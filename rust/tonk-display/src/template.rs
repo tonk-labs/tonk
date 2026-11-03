@@ -179,19 +179,24 @@ mod dom {
     /// text nodes (mutating `fragment` in place), and return the flat
     /// list of bindings. Used by [`extract_plan`].
     fn collect_bindings(fragment: &DocumentFragment) -> Vec<Binding> {
-        let mut bindings: Vec<Binding> = Vec::new();
-        // (Path, NodeKind) snapshot — collect first, mutate after,
-        // because mutating during walk invalidates the iterator.
-        let mut text_targets: Vec<(Vec<usize>, String)> = Vec::new();
-        let mut attr_targets: Vec<(Vec<usize>, IndexMap<String, String>)> = Vec::new();
+        let root = fragment.unchecked_ref::<Node>();
+        // Collect the NODES first, mutate after, and only then compute
+        // paths. Splitting a text node into per-segment nodes shifts the
+        // index of every later sibling, so a path recorded before a split
+        // can point at the wrong node afterwards: in `<p>a {x} <b>{y}</b></p>`
+        // splitting `a {x} ` moves `<b>` from child 1 to child 3, and `{y}`
+        // was silently dropped. Paths taken from the final tree cannot go
+        // stale.
+        let mut text_targets: Vec<(Node, String)> = Vec::new();
+        let mut attr_targets: Vec<(Node, IndexMap<String, String>)> = Vec::new();
         walk(
-            fragment.unchecked_ref::<Node>(),
+            root,
             &mut Vec::new(),
-            &mut |path, node| match node.node_type() {
+            &mut |_path, node| match node.node_type() {
                 Node::TEXT_NODE => {
                     let raw = node.text_content().unwrap_or_default();
                     if raw.contains('{') {
-                        text_targets.push((path.to_vec(), raw));
+                        text_targets.push((node.clone(), raw));
                     }
                 }
                 Node::ELEMENT_NODE => {
@@ -208,7 +213,7 @@ mod dom {
                             }
                         }
                         if !interpolated.is_empty() {
-                            attr_targets.push((path.to_vec(), interpolated));
+                            attr_targets.push((node.clone(), interpolated));
                         }
                     }
                 }
@@ -218,68 +223,54 @@ mod dom {
 
         // For each text target, split the original text node into
         // a sequence of single-segment text nodes so the rendered
-        // value of one field doesn't trample its neighbours.
+        // value of one field doesn't trample its neighbours. Keep each
+        // field's new node, to take its path once every split is done.
         let document = window().and_then(|w| w.document());
-        for (path, raw) in text_targets {
+        let mut field_nodes: Vec<(Node, Segment)> = Vec::new();
+        for (node, raw) in text_targets {
             let segments = parse_segments(&raw);
             if !has_field(&segments) {
                 continue;
             }
-            let Some(node) = navigate(fragment.unchecked_ref::<Node>(), &path) else {
-                continue;
-            };
             let Some(parent) = node.parent_node() else {
                 continue;
             };
-            let document = match &document {
-                Some(d) => d,
-                None => continue,
+            let Some(document) = &document else {
+                continue;
             };
-            // Build replacement nodes in document order, also
-            // recording the new sub-path of each Field node so we
-            // can target it on a clone.
-            let mut new_nodes: Vec<(Node, Option<usize>)> = Vec::new();
-            for seg in &segments {
-                match seg {
-                    Segment::Text(t) => {
-                        let n: Node = document.create_text_node(t).into();
-                        new_nodes.push((n, None));
-                    }
-                    Segment::Field(_) => {
-                        let n: Node = document.create_text_node("").into();
-                        new_nodes.push((n, Some(new_nodes.len())));
-                    }
-                }
-            }
-            // Replace the original node with the new sequence.
             let mut last_inserted: Node = node.clone();
-            for (n, _) in &new_nodes {
-                let _ = parent.insert_before(n, last_inserted.next_sibling().as_ref());
+            for seg in &segments {
+                let text = match seg {
+                    Segment::Text(t) => t.as_str(),
+                    Segment::Field(_) => "",
+                };
+                let n: Node = document.create_text_node(text).into();
+                let _ = parent.insert_before(&n, last_inserted.next_sibling().as_ref());
                 last_inserted = n.clone();
+                if let Segment::Field(_) = seg {
+                    field_nodes.push((n, seg.clone()));
+                }
             }
             let _ = parent.remove_child(&node);
-
-            // Now compute paths of the new Field nodes and emit
-            // bindings. The new nodes were inserted at the
-            // original sibling index `path.last()`, so their paths
-            // are `path[..-1] + [original_idx + i]`.
-            let original_idx = *path.last().unwrap_or(&0);
-            let prefix = &path[..path.len().saturating_sub(1)];
-            for (i, seg) in segments.iter().enumerate() {
-                if let Segment::Field(_) = seg {
-                    let mut new_path = prefix.to_vec();
-                    new_path.push(original_idx + i);
-                    bindings.push(Binding {
-                        path: new_path,
-                        kind: BindingKind::Text {
-                            segments: vec![seg.clone()],
-                        },
-                    });
-                }
-            }
         }
 
-        for (path, attrs) in attr_targets {
+        let mut bindings: Vec<Binding> = Vec::new();
+        for (node, segment) in field_nodes {
+            let Some(path) = path_of(root, &node) else {
+                continue;
+            };
+            bindings.push(Binding {
+                path,
+                kind: BindingKind::Text {
+                    segments: vec![segment],
+                },
+            });
+        }
+
+        for (node, attrs) in attr_targets {
+            let Some(path) = path_of(root, &node) else {
+                continue;
+            };
             for (name, value) in attrs {
                 let segments = parse_segments(&value);
                 if !has_field(&segments) {
@@ -294,9 +285,7 @@ mod dom {
                 // carry the literal `html:foo="{x}"` placeholder.
                 let (attr_name, force_attribute) = match name.strip_prefix("html:") {
                     Some(stripped) => {
-                        if let Some(node) = navigate(fragment.unchecked_ref::<Node>(), &path)
-                            && let Some(el) = node.dyn_ref::<Element>()
-                        {
+                        if let Some(el) = node.dyn_ref::<Element>() {
                             let _ = el.remove_attribute(&name);
                         }
                         (stripped.to_string(), true)
@@ -315,6 +304,26 @@ mod dom {
         }
 
         bindings
+    }
+
+    /// The child-index path from `root` down to `node`, read from the tree
+    /// as it is now. `None` when `node` is not under `root`.
+    fn path_of(root: &Node, node: &Node) -> Option<Vec<usize>> {
+        let mut path = Vec::new();
+        let mut current = node.clone();
+        while !current.is_same_node(Some(root)) {
+            let parent = current.parent_node()?;
+            let children = parent.child_nodes();
+            let index = (0..children.length()).position(|i| {
+                children
+                    .item(i)
+                    .is_some_and(|c| c.is_same_node(Some(&current)))
+            })?;
+            path.push(index);
+            current = parent;
+        }
+        path.reverse();
+        Some(path)
     }
 
     /// Walk a node and its descendants, calling `visit(path, node)`

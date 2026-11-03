@@ -1178,6 +1178,65 @@ mod tests {
             .collect()
     }
 
+    /// A binding after a text node that holds a field, in the same parent,
+    /// still renders. Splitting `For {provider} · ` into per-segment nodes
+    /// shifted `<code>` to a later index, and the paths recorded before the
+    /// split pointed at the wrong node, so `{this}` (in text or attribute)
+    /// stayed literal. The agent home's header hit exactly this.
+    #[dialog_common::test]
+    fn it_renders_this_after_a_split_text_node() {
+        let document = window().expect("window").document().expect("doc");
+        let host = document.create_element("tonk-view").expect("create host");
+        host.set_inner_html(
+            "<header><h1>{name}</h1><p><small>For {provider} · <code>{this}</code></small></p></header>",
+        );
+        let snapshot = snapshot_template(&host).expect("snapshot");
+        let scalars: std::collections::BTreeSet<String> =
+            ["name", "provider"].into_iter().map(String::from).collect();
+        let mut renderer = Renderer::from_snapshot_with_scalars(snapshot, &scalars);
+        renderer.apply(&[row(
+            "did:key:agent",
+            &[("name", "Claude"), ("provider", "claude")],
+        )]);
+        let code = host
+            .query_selector("code")
+            .expect("query")
+            .expect("the code element renders");
+        assert_eq!(
+            code.text_content().as_deref(),
+            Some("did:key:agent"),
+            "`{{this}}` in text renders the entity; got: {}",
+            host.inner_html()
+        );
+    }
+
+    /// The same, for a plain field and an attribute: nothing about it is
+    /// specific to `{this}`.
+    #[dialog_common::test]
+    fn it_renders_fields_after_a_split_text_node() {
+        let (mut renderer, host) = renderer("<p>Hello {name}, <b title={kind}>{role}</b></p>");
+        renderer.apply(&[row(
+            "did:key:a",
+            &[("name", "Ada"), ("kind", "person"), ("role", "founder")],
+        )]);
+        let b = host
+            .query_selector("b")
+            .expect("query")
+            .expect("the b element renders");
+        assert_eq!(
+            b.text_content().as_deref(),
+            Some("founder"),
+            "a text field after a split renders; got: {}",
+            host.inner_html()
+        );
+        assert_eq!(
+            b.get_attribute("title").as_deref(),
+            Some("person"),
+            "an attribute after a split renders; got: {}",
+            host.inner_html()
+        );
+    }
+
     #[dialog_common::test]
     fn it_describes_nothing_before_the_first_frame() {
         let (renderer, _host) = renderer("<p>{title}</p>");
