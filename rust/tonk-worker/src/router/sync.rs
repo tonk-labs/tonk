@@ -594,6 +594,19 @@ pub fn branches_to_sync(branches: &HashMap<String, BranchConfiguration>) -> Vec<
     names
 }
 
+/// Branch names in `branches` with no upstream, sorted: the complement of
+/// [`branches_to_sync`]. They have nowhere to sync to, so no sweep ever
+/// reconciles them, and their status is `local` by construction.
+pub fn local_only_branches(branches: &HashMap<String, BranchConfiguration>) -> Vec<String> {
+    let mut names: Vec<String> = branches
+        .iter()
+        .filter(|(_, config)| config.upstream.is_none())
+        .map(|(name, _)| name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
 /// Stamp `sync:offline` at `state:here` on every open repository's upstream
 /// branches, WITHOUT touching the network. The per-fetch drain calls this
 /// instead of sweeping while the browser reports offline, so the chip/disc
@@ -701,6 +714,19 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
             return Ok(());
         }
     };
+
+    // A branch with no upstream is never swept, so nothing else would
+    // settle its status: the chip would sit on its `pending` default and
+    // draw a local-only space as synced. Stamp `local` without touching
+    // the network. The status lives in the in-memory overlay, so each
+    // sweep re-stamps it after a worker restart, as the paused path does.
+    {
+        let tonk = state.read().await;
+        for branch in local_only_branches(&info.branch) {
+            publish_sync_status_attr(&tonk, repo, &branch, tonk_schema::Replica::local_status())
+                .await;
+        }
+    }
 
     let mut failed = false;
     for branch in branches_to_sync(&info.branch) {
@@ -2468,6 +2494,25 @@ mod tests {
     fn it_returns_empty_when_no_branch_has_an_upstream() {
         let branches = HashMap::from([("main".to_string(), without_upstream())]);
         assert!(branches_to_sync(&branches).is_empty());
+    }
+
+    #[dialog_common::test]
+    fn it_reports_branches_without_an_upstream_as_local_only() {
+        let branches = HashMap::from([
+            ("main".to_string(), without_upstream()),
+            ("shared".to_string(), with_upstream()),
+            ("alpha".to_string(), without_upstream()),
+        ]);
+        assert_eq!(
+            local_only_branches(&branches),
+            vec!["alpha".to_string(), "main".to_string()]
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_reports_no_local_only_branch_when_every_branch_syncs() {
+        let branches = HashMap::from([("main".to_string(), with_upstream())]);
+        assert!(local_only_branches(&branches).is_empty());
     }
 
     fn authorization_failure(error: AuthorizeError) -> crate::reactor::ReactorError {
