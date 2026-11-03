@@ -2666,10 +2666,27 @@ impl dialog_capability::Provider<tonk_schema::command::ProfileRename>
             Ok(()) => ("renamed", "Display name saved."),
             Err(error) => {
                 log!("ProfileRename for repo '{}' failed: {}", key, error);
-                ("failed", "Couldn't save your display name. Try again.")
+                ("failed", profile_rename_failure_detail(&error))
             }
         };
         report_profile_rename(self.state(), &command.this, status, detail).await;
+    }
+}
+
+/// What the name chip tells the user when a [`ProfileRename`] fails.
+///
+/// A linked account whose state is not ready yet (most often an email that
+/// has not been verified) refuses the rename; retrying cannot help, so say
+/// what will. Any other failure keeps the generic retry hint, since its
+/// message is a diagnostic rather than something to show.
+///
+/// [`ProfileRename`]: tonk_schema::command::ProfileRename
+pub(crate) fn profile_rename_failure_detail(error: &TonkWorkerError) -> &'static str {
+    match error {
+        TonkWorkerError::AccountStateUnavailable(_) => {
+            "Please verify your email using the verification link we sent before changing your display name."
+        }
+        _ => "Couldn't save your display name. Try again.",
     }
 }
 
@@ -9580,6 +9597,26 @@ mod rename_outcome_tests {
     #[dialog_common::test]
     fn it_maps_a_successful_rename_to_renamed() {
         assert_eq!(rename_outcome(Ok(())), RenameOutcome::Renamed);
+    }
+
+    #[dialog_common::test]
+    fn it_asks_for_verification_when_a_display_name_rename_precedes_activation() {
+        let detail = super::profile_rename_failure_detail(
+            &crate::TonkWorkerError::AccountStateUnavailable("not ready".into()),
+        );
+        assert!(detail.contains("verify your email"), "{detail}");
+        assert!(
+            !detail.contains("not ready"),
+            "the diagnostic must not leak: {detail}"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_keeps_the_generic_retry_hint_for_other_display_name_failures() {
+        let detail = super::profile_rename_failure_detail(&crate::TonkWorkerError::Internal(
+            "failed to persist profile name override: boom".into(),
+        ));
+        assert_eq!(detail, "Couldn't save your display name. Try again.");
     }
 }
 
