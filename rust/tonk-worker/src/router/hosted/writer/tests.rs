@@ -111,6 +111,18 @@ async fn a_revoked_sync_is_answered_as_a_refusal() {
         TonkWorkerError::Upstream { status: 403, .. }
     ));
 
+    // No chain left, as after the revoked one is dropped: also refused.
+    let denied = SyncFailure::answered(
+        "pull",
+        StatusCode::FORBIDDEN,
+        br#"{"error":{"kind":"upstream","code":"ACCESS_DENIED","message":"no access to this space"}}"#,
+    );
+    let answer = denied.answer("PULL_FAILED");
+    assert_eq!(answer.status(), StatusCode::FORBIDDEN);
+    let body: serde_json::Value =
+        serde_json::from_slice(&answer.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["code"], ACCESS_DENIED);
+
     // Any other failed sync is still a failed sync.
     let failed = SyncFailure::answered("pull", StatusCode::SERVICE_UNAVAILABLE, b"down");
     assert!(!failed.revoked());
@@ -748,9 +760,10 @@ concept!: &writer-note
             SpaceWriter::open(&scratch_root(), &session, &ungranted.did(), &fixture.remote)
                 .await
                 .unwrap();
+        // No chain reaches the space: refused, not a failed sync.
         let (status, body) = evaluate(&refused, fixture.note("refused")).await;
-        assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
-        assert_eq!(body["code"], "PULL_FAILED", "{body}");
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["code"], ACCESS_DENIED, "{body}");
         // Its owner sees nothing published.
         let owner = super::session(&ungranted, "owner", &fixture.remote).await;
         let owner = SpaceWriter::open(&scratch_root(), &owner, &ungranted.did(), &fixture.remote)

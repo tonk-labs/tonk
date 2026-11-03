@@ -614,6 +614,11 @@ impl SpaceWriter {
 /// because a grant it proves through was revoked.
 pub const CREDENTIAL_REVOKED: &str = "CREDENTIAL_REVOKED";
 
+/// The code a pull or push answers when no chain the peer holds reaches
+/// the space: what a revoked grant becomes once its revoked chain is
+/// dropped.
+pub const ACCESS_DENIED: &str = "ACCESS_DENIED";
+
 /// A pull or push that did not succeed, with the reason the branch's
 /// sync route gave, so a revocation is answered as one rather than as a
 /// failed sync.
@@ -648,25 +653,34 @@ impl SyncFailure {
         self.code.as_deref() == Some(CREDENTIAL_REVOKED)
     }
 
-    /// The writer's answer: `403` and [`CREDENTIAL_REVOKED`] for a
-    /// revocation, `502` and `code` otherwise.
+    /// The refusal's code when access was refused (a revoked grant, or no
+    /// grant left), rather than the sync failing.
+    fn refusal(&self) -> Option<&'static str> {
+        match self.code.as_deref() {
+            Some(CREDENTIAL_REVOKED) => Some(CREDENTIAL_REVOKED),
+            Some(ACCESS_DENIED) => Some(ACCESS_DENIED),
+            _ => None,
+        }
+    }
+
+    /// The writer's answer: `403` and the refusal's code when access was
+    /// refused, `502` and `code` otherwise.
     fn answer(&self, code: &str) -> Response<Body> {
         self.answer_with(code, &self.message)
     }
 
     /// [`answer`](Self::answer), with `message`.
     fn answer_with(&self, code: &str, message: &str) -> Response<Body> {
-        if self.revoked() {
-            failure(StatusCode::FORBIDDEN, CREDENTIAL_REVOKED, message)
-        } else {
-            failure(StatusCode::BAD_GATEWAY, code, message)
+        match self.refusal() {
+            Some(refusal) => failure(StatusCode::FORBIDDEN, refusal, message),
+            None => failure(StatusCode::BAD_GATEWAY, code, message),
         }
     }
 
-    /// As a worker error: [`TonkWorkerError::Upstream`] with `403` for a
-    /// revocation, so a caller can tell it from a failure.
+    /// As a worker error: [`TonkWorkerError::Upstream`] with `403` when
+    /// access was refused, so a caller can tell it from a failure.
     fn into_worker_error(self) -> TonkWorkerError {
-        if self.revoked() {
+        if self.refusal().is_some() {
             TonkWorkerError::Upstream {
                 status: StatusCode::FORBIDDEN.as_u16(),
                 code: self.code,
@@ -886,6 +900,39 @@ impl SpaceWriter {
         directory: &[super::access::DirectoryEntry],
     ) -> Result<(), String> {
         self.retain_grants(chains, directory).await
+    }
+
+    /// Drop `chains` from the agent space and push, as revoking a grant
+    /// joined from a share link does (see `agents::revoke`): the access
+    /// service is never told, so only the agent space says it is gone.
+    #[cfg(test)]
+    pub(crate) async fn withdraw(&self, chains: &[DelegationChain]) -> Result<(), String> {
+        if self.space != self.agent {
+            return Err("only the agent space's writer drops its grants".into());
+        }
+        let _turn = self.lock.lock().await;
+        let peer = self.peer();
+        self.sync(&peer, "pull").await?;
+        {
+            let state = peer.state.read().await;
+            let session = state
+                .reactor
+                .repository(self.space.as_ref())
+                .branch("main")
+                .acquire(&state.operator)
+                .await
+                .map_err(|error| error.to_string())?;
+            for chain in chains {
+                session
+                    .handle()
+                    .delegations()
+                    .retract(dialog_ucan::UcanDelegation(chain.clone()))
+                    .perform(&state.operator)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        self.push(&peer).await.map_err(String::from)
     }
 }
 
