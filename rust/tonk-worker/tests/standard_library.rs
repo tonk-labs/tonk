@@ -896,6 +896,24 @@ fn it_mints_an_invite_when_copying_a_hub_space_link() {
 }
 
 #[dialog_common::test]
+fn it_answers_a_resend_activation_request_in_place() {
+    for contract in [
+        "<resend-activation><button type=\"button\" data-resend-activation>",
+        "data-resend-status role=\"status\"",
+        "element!: &resend-activation",
+        "the: 'xyz.tonk.resend-activation/at', as: 'natural:64'",
+        "the: 'xyz.tonk.resend-activation/status'",
+        "result?.status === 'requested'",
+        "result?.status === 'failed'",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the activation notice must show what came of a resend: `{contract}`"
+        );
+    }
+}
+
+#[dialog_common::test]
 fn it_renames_a_space_from_the_hub_menu() {
     for contract in [
         "event!: &on/repository-rename-submit",

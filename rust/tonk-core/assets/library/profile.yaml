@@ -891,6 +891,12 @@ view!:
       .account-email-notice button { min-height:44px; padding:10px 12px; color:inherit;
         font:600 15px/1.15 var(--cond); text-decoration:underline;
         text-underline-offset:3px; white-space:nowrap; }
+      .account-email-notice button:disabled { opacity:.6; cursor:default; }
+      .account-email-notice resend-activation { display:flex; flex-direction:column;
+        align-items:flex-start; gap:2px; margin-left:auto; }
+      .account-email-notice .resend-status { max-width:32ch; padding:0 12px;
+        font:400 14px/1.35 var(--cond); }
+      .account-email-notice .resend-status:empty { display:none; }
       .visually-hidden { position:absolute; width:1px; height:1px; padding:0; margin:-1px;
         overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
       @media (hover:none) {
@@ -1148,12 +1154,10 @@ command!: &profile/rename
       the: xyz.tonk.command.profile-rename/name
       as: text
 
-event!: &on/resend-activation
-  type: "click"
-  prevent-default: true
-  where:
-    at: ".timeStamp"
-
+# The worker answers each request on its command entity with
+# `xyz.tonk.resend-activation/{status,detail}` (overlay, per tab):
+# `requested` or `failed`. `<resend-activation>` dispatches it under its
+# own receipt so it can show that answer.
 command!: &account/resend-activation
   description: Ask the account service to send the pending activation email again.
   with:
@@ -4177,7 +4181,7 @@ view!:
     notice: |
       <aside class="account-email-notice" data-account-status={status} aria-label="account activation">
         <span>Check your email to finish setting up this account.</span>
-        <button type="button" on:resend-activation=account/resend-activation>resend activation email</button>
+        <resend-activation><button type="button" data-resend-activation>resend activation email</button><span class="resend-status" data-resend-status role="status"></span></resend-activation>
       </aside>
 
 # An onboarding account that has not been handed over is interim.
@@ -4941,6 +4945,88 @@ element!: &inline-editable
           self.dispatchEvent(new Event('change', { bubbles: true }));
         });
       }
+
+# Asks for another activation email and says what came of it. The
+# service sends at most one mail a minute and answers a throttled
+# request like a sent one (so it never says whether an account exists),
+# so the button rests for that minute rather than offering a press that
+# would quietly send nothing.
+element!: &resend-activation
+  description: Requests another activation email and shows the answer.
+  method:
+    say: |
+      (self, text) => {
+        const status = self.querySelector('[data-resend-status]');
+        if (status) status.textContent = text;
+      }
+    request: |
+      async (self) => {
+        const button = self.querySelector('[data-resend-activation]');
+        if (!button || button.disabled) return;
+        button.disabled = true;
+        self.say('Requesting…');
+        let reader;
+        let rest = false;
+        try {
+          await window.tonk.ready;
+          if (!self.isConnected) return;
+          const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+          reader = window.tonk.subscribe({
+            predicate: { with: {
+              status: { the: 'xyz.tonk.resend-activation/status', as: 'Text', cardinality: 'one' },
+              detail: { the: 'xyz.tonk.resend-activation/detail', as: 'Text', cardinality: 'one' },
+            } },
+            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+          }).getReader();
+          self.__reader = reader;
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              at: { the: 'xyz.tonk.resend-activation/at', as: 'natural:64' },
+            } } },
+            parameters: { this: id, at: Date.now() },
+          } }] });
+          while (self.isConnected) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('Resend status stream ended');
+            const result = value.find(row => row.this === id)?.fields;
+            if (result?.status === 'failed') {
+              self.say(result.detail);
+              return;
+            }
+            if (result?.status === 'requested') {
+              self.say(result.detail + ' Check your inbox and spam folder. You can ask again in a minute.');
+              rest = true;
+              return;
+            }
+          }
+        } catch (failure) {
+          self.say("Couldn't confirm the request. Try again.");
+        } finally {
+          if (reader) await reader.cancel().catch(() => {});
+          if (self.__reader === reader) self.__reader = null;
+          clearTimeout(self.__rest);
+          if (rest) {
+            self.__rest = setTimeout(() => { button.disabled = false; }, 60000);
+          } else {
+            button.disabled = false;
+          }
+        }
+      }
+    connected: |
+      (self) => {
+        if (self.__wired) return;
+        self.__wired = true;
+        self.addEventListener('click', event => {
+          if (event.target?.closest?.('[data-resend-activation]')) self.request();
+        });
+      }
+    disconnected: |
+      (self) => {
+        self.__reader?.cancel().catch(() => {});
+        self.__reader = null;
+      }
+    released: |
+      (self) => self.disconnected()
 
 # Opens account recovery over the missing-space screen: a click asks the
 # top page to raise the passkey ceremony, which needs a `window` and a
