@@ -168,7 +168,7 @@ async function scenario(name, body) {
   const unsettled = [observed.settled_ms].flat().some((ms) => ms === null);
   const values = {
     ...counters,
-    ...(observed.read ? { "harness.read_over_budget": observed.read.ms > READ_BUDGET_MS ? 1 : 0 } : {}),
+    ...(observed.read ? { "harness.read_over_budget": observed.read.status !== 200 || observed.read.ms > READ_BUDGET_MS ? 1 : 0 } : {}),
     ...(observed.pull_stalled !== undefined ? { "harness.sync_stalled": observed.pull_stalled ? 1 : 0 } : {}),
     "harness.top_loads": topLoads,
     "harness.started_settled": ready === null ? 0 : 1,
@@ -247,8 +247,10 @@ await scenario("restart-then-stall", async () => {
 // page creates a space, which takes the worker's state for writing. The
 // state lock is write-preferring, so if the sync holds its guard across the
 // round trip, the writer queues behind it and every request after the
-// writer queues too. A plain read issued after the writer must still answer
-// within READ_BUDGET_MS (declared at the top). Only the remote leg is stalled (`link=ucan`, which
+// writer queues too. A local read of space B issued after the writer must
+// still answer within READ_BUDGET_MS (declared at the top). The read is a
+// claim select, which answers from the replica: `sync/status` fetches the
+// upstream head and would wait on the stalled remote whatever the lock does. Only the remote leg is stalled (`link=ucan`, which
 // `tonk-perf link` honours; bench/trace/gate.mjs stalls everything, and
 // cannot stall a sync that bypasses it, so there the scenario is vacuous).
 // bench/trace/gate.mjs has no `/stats`; only `tonk-perf link` can stall
@@ -277,7 +279,10 @@ if (shapesRemote) await scenario("write-while-sync-stalls", async () => {
   const pullStalled = pullDone === null;
   const writer = timed(`/api/repository/stability-${Date.now()}`, { method: "PUT" });
   await page.waitForTimeout(500);
-  const read = await timed(`/api/repository/${spaceB}/branch/main/sync/status`, {});
+  const read = await timed(
+    `/api/repository/${spaceB}/branch/main/claim/select?the=${encodeURIComponent("tonk/repository/name")}`,
+    {},
+  );
   await page.waitForTimeout(Math.max(0, Number(process.env.STABILITY_OUTAGE_MS ?? 20_000) - (Date.now() - t0)));
   await network("shaped");
   const [pulled, wrote] = await Promise.all([pull, writer]);
