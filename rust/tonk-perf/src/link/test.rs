@@ -314,3 +314,38 @@ async fn the_gate_switches_the_network_around_the_runs_profile() {
             .contains("no profile")
     );
 }
+
+#[tokio::test]
+async fn a_request_left_unanswered_is_listed_in_flight() {
+    // A server that reads the request and never answers.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buffer = [0u8; 1024];
+        let _ = stream.read(&mut buffer).await;
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    });
+    let link = Link::start_with(
+        Options {
+            name: "ucan".into(),
+            listen: 0,
+            upstream,
+            shape: Shape::default(),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    let mut stream = connect(&link).await;
+    stream
+        .write_all(b"POST /ucan/ HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\n")
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let pending = link.handle().inflight();
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(pending[0].kind, "ucan");
+    assert_eq!(pending[0].first_byte_ms, None, "never answered");
+    assert!(link.exchanges().is_empty(), "nothing has ended");
+}

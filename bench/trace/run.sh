@@ -17,7 +17,8 @@
 # crossed a link, with its kind, bytes and timing as the browser saw them.
 #
 # TRACE_PROFILE names the network the links start as (default lan; see
-# `tonk-perf profiles`); a scenario's `open` returns to it.
+# `tonk-perf profiles`), and TRACE_SHAPE adjusts it (`kbps=400&jitter_ms=50`);
+# a scenario's `open` returns to it.
 #
 # Usage: bench/trace/run.sh [--dist DIR] [--notes N]
 # Expects release builds of tonk-access-local, tonk and tonk-perf (or their
@@ -58,6 +59,12 @@ for bin in "$ACCESS_LOCAL" "$TONK" "$PERF"; do
 done
 
 cleanup() {
+  # What crossed each link, and what was still waiting on an answer when
+  # the run ended: a request in `inflight.json` was never answered.
+  if [ -n "${CONTROL:-}" ]; then
+    curl -fso "$RUN_DIR/links-stats.json" "$CONTROL/stats" || true
+    curl -fso "$RUN_DIR/inflight.json" "$CONTROL/inflight" || true
+  fi
   [ -n "${TRACE_KEEP:-}" ] && return 0
   for pid in links proxy provisioner access; do
     [ -f "$RUN_DIR/$pid.pid" ] && kill "$(cat "$RUN_DIR/$pid.pid")" 2>/dev/null || true
@@ -65,9 +72,12 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# The service's object permits must name the link, or the browser's
-# block reads and writes go around it.
-ACCESS_PUBLIC_ENDPOINT="$REMOTE" "$ACCESS_LOCAL" > "$RUN_DIR/access.log" 2>&1 &
+# The browser must reach the service only through its link: the object
+# permits name the link (ACCESS_PUBLIC_ENDPOINT), and so does the service's
+# DID document (ACCESS_PUBLIC_ORIGIN), which is where the browser finds the
+# socket live updates arrive on. A document naming another host is not
+# taken, and the browser falls back to polling.
+ACCESS_PUBLIC_ENDPOINT="$REMOTE" ACCESS_PUBLIC_ORIGIN="$REMOTE" "$ACCESS_LOCAL" > "$RUN_DIR/access.log" 2>&1 &
 echo $! > "$RUN_DIR/access.pid"
 ACCESS_URL=""
 for _ in $(seq 1 60); do
@@ -108,7 +118,12 @@ for _ in $(seq 1 20); do
   sleep 0.5
 done
 curl -fso /dev/null "$BASE/" || { echo "trace: links not serving" >&2; exit 1; }
-echo "trace: network $PROFILE, control $CONTROL" >&2
+# TRACE_SHAPE adjusts the profile, as `/profile` takes it, such as
+# `idle_cut_ms=10000` for a NAT that forgets a connection quiet for 10 s.
+if [ -n "${TRACE_SHAPE:-}" ]; then
+  curl -fsS "$CONTROL/profile?$TRACE_SHAPE" >&2 || { echo "trace: bad TRACE_SHAPE" >&2; exit 1; }
+fi
+echo "trace: network $PROFILE${TRACE_SHAPE:+ ($TRACE_SHAPE)}, control $CONTROL" >&2
 
 # The CLI is a second device with no account: a device-rooted space is
 # enough to seed, push and invite. Keep its state inside the run.

@@ -52,6 +52,9 @@ Each run writes `bench/trace/runs/<stamp>/`:
   `asset`), bytes, and when the browser sent it, got its first byte and its
   last. An exchange still unanswered when the run ends was never answered;
   in `stall` mode, those name what the page is waiting on.
+- `inflight.json`: the exchanges still open when the run ended; one never
+  answered is a request the page waited on to the end. `links-stats.json`:
+  connections, bytes, resets and forgotten connections per link.
 - `requests.jsonl`, screenshots, and the access service's and proxy's logs.
 
 ## Running

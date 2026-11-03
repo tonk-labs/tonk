@@ -116,7 +116,7 @@ struct Inner {
     /// The shape the link returns to when a gate opens it.
     base: Mutex<Shape>,
     next: AtomicU64,
-    open: Mutex<HashMap<u64, CancellationToken>>,
+    open: Mutex<HashMap<u64, Arc<Conn>>>,
     counters: Counters,
     /// When each direction's bandwidth is next free: up, then down.
     lanes: [Mutex<Instant>; 2],
@@ -262,6 +262,18 @@ impl Handle {
         *lock(&self.0.base) = shape;
     }
 
+    /// The exchanges still waiting on their answer, or still streaming
+    /// it, as of now: what a stalled client is waiting on.
+    pub fn inflight(&self) -> Vec<Exchange> {
+        let open: Vec<Arc<Conn>> = lock(&self.0.open).values().cloned().collect();
+        let mut pending: Vec<Exchange> = open
+            .iter()
+            .filter_map(|conn| lock(&conn.exchanges).pending(now_ms()))
+            .collect();
+        pending.sort_by_key(|exchange| exchange.t0);
+        pending
+    }
+
     pub fn stats(&self) -> Stats {
         let counters = &self.0.counters;
         let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
@@ -283,8 +295,8 @@ impl Handle {
 
 impl Inner {
     fn reset(&self) {
-        for (_, token) in lock(&self.open).drain() {
-            token.cancel();
+        for (_, conn) in lock(&self.open).drain() {
+            conn.token.cancel();
         }
     }
 
@@ -375,7 +387,6 @@ async fn connection(link: Arc<Inner>, client: TcpStream) {
     let _ = client.set_nodelay(true);
     let _ = upstream.set_nodelay(true);
     let token = CancellationToken::new();
-    lock(&link.open).insert(id, token.clone());
     let seed = link.shape.borrow().seed;
     let conn = Arc::new(Conn {
         id,
@@ -384,8 +395,9 @@ async fn connection(link: Arc<Inner>, client: TcpStream) {
         forgotten: AtomicBool::new(false),
         exchanges: Mutex::new(Exchanges::new(&link.name, id)),
         draw: Mutex::new(Draw::new(seed ^ id.wrapping_mul(0x9e37_79b9_7f4a_7c15))),
-        token: token.clone(),
+        token,
     });
+    lock(&link.open).insert(id, conn.clone());
 
     let (client_read, client_write) = client.into_split();
     let (upstream_read, upstream_write) = upstream.into_split();

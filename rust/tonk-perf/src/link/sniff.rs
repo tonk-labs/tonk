@@ -154,6 +154,13 @@ impl Exchanges {
         current.t1 = now;
     }
 
+    /// The exchange still open, as of `now`, if any.
+    pub(crate) fn pending(&self, now: u64) -> Option<Exchange> {
+        let mut pending = self.current.clone()?;
+        pending.t1 = now;
+        Some(pending)
+    }
+
     /// The connection closed at `now`: the exchange still open ends.
     pub(crate) fn closed(&mut self, now: u64) -> Option<Exchange> {
         let mut ended = self.current.take()?;

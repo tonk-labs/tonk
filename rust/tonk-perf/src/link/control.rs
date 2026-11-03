@@ -11,6 +11,8 @@
 //!   `idle_cut_ms`, `seed`: change the shape, and make it the base.
 //! - `GET /reset`: reset every connection, as a network change does.
 //! - `GET /stats`: every link's [`Stats`](super::Stats) as JSON.
+//! - `GET /inflight`: the exchanges still open now, oldest first: a
+//!   request that was never answered is what a stalled client waits on.
 //! - `GET /profiles`: the named profiles.
 //!
 //! Each change applies to every link, or to the one named by `link=`.
@@ -120,6 +122,10 @@ fn route(target: &str, links: &[Handle]) -> Result<String, String> {
         "/stats" => {
             let stats: Vec<_> = chosen.iter().map(|link| link.stats()).collect();
             serde_json::to_string_pretty(&stats).map_err(|error| error.to_string())
+        }
+        "/inflight" => {
+            let pending: Vec<_> = chosen.iter().flat_map(|link| link.inflight()).collect();
+            serde_json::to_string_pretty(&pending).map_err(|error| error.to_string())
         }
         "/profiles" => Ok(PROFILES
             .iter()
