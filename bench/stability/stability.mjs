@@ -253,7 +253,10 @@ await scenario("restart-then-stall", async () => {
 // cannot stall a sync that bypasses it, so there the scenario is vacuous).
 // bench/trace/gate.mjs has no `/stats`; only `tonk-perf link` can stall
 // the remote leg alone.
-const shapesRemote = await fetch(`${config.gate}/stats`).then((r) => r.ok, () => false);
+const shapesRemote = await fetch(`${config.gate}/stats`)
+  .then((r) => (r.ok ? r.text() : "null"))
+  .then((body) => Array.isArray(JSON.parse(body)))
+  .catch(() => false);
 if (!shapesRemote) console.error("stability: write-while-sync-stalls skipped: the network cannot stall the remote alone");
 if (shapesRemote) await scenario("write-while-sync-stalls", async () => {
   await network("stall", { link: "ucan" });
