@@ -2581,8 +2581,14 @@ tonk-code:focus-within {
    own `<form>` (`.branch-yaml-query`); sealed cells dim back
    so the eye lands on the active one at the bottom — same idea
    as Observable's notebook layout. */
+/* The diagnostics row is the first full-width row of a space's
+   inspector, and the FABB floats over the space in a corner: 16px in
+   from the edge, 48px tall. Start the row below that band so a bar
+   docked top-left or top-right never covers the summary or its
+   disclosure chevron. A bottom dock leaves the band empty. */
 .inspector-debug {
     width: 100%;
+    padding-top: 72px;
     color: var(--ink);
     font-family: var(--sans);
 }
