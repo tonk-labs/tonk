@@ -332,6 +332,7 @@ pub const BLOB_UPLOAD_LIMIT: usize = 64 * 1024 * 1024;
 /// request path, before deciding whether to dispatch into the
 /// router or pass a fetch through to the network.
 pub fn api_router_with_state(state: TonkState) -> (Router, AppState, Arc<LspHub>) {
+    state.retiring.serve(&state);
     let state = Arc::new(crate::StateLock::new(state));
     let (router, hub) = api_router_from_state(state.clone());
     (router, state, hub)
@@ -5405,6 +5406,73 @@ mod approval_stall_diagnosis {
         let info: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
         info.name
     }
+    /// Releasing a retiring worker's streams does not wait on the state
+    /// lock. While a writer holds it, as one queued behind a slow request
+    /// does, the release still ends the installed state's subscriptions, so
+    /// the successor can activate and the requests the service worker holds
+    /// for the release are answered.
+    #[test]
+    fn retirement_releases_streams_while_a_writer_holds_the_state() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(release_under_writer());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn release_under_writer() {
+        use http_body_util::BodyExt as _;
+        use std::time::Duration;
+
+        let tonk = test_state().await;
+        let retirement = std::sync::Arc::clone(&tonk.retiring);
+        let (app, app_state, _lsp) = crate::api_router_with_state(tonk);
+        let repo = put_repo(&app, "release-under-writer").await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/main/query"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("accept", "text/event-stream")
+                    .body(Body::from(
+                        crate::helpers::named_concept_wire_query().to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body();
+        let first = body.frame().await.expect("the stream opens with a frame");
+        assert!(first.is_ok());
+
+        let writer = app_state.write().await;
+        let _overlays = retirement.release();
+        assert!(retirement.is_retiring());
+
+        let ended = tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(frame) = body.frame().await {
+                frame.expect("frame ok");
+            }
+        })
+        .await;
+        assert!(
+            ended.is_ok(),
+            "the stream did not end while a writer held the state"
+        );
+        drop(writer);
+    }
+
     #[test]
     fn local_identity_remains_responsive_during_stalled_sync_and_pull() {
         // Unoptimized native network/authority futures need more stack than

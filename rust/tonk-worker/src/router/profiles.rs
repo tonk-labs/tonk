@@ -643,6 +643,9 @@ async fn promote(
         profile_swaps.begin();
         let mut active = state.write().await;
         *active = new_state;
+        // Retirement reaches the installed state without this lock, so it
+        // must learn of the replacement under the same guard.
+        active.retiring.serve(&active);
         active.context_generation.fetch_add(1, Ordering::AcqRel);
     }
     super::navigate::notify_profile_changed(source);
