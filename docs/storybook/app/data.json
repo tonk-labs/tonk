@@ -626,12 +626,12 @@
       "variants": "Founder/admin (offered) or member/reader (not offered); already public/private; account not hosting the space; service refuses; palette on the space's page or elsewhere (space named)."
     },
     {
-      "evidence": "Worker test: a fresh device claims the public ticket and replicates, a newcomer after unpublish gets Private, the earlier reader's pull is refused as Revoked. Access-service tests: the ticket's holder and its delegate claim it; any other principal is refused as InvalidAudience. Whole real-browser test: an encoded-address visitor sees the space itself rendered (not only the FABB) with the half-filled observer disc and no share link, without a reload; the next visitor after unpublish sees the private wall. The test checks the space renders in the same document, with no reload; it fails on a build whose join leaves the waiting view on its loading state.",
+      "evidence": "Worker test: a fresh device claims the public ticket and replicates, from the bare address and from a percent-encoded notebook route; a newcomer after unpublish gets Private from either, the earlier reader's pull is refused as Revoked. Access-service tests: the ticket's holder and its delegate claim it; any other principal is refused as InvalidAudience. Whole real-browser test: an encoded-address visitor sees the space itself rendered (not only the FABB) with the half-filled observer disc and no share link, without a reload; the next visitor after unpublish sees the private wall. The test checks the space renders in the same document, with no reload; it fails on a build whose join leaves the waiting view on its loading state.",
       "gaps": "Readers can still write locally (never synced); a deployment pass on the preview; offline first visit; a reader later invited as a member.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "COLLAB-07",
-      "title": "Open a published space from its bare address as an observer, and meet the private wall once it is unpublished.",
-      "variants": "Fresh or returning visitor; no account or an account; raw or percent-encoded DID (a normalizing deployment redirects to the encoded form); already a member; space unpublished before or after the first visit."
+      "title": "Open a published space from its address, bare or a link into one of its pages, as an observer, and meet the private wall once it is unpublished.",
+      "variants": "Fresh or returning visitor; no account or an account; raw or percent-encoded DID (a normalizing deployment redirects to the encoded form); the bare address or a route of the space (/space/{did}/notebook/…); already a member; space unpublished before or after the first visit."
     },
     {
       "evidence": "Strong authoring/process coverage.",
@@ -2285,12 +2285,12 @@
       "result": "Partial (local real-browser, 3c83082, 2026-10-09): it_opens_a_published_space_to_a_visitor_as_an_observer publishes from the FABB and unpublishes from the palette. The member/reader not-offered half and a refused publish are unrun."
     },
     {
-      "claim": "A visitor with no access opens a published space from its bare address as an observer, without a reload, and meets the private wall once it is unpublished (Ticket links and public spaces decision).",
+      "claim": "A visitor with no access opens a published space from its bare address, or from a link into one of its pages, as an observer, without a reload, and meets the private wall once it is unpublished (Ticket links and public spaces decision).",
       "device": "fresh-browser + encoded address",
       "file": "verification/cli-spaces-ui.md",
       "id": "COLLAB-07",
       "priority": "P1",
-      "result": "Pass (local real-browser, 2026-10-09, on top of 3c83082 with the in-place reload): the stuck first load reported on the preview reproduced locally before the fix and passes after it. A deployment pass remains unrun from this environment."
+      "result": "Pass (local real-browser, 2026-10-09, on top of 3c83082 with the in-place reload): the stuck first load reported on the preview reproduced locally before the fix and passes after it. A deployment pass remains unrun from this environment. Deep link (BUG-220, 2026-11-03): a link into a page of the space (/space/did%3Akey%3A…/notebook/…) claimed nothing and left the page silently; the worker test now opens it from a notebook route and refuses it as Private after unpublish. The real-browser pass for a deep link is not yet run."
     },
     {
       "claim": "Concept and all view kinds round-trip through list/show/render (Inventory).",
