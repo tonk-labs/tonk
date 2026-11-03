@@ -134,13 +134,17 @@ async fn it_suggests_from_a_seeded_space_and_runs_what_it_suggests() {
         }
     };
 
-    // An empty argument is labelled by its field, and nothing runs yet:
-    // the space has no members for a rule to offer.
+    // "expel" means only expel: the members a rule offers for it are
+    // listed, and none runs as it stands. Which is meant is for the user
+    // to say, even of the space's only member.
     let rows = read("expel", 1.0).await;
     let expel = rows
         .iter()
-        .find(|row| field(row, "text") == "expel (member)")
+        .find(|row| {
+            field(row, "command").is_string() && field(row, "nouns") == "{\"object\":\"member\"}"
+        })
         .unwrap_or_else(|| panic!("expel is suggested: {rows:?}"));
+    assert_eq!(field(expel, "listed"), true, "{rows:?}");
     assert_eq!(field(expel, "claim"), &Value::Null);
     assert_eq!(field(expel, "rank"), 0);
 
@@ -962,4 +966,81 @@ async fn it_installs_a_component_from_the_palette() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     panic!("the notebook component was never installed: {sources}");
+}
+
+/// "inst" means only install, so the palette lists the components it can
+/// install rather than waiting at "install (component)": each listed, none
+/// run as it stands, and the one picked before, as the profile remembers
+/// it, first.
+#[dialog_common::test]
+async fn it_lists_the_components_install_can_take() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let subject = created["subject"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+
+    let page = "site:2a4c6e8f-0b1d-4f3a-8c5e-7a9b1c3d5e7f";
+    let expression = "intent:test-list";
+    interpreted(&app, &space, expression, "inst", page, 1.0).await;
+    let rows = readings(&app, &space, expression, &subject).await;
+    assert!(rows.len() > 1, "several components are listed: {rows:?}");
+    for row in &rows {
+        assert_eq!(field(row, "listed"), true, "{row:?}");
+        assert!(field(row, "claim").is_null(), "{row:?}");
+        let text = field(row, "text").as_str().unwrap();
+        let label = text
+            .strip_prefix("install [")
+            .and_then(|rest| rest.strip_suffix(']'))
+            .unwrap_or_else(|| panic!("a component is listed: {text}"));
+        assert_eq!(
+            field(row, "completion"),
+            &json!(format!("install {label}")),
+            "{row:?}"
+        );
+    }
+
+    // The last one listed, picked before, comes first.
+    let last = rows.last().unwrap();
+    let entities: Vec<String> =
+        serde_json::from_str(field(last, "entities").as_str().unwrap()).unwrap();
+    let command = field(last, "command").as_str().unwrap();
+    let memory = json!({
+        "picks": [{
+            "this": "pick:0",
+            "fields": { "command": command, "value": entities[0], "time": 1.0 }
+        }]
+    });
+    let remembered = send(
+        &app,
+        "POST",
+        &format!("{space}/query"),
+        "application/json",
+        json!({
+            "predicate": "intent/suggest",
+            "terms": {
+                "expression": expression, "this": subject, "now": 1.0, "max": 8,
+                "memory": memory.to_string()
+            }
+        })
+        .to_string(),
+    )
+    .await;
+    let top = &remembered.as_array().unwrap()[0];
+    assert_eq!(field(top, "text"), field(last, "text"), "{remembered:?}");
 }

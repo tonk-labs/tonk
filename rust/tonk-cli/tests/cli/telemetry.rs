@@ -216,3 +216,101 @@ fn opted_out_account_command_sends_no_batch() {
     assert!(!output.status.success());
     assert!(rx.recv_timeout(Duration::from_secs(1)).is_err());
 }
+
+fn current_hour() -> i64 {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_secs() as i64;
+    seconds.div_euclid(3600)
+}
+
+fn write_budget(state_dir: &std::path::Path, hour: i64, sent: u32, dropped: u32) {
+    let budget = serde_json::json!({
+        "hour": hour,
+        "commands": { "help": { "sent": sent, "dropped": dropped } },
+    });
+    std::fs::write(state_dir.join("telemetry-budget.json"), budget.to_string())
+        .expect("write budget");
+}
+
+#[dialog_common::test]
+fn command_over_its_hourly_budget_sends_nothing() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let endpoint = format!("http://{}", listener.local_addr().expect("addr"));
+    let (tx, rx) = mpsc::channel();
+    serve_once(listener, tx);
+
+    let state = tempfile::tempdir().expect("tempdir");
+    let hour = current_hour();
+    write_budget(state.path(), hour, tonk_cli::telemetry::HOURLY_BUDGET, 0);
+    let output = run_tonk_help(state.path(), &endpoint, &[]);
+    assert!(output.status.success());
+    let request = rx.recv_timeout(Duration::from_secs(1));
+    // A new hour between the write and the run resets the budget.
+    if current_hour() == hour {
+        assert!(request.is_err(), "a spent budget must send no request");
+    }
+}
+
+#[dialog_common::test]
+fn first_run_of_a_new_hour_reports_the_runs_dropped_before_it() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let endpoint = format!("http://{}", listener.local_addr().expect("addr"));
+    let (tx, rx) = mpsc::channel();
+    serve_once(listener, tx);
+
+    let state = tempfile::tempdir().expect("tempdir");
+    write_budget(
+        state.path(),
+        current_hour() - 1,
+        tonk_cli::telemetry::HOURLY_BUDGET,
+        5,
+    );
+    let output = run_tonk_help(state.path(), &endpoint, &[]);
+    assert!(output.status.success());
+    let request = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("request arrives");
+    let payload = request_body(&request);
+    let run = payload["batch"]
+        .as_array()
+        .expect("batch array")
+        .iter()
+        .find(|event| event["event"] == "cli_command_run")
+        .expect("one cli_command_run");
+    assert_eq!(run["properties"]["unreported_runs"], 5);
+}
+
+#[dialog_common::test]
+fn parallel_runs_share_one_budget_without_lost_counts() {
+    // A closed port: each flush fails fast, and the budget is all we check.
+    let endpoint = {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        format!("http://{}", listener.local_addr().expect("addr"))
+    };
+    let state = tempfile::tempdir().expect("tempdir");
+    let runs = tonk_cli::telemetry::HOURLY_BUDGET + 10;
+    let hour = current_hour();
+    let children = (0..runs)
+        .map(|_| {
+            let state = state.path().to_owned();
+            let endpoint = endpoint.clone();
+            std::thread::spawn(move || run_tonk_help(&state, &endpoint, &[]))
+        })
+        .collect::<Vec<_>>();
+    for child in children {
+        assert!(child.join().expect("run joins").status.success());
+    }
+    // A new hour during the runs resets the counts.
+    if current_hour() != hour {
+        return;
+    }
+    let budget: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(state.path().join("telemetry-budget.json")).expect("budget"),
+    )
+    .expect("budget JSON");
+    let help = &budget["commands"]["help"];
+    assert_eq!(help["sent"], tonk_cli::telemetry::HOURLY_BUDGET);
+    assert_eq!(help["dropped"], 10);
+}

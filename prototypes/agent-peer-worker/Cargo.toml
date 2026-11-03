@@ -1,0 +1,42 @@
+[package]
+name = "agent-peer-worker"
+description = "Spike: the dialog peer, stateless per request, in a Cloudflare Workers isolate."
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# A prototype, not a workspace member: it builds only for wasm32 with
+# worker-build, and the workspace's native clippy run never sees it.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+axum = { version = "0.8", default-features = false }
+base64 = "0.22"
+blake3 = "1.5"
+bytes = "1"
+console_error_panic_hook = "0.1"
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
+futures-util = "0.3"
+http = "1"
+http-body-util = "0.1"
+js-sys = "0.3"
+serde_json = "1"
+tonk-identity = { path = "../../rust/tonk-identity" }
+tonk-worker = { path = "../../rust/tonk-worker", features = ["volatile-storage"] }
+url = "2"
+wasm-bindgen = "=0.2.126"
+worker = { version = "=0.8.5", features = ["http"] }
+worker-macros = { version = "=0.8.5", features = ["http"] }
+
+# The browser worker's release profile (`wasm-worker-release`).
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"

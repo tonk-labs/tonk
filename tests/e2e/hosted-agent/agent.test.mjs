@@ -1,0 +1,499 @@
+// The hosted agent end to end, with no person and no LLM host: this script
+// is the MCP client, and Playwright is the person approving it.
+//
+//   TONK_E2E_ORIGIN           the provider origin, e.g. a PR preview's workers.dev URL
+//   TONK_E2E_CAPTURED_EMAILS  where activation emails are read back; defaults to the
+//                             origin (a preview records mail to `.test` addresses)
+//   TONK_E2E_HEADED=1         watch the browser
+//   TONK_E2E_TRACE            where to write a Playwright trace when a step fails
+//
+// See "Testing end to end" in plans/2026-10-28-hosted-agent-peer.md.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
+import {
+  Client,
+  StreamableHTTPClientTransport,
+  UnauthorizedError,
+} from '@modelcontextprotocol/client';
+import { loopback, provider } from './lib/oauth.mjs';
+import { inbox } from './lib/inbox.mjs';
+import {
+  launch,
+  boot,
+  passkeyOf,
+  signUp,
+  createSpace,
+  syncedSpaces,
+  approve,
+} from './lib/browser.mjs';
+import { showView } from './lib/view-host.mjs';
+
+const origin = new URL(process.env.TONK_E2E_ORIGIN ?? 'http://localhost:8787').origin;
+const endpoint = new URL('/mcp', origin);
+const run = process.env.GITHUB_RUN_ID
+  ? `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`
+  : randomBytes(4).toString('hex');
+// Two spaces the test makes: one granted read and write, one read.
+const writableName = `e2e write ${run}`;
+const readableName = `e2e read ${run}`;
+const agent = `e2e ${run}`;
+// Writes per session, sent all at once.
+const WRITES = 8;
+// What approving may upload before it answers: the agent space and its
+// grants (30 to 60 measured), plus mounting the chosen spaces in a browser
+// that never had them (about 100), but never the agent's library, which
+// is about 190 more.
+const APPROVAL_UPLOADS = 80;
+const NEW_BROWSER_APPROVAL_UPLOADS = 180;
+
+const NOTE = `attribute!: &e2e-note-label
+  description: Which run, session and write made this note
+  the: e2e.note/label
+  as: text
+concept!: &e2e-note
+  description: A note the end-to-end test writes
+  with:
+    label: e2e-note-label
+`;
+const note = (label) =>
+  `e2e-note!:\n  this: urn:e2e:${label.replaceAll(' ', ':')}\n  label: "${label}"\n`;
+const NOTES = 'e2e-note:\n  label: ?label\n';
+// How long a write the agent makes may take to reach an open view: the
+// provider's `live.rs` tells the view's peer, which pulls.
+const LIVE = 30_000;
+
+test('the hosted agent connects, is approved, and reads and writes spaces', async (t) => {
+  const mail = inbox({ run, base: process.env.TONK_E2E_CAPTURED_EMAILS || origin });
+  let elsewhere;
+  const person = await launch({
+    headed: !!process.env.TONK_E2E_HEADED,
+    trace: process.env.TONK_E2E_TRACE,
+  });
+  // Each step needs the one before it, so the first failure skips the rest
+  // rather than burying its cause under theirs.
+  let failed = false;
+  const step = (name, run) =>
+    t.test(name, { skip: failed && 'an earlier step failed' }, async () => {
+      try {
+        await run();
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
+    });
+  const sessions = [];
+  try {
+    await step('/mcp refuses a request without a valid token', async () => {
+      for (const authorization of [undefined, 'Bearer not-a-token']) {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            ...(authorization && { authorization }),
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+        });
+        assert.equal(response.status, 401, `with ${authorization ?? 'no token'}`);
+        assert.match(
+          response.headers.get('www-authenticate') ?? '',
+          /resource_metadata="[^"]+\/\.well-known\/oauth-protected-resource\/mcp"/,
+        );
+      }
+    });
+
+    // Subjects by name, of the spaces the person grants.
+    let granted;
+    await step('a fresh person signs up, confirms their email and makes two spaces', async () => {
+      await signUp(person.page, { origin, address: mail.address, inbox: mail });
+      await createSpace(person.page, { origin, name: writableName });
+      await createSpace(person.page, { origin, name: readableName });
+      granted = await syncedSpaces(person.page, [writableName, readableName]);
+    });
+
+    // OAuth as a host runs it, approved in `browser`: the token.
+    const authorize = async (browser, { name, grants, signIn, budget = APPROVAL_UPLOADS }) => {
+      const callback = await loopback();
+      try {
+        let authorizationUrl;
+        const auth = provider({
+          redirectUrl: callback.url,
+          name,
+          navigate: (url) => (authorizationUrl = url),
+        });
+        const transport = new StreamableHTTPClientTransport(endpoint, { authProvider: auth });
+        await assert.rejects(
+          new Client({ name: 'tonk-e2e', version: '0' }).connect(transport),
+          UnauthorizedError,
+        );
+        assert.ok(authorizationUrl, 'the client was never sent to /authorize');
+        assert.equal(new URL(authorizationUrl).origin, origin);
+
+        const cost = await approve(browser.page, { authorizationUrl, agent: name, grants, signIn });
+        const answer = await callback.answered;
+        // Approval has to finish while the request is still pending, on a
+        // person's link rather than CI's: it may only push the grants, not
+        // a whole space's history.
+        const spent = cost.stop();
+        console.log(`approval: ${JSON.stringify(spent)}`);
+        assert.ok(
+          spent.uploads <= budget,
+          `approval made ${spent.uploads} uploads (budget ${budget})`,
+        );
+        assert.ok(answer.get('code'), `the callback carried no code: ${answer}`);
+        // The whole callback, so the SDK checks `iss` (RFC 9207) too.
+        await transport.finishAuth(answer);
+        const token = auth.tokens()?.access_token;
+        assert.ok(token, 'no access token after the code was redeemed');
+        return token;
+      } finally {
+        await callback.close();
+      }
+    };
+
+    let token;
+    await step('OAuth runs to a token, approved on /settings/agent', async () => {
+      token = await authorize(person, {
+        name: agent,
+        grants: { [writableName]: 'read & write', [readableName]: 'read' },
+      });
+    });
+
+    const connect = async (bearer = token) => {
+      const client = new Client({ name: 'tonk-e2e', version: '0' });
+      await client.connect(
+        new StreamableHTTPClientTransport(endpoint, {
+          requestInit: { headers: { authorization: `Bearer ${bearer}` } },
+        }),
+      );
+      sessions.push(client);
+      return client;
+    };
+    const call = async (client, name, args) => {
+      const result = await client.callTool({ name, arguments: args });
+      assert.notEqual(result.isError, true, `${name}: ${JSON.stringify(result.content)}`);
+      return result;
+    };
+
+    // The agent sees exactly the spaces it was granted, and each allows
+    // what it was granted.
+    const spaces = {};
+    await step('the agent lists its grants, reads both and writes only one', async () => {
+      spaces.writable = granted[writableName];
+      spaces.readable = granted[readableName];
+      const client = await connect();
+      const tools = (await client.listTools()).tools.map((tool) => tool.name);
+      for (const name of ['tonk_list_spaces', 'tonk_query', 'tonk_evaluate', 'tonk_guide']) {
+        assert.ok(tools.includes(name), `tools/list lacks ${name}: ${tools}`);
+      }
+      const listed = (await call(client, 'tonk_list_spaces', {})).structuredContent.spaces;
+      // The agent's own space is listed too, marked as such. The rest come
+      // from the grants the approval kept in it.
+      assert.equal(
+        listed.filter((space) => space.home).length,
+        1,
+        `listed ${JSON.stringify(listed)}`,
+      );
+      assert.deepEqual(
+        Object.fromEntries(
+          listed
+            .filter((space) => !space.home)
+            .map(({ subject, name, access }) => [subject, { name, access }]),
+        ),
+        {
+          [spaces.writable]: { name: writableName, access: 'read-write' },
+          [spaces.readable]: { name: readableName, access: 'read' },
+        },
+        `listed ${JSON.stringify(listed)}`,
+      );
+      for (const space of [spaces.writable, spaces.readable]) {
+        await call(client, 'tonk_query', { space, document: 'concept:\n' });
+      }
+      const refused = await client.callTool({
+        name: 'tonk_evaluate',
+        arguments: { space: spaces.readable, document: NOTE },
+      });
+      assert.equal(refused.isError, true, `${readableName} was granted Read but took a write`);
+      await call(client, 'tonk_evaluate', { space: spaces.writable, document: NOTE });
+    });
+
+    const labels = [];
+    await step('concurrent writes from two sessions on one token all land', async () => {
+      const [first] = sessions;
+      const second = await connect();
+      const writes = [first, second].flatMap((client, session) =>
+        Array.from({ length: WRITES }, (_, index) => {
+          const label = `${run} ${session} ${index}`;
+          labels.push(label);
+          return call(client, 'tonk_evaluate', { space: spaces.writable, document: note(label) });
+        }),
+      );
+      await Promise.all(writes);
+    });
+
+    await step('a fresh session reads every write back (dialog-db#705)', async () => {
+      // A new MCP session is a new space writer: nothing it reads can come
+      // from the memory of the sessions that wrote.
+      const reader = await connect();
+      const read = JSON.stringify(
+        (await call(reader, 'tonk_query', { space: spaces.writable, document: NOTES }))
+          .structuredContent,
+      );
+      const lost = labels.filter((label) => !read.includes(label));
+      assert.deepEqual(lost, [], `${lost.length} of ${labels.length} writes were lost`);
+    });
+
+    // A link the person shares in the chat, joined as the card joins it:
+    // `tonk_join_space` only reads the link, and `tonk_join_accept` (the
+    // card's app-only tool) joins with the access the person chose. The
+    // person does not join and is not asked for a passkey. Revoking it in
+    // "your agents" asks for the passkey, and the agent's key revokes the
+    // link's grants at the access service.
+    await step('the agent joins a shared space from a link, read only, then is revoked', async () => {
+      const name = `e2e join ${run}`;
+      await boot(person.page, origin);
+      await createSpace(person.page, { origin, name });
+      const subject = (await syncedSpaces(person.page, [name]))[name];
+      const link = await person.page.evaluate(async (space) => {
+        const response = await fetch(`/api/repository/${space}/invite`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        });
+        if (!response.ok)
+          throw new Error(`invite answered ${response.status}: ${await response.text()}`);
+        return (await response.json()).url;
+      }, subject);
+      const client = await connect();
+      const tools = (await client.listTools()).tools;
+      const join = tools.find((tool) => tool.name === 'tonk_join_space');
+      assert.ok(join?._meta?.ui?.resourceUri, 'tonk_join_space shows no card');
+      const accept = tools.find((tool) => tool.name === 'tonk_join_accept');
+      assert.deepEqual(accept?._meta?.ui?.visibility, ['app'], 'the accept tool is the model’s');
+
+      const offer = (await call(client, 'tonk_join_space', { link })).structuredContent;
+      assert.equal(offer.space, subject);
+      assert.equal(offer.name, name);
+      assert.equal(offer.write, true, 'a member link offers writing');
+      assert.equal(offer.joined ?? null, null, 'reading the link joined');
+      const before = (await call(client, 'tonk_list_spaces', {})).structuredContent.spaces;
+      assert.ok(!before.some((space) => space.subject === subject), 'listed before joining');
+
+      const joined = (await call(client, 'tonk_join_accept', { link, access: 'read' }))
+        .structuredContent;
+      assert.deepEqual(joined, { space: subject, name, access: 'read' });
+      const listed = (await call(client, 'tonk_list_spaces', {})).structuredContent.spaces;
+      assert.deepEqual(
+        listed
+          .filter((space) => space.subject === subject)
+          .map(({ name, access }) => ({ name, access })),
+        [{ name, access: 'read' }],
+        `listed ${JSON.stringify(listed)}`,
+      );
+      await call(client, 'tonk_query', { space: subject, document: 'concept:\n' });
+      const refused = await client.callTool({
+        name: 'tonk_evaluate',
+        arguments: { space: subject, document: NOTE },
+      });
+      assert.equal(refused.isError, true, `${name} was joined read only but took a write`);
+      const again = (await call(client, 'tonk_join_space', { link })).structuredContent;
+      assert.equal(again.joined, 'read');
+
+      // Revoked from "your agents" in the person's browser, which pulls
+      // the agent space to see the link's grants, then answers the
+      // passkey with the virtual one.
+      const removal = await person.page.evaluate(
+        async ({ space, deadline }) => {
+          const agents = async () => (await fetch('/api/agents')).json();
+          let agent;
+          while (!agent && Date.now() < deadline) {
+            agent = (await agents()).find((each) =>
+              each.spaces?.some((held) => held.subject === space && held.viaLink),
+            );
+            if (!agent) await new Promise((resolve) => setTimeout(resolve, 2000));
+          }
+          if (!agent) throw new Error('the link grant never listed under your agents');
+          const response = await fetch(`/api/agents/${encodeURIComponent(agent.key)}/revoke`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ space }),
+          });
+          if (!response.ok)
+            throw new Error(`revoke answered ${response.status}: ${await response.text()}`);
+          const answer = await response.json();
+          while (Date.now() < deadline) {
+            const held = (await agents())
+              .find((each) => each.key === agent.key)
+              ?.spaces?.find((each) => each.subject === space);
+            if (!held) return { pending: answer.pending, removed: true };
+            if (held.removal?.state === 'failed') return { pending: answer.pending, failed: held.removal.reason };
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          }
+          return { pending: answer.pending, removed: false };
+        },
+        { space: subject, deadline: Date.now() + 180_000 },
+      );
+      assert.equal(removal.pending, true, 'a link grant asks for the passkey');
+      assert.deepEqual(removal, { pending: true, removed: true }, JSON.stringify(removal));
+      // Not necessarily on the next call: an open session reuses the
+      // access service's read permits for a few minutes (dialog's permit
+      // cache), and the hosted agent drops the space from its own list
+      // once the retraction syncs. Refusal of cached grants by the access
+      // service itself is checked natively in
+      // `the_account_withdraws_a_link_grant_as_its_agent`.
+      let denied;
+      const deadline = Date.now() + 60_000;
+      do {
+        denied = await client.callTool({
+          name: 'tonk_query',
+          arguments: { space: subject, document: 'concept:\n' },
+        });
+        if (!denied.isError) await new Promise((resolve) => setTimeout(resolve, 3000));
+      } while (!denied.isError && Date.now() < deadline);
+      assert.equal(denied.isError, true, `${name} still read after the revocation`);
+    });
+
+    // A view, as a host shows `tonk_open_space`: first as a host that
+    // frames nothing (route B, the view's own peer in a Web Worker), then
+    // as one that frames the provider (route A, the provider's page with
+    // its service worker as the peer). Route B runs again in a browser
+    // with no SharedWorker, where each view runs a peer of its own over
+    // the one store. Each must show what the agent wrote, then a write it
+    // makes while the view is open.
+    for (const [route, frames, shared] of [
+      ['B', false, true],
+      ['B without SharedWorker', false, false],
+      ['A', true, true],
+    ]) {
+      await step(
+        `a shown view renders the space and follows a write (route ${route})`,
+        async () => {
+          const client = await connect();
+          const open = (await client.listTools()).tools.find(
+            (tool) => tool.name === 'tonk_open_space',
+          );
+          assert.ok(open, 'tools/list lacks tonk_open_space');
+          const resource = await client.readResource({ uri: open._meta.ui.resourceUri });
+          // The notes' directory page: every e2e-note, each with its label.
+          const result = await call(client, 'tonk_open_space', {
+            space: spaces.writable,
+            path: '/e2e-note',
+          });
+          const view = await showView({
+            client,
+            result,
+            resource,
+            frames,
+            shared,
+            headed: !!process.env.TONK_E2E_HEADED,
+          });
+          try {
+            const started = Date.now();
+            await view.shows(labels.slice(0, 3));
+            console.log(`route ${route}: shown in ${Date.now() - started} ms`);
+            assert.ok(view.calls.includes('tonk_view_access'), `the view called ${view.calls}`);
+            // The view sizes itself to the page: three notes, not a
+            // fixed card.
+            const height = await view.height();
+            console.log(`route ${route}: reported ${height} px`);
+            assert.ok(height >= 40 && height < 4000, `the view reported a height of ${height}`);
+            const framed = view
+              .frames()
+              .some((frame) => frame.url().startsWith(`${origin}/view-frame`));
+            assert.equal(
+              framed,
+              frames,
+              frames ? 'the view fell back to route B' : 'the view framed the provider',
+            );
+            const live = `${run} live ${route}`;
+            const wrote = Date.now();
+            await call(client, 'tonk_evaluate', { space: spaces.writable, document: note(live) });
+            await view.shows([live], LIVE);
+            console.log(`route ${route}: a write showed in ${Date.now() - wrote} ms`);
+            // A write the person makes in their own Tonk app, which
+            // reaches the space through their browser, not the agent.
+            const theirs = `${run} theirs ${route}`;
+            await boot(person.page, origin);
+            const made = Date.now();
+            await person.page.evaluate(
+              async ([space, document]) => {
+                const response = await fetch(`/api/repository/${space}/branch/main/evaluate`, {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/yaml' },
+                  body: document,
+                });
+                if (!response.ok)
+                  throw new Error(`evaluate answered ${response.status}: ${await response.text()}`);
+              },
+              [spaces.writable, note(theirs)],
+            );
+            await view.shows([theirs], LIVE);
+            console.log(`route ${route}: the person's write showed in ${Date.now() - made} ms`);
+            if (!frames) {
+              // Shown again, the view signs as the key it kept and reads
+              // the store it pulled into before it pulls again.
+              const reopened = Date.now();
+              await view.again();
+              const stores = () => view.logged('tonk view:').filter((line) => / store$/.test(line));
+              while (stores().length < 2 && Date.now() - reopened < 60_000)
+                await new Promise((resolve) => setTimeout(resolve, 100));
+              assert.deepEqual(
+                stores()
+                  .slice(1)
+                  .map((line) => line.replace(/^\w+: /, '')),
+                ['tonk view: kept store'],
+                'the view shown again did not open the store it kept',
+              );
+              // With SharedWorker every view of the space is served by the
+              // one peer; without, each runs its own.
+              const kind = shared ? 'tonk view: shared peer' : 'tonk view: own peer';
+              assert.ok(
+                view.logged(kind).length >= 2,
+                `the views did not use the expected peers: ${view.logged('tonk view:')}`,
+              );
+              await view.shows([live, theirs]);
+              console.log(`route ${route}: shown again in ${Date.now() - reopened} ms`);
+            }
+          } finally {
+            if (view.violations.length)
+              console.log(`route ${route} CSP: ${view.violations.join('\n')}`);
+            await view.close();
+          }
+        },
+      );
+    }
+
+    // What a person who made their spaces earlier meets: a browser with
+    // no account on it, so the approval page signs them in first and has
+    // to list spaces this browser has never seen.
+    await step(
+      'the same person approves another agent from a browser with no account on it',
+      async () => {
+        await boot(person.page, origin);
+        elsewhere = await launch({
+          headed: !!process.env.TONK_E2E_HEADED,
+          passkey: await passkeyOf(person),
+        });
+        const again = await authorize(elsewhere, {
+          name: `${agent} elsewhere`,
+          grants: { [readableName]: 'read' },
+          signIn: mail.address,
+          budget: NEW_BROWSER_APPROVAL_UPLOADS,
+        });
+        const listed = (await call(await connect(again), 'tonk_list_spaces', {})).structuredContent
+          .spaces;
+        assert.deepEqual(
+          listed.filter((space) => !space.home).map(({ subject, access }) => ({ subject, access })),
+          [{ subject: granted[readableName], access: 'read' }],
+          `listed ${JSON.stringify(listed)}`,
+        );
+      },
+    );
+  } finally {
+    await Promise.allSettled(sessions.map((client) => client.close()));
+    await person.close({ keepTrace: failed });
+    await elsewhere?.close();
+  }
+});

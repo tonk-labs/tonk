@@ -54,6 +54,7 @@ anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 dialog-credentials = { workspace = true }
 dialog-peer = { workspace = true, features = ["helpers"] }
+dialog-ucan = { workspace = true }
 lsp-types = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 tonk-evaluator = { workspace = true }

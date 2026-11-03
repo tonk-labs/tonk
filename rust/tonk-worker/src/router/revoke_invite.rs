@@ -423,7 +423,8 @@ pub async fn list(
     State(state): State<AppState>,
     Path(repo): Path<String>,
 ) -> Result<Json<Vec<InvitationSummary>>, TonkWorkerError> {
-    let tonk = state.read().await;
+    // A clone, not a guard: a first-use mount can pull over the network.
+    let tonk = state.read().await.clone();
     super::adopt::mount_on_first_use(&tonk, &state, &repo).await;
     let session = tonk
         .reactor
@@ -563,7 +564,7 @@ mod tests {
         )
         .await
         .expect("the root persists");
-        let state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let state: AppState = std::sync::Arc::new(crate::StateLock::new(tonk));
         let key = super::super::repository::create_space_inner(&state, "Sibling", None)
             .await
             .expect("the space creates");
@@ -710,7 +711,7 @@ mod tests {
         )
         .await
         .expect("the root persists");
-        let state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let state: AppState = std::sync::Arc::new(crate::StateLock::new(tonk));
         let key = super::super::repository::create_space_inner(&state, "Reinvited", None)
             .await
             .expect("the space creates");

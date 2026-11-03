@@ -121,6 +121,7 @@ fn request(input: &str) -> Request {
         shown: vec!["did:key:space".into()],
         sources: vec![space()],
         memory: Vec::new(),
+        picks: Vec::new(),
         now: Some(1_000.5),
     }
 }
@@ -128,14 +129,15 @@ fn request(input: &str) -> Request {
 #[test]
 fn it_fills_no_field_unasked_with_a_value_the_page_does_not_show() {
     // Rules offer only Alice for expel's member, and the page shows the
-    // space, not her: "expel" waits for a member to be named rather than
+    // space, not her: "expel" lists her, to be taken, rather than
     // expelling the only one there is.
     let mut source = space();
     source.fragments = derived("concept:expel", "the:expel-member", &["did:key:alice"]);
     let mut asked = request("expel");
     asked.sources = vec![source];
     let top = &propose(&asked)[0];
-    assert_eq!(top.parse.display_text(), "expel (member)");
+    assert_eq!(top.parse.display_text(), "expel [Alice]");
+    assert!(top.listed);
     assert_eq!(top.claim, None);
 
     // Named, she fills it, by her concept row's label.
@@ -259,7 +261,14 @@ fn it_reads_this_as_the_entity_the_page_shows() {
 
 #[test]
 fn it_labels_an_empty_argument_by_its_field_and_withholds_the_claim() {
-    let proposals = propose(&request("expel"));
+    // Nothing derived for the member: nothing to list either.
+    let mut source = space();
+    source
+        .fragments
+        .retain(|row| row.text("command") != Some("concept:expel"));
+    let mut request = request("expel");
+    request.sources = vec![source];
+    let proposals = propose(&request);
     let top = &proposals[0];
     assert_eq!(top.parse.display_text(), "expel (member)");
     assert_eq!(top.claim, None);
@@ -331,7 +340,8 @@ fn it_fills_the_now_role_from_the_callers_clock_without_asking_for_it() {
     request.context.this = None;
     request.shown.clear();
     let top = &propose(&request)[0];
-    assert_eq!(top.parse.display_text(), "pause sync (space)");
+    assert_eq!(top.parse.display_text(), "pause sync [Budget]");
+    assert!(top.listed);
     assert_eq!(top.claim, None);
     request.input = "pause plans".into();
     assert_eq!(
@@ -438,6 +448,101 @@ fn it_lists_what_can_be_done_without_saying_more() {
         .map(|proposal| proposal.command.clone())
         .collect();
     assert_eq!(order, vec!["concept:members", "concept:agent"]);
+}
+
+#[test]
+fn it_lists_the_values_of_the_argument_the_one_command_matched_waits_for() {
+    let proposals = propose(&request("exp"));
+    let shown: Vec<(String, Option<String>)> = proposals
+        .iter()
+        .map(|proposal| (proposal.parse.display_text(), proposal.completion.clone()))
+        .collect();
+    assert_eq!(
+        shown,
+        vec![
+            ("expel [Alice]".to_owned(), Some("expel Alice".to_owned())),
+            ("expel [Bob]".to_owned(), Some("expel Bob".to_owned())),
+        ]
+    );
+    // Listed, not chosen: none runs as it stands.
+    assert!(
+        proposals
+            .iter()
+            .all(|proposal| proposal.listed && proposal.claim.is_none())
+    );
+
+    // Taking one types it, and what it says then runs.
+    let top = &propose(&request("expel Bob"))[0];
+    assert!(!top.listed);
+    assert_eq!(
+        top.claim.as_ref().unwrap()["claims"][0]["application"]["parameters"],
+        json!({ "member": "did:key:bob" })
+    );
+}
+
+#[test]
+fn it_lists_nothing_while_the_input_could_mean_several_commands() {
+    // "re" reads as rename and as remove member.
+    let proposals = propose(&request("re"));
+    let commands: BTreeSet<&str> = proposals
+        .iter()
+        .map(|proposal| proposal.command.as_str())
+        .collect();
+    assert!(commands.len() > 1, "{commands:?}");
+    assert!(proposals.iter().all(|proposal| !proposal.listed));
+}
+
+#[test]
+fn it_lists_nothing_for_an_argument_that_takes_text() {
+    // Rename's subject defaults to the space; what waits is its name.
+    let proposals = propose(&request("ren"));
+    assert!(proposals.iter().all(|proposal| !proposal.listed));
+}
+
+#[test]
+fn it_lists_the_values_picked_most_and_most_recently_first() {
+    const DAY: f64 = 24.0 * 60.0 * 60.0 * 1000.0;
+    let pick = |n: usize, member: &str, time: f64| {
+        row(
+            &format!("pick:{n}"),
+            json!({ "command": "concept:expel", "value": member, "time": time }),
+        )
+    };
+    let order = |request: &Request| -> Vec<String> {
+        propose(request)
+            .iter()
+            .map(|proposal| proposal.parse.display_text())
+            .collect()
+    };
+    let mut request = request("expel");
+    request.now = Some(60.0 * DAY);
+    assert_eq!(order(&request), vec!["expel [Alice]", "expel [Bob]"]);
+
+    // Picked once, Bob comes first.
+    request.picks = vec![pick(0, "did:key:bob", 59.0 * DAY)];
+    assert_eq!(order(&request), vec!["expel [Bob]", "expel [Alice]"]);
+
+    // Twice as often counts for more than once, at the same time.
+    request.picks.extend([
+        pick(1, "did:key:alice", 59.0 * DAY),
+        pick(2, "did:key:alice", 59.0 * DAY),
+    ]);
+    assert_eq!(order(&request), vec!["expel [Alice]", "expel [Bob]"]);
+
+    // But picks a month old count for less than one from today.
+    request.picks = vec![
+        pick(0, "did:key:alice", 30.0 * DAY),
+        pick(1, "did:key:alice", 30.0 * DAY),
+        pick(2, "did:key:bob", 60.0 * DAY),
+    ];
+    assert_eq!(order(&request), vec!["expel [Bob]", "expel [Alice]"]);
+
+    // A pick for another command says nothing about this one.
+    request.picks = vec![row(
+        "pick:0",
+        json!({ "command": "concept:rename", "value": "did:key:bob", "time": 60.0 * DAY }),
+    )];
+    assert_eq!(order(&request), vec!["expel [Alice]", "expel [Bob]"]);
 }
 
 /// How the parse scales with a noun's rows. Run with

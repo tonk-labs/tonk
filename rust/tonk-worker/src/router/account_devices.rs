@@ -767,7 +767,6 @@ mod tests {
 
     use axum::Json;
     use axum::extract::State;
-    use tokio::sync::RwLock;
     use tonk_worker_api::RevokeDeviceRequest;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
@@ -783,7 +782,7 @@ mod tests {
     /// depends on a sweep having run.
     #[dialog_common::test]
     async fn it_lists_this_device_for_a_profile_with_a_root() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_account().await));
         let own = { state.read().await.profile.did().to_string() };
         let devices = list(State(state)).await.unwrap();
         assert_eq!(devices.0.len(), 1);
@@ -843,7 +842,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_self_revokes_without_a_passkey_artifact() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_account().await));
         let request = {
             let tonk = state.read().await;
             crate::router::account::tests_matching_request(&tonk).await
@@ -870,7 +869,7 @@ mod tests {
     async fn it_registers_a_device_as_account_space_facts() {
         use dialog_varsig::Principal as _;
 
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_account().await));
         let account = dialog_credentials::Ed25519Signer::generate().await.unwrap();
         let device = dialog_credentials::Ed25519Signer::generate().await.unwrap();
         let chain = tonk_account::delegations::mint_account_union(
@@ -912,7 +911,7 @@ mod tests {
     async fn it_records_a_device_before_publishing_it() {
         use dialog_varsig::Principal as _;
 
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_account().await));
         let account = dialog_credentials::Ed25519Signer::generate().await.unwrap();
         let device = dialog_credentials::Ed25519Signer::generate().await.unwrap();
         let chain = tonk_account::delegations::mint_account_union(
@@ -948,7 +947,7 @@ mod tests {
     /// refused with what was missing, not with a demand for an artifact.
     #[dialog_common::test]
     async fn it_refuses_to_revoke_a_device_without_a_retained_grant() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_account().await));
         let request = {
             let tonk = state.read().await;
             crate::router::account::tests_matching_request(&tonk).await

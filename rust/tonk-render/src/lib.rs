@@ -25,7 +25,9 @@ pub mod serialize;
 pub mod tree;
 
 pub use collect::collect_bindings;
-pub use page::{QueryBackend, RenderError, RenderRoute, render as render_page};
+pub use page::{
+    Outline, OutlineItem, QueryBackend, RenderError, RenderRoute, outline, render as render_page,
+};
 pub use parse::parse_fragment;
 pub use render::{Conclusion, render, render_nodes};
 pub use serialize::serialize_nodes;

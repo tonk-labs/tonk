@@ -90,7 +90,8 @@ view and replaces the prior home with this one concept in the same transaction.
 
 Release builds send one anonymous `cli_command_run` event per
 invocation (command name, duration, exit class — never document
-content, paths, or URLs). `tonk telemetry off`, `DO_NOT_TRACK=1`, or
+content, paths, or URLs), at most 30 runs of one command per hour.
+`tonk telemetry off`, `DO_NOT_TRACK=1`, or
 `TONK_TELEMETRY=0` disable it; builds without a baked-in key send
 nothing. Full inventory: [`docs/telemetry.md`](../../docs/telemetry.md).
 

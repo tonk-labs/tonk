@@ -1,0 +1,45 @@
+[package]
+name = "tonk-host-worker"
+description = "The Host Worker of the hosted agent peer: one space writer per space and MCP session, in a Durable Object."
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Not a workspace member, like `prototypes/agent-peer-worker`: it builds
+# only for wasm32 with worker-build, and it turns on tonk-worker's
+# `volatile-storage`, which a workspace-wide wasm build would unify into
+# every other crate's tonk-worker and so put the browser worker's tests in
+# memory.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+axum = { version = "0.8", default-features = false }
+base64 = "0.22"
+bytes = "1"
+console_error_panic_hook = "0.1"
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
+futures-util = "0.3"
+hex = "0.4"
+http = "1"
+js-sys = "0.3"
+serde_json = "1"
+tonk-worker = { path = "../tonk-worker", features = ["volatile-storage"] }
+url = "2"
+wasm-bindgen = "=0.2.126"
+worker = { version = "=0.8.5", features = ["http"] }
+worker-macros = { version = "=0.8.5", features = ["http"] }
+zeroize = "1"
+
+# The browser worker's release profile (`wasm-worker-release`).
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"

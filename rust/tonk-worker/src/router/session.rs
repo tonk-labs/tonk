@@ -224,7 +224,8 @@ pub async fn register_site_on_repo(
     }
     let (site, client) = client_site(&request)?;
     let body = read_site_request(request).await?;
-    let tonk = state.read().await;
+    // A clone, not a guard: a first-use mount can pull over the network.
+    let tonk = state.read().await.clone();
     // The stamp acquires the branch; a directory-listed space this
     // device has not pulled yet is mounted first, as on every other
     // route that addresses a space by key.
@@ -674,7 +675,7 @@ impl dialog_capability::Provider<tonk_schema::command::Load> for crate::router::
 /// this device's `(profile, subject)` on the branch — the entity `tonk/replica`
 /// and `tonk:binder` live on. Queried (not derived) so it stays correct even if
 /// tonk's and dialog's hashing drift. `None` if no replica is on the branch yet.
-async fn origin_entity(
+pub(super) async fn origin_entity(
     tonk: &crate::worker::TonkState,
     state: &dialog_reactor::BranchSession,
 ) -> Option<dialog_artifacts::Entity> {

@@ -2334,30 +2334,32 @@ pub(crate) mod tests {
             .unwrap();
         let session = crate::session::open(&profile).await.unwrap();
         let reactor = crate::Reactor::new(profile.credential().clone());
-        let state = TonkState {
-            profile,
-            operator: session.operator,
-            storage,
-            session_expires_at: session.expires_at,
-            profile_name: name.clone(),
-            active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
-            reactor,
-            admission: Default::default(),
-            reject_admission_content_reads: Default::default(),
-            retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            view_bindings: Default::default(),
-            bridges: Default::default(),
-            sync_queue: Default::default(),
-            commands: crate::router::command_providers(),
-            clients: Default::default(),
-            seed_upgrades: Default::default(),
-            account_keys: Default::default(),
-            profile_library: Default::default(),
-            registry: crate::device::Registry::new(name.clone(), directory),
-            profile_transition: Default::default(),
-            context_generation: Default::default(),
-            profile_swaps: Default::default(),
-        };
+        let state = TonkState::from_parts(
+            session.operator,
+            session.expires_at,
+            crate::router::repository::PROFILE_BRANCH.to_owned(),
+            crate::worker::TonkShared {
+                profile,
+                storage,
+                profile_name: name.clone(),
+                reactor,
+                admission: Default::default(),
+                reject_admission_content_reads: Default::default(),
+                retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                view_bindings: Default::default(),
+                bridges: Default::default(),
+                sync_queue: Default::default(),
+                commands: crate::router::command_providers(),
+                clients: Default::default(),
+                seed_upgrades: Default::default(),
+                account_keys: Default::default(),
+                profile_library: Default::default(),
+                registry: crate::device::Registry::new(name.clone(), directory),
+                profile_transition: Default::default(),
+                context_generation: Default::default(),
+                profile_swaps: Default::default(),
+            },
+        );
         crate::router::repository::bootstrap_profile(&state)
             .await
             .unwrap();
@@ -2645,7 +2647,7 @@ pub(crate) mod tests {
         let (home, _service, _root, _remote) = ready_account_state(None).await;
         let key = require_ready_account_state(&home).await.unwrap().key;
         let transition = std::sync::Arc::clone(&home.profile_transition);
-        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(home));
+        let state: crate::router::AppState = std::sync::Arc::new(crate::StateLock::new(home));
 
         let switching = transition.lock().await;
         let deferred = crate::router::sync_repository(&state, &key).await;
@@ -2946,7 +2948,6 @@ pub(crate) mod tests {
         use dialog_artifacts::{Artifact, Instruction, Value};
         use dialog_varsig::Principal as _;
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         const RENAMED: &str = "Renamed on the other device";
 
@@ -2989,7 +2990,7 @@ pub(crate) mod tests {
         assert_eq!(status, AccountStateStatus::Ready);
         swept.unwrap();
 
-        let device = Arc::new(RwLock::new(device));
+        let device = Arc::new(crate::StateLock::new(device));
         super::super::profiles::sign_out(&device, None)
             .await
             .unwrap();
@@ -3028,7 +3029,6 @@ pub(crate) mod tests {
     #[dialog_common::test]
     async fn it_retracts_its_device_rows_from_the_account_on_sign_out() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         async fn listed(state: &TonkState) -> Vec<String> {
             let main = state
@@ -3061,7 +3061,7 @@ pub(crate) mod tests {
             "the other device is listed once it links"
         );
 
-        let device = Arc::new(RwLock::new(device));
+        let device = Arc::new(crate::StateLock::new(device));
         super::super::profiles::sign_out(&device, None)
             .await
             .unwrap();

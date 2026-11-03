@@ -13,6 +13,7 @@ mod connections;
 mod deployment_config;
 mod email_invitation_signup;
 mod lookup;
+mod oauth;
 mod object;
 mod purger;
 mod registration;
