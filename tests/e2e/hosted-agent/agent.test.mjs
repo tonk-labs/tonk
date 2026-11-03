@@ -27,6 +27,7 @@ import {
   createSpace,
   syncedSpaces,
   approve,
+  revoke,
 } from './lib/browser.mjs';
 import { showView } from './lib/view-host.mjs';
 
@@ -63,6 +64,14 @@ const NOTES = 'e2e-note:\n  label: ?label\n';
 // How long a write the agent makes may take to reach an open view: the
 // provider's `live.rs` tells the view's peer, which pulls.
 const LIVE = 30_000;
+// How long after the person revokes a grant the agent may still be
+// answered. A grant this profile issued is revoked at the access service,
+// which the writer's next pull meets; a grant from a share link is only
+// dropped from the agent space, which background sync then pushes. Both
+// are today's measures with room to spare, to tighten once the numbers
+// are known.
+const REVOKE_BUDGET = 30_000;
+const LINK_REVOKE_BUDGET = 60_000;
 
 test('the hosted agent connects, is approved, and reads and writes spaces', async (t) => {
   const mail = inbox({ run, base: process.env.TONK_E2E_CAPTURED_EMAILS || origin });
@@ -176,6 +185,21 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       assert.notEqual(result.isError, true, `${name}: ${JSON.stringify(result.content)}`);
       return result;
     };
+    // Call `name` until the agent is refused, from `since` for at most
+    // `budget` ms: how long the refusal took, and what it said.
+    const refused = async (client, name, args, { since, budget }) => {
+      for (;;) {
+        const result = await client.callTool({ name, arguments: args });
+        const ms = Date.now() - since;
+        if (result.isError) return { ms, text: JSON.stringify(result.content) };
+        if (ms >= budget)
+          assert.fail(
+            `${name} was still answered ${ms} ms after the revocation: ` +
+              JSON.stringify(result.content).slice(0, 400),
+          );
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    };
 
     // The agent sees exactly the spaces it was granted, and each allows
     // what it was granted.
@@ -245,17 +269,68 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       assert.deepEqual(lost, [], `${lost.length} of ${labels.length} writes were lost`);
     });
 
+    // The raw response, which the SDK client does not show: the call's
+    // trace id, and the time of each step from the front to the space
+    // writer.
+    await step('a tool call answers its trace and the time of each step', async () => {
+      const post = (body, session) =>
+        fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            authorization: `Bearer ${token}`,
+            ...(session && { 'mcp-session-id': session }),
+          },
+          body: JSON.stringify(body),
+        });
+      const initialized = await post({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'tonk-e2e', version: '0' },
+        },
+      });
+      assert.equal(initialized.status, 200, await initialized.clone().text());
+      const session = initialized.headers.get('mcp-session-id');
+      assert.ok(session, 'initialize answered no session id');
+      const response = await post(
+        {
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: { name: 'tonk_query', arguments: { space: spaces.writable, document: NOTES } },
+        },
+        session,
+      );
+      assert.equal(response.status, 200);
+      const trace = response.headers.get('x-tonk-trace') ?? '';
+      const timing = response.headers.get('server-timing') ?? '';
+      console.log(`trace ${trace}: ${timing}`);
+      assert.match(trace, /^[0-9a-f]{16}$/, 'the call answered no trace id');
+      const steps = timing.split(',').map((entry) => entry.trim().split(';')[0]);
+      for (const name of ['access', 'writer', 'writer.pull', 'writer.eval', 'total']) {
+        assert.ok(steps.includes(name), `${name} missing from ${timing}`);
+      }
+      assert.equal((await response.json()).result?.isError, false);
+    });
+
     // A link the person shares in the chat, joined as the card joins it:
     // `tonk_join_space` only reads the link, and `tonk_join_accept` (the
     // card's app-only tool) joins with the access the person chose. The
     // person does not join and is not asked for a passkey. Revoking it in
     // "your agents" asks for the passkey, and the agent's key revokes the
     // link's grants at the access service.
+    let linked;
     await step('the agent joins a shared space from a link, read only, then is revoked', async () => {
       const name = `e2e join ${run}`;
       await boot(person.page, origin);
       await createSpace(person.page, { origin, name });
       const subject = (await syncedSpaces(person.page, [name]))[name];
+      linked = subject;
       const link = await person.page.evaluate(async (space) => {
         const response = await fetch(`/api/repository/${space}/invite`, {
           method: 'POST',
@@ -491,6 +566,29 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
         );
       },
     );
+
+    // The person takes access away from their agents list, and the agent's
+    // next calls on that space are refused within the budget. Each is
+    // timed from the moment the person asked.
+    for (const [kind, space, budget] of [
+      ['an approved grant', () => spaces.writable, REVOKE_BUDGET],
+      ['a grant from a share link', () => linked, LINK_REVOKE_BUDGET],
+    ]) {
+      await step(`revoking ${kind} refuses the agent within ${budget} ms`, async () => {
+        const subject = space();
+        const client = await connect();
+        const read = { space: subject, document: 'concept:\n' };
+        // Answered before, so a refusal after is the revocation's.
+        await call(client, 'tonk_query', read);
+        await boot(person.page, origin);
+        const since = Date.now();
+        await revoke(person.page, { agent, space: subject });
+        console.log(`revoke ${kind}: answered in ${Date.now() - since} ms`);
+        const { ms, text } = await refused(client, 'tonk_query', read, { since, budget });
+        console.log(`revoke ${kind}: refused after ${ms} ms: ${text.slice(0, 300)}`);
+        assert.match(text, /revoked|no access/i, `refused for another reason: ${text}`);
+      });
+    }
   } finally {
     await Promise.allSettled(sessions.map((client) => client.close()));
     await person.close({ keepTrace: failed });
