@@ -137,9 +137,10 @@ checks `bench/stability/invariants.mjs`. Eight runs on main at 5d18593
 | worker-restart | nothing rebuilt or removed | clean every run |
 | remote-write-while-viewing | an empty frame over rendered rows, and the page not settling, in some runs | emptied 0 to 2; unsettled in 5 of 8 |
 | restart-then-stall | worker restart, then a 20 s stall: rows wiped, pulsing dot still there 60 s after the network returned | 2 of 2 dedicated runs |
-| stall-while-viewing, offline-while-viewing | clean when run on a settled page | failed in all 8 full runs, inherited from the scenario before (since fixed: a scenario now starts on a settled page) |
+| stall-while-viewing | 20 s stall on a settled page: rows wiped and never back | failed in all 8 local full runs and on the first CI run; passed in one dedicated local run |
+| offline-while-viewing | clean when run on a settled page | failed in all 8 local full runs, inherited from the scenario before (a scenario now starts on a settled page) |
 
-`ratchets.json` holds the worst of those runs. That is the bridge the
+`ratchets.json` holds the worst of those runs and of the first CI run. That is the bridge the
 design describes, with a cost: a ratchet at the worst run lets a change
 that makes the usual case worse through. Counts that wobble by a factor of
 two are telling us the scenario is racy, not that the tolerance is right.
