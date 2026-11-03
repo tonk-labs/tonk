@@ -288,6 +288,7 @@ function pageHarness({
   pageBuild,
   successorPageBuild,
   healthFails = false,
+  registerHangs = false,
 } = {}) {
   const messages = [];
   const fetched = [];
@@ -336,7 +337,14 @@ function pageHarness({
   serviceWorkers = eventTarget({
     controller: incumbent,
     ready,
-    async register() { return registration; },
+    // A register() call joins the registration's job queue, behind an
+    // update job an earlier document started; on a stalled network that
+    // job never finishes.
+    async register() {
+      if (registerHangs) await new Promise(() => {});
+      return registration;
+    },
+    async getRegistration() { return mode === "cold" ? undefined : registration; },
   });
   const self = eventTarget({
     tonkBootLife() {},
@@ -470,6 +478,7 @@ function multiPageReplacementHarness() {
     controller: incumbent,
     ready: Promise.resolve(registration),
     async register() { return registration; },
+    async getRegistration() { return registration; },
   });
   const pages = Array.from({ length: 2 }, () => {
     const storage = new Map();
@@ -804,6 +813,14 @@ test("a successor that never takes over stops holding the page", async () => {
   assert.equal(after.open, true, "new IO proceeds once the hold expires");
   result.tickRepeats();
   assert.equal(result.frames.length, 1, "no more activation requests after the hold");
+});
+
+test("a warm page does not wait behind another document's stuck update check", async () => {
+  const result = pageHarness({ mode: "warm", registerHangs: true });
+  let ready = false;
+  result.ready().then(() => { ready = true; });
+  for (let turn = 0; turn < 10; turn++) await new Promise(setImmediate);
+  assert.equal(ready, true, "readiness must not queue behind the registration's update job");
 });
 
 test("a page without a waiting successor opens its IO at once", async () => {

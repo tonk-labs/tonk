@@ -569,15 +569,26 @@
                     onFirstControl,
                 );
 
+                // A controlled page already has its registration: read it
+                // instead of registering again. `register()` joins the
+                // registration's job queue, so it waits behind an update
+                // check an earlier document started, and on a stalled network
+                // that check never finishes: every load after the first one
+                // would sit on the boot screen until the network came back.
                 let registration;
                 try {
-                    registration = await navigator.serviceWorker.register(
-                        "/service_worker.js",
-                        {
-                            type: "module",
-                            updateViaCache: "none",
-                        },
-                    );
+                    registration =
+                        (priorController &&
+                            (await navigator.serviceWorker.getRegistration(
+                                "/",
+                            ))) ||
+                        (await navigator.serviceWorker.register(
+                            "/service_worker.js",
+                            {
+                                type: "module",
+                                updateViaCache: "none",
+                            },
+                        ));
                 } catch (error) {
                     navigator.serviceWorker.removeEventListener(
                         "controllerchange",
