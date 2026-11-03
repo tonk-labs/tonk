@@ -163,6 +163,11 @@ await scenario("switch-spaces", async () => {
   return { settled_ms };
 });
 
+// Let the worker fill its offline copy before stopping it. Interrupting the
+// fill is a separate bug (an endless boot screen) that would mask what this
+// scenario measures.
+if (!only || only.includes("worker-restart")) await page.waitForTimeout(Number(process.env.STABILITY_IDLE_MS ?? 90_000));
+
 await scenario("worker-restart", async () => {
   await cdp.send("ServiceWorker.stopAllWorkers");
   // Something has to wake the worker: the person keeps using the page.

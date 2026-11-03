@@ -20,8 +20,10 @@ seeded spaces with invites). Point `stability.mjs` at the config that script
 writes:
 
 ```
-node bench/stability/stability.mjs bench/trace/runs/<stamp>/config.json
+TRACE_DRIVER=bench/stability/stability.mjs bench/trace/run.sh
 ```
+
+or, against a stack already up, `node bench/stability/stability.mjs <run-dir>/config.json`.
 
 It prints one line per scenario, writes `stability.json` (every counter,
 the worker's lock waits and holds by source line) into the run directory,
@@ -50,5 +52,7 @@ after the variance study shows the counts repeat run to run.
   boot that destroyed it is counted in its parent, which survives.
 - Reloads are counted by the harness (top-page `load` events), not in the
   page.
-- The network gate shapes HTTP only. The live-update websocket and direct
-  S3 transfers bypass it until `tonk-perf link` lands.
+- The network gate sits between the page and the stack. The worker syncs
+  with the access service directly (and with S3, and over the live-update
+  websocket), so sync is not shaped until `tonk-perf link` lands; the
+  delay today slows page and asset traffic only.
