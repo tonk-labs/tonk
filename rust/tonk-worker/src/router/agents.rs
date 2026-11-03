@@ -522,7 +522,6 @@ mod tests {
     use dialog_effects::storage::Directory;
     use dialog_varsig::Principal as _;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
     use tonk_invite::connection::{AgentAccess, DEFAULT_GRANT_TTL_SECONDS};
 
     /// A marked space with grants retained to it lists as an agent, with
@@ -535,7 +534,7 @@ mod tests {
         let (storage, profile) = crate::device::open_profile_at("agents", location.clone()).await?;
         let registry = crate::device::Registry::new("agents".into(), location);
         let tonk = crate::worker::boot_state(storage, "agents".into(), profile, registry).await?;
-        let state: AppState = Arc::new(RwLock::new(tonk));
+        let state: AppState = Arc::new(crate::StateLock::new(tonk));
 
         let mut keys = Vec::new();
         for name in ["Notes", "Plans"] {

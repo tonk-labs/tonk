@@ -765,6 +765,14 @@
             fixupPhase = darwinBinaryFixup;
           };
 
+          # The native half of the bench/trace stack the stability scenarios
+          # run on: the local access service and the logging front proxy.
+          tonk-bench-stack = buildCrate {
+            pname = "tonk-bench-stack";
+            cargoExtraArgs = "--package tonk-access-service --features tonk-access-service/helpers --bin tonk-access-local --package tonk-perf --bin tonk-perf";
+            doCheck = false;
+          };
+
           tonk-cli-ci = (if system == "x86_64-linux" then buildStaticCrate else buildCrate) {
             pname = "tonk-cli-ci";
             CARGO_PROFILE = "ci-release";

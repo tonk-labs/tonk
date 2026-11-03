@@ -275,7 +275,7 @@ mod deadline_tests {
     async fn approval_deadline_publishes_failure_for_only_the_timed_out_request() {
         use dialog_query::{Output as _, Query};
         use tonk_schema::{CeremonyStatus, ceremony_state};
-        let state = std::sync::Arc::new(tokio::sync::RwLock::new(
+        let state = std::sync::Arc::new(crate::StateLock::new(
             crate::router::tests::test_state_without_account().await,
         ));
         let request = tonk_worker_api::DeviceAuthorization {
@@ -348,7 +348,7 @@ mod deadline_tests {
 
     #[dialog_common::test]
     async fn approval_deadline_bounds_failure_reporting_when_the_state_is_locked() {
-        let state = std::sync::Arc::new(tokio::sync::RwLock::new(
+        let state = std::sync::Arc::new(crate::StateLock::new(
             crate::router::tests::test_state_without_account().await,
         ));
         let request =
@@ -1339,7 +1339,6 @@ mod tests {
     use super::*;
     use crate::router::tests::test_state;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
@@ -1522,7 +1521,7 @@ mod tests {
     async fn it_records_the_envelope_as_a_fact_when_it_mints_one() {
         use dialog_query::{Output as _, Query, Term};
 
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let custodian = tonk_identity::custodian::Custodian::Passkey(
             tonk_identity::webcrypto_kek::Custodian::adopt(vec![3], &[13u8; 32], &[23u8; 32])
                 .await

@@ -260,7 +260,11 @@ async fn serve_static(root: &Path, path: &str) -> (StatusCode, Bytes, Vec<(Strin
     let index = root.join("index.html");
     let relative = path.trim_start_matches('/');
     // Resolve inside the root; anything escaping it (or missing) falls
-    // back to the SPA shell, mirroring `try_files {path} /index.html`.
+    // back to the SPA shell, mirroring the deployment's
+    // `try_files {path} {path}/index.html /index.html`. A directory serves
+    // its own index: the service worker verifies `/agent/` against the
+    // digest of `agent/index.html`, and the SPA shell in its place fails
+    // that check and keeps the offline generation from ever filling.
     let candidate = if relative.is_empty() {
         index.clone()
     } else {
@@ -268,6 +272,11 @@ async fn serve_static(root: &Path, path: &str) -> (StatusCode, Bytes, Vec<(Strin
         match (joined.canonicalize(), root.canonicalize()) {
             (Ok(resolved), Ok(root)) if resolved.starts_with(&root) && resolved.is_file() => {
                 resolved
+            }
+            (Ok(resolved), Ok(root))
+                if resolved.starts_with(&root) && resolved.join("index.html").is_file() =>
+            {
+                resolved.join("index.html")
             }
             _ => index.clone(),
         }

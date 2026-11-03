@@ -118,12 +118,6 @@
     navigate:function(href){
       ready.then(function(){port.postMessage({v:1,type:"navigate",href:href});});
     },
-    // Reload the HOST page after a whole-profile state swap. Unlike navigate,
-    // this is meaningful when the route itself has not changed: every portal
-    // and subscription owned by the previous profile must be rebuilt.
-    reload:function(){
-      ready.then(function(){port.postMessage({v:1,type:"reload"});});
-    },
     // Retitle the HOST page's tab: the opaque guest can't touch
     // parent.document.title. `<tab-title>` posts its text here and the
     // parent performs the real assignment. Fire-and-forget (no response).
