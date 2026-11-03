@@ -1393,7 +1393,7 @@ mod when_a_device_has_no_account {
         };
         let rendered = format!("{error:#}");
         assert!(
-            rendered.contains("tonk account login"),
+            rendered.contains("tonk join <URL>") && !rendered.contains("tonk account login"),
             "the refusal must name the command that fixes it: {rendered}"
         );
         Ok(())

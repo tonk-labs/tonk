@@ -89,7 +89,7 @@ pub async fn provision_in(
 ) -> Result<()> {
     let connection = crate::account::optional_connection_in(profile, store)
         .await?
-        .context("no active account; run `tonk account login`")?;
+        .context("no active account; connect this CLI with a tool invitation from Tonk: `tonk join <URL>`")?;
     let origin = access_origin_in(profile, store)
         .await?
         .context("the account has no repository descriptor to locate its service by")?;
@@ -140,7 +140,7 @@ pub async fn deprovision_in(
 ) -> Result<()> {
     let connection = crate::account::optional_connection_in(profile, store)
         .await?
-        .context("no active account; run `tonk account login`")?;
+        .context("no active account; connect this CLI with a tool invitation from Tonk: `tonk join <URL>`")?;
     let origin = access_origin_in(profile, store)
         .await?
         .context("the account has no repository descriptor to locate its service by")?;
