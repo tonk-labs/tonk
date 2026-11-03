@@ -348,7 +348,7 @@ pub(crate) async fn schedule_seed_upgrade(
 }
 
 /// Parse either the canonical full repository key or the legacy bare suffix.
-fn space_subject(key: &str) -> Option<dialog_varsig::Did> {
+pub(crate) fn space_subject(key: &str) -> Option<dialog_varsig::Did> {
     if key.starts_with("did:key:") {
         key.parse().ok()
     } else {

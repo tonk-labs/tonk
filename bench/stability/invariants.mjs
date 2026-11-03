@@ -63,6 +63,12 @@ export const SCENARIOS = {
     invariants: [...NO_REMOVALS, ...NO_RELOADS, ...NO_REBUILDS],
     preconditions: [STARTED_SETTLED, { metric: "worker.instances", target: 2, op: "ge" }],
   },
+  // A read answers while a sync is stalled and a writer waits for the state.
+  "write-while-sync-stalls": {
+    invariants: [...NO_REMOVALS, ...NO_RELOADS, { metric: "harness.read_over_budget", target: 0 }],
+    // Without a sync actually hanging on the remote it proved nothing.
+    preconditions: [STARTED_SETTLED, { metric: "harness.sync_stalled", target: 1 }],
+  },
   "offline-while-viewing": {
     invariants: [...NO_REMOVALS, ...NO_RELOADS, ...NO_REBUILDS],
   },
