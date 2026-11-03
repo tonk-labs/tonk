@@ -54,13 +54,9 @@ pub mod names {
     /// `<tonk-site>` re-routed a live guest frame in place, with no rebuild.
     pub const SITE_REROUTE: &str = "site.reroute";
 
-    /// `<tonk-display>` removed content it had kept through a restart (a
-    /// changed `entity`, `model` or `view` attribute) because the restarted
-    /// flow ended in an error state instead of something to show.
+    /// `<tonk-display>` removed rendered content because its subscription
+    /// restarted (a changed attribute, a reconnect).
     pub const DISPLAY_REMOVED_RESTART: &str = "display.removed.restart";
-    /// `<tonk-display>` replaced content it had kept through a restart with
-    /// what the restarted flow shows, with no empty moment between them.
-    pub const DISPLAY_REPLACED_RESTART: &str = "display.replaced.restart";
     /// `<tonk-display>` removed rendered content to show an error.
     pub const DISPLAY_REMOVED_ERROR: &str = "display.removed.error";
     /// `<tonk-display>` removed rendered content because a model frame
