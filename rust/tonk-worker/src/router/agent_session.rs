@@ -747,7 +747,8 @@ async fn open_held(
 }
 
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-/// Mark the agent space as one, and note which provider's apps it is for.
+/// Mark the agent space as one, in its own space and in the account
+/// directory, and note which provider's apps it is for.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 async fn mark(
     tonk: &crate::TonkState,
@@ -770,7 +771,8 @@ async fn mark(
         .perform(&tonk.operator)
         .await
         .map_err(failure)?;
-    Ok(())
+    // The account's other devices learn it is an agent from the directory.
+    super::agents::mark_in_directory(tonk, agent).await
 }
 
 /// One space granted to an agent, as its space records it.
