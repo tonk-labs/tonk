@@ -12,11 +12,18 @@
 //! touch the link: whoever holds the link and its secret can still redeem
 //! it for a fresh grant.
 
-use dialog_credentials::{Ed25519Signer, Signer};
+// The removal runs behind the passkey, in the browser; natively only
+// tests reach it.
+#![cfg_attr(
+    not(any(test, all(target_arch = "wasm32", target_os = "unknown"))),
+    allow(dead_code)
+)]
+
+use dialog_credentials::Signer;
 use dialog_query::{Output as _, Query, Term};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::{DelegationChain, subject::Subject, time::Timestamp};
-use dialog_varsig::{Did, Principal as _};
+use dialog_varsig::Did;
 use ipld_core::cid::Cid;
 use tonk_schema::prelude::DidExt as _;
 
@@ -75,9 +82,10 @@ pub(crate) async fn link_grants(
 /// from the agent space only once the service has acknowledged its
 /// revocation; the agent space is then queued to sync, so the hosted agent
 /// stops listing it.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) async fn withdraw(
     tonk: &TonkState,
-    root: &Ed25519Signer,
+    root: &dialog_credentials::Ed25519Signer,
     key: &str,
     space: &Did,
 ) -> Result<Withdrawal, String> {
@@ -86,6 +94,7 @@ pub(crate) async fn withdraw(
         .await
         .map_err(|error| format!("no account is signed in on this profile: {error}"))?
         .root_did;
+    use dialog_varsig::Principal as _;
     if root.did() != linked {
         return Err("this passkey belongs to a different account".into());
     }
@@ -252,4 +261,141 @@ async fn home(tonk: &TonkState, agent: &Did, space: &Did) -> Result<url::Url, To
                 "the agent's space does not say where that space is served".into(),
             )
         })
+}
+
+/// How long a removal waits for its passkey before the list stops
+/// showing it as under way: the custody deadline, and some.
+const PENDING_FOR_MS: f64 = 180_000.0;
+
+/// Where a removal the person started stands, for the list to show.
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", tag = "state")]
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+pub(crate) enum Removal {
+    /// Waiting for the passkey.
+    Pending,
+    /// The passkey opened the account; revocations are being published.
+    Working,
+    /// It stopped, and why. What was not acknowledged is still listed.
+    Failed { reason: String },
+}
+
+type Removals = std::sync::Mutex<std::collections::HashMap<(String, String), (Removal, f64)>>;
+
+fn removals() -> &'static Removals {
+    static REMOVALS: std::sync::OnceLock<Removals> = std::sync::OnceLock::new();
+    REMOVALS.get_or_init(Default::default)
+}
+
+/// Record where the removal of `agent`'s access to `space` stands, or
+/// clear it with `None` once it is done.
+pub(crate) fn note(agent: &str, space: &str, removal: Option<Removal>) {
+    let Ok(mut removals) = removals().lock() else {
+        return;
+    };
+    let key = (agent.to_owned(), space.to_owned());
+    match removal {
+        Some(removal) => {
+            removals.insert(key, (removal, super::super::sync::now_millis()));
+        }
+        None => {
+            removals.remove(&key);
+        }
+    }
+}
+
+/// Where the removal of `agent`'s access to `space` stands. A removal
+/// still waiting for its passkey after the deadline was dismissed or
+/// never answered, so it is no longer reported.
+pub(crate) fn status(agent: &str, space: &str) -> Option<Removal> {
+    let removals = removals().lock().ok()?;
+    let (removal, at) = removals.get(&(agent.to_owned(), space.to_owned()))?;
+    let stale = super::super::sync::now_millis() - at > PENDING_FOR_MS;
+    match removal {
+        Removal::Pending | Removal::Working if stale => None,
+        removal => Some(removal.clone()),
+    }
+}
+
+/// The passkey continuation of `POST /api/agents/{key}/revoke` for
+/// link-issued grants: open the account the passkey holds, then
+/// [`withdraw`] as the agent and push the agent space.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn authorize(
+    state: &super::super::AppState,
+    custodian: &tonk_identity::custodian::Custodian,
+    request: tonk_worker_api::AgentRevocation,
+) -> Result<wasm_bindgen::JsValue, String> {
+    note(&request.agent, &request.space, Some(Removal::Working));
+    report(state, tonk_schema::ceremony_state::WORKING, &request.space).await;
+    let outcome = authorize_inner(state, custodian, &request).await;
+    match &outcome {
+        Ok(()) => {
+            note(&request.agent, &request.space, None);
+            report(state, tonk_schema::ceremony_state::DONE, &request.space).await;
+        }
+        Err(reason) => {
+            let reason = reason
+                .split_once('\u{1f}')
+                .map_or(reason.as_str(), |(_, message)| message)
+                .to_owned();
+            note(
+                &request.agent,
+                &request.space,
+                Some(Removal::Failed {
+                    reason: reason.clone(),
+                }),
+            );
+            report(state, tonk_schema::ceremony_state::FAILED, &reason).await;
+        }
+    }
+    outcome.map(|()| wasm_bindgen::JsValue::UNDEFINED)
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn report(state: &super::super::AppState, status: &str, detail: &str) {
+    let tonk = state.read().await;
+    super::super::ceremony::report(&tonk, tonk_schema::ceremony::REVOKE_AGENT, status, detail)
+        .await;
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn authorize_inner(
+    state: &super::super::AppState,
+    custodian: &tonk_identity::custodian::Custodian,
+    request: &tonk_worker_api::AgentRevocation,
+) -> Result<(), String> {
+    let space: Did = request
+        .space
+        .parse()
+        .map_err(|_| "that space's name is unreadable".to_string())?;
+    let account = super::super::custody::held_account(custodian).await?;
+    let Signer::Ed25519(root) = account
+        .signer()
+        .await
+        .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
+    // Bring in grants a join from the chat kept since this browser last
+    // synced the agent space. If that fails, what is here is withdrawn;
+    // anything newer shows once it syncs, to remove again.
+    if let Err(error) = super::super::sync::sync_repository(state, &request.agent).await {
+        tonk_common::log!(
+            "agent {}: not synced before removal: {error}",
+            request.agent
+        );
+    }
+    let withdrawn = {
+        let tonk = state.read().await;
+        withdraw(&tonk, &root, &request.agent, &space).await?
+    };
+    let finished = withdrawn.finished();
+    // The hosted agent lists its spaces from the agent space. The access
+    // service already refuses what was revoked; a failed push is left to
+    // the background sync, which the removal queued.
+    if let Err(error) = super::super::sync::sync_repository(state, &request.agent).await {
+        tonk_common::log!("agent {}: removal not pushed yet: {error}", request.agent);
+    }
+    finished.map(|_| ())
 }

@@ -333,40 +333,6 @@ export async function approve(page, { authorizationUrl, agent, grants, signIn })
   return cost;
 }
 
-/**
- * Let an agent into a space from the join page its chat card opens
- * (`/settings/agent-join#agent=…&link=…`): choose `access` ("read" or
- * "read & write"), join, and answer the passkey with the virtual one.
- * Resolves when the page says the agent is in.
- *
- * Locators are by role and accessible name, agreed with the join page.
- */
-export async function letIn(page, { open, access }) {
-  await page.goto(open);
-  const deadline = Date.now() + SETTLE;
-  let root;
-  while (!root) {
-    for (const candidate of [page, ...page.frames()]) {
-      if (await candidate.getByRole('button', { name: 'join', exact: true }).count()) {
-        root = candidate;
-        break;
-      }
-    }
-    if (root) break;
-    if (Date.now() > deadline) {
-      await snap(page, 'agent join page');
-      throw new Error('the agent join page did not show');
-    }
-    await page.waitForTimeout(500);
-  }
-  await root
-    .getByRole('radiogroup', { name: 'what it may do' })
-    .getByRole('radio', { name: access, exact: true })
-    .click();
-  await root.getByRole('button', { name: 'join', exact: true }).click();
-  await root.getByText(/can now (read|read and change) the space/).waitFor({ timeout: 120_000 });
-}
-
 /** A full-page screenshot into TONK_E2E_SCREENSHOTS, when it is set. */
 export async function snap(page, name) {
   const dir = process.env.TONK_E2E_SCREENSHOTS;

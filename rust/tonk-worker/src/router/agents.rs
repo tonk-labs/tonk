@@ -45,21 +45,6 @@ pub struct AgentSummary {
     spaces: Vec<AgentSpaceAccess>,
 }
 
-#[cfg(test)]
-impl AgentSummary {
-    pub(super) fn did(&self) -> &Did {
-        &self.did
-    }
-
-    /// The access listed for `space`, if it is listed.
-    pub(super) fn access_to(&self, space: &Did) -> Option<&'static str> {
-        self.spaces
-            .iter()
-            .find(|entry| &entry.subject == space)
-            .map(|entry| entry.access)
-    }
-}
-
 /// One space an agent can reach, and how.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,6 +56,13 @@ pub struct AgentSpaceAccess {
     access: &'static str,
     /// When the earliest of its grants lapses, unix seconds.
     expires_at: Option<u64>,
+    /// Whether a share link issued any of its grants. Removing those asks
+    /// for the passkey, and does not stop the link being used again.
+    via_link: bool,
+    /// Where a removal the person started stands, while it is under way
+    /// or after it failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    removal: Option<withdraw::Removal>,
 }
 
 /// Which of an agent's spaces to revoke.
@@ -230,8 +222,8 @@ async fn retained(
 /// Who issued a grant: this profile or its account root, which can
 /// revoke it at the space's access service, or the key of a share link
 /// the agent joined from the chat (`hosted::join`), which the person may
-/// hold no proof to revoke. A link's grant is removed by dropping it from
-/// the agent space, the only place the hosted agent finds it.
+/// hold no proof to revoke. The agent, as the grant's audience, can: see
+/// [`withdraw`], which opens its key with the account.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Issued {
     Here,
@@ -287,38 +279,44 @@ pub async fn list(
         if !is_agent(&tonk, &did).await {
             continue;
         }
-        let mut by_space = std::collections::BTreeMap::<String, (Did, bool, Option<u64>)>::new();
-        for (chain, _, _) in grants(&tonk, &did).await? {
+        let mut by_space =
+            std::collections::BTreeMap::<String, (Did, bool, Option<u64>, bool)>::new();
+        for (chain, _, issued) in grants(&tonk, &did).await? {
             let subject = chain.subject().unwrap().clone();
             let write = chain.ability().starts_with("/use/put");
             let expires = chain.expiration().map(|at| at.to_unix());
             let entry = by_space
                 .entry(subject.to_string())
-                .or_insert((subject, false, expires));
+                .or_insert((subject, false, expires, false));
             entry.1 |= write;
             entry.2 = match (entry.2, expires) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             };
+            entry.3 |= issued == Issued::Link;
         }
+        let key = did.repo_key().to_owned();
         let mut spaces = Vec::new();
-        for (_, (subject, write, expires_at)) in by_space {
+        for (_, (subject, write, expires_at, via_link)) in by_space {
             // A space joined from a link may not be one of the person's:
             // the agent space's directory names it then.
             let name = match name(&tonk, &subject).await {
                 Some(name) => Some(name),
                 None => directory_name(&tonk, &did, &subject).await,
             };
+            let removal = withdraw::status(&key, subject.as_str());
             spaces.push(AgentSpaceAccess {
                 key: subject.repo_key().to_owned(),
                 name,
                 subject,
                 access: if write { "write" } else { "read" },
                 expires_at,
+                via_link,
+                removal,
             });
         }
         agents.push(AgentSummary {
-            key: did.repo_key().to_owned(),
+            key,
             name: name(&tonk, &did).await,
             did,
             spaces,
@@ -327,16 +325,31 @@ pub async fn list(
     Ok(Json(agents))
 }
 
+/// What [`revoke`] answers: whether a passkey removal is under way.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeAnswer {
+    /// The page was asked for the passkey; the list reports the removal
+    /// (see [`withdraw::status`]) and drops the space when it is done.
+    pending: bool,
+}
+
 /// `POST /api/agents/{key}/revoke`: withdraw every grant the agent holds
 /// to one space. Each grant is revoked at the space's access service,
-/// which checks every request the agent makes, and only then dropped
-/// from the profile, so a failure leaves it listed to retry.
+/// which checks every request the agent makes, and only then dropped, so
+/// a failure leaves it listed to retry.
+///
+/// Grants the profile or the account issued are revoked here. Grants a
+/// share link issued the agent can be revoked only by the agent, whose
+/// key the account opens: for those the page that asked is asked for the
+/// passkey, and [`withdraw::authorize`] finishes the removal.
 #[wasm_compat]
 pub async fn revoke(
     State(state): State<AppState>,
     Path(key): Path<String>,
+    client: Option<axum::Extension<super::ClientId>>,
     Json(request): Json<RevokeRequest>,
-) -> Result<Json<()>, TonkWorkerError> {
+) -> Result<Json<RevokeAnswer>, TonkWorkerError> {
     let tonk = state.read().await;
     let agent = find(&tonk, &key).await?;
     let (leaves, links): (Vec<_>, Vec<_>) = grants(&tonk, &agent)
@@ -349,41 +362,56 @@ pub async fn revoke(
             "the agent holds no access to that space".into(),
         ));
     }
-    if !links.is_empty() {
-        // Dropped from the agent space, which the hosted agent reads its
-        // access from on every call, then sent there by the background
-        // sync, which retries.
-        let session = tonk
-            .reactor
-            .repository(agent.repo_key())
-            .branch(CONTENT_BRANCH)
-            .acquire(&tonk.operator)
-            .await
-            .map_err(failure)?;
-        for (leaf, _, _) in links {
-            session
-                .handle()
-                .delegations()
-                .retract(UcanDelegation(leaf))
-                .perform(&tonk.operator)
-                .await
-                .map_err(failure)?;
-        }
-        tonk.sync_queue
-            .mark_dirty(agent.repo_key(), super::sync::now_millis());
+    if !leaves.is_empty() {
+        revoke_issued(&tonk, &agent, &request.space, leaves).await?;
     }
-    if leaves.is_empty() {
-        tonk_common::log!("agent {} link access to {} removed", agent, request.space);
-        return Ok(Json(()));
+    if links.is_empty() {
+        return Ok(Json(RevokeAnswer { pending: false }));
     }
+    drop(tonk);
+    let Some(axum::Extension(client)) = client else {
+        return Err(TonkWorkerError::Conflict(
+            "removing access a share link gave the agent needs your passkey; remove it from Tonk in your browser".into(),
+        ));
+    };
+    let space = request.space.to_string();
+    withdraw::note(&key, &space, Some(withdraw::Removal::Pending));
+    let asked = super::navigate::request_webauthn_with(
+        &client,
+        tonk_worker_api::WebAuthnKind::Custody,
+        Some(tonk_worker_api::CustodyIntent::RevokeAgent(
+            tonk_worker_api::AgentRevocation {
+                agent: key.clone(),
+                space: space.clone(),
+            },
+        )),
+        None,
+    )
+    .await;
+    if let Err(error) = asked {
+        withdraw::note(&key, &space, None);
+        return Err(error);
+    }
+    Ok(Json(RevokeAnswer { pending: true }))
+}
+
+/// Revoke `leaves`, grants to `agent` for `space` that the profile or the
+/// account root issued, with the profile's own proof, and drop each once
+/// the access service has acknowledged it.
+async fn revoke_issued(
+    tonk: &TonkState,
+    agent: &Did,
+    space: &Did,
+    leaves: Vec<(DelegationChain, Held, Issued)>,
+) -> Result<(), TonkWorkerError> {
     let repository = tonk
         .profile
-        .space(request.space.repo_key())
+        .space(space.repo_key())
         .load()
         .perform(&tonk.operator)
         .await
-        .map_err(|_| TonkWorkerError::NotFound(format!("no space {}", request.space)))?;
-    let remote = match resolve_remote_url(&tonk, &repository).await? {
+        .map_err(|_| TonkWorkerError::NotFound(format!("no space {}", space)))?;
+    let remote = match resolve_remote_url(tonk, &repository).await? {
         RemoteRequirement::Ready(remote) => remote.access_url,
         RemoteRequirement::Refused(_) => {
             return Err(TonkWorkerError::Conflict(
@@ -399,11 +427,11 @@ pub async fn revoke(
             .last()
             .ok_or_else(|| failure("empty grant"))?;
         let certificate = leaf.proofs().last().unwrap().clone();
-        let path = ancestor(&tonk, &profile, &request.space, &leaf)
+        let path = ancestor(tonk, &profile, space, &leaf)
             .await?
             .push(certificate)
             .map_err(failure)?;
-        publish_target(&tonk, &remote, &path, &target).await?;
+        publish_target(tonk, &remote, &path, &target).await?;
         let session = match held {
             Held::Profile => tonk
                 .reactor
@@ -434,8 +462,8 @@ pub async fn revoke(
         tonk.sync_queue
             .mark_dirty(agent.repo_key(), super::sync::now_millis());
     }
-    tonk_common::log!("agent {} access to {} revoked", agent, request.space);
-    Ok(Json(()))
+    tonk_common::log!("agent {} access to {} revoked", agent, space);
+    Ok(())
 }
 
 /// The profile's own proof for the scope `leaf` was issued under: the
@@ -594,11 +622,10 @@ mod tests {
         }
         drop(tonk);
 
-        // A space the agent joined from a share link in the chat before the
-        // account was put in the chain: its grant was issued by the link's
-        // key into the agent space, for a space this person may not belong
-        // to. It lists under the agent space's directory name, and revoking
-        // drops it from there.
+        // A space the agent joined from a share link in the chat: its grant
+        // was issued by the link's key into the agent space, for a space
+        // this person may not belong to. It lists under the agent space's
+        // directory name.
         let shared = Ed25519Signer::generate().await?;
         let seed: [u8; 32] = rand::random();
         let link_key = Ed25519Signer::import(&seed).await?;
@@ -610,8 +637,7 @@ mod tests {
             .meta(tonk_invite::home_address_meta(&remote))
             .try_build()
             .await?;
-        // A join from the chat before the account was in the chain: the
-        // link's key delegated straight to the agent space.
+        // The link's key delegates straight to the agent space.
         let scopes = tonk_invite::connection::agent_grant_scopes(&shared.did(), AgentAccess::Read);
         let chains = super::super::agent_connections::issue_to_recipient(
             &agent,
@@ -647,24 +673,39 @@ mod tests {
             .expect("the space joined from a link is listed");
         assert_eq!(joined.name.as_deref(), Some("Family trip"));
         assert_eq!(joined.access, "read");
+        assert!(joined.via_link, "{joined:?}");
+        assert!(
+            agents[0]
+                .spaces
+                .iter()
+                .filter(|space| space.subject != shared.did())
+                .all(|space| !space.via_link),
+            "the person's own grants are not a link's"
+        );
 
-        let Json(()) = revoke(
+        // Only the agent can revoke a link's grant, and only the passkey
+        // opens its key: with no page to ask, nothing is removed, not even
+        // from the agent space.
+        let refused = revoke(
             State(state.clone()),
             Path(agent_key.clone()),
+            None,
             Json(RevokeRequest {
                 space: shared.did(),
             }),
         )
-        .await?;
+        .await
+        .unwrap_err();
+        assert!(matches!(refused, TonkWorkerError::Conflict(_)), "{refused}");
         let Json(agents) = list(State(state.clone())).await?;
         assert!(
             agents[0]
                 .spaces
                 .iter()
-                .all(|space| space.subject != shared.did()),
-            "the link's grant is gone"
+                .any(|space| space.subject == shared.did() && space.removal.is_none()),
+            "the link's grant stays listed"
         );
-        assert_eq!(agents[0].spaces.len(), 2, "the person's own grants stay");
+        assert_eq!(agents[0].spaces.len(), 3);
         Ok(())
     }
 }

@@ -641,28 +641,6 @@ pub(super) async fn publish_target(
     path: &DelegationChain,
     target: &ipld_core::cid::Cid,
 ) -> Result<tonk_account::customer::RevokeReceipt, TonkWorkerError> {
-    let artifact = revocation(tonk, path, target).await?;
-    let response = super::http::post_cbor(remote, &artifact).await?;
-    let receipt: tonk_account::customer::RevokeReceipt =
-        serde_json::from_slice(&response.body).map_err(failure)?;
-    let expected = tonk_identity::revocation::verify(&artifact)
-        .await
-        .map_err(failure)?;
-    if receipt.revoked != *target || receipt.subject != expected.subject {
-        return Err(failure(
-            "access service acknowledged a different revocation",
-        ));
-    }
-    Ok(receipt)
-}
-
-/// The signed revocation of `target`, witnessed by `path`, checked as the
-/// access service checks it, for [`publish_target`] to send.
-pub(super) async fn revocation(
-    tonk: &TonkState,
-    path: &DelegationChain,
-    target: &ipld_core::cid::Cid,
-) -> Result<Vec<u8>, TonkWorkerError> {
     let signer = tonk.profile.credential().signer().clone();
     let artifact = if path
         .proofs()
@@ -686,7 +664,18 @@ pub(super) async fn revocation(
     tonk_identity::revocation::verify(&artifact)
         .await
         .map_err(failure)?;
-    Ok(artifact)
+    let response = super::http::post_cbor(remote, &artifact).await?;
+    let receipt: tonk_account::customer::RevokeReceipt =
+        serde_json::from_slice(&response.body).map_err(failure)?;
+    let expected = tonk_identity::revocation::verify(&artifact)
+        .await
+        .map_err(failure)?;
+    if receipt.revoked != *target || receipt.subject != expected.subject {
+        return Err(failure(
+            "access service acknowledged a different revocation",
+        ));
+    }
+    Ok(receipt)
 }
 
 #[wasm_compat]

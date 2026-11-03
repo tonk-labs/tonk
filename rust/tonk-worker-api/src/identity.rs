@@ -117,23 +117,22 @@ pub enum CustodyIntent {
     /// the chosen spaces with the account this passkey holds, and send
     /// the page to the app's callback.
     AuthorizeAgent(AgentAuthorization),
-    /// Let one of the account's agents into a space the account holds:
-    /// sign its grant with the account this passkey holds, so the grant
-    /// runs `space -> ... -> account -> agent` and the account can revoke
-    /// it.
-    GrantAgent(AgentGrant),
+    /// Withdraw what a share link gave one of the account's agents: open
+    /// the agent's key with the account this passkey holds, and have the
+    /// agent revoke, at the space's access service, every grant the link
+    /// issued it for the space.
+    RevokeAgent(AgentRevocation),
 }
 
-/// The grant [`CustodyIntent::GrantAgent`] carries. It names the space
-/// by its routing key: the link the account joined it from, a secret,
-/// never travels with the passkey request.
+/// The removal [`CustodyIntent::RevokeAgent`] carries: public names only.
+/// No link, seed or signed grant travels with the passkey request.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentGrant {
+pub struct AgentRevocation {
     /// The agent space's routing key.
     pub agent: String,
-    /// The space, and how the agent may use it.
-    pub space: AgentSpaceChoice,
+    /// The DID of the space whose grants are withdrawn.
+    pub space: String,
 }
 
 /// The approval [`CustodyIntent::AuthorizeAgent`] carries: what the

@@ -1,8 +1,8 @@
 # Direct agent join with recipient-side revocation
 
 Status: in progress, 2026-11-03. Revises PR #1240 (head `9c4a1a5aa8`,
-base `d9e8852745`). Supersedes the account-mediated join in
-[2026-11-02-person-in-agent-chain.md](2026-11-02-person-in-agent-chain.md).
+base `d9e8852745`). Supersedes the account-mediated join the PR first proposed (see
+"Rejected alternative").
 Evidence: [2026-11-03-recipient-revocation-spike.md](2026-11-03-recipient-revocation-spike.md).
 
 ## Decision
@@ -31,6 +31,15 @@ applies to every chain that presents that leaf, whoever presents it.
 
 Only the account can open the agent key (`agent_session::open_held`), so
 removal needs the passkey.
+
+## Rejected alternative
+
+The PR's first version put the person's account in the chain
+(`link key -> account -> agent`): the person claimed the link (joining the
+space), then signed the agent's grant behind the passkey, on a Tonk page
+the card opened. That made the account's existing revocation path work,
+but made the person join and approve every agent join with a passkey.
+The direct join keeps the chat flow; the agent's key gives the revocation.
 
 ## Security boundary
 
@@ -80,3 +89,17 @@ invitation for everyone. UI copy and the PR say so.
   are refused with `CREDENTIAL_REVOKED`; the hosted copy still lists the
   grants. A wrong account is refused before any key opens; a failed
   publication drops nothing and the retry succeeds.
+- Steps 2 and 3: the revoke route asks for the passkey for link-issued
+  grants (`CustodyIntent::RevokeAgent { agent, space }`, public names only)
+  and the continuation calls the tested `withdraw`. The direct join
+  (`tonk_join_accept`, `Offer::grant`, card) is restored from the base; the
+  join page, `/api/agents/{key}/join`, `GrantAgent`, `tonk_join_status`
+  are gone. Native: worker lib 346 passed (3 ignored) with
+  `integration-tests`; standard_library 54; tonk-ui 44, tonk-analytics 30,
+  tonk-schema 137, tonk-worker-api 36; tonk-ui node tests 192 (4 new for
+  the agents panel). `cargo fmt --all --check` clean; clippy on touched
+  crates shows only pre-existing dead-code warnings; wasm32 checks of
+  tonk-worker, tonk-ui and tonk-host-worker pass.
+- Not covered natively: loading the account from the custody cell
+  (`custody::held_account`), the passkey prompt, and the page. The native
+  test calls `withdraw` with the account root directly.

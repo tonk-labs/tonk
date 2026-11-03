@@ -672,21 +672,51 @@ fn failure(status: StatusCode, code: &str, message: &str) -> Response<Body> {
 }
 
 impl SpaceWriter {
-    /// Read an invite link the person pasted (see [`super::join`]). Only
-    /// the agent space's own writer answers. A refusal is a sentence for
-    /// the person.
+    /// Keep what a join from the chat grants the agent space (see
+    /// [`super::join`]): the chains in `body`, each checked to reach the
+    /// agent space and grant the space named, and the space's directory
+    /// entry.
+    pub(crate) async fn keep_grant(&self, body: &super::join::GrantBody) -> Result<(), String> {
+        let (chains, entry) = body.open(&self.agent)?;
+        self.retain_grants(&chains, &[entry]).await
+    }
+
+    /// Read an invite link the person pasted, and when `request` names an
+    /// access, join with it: the link's key delegates that access to the
+    /// agent space, which keeps it (see [`super::join`]). Only the agent
+    /// space's own writer answers. A refusal is a sentence for the person.
     pub async fn join_link(
         &self,
         request: &super::join::LinkRequest,
     ) -> Result<super::join::LinkAnswer, String> {
+        use tonk_invite::connection::AgentAccess as Level;
         if self.space != self.agent {
             return Err("Only the agent's own space joins spaces.".into());
         }
         let offer = super::join::read_link(&request.link).await?;
+        let granted = match request.access.as_deref() {
+            None => None,
+            Some(access) => {
+                let level = match access {
+                    "read" => Level::Read,
+                    "write" => Level::ReadWrite,
+                    _ => return Err("Choose read or write access.".into()),
+                };
+                let chains = offer
+                    .grant(&self.agent, level, dialog_ucan_core::time::Timestamp::now())
+                    .await?;
+                let body = super::join::GrantBody::new(&offer, &chains)?;
+                self.keep_grant(&body)
+                    .await
+                    .map_err(|error| format!("Could not join: {error}"))?;
+                Some(access.to_owned())
+            }
+        };
         Ok(super::join::LinkAnswer {
             space: offer.subject.to_string(),
             name: offer.name.clone(),
             write: offer.write,
+            granted,
         })
     }
 
@@ -696,7 +726,6 @@ impl SpaceWriter {
     /// [`super::access::retain_agent_grants`].
     ///
     /// Only the agent space's own writer keeps grants.
-    #[cfg(test)]
     pub(crate) async fn retain_grants(
         &self,
         chains: &[DelegationChain],

@@ -610,8 +610,8 @@ pub mod ceremony {
     pub const ADD_PASSKEY: &str = "add-passkey";
     /// Making an agent for an app signing in over OAuth.
     pub const AUTHORIZE_AGENT: &str = "authorize-agent";
-    /// Letting one of the account's agents into a space it joined.
-    pub const GRANT_AGENT: &str = "grant-agent";
+    /// Withdrawing what a share link gave one of the account's agents.
+    pub const REVOKE_AGENT: &str = "revoke-agent";
     /// `tonk:add-profile` — signing up a fresh profile's account.
     ///
     /// Unlike its siblings the worker does not drive this one to

@@ -44,7 +44,7 @@ pub use deployment::DeploymentConfig;
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
 pub use identify::IdentifyResponse;
 pub use identity::{
-    AccountCreation, AccountPurge, AgentAuthorization, AgentGrant, AgentSpaceChoice,
+    AccountCreation, AccountPurge, AgentAuthorization, AgentRevocation, AgentSpaceChoice,
     CREATE_ACCOUNT_REQUEST, CUSTODY_REQUEST, CustodyIntent, DeviceAuthorization, DeviceLink,
     ENCRYPTION_KEY_REQUEST, Enrollment, LINK_ACCOUNT, LinkAccountRequest, PasskeyAddition,
     PasskeyMetadata, RootStatus, SaveRootRequest, WEBAUTHN, WebAuthnKind, WebAuthnRequest,

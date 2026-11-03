@@ -83,12 +83,7 @@ fn pending() -> &'static Mutex<HashMap<String, url::Url>> {
 }
 
 fn access(choice: &AgentSpaceChoice) -> Result<AgentAccess, TonkWorkerError> {
-    access_of(&choice.access)
-}
-
-/// `read`, or `write` for read and write.
-pub(super) fn access_of(access: &str) -> Result<AgentAccess, TonkWorkerError> {
-    match access {
+    match choice.access.as_str() {
         "read" => Ok(AgentAccess::Read),
         "write" => Ok(AgentAccess::ReadWrite),
         other => Err(TonkWorkerError::Router(format!(
@@ -129,16 +124,16 @@ pub(crate) fn provider(redirect_uri: &str, client_name: &str) -> Option<&'static
     not(all(target_arch = "wasm32", target_os = "unknown")),
     allow(dead_code)
 )]
-pub(super) struct Target {
-    pub(super) subject: Did,
-    pub(super) access: AgentAccess,
-    pub(super) remote: url::Url,
-    pub(super) label: String,
+struct Target {
+    subject: Did,
+    access: AgentAccess,
+    remote: url::Url,
+    label: String,
 }
 
 /// Check the ask before anything is created, so a refusal leaves no agent
 /// space behind.
-pub(super) async fn targets(
+async fn targets(
     state: &AppState,
     name: Option<&str>,
     spaces: &[AgentSpaceChoice],
@@ -701,19 +696,25 @@ async fn reopen(
 /// `PRINCIPAL_KEY` are its own, and nothing it makes public opens a held
 /// key, so they are copied here as dialog's own tests copy them; the
 /// test `it_opens_a_held_agent_key_with_the_account` fails if they drift.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 const DIALOG_SPACE_KEY: &str = "dialog.space/key";
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 const DIALOG_PRINCIPAL_KEY: &str = "dialog.principal/key";
 
 /// Open the key of `agent`, which this browser's peer holds sealed to
 /// the account `root`, as the account: what lets the agent sign a new
 /// session, or withdraw grants issued to it, without its key ever being
 /// sealed to anyone else.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(super) async fn open_held(
     tonk: &crate::TonkState,
-    root: &Ed25519Signer,
+    root: &dialog_credentials::Ed25519Signer,
     agent: &Did,
-) -> Result<Ed25519Signer, String> {
+) -> Result<dialog_credentials::Ed25519Signer, String> {
+    use dialog_credentials::Ed25519Signer;
     use dialog_credentials::secret::{Context, SealedSecret};
+    use dialog_varsig::Principal as _;
+    use zeroize::Zeroizing;
     let held =
         dialog_repository::secrets::held_principal(tonk.profile.state(), agent, &tonk.profile)
             .await

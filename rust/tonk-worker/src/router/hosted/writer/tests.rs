@@ -1450,11 +1450,132 @@ concept!: &writer-note
         fixture.stop().await;
     }
 
-    /// The chain a join from the chat leaves: the person's account
-    /// claims the link (`link key -> account`) and signs the agent's
-    /// grant (`account -> agent space`). The agent reads with it and the
-    /// access service refuses its write. When the account revokes the
-    /// grant at the access service, the agent's next read is refused too.
+    /// Joining from the chat with read access lets the agent read the
+    /// space and nothing more: the access service refuses its write,
+    /// whatever the model sends. Joined with read and write, its write
+    /// lands.
+    #[dialog_common::test]
+    async fn a_join_from_the_chat_grants_only_the_access_chosen() {
+        use super::super::super::join::{GrantBody, LinkRequest, Offer};
+        use tonk_invite::connection::AgentAccess as Level;
+
+        let fixture = Fixture::start().await;
+        let mut shared = Vec::new();
+        for _ in 0..2 {
+            let space = Ed25519Signer::generate().await.unwrap();
+            fixture
+                .service
+                .address
+                .provision_subject(space.did().as_ref())
+                .await
+                .unwrap();
+            let owner = super::session(&space, "owner", &fixture.remote).await;
+            let owner = SpaceWriter::open(&scratch_root(), &owner, &space.did(), &fixture.remote)
+                .await
+                .unwrap();
+            let (status, body) = evaluate(&owner, SCHEMA.to_owned()).await;
+            assert!(status.is_success(), "schema: {status}: {body}");
+            let (status, body) = evaluate(&owner, fixture.note("owner")).await;
+            assert!(status.is_success(), "owner: {status}: {body}");
+            owner.close().await;
+            shared.push(space);
+        }
+        let [read_only, writable] = &shared[..] else {
+            unreachable!()
+        };
+
+        let session = session(&fixture.space, "mcp-join", &fixture.remote).await;
+        let own = fixture.writer_for(&session).await;
+        // Through the agent writer's link route, as the tools reach it:
+        // an `access=` link, which needs no ticket fetched. Reading the
+        // link joins nothing; joining keeps only the access asked for.
+        let base = fixture.remote.origin().ascii_serialization();
+        for (space, access) in [(read_only, "read"), (writable, "write")] {
+            let link = share_link(space, &fixture.remote)
+                .await
+                .to_url(&base)
+                .unwrap();
+            let offer = own
+                .join_link(&LinkRequest {
+                    link: link.clone(),
+                    access: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(offer.space, space.did().to_string());
+            assert!(offer.write, "a member's link allows writing");
+            assert_eq!(offer.granted, None);
+            assert!(
+                own.agent_access()
+                    .await
+                    .unwrap()
+                    .get(&space.did())
+                    .is_none()
+            );
+            let joined = own
+                .join_link(&LinkRequest {
+                    link,
+                    access: Some(access.into()),
+                })
+                .await
+                .unwrap();
+            assert_eq!(joined.granted.as_deref(), Some(access));
+        }
+        let access = own.agent_access().await.unwrap();
+        let entry = access.get(&read_only.did()).expect("the read join");
+        assert!(entry.read && !entry.write, "{entry:?}");
+        let entry = access.get(&writable.did()).expect("the write join");
+        assert!(entry.read && entry.write, "{entry:?}");
+
+        let reader =
+            SpaceWriter::open(&scratch_root(), &session, &read_only.did(), &fixture.remote)
+                .await
+                .unwrap();
+        assert_eq!(
+            notes(&reader, fixture.run).await,
+            labels(fixture.run, &["owner".into()]),
+            "the agent reads the space"
+        );
+        let (status, body) = evaluate(&reader, fixture.note("agent")).await;
+        assert!(!status.is_success(), "a read join cannot write: {body}");
+
+        let writer = SpaceWriter::open(&scratch_root(), &session, &writable.did(), &fixture.remote)
+            .await
+            .unwrap();
+        let (status, body) = evaluate(&writer, fixture.note("agent")).await;
+        assert!(status.is_success(), "a write join writes: {status}: {body}");
+
+        // A grant to another agent is not this agent's to keep.
+        let other = Ed25519Signer::generate().await.unwrap().did();
+        let foreign = Offer::of(share_link(read_only, &fixture.remote).await).unwrap();
+        let chains = foreign
+            .grant(
+                &other,
+                Level::Read,
+                dialog_ucan_core::time::Timestamp::now(),
+            )
+            .await
+            .unwrap();
+        let refused = own
+            .keep_grant(&GrantBody::new(&foreign, &chains).unwrap())
+            .await
+            .unwrap_err();
+        assert!(
+            refused.contains("not this space's to the agent"),
+            "{refused}"
+        );
+
+        reader.close().await;
+        writer.close().await;
+        own.close().await;
+        fixture.stop().await;
+    }
+
+    /// A grant the person's account issued to the agent, under authority
+    /// the account holds over the space (here, a link it claimed): the
+    /// agent reads with it and the access service refuses its write.
+    /// When the account revokes the grant at the access service, the
+    /// agent's next read is refused too. No agent key is needed for this.
     #[dialog_common::test]
     async fn the_account_revokes_an_agent_it_let_in() {
         use crate::router::agent_connections::issue_to_recipient;
@@ -1482,7 +1603,7 @@ concept!: &writer-note
         assert!(status.is_success(), "owner: {status}: {body}");
         owner.close().await;
 
-        // The account claims the link, as a join does.
+        // The account claims the link, as a person's own join does.
         let account = Ed25519Signer::generate().await.unwrap();
         let link = share_link(&space, &fixture.remote).await;
         let link_key = link.signer().await.unwrap().unwrap();
