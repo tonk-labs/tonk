@@ -124,6 +124,32 @@ Not counted in the page, on purpose: reloads (the registry dies with the
 page, so the harness counts navigations) and remote requests by kind (the
 `tonk-perf` proxy already logs every request with its kind and size).
 
+## Stability scenarios as built
+
+`bench/stability` runs on the `bench/trace` stack behind a 150 ms delay
+(`TRACE_DRIVER=bench/stability/stability.mjs bench/trace/run.sh`) and
+checks `bench/stability/invariants.mjs`. Eight runs on main at 5d18593
+(debug trunk build), before the steady-interface fixes:
+
+| Scenario | What it showed | Spread over 8 runs |
+| --- | --- | --- |
+| switch-spaces (A to B to A) | 2 guest boots and 1 to 2 content removals per switch | boots 4 every run; removals 2 or 4 |
+| worker-restart | nothing rebuilt or removed | clean every run |
+| remote-write-while-viewing | an empty frame over rendered rows, and the page not settling, in some runs | emptied 0 to 2; unsettled in 5 of 8 |
+| restart-then-stall | worker restart, then a 20 s stall: rows wiped, pulsing dot still there 60 s after the network returned | 2 of 2 dedicated runs |
+| stall-while-viewing | 20 s stall on a settled page: rows wiped and never back | failed in all 8 local full runs and on the first CI run; passed in one dedicated local run |
+| offline-while-viewing | clean when run on a settled page | failed in all 8 local full runs, inherited from the scenario before (a scenario now starts on a settled page) |
+
+`ratchets.json` holds the worst of those runs and of the first CI run. That is the bridge the
+design describes, with a cost: a ratchet at the worst run lets a change
+that makes the usual case worse through. Counts that wobble by a factor of
+two are telling us the scenario is racy, not that the tolerance is right.
+
+Not measured yet: the state lock under real latency. The worker syncs
+with the access service directly, outside the delay, so every hold here
+was under 1 ms. That says nothing about the lock until sync is shaped
+(`tonk-perf link`).
+
 ## Assumptions worth challenging
 
 - **"It only improves" cannot mean wall-clock in CI.** Shared runners vary by

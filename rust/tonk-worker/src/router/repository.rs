@@ -5557,6 +5557,9 @@ pub(super) async fn fetch_library_bytes(url: &str) -> Result<Vec<u8>, TonkWorker
     {
         return Ok(bytes);
     }
+    if let Some(bytes) = crate::cache::downloaded_library_bytes(url).await {
+        return Ok(bytes);
+    }
 
     let init = RequestInit::new();
     init.set_cache(RequestCache::NoStore);
@@ -6679,7 +6682,10 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
     // harness that serves no library) costs a degraded Hub until the
     // next attempt — not a worker that refuses to boot or a profile
     // switch that dies half-way.
-    if let Err(error) = reconcile_profile_library(tonk).await {
+    //
+    // Bounded, because every request waits for boot: a network that never
+    // answers must cost a degraded Hub, not a worker that never boots.
+    if let Err(error) = reconcile_profile_library_within(tonk, PROFILE_LIBRARY_BOOT_WAIT).await {
         log!("profile library reconciliation skipped: {error}");
     }
     // A fresh state, a fresh overlay: say whether this device is linked
@@ -6692,6 +6698,33 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     Ok(())
+}
+
+/// How long a boot waits for the profile library's bytes before it boots
+/// without reconciling them.
+const PROFILE_LIBRARY_BOOT_WAIT: web_time::Duration = web_time::Duration::from_secs(5);
+
+/// [`reconcile_profile_library`], giving up when the library's bytes have
+/// not arrived within `limit`. Only the acquisition is bounded: once the
+/// bytes are here, the reconciliation's commits run to the end.
+pub(crate) async fn reconcile_profile_library_within(
+    tonk: &TonkState,
+    limit: web_time::Duration,
+) -> Result<ProfileLibraryOutcome, RepositoryError> {
+    use futures_util::future::{Either, select};
+    let acquire = tonk.profile_library.acquire();
+    let deadline = crate::sleep(limit);
+    futures_util::pin_mut!(acquire, deadline);
+    let prepared = match select(acquire, deadline).await {
+        Either::Left((prepared, _)) => prepared?,
+        Either::Right(_) => {
+            return Err(RepositoryError::Internal(format!(
+                "the profile library did not arrive within {} s",
+                limit.as_secs()
+            )));
+        }
+    };
+    reconcile_prepared_profile_library(tonk, prepared).await
 }
 
 /// Fetch and reconcile the lean profile library onto profile `main`.
