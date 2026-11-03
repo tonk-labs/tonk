@@ -74,7 +74,7 @@ pub async fn export(
         return export_profile(State(state), Path(path), headers).await;
     }
     log!("export repo={}, branch={}", path.repo, path.branch);
-    let tonk_state = state.read().await;
+    let tonk_state = state.write().await;
     let tonk_branch = tonk_state
         .reactor
         .repository(&path.repo)
@@ -108,7 +108,7 @@ pub async fn export_profile(
         .and_then(|value| value.to_str().ok())
         .is_some_and(|accept| accept.contains(SNAPSHOT_MEDIA_TYPE));
 
-    let tonk_state = state.read().await;
+    let tonk_state = state.write().await;
     let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
 
     // CSV ships FACTS; the snapshot ships the tree itself -- every block
@@ -266,44 +266,18 @@ pub async fn import(
         path.branch,
         body.len()
     );
-    // The import commits under the branch's write lock, so a read guard is
-    // enough.
-    let tonk_state = state.read().await;
+    let tonk_state = state.write().await;
     let tonk_branch = tonk_state
         .reactor
         .repository(&path.repo)
         .branch(&path.branch);
 
-    // The import publishes against the head it read, and nothing holds
-    // other writers of the branch off meanwhile, so one that loses the
-    // head's race reads the head again and imports onto it.
-    const IMPORT_ATTEMPTS: usize = 4;
-    let mut attempt = 0;
-    let revision = loop {
-        attempt += 1;
-        let importer = CsvImporter::from(Cursor::new(body.to_vec()));
-        match tonk_branch
-            .import(importer)
-            .perform(&tonk_state.operator)
-            .await
-        {
-            Ok(revision) => break revision,
-            Err(dialog_reactor::ImportError::Commit(dialog_repository::CommitError::Publish(
-                dialog_repository::PublishError::VersionMismatch { .. },
-            ))) if attempt < IMPORT_ATTEMPTS => {
-                let session = tonk_branch
-                    .acquire(&tonk_state.operator)
-                    .await
-                    .map_err(|e| TonkWorkerError::Router(e.to_string()))?;
-                session
-                    .handle()
-                    .refresh(&tonk_state.operator)
-                    .await
-                    .map_err(|e| TonkWorkerError::Router(e.to_string()))?;
-            }
-            Err(e) => return Err(TonkWorkerError::Router(e.to_string())),
-        }
-    };
+    let importer = CsvImporter::from(Cursor::new(body.to_vec()));
+    let revision = tonk_branch
+        .import(importer)
+        .perform(&tonk_state.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Router(e.to_string()))?;
 
     // Announce the moved head on the branch channel so subscribed
     // UIs refresh their revision/sync badges, the same as

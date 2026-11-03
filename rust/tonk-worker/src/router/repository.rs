@@ -3640,11 +3640,7 @@ pub(super) async fn enable_sync_inner(
     key: &str,
     remote: &str,
 ) -> Result<(), RepositoryError> {
-    // A read guard, as the other callers of the lock-free core take: the
-    // attach provisions the space with the access service and records the
-    // mount in the account directory, both round trips, and a write guard
-    // held across them stalls every other request.
-    let tonk = state.read().await;
+    let tonk = state.write().await;
     enable_sync_for_repository(&tonk, key, remote, true).await
 }
 
@@ -8258,9 +8254,7 @@ pub async fn attach_remote(
             .map_err(|e| TonkWorkerError::Router(format!("Invalid request body: {e}")))?
     };
 
-    // A read guard: provisioning is a round trip to the access service,
-    // and the remote configuration commits serialize on their branch.
-    let tonk = state.read().await;
+    let tonk = state.write().await;
 
     let repository = tonk
         .profile

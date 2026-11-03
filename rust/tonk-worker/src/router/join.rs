@@ -484,10 +484,7 @@ pub async fn join(
     State(state): State<AppState>,
     Json(body): Json<JoinRequest>,
 ) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
-    // A read guard, as the page's join command takes: the join is network
-    // bound (a pull, validation and roster reads against the remote), and
-    // a write guard held across it stalls every other request.
-    let tonk = state.read().await;
+    let tonk = state.write().await;
     let outcome = join_invite(&tonk, &body.url).await?;
     log!(
         "POST /api/profile/join -> subject {} (key {})",
@@ -968,51 +965,28 @@ async fn perform_join(
     }
 
     // Every claim, including a renewal, lands its roster/provenance/name
-    // facts as an ordinary commit; the next sync tick pushes them. Nothing
-    // holds other writers of this branch off meanwhile (a space's seeding
-    // commits into it in the background), so a commit that loses the
-    // head's race is computed again on the head that won.
-    const CLAIM_ATTEMPTS: usize = 4;
-    let mut attempt = 0;
-    loop {
-        attempt += 1;
-        let (changes, _already_claimed) = claim_changes(
-            tonk,
-            &branch,
-            &tonk.operator,
-            &prepared.invitation,
-            &prepared.invitation_execution,
-            &prepared.member,
-            &prepared.subject,
-        )
-        .await?;
-        if changes.is_empty() {
-            break;
-        }
-        match branch
+    // facts as an ordinary commit; the next sync tick pushes them.
+    let (changes, _already_claimed) = claim_changes(
+        tonk,
+        &branch,
+        &tonk.operator,
+        &prepared.invitation,
+        &prepared.invitation_execution,
+        &prepared.member,
+        &prepared.subject,
+    )
+    .await?;
+    if !changes.is_empty() {
+        branch
             .transaction()
             .assert(changes)
             .commit()
             .publish()
             .perform(&tonk.operator)
             .await
-        {
-            Ok(_) => break,
-            Err(dialog_repository::CommitError::Publish(
-                dialog_repository::PublishError::VersionMismatch { .. },
-            )) if attempt < CLAIM_ATTEMPTS => {
-                branch.refresh(&tonk.operator).await.map_err(|error| {
-                    JoinFailure::claim_failed(format!(
-                        "failed to read the content branch again: {error}"
-                    ))
-                })?;
-            }
-            Err(error) => {
-                return Err(JoinFailure::claim_failed(format!(
-                    "failed to commit the claim: {error}"
-                )));
-            }
-        }
+            .map_err(|error| {
+                JoinFailure::claim_failed(format!("failed to commit the claim: {error}"))
+            })?;
     }
 
     // The reactor may hold a handle from an earlier attempt at this key;
