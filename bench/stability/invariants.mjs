@@ -59,6 +59,10 @@ export const SCENARIOS = {
   "stall-while-viewing": {
     invariants: [...NO_REMOVALS, ...NO_RELOADS, ...NO_REBUILDS],
   },
+  "restart-then-stall": {
+    invariants: [...NO_REMOVALS, ...NO_RELOADS, ...NO_REBUILDS],
+    preconditions: [STARTED_SETTLED, { metric: "worker.instances", target: 2, op: "ge" }],
+  },
   "offline-while-viewing": {
     invariants: [...NO_REMOVALS, ...NO_RELOADS, ...NO_REBUILDS],
   },

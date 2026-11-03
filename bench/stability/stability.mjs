@@ -216,6 +216,21 @@ for (const [name, mode] of [
   });
 }
 
+// The browser stopped the worker earlier (it does so on its own after
+// about 30 idle seconds), then the network stalls: the new worker instance
+// must not need the network to keep the page showing what it had.
+await scenario("restart-then-stall", async () => {
+  await cdp.send("ServiceWorker.stopAllWorkers");
+  await page.waitForTimeout(2_000);
+  await page.evaluate(() => fetch("/api/health").catch(() => {}));
+  const restarted_ms = await settled(30_000);
+  await network("stall");
+  await page.waitForTimeout(Number(process.env.STABILITY_OUTAGE_MS ?? 20_000));
+  await network("shaped");
+  const settled_ms = await settled(60_000);
+  return settled_ms === null ? { restarted_ms, settled_ms, unsettled: lastUnsettled } : { restarted_ms, settled_ms };
+});
+
 await browser.close();
 
 const failed = results.filter((r) => r.failures.length || r.vacuous.length || r.observed.error);
