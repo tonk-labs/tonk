@@ -10,8 +10,10 @@
 //
 // Metrics are the counter names from `tonk_common::diagnostics::names`,
 // summed over every realm, plus what the harness counts itself:
-// `harness.top_loads` (top-page loads the scenario did not ask for) and
-// `worker.instances` (how many service worker instances answered).
+// `harness.top_loads` (top-page loads the scenario did not ask for),
+// `harness.unsettled` (1 when the page never settled after the scenario),
+// `harness.started_settled` and `worker.instances` (how many service
+// worker instances answered).
 
 /** Every content-removal counter: none may move in any scenario. */
 const NO_REMOVALS = [
@@ -24,7 +26,14 @@ const NO_REMOVALS = [
   "site.guest_boot.remount",
 ].map((metric) => ({ metric, target: 0 }));
 
-const NO_RELOADS = [{ metric: "harness.top_loads", target: 0 }];
+// The page settles (content shown, no loading pulse) once the scenario's
+// disturbance is over, and it does not reload itself.
+const NO_RELOADS = [
+  { metric: "harness.top_loads", target: 0 },
+  { metric: "harness.unsettled", target: 0 },
+];
+// A scenario that started on a broken page measured nothing.
+const STARTED_SETTLED = { metric: "harness.started_settled", target: 1 };
 const NO_REBUILDS = ["site.guest_boot.navigation", "site.guest_boot.mount"].map((metric) => ({ metric, target: 0 }));
 
 export const SCENARIOS = {
@@ -38,7 +47,7 @@ export const SCENARIOS = {
   "worker-restart": {
     invariants: [...NO_REMOVALS, ...NO_RELOADS, ...NO_REBUILDS],
     // Without a second worker instance the scenario proved nothing.
-    preconditions: [{ metric: "worker.instances", target: 2, op: "ge" }],
+    preconditions: [STARTED_SETTLED, { metric: "worker.instances", target: 2, op: "ge" }],
   },
   // Another device writes while the page is open: the new row arrives in
   // place.
@@ -76,7 +85,7 @@ export function check(name, values, ratchets = {}) {
   const failures = [];
   const improvements = [];
   const vacuous = [];
-  for (const pre of spec.preconditions ?? []) {
+  for (const pre of spec.preconditions ?? [STARTED_SETTLED]) {
     const value = values[pre.metric] ?? 0;
     if (!holds(value, pre)) vacuous.push({ ...pre, value });
   }

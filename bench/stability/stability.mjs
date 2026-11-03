@@ -130,7 +130,15 @@ async function scenario(name, body) {
   if (only && !only.includes(name)) return;
   await network("shaped");
   if (!page.url().includes(`/space/${spaceA}`)) await page.goto(`${config.base}/space/${spaceA}`);
-  await settled();
+  // A scenario measures a page that was showing its content. If the one
+  // before left it broken, reload (before the counters reset, so the
+  // reload is not this scenario's), and if it still will not settle, the
+  // scenario is vacuous.
+  let ready = await settled();
+  if (ready === null) {
+    await page.goto(`${config.base}/space/${spaceA}`);
+    ready = await settled(60_000);
+  }
   const collector = new Collector(page);
   await collector.reset();
   topLoads = 0;
@@ -147,7 +155,14 @@ async function scenario(name, body) {
   await network("shaped");
   await collector.stop();
   const { counters, lockSites } = collector.totals();
-  const values = { ...counters, "harness.top_loads": topLoads };
+  const unsettled = [observed.settled_ms].flat().some((ms) => ms === null);
+  const values = {
+    ...counters,
+    "harness.top_loads": topLoads,
+    "harness.started_settled": ready === null ? 0 : 1,
+    "harness.unsettled": unsettled ? 1 : 0,
+  };
+  await page.screenshot({ path: join(config.out, `${name}.png`), timeout: 10_000 }).catch(() => {});
   const verdict = check(name, values, ratchets);
   results.push({ scenario: name, observed, values, lockSites, ...verdict });
   console.error(`stability: ${name}`, JSON.stringify({ observed, ...verdict }));
