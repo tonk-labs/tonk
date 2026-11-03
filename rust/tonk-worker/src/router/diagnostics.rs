@@ -32,6 +32,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_reads_and_resets_the_worker_registry() {
+        let _serial = crate::state_lock::DIAGNOSTICS_TESTS.lock().await;
         diagnostics::reset();
         diagnostics::count(names::SITE_REROUTE);
         let Json(snapshot) = read().await;

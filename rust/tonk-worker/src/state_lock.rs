@@ -217,11 +217,18 @@ impl<T> Deref for OwnedReadGuard<T> {
     }
 }
 
+/// Serializes the tests that reset the process-wide diagnostics registry,
+/// so one test's reset never clears what another is about to assert.
+#[cfg(test)]
+pub(crate) static DIAGNOSTICS_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn site_holds(name: &str) -> u64 {
+    /// How many times `name` was recorded from a line of this file. Other
+    /// tests take other locks concurrently; this counts only what these did.
+    fn here(name: &str) -> u64 {
         diagnostics::snapshot()
             .sites
             .iter()
@@ -234,6 +241,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_records_a_hold_for_every_guard_by_the_line_that_took_it() {
+        let _serial = DIAGNOSTICS_TESTS.lock().await;
         diagnostics::reset();
         let lock = Arc::new(StateLock::new(1_u32));
         {
@@ -250,15 +258,15 @@ mod tests {
         }
         assert!(lock.try_write().is_ok());
 
-        assert_eq!(site_holds(names::WORKER_LOCK_READ_HOLD), 2);
-        assert_eq!(site_holds(names::WORKER_LOCK_WRITE_HOLD), 2);
-        let waits = diagnostics::snapshot();
-        assert!(!waits.durations.contains_key(names::WORKER_LOCK_READ_WAIT));
-        assert!(!waits.durations.contains_key(names::WORKER_LOCK_WRITE_WAIT));
+        assert_eq!(here(names::WORKER_LOCK_READ_HOLD), 2);
+        assert_eq!(here(names::WORKER_LOCK_WRITE_HOLD), 2);
+        assert_eq!(here(names::WORKER_LOCK_READ_WAIT), 0);
+        assert_eq!(here(names::WORKER_LOCK_WRITE_WAIT), 0);
     }
 
     #[dialog_common::test]
     async fn it_records_a_wait_when_a_reader_queues_behind_the_writer() {
+        let _serial = DIAGNOSTICS_TESTS.lock().await;
         diagnostics::reset();
         let lock = Arc::new(StateLock::new(0_u32));
         let write = lock.write().await;
@@ -272,9 +280,6 @@ mod tests {
         };
         let (value, ()) = futures_util::join!(reader, release);
         assert_eq!(value, 0);
-        assert_eq!(
-            diagnostics::snapshot().durations[names::WORKER_LOCK_READ_WAIT].count,
-            1
-        );
+        assert_eq!(here(names::WORKER_LOCK_READ_WAIT), 1);
     }
 }

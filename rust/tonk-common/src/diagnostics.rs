@@ -28,6 +28,7 @@
 //! assert_eq!(snapshot.durations[names::WORKER_LOCK_READ_WAIT].count, 1);
 //! ```
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
@@ -137,8 +138,33 @@ impl Registry {
     }
 }
 
+// One registry per realm. A browser realm is single-threaded, so the web
+// keeps it in a thread-local. A native process runs tasks on many threads
+// (tokio's multi-threaded runtime), and a thread-local there would split
+// one worker's numbers across threads and answer a read with one thread's
+// share, so native keeps a single process-wide registry behind a mutex.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 thread_local! {
     static REGISTRY: RefCell<Registry> = RefCell::new(Registry::new());
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn with_registry<R>(f: impl FnOnce(&mut Registry) -> R) -> R {
+    REGISTRY.with(|registry| f(&mut registry.borrow_mut()))
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+static REGISTRY: std::sync::LazyLock<std::sync::Mutex<Registry>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(Registry::new()));
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn with_registry<R>(f: impl FnOnce(&mut Registry) -> R) -> R {
+    // A panic while recording leaves only counts behind, never a broken
+    // invariant, so a poisoned lock is still safe to keep using.
+    let mut registry = REGISTRY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(&mut registry)
 }
 
 /// Count one occurrence of `name`.
@@ -148,23 +174,22 @@ pub fn count(name: &'static str) {
 
 /// Count `n` occurrences of `name`.
 pub fn add(name: &'static str, n: u64) {
-    REGISTRY.with(|registry| {
-        *registry.borrow_mut().counters.entry(name).or_default() += n;
+    with_registry(|registry| {
+        *registry.counters.entry(name).or_default() += n;
     });
 }
 
 /// Record one duration of `ms` milliseconds under `name`.
 pub fn record(name: &'static str, ms: f64) {
-    REGISTRY.with(|registry| {
-        accumulate(registry.borrow_mut().durations.entry(name).or_default(), ms);
+    with_registry(|registry| {
+        accumulate(registry.durations.entry(name).or_default(), ms);
     });
 }
 
 /// Record one duration under `name`, and under `name` at the source location
 /// `site`, so a slow or contended path can be found from the snapshot alone.
 pub fn record_at(name: &'static str, site: &'static std::panic::Location<'static>, ms: f64) {
-    REGISTRY.with(|registry| {
-        let mut registry = registry.borrow_mut();
+    with_registry(|registry| {
         accumulate(registry.durations.entry(name).or_default(), ms);
         let key = (name, site.file(), site.line());
         accumulate(registry.sites.entry(key).or_default(), ms);
@@ -181,35 +206,31 @@ fn accumulate(duration: &mut Duration, ms: f64) {
 
 /// Everything recorded since this registry started or was last [`reset`].
 pub fn snapshot() -> Snapshot {
-    REGISTRY.with(|registry| {
-        let registry = registry.borrow();
-        Snapshot {
-            instance: registry.instance.clone(),
-            started_at_ms: registry.started_at_ms,
-            counters: registry
-                .counters
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), *value))
-                .collect(),
-            durations: registry
-                .durations
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), *value))
-                .collect(),
-            sites: registry
-                .sites
-                .iter()
-                .map(|((name, file, line), value)| (format!("{name}@{file}:{line}"), *value))
-                .collect(),
-        }
+    with_registry(|registry| Snapshot {
+        instance: registry.instance.clone(),
+        started_at_ms: registry.started_at_ms,
+        counters: registry
+            .counters
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), *value))
+            .collect(),
+        durations: registry
+            .durations
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), *value))
+            .collect(),
+        sites: registry
+            .sites
+            .iter()
+            .map(|((name, file, line), value)| (format!("{name}@{file}:{line}"), *value))
+            .collect(),
     })
 }
 
 /// Clear every counter and duration. The instance identifier and start time
 /// stay, so a reset is not mistaken for a restart.
 pub fn reset() {
-    REGISTRY.with(|registry| {
-        let mut registry = registry.borrow_mut();
+    with_registry(|registry| {
         registry.counters.clear();
         registry.durations.clear();
         registry.sites.clear();
@@ -289,8 +310,19 @@ pub fn install_global() {
 mod tests {
     use super::*;
 
+    /// The registry is process-wide on native and tests run in parallel
+    /// threads, so the tests that reset it take turns.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn it_counts_and_resets_without_changing_the_instance() {
+        let _serial = serial();
         reset();
         let before = snapshot();
         count(names::SITE_GUEST_BOOT_MOUNT);
@@ -313,7 +345,18 @@ mod tests {
     }
 
     #[test]
+    fn it_sees_what_another_thread_recorded() {
+        let _serial = serial();
+        reset();
+        std::thread::spawn(|| count(names::SITE_GUEST_BOOT_REMOUNT))
+            .join()
+            .expect("counting thread");
+        assert_eq!(snapshot().counters[names::SITE_GUEST_BOOT_REMOUNT], 1);
+    }
+
+    #[test]
     fn it_keys_sites_by_name_and_location() {
+        let _serial = serial();
         reset();
         let here = std::panic::Location::caller();
         record_at(names::WORKER_LOCK_WRITE_HOLD, here, 7.0);
