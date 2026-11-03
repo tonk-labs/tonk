@@ -1,7 +1,4 @@
 {
-  "switch-spaces": {
-    "display.removed.restart": 4
-  },
   "write-while-sync-stalls": {
     "harness.read_over_budget": 1
   }
