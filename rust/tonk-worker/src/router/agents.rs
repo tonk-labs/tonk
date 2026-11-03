@@ -426,6 +426,8 @@ pub async fn revoke(
         tonk_common::log!("agent {} link access to {} removed", agent, request.space);
         return Ok(Json(()));
     }
+    // A space granted on another device may not be on this one yet.
+    super::adopt::mount_on_first_use(&tonk, &state, request.space.repo_key()).await;
     let repository = tonk
         .profile
         .space(request.space.repo_key())
