@@ -11608,6 +11608,196 @@ mod tests {
         );
     }
 
+    /// The scratch notebook's sequence, as `key -> block`, in key order.
+    async fn scratch_entries(
+        state: &AppState,
+        repo: &str,
+    ) -> std::collections::BTreeMap<String, String> {
+        rows(
+            state,
+            repo,
+            "notebook:\n  this: id:notebook/scratch\n  block: {?key: ?block}\n",
+        )
+        .await
+        .first()
+        .and_then(|row| row.get("block"))
+        .and_then(|entries| entries.as_object())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|(key, block)| Some((key.clone(), block.as_str()?.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    /// The keys `block` is entered under in the scratch notebook.
+    fn keys_of(entries: &std::collections::BTreeMap<String, String>, block: &str) -> Vec<String> {
+        entries
+            .iter()
+            .filter(|(_, held)| held.as_str() == block)
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
+    /// A second entry for the seed's first block, written directly the
+    /// way a placement that never retracted the first one left it.
+    const DUPLICATE_FIRST: &str =
+        "notebook/blocks!:\n  this: id:notebook/scratch\n  block: {NZ: id:notebook/scratch/1}\n";
+
+    /// A PLACEMENT leaves the block with one entry, the placed one,
+    /// whatever entries it held before.
+    ///
+    /// The element places a block it reads as having no entry. Reading
+    /// it that way while an entry existed (the entry had not rendered
+    /// yet) used to ADD the new entry beside the old one: the block sat
+    /// in the sequence twice, and every later insert beside it derived
+    /// its position from the wrong one.
+    #[dialog_common::test]
+    async fn it_places_a_block_out_of_every_entry_it_held() {
+        let (_app, state, key) = fresh_repo("test-notebook-place-once").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        seed(
+            &state,
+            repo,
+            "block/place!:\n  subject: id:notebook/scratch/1\n  notebook: id:notebook/scratch\n  key: \"NX\"\n",
+        )
+        .await;
+        let entries = scratch_entries(&state, repo).await;
+        assert_eq!(
+            keys_of(&entries, "id:notebook/scratch/1"),
+            vec!["NX".to_owned()],
+            "the block holds the placed entry and no other: {entries:#?}"
+        );
+        assert_eq!(entries.len(), 3, "one entry per block: {entries:#?}");
+    }
+
+    /// Placing a block under the key it already holds keeps that entry:
+    /// the entries a placement clears are the OTHER ones.
+    #[dialog_common::test]
+    async fn it_keeps_an_entry_placed_again_under_its_own_key() {
+        let (_app, state, key) = fresh_repo("test-notebook-place-same").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        seed(
+            &state,
+            repo,
+            "block/place!:\n  subject: id:notebook/scratch/1\n  notebook: id:notebook/scratch\n  key: \"N1\"\n",
+        )
+        .await;
+        let entries = scratch_entries(&state, repo).await;
+        assert_eq!(
+            keys_of(&entries, "id:notebook/scratch/1"),
+            vec!["N1".to_owned()],
+            "{entries:#?}"
+        );
+    }
+
+    /// A MOVE leaves the block with only its new entry, even when the
+    /// `from` it names is not the only entry it held: a block entered
+    /// twice is repaired by its next move rather than keeping a stray.
+    #[dialog_common::test]
+    async fn it_moves_a_twice_entered_block_out_of_both_entries() {
+        let (_app, state, key) = fresh_repo("test-notebook-move-duplicate").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+        seed(&state, repo, DUPLICATE_FIRST).await;
+        assert_eq!(
+            keys_of(
+                &scratch_entries(&state, repo).await,
+                "id:notebook/scratch/1"
+            ),
+            vec!["N1".to_owned(), "NZ".to_owned()],
+            "the fixture enters the block twice"
+        );
+
+        seed(
+            &state,
+            repo,
+            "block/move!:\n  subject: id:notebook/scratch/1\n  notebook: id:notebook/scratch\n  from: \"N1\"\n  key: \"N7\"\n",
+        )
+        .await;
+        let entries = scratch_entries(&state, repo).await;
+        assert_eq!(
+            keys_of(&entries, "id:notebook/scratch/1"),
+            vec!["N7".to_owned()],
+            "only the new entry is left: {entries:#?}"
+        );
+    }
+
+    /// A REMOVAL takes the block out of every entry it held, not just the
+    /// one the element named; otherwise the stray entry brings it back.
+    #[dialog_common::test]
+    async fn it_removes_a_twice_entered_block_from_both_entries() {
+        let (_app, state, key) = fresh_repo("test-notebook-remove-duplicate").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+        seed(&state, repo, DUPLICATE_FIRST).await;
+
+        seed(
+            &state,
+            repo,
+            "block/remove!:\n  subject: id:notebook/scratch/1\n  notebook: id:notebook/scratch\n  key: \"N1\"\n",
+        )
+        .await;
+        let entries = scratch_entries(&state, repo).await;
+        assert!(
+            keys_of(&entries, "id:notebook/scratch/1").is_empty(),
+            "no entry is left for the removed block: {entries:#?}"
+        );
+        assert_eq!(entries.len(), 2, "the other blocks stay: {entries:#?}");
+    }
+
+    /// A block inserted after a twice-entered block lands after the entry
+    /// the PAGE shows, which is the first one in key order.
+    ///
+    /// The neighbour's position used to be read under the default `last`
+    /// pick, which chose the stray entry near the end of the document, so
+    /// typing a paragraph after the first one placed it somewhere far below.
+    #[dialog_common::test]
+    async fn it_inserts_after_the_entry_the_page_shows() {
+        let (_app, state, key) = fresh_repo("test-notebook-insert-after-duplicate").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+        seed(&state, repo, DUPLICATE_FIRST).await;
+
+        // What `insert_notation` writes for one paragraph typed between
+        // the first and second blocks.
+        seed(
+            &state,
+            repo,
+            "block/insert!:\n  this: ?b0\n  notebook: id:notebook/scratch\n  source: \"Hello world\"\n  next: id:notebook/scratch/2\n  prev: id:notebook/scratch/1\n",
+        )
+        .await;
+        let sources = rows(
+            &state,
+            repo,
+            "notebook/block:\n  this: ?this\n  notebook: id:notebook/scratch\n  source: \"Hello world\"\n",
+        )
+        .await;
+        let inserted = sources
+            .first()
+            .and_then(|row| row.get("this"))
+            .and_then(|this| this.as_str())
+            .map(str::to_owned)
+            .expect("the inserted block exists");
+        let entries = scratch_entries(&state, repo).await;
+        let keys = keys_of(&entries, &inserted);
+        assert_eq!(keys.len(), 1, "one entry for the new block: {entries:#?}");
+        assert!(
+            "N1" < keys[0].as_str() && keys[0].as_str() < "N5",
+            "the new block sits between the first block's shown entry and the second block: {entries:#?}"
+        );
+    }
+
     /// A RUN of blocks inserted in ONE transaction lands in document order.
     ///
     /// This is the case a per-block command cannot express: block 2's
