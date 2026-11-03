@@ -1434,7 +1434,7 @@ mod tests {
             "the space must start unmounted for the pin to mean anything"
         );
 
-        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let state: crate::router::AppState = std::sync::Arc::new(crate::StateLock::new(tonk));
         let response = crate::router::transact::transact(
             axum::extract::State(state.clone()),
             axum::extract::Path(crate::router::transact::TransactPath {
@@ -1497,7 +1497,7 @@ mod tests {
                 .unwrap(),
             "the space must start unmounted for the pin to mean anything"
         );
-        (std::sync::Arc::new(tokio::sync::RwLock::new(tonk)), subject)
+        (std::sync::Arc::new(crate::StateLock::new(tonk)), subject)
     }
 
     /// After a worker update nothing is mounted, and the desktop app reads

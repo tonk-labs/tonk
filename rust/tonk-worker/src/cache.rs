@@ -29,6 +29,7 @@ const GENERATION_PREFIX: &str = "TONK_GENERATION_";
 /// across two languages.
 static BUILD_ID: OnceLock<String> = OnceLock::new();
 static ASSET_PATHS: OnceLock<HashSet<String>> = OnceLock::new();
+static ASSET_ORIGIN: OnceLock<String> = OnceLock::new();
 
 /// Record the build id for cache naming. Called once, from the
 /// worker binary's `activate` export, before any cache use.
@@ -40,6 +41,21 @@ pub fn set_build_id(id: String) {
 /// Called once beside [`set_build_id`] before any cache policy is evaluated.
 pub fn set_asset_paths(paths: Vec<String>) {
     let _ = ASSET_PATHS.set(paths.into_iter().collect());
+}
+
+/// Record the origin this worker's served assets come from, for a worker
+/// that is not the origin's service worker: an inline view's peer, in a
+/// Web Worker on the host's origin, reads the provider's library.
+pub fn set_asset_origin(origin: String) {
+    let _ = ASSET_ORIGIN.set(origin.trim_end_matches('/').to_owned());
+}
+
+/// `path` on the origin this worker's assets come from.
+pub(crate) fn asset_url(path: &str) -> String {
+    match worker_origin() {
+        Some(origin) if path.starts_with('/') => format!("{origin}{path}"),
+        _ => path.to_owned(),
+    }
 }
 
 fn build_id() -> &'static str {
@@ -61,6 +77,37 @@ fn shell_cache() -> String {
 
 fn generation_cache() -> String {
     format!("{GENERATION_PREFIX}{}", build_id())
+}
+
+/// Read a `/library/` file through the service worker's verified download
+/// path (`self.tonkBundledAsset`): this worker's downloads first, checked
+/// against the asset manifest stamped into the shim, then the network. A
+/// worker restarted before its generation is adopted already holds what the
+/// first boot downloaded, so its next boot need not wait on the network.
+///
+/// `None` when there is no such path: a development build (no stamped
+/// manifest), a Web Worker beside an inline view, or a response that is not
+/// a success (the shim's missing-asset 503). The caller then asks the
+/// network as before.
+pub(crate) async fn downloaded_library_bytes(path: &str) -> Option<Vec<u8>> {
+    if build_id() == "dev" || !path.starts_with("/library/") {
+        return None;
+    }
+    let bundled = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("tonkBundledAsset"))
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    let promise: js_sys::Promise = bundled
+        .call1(&JsValue::UNDEFINED, &JsValue::from_str(path))
+        .ok()?
+        .dyn_into()
+        .ok()?;
+    let response: Response = JsFuture::from(promise).await.ok()?.dyn_into().ok()?;
+    if !response.ok() {
+        return None;
+    }
+    let buffer = JsFuture::from(response.array_buffer().ok()?).await.ok()?;
+    Some(js_sys::Uint8Array::new(&buffer).to_vec())
 }
 
 /// Read bytes from this worker's immutable asset generation.
@@ -219,10 +266,27 @@ pub async fn immutable_cache_first(request: &Request) -> Result<JsValue, JsValue
 /// the worker reports no origin: caching foreign bytes is worse than a network
 /// fetch.
 fn worker_origin() -> Option<String> {
-    js_sys::global()
+    scope_origin().or_else(|| ASSET_ORIGIN.get().cloned())
+}
+
+/// The origin of the service worker this runs in, or `None` in any other
+/// scope.
+///
+/// Read without `web_sys`'s `location()`: a Cloudflare worker's global is
+/// a `ServiceWorkerGlobalScope` with no `location`, and the getter's
+/// `TypeError` would unwind through wasm and leave the async executor
+/// stuck, hanging every later request in the isolate.
+pub(crate) fn scope_origin() -> Option<String> {
+    let global = js_sys::global()
         .dyn_into::<ServiceWorkerGlobalScope>()
-        .ok()
-        .map(|global| global.location().origin())
+        .ok()?;
+    let location = js_sys::Reflect::get(&global, &JsValue::from_str("location")).ok()?;
+    if !location.is_object() {
+        return None;
+    }
+    js_sys::Reflect::get(&location, &JsValue::from_str("origin"))
+        .ok()?
+        .as_string()
         .filter(|origin| !origin.is_empty())
 }
 

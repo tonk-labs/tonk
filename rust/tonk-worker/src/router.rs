@@ -11,7 +11,6 @@ use ::axum::{
     routing::post,
     routing::put,
 };
-use tokio::sync::RwLock;
 
 use crate::worker::TonkState;
 
@@ -89,11 +88,13 @@ mod agent_link;
 #[cfg_attr(not(feature = "volatile-storage"), allow(dead_code, unused_imports))]
 mod hosted;
 mod join;
+mod view_access;
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 pub use agent_link::AgentLinkWorker;
 #[cfg(feature = "volatile-storage")]
 pub use hosted::{
-    HostedPeer, NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, mcp, view, writer_seed,
+    HostedPeer, NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, join as agent_join, mcp,
+    view, writer_seed,
 };
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 mod local_peer;
@@ -179,6 +180,11 @@ pub use session::{ClientRegistry, ClientState, SiteResponse};
 mod transact;
 pub use transact::{ProfileTransactPath, TransactPath, TransactResponse};
 
+// The views a hosted peer outlines for an agent; built where `hosted` is.
+#[cfg(any(feature = "volatile-storage", test))]
+#[cfg_attr(not(feature = "volatile-storage"), allow(dead_code))]
+mod view_tree;
+
 mod transfer;
 pub use transfer::ImportResponse;
 
@@ -197,6 +203,8 @@ mod navigate;
 mod site_request;
 mod site_select;
 
+mod diagnostics;
+
 mod command;
 pub use command::{CommandEnv, CommandOrigin, CommandProviders, command_providers, dispatch};
 
@@ -208,10 +216,14 @@ mod route_table;
 mod wire_compat;
 
 /// Shared application state containing profile and operator.
-pub type AppState = Arc<RwLock<TonkState>>;
+pub type AppState = Arc<crate::StateLock<TonkState>>;
 
 fn is_profile_scoped_path(path: &str) -> bool {
-    path.starts_with("/api/") && !matches!(path, "/api/identify" | "/api/health")
+    path.starts_with("/api/")
+        && !matches!(
+            path,
+            "/api/identify" | "/api/health" | "/api/inspect/diagnostics"
+        )
 }
 
 async fn profile_context_fence(
@@ -305,7 +317,7 @@ async fn root(State(_state): State<AppState>) -> &'static str {
 /// the SW entry point can call [`LspHub::shutdown`] when a newer
 /// worker version begins installing.
 pub fn api_router(state: TonkState) -> (Router, Arc<LspHub>) {
-    api_router_from_state(Arc::new(RwLock::new(state)))
+    api_router_from_state(Arc::new(crate::StateLock::new(state)))
 }
 
 /// Largest accepted `POST …/blob` body. The handler buffers the whole
@@ -320,7 +332,7 @@ pub const BLOB_UPLOAD_LIMIT: usize = 64 * 1024 * 1024;
 /// request path, before deciding whether to dispatch into the
 /// router or pass a fetch through to the network.
 pub fn api_router_with_state(state: TonkState) -> (Router, AppState, Arc<LspHub>) {
-    let state = Arc::new(RwLock::new(state));
+    let state = Arc::new(crate::StateLock::new(state));
     let (router, hub) = api_router_from_state(state.clone());
     (router, state, hub)
 }
@@ -333,6 +345,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
     let router = Router::new()
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
+        .route(
+            "/api/inspect/diagnostics",
+            get(diagnostics::read).delete(diagnostics::reset),
+        )
         .route(
             "/api/identity/root",
             get(identity::get).post(identity::save),
@@ -382,6 +398,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // Join an invite — creates a fresh replica or refreshes
         // access on an existing one. See `router/join.rs`.
         .route("/api/profile/join", post(join::join))
+        .route("/api/view/access", post(view_access::accept))
         .route(
             "/api/local-space-link/approve",
             post(local_space_link::approve),
@@ -2348,10 +2365,9 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_sweeps_a_tagged_repo_with_no_upstream_branches_as_a_no_op() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
         let repo = "test-bgsync-noupstream";
 
@@ -2369,10 +2385,9 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_treats_a_tag_for_an_unknown_repo_as_a_no_op() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
 
         // Nothing to retry for a repo that does not exist, so the
         // sweep resolves rather than rejecting.
@@ -2441,10 +2456,9 @@ pub mod tests {
     /// Returns the router for driving the HTTP surface.
     async fn repo_with_sibling_upstream(label: &str) -> (Router, String) {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
         let repo = put_repo(&app, label).await;
         let repo = repo.as_str();
@@ -4184,11 +4198,10 @@ employee:
     async fn it_reads_one_shot_via_the_reactor_query_effect() {
         use dialog_query::{ConceptQuery, Query as ConceptPattern};
         use std::sync::Arc;
-        use tokio::sync::RwLock;
         use tonk_schema::meta::Name;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-query-effect";
@@ -4507,10 +4520,9 @@ employee:
     #[dialog_common::test]
     async fn it_skips_broadcast_when_repoll_is_unchanged() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-noop-repoll";
@@ -4555,10 +4567,9 @@ employee:
     #[dialog_common::test]
     async fn it_prunes_dropped_subscriber_on_change() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-prune";
@@ -4611,12 +4622,11 @@ employee:
     #[dialog_common::test]
     async fn it_polls_outer_levels_before_nested_ones() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
         use tokio::sync::mpsc::unbounded_channel;
         use tonk_schema::query::Query as WireQuery;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
         let (repo, subject) = put_repo_info(&app, "test-reactor-poll-order").await;
 
@@ -4696,10 +4706,9 @@ employee:
     #[dialog_common::test]
     async fn it_records_the_level_a_subscription_request_names() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
         let repo = "test-reactor-level";
         let key = put_repo(&app, repo).await;
@@ -4749,10 +4758,9 @@ employee:
     #[dialog_common::test]
     async fn a_subscription_to_a_branch_an_earlier_release_wrote_opens_with_the_upgrading_frame() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
         let repo = "test-upgrading-frame";
         let key = put_repo(&app, repo).await;
@@ -4810,6 +4818,30 @@ employee:
         );
     }
 
+    /// A branch that is not here yet has no answer, so a subscription to
+    /// it opens with the `pending` notice, never with an empty set: an
+    /// empty set says "nothing matched", and a page that already shows
+    /// rows (a reconnect, a worker restart) would delete them only to
+    /// insert them again when the branch arrives.
+    #[dialog_common::test]
+    async fn a_subscription_to_a_branch_not_here_yet_opens_pending_not_empty() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let mut body = open_subscription_with_query(
+            &app,
+            "test-not-here-yet",
+            "main",
+            named_concept_wire_query(),
+        )
+        .await;
+        let first = body.next_event().await.expect("a first frame");
+        assert_eq!(
+            first,
+            serde_json::json!({ "control": "pending" }),
+            "the stream opens with the pending notice"
+        );
+    }
+
     /// One-shot `/query` projects every term named in the
     /// query's `terms` map into [`Conclusion::fields`]. The
     /// `Name` view binds `this` (the `id:<n>` name entity) and
@@ -4857,10 +4889,9 @@ employee:
     #[dialog_common::test]
     async fn it_keeps_subscription_live_across_pull() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-pull";
@@ -4940,10 +4971,9 @@ employee:
     #[dialog_common::test]
     async fn it_releases_sse_subscribers_on_shutdown() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-shutdown-releases";
@@ -5509,6 +5539,193 @@ mod approval_stall_diagnosis {
             !blocked,
             "queued writer behind remote sync blocks local identity reads"
         );
+    }
+
+    /// Requests that commit, export, import or hydrate a starter image
+    /// answer while a sync holds its read guard across a round trip
+    /// the remote never answers.
+    ///
+    /// Each of these used to take the state's write guard, which waits for
+    /// every reader to finish. With a sync in flight that is the whole
+    /// round trip, and while the writer waits, every request after it waits
+    /// too. The remote here accepts the connection and never answers, so a
+    /// route that still took the write guard would never answer at all.
+    #[test]
+    fn writing_routes_answer_while_a_sync_waits_on_its_remote() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(writing_routes_during_a_stalled_sync());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn writing_routes_during_a_stalled_sync() {
+        use super::repository::{
+            BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
+        };
+        use dialog_remote_ucan::UcanAddress;
+        use dialog_repository::SiteAddress;
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/ucan/", listener.local_addr().unwrap());
+        let (app, state, _lsp) = super::api_router_with_state(test_state().await);
+        let repo = put_repo(&app, "stalled-sync-writers").await;
+        let config = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(&endpoint))),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        let attached = send(
+            &app,
+            "POST",
+            &format!("/api/repository/{repo}/remote"),
+            "application/json",
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .await;
+        assert_eq!(attached.0, StatusCode::OK);
+
+        let syncing = super::sync::sync(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(super::sync::SyncPath {
+                repo: repo.clone(),
+                branch: "main".into(),
+            }),
+        );
+        tokio::pin!(syncing);
+        // Drive the sync until it waits on the remote with its read guard
+        // held, keeping every connection it opens unanswered.
+        let mut sockets = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            tokio::select! {
+                accepted = listener.accept() => sockets.push(accepted.unwrap().0),
+                result = &mut syncing => panic!("sync returned before reaching remote: {result:?}"),
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                    if !sockets.is_empty() && state.try_write().is_err() {
+                        break;
+                    }
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "the sync never waited on its remote holding its read guard"
+                    );
+                }
+            }
+        }
+
+        let branch = format!("/api/repository/{repo}/branch/main");
+        let requests: Vec<(&str, String, &str, Vec<u8>)> = vec![
+            (
+                "POST",
+                format!("{branch}/claim/assert/test:stalled/test/name"),
+                "text/plain",
+                b"asserted".to_vec(),
+            ),
+            (
+                "POST",
+                format!("{branch}/claim/retract/test:stalled/test/name"),
+                "text/plain",
+                b"asserted".to_vec(),
+            ),
+            (
+                "POST",
+                format!("{branch}/blob"),
+                "text/plain",
+                b"uploaded while a sync waits".to_vec(),
+            ),
+            (
+                "GET",
+                format!("{branch}/blob/blob:CmZq5URy2ucFKNyZCFUtHiNvEaUNK4Z8UstvzwbjREFG"),
+                "",
+                Vec::new(),
+            ),
+            ("GET", format!("{branch}/export"), "", Vec::new()),
+        ];
+        for (method, uri, content_type, body) in requests {
+            let answered = tokio::time::timeout(
+                Duration::from_secs(10),
+                send(&app, method, &uri, content_type, body),
+            )
+            .await;
+            let Ok((status, body)) = answered else {
+                panic!("{method} {uri} waited on the sync's round trip");
+            };
+            assert!(
+                status.is_success(),
+                "{method} {uri}: {status}: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        // The export's rows back in, onto a branch the upload above moved
+        // through another handle than the import's. The asset facts dialog
+        // records itself are left out: an import refuses its namespace.
+        let (_, exported) = send(&app, "GET", &format!("{branch}/export"), "", Vec::new()).await;
+        let exported = String::from_utf8(exported)
+            .unwrap()
+            .lines()
+            .filter(|row| !row.starts_with("dialog."))
+            .map(|row| format!("{row}\n"))
+            .collect::<String>()
+            .into_bytes();
+        let imported = tokio::time::timeout(
+            Duration::from_secs(10),
+            send(
+                &app,
+                "POST",
+                &format!("{branch}/import"),
+                "text/csv",
+                exported,
+            ),
+        )
+        .await
+        .expect("an import waited on the sync's round trip");
+        assert!(
+            imported.0.is_success(),
+            "import: {}: {}",
+            imported.0,
+            String::from_utf8_lossy(&imported.1)
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut syncing)
+                .await
+                .is_err(),
+            "the sync is still waiting on its remote"
+        );
+    }
+
+    async fn send(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> (StatusCode, Vec<u8>) {
+        let mut request = Request::builder().uri(uri).method(method);
+        if !content_type.is_empty() {
+            request = request.header("content-type", content_type);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, body.to_vec())
     }
 
     #[dialog_common::test]

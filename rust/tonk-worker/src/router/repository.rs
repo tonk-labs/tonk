@@ -1319,7 +1319,7 @@ async fn run_agent_handoff(
 // overlay. The marker also excludes matching facts supplied by space content.
 #[cfg(feature = "connection-invites")]
 struct ReadyConnectionInvite {
-    state: std::sync::Weak<tokio::sync::RwLock<TonkState>>,
+    state: std::sync::Weak<crate::StateLock<TonkState>>,
     subject: Did,
     issuer: [u8; 32],
     link: [u8; 32],
@@ -2527,13 +2527,7 @@ async fn invite_url(
 pub(super) fn worker_origin() -> Option<String> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
-        use wasm_bindgen::JsCast;
-
-        js_sys::global()
-            .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
-            .ok()
-            .map(|global| global.location().origin())
-            .filter(|origin| !origin.is_empty())
+        crate::cache::scope_origin()
     }
     // A native host serves no origin of its own; the access-service
     // address must come from recorded facts (an account provider) or
@@ -3649,7 +3643,11 @@ pub(super) async fn enable_sync_inner(
     key: &str,
     remote: &str,
 ) -> Result<(), RepositoryError> {
-    let tonk = state.write().await;
+    // A read guard, as the other callers of the lock-free core take: the
+    // attach provisions the space with the access service and records the
+    // mount in the account directory, both round trips, and a write guard
+    // held across them stalls every other request.
+    let tonk = state.read().await;
     enable_sync_for_repository(&tonk, key, remote, true).await
 }
 
@@ -5562,15 +5560,19 @@ pub(super) async fn fetch_library_bytes(url: &str) -> Result<Vec<u8>, TonkWorker
     {
         return Ok(bytes);
     }
+    if let Some(bytes) = crate::cache::downloaded_library_bytes(url).await {
+        return Ok(bytes);
+    }
 
     let init = RequestInit::new();
     init.set_cache(RequestCache::NoStore);
-    let request = Request::new_with_str_and_init(url, &init)
+    let request = Request::new_with_str_and_init(&crate::cache::asset_url(url), &init)
         .map_err(|e| TonkWorkerError::Internal(format!("standard library request: {e:?}")))?;
 
-    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
+    // The origin's service worker, or a Web Worker beside an inline view.
+    let global: web_sys::WorkerGlobalScope = js_sys::global()
         .dyn_into()
-        .map_err(|_| TonkWorkerError::Internal("not in a service-worker scope".to_owned()))?;
+        .map_err(|_| TonkWorkerError::Internal("not in a worker scope".to_owned()))?;
     let response: Response = JsFuture::from(global.fetch_with_request(&request))
         .await
         .and_then(|v| v.dyn_into())
@@ -6683,7 +6685,10 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
     // harness that serves no library) costs a degraded Hub until the
     // next attempt — not a worker that refuses to boot or a profile
     // switch that dies half-way.
-    if let Err(error) = reconcile_profile_library(tonk).await {
+    //
+    // Bounded, because every request waits for boot: a network that never
+    // answers must cost a degraded Hub, not a worker that never boots.
+    if let Err(error) = reconcile_profile_library_within(tonk, PROFILE_LIBRARY_BOOT_WAIT).await {
         log!("profile library reconciliation skipped: {error}");
     }
     // A fresh state, a fresh overlay: say whether this device is linked
@@ -6696,6 +6701,33 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     Ok(())
+}
+
+/// How long a boot waits for the profile library's bytes before it boots
+/// without reconciling them.
+const PROFILE_LIBRARY_BOOT_WAIT: web_time::Duration = web_time::Duration::from_secs(5);
+
+/// [`reconcile_profile_library`], giving up when the library's bytes have
+/// not arrived within `limit`. Only the acquisition is bounded: once the
+/// bytes are here, the reconciliation's commits run to the end.
+pub(crate) async fn reconcile_profile_library_within(
+    tonk: &TonkState,
+    limit: web_time::Duration,
+) -> Result<ProfileLibraryOutcome, RepositoryError> {
+    use futures_util::future::{Either, select};
+    let acquire = tonk.profile_library.acquire();
+    let deadline = crate::sleep(limit);
+    futures_util::pin_mut!(acquire, deadline);
+    let prepared = match select(acquire, deadline).await {
+        Either::Left((prepared, _)) => prepared?,
+        Either::Right(_) => {
+            return Err(RepositoryError::Internal(format!(
+                "the profile library did not arrive within {} s",
+                limit.as_secs()
+            )));
+        }
+    };
+    reconcile_prepared_profile_library(tonk, prepared).await
 }
 
 /// Fetch and reconcile the lean profile library onto profile `main`.
@@ -8258,7 +8290,9 @@ pub async fn attach_remote(
             .map_err(|e| TonkWorkerError::Router(format!("Invalid request body: {e}")))?
     };
 
-    let tonk = state.write().await;
+    // A read guard: provisioning is a round trip to the access service,
+    // and the remote configuration commits serialize on their branch.
+    let tonk = state.read().await;
 
     let repository = tonk
         .profile
@@ -9284,7 +9318,7 @@ mod invite_chain_tests {
         )
         .await
         .expect("the root persists with a recipient");
-        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let state: crate::router::AppState = std::sync::Arc::new(crate::StateLock::new(tonk));
 
         let key = create_space_inner(&state, "Invite Chain", None)
             .await

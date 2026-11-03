@@ -108,10 +108,11 @@ The load lifecycle has four cases:
 - A real warm replacement activates through `skipWaiting()`. Activation
   replaces the controller of already-controlled documents, and each
   update-aware page observes `controllerchange`. A page whose
-  `tonk-page-build` matches the successor's `/api/health` `page` keeps running
-  and remounts each top-level `<tonk-site>`, so its guest boots from the new
-  worker. Any other page reloads once, so the document, shell, and controller
-  agree. A first-install document adopts later successors the same way.
+  `tonk-page-build` matches the successor's `/api/health` `page` keeps running,
+  and so does every guest in it: their subscriptions reconnect to the new
+  worker, and a guest runs the new guest code the next time a navigation or a
+  load builds it. Any other page reloads once, so the document, shell, and
+  controller agree. A first-install document adopts later successors the same way.
 
 The page build is stamped over every published resource except the guest
 runtime, the lazily fetched editor bundles, and library data. Two builds with
