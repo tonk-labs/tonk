@@ -122,5 +122,8 @@ jq -n \
       XDG_DATA_HOME:($out+"/cli-data"), TONK_UNSAFE_ALLOW_DEVICE_ROOT:"1",
       TONK_NO_UPDATE_CHECK:"1", DO_NOT_TRACK:"1"}}' > "$RUN_DIR/config.json"
 
-node "$ROOT/bench/trace/trace.mjs" "$RUN_DIR/config.json" | tee "$RUN_DIR/summary.txt"
+# TRACE_DRIVER picks what runs against the stack: the trace (default) or
+# bench/stability/stability.mjs, which checks the invariants.
+DRIVER="${TRACE_DRIVER:-$ROOT/bench/trace/trace.mjs}"
+node "$DRIVER" "$RUN_DIR/config.json" | tee "$RUN_DIR/summary.txt"
 echo "trace: artifacts in $RUN_DIR" >&2
