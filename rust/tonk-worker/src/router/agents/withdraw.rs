@@ -175,8 +175,8 @@ pub(crate) async fn publish(
 
 /// The public chain `space -> ... -> link key -> agent` that ends in
 /// `leaf`, rebuilt from the certificates the agent space retains. Each
-/// step up takes a certificate for `space` to the current issuer whose
-/// command covers the one below it.
+/// step up takes a certificate to the current issuer, for `space` or a
+/// powerline, whose command covers the one below it.
 pub(crate) async fn evidence(
     tonk: &TonkState,
     agent: &Did,
@@ -210,16 +210,26 @@ pub(crate) async fn evidence(
             .perform(&tonk.operator)
             .await
             .map_err(failure)?;
+        let count = held.len();
         let above = held
             .into_iter()
             .filter_map(|UcanDelegation(chain)| chain.proofs().last().cloned())
             .find(|parent| {
-                *parent.subject() == subject
+                // A device or account hop on the link's path is often a
+                // powerline, which names no subject of its own.
+                (*parent.subject() == subject || *parent.subject() == Subject::Any)
                     && parent.audience() == below.issuer()
                     && parent.expiration().is_none_or(|at| at.to_unix() > now)
                     && covers(parent.command().segments(), below.command().segments())
             })
-            .ok_or_else(|| failure("the agent space does not hold the link's chain"))?;
+            .ok_or_else(|| {
+                failure(format!(
+                    "the agent space does not hold the link's chain: nothing of its {count} \
+                     grant(s) to {} covers {} for {space}",
+                    below.issuer(),
+                    below.command(),
+                ))
+            })?;
         path.insert(0, above);
     }
     let mut certificates = path.into_iter();

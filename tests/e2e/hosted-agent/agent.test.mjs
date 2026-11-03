@@ -337,8 +337,10 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       );
       assert.equal(removal.pending, true, 'a link grant asks for the passkey');
       assert.deepEqual(removal, { pending: true, removed: true }, JSON.stringify(removal));
-      // The hosted agent may still hold the grants it pulled; the access
-      // service refuses them.
+      // Here the hosted agent has already pulled the retraction, so it
+      // refuses on its own list. That the access service refuses cached
+      // copies of the grants is checked natively in
+      // `the_account_withdraws_a_link_grant_as_its_agent`.
       const denied = await client.callTool({
         name: 'tonk_query',
         arguments: { space: subject, document: 'concept:\n' },

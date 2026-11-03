@@ -914,6 +914,56 @@ concept!: &writer-note
         fixture.stop().await;
     }
 
+    /// A share link a member made through their device, as Tonk makes
+    /// one: `space -> member -> device` (a powerline, naming no subject)
+    /// `-> link key`, the key's seed beside it.
+    async fn member_share_link(space: &Ed25519Signer, home: &url::Url) -> tonk_invite::Invite {
+        use dialog_credentials::Signer;
+        use dialog_ucan_core::DelegationBuilder;
+        use dialog_ucan_core::subject::Subject as UcanSubject;
+        let member = Ed25519Signer::generate().await.unwrap();
+        let device = Ed25519Signer::generate().await.unwrap();
+        let seed: [u8; 32] = rand::random();
+        let key = Ed25519Signer::import(&seed).await.unwrap();
+        let first = DelegationBuilder::new()
+            .issuer(Signer::from(space.clone()))
+            .audience(&member.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .meta(tonk_invite::home_address_meta(home))
+            .try_build()
+            .await
+            .unwrap();
+        let second = DelegationBuilder::new()
+            .issuer(Signer::from(member))
+            .audience(&device.did())
+            .subject(UcanSubject::Any)
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let third = DelegationBuilder::new()
+            .issuer(Signer::from(device))
+            .audience(&key.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let chain = DelegationChain::new(first)
+            .push(second)
+            .unwrap()
+            .push(third)
+            .unwrap();
+        tonk_invite::Invite::new(
+            chain,
+            tonk_invite::InviteAudience::Open { seed },
+            Some(home.clone()),
+        )
+        .await
+        .unwrap()
+    }
+
     /// A member's share link to `space`, as `tonk_join_space` reads one:
     /// `space -> link key` for every command, syncing at `home`, the key's
     /// seed beside it.
@@ -1250,10 +1300,11 @@ concept!: &writer-note
             .unwrap();
         let agent_session = session(&agent_signer, "recipient", &fixture.remote).await;
 
-        // The link's key grants read and write straight to the agent, as
-        // the chat card's join does, and grants read again, as a second
+        // The link, made through a member's device, so its chain has a
+        // powerline hop. Its key grants read and write straight to the
+        // agent, as the chat card's join does, and grants read again, as a second
         // join from the same link does: every leaf is live.
-        let invite = share_link(&space, &fixture.remote).await;
+        let invite = member_share_link(&space, &fixture.remote).await;
         let link_key = Signer::from(invite.signer().await.unwrap().unwrap());
         let mut chains = Vec::new();
         for access in [AgentAccess::ReadWrite, AgentAccess::Read] {

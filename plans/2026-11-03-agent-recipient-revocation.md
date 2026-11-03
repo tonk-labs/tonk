@@ -103,3 +103,15 @@ invitation for everyone. UI copy and the PR say so.
 - Not covered natively: loading the account from the custody cell
   (`custody::held_account`), the passkey prompt, and the page. The native
   test calls `withdraw` with the account root directly.
+- Browser (local stack, `tests/e2e/hosted-agent/local/stack.sh`: native
+  access service, trunk, wrangler dev, Chromium 1228 with a virtual PRF
+  passkey): the e2e step "the agent joins a shared space from a link, read
+  only, then is revoked" passed twice. The card's join, the list, the
+  passkey continuation (custody cell included) and the acknowledged removal
+  ran for real. Its first run failed: a link Tonk makes has a device
+  powerline on its chain, which the evidence walk skipped. Fixed, and the
+  native test now uses such a link (it fails without the fix). The later
+  view steps fail locally because the stack does not serve
+  `view-peer/tonk_view_peer.js` (built by the publish workflow only).
+- The e2e sees the hosted agent refuse on its own list once the retraction
+  syncs; service refusal of cached grants is shown natively.
