@@ -314,11 +314,17 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       const timing = response.headers.get('server-timing') ?? '';
       console.log(`trace ${trace}: ${timing}`);
       assert.match(trace, /^[0-9a-f]{16}$/, 'the call answered no trace id');
+      // A failed call answers only the steps it reached, so say why first.
+      const { result } = await response.json();
+      assert.equal(
+        result?.isError,
+        false,
+        `trace ${trace} failed: ${JSON.stringify(result?.content).slice(0, 600)}`,
+      );
       const steps = timing.split(',').map((entry) => entry.trim().split(';')[0]);
       for (const name of ['access', 'writer', 'writer.pull', 'writer.eval', 'total']) {
         assert.ok(steps.includes(name), `${name} missing from ${timing}`);
       }
-      assert.equal((await response.json()).result?.isError, false);
     });
 
     // A link the person shares in the chat, joined as the card joins it:
