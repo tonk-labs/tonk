@@ -168,7 +168,7 @@ The account capture entry point accepts no arbitrary JSON properties.
 
 Every web event additionally carries an `environment` super property
 derived from the hostname: `production` (tonk.network), `staging`
-(staging.tonk.xyz), or `dev` (anything else). The marketing site's
+(staging.tonk.xyz or tonk.spot), or `dev` (anything else). The marketing site's
 own snippet registers `environment = "website"` in its repo, so all
 surfaces share one filterable dimension within the PostHog project.
 
