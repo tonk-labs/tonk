@@ -5947,6 +5947,56 @@ mod approval_stall_diagnosis {
             .expect("the probe answers once the service hangs up");
     }
 
+    /// Turning sync on for a space provisions it with the access service, a
+    /// round trip. While that service is silent, the attach holds no guard
+    /// over the state.
+    #[test]
+    fn enabling_sync_holds_no_guard_while_it_provisions() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(enabling_sync_during_a_stalled_provision());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn enabling_sync_during_a_stalled_provision() {
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider = format!("http://{}/ucan/", listener.local_addr().unwrap());
+        let (app, state, _lsp) = super::api_router_with_state(test_state().await);
+        // Created before the account is served, so it is local-only.
+        let key = put_repo(&app, "synced-while-the-service-stalls").await;
+        served_by(&*state.read().await, &provider).await;
+
+        let mut enabling = Box::pin(super::repository::enable_sync_inner(
+            &state, &key, &provider,
+        ));
+        let socket = tokio::select! {
+            accepted = listener.accept() => accepted.unwrap().0,
+            _ = &mut enabling => panic!("sync was turned on without asking the service"),
+            _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                panic!("turning sync on never reached the service")
+            }
+        };
+        assert!(
+            state.try_write().is_ok(),
+            "turning sync on holds a guard over the state while the service answers"
+        );
+        drop(socket);
+        drop(listener);
+        let _ = tokio::time::timeout(Duration::from_secs(30), enabling)
+            .await
+            .expect("turning sync on answers once the service hangs up");
+    }
+
     /// What used to keep a sync from writing into a space being removed
     /// was the write guard the removal took, which waited out every sync.
     /// A sync now holds no guard, so the space's own gate does it: removing

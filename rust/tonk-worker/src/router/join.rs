@@ -487,7 +487,7 @@ pub async fn join(
     // A read guard, as the page's join command takes: the join is network
     // bound (a pull, validation and roster reads against the remote), and
     // a write guard held across it stalls every other request.
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     let outcome = join_invite(&tonk, &body.url).await?;
     log!(
         "POST /api/profile/join -> subject {} (key {})",
@@ -2065,7 +2065,7 @@ async fn run_join(env: &crate::router::CommandEnv, page: &str, link: String) {
     use tonk_schema::command::{JoinFailure as JoinFailureFact, JoinStatus};
     use tonk_schema::domain::join::{Kind, Reason, Status};
 
-    let tonk = env.state().read().await;
+    let tonk = env.state().read().await.clone();
 
     // Acquire the profile meta branch — the `/join` view reads
     // `tonk:join/status` from here; overlay writes + their poll target it.
