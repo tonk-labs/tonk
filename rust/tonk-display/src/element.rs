@@ -634,9 +634,10 @@ impl CustomElement for TonkDisplay {
             // the first frame per tag is a fresh snapshot, so stale rows
             // from the prior context must not survive as a delta base.
             s.retained.clear();
-            // Tear down any mounted slide / carousel chrome so the
-            // restart starts from a clean host.
-            clear_host(&host, &mut s, names::DISPLAY_REMOVED_RESTART);
+            // Forget the mounted slides so the restart mounts its own,
+            // but keep what they show until the new flow has something
+            // in its place.
+            retire_host(&host, &mut s);
         }
         state::set(&host, State::Loading);
         start_flows(&host, state);
@@ -1099,6 +1100,19 @@ fn clear_host(host: &Element, inner: &mut Inner, reason: &'static str) {
     }
 }
 
+/// Forget every mounted slide and chrome as [`clear_host`] does, but leave
+/// what they rendered on screen until the restarted flow reaches a state
+/// of its own (see [`state::retain_rendered`]). A subject change, a model
+/// frame and a renamed referent all restart the flow this way, so a
+/// switch replaces what the person sees instead of emptying it first.
+fn retire_host(host: &Element, inner: &mut Inner) {
+    inner.slides.clear();
+    inner.carousel = None;
+    inner.notation_source = None;
+    inner.notation_item = None;
+    state::retain_rendered(host);
+}
+
 /// Remove every direct child of `host` that the renderer mounted,
 /// keeping the embedder's authored `[slot]` children. Replaces a blanket
 /// `set_inner_html("")` so state-slot content survives a restart.
@@ -1315,7 +1329,7 @@ async fn start_downstream(
         let mut s = state.borrow_mut();
         s.view_sub.take();
         s.entity_sub.take();
-        clear_host(host, &mut s, names::DISPLAY_REMOVED_MODEL);
+        retire_host(host, &mut s);
         // Subscriptions can deliver their first frame before subscribe returns.
         // Publish the complete rendering context before opening either stream.
         s.directory = directory;
@@ -1503,7 +1517,7 @@ fn handle_name_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
         s.downstream_generation = s.downstream_generation.wrapping_add(1);
         s.last_frame.clear();
         s.retained.clear();
-        clear_host(host, &mut s, names::DISPLAY_REMOVED_NAME);
+        retire_host(host, &mut s);
     }
     state::set(host, State::Loading);
     start_flows(host, state.clone());
@@ -6864,6 +6878,77 @@ mod tests {
             assert!(
                 display.query_selector("tonk-view").unwrap().is_none(),
                 "the stale template is unmounted",
+            );
+        }
+
+        // Pointing a display at another subject keeps what it shows,
+        // inert, until the new subject has something in its place, and
+        // then swaps in one step: no empty moment between the two.
+        #[dialog_common::test]
+        async fn it_keeps_what_it_shows_until_a_new_subject_answers() {
+            let host = FakeHost::install_with_model(
+                // One-shots: the model name lookup for each subject.
+                vec![name_row("did:key:zModel"), name_row("did:key:zModel")],
+                Some(model_concept_frame()),
+            );
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
+            let entity_subs = |host: &FakeHost| {
+                host.subscribe_tags()
+                    .iter()
+                    .filter(|tag| tag.as_str() == "entity")
+                    .count()
+            };
+            for _ in 0..200 {
+                if entity_subs(&host) == 1 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "9")])]));
+            host.push_frame("view", &view_frame("<h1>{count}</h1>"));
+            let shown = await_selector(&display, "tonk-view")
+                .await
+                .expect("the first subject renders");
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("ready")
+            );
+
+            display.set_attribute("entity", "id:other-counter").unwrap();
+            assert!(shown.is_connected(), "the old subject stays on screen");
+            assert!(shown.has_attribute("inert"), "and cannot be acted on");
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("ready"),
+                "no loading state is painted over it",
+            );
+            assert_eq!(display.get_attribute("aria-busy").as_deref(), Some("true"));
+
+            for _ in 0..200 {
+                if entity_subs(&host) == 2 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert!(
+                shown.is_connected(),
+                "still shown while the new subject resolves"
+            );
+            host.push_frame("view", &view_frame("<h1>{count}</h1>"));
+            host.push_frame("entity", &rows(&[("id:other-counter", &[("count", "4")])]));
+            for _ in 0..200 {
+                if !shown.is_connected() {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert!(!shown.is_connected(), "the answer replaces the old subject");
+            let views = display.query_selector_all("tonk-view").unwrap();
+            assert_eq!(views.length(), 1, "one view, the new subject's");
+            assert!(display.get_attribute("aria-busy").is_none());
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("ready")
             );
         }
 

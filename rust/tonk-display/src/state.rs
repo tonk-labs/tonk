@@ -162,6 +162,84 @@ pub fn state_for(kind: ErrorKind) -> State {
 #[cfg(target_arch = "wasm32")]
 const ERROR_CALLOUT_ATTR: &str = "data-tonk-display-error";
 
+/// Marks a rendered child a restarted flow kept on screen until it has a
+/// replacement. See [`retain_rendered`].
+#[cfg(target_arch = "wasm32")]
+const RETAINED_ATTR: &str = "data-tonk-display-retained";
+
+/// Keep what `host` renders on screen while its flow restarts, instead of
+/// removing it before the new flow has anything to show.
+///
+/// Every rendered child (not an embedder's `[slot]` child) is marked
+/// retained and made `inert`, since it may belong to the subject the
+/// display no longer shows, and the host is marked `aria-busy`. The next
+/// state other than loading or upgrading drops them: [`set`],
+/// [`set_absence`] and [`set_error`] all do. Returns how many children
+/// are retained.
+#[cfg(target_arch = "wasm32")]
+pub fn retain_rendered(host: &Element) -> usize {
+    let mut retained = 0;
+    let mut cursor = host.first_element_child();
+    while let Some(child) = cursor {
+        cursor = child.next_element_sibling();
+        if child.has_attribute("slot") {
+            continue;
+        }
+        let _ = child.set_attribute(RETAINED_ATTR, "");
+        let _ = child.set_attribute("inert", "");
+        retained += 1;
+    }
+    if retained > 0 {
+        let _ = host.set_attribute(RETAINED_ATTR, "");
+        let _ = host.set_attribute("aria-busy", "true");
+    }
+    retained
+}
+
+#[cfg(target_arch = "wasm32")]
+fn has_retained(host: &Element) -> bool {
+    host.has_attribute(RETAINED_ATTR)
+}
+
+/// Remove the children [`retain_rendered`] kept, now that the flow has
+/// reached `state`. A state that shows the subject (its rows, or the
+/// absence the view or the embedder words) replaces them; a loud state
+/// removes them, and that is counted as a restart removal.
+#[cfg(target_arch = "wasm32")]
+fn drop_retained(host: &Element, state: State) {
+    if matches!(state, State::Loading | State::Upgrading) || !has_retained(host) {
+        return;
+    }
+    let _ = host.remove_attribute(RETAINED_ATTR);
+    let _ = host.remove_attribute("aria-busy");
+    let Ok(children) = host.query_selector_all(&format!(":scope > [{RETAINED_ATTR}]")) else {
+        return;
+    };
+    let removed = children.length();
+    for i in 0..removed {
+        if let Some(child) = children.item(i).and_then(|n| n.dyn_into::<Element>().ok()) {
+            child.remove();
+        }
+    }
+    if removed == 0 {
+        return;
+    }
+    let replaced = matches!(
+        state,
+        State::Ready
+            | State::DefaultView
+            | State::NoModel
+            | State::NoView
+            | State::NoEntity
+            | State::Empty
+    );
+    tonk_common::diagnostics::count(if replaced {
+        tonk_common::diagnostics::names::DISPLAY_REPLACED_RESTART
+    } else {
+        tonk_common::diagnostics::names::DISPLAY_REMOVED_RESTART
+    });
+}
+
 /// Set `data-state` on `host`. Idempotent — safe to call repeatedly
 /// with the same state.
 ///
@@ -170,6 +248,13 @@ const ERROR_CALLOUT_ATTR: &str = "data-tonk-display-error";
 /// or a recovery to `ready` never leaves a stale red box behind.
 #[cfg(target_arch = "wasm32")]
 pub fn set(host: &Element, state: State) {
+    // Content a restarted flow kept stays up, with the state it had, until
+    // the flow reaches a state of its own: a loading moment over it would
+    // only paint a ghost on top of what the person is reading.
+    if state == State::Loading && has_retained(host) {
+        return;
+    }
+    drop_retained(host, state);
     let _ = host.set_attribute("data-state", state.as_str());
     if !state.is_loud() {
         remove_error_callout(host);
@@ -278,6 +363,7 @@ fn remove_default_notice(host: &Element) {
 /// `malformed`) so `data-state` and the callout stay in step.
 #[cfg(target_arch = "wasm32")]
 pub fn set_error(host: &Element, state: State, title: &str, message: &str) {
+    drop_retained(host, state);
     let _ = host.set_attribute("data-state", state.as_str());
     remove_error_callout(host);
     remove_absence_callout(host);
@@ -411,6 +497,7 @@ pub fn set_upgrading(host: &Element) {
 /// (offline/unauthorized/malformed).
 #[cfg(target_arch = "wasm32")]
 pub fn set_absence(host: &Element, state: State, label: &str, notation: &str) {
+    drop_retained(host, state);
     let _ = host.set_attribute("data-state", state.as_str());
     // A prior loud error must not linger under an absence.
     remove_error_callout(host);
