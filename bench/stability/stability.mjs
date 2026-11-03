@@ -49,7 +49,12 @@ function within(promise, fallback, ms = 2_000) {
   return Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(fallback), ms))]);
 }
 
-const browser = await chromium.launch();
+// CI passes the Nix chromium in CHROME; locally Playwright's own browser.
+const browser = await chromium.launch(
+  process.env.CHROME
+    ? { executablePath: process.env.CHROME, args: ["--no-sandbox", "--disable-dev-shm-usage"] }
+    : {},
+);
 const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
 const page = await context.newPage();
 const cdp = await context.newCDPSession(page);
