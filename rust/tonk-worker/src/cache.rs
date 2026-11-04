@@ -50,6 +50,13 @@ pub fn set_asset_origin(origin: String) {
     let _ = ASSET_ORIGIN.set(origin.trim_end_matches('/').to_owned());
 }
 
+/// Whether this worker has an origin its served assets come from: its
+/// service worker's, or one it was given. A hosted peer in a Durable
+/// Object has neither.
+pub(crate) fn has_asset_origin() -> bool {
+    worker_origin().is_some()
+}
+
 /// `path` on the origin this worker's assets come from.
 pub(crate) fn asset_url(path: &str) -> String {
     match worker_origin() {

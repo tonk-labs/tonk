@@ -1746,7 +1746,7 @@ concept!: &mcp-note
             ask["fine"]
                 .as_str()
                 .unwrap()
-                .starts_with("From the Tonk library, prose"),
+                .starts_with("From the Tonk library, `prose"),
             "{ask}"
         );
         let arguments = ask["answers"][0]["arguments"].clone();
