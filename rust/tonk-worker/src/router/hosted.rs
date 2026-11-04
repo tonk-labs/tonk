@@ -26,6 +26,7 @@ pub mod access;
 pub mod card;
 pub mod in_agent;
 pub mod join;
+pub mod library;
 pub mod mcp;
 pub mod propose;
 pub mod telemetry;
@@ -238,6 +239,57 @@ impl HostedPeer {
     ) -> Result<super::UndoReport, TonkWorkerError> {
         let state = self.state.read().await;
         super::undo::undo_change(&state, space.as_ref(), "main", revision).await
+    }
+
+    /// Run the library command `command` on the mounted space `space`, on
+    /// its `main`, as of the replica here, and answer what came of it with
+    /// the component's catalog entry. Awaited, unlike a command's
+    /// dispatch: the writer pushes what it wrote. See [`library`].
+    pub async fn library(
+        &self,
+        space: &Did,
+        command: &library::Command,
+    ) -> Result<serde_json::Value, String> {
+        let state = self.state.read().await;
+        let component: dialog_artifacts::Entity = command
+            .component
+            .parse()
+            .map_err(|error| format!("'{}' is not a component: {error}", command.component))?;
+        let this: dialog_artifacts::Entity =
+            format!("tonk:library/request/{:032x}", rand::random::<u128>())
+                .parse()
+                .map_err(|error| format!("request entity: {error}"))?;
+        let time = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs_f64() * 1000.0)
+            .unwrap_or_default();
+        let outcome = super::library::run_now(
+            &state,
+            space.as_ref(),
+            "main",
+            super::library::Request {
+                this,
+                component: component.clone(),
+                time,
+                action: command.action,
+            },
+        )
+        .await?;
+        let catalog = super::library::catalog(&state, space.as_ref(), "main", &component).await?;
+        Ok(library::answered(&outcome, &catalog))
+    }
+
+    /// The catalog entry of `component` on the mounted space `space`.
+    pub async fn library_catalog(
+        &self,
+        space: &Did,
+        component: &str,
+    ) -> Result<super::library::Catalog, String> {
+        let state = self.state.read().await;
+        let component: dialog_artifacts::Entity = component
+            .parse()
+            .map_err(|error| format!("'{component}' is not a component: {error}"))?;
+        super::library::catalog(&state, space.as_ref(), "main", &component).await
     }
 
     /// The DID this peer signs as.

@@ -189,7 +189,7 @@ pub struct Context {
 
 impl Context {
     /// The space in Tonk.
-    fn in_tonk(&self) -> String {
+    pub(super) fn in_tonk(&self) -> String {
         format!(
             "{}/space/{}",
             self.origin.trim_end_matches('/'),

@@ -2794,15 +2794,46 @@ view!:
 # The library's components a space can install, each beside the others
 # and beside the space's seed: issue, meta, notebook, prose, table,
 # version-control (every library file but `core.yaml`, which every space
-# runs, and `profile.yaml`, the profile's). An install is recorded like the seed's and brought up to
-# date the same way when the space mounts; installing one already there
-# updates it, or does nothing when it is current.
+# runs, and `profile.yaml`, the profile's). An install is recorded like the
+# seed's and brought up to date the same way when the space mounts;
+# installing one already there updates it, or does nothing when it is
+# current.
+#
+# The catalog is readable before anything is installed, so an agent can
+# search it and an install ask can say what an install would change:
+#
+#   library/component:
+#     name: ?name
+#     label: ?label
+#     version: ?version
+#
+#   library/manifest:
+#     this: tonk:library/table
+#     adds: ?adds
 concept!: &library/component
   description: A library component a space can install.
   with:
     name:
       description: The component's name, the file it is in without `.yaml`.
       the: xyz.tonk.library.component/name
+      as: text
+    label:
+      description: What a person calls the component, e.g. "Version control".
+      the: xyz.tonk.library.component/label
+      as: text
+    version:
+      description: >
+        The component's release, e.g. "1.0". Raise it when a change to the
+        component's file changes what an install adds.
+      the: xyz.tonk.library.component/version
+      as: text
+  maybe:
+    agents:
+      description: >
+        The lines installing the component adds to the space's AGENTS.md
+        (`tonk/agents`), one per line, so agents know how to use it.
+        Uninstalling removes exactly these lines again.
+      the: xyz.tonk.library.component/agents
       as: text
 
 view!:
@@ -2814,26 +2845,117 @@ view!:
 library/component!:
   this: tonk:library/issue
   name: "issue"
+  label: "Issues"
+  version: "1.0"
+  agents: |
+    Track work as `issue` records (title, description, type, priority, status); query `issue:` before adding one.
 
 library/component!:
   this: tonk:library/meta
   name: "meta"
+  label: "Branches"
+  version: "1.0"
+  agents: |
+    Read which branches this space has and what each one tracks through `branch`, `branch/upstream` and `replica`.
 
 library/component!:
   this: tonk:library/notebook
   name: "notebook"
+  label: "Notebook"
+  version: "1.0"
+  agents: |
+    Write notebooks as blocks with `block/insert`, `block/edit`, `block/move` and `block/remove`, never by asserting `notebook/block` directly.
+    A `dialog-yaml` fence in a notebook block is a live cell: it is evaluated against the space.
 
 library/component!:
   this: tonk:library/prose
   name: "prose"
+  label: "Prose"
+  version: "1.0"
+  agents: |
+    Edit `prose` documents (markdown) with `prose/edit`.
 
 library/component!:
   this: tonk:library/table
   name: "table"
+  label: "Table"
+  version: "1.0"
+  agents: |
+    Keep spreadsheets as `table` workbooks: one `table/cell` per non-empty cell, holding raw input only (`=B2*C2`, `3.5`).
+    Change cells with `table/create-cell`, `table/edit-cell` and `table/clear-cell`; computed values are derived, never stored.
 
 library/component!:
   this: tonk:library/version-control
   name: "version-control"
+  label: "Version control"
+  version: "1.0"
+  agents: |
+    Read the space's history through `version-control/revision`; comment on a revision with `version-control/comment-on`.
+
+# What each component adds, one line per concept, command and view its
+# file declares: `concept <name>`, `command <name>`, or `view <model>
+# <slot>`. One fact per component rather than a row per part, so every
+# space's seed stays small. Generated from the component files, not
+# written by hand: `cargo test -p tonk-worker --test standard_library`
+# fails when this block is out of date, and `TONK_BLESS_LIBRARY=1`
+# rewrites it.
+concept!: &library/manifest
+  description: What a library component adds to a space when it is installed.
+  with:
+    adds:
+      description: >
+        One line per thing it adds: "concept <name>", "command <name>", or
+        "view <model> <slot>" for a view of `model` in `slot`.
+      the: xyz.tonk.library.manifest/adds
+      as: text
+
+# BEGIN library manifest (generated)
+library/manifest!: { this: tonk:library/issue, adds: "concept issue\n" }
+library/manifest!: { this: tonk:library/meta, adds: "concept replica\nconcept branch\nconcept branch/upstream\nconcept replica/active-branch\n" }
+library/manifest!: { this: tonk:library/notebook, adds: "concept notebook\nconcept notebook/named\nconcept notebook/blocks\nconcept block/position\nconcept notebook/block\nconcept block/chain\nview notebook ui\nview notebook directory\nview notebook/block directory\nconcept notebook/index-route\nview tonk:notebook/index-route ui\nconcept notebook/route\nview tonk:notebook/route ui\ncommand block/insert\ncommand notebook/retitle\ncommand block/edit\ncommand block/place\ncommand block/move\ncommand block/remove\n" }
+library/manifest!: { this: tonk:library/prose, adds: "concept prose\ncommand prose/edit\nview prose ui\nview prose directory\n" }
+library/manifest!: { this: tonk:library/table, adds: "concept table\nconcept table/sheet\nconcept table/sheet-name\nconcept table/cell\nconcept table/cell-content\nconcept table/cell-style\nconcept table/column\nconcept table/column-width\nconcept table/row\nconcept table/row-height\ncommand table/create-sheet\ncommand table/rename-sheet\ncommand table/create-cell\ncommand table/edit-cell\ncommand table/clear-cell\ncommand table/create-column\ncommand table/resize-column\ncommand table/create-row\ncommand table/resize-row\nview tonk:table/sheet directory\nview tonk:table/cell directory\nview tonk:table/column directory\nview tonk:table/row directory\nview table ui\nview table directory\n" }
+library/manifest!: { this: tonk:library/version-control, adds: "concept version-control/revision\nconcept version-control/parent\nconcept version-control/head\nconcept version-control/comment\nconcept version-control/session\ncommand version-control/comment-on\ncommand version-control/uncomment\nview version-control/revision vc-row\nview version-control/parent vc-row\nview version-control/head vc-row\nview version-control/comment vc-row\nview version-control/session vc-row\nview member/account vc-row\nconcept version-control/console\nview tonk:version-control/console ui\n" }
+# END library manifest (generated)
+
+# What came of one request to install or uninstall a component, keyed by
+# the request's own entity: the card that asked reads the answer to its
+# own request, by the component and time it asked with. One row per
+# request, so a history of installs and undos reads in order of `time`.
+concept!: &library/outcome
+  description: What came of asking this space to install or uninstall a library component.
+  with:
+    component:
+      description: The component asked for, `tonk:library/<name>`.
+      the: xyz.tonk.library.outcome/component
+      as: entity
+    action:
+      description: What was asked, "install" or "uninstall".
+      the: xyz.tonk.library.outcome/action
+      as: text
+    status:
+      description: >
+        What happened: "installed", "current" (installed already and up to
+        date, so nothing changed), "uninstalled", or "failed".
+      the: xyz.tonk.library.outcome/status
+      as: text
+    time:
+      description: The `time` the request was asked with.
+      the: xyz.tonk.library.outcome/time
+      as: float:64
+  maybe:
+    version:
+      description: The component's version the request installed or removed.
+      the: xyz.tonk.library.outcome/version
+      as: text
+    lines:
+      description: The AGENTS.md lines the request added or removed.
+      the: xyz.tonk.library.outcome/lines
+      as: text
+    reason:
+      description: Why the request failed, in words.
+      the: xyz.tonk.library.outcome/reason
+      as: text
 
 attribute!: &install-component/component
   description: Which component to install, `tonk:library/<name>`.
@@ -2907,6 +3029,39 @@ rule!:
   when:
     - assert: intent
       where: { this: ?this, command: library/install }
+    - assert: library/component
+      where: { this: ?component }
+
+attribute!: &uninstall-component/component
+  description: Which component to uninstall, `tonk:library/<name>`.
+  the: xyz.tonk.command.uninstall-component/component
+  as: entity
+  role: :object
+
+attribute!: &uninstall-component/time
+  description: The moment it was asked; makes each dispatch a distinct transient.
+  the: xyz.tonk.command.uninstall-component/time
+  as: float:64
+  role: :now
+
+# The inverse of `library/install`: withdraws what the component's install
+# added (its concepts, commands, views and AGENTS.md lines) and its install
+# record. What the space wrote with it stays: uninstalling a table
+# component removes the table views, not the sheets.
+command!: &library/uninstall
+  description: Uninstall a library component from this space.
+  action: ["uninstall"]
+  with:
+    component: uninstall-component/component
+    time: uninstall-component/time
+
+# What "uninstall" can be said of: every component.
+rule!:
+  description: A library component is one an uninstall from the palette can name.
+  assert: uninstall-component/component
+  when:
+    - assert: intent
+      where: { this: ?this, command: library/uninstall }
     - assert: library/component
       where: { this: ?component }
 

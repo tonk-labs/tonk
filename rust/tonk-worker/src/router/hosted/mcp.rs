@@ -454,6 +454,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
             "tools/list" => {
                 let mut tools = tools();
                 tools.push(undo::tool());
+                tools.push(super::library::tool());
                 tools.extend(super::view::tools());
                 tools.extend(super::join::tools());
                 tools.extend(super::propose::tools());
@@ -708,6 +709,10 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 answer
             }
             UNDO => self.undo(verified, bearer, session, arguments, call).await,
+            super::library::UNDO => {
+                self.library_undo(verified, bearer, session, arguments, call)
+                    .await
+            }
             super::propose::APPLY | super::propose::DISMISS => {
                 self.answer_proposal(name, arguments, verified, bearer, session, call)
                     .await
@@ -753,6 +758,15 @@ impl<W: Writers> McpEndpoint<'_, W> {
             Ok(reached) => reached,
             Err(refused) => return refused,
         };
+        // A library install or uninstall runs through the writer, which
+        // awaits its outcome; with confirm it is proposed as any change.
+        if !confirm && let Some(command) = super::library::command_of(document) {
+            return self
+                .library(
+                    verified, bearer, session, space, &command, &reached, false, call,
+                )
+                .await;
+        }
         let route = if confirm {
             super::propose::PROPOSE_ROUTE
         } else {
@@ -776,6 +790,8 @@ impl<W: Writers> McpEndpoint<'_, W> {
             let value = parsed(&body);
             writer_failed(call, status, &value);
             let reason = reason(&value);
+            let command = value["code"] == "COMMAND_NOT_CONFIRMABLE";
+            let unknown_component = value["code"] == super::library::UNKNOWN;
             // A change that would change nothing is not asked: it is said.
             if confirm && value["code"] == "NOTHING_TO_PROPOSE" {
                 let card = super::propose::nothing(context);
@@ -797,6 +813,10 @@ impl<W: Writers> McpEndpoint<'_, W> {
             // words for the person, and never shows the reason itself.
             let card = if unreachable(status) {
                 super::propose::not_saved(context)
+            } else if confirm && command {
+                super::library::not_previewable(context)
+            } else if unknown_component {
+                super::library::unknown(context, document)
             } else {
                 super::propose::rejected(context, confirm)
             };
@@ -839,6 +859,19 @@ impl<W: Writers> McpEndpoint<'_, W> {
             .as_str()
             .unwrap_or_default()
             .to_owned();
+        if held["library"].is_object() {
+            let ask = super::library::ask(context, &id, &held["library"]);
+            let text = format!(
+                "Asked the person to confirm in a card: {}. Nothing changes unless they answer \
+                 it there; the card tells you when they do. Do not run it again meanwhile.",
+                ask.say
+            );
+            return json!({
+                "content": [{ "type": "text", "text": text }],
+                "structuredContent": { "proposal": held["proposal"], "card": ask.to_value() },
+                "isError": false,
+            });
+        }
         let evaluation = without_revisions(held["evaluation"].clone());
         let ask = super::propose::ask(context, &id, &evaluation);
         let dry_run = serde_json::to_vec(&evaluation)
@@ -976,8 +1009,14 @@ impl<W: Writers> McpEndpoint<'_, W> {
             );
         }
         if !apply {
+            let declined = parsed(&body);
+            let shown = if declined["library"].is_object() {
+                super::library::declined(context, &declined["library"])
+            } else {
+                super::propose::dismissed(context)
+            };
             return card(
-                super::propose::dismissed(context),
+                shown,
                 format!(
                     "The person chose not to apply the change in {label}. Nothing was written. \
                      Do not propose it again unless they bring it up."
@@ -986,6 +1025,9 @@ impl<W: Writers> McpEndpoint<'_, W> {
             );
         }
         let written = parsed(&body);
+        if written["library"].is_object() {
+            return library_answer(space.as_ref(), context, &written["library"], false);
+        }
         let moved = written["revision_before"] != written["revision_after"];
         let change = undo::change_meta(&space, &written);
         let evaluation = without_revisions(written);
@@ -1197,6 +1239,82 @@ impl<W: Writers> McpEndpoint<'_, W> {
         }
     }
 
+    /// Run the library command `command` in `space` through its writer
+    /// ([`super::library::ROUTE`]), answering the receipt the card draws,
+    /// with an undo that runs the inverse, or a tell when it failed.
+    /// `undoing` when it runs as a receipt's undo.
+    #[allow(clippy::too_many_arguments)]
+    async fn library(
+        &self,
+        verified: &Verified,
+        bearer: &str,
+        session: &str,
+        space: &Did,
+        command: &super::library::Command,
+        reached: &Reached,
+        undoing: bool,
+        call: &mut Call,
+    ) -> Value {
+        let Some(request) = space_request(
+            super::library::ROUTE,
+            reached.granted.as_ref(),
+            "application/json",
+            &command.body(),
+            &call.trace,
+        ) else {
+            call.end(Outcome::Error, "bad_directory_entry");
+            return tool_result(json!("The space's directory entry is malformed."), true);
+        };
+        let (status, body) = self
+            .send(verified, bearer, session, space, request, call)
+            .await;
+        let context = &reached.context;
+        if !status.is_success() {
+            let value = parsed(&body);
+            writer_failed(call, status, &value);
+            let card = if unreachable(status) {
+                super::propose::not_saved(context)
+            } else {
+                super::library::failed(context, command)
+            };
+            let mut answer = tool_result(json!(reason(&value)), true);
+            answer["structuredContent"] = json!({ "card": card.to_value() });
+            return answer;
+        }
+        library_answer(space.as_ref(), context, &parsed(&body)["library"], undoing)
+    }
+
+    /// `tonk_library_undo`: run the inverse of a library receipt's command.
+    async fn library_undo(
+        &self,
+        verified: &Verified,
+        bearer: &str,
+        session: &str,
+        arguments: &Value,
+        call: &mut Call,
+    ) -> Value {
+        let Some(space) = arguments["space"]
+            .as_str()
+            .and_then(|space| space.parse::<Did>().ok())
+        else {
+            call.end(Outcome::Invalid, "bad_space");
+            return tool_result(json!("Name the receipt's space."), true);
+        };
+        let Some(command) = super::library::Command::from_body(arguments) else {
+            call.end(Outcome::Invalid, "bad_library_change");
+            return tool_result(json!("Name the component and the action to run."), true);
+        };
+        call.space = Some(space.clone());
+        let reached = match self.reach(verified, bearer, session, &space, call).await {
+            Ok(reached) => reached,
+            Err(refused) => return refused,
+        };
+        self.library(
+            verified, bearer, session, &space, &command, &reached, true, call,
+        )
+        .await
+    }
+
     /// What the agent space reaches, as its own writer reads it.
     async fn access(
         &self,
@@ -1356,6 +1474,28 @@ fn unreachable(status: StatusCode) -> bool {
 }
 
 /// A writer's answer as JSON, or as a string when it is not.
+/// The tool result for a library command's answer `library`: what the
+/// model reads, the card, and the inverse command in `_meta` where the
+/// receipt offers undo.
+fn library_answer(
+    space: &str,
+    context: &super::propose::Context,
+    library: &Value,
+    undoing: bool,
+) -> Value {
+    let card = super::library::receipt(context, library, undoing);
+    let failed = card.kind == super::card::Kind::Tell;
+    let mut answer = json!({
+        "content": [{ "type": "text", "text": super::library::told(context, library) }],
+        "structuredContent": { "library": library, "card": card.to_value() },
+        "isError": failed,
+    });
+    if card.undo.is_some() {
+        answer["_meta"] = json!({ CHANGE_META: super::library::change(space, library) });
+    }
+    answer
+}
+
 fn parsed(body: &[u8]) -> Value {
     serde_json::from_slice::<Value>(body).unwrap_or_else(|_| json!(String::from_utf8_lossy(body)))
 }
