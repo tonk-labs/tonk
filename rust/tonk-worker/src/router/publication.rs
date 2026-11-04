@@ -783,6 +783,31 @@ mod tests {
                 assert!(again.renewed, "the second open finds it here");
             }
 
+            // A visitor who follows a link into one of the space's pages,
+            // percent-encoded as a normalizing deployment serves it, opens
+            // the same space: every route of it recovers access, not only
+            // its bare address.
+            let deep_link = format!(
+                "{}/space/{}/notebook/notebook%3A5d314db6-4bea-4c04-bd8a-0ef2be8a0b5d",
+                serving.origin().ascii_serialization(),
+                key.replace(':', "%3A")
+            );
+            let deep_reader = crate::router::command::tests::native::test_state().await;
+            {
+                let deep_reader = deep_reader.read().await;
+                let opened = crate::router::join::join_invite(&deep_reader, &deep_link)
+                    .await
+                    .expect("a visitor opens a published space from a route of it");
+                assert_eq!(opened.subject, space);
+                assert!(!opened.renewed, "the first open installs a replica");
+                assert!(
+                    crate::router::join::find_replica_for_subject(&deep_reader, &space)
+                        .await
+                        .expect("replica lookup"),
+                    "the deep link installed the space's replica"
+                );
+            }
+
             let tonk = state.read().await;
             unpublish(&tonk, &key)
                 .await
@@ -806,6 +831,19 @@ mod tests {
                         .await
                         .expect("replica lookup"),
                     "a refused visit installs no replica"
+                );
+                // From a route of the space it is refused the same way,
+                // with its reason, rather than leaving the page silently.
+                let refused = crate::router::join::join_invite(&newcomer, &deep_link)
+                    .await
+                    .err()
+                    .expect("an unpublished space does not open from a route of it");
+                assert_eq!(refused.kind(), tonk_worker_api::JoinFailureKind::Private);
+                assert!(
+                    !crate::router::join::find_replica_for_subject(&newcomer, &space)
+                        .await
+                        .expect("replica lookup"),
+                    "a refused deep link installs no replica"
                 );
             }
 
