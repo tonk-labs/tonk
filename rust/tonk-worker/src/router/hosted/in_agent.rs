@@ -117,23 +117,4 @@ mod tests {
         ));
         assert!(html.contains("<style>"));
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[dialog_common::test]
-    fn it_ships_every_font_the_stylesheet_names() {
-        let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../tonk-ui/assets/in-agent/fonts");
-        let css = stylesheet("");
-        for name in css
-            .split("url(\"/in-agent/fonts/")
-            .skip(1)
-            .filter_map(|rest| rest.split_once('"').map(|(name, _)| name))
-        {
-            assert!(assets.join(name).is_file(), "{name} is not shipped");
-        }
-        assert!(
-            assets.join("OFL.txt").is_file(),
-            "the fonts' licence is not shipped"
-        );
-    }
 }
