@@ -191,7 +191,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
     // Call `name` until the agent is refused, from `since` for at most
     // `budget` ms: how long the refusal took, and what it said. `args` is
     // called for each attempt.
-    const refused = async (client, name, args, { since, budget }) => {
+    const untilRefused = async (client, name, args, { since, budget }) => {
       for (;;) {
         const result = await client.callTool({ name, arguments: args() });
         const ms = Date.now() - since;
@@ -432,7 +432,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       // from its own list once the retraction syncs. Refusal of cached
       // grants by the access service itself is checked natively in
       // `the_account_withdraws_a_link_grant_as_its_agent`.
-      const { ms, text } = await refused(
+      const { ms, text } = await untilRefused(
         client,
         'tonk_query',
         () => ({ space: subject, document: 'concept:\n' }),
@@ -600,7 +600,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
           ['tonk_query', () => read],
           ['tonk_evaluate', () => ({ space: subject, document: note(`${run} probe ${probe++}`) })],
         ]) {
-          const { ms, text } = await refused(client, name, args, { since, budget });
+          const { ms, text } = await untilRefused(client, name, args, { since, budget });
           console.log(`revoke ${kind}: ${name} refused after ${ms} ms: ${text.slice(0, 300)}`);
           assert.match(text, /revoked|no access/i, `refused for another reason: ${text}`);
         }
