@@ -2,7 +2,11 @@
 //! subscriptions re-poll once remote artifacts have been
 //! merged into the branch.
 
-use dialog_repository::Revision;
+use dialog_capability::Provider;
+use dialog_common::{Blake3Hash, ConditionalSync};
+use dialog_effects::archive::Get;
+use dialog_repository::{Branch, Hydrate, NetworkedIndex, RemoteFallback, Revision, Upstream};
+use dialog_search_tree::LoadBlock;
 
 use super::BranchReference;
 use super::env::{BranchOpenProvider, LoadProvider, PullProvider, SelectProvider};
@@ -144,6 +148,20 @@ impl<'a> Pull<'a> {
             download.perform(env).await?;
         }
 
+        // Hold the root of what the advance would adopt before adopting
+        // it. A fast-forward adopts by reference and never reads the root,
+        // so a head this replica can no longer fetch (its grant was
+        // revoked after a watch told it of the head, say) would otherwise
+        // become the branch's head, and every later read and commit of
+        // the branch would fail on that root. Refused here, the head
+        // stays where it was and the replica keeps working on what it
+        // holds.
+        if let Some(revision) = prepared.revision()
+            && before.as_ref() != Some(&revision.tree)
+        {
+            hold_root(cached.handle(), revision, env).await?;
+        }
+
         // Advance the cells under the transactor lock, so this serializes with
         // commits on the same branch instead of racing the head CAS.
         let revision = {
@@ -164,5 +182,42 @@ impl<'a> Pull<'a> {
         }
 
         Ok(revision)
+    }
+}
+
+/// Read the root block of `revision`'s tree into `branch`'s archive: a
+/// local hit when it is already held, else a fetch from the upstream the
+/// pull prepared from, which is the first the branch pulls from (see
+/// [`dialog_repository::Pull::prepare`]).
+///
+/// Only the root: the rest of a tree adopted by reference hydrates as
+/// reads reach it, and the root is what every read and commit of the
+/// branch reads first.
+async fn hold_root<Env>(branch: &Branch, revision: &Revision, env: &Env) -> Result<(), ReactorError>
+where
+    Env: Provider<Get> + Provider<Hydrate> + ConditionalSync,
+{
+    let fallback = match branch.pulls().iter().next() {
+        Some(Upstream::Remote { remote, .. }) => RemoteFallback::Remote(remote.clone()),
+        Some(Upstream::Unreachable { target, reason, .. }) => RemoteFallback::Unavailable {
+            remote: target.to_string(),
+            reason: reason.clone(),
+        },
+        Some(Upstream::Local { .. }) | None => RemoteFallback::None,
+    };
+    let root = Blake3Hash::from(*revision.tree.hash());
+    let index = NetworkedIndex::new(env, branch.archive().index(), fallback);
+    match LoadBlock::new(root.clone()).perform(&index).await {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(ReactorError::UnreadableHead {
+            branch: branch.name().to_string(),
+            root: root.to_string(),
+            reason: "the block is neither held nor reachable".to_string(),
+        }),
+        Err(error) => Err(ReactorError::UnreadableHead {
+            branch: branch.name().to_string(),
+            root: root.to_string(),
+            reason: error.to_string(),
+        }),
     }
 }
