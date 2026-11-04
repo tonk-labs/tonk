@@ -37,6 +37,7 @@ const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profi
 const TABLE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/table.yaml");
 const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/notebook.yaml");
 const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose-editor.yaml");
+const CODE_EDITOR_LIBRARY: &str = include_str!("../../tonk-core/assets/library/code-editor.yaml");
 const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
 const META_LIBRARY: &str = include_str!("../../tonk-core/assets/library/meta.yaml");
 const VERSION_CONTROL_LIBRARY: &str =
@@ -1370,6 +1371,41 @@ async fn it_lowers_the_notebook_library() {
         NOTEBOOK_LIBRARY,
     )
     .await;
+}
+
+#[dialog_common::test]
+async fn it_lowers_the_code_editor_library() {
+    assert_component_library_lowers(
+        "code-editor library (code-editor.yaml)",
+        "code-editor.yaml",
+        CODE_EDITOR_LIBRARY,
+    )
+    .await;
+}
+
+/// A language is a component of its own, installable without the editor,
+/// so it lowers on the standard library alone. One of each shape the
+/// build generates: a Lezer grammar, a legacy stream mode, a SQL dialect.
+#[dialog_common::test]
+async fn it_lowers_language_components() {
+    for (file, document) in [
+        (
+            "language/python.yaml",
+            include_str!("../../tonk-core/assets/library/language/python.yaml"),
+        ),
+        (
+            "language/clojure.yaml",
+            include_str!("../../tonk-core/assets/library/language/clojure.yaml"),
+        ),
+        (
+            "language/postgresql.yaml",
+            include_str!("../../tonk-core/assets/library/language/postgresql.yaml"),
+        ),
+    ] {
+        // Parsed at the library directory, as seeding parses every library
+        // document, so its include (`./language/<id>.js`) resolves there.
+        assert_component_library_lowers(file, "language.yaml", document).await;
+    }
 }
 
 #[dialog_common::test]

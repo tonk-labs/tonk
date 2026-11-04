@@ -2792,9 +2792,11 @@ view!:
       {name}
 
 # The library's components a space can install, each beside the others
-# and beside the space's seed: issue, meta, notebook, prose-editor, table,
-# version-control (every library file but `core.yaml`, which every space
-# runs, and `profile.yaml`, the profile's). An install is recorded like the seed's and brought up to
+# and beside the space's seed: code-editor, issue, meta, notebook,
+# prose-editor, table, version-control (every library file but `core.yaml`,
+# which every space runs, and `profile.yaml`, the profile's). The
+# <code-editor> languages are components too, `language/<id>`, listed by
+# code-editor.yaml once it is installed. An install is recorded like the seed's and brought up to
 # date the same way when the space mounts; installing one already there
 # updates it, or does nothing when it is current.
 concept!: &library/component
@@ -2810,6 +2812,10 @@ view!:
   show:
     label: |
       {name}
+
+library/component!:
+  this: tonk:library/code-editor
+  name: "code-editor"
 
 library/component!:
   this: tonk:library/issue

@@ -5656,6 +5656,9 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
             Ok(include_str!("../../../tonk-core/assets/library/profile.yaml").to_owned())
         }
         // The components a space can install (`library::COMPONENTS`).
+        "/library/code-editor.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/code-editor.yaml").to_owned())
+        }
         "/library/issue.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/issue.yaml").to_owned())
         }
@@ -5674,9 +5677,14 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         "/library/version-control.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/version-control.yaml").to_owned())
         }
-        other => Err(TonkWorkerError::Internal(format!(
-            "no embedded library for '{other}'"
-        ))),
+        // A language (`library::LANGUAGES`): generated, so not listed
+        // here; `tonk-library` bundles every document in a subdirectory.
+        other => other
+            .strip_prefix("/library/")
+            .filter(|path| path.starts_with(super::library::LANGUAGES))
+            .and_then(|path| tonk_library::Bundled.get(&tonk_library::location(path)))
+            .and_then(|bytes| String::from_utf8(bytes.to_vec()).ok())
+            .ok_or_else(|| TonkWorkerError::Internal(format!("no embedded library for '{other}'"))),
     }
 }
 
@@ -16187,6 +16195,14 @@ mod library_quarantine_tests {
             .expect("the space creates");
         let tonk = state.read().await;
         for (name, body) in [
+            (
+                "code-editor",
+                include_str!("../../../tonk-core/assets/library/code-editor.yaml"),
+            ),
+            (
+                "language/python",
+                include_str!("../../../tonk-core/assets/library/language/python.yaml"),
+            ),
             (
                 "issue",
                 include_str!("../../../tonk-core/assets/library/issue.yaml"),
