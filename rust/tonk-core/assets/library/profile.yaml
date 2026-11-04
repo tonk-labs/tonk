@@ -5720,7 +5720,7 @@ element!: &account-settings
           const approval = response?.approval;
           if (!approval) { self.status('The approval response was not readable.'); return; }
           self.localLinkReturn(described.callback, [['approve', approval], ['correlation', described.correlation]]);
-        }, (error) => self.status(`Could not approve this space: ${error.message}`));
+        }, (error) => self.localLinkFail('Could not approve this space', error));
       }
     local-link-decline: |
       (self) => {
@@ -5737,10 +5737,7 @@ element!: &account-settings
           const provisioned = response?.provisioned;
           if (!provisioned) { self.status('The provisioning receipt was not readable.'); return; }
           self.localLinkReturn(described.callback, [['provisioned', provisioned], ['correlation', described.correlation]]);
-        }, (error) => {
-          self.removeAttribute('data-local-link-finishing');
-          self.status(`Publication stopped: ${error.message}. Reload to retry.`);
-        });
+        }, (error) => self.localLinkFail('Publication stopped', error));
       }
     local-link-finish: |
       (self, request) => {
@@ -5751,10 +5748,23 @@ element!: &account-settings
           const completion = response?.completion;
           if (!completion) { self.status('The publication receipt was not readable. Reload to retry.'); return; }
           self.localLinkReturn(described.callback, [['complete', completion], ['correlation', described.correlation]]);
-        }, (error) => {
-          self.removeAttribute('data-local-link-finishing');
-          self.status(`Publication stopped: ${error.message}. Reload to retry.`);
-        });
+        }, (error) => self.localLinkFail('Publication stopped', error));
+      }
+    # A step of the link failed. One that may pass on a second try (the
+    # network, a 5xx, a timeout) leaves the terminal waiting and the page
+    # ready to retry on reload. A refusal (any other 4xx) will not pass
+    # again, so the terminal is told why and stops, rather than waiting
+    # out its timeout for an answer that never comes.
+    local-link-fail: |
+      (self, stage, error) => {
+        const reason = self.agentReason(error);
+        const status = Number(error?.status) || 0;
+        const refused = status >= 400 && status < 500 && status !== 408 && status !== 429;
+        self.removeAttribute('data-local-link-finishing');
+        if (!refused) { self.status(`${stage}: ${reason}. Reload to retry.`); return; }
+        self.status(`${stage}: ${reason}`);
+        const described = self.localLink;
+        if (described) self.localLinkReturn(described.callback, [['deny', `${stage.toLowerCase()}: ${reason}`], ['correlation', described.correlation]]);
       }
     # Keys are hyphenated: the runtime camelCases them onto the
     # prototype, so `self.linkRequest()` is how a sibling calls this.
