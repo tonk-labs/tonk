@@ -2007,6 +2007,8 @@ async fn export_op(out: Option<PathBuf>, branch: &str, space: Option<&str>) -> E
             }
             ExitCode::Success
         }
+        // The reader (e.g. `head`) closed stdout early: exit quietly.
+        Err(transfer::TransferError::ReaderClosed) => ExitCode::Success,
         Err(err) => print_coded(err),
     }
 }
