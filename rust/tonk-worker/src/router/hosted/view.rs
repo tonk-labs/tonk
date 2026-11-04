@@ -404,6 +404,32 @@ pub async fn call<W: Writers>(
         } else {
             "Showing that view inline. Rendering is not verified by this response."
         };
+        // What Tonk's line under the view names: the view, as its outline
+        // calls it. A view whose outline cannot be read is still shown;
+        // the line then names the space alone.
+        let shown = match arguments["view"].as_str().map(str::trim) {
+            Some(route) if !view.is_null() => read_outline(
+                route,
+                &access,
+                writers,
+                verified,
+                bearer,
+                mcp_session,
+                &space,
+            )
+            .await
+            .ok(),
+            _ => None,
+        };
+        // The view's own title, else its concept's name.
+        let view_name = shown
+            .as_ref()
+            .and_then(|outline| {
+                outline["outline"]["title"]
+                    .as_str()
+                    .or_else(|| outline["outline"]["name"].as_str())
+            })
+            .map(str::to_owned);
         return Some(json!({
             "content": [{ "type": "text", "text": text }],
             "structuredContent": {
@@ -412,6 +438,9 @@ pub async fn call<W: Writers>(
                 "view": view,
                 "edit": edit,
                 "remote": remote,
+                "name": access.name,
+                "viewName": view_name,
+                "role": role(&access),
             },
             "isError": false,
         }));
@@ -584,9 +613,18 @@ fn command_of(chain: &DelegationChain) -> Vec<String> {
         .collect()
 }
 
-/// [`OUTLINE`]: the view tree of `space`, as its writer reads it. A
-/// granted space's request carries its grants and address, as a query's
-/// does, so its writer mounts and pulls it the same way.
+/// The role Tonk's line names for a connection with `access`: `write`
+/// wherever it may write, else `read`. Admin is not modelled for a
+/// connection yet; it will be a third answer here.
+fn role(access: &SpaceAccess) -> &'static str {
+    if access.agent || access.write {
+        "write"
+    } else {
+        "read"
+    }
+}
+
+/// [`OUTLINE`]: the view tree of `space`, as its writer reads it.
 async fn outline<W: Writers>(
     arguments: &Value,
     access: &SpaceAccess,
@@ -596,7 +634,31 @@ async fn outline<W: Writers>(
     mcp_session: &str,
     space: &Did,
 ) -> Value {
-    let route = arguments["route"].as_str().unwrap_or("").trim();
+    let route = arguments["route"].as_str().unwrap_or("");
+    match read_outline(route, access, writers, verified, bearer, mcp_session, space).await {
+        Ok(outline) => json!({
+            "content": [{ "type": "text", "text": outline.to_string() }],
+            "structuredContent": outline,
+            "isError": false,
+        }),
+        Err(message) => error(&message),
+    }
+}
+
+/// The view tree of `space` from `route` (the home when empty), as its
+/// writer reads it. A granted space's request carries its grants and
+/// address, as a query's does, so its writer mounts and pulls it the same
+/// way.
+async fn read_outline<W: Writers>(
+    route: &str,
+    access: &SpaceAccess,
+    writers: &W,
+    verified: &Verified,
+    bearer: &str,
+    mcp_session: &str,
+    space: &Did,
+) -> Result<Value, String> {
+    let route = route.trim();
     let mut query = url::form_urlencoded::Serializer::new(String::new());
     if !route.is_empty() {
         query.append_pair("route", route);
@@ -615,7 +677,7 @@ async fn outline<W: Writers>(
         }
     }
     let Ok(request) = request.body(Body::empty()) else {
-        return error("The space's directory entry is malformed.");
+        return Err("The space's directory entry is malformed.".into());
     };
     let response = writers
         .call(verified, bearer, mcp_session, space, request)
@@ -632,18 +694,10 @@ async fn outline<W: Writers>(
             .ok()
             .and_then(|body| body["error"].as_str().map(str::to_owned))
             .unwrap_or_else(|| String::from_utf8_lossy(&body).into_owned());
-        return error(&format!("Could not outline the space ({status}): {reason}"));
+        return Err(format!("Could not outline the space ({status}): {reason}"));
     }
-    match serde_json::from_slice::<Value>(&body) {
-        Ok(outline) => json!({
-            "content": [{ "type": "text", "text": outline.to_string() }],
-            "structuredContent": outline,
-            "isError": false,
-        }),
-        Err(problem) => error(&format!(
-            "The space answered an unreadable outline: {problem}"
-        )),
-    }
+    serde_json::from_slice::<Value>(&body)
+        .map_err(|problem| format!("The space answered an unreadable outline: {problem}"))
 }
 
 fn error(message: &str) -> Value {
