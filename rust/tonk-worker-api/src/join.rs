@@ -47,7 +47,7 @@ impl JoinFailureKind {
     /// Fixed recipient-facing message.
     pub const fn message(self) -> &'static str {
         match self {
-            Self::Malformed => "This share link is invalid.",
+            Self::Malformed => "This passlink is invalid.",
             Self::AudienceMismatch => "This invite was issued to a different identity.",
             Self::Revoked => "This invite has been revoked.",
             Self::Unavailable => "Tonk could not reach this space. Try again.",
@@ -55,7 +55,7 @@ impl JoinFailureKind {
                 "This space's host declined the invite. Its owner needs to check the space's plan."
             }
             Self::ClaimFailed => "Tonk could not join this space.",
-            Self::Private => "This space is private. Ask someone in it for an invite link.",
+            Self::Private => "This space is private. Ask someone in it for a passlink.",
         }
     }
 

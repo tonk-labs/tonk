@@ -561,8 +561,6 @@ view!:
       .contact-list { display:grid; gap:16px; }
       .contact-card { border:1px solid var(--ink); background:var(--card); }
       .contact-head { display:flex; align-items:center; gap:14px; padding:16px 19px; }
-      .contact-mark { display:grid; place-items:center; flex:none; width:40px; height:40px;
-        border:1px solid var(--ink); font:500 16px/1 var(--cond); }
       .contact-name { margin:0; letter-spacing:-.02em; overflow-wrap:anywhere;
         font:300 27px/1.1 Gestalte,Georgia,serif; }
       .contact-kind { margin:4px 0 0; color:var(--soft); font:12px/1.4 var(--cond); }
@@ -2575,10 +2573,9 @@ element!: &hub-discover
           card.dataset.agent = agent.did;
           card.setAttribute('aria-label', name);
           const head = el('div', 'contact-head', '', card);
-          el('span', 'contact-mark', name.trim().charAt(0).toUpperCase() || 'A', head).setAttribute('aria-hidden', 'true');
           const who = el('div', '', '', head);
           el('h3', 'contact-name', name, who);
-          el('p', 'contact-kind', `agent · ${agent.did}`, who);
+          el('p', 'contact-kind', `bot · ${agent.did}`, who);
           const open = el('a', 'contact-open', 'open its space ↗', head);
           open.href = `/space/${agent.did}`;
           const spaces = el('ul', 'contact-spaces', '', card);
@@ -2587,8 +2584,8 @@ element!: &hub-discover
             const row = el('li', 'contact-space', '', spaces);
             const link = el('a', '', space.name || space.subject, row);
             link.href = `/space/${space.subject}`;
-            const access = space.access === 'write' ? 'read and write' : 'read';
-            const via = space.viaLink ? ' · from a share link' : '';
+            const access = space.access === 'write' ? 'write' : 'read';
+            const via = space.viaLink ? ' · from a passlink' : '';
             el('span', 'contact-access', (space.expiresAt ? `${access} · until ${date(space.expiresAt)}` : access) + via, row);
             // A removal under way or failed, as the worker reports it: the
             // grant stays listed until the access service acknowledges it.
@@ -2619,7 +2616,7 @@ element!: &hub-discover
           button.textContent = 'confirm revoke';
           // A share link's grant is revoked by the agent itself, whose key
           // only the passkey opens. The link stays usable either way.
-          if (viaLink && status) status.textContent = 'Tonk will ask for your passkey. This revokes the agent’s access; it does not end the share link, which still works for whoever has it.';
+          if (viaLink && status) status.textContent = 'Tonk will ask for your passkey. This revokes the agent’s access; it does not end the passlink, which still works for whoever has it.';
           return;
         }
         button.disabled = true;
@@ -2670,7 +2667,7 @@ element!: &hub-discover
         if (status) status.textContent = '';
         self.agentsRender(agents);
         if (!held) {
-          if (status) status.textContent = 'Access revoked. The access service refuses the agent’s grants for that space; a session already open may keep reading for a few minutes. The share link still works for whoever has it.';
+          if (status) status.textContent = 'Access revoked. The access service refuses the agent’s grants for that space; a session already open may keep reading for a few minutes. The passlink still works for whoever has it.';
         } else if (state === 'failed') {
           // agentsRender has said why; the row offers to retry.
         } else if ((state === 'pending' || state === 'working') && Date.now() - started < 4 * 60 * 1000) {

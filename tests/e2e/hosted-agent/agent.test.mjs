@@ -234,7 +234,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
             .map(({ subject, name, access }) => [subject, { name, access }]),
         ),
         {
-          [spaces.writable]: { name: writableName, access: 'read-write' },
+          [spaces.writable]: { name: writableName, access: 'write' },
           [spaces.readable]: { name: readableName, access: 'read' },
         },
         `listed ${JSON.stringify(listed)}`,

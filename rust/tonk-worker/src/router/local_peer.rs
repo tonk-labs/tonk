@@ -101,7 +101,7 @@ impl LocalPeer {
             "tonk_join" => {
                 let link = text("link").trim();
                 if link.is_empty() || link.len() > 160_000 {
-                    return Err("Provide one complete Tonk share link.".into());
+                    return Err("Provide one complete Tonk passlink.".into());
                 }
                 let link = self.expand(link).await?;
                 if is_agent_link(&link) {
@@ -126,7 +126,7 @@ impl LocalPeer {
                     .is_some_and(|spaces| spaces.iter().any(|entry| entry["subject"] == space))
                 {
                     return Err(
-                        "This peer has not joined that space. Ask for a share link and call tonk_join."
+                        "This peer has not joined that space. Ask for a passlink and call tonk_join."
                             .to_owned(),
                     );
                 }
@@ -151,7 +151,7 @@ impl LocalPeer {
     /// the fragment is reattached.
     async fn expand(&self, link: &str) -> Result<String, String> {
         let parsed =
-            url::Url::parse(link).map_err(|_| "That is not a Tonk share link.".to_owned())?;
+            url::Url::parse(link).map_err(|_| "That is not a Tonk passlink.".to_owned())?;
         if !parsed.path().starts_with("/@/") {
             return Ok(link.to_owned());
         }

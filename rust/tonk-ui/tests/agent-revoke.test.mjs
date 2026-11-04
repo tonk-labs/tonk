@@ -1,4 +1,4 @@
-// "Your agents": revoking a share link's grant asks for the passkey, and the
+// "Your agents": revoking a passlink grant asks for the passkey, and the
 // space stays listed until the worker reports the revocation acknowledged.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -62,7 +62,7 @@ test('the first press says the passkey is asked for and the link stays usable', 
   assert.equal(calls.length, 0, 'nothing is sent before confirming');
   assert.equal(revoke.textContent, 'confirm revoke');
   assert.match(status.textContent, /passkey/);
-  assert.match(status.textContent, /does not end the share link/);
+  assert.match(status.textContent, /does not end the passlink/);
 });
 
 test('a pending removal is watched until the space leaves the list', async () => {
@@ -80,7 +80,7 @@ test('a pending removal is watched until the space leaves the list', async () =>
   assert.equal(timers.length, 1);
   await timers.shift()();
   assert.match(status.textContent, /Access revoked/);
-  assert.match(status.textContent, /share link still works/);
+  assert.match(status.textContent, /passlink still works/);
 });
 
 test('a failed removal keeps the space listed with its reason and a retry', async () => {
