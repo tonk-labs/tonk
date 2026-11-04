@@ -92,6 +92,45 @@ concept!: &block/position
       the: xyz.tonk.notebook.block/at
       as: text
 
+# An entry of a block that is not the block's FIRST: some entry of the same
+# block sorts before it.
+#
+# The placement rules keep one entry per block, but a sequence written before
+# they did can hold a block twice. The page shows such a block at its first
+# entry, so the position the rules derive from must be that one too. Read
+# under the default `last` pick, the derivation took the stray entry instead:
+# a paragraph typed after the first one was positioned against an entry near
+# the end of the document and landed far below where it was typed.
+#
+# A separate concept rather than a `min` pick on `block/position`, because
+# the position rules recurse through `block/position`, and an aggregate inside
+# that recursion is unstratified: inserts derived nothing at all.
+concept!: &block/stray-entry
+  description: A position a block holds besides its first.
+  with:
+    at:
+      description: The later position.
+      the: xyz.tonk.notebook.block/stray-at
+      as: text
+      pick: :all
+
+rule!:
+  description: A block's entry is stray when another of its entries sorts first.
+  assert: block/stray-entry
+  when:
+    - assert: notebook/blocks
+      where:
+        this: ?notebook
+        block: {?first: ?this}
+    - assert: notebook/blocks
+      where:
+        this: ?notebook
+        block: {?at: ?this}
+    - assert: "<"
+      where:
+        of: ?first
+        with: ?at
+
 # One block of a notebook. Carries a pointer back to its notebook so the
 # block rows the element reads can be scoped, and so a block written before
 # its placement lands still belongs somewhere.
@@ -482,10 +521,14 @@ command!: &block/place
       the: xyz.tonk.block.place/key
       as: text
 
-# A move re-keys a block that already has an entry: the entry under `from`
-# goes and one under `key` takes its place, in the same commit. Placing the
-# new key alone left the old entry behind, so the block sat in the sequence
-# twice and the earlier key put it back where it had been moved from.
+# A move re-keys a block that already has an entry: its entries go and one
+# under `key` takes their place, in the same commit. Placing the new key alone
+# left the old entry behind, so the block sat in the sequence twice and the
+# earlier key put it back where it had been moved from.
+#
+# `from` names the entry the element read. The rules do not rely on it: they
+# retract every entry the block holds, so an entry the element never saw goes
+# too. It stays on the command because the element writes it.
 command!: &block/move
   description: Move one block to another position in its notebook's sequence.
   with:
@@ -536,8 +579,9 @@ rule!:
         notebook: ?notebook
         source: ?source
 
-# A block already in the sequence is at the position it is stored under.
-# This is what gives the derivation rule its neighbours.
+# A block already in the sequence is at the position it is stored under, the
+# first one when it is stored under several (see `block/stray-entry`). This is
+# what gives the derivation rule its neighbours.
 rule!:
   description: A placed block's position.
   assert: block/position
@@ -550,6 +594,11 @@ rule!:
       where:
         this: ?at
         is: ?block/key
+  unless:
+    - assert: block/stray-entry
+      where:
+        this: ?this
+        at: ?at
 
 # An inserted block's successor, kept as a fact so the position rules can
 # recurse over it. `case:none` at the tail is an ordinary sentinel entity —
@@ -696,6 +745,34 @@ rule!:
         notebook: ?this
         key: ?block/key
 
+# A placement leaves the block with ONE entry: the placed one.
+#
+# The element places a block it reads as having no entry. It can read that
+# while an entry exists, because the entries and the block rows are separate
+# renders that do not update together, and the placement then wrote a second
+# entry beside the first. So the rule does not take the element's word for
+# what the block holds: it retracts every other entry the block has, read from
+# the sequence itself. The entry under the placed key is left alone, so
+# placing a block where it already is changes nothing.
+rule!:
+  description: A placed block leaves every other entry it held.
+  retract!: notebook/blocks
+  when:
+    - assert: block/place
+      where:
+        subject: ?block
+        notebook: ?this
+        key: ?key
+    - assert: notebook/blocks
+      where:
+        this: ?this
+        block: {?block/key: ?block}
+  unless:
+    - assert: "=="
+      where:
+        this: ?block/key
+        is: ?key
+
 rule!:
   description: Enter a moved block under its new position.
   assert!: notebook/blocks
@@ -706,25 +783,41 @@ rule!:
         notebook: ?this
         key: ?block/key
 
+# Every entry the block held goes, not just `from`: a block entered twice is
+# repaired by its next move instead of keeping the stray.
 rule!:
-  description: Retract a moved block's entry under its old position.
+  description: A moved block leaves every other entry it held.
   retract!: notebook/blocks
   when:
     - assert: block/move
       where:
         subject: ?block
         notebook: ?this
-        from: ?block/key
+        key: ?key
+    - assert: notebook/blocks
+      where:
+        this: ?this
+        block: {?block/key: ?block}
+  unless:
+    - assert: "=="
+      where:
+        this: ?block/key
+        is: ?key
 
+# Every entry the block holds, read from the sequence rather than the `key`
+# the element names: a stray entry would otherwise bring the block back.
 rule!:
-  description: Retract a block's entry from the notebook's sequence.
+  description: Retract a removed block's every entry from the notebook's sequence.
   retract!: notebook/blocks
   when:
     - assert: block/remove
       where:
         subject: ?block
         notebook: ?this
-        key: ?block/key
+    - assert: notebook/blocks
+      where:
+        this: ?this
+        block: {?block/key: ?block}
 
 # The block's own facts go too. Retracting only the entry leaves the block
 # behind with its source, and a block that has a source but no entry is
