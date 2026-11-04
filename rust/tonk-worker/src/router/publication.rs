@@ -407,7 +407,7 @@ impl dialog_capability::Provider<tonk_schema::command::PublishSpace> for crate::
             log!("space/publish: refused to target '{key}' from another space");
             return;
         }
-        let tonk = self.state().read().await;
+        let tonk = self.state().read().await.clone();
         if let Err(error) = publish(&tonk, &key).await {
             log!("space/publish '{key}' failed: {error}");
         }
@@ -432,7 +432,7 @@ impl dialog_capability::Provider<tonk_schema::command::UnpublishSpace>
             log!("space/unpublish: refused to target '{key}' from another space");
             return;
         }
-        let tonk = self.state().read().await;
+        let tonk = self.state().read().await.clone();
         if let Err(error) = unpublish(&tonk, &key).await {
             log!("space/unpublish '{key}' failed: {error}");
         }
