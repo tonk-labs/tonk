@@ -1049,11 +1049,13 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(panel.contains("data-delete-account-open"));
     assert!(panel.contains("data-sign-out-open"));
     assert!(panel.contains("<h2>Sign out</h2>"));
-    assert!(panel.contains("Disconnect this account. Keep local spaces on this device."));
+    assert!(panel.contains(
+        "Disconnect this account. Its spaces stay on this device for when you sign back in."
+    ));
     assert!(panel.contains("sign out on this device"));
     assert!(panel.contains("heading=\"confirm sign out\""));
     assert!(panel.contains(
-        "this disconnects the account from this browser. local spaces stay on this device, including spaces that have not been backed up or synced. you can sign into this or another account later."
+        "this disconnects the account from this browser. its spaces stay on this device, including spaces that have not been backed up or synced, but the hub lists them only while you are signed in. sign back into this account to see them again."
     ));
     assert!(panel.contains("data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>"));
     assert!(!panel.contains("remove this device"));

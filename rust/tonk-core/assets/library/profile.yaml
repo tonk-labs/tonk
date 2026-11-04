@@ -3074,7 +3074,7 @@ view!:
                     </section>
                     <section class="settings-panel signout-panel">
                       <h2>Sign out</h2>
-                      <p>Disconnect this account. Keep local spaces on this device.</p>
+                      <p>Disconnect this account. Its spaces stay on this device for when you sign back in.</p>
                       <button class="cta panel-action" type="button" data-sign-out-open>sign out on this device <span aria-hidden="true">↗</span></button>
                     </section>
                     <section class="settings-panel danger-panel">
@@ -3188,7 +3188,7 @@ view!:
               </div>
               <tonk-dialog data-sign-out-dialog heading="confirm sign out">
                 <div class="confirm-body">
-                  this disconnects the account from this browser. local spaces stay on this device, including spaces that have not been backed up or synced. you can sign into this or another account later.
+                  this disconnects the account from this browser. its spaces stay on this device, including spaces that have not been backed up or synced, but the hub lists them only while you are signed in. sign back into this account to see them again.
                 </div>
                 <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
                 <button class="m-go" slot="actions" type="button" data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>
