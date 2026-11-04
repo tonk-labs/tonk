@@ -898,12 +898,16 @@ fn it_mints_an_invite_when_copying_a_hub_space_link() {
 #[dialog_common::test]
 fn it_renames_a_space_from_the_hub_menu() {
     for contract in [
-        "event!: &on/repository-rename-submit",
-        "on:repository-rename-submit=tonk/rename-repository",
         "data-space={subject}",
         "the: xyz.tonk.command.rename-repository/name",
         "the: xyz.tonk.rename-repository/space",
         "data-space-rename-open",
+        // The submit dispatches under its own receipt and closes the
+        // dialog only on the worker's answer for that receipt.
+        "the: 'xyz.tonk.command.rename-repository/name'",
+        "the: 'xyz.tonk.rename-repository/space'",
+        "the: 'xyz.tonk.repository-rename/status'",
+        "result?.status === 'renamed'",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),

@@ -2018,7 +2018,10 @@ pub async fn drain_sync(state: &AppState) {
     };
     if !account_already_swept && !account_watched {
         let sweep = async {
-            let tonk = state.read().await;
+            // A clone, not a guard: the sweep pulls and pushes the account
+            // over the network, and a swap is already handled by
+            // `unless_swapped`.
+            let tonk = state.read().await.clone();
             if switching_profiles(&tonk) {
                 return None;
             }

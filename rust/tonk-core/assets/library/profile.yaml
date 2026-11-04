@@ -278,13 +278,6 @@ command!: &space/remove
       the: xyz.tonk.command.remove-space/subject
       as: entity
 
-event!: &on/repository-rename-submit
-  type: "submit"
-  prevent-default: true
-  where:
-    space: ".currentTarget.dataset.space"
-    name: ".currentTarget.elements.name.value"
-
 #
 # Named field attributes, so the palette's arguments can point at them. The
 # descriptors are unchanged, and so is the command's identity.
@@ -1034,7 +1027,7 @@ view!:
               </space-create>
               <tonk-dialog appearance="hub" data-space-rename-dialog heading="Rename space">
                 <form id="rename-{subject}" class="space-create-form" data-space-rename-form
-                  data-space={subject} on:repository-rename-submit=tonk/rename-repository>
+                  data-space={subject}>
                   <label class="space-create-field"><span>space name</span><input name="name" type="text"
                     value={name} required maxlength="100" autocomplete="off" data-space-rename-input></label>
                   <p class="space-create-error" data-space-rename-error role="alert"></p>
@@ -4981,10 +4974,66 @@ element!: &space-actions
           event.stopImmediatePropagation();
           return;
         }
+        event.preventDefault();
+        event.stopImmediatePropagation();
         if (error) error.textContent = '';
+        if (input.value === input.defaultValue.trim()) {
+          self.querySelector('[data-space-rename-dialog]')?.close?.();
+          return;
+        }
         self.setAttribute('busy', '');
         const submit = self.querySelector('[data-space-rename-submit]');
         if (submit) submit.disabled = true;
+        self.rename(form, input.value);
+      }
+    # Dispatch the rename under a fresh receipt and wait for the worker's
+    # answer on it: close on `renamed`, show the detail on `failed`.
+    rename: |
+      async (self, form, name) => {
+        let reader;
+        const error = self.querySelector('[data-space-rename-error]');
+        try {
+          await window.tonk.ready;
+          if (!self.isConnected) return;
+          const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+          reader = window.tonk.subscribe({
+            predicate: { with: {
+              status: { the: 'xyz.tonk.repository-rename/status', as: 'Text', cardinality: 'one' },
+              detail: { the: 'xyz.tonk.repository-rename/detail', as: 'Text', cardinality: 'one' },
+            } },
+            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+          }).getReader();
+          self.__renameReader = reader;
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              name: { the: 'xyz.tonk.command.rename-repository/name', as: 'Text' },
+              space: { the: 'xyz.tonk.rename-repository/space', as: 'Entity' },
+            } } },
+            parameters: { this: id, name, space: form.dataset.space },
+          } }] });
+          while (self.isConnected) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('Rename status stream ended');
+            const result = value.find(row => row.this === id)?.fields;
+            if (result?.status === 'failed') {
+              if (error) error.textContent = result.detail;
+              return;
+            }
+            if (result?.status === 'renamed') {
+              form.elements.name.defaultValue = name;
+              self.querySelector('[data-space-rename-dialog]')?.close?.();
+              return;
+            }
+          }
+        } catch (failure) {
+          if (error) error.textContent = "Couldn't confirm the rename. Check the space's name before trying again.";
+        } finally {
+          if (reader) await reader.cancel().catch(() => {});
+          if (self.__renameReader === reader) self.__renameReader = null;
+          self.removeAttribute('busy');
+          const submit = self.querySelector('[data-space-rename-submit]');
+          if (submit) submit.disabled = false;
+        }
       }
     connected: |
       (self) => {
@@ -5027,7 +5076,11 @@ element!: &space-actions
         document.addEventListener('pointerdown', self._outside, true);
       }
     disconnected: |
-      (self) => document.removeEventListener('pointerdown', self._outside, true)
+      (self) => {
+        document.removeEventListener('pointerdown', self._outside, true);
+        self.__renameReader?.cancel().catch(() => {});
+        self.__renameReader = null;
+      }
     released: |
       (self) => self.disconnected()
 
