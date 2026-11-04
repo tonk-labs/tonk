@@ -1145,7 +1145,7 @@ async fn prepare(
     let account = registry
         .account
         .clone()
-        .context("no account is signed in; run `tonk account login` first")?;
+        .with_context(|| format!("no account is signed in on this CLI; link the space through Tonk with `tonk space link {name}`"))?;
     let account_root: Did = account
         .root
         .parse()
@@ -1178,7 +1178,9 @@ async fn prepare(
 
     match crate::account::status_in(&site.profile, store).await? {
         crate::account::AccountStatus::Registered { root_did, .. } if root_did == account.root => {}
-        _ => bail!("this account is signed out; run `tonk account login` first"),
+        _ => bail!(
+            "this account is signed out on this CLI; link the space through Tonk with `tonk space link {name}`"
+        ),
     }
 
     let access = account
