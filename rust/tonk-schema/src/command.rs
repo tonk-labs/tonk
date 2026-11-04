@@ -639,6 +639,27 @@ impl Command for InstallComponent {
     type Output = ();
 }
 
+/// `change/undo`: reverse one earlier change to the space it is said in.
+///
+/// The change is named by the revision that made it, as an evaluate
+/// answers it. The worker commits the change's inverse, or refuses when a
+/// later change touched what it wrote, and records the outcome as a
+/// [`crate::Undo`] either way.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct UndoChange {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The revision that made the change.
+    pub revision: crate::domain::command::current::undo_change::Revision,
+    /// The moment it was asked.
+    pub time: crate::domain::command::current::undo_change::Time,
+}
+
+impl Command for UndoChange {
+    type Input = Self;
+    type Output = ();
+}
+
 /// `tonk:sign-in-via`: sign this browser in through another deployment.
 ///
 /// The browser-side `tonk account login --via`: the worker sends the page

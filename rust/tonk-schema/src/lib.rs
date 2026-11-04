@@ -110,6 +110,9 @@ pub use branch::*;
 pub mod remote;
 pub use remote::*;
 
+pub mod undo;
+pub use undo::{Undo, UndoReason, decode_revision, encode_revision};
+
 pub mod remote_execution;
 pub use remote_execution::*;
 

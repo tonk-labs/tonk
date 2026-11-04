@@ -36,6 +36,7 @@ use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
 use super::HostedPeer;
+use super::telemetry::Steps;
 use crate::TonkWorkerError;
 
 mod caps;
@@ -295,10 +296,24 @@ impl SpaceWriter {
     /// own, sent once the push has landed. A write whose push failed is
     /// answered with `502` and `WRITE_NOT_LANDED`, and is gone: the next
     /// write commits on the remote's head, without it.
+    ///
+    /// Every answer carries the time of each step in `Server-Timing`:
+    /// `lock` (waiting for the write before it), `reopen`, `pull`, `eval`,
+    /// `push` and `landed`, each when it ran.
     pub async fn write(&self, request: Request<Body>) -> Response<Body> {
+        let mut steps = Steps::start();
+        let mut response = self.write_timed(request, &mut steps).await;
+        steps.insert(response.headers_mut());
+        response
+    }
+
+    async fn write_timed(&self, request: Request<Body>, steps: &mut Steps) -> Response<Body> {
         let _turn = self.lock.lock().await;
+        steps.lap("lock");
         if self.stale.load(Ordering::SeqCst) {
-            if let Err(error) = self.reopen().await {
+            let reopened = self.reopen().await;
+            steps.lap("reopen");
+            if let Err(error) = reopened {
                 return failure(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "WRITER_UNAVAILABLE",
@@ -308,11 +323,14 @@ impl SpaceWriter {
             self.stale.store(false, Ordering::SeqCst);
         }
         let peer = self.peer();
-        if let Err(error) = self.sync(&peer, "pull").await {
-            return failure(StatusCode::BAD_GATEWAY, "PULL_FAILED", &error);
+        let pulled = self.sync(&peer, "pull").await;
+        steps.lap("pull");
+        if let Err(error) = pulled {
+            return error.answer("PULL_FAILED");
         }
         let response = peer.call(self.on_branch(request)).await;
         if !response.status().is_success() {
+            steps.lap("eval");
             return response;
         }
         let (parts, body) = response.into_parts();
@@ -326,23 +344,63 @@ impl SpaceWriter {
                 );
             }
         };
-        if let Err(error) = self.push(&peer).await {
+        steps.lap("eval");
+        let pushed = self.push(&peer).await;
+        steps.lap("push");
+        if let Err(error) = pushed {
             // A push can fail after its publish reached the remote, when
             // only the answer was lost: then the write did land.
-            if self.landed(&peer).await {
+            let landed = self.landed(&peer).await;
+            steps.lap("landed");
+            if landed {
                 return Response::from_parts(parts, Body::from(body));
             }
             if let Err(reopen) = self.reopen().await {
                 self.stale.store(true, Ordering::SeqCst);
-                return failure(
-                    StatusCode::BAD_GATEWAY,
+                return error.answer_with(
                     "WRITE_NOT_LANDED",
                     &format!("{error}; the writer reopens before its next write: {reopen}"),
                 );
             }
-            return failure(StatusCode::BAD_GATEWAY, "WRITE_NOT_LANDED", &error);
+            return error.answer("WRITE_NOT_LANDED");
         }
         Response::from_parts(parts, Body::from(body))
+    }
+
+    /// Undo the change `revision` made to the space, holding the lock from
+    /// the pull before it through the push after it, as a write does.
+    ///
+    /// Answered once the push has landed. A refusal is recorded and pushed
+    /// too, so whatever shows the change can say why; an undo that writes
+    /// nothing (the change is undone already) pushes nothing.
+    pub async fn undo(&self, revision: &str) -> Result<super::super::UndoReport, String> {
+        let _turn = self.lock.lock().await;
+        if self.stale.load(Ordering::SeqCst) {
+            self.reopen().await?;
+            self.stale.store(false, Ordering::SeqCst);
+        }
+        let peer = self.peer();
+        self.sync(&peer, "pull").await?;
+        let report = peer
+            .undo(&self.space, revision)
+            .await
+            .map_err(|error| error.to_string())?;
+        if report.committed.is_none() {
+            return Ok(report);
+        }
+        if let Err(error) = self.push(&peer).await {
+            if self.landed(&peer).await {
+                return Ok(report);
+            }
+            if let Err(reopen) = self.reopen().await {
+                self.stale.store(true, Ordering::SeqCst);
+                return Err(format!(
+                    "{error}; the writer reopens before its next write: {reopen}"
+                ));
+            }
+            return Err(error.into());
+        }
+        Ok(report)
     }
 
     /// Answer one read without waiting for the lock.
@@ -355,7 +413,18 @@ impl SpaceWriter {
     /// A `query` or `evaluate` answers at most the writer's [`ReadCaps`],
     /// and is refused over them unless it asks for a page with `limit`
     /// and `cursor` (see [`caps`]).
+    ///
+    /// Every answer carries the time of each step in `Server-Timing`:
+    /// `pull` (including waiting for a pull another read began) and
+    /// `eval`.
     pub async fn read(&self, request: Request<Body>) -> Response<Body> {
+        let mut steps = Steps::start();
+        let mut response = self.read_timed(request, &mut steps).await;
+        steps.insert(response.headers_mut());
+        response
+    }
+
+    async fn read_timed(&self, request: Request<Body>, steps: &mut Steps) -> Response<Body> {
         let (mut parts, body) = request.into_parts();
         let page = match caps::Page::take(&parts.uri) {
             Ok((page, uri)) => {
@@ -372,16 +441,21 @@ impl SpaceWriter {
                 "this route can commit; send it as a write",
             );
         }
-        if let Err(error) = self.refresh().await {
-            return failure(StatusCode::BAD_GATEWAY, "PULL_FAILED", &error);
+        steps.skip();
+        let refreshed = self.refresh().await;
+        steps.lap("pull");
+        if let Err(error) = refreshed {
+            return error.answer("PULL_FAILED");
         }
         let capped = request.method() == Method::POST;
         let response = self.peer().call(self.on_branch(request)).await;
-        if capped {
+        let response = if capped {
             caps::cap(response, self.caps, &page).await
         } else {
             response
-        }
+        };
+        steps.lap("eval");
+        response
     }
 
     /// Preview `document` as a read does (`transact=false&preview=true`:
@@ -541,7 +615,9 @@ impl SpaceWriter {
                 "only the agent space's writer reads its grants".into(),
             ));
         }
-        self.refresh().await.map_err(TonkWorkerError::Internal)?;
+        self.refresh()
+            .await
+            .map_err(SyncFailure::into_worker_error)?;
         self.peer().agent_access(&self.agent).await
     }
 
@@ -554,7 +630,9 @@ impl SpaceWriter {
                 "only the agent space's writer reads its grants".into(),
             ));
         }
-        self.refresh().await.map_err(TonkWorkerError::Internal)?;
+        self.refresh()
+            .await
+            .map_err(SyncFailure::into_worker_error)?;
         self.peer().space_chains(&self.agent, space).await
     }
 
@@ -635,7 +713,7 @@ impl SpaceWriter {
         .map_err(|error| error.to_string())?;
         if let Err(error) = self.sync(&peer, "pull").await {
             peer.close().await;
-            return Err(error);
+            return Err(error.into());
         }
         let old = std::mem::replace(&mut *self.peer.write(), Arc::new(peer));
         // A read still on the old peer fails rather than answer from it.
@@ -665,7 +743,7 @@ impl SpaceWriter {
 
     /// Pull for a read that is about to begin, unless a pull that began
     /// after it already landed or a write holds the lock.
-    async fn refresh(&self) -> Result<(), String> {
+    async fn refresh(&self) -> Result<(), SyncFailure> {
         let read = self.reads.fetch_add(1, Ordering::SeqCst);
         let _pulling = self.pulls.lock().await;
         if read < self.pulled_for.load(Ordering::SeqCst) {
@@ -680,22 +758,22 @@ impl SpaceWriter {
         Ok(())
     }
 
-    async fn push(&self, peer: &HostedPeer) -> Result<(), String> {
+    async fn push(&self, peer: &HostedPeer) -> Result<(), SyncFailure> {
         #[cfg(test)]
         if self.refuse_push.swap(false, Ordering::SeqCst) {
-            return Err("push: refused by the test".into());
+            return Err(SyncFailure::local("push: refused by the test"));
         }
         self.sync(peer, "push").await
     }
 
     /// Pull or push the space's branch.
-    async fn sync(&self, peer: &HostedPeer, operation: &str) -> Result<(), String> {
+    async fn sync(&self, peer: &HostedPeer, operation: &str) -> Result<(), SyncFailure> {
         let request = Request::builder()
             .method(Method::POST)
             .uri(format!("{}/sync/{operation}", self.base))
             .header(header::CONTENT_TYPE, "text/plain")
             .body(Body::empty())
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| SyncFailure::local(error.to_string()))?;
         let response = peer.call(request).await;
         let status = response.status();
         if status.is_success() {
@@ -707,10 +785,101 @@ impl SpaceWriter {
             .await
             .map(|body| body.to_bytes())
             .unwrap_or_default();
-        Err(format!(
-            "{operation}: {status}: {}",
-            String::from_utf8_lossy(&body)
-        ))
+        Err(SyncFailure::answered(operation, status, &body))
+    }
+}
+
+/// The code a pull or push answers when the access service refused it
+/// because a grant it proves through was revoked.
+pub const CREDENTIAL_REVOKED: &str = "CREDENTIAL_REVOKED";
+
+/// The code a pull or push answers when no chain the peer holds reaches
+/// the space: what a revoked grant becomes once its revoked chain is
+/// dropped.
+pub const ACCESS_DENIED: &str = "ACCESS_DENIED";
+
+/// A pull or push that did not succeed, with the reason the branch's
+/// sync route gave, so a revocation is answered as one rather than as a
+/// failed sync.
+#[derive(Debug, Clone)]
+pub struct SyncFailure {
+    /// The sync route's error code (`error.code` in its body).
+    code: Option<String>,
+    message: String,
+}
+
+impl SyncFailure {
+    fn local(message: impl Into<String>) -> Self {
+        Self {
+            code: None,
+            message: message.into(),
+        }
+    }
+
+    /// The failure a sync route answered with `status` and `body`.
+    pub fn answered(operation: &str, status: StatusCode, body: &[u8]) -> Self {
+        let code = serde_json::from_slice::<serde_json::Value>(body)
+            .ok()
+            .and_then(|body| body["error"]["code"].as_str().map(str::to_owned));
+        Self {
+            code,
+            message: format!("{operation}: {status}: {}", String::from_utf8_lossy(body)),
+        }
+    }
+
+    /// Whether the access service refused it for a revoked grant.
+    pub fn revoked(&self) -> bool {
+        self.code.as_deref() == Some(CREDENTIAL_REVOKED)
+    }
+
+    /// The refusal's code when access was refused (a revoked grant, or no
+    /// grant left), rather than the sync failing.
+    fn refusal(&self) -> Option<&'static str> {
+        match self.code.as_deref() {
+            Some(CREDENTIAL_REVOKED) => Some(CREDENTIAL_REVOKED),
+            Some(ACCESS_DENIED) => Some(ACCESS_DENIED),
+            _ => None,
+        }
+    }
+
+    /// The writer's answer: `403` and the refusal's code when access was
+    /// refused, `502` and `code` otherwise.
+    fn answer(&self, code: &str) -> Response<Body> {
+        self.answer_with(code, &self.message)
+    }
+
+    /// [`answer`](Self::answer), with `message`.
+    fn answer_with(&self, code: &str, message: &str) -> Response<Body> {
+        match self.refusal() {
+            Some(refusal) => failure(StatusCode::FORBIDDEN, refusal, message),
+            None => failure(StatusCode::BAD_GATEWAY, code, message),
+        }
+    }
+
+    /// As a worker error: [`TonkWorkerError::Upstream`] with `403` when
+    /// access was refused, so a caller can tell it from a failure.
+    fn into_worker_error(self) -> TonkWorkerError {
+        if self.refusal().is_some() {
+            TonkWorkerError::Upstream {
+                status: StatusCode::FORBIDDEN.as_u16(),
+                code: self.code,
+                message: self.message,
+            }
+        } else {
+            TonkWorkerError::Internal(self.message)
+        }
+    }
+}
+
+impl std::fmt::Display for SyncFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl From<SyncFailure> for String {
+    fn from(failure: SyncFailure) -> Self {
+        failure.message
     }
 }
 
@@ -914,7 +1083,7 @@ impl SpaceWriter {
                     "{error}; the writer reopens before its next write: {reopen}"
                 ));
             }
-            return Err(error);
+            return Err(error.into());
         }
         Ok(())
     }
@@ -928,6 +1097,39 @@ impl SpaceWriter {
         directory: &[super::access::DirectoryEntry],
     ) -> Result<(), String> {
         self.retain_grants(chains, directory).await
+    }
+
+    /// Drop `chains` from the agent space and push, as revoking a grant
+    /// joined from a share link does (see `agents::revoke`): the access
+    /// service is never told, so only the agent space says it is gone.
+    #[cfg(test)]
+    pub(crate) async fn withdraw(&self, chains: &[DelegationChain]) -> Result<(), String> {
+        if self.space != self.agent {
+            return Err("only the agent space's writer drops its grants".into());
+        }
+        let _turn = self.lock.lock().await;
+        let peer = self.peer();
+        self.sync(&peer, "pull").await?;
+        {
+            let state = peer.state.read().await;
+            let session = state
+                .reactor
+                .repository(self.space.as_ref())
+                .branch("main")
+                .acquire(&state.operator)
+                .await
+                .map_err(|error| error.to_string())?;
+            for chain in chains {
+                session
+                    .handle()
+                    .delegations()
+                    .retract(dialog_ucan::UcanDelegation(chain.clone()))
+                    .perform(&state.operator)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        self.push(&peer).await.map_err(String::from)
     }
 }
 

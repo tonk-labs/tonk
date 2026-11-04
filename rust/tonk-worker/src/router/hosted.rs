@@ -28,6 +28,7 @@ pub mod in_agent;
 pub mod join;
 pub mod mcp;
 pub mod propose;
+pub mod telemetry;
 pub mod view;
 mod writer;
 pub use writer::{NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, writer_seed};
@@ -226,6 +227,17 @@ impl HostedPeer {
     pub async fn outline(&self, space: &Did, route: &str) -> Result<serde_json::Value, String> {
         let route = super::view_tree::route(&self.state, space, route).await?;
         super::view_tree::outline(&self.state, space, &route).await
+    }
+
+    /// Undo the change `revision` made to the mounted space `space`, on
+    /// its `main`, as of the replica here. See [`super::undo`].
+    pub async fn undo(
+        &self,
+        space: &Did,
+        revision: &str,
+    ) -> Result<super::UndoReport, TonkWorkerError> {
+        let state = self.state.read().await;
+        super::undo::undo_change(&state, space.as_ref(), "main", revision).await
     }
 
     /// The DID this peer signs as.

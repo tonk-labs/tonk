@@ -2854,6 +2854,52 @@ command!: &library/install
     component: install-component/component
     time: install-component/time
 
+# Undoing one change. A receipt that shows a change (on an MCP App card,
+# or any view) carries the revision the change's evaluate answered, and
+# asks for the undo with it. The worker commits the change's inverse:
+# what the change asserted is retracted, what it superseded or retracted
+# is asserted again. It refuses instead, undoing nothing, when a later
+# change touched an entity and attribute this one wrote, or the change is
+# not in this branch's recent history. Either way the outcome lands as a
+# `tonk:undo` on the content branch.
+attribute!: &undo-change/revision
+  description: The revision that made the change, base58 of its version's key bytes, as an evaluate answers it.
+  the: xyz.tonk.command.undo-change/revision
+  as: text
+
+attribute!: &undo-change/time
+  description: The moment it was asked; makes each dispatch a distinct transient.
+  the: xyz.tonk.command.undo-change/time
+  as: float:64
+  role: :now
+
+command!: &change/undo
+  description: Undo one earlier change to this space, named by the revision that made it.
+  with:
+    revision: undo-change/revision
+    time: undo-change/time
+
+# The outcome of an undo, on `tonk:undo/<revision>`: one per change, so a
+# receipt reads it by the revision it already holds. A later attempt on the
+# same change overwrites it.
+concept!: &undo
+  this: tonk:undo
+  description: Whether one change to this space was undone, or why not.
+  with:
+    revision:
+      description: The revision whose change was asked to be undone, encoded as `undo-change/revision` is.
+      the: xyz.tonk.undo/revision
+      as: text
+    status:
+      description: "`undone`, or `refused` when the change could not be undone."
+      the: xyz.tonk.undo/status
+      as: text
+  maybe:
+    reason:
+      description: Why it was refused, in words a person can read.
+      the: xyz.tonk.undo/reason
+      as: text
+
 # What "install" can be said of: every component.
 rule!:
   description: A library component is one an install from the palette can name.
