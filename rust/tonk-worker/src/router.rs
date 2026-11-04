@@ -5897,6 +5897,56 @@ mod approval_stall_diagnosis {
             .expect("the create answers once the service hangs up");
     }
 
+    /// The account panel's `GET /api/customer` asks the access service for
+    /// the customer's live status. While that service is silent, the route
+    /// holds no guard over the state.
+    #[test]
+    fn the_customer_probe_holds_no_guard_while_the_service_answers() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(customer_probe_during_a_stalled_service());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn customer_probe_during_a_stalled_service() {
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}/", listener.local_addr().unwrap());
+        let tonk = test_state().await;
+        served_by(&tonk, &format!("{origin}ucan/")).await;
+        let (_app, state, _lsp) = super::api_router_with_state(tonk);
+
+        let mut probing = Box::pin(super::customer::get_state(
+            axum::extract::State(state.clone()),
+            axum::Extension(crate::axum::RequestOrigin::parse(&origin).unwrap()),
+        ));
+        let socket = tokio::select! {
+            accepted = listener.accept() => accepted.unwrap().0,
+            _ = &mut probing => panic!("the probe answered without asking the service"),
+            _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                panic!("the probe never reached the service")
+            }
+        };
+        assert!(
+            state.try_write().is_ok(),
+            "the customer probe holds a guard over the state while the service answers"
+        );
+        drop(socket);
+        drop(listener);
+        let _ = tokio::time::timeout(Duration::from_secs(30), probing)
+            .await
+            .expect("the probe answers once the service hangs up");
+    }
+
     /// What used to keep a sync from writing into a space being removed
     /// was the write guard the removal took, which waited out every sync.
     /// A sync now holds no guard, so the space's own gate does it: removing
