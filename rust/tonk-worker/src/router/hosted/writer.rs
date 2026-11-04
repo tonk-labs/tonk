@@ -658,7 +658,7 @@ impl SpaceWriter {
         let now = dialog_ucan_core::time::Timestamp::now().to_unix();
         match self.proposals.take(id, now) {
             // A declined library command says which, for its receipt.
-            Ok((document, _)) => match super::library::command_of(&document) {
+            Ok(taken) => match super::library::command_of(&taken.document) {
                 Some(command) => json_answer(serde_json::json!({
                     "dismissed": true,
                     "library": { "action": command.action.word(), "component": command.component },

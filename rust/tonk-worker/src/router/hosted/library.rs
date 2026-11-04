@@ -389,6 +389,7 @@ mod tests {
             role: None,
             agent: Agent::default(),
             home,
+            origin: "https://tonk.example".into(),
         }
     }
 
