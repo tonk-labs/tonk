@@ -489,6 +489,27 @@ fn the_relay_is_filled_with_the_origin_it_was_reached_on() {
     assert!(read_resource("ui://tonk/other.html", ORIGIN).is_none());
 }
 
+#[dialog_common::test]
+fn it_wears_the_in_agent_stylesheet_with_fonts_from_the_origin() {
+    let read = read_resource(RELAY_URI, "https://tonk.example/").unwrap();
+    let text = read["contents"][0]["text"].as_str().unwrap();
+    assert!(!text.contains(super::super::in_agent::MARK));
+    assert!(
+        text.contains("--tonk-text:"),
+        "the shared tokens are inlined"
+    );
+    assert!(text.contains("url(\"https://tonk.example/in-agent/fonts/"));
+    assert_eq!(
+        read["contents"][0]["_meta"]["ui"]["csp"]["resourceDomains"],
+        json!(["https://tonk.example"]),
+        "the fonts' origin is a resource domain"
+    );
+    assert_eq!(
+        read["contents"][0]["_meta"]["openai/widgetCSP"]["resource_domains"],
+        json!(["https://tonk.example"])
+    );
+}
+
 #[cfg(all(feature = "integration-tests", not(target_arch = "wasm32")))]
 mod against_a_service {
     //! A view's peer, acting as the view's own key with the delegations

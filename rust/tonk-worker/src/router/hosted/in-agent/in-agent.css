@@ -1,0 +1,785 @@
+/* Tonk's in-agent system, vendored from gooey (in-agent/in-agent.css and
+   tonk-look.css at gooey 1a2e518) as one file, so the relay and the join card
+   can inline it: an MCP App resource is one HTML document. Changes go to
+   gooey first; copy them here unchanged.
+
+   The only edits from the source: the @import of tonk-look.css is replaced
+   by that file's text, below, and the font addresses start with
+   __TONK_IN_AGENT_FONTS__, which the worker fills in with the provider's
+   /in-agent/fonts (served with CORS; see rust/tonk-ui/assets/_headers). */
+
+/* =============================================================================
+   tonk-look.css — Tonk's look as custom properties: the values README.md lists
+   under "Tonk's look", in one place. Scoped to Tonk's own elements, never
+   :root (rule 1), so nothing reaches a space or the agent app around it.
+   in-agent.css imports this file. In a browser, Tonk's own pages wear it: the
+   hub (.tonk-hub, in-browser/hub.css) and task pages. <tonk-message> inherits
+   these names and falls back to the same values on its own.
+
+   Every name says the job a value does. Light, dark and the ask change values,
+   never names. Each name is declared once as light-dark(light, dark); recipes
+   read other names, so they follow. Only color-scheme decides dark.
+============================================================================= */
+.tonk, .tonk-hub, .tonk-task, .tonk-look, .fabb-page, .fabb-request {
+  --tonk-text:          light-dark(#38182a, #f7f6f5);
+  --tonk-text-soft:     light-dark(#5b4953, #c9bec4);
+  --tonk-text-disabled: color-mix(in oklab, var(--tonk-text) 40%, var(--tonk-sheet));
+  --tonk-sheet:         light-dark(#f7f6f5, #23141c);
+  --tonk-ground:        light-dark(#e8e6e4, #180d12);
+  --tonk-field:         light-dark(#ffffff, #180d12);
+  --tonk-control-edge:  #86757d;
+  --tonk-rule:          color-mix(in oklab, var(--tonk-text) 28%, transparent);
+  --tonk-rule-soft:     color-mix(in oklab, var(--tonk-text) 12%, transparent);
+  --tonk-wash:          color-mix(in oklab, var(--tonk-text) 6%, transparent);
+  --tonk-wash-strong:   color-mix(in oklab, var(--tonk-text) 12%, transparent);
+  --tonk-main:          var(--tonk-text);
+  --tonk-main-text:     light-dark(#f7f6f5, #38182a);
+  --tonk-main-hover:    color-mix(in oklab, var(--tonk-main-text) 12%, var(--tonk-main));
+  --tonk-backdrop:      light-dark(rgb(56 24 42 / 32%), rgb(0 0 0 / 45%));
+  --tonk-shadow:        0 0 0 1px light-dark(rgb(56 24 42 / 6%), rgb(247 246 245 / 6%)),
+                        0 1px 3px light-dark(rgb(56 24 42 / 6%), transparent),
+                        0 8px 24px -12px light-dark(rgb(56 24 42 / 12%), transparent);
+  --tonk-view-ground:   light-dark(#ffffff, #131313);
+  --tonk-font-label:    "IBM Plex Sans Condensed", "Tonk Narrow", "Tonk Narrowed", sans-serif;
+  --tonk-font-sentence: "IBM Plex Sans", system-ui, sans-serif;
+  --tonk-font-code:     "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  --tonk-radius-tag:     3px;
+  --tonk-radius-control: 6px;
+  --tonk-radius-sheet:   12px;
+  --tonk-change:    150ms ease-out;                  /* a hover, a press, a wash, a ring */
+  --tonk-ease-open: cubic-bezier(0.23, 1, 0.32, 1);  /* anything that opens; each sets its own duration */
+  /* type: 12, 14 and 16, and no other size */
+  --tonk-size-heading:     16px;   /* what a page, sheet or ask is called */
+  --tonk-size-label:       14px;   /* buttons, options, links, row details, ledgers, Tonk's line */
+  --tonk-size-hint:        14px;   /* hints, receipts, fine print: soft text makes the step */
+  --tonk-size-code:        12px;   /* ids and addresses; a code someone compares takes the size around it */
+  --tonk-size-tag:         12px;   /* the bot and default tags */
+  --tonk-size-field:       16px;   /* text a person types, on every surface */
+  --tonk-leading-label:    1.3;
+  --tonk-leading-sentence: 1.5;
+  --tonk-height-field:     44px;
+}
+/* two settings. Tonk's own pages: */
+.tonk-hub, .tonk-task, .tonk-look, .fabb-page, .fabb-request {
+  --tonk-size-sentence:  16px;
+  --tonk-size-name:      16px;
+  --tonk-height-control: 36px;
+  --tonk-height-row:     48px;
+  --tonk-measure:        29em;   /* 65 real characters of Plex Sans; 65ch holds 86 */
+}
+/* a card inside someone's agent app, which sits under the agent's text: */
+.tonk {
+  --tonk-size-sentence:  14px;
+  --tonk-size-name:      14px;
+  --tonk-height-control: 30px;
+}
+@media (pointer: coarse) { .tonk { --tonk-height-control: 44px; } }
+/* the ask: a solid card, the same in light and dark */
+.tonk--ask {
+  --tonk-text: #f7f6f5; --tonk-text-soft: #c9bec4; --tonk-sheet: #38182a; --tonk-field: #180d12;
+  --tonk-rule: rgb(247 246 245 / 22%); --tonk-wash: rgb(247 246 245 / 12%); --tonk-wash-strong: rgb(247 246 245 / 18%);
+  --tonk-main-text: #38182a;
+}
+/* who is dark: the hub follows the system, task pages stay light, the frame sets in-agent */
+.tonk-hub { color-scheme: light dark; }
+.tonk-task, .fabb-page { color-scheme: light; }
+[data-theme="dark"] .tonk:not(:where([data-theme="light"] .tonk)), .tonk[data-theme="dark"] { color-scheme: dark; }
+[data-theme="light"] .tonk, .tonk[data-theme="light"] { color-scheme: light; }
+@font-face { font-family: "Tonk Narrow"; src: local("Arial Narrow"), local("ArialNarrow"), local("Roboto Condensed"), local("HelveticaNeue-Condensed"); }
+@font-face { font-family: "Tonk Narrowed"; src: local("Arial"), local("ArialMT"), local("Helvetica"); size-adjust: 88%; }
+
+/* =============================================================================
+   TONK · IN-AGENT — what Tonk draws inside someone's own agent
+   -----------------------------------------------------------------------------
+   When a person's agent shows a space, asks them to join one, or reports a
+   problem, Tonk draws into the agent app's own container in the
+   conversation. This file is what goes in it. It wears the same look as
+   Tonk's pages in a browser (in-browser/): the same aubergine ink on warm
+   stone and the same condensed lowercase labels, kept to one line wherever it can, because the agent app
+   gives little room and already draws the card around it.
+
+   THREE LAYERS, THREE OWNERS
+   · the agent app — the container, its border and corners, and the bar above
+                     it with the connector's name and the tool's name. Not
+                     ours; Tonk can't put the disc or the role there.
+   · Tonk          — everything in this file. The same in every space.
+   · the view      — the space's own page, styled by the space's theme
+                     (default/ or its reskin). This file never reaches inside.
+
+   THREE CARD TYPES
+   · shows  .tonk          a view, then one Tonk line under it: disc, space ›
+                           view, role, full screen. After a save the line
+                           holds the receipt and undo instead of the place
+   · asks   .tonk--ask     consent and admin: connect, join, install, change
+                           how the space works, leave. Ink fills the
+                           container. Never holds a view, so a view can never
+                           pass for one.
+   · tells  .tonk--tell    errors and limits: a heavy ink rule on top, the
+                           condition named in the line, one sentence, then
+                           what you can do instead.
+
+   ROOM IN AGENT APPS
+   · Tonk draws no card of its own inline: the agent app's container is the
+     card. Tonk's part of a shows card is one 30px line
+   · inline sizes are the strip, the card (4-5 rows, at most 2 actions) and
+     the carousel (3-8 items, 1 action each). Inline views drop their own
+     heading; the line names them. Keep a whole inline card under about 400px
+   · a whole view opens full screen (.tonk--fill), never inline
+   · the agent's text carries the answer; the card is for looking and acting
+
+   RULES
+   · tokens live on .tonk, never on :root, so nothing leaks into the agent
+     app or into a view
+   · the sync disc is the only circle; no person or agent glyphs. An agent
+     is its account's name plus the bot tag
+   · Tonk-written labels and actions are lowercase in the source; names,
+     titles and typed values keep their case
+   · one ink. Status is words plus the disc, never a hue
+   · the theme follows the agent app's: the frame sets data-theme from the
+     host context and passes it to the views
+============================================================================= */
+
+/* =============================================================================
+   1 · TOKENS
+   The palette and the faces come from ../tonk-look.css, light and dark. The
+   fonts ship with the frame (fonts/, OFL.txt); nothing here loads from
+   Google Fonts. Only the latin subset and the weights in use.
+============================================================================= */
+@font-face {
+  font-family: "IBM Plex Sans Condensed";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("__TONK_IN_AGENT_FONTS__/ibm-plex-sans-condensed-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans Condensed";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("__TONK_IN_AGENT_FONTS__/ibm-plex-sans-condensed-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans Condensed";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("__TONK_IN_AGENT_FONTS__/ibm-plex-sans-condensed-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("__TONK_IN_AGENT_FONTS__/ibm-plex-sans-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("__TONK_IN_AGENT_FONTS__/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+}
+
+.tonk {
+  /* shape */
+  --in-agent-pad:       12px;
+  --in-agent-line-size: 30px;
+
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  background: var(--tonk-sheet);
+  color: var(--tonk-text);
+  font: 400 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label);
+  text-align: left;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;   /* every control has its own press */
+}
+.tonk *,
+.tonk *::before,
+.tonk *::after { box-sizing: border-box; }
+
+/* =============================================================================
+   2 · CARD TYPES
+============================================================================= */
+/* the agent app draws the edge, so a tell's weight is a rule along the top */
+.tonk--tell {
+  box-shadow: inset 0 3px 0 var(--tonk-text);
+  padding-top: 3px;
+}
+
+/* =============================================================================
+   3 · THE DISC — the only circle, with the chrome's states
+   filled  connected and synced · hollow  local only, nothing syncs yet ·
+   diagonal half  paused on purpose, changes stay private until it resumes.
+   No disc where the person isn't in the space.
+   It names its state too: role="img" and the state as its aria-label
+============================================================================= */
+.tonk-disc {
+  flex: none;
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--tonk-text, #38182a);
+}
+.tonk-disc[data-state="hollow"] {
+  background: none;
+  box-shadow: inset 0 0 0 1.5px var(--tonk-text, #38182a);
+}
+.tonk-disc[data-state="paused"] {
+  background: linear-gradient(135deg, var(--tonk-text, #38182a) 50%, transparent 50%);
+  box-shadow: inset 0 0 0 1.5px var(--tonk-text, #38182a);
+}
+
+/* =============================================================================
+   4 · THE LINE — Tonk's whole frame around a view
+   One 30px line under the view: disc · space › view · role · full screen.
+   After a save, [data-receipt] swaps the place for the receipt and undo; the
+   role stays. In a chat whose changes aren't on main, the count and save on
+   main come before the role. On a narrow card they take a row of their own,
+   as a stamp does. Asks and tells open with the same line as their head.
+============================================================================= */
+.tonk-line,
+.tonk-head {
+  min-height: var(--in-agent-line-size);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 0 var(--in-agent-pad);
+  font-size: var(--tonk-size-label);
+  white-space: nowrap;
+}
+/* everything in the line sits on its first text line, so a receipt that
+   wraps keeps the disc, undo and the role beside its first words. The place
+   and the receipt pad themselves to the line's height, which keeps a single
+   line centred. They start from nothing and grow to their text, so they
+   never push the rest onto a second row; only the count goes there.
+   The line is its own container: its width comes from the card, so the
+   containment can't collapse it */
+.tonk-line {
+  container: tonk-line / inline-size;
+  flex-wrap: wrap;
+  row-gap: 0;
+  align-items: baseline;
+  box-shadow: inset 0 1px 0 var(--tonk-rule);
+}
+.tonk-line .tonk-place,
+.tonk-line .tonk-receipt {
+  flex: 1 1 0;
+  max-width: max-content;
+  padding-block: calc((var(--in-agent-line-size) - 1lh) / 2);
+}
+
+/* short of room, the view's name gives way first, then the space's, each
+   with an ellipsis */
+.tonk-place {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  overflow: hidden;
+}
+.tonk-space {
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+.tonk-where {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--tonk-text-soft);
+  text-overflow: ellipsis;
+}
+/* at least 16px from an undo before it, so the two don't read as one phrase */
+.tonk-role {
+  flex: none;
+  margin-left: auto;
+  padding: 0 8px 0 10px;
+  color: var(--tonk-text-soft);
+  font-variant-numeric: tabular-nums;
+}
+/* a long receipt wraps to a second line rather than cut off who made the
+   change. Empty, it leaves the row but stays in the accessibility tree, so
+   the first receipt is announced */
+.tonk-receipt {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: break-word;
+  font-variant-numeric: tabular-nums;
+}
+/* no 700 of Plex Condensed is loaded */
+.tonk-receipt b { font-weight: 600; }
+.tonk-line .tonk-receipt:empty { position: absolute; padding: 0; }
+.tonk-line[data-receipt] .tonk-place { display: none; }
+.tonk-line .tonk-receipt + .tonk-link { margin-left: 6px; }
+/* two answers side by side keep their hit areas apart */
+.tonk-line .tonk-link + .tonk-link { margin-left: 8px; }
+
+/* a stamp where the role sits: snapshot time, preview */
+.tonk-stamp {
+  flex: none;
+  margin-left: auto;
+  padding-right: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.tonk-stamp + .tonk-role { margin-left: 0; }
+.tonk-out { margin-left: auto; padding-right: 8px; }
+.tonk-stamp + .tonk-out,
+.tonk-role + .tonk-out { margin-left: 4px; }
+/* a chat's changes that aren't on main: the count in the stamp's place, then
+   save on main, before the role. Its hit area is the line's, like every link
+   in it */
+.tonk-count {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 6px 0 auto;
+}
+.tonk-count .tonk-stamp { margin-left: 0; padding-right: 0; }
+.tonk-count + .tonk-role { margin-left: 0; }
+/* on a card under 382px, where a name like Family trip stops fitting beside
+   the widest count, the stamp and the count each take a row of their own under
+   the line, lined up with the place. The role stays at the line's end */
+@container tonk-line (max-width: 366px) {
+  .tonk-count,
+  .tonk-line > .tonk-stamp {
+    order: 1;
+    flex-basis: 100%;
+    display: flex;
+    min-height: var(--in-agent-line-size);
+    align-items: center;
+    margin: 0;
+    padding-left: 16px;
+  }
+  .tonk-count + .tonk-role,
+  .tonk-stamp + .tonk-role,
+  .tonk-stamp + .tonk-out { margin-left: auto; }
+}
+/* a receipt needs more room than a name, so beside one the count moves on a
+   card under 520px */
+@container tonk-line (max-width: 504px) {
+  .tonk-line[data-receipt] .tonk-count {
+    order: 1;
+    flex-basis: 100%;
+    min-height: var(--in-agent-line-size);
+    align-items: center;
+    margin: 0;
+    padding-left: 16px;
+  }
+  .tonk-line[data-receipt] .tonk-count + .tonk-role { margin-left: auto; }
+}
+
+/* full screen: the card's own button, as the agent apps ask for */
+.tonk-expand {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  margin-left: -4px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--tonk-radius-control);
+  background: none;
+  color: var(--tonk-text);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: scale var(--tonk-change), background-color var(--tonk-change);
+}
+@media (hover: hover) and (pointer: fine) {
+  .tonk-expand:hover { background: var(--tonk-wash); }
+}
+.tonk-expand:active { background: var(--tonk-wash-strong); scale: 0.96; }
+.tonk-expand svg { width: 14px; height: 14px; }
+/* no text to share a baseline with: centred on the line's first row */
+.tonk-line .tonk-expand {
+  align-self: flex-start;
+  margin-top: calc((var(--in-agent-line-size) - 26px) / 2);
+}
+
+/* hit areas: 44px across and the line's full height. Taller would cover
+   the view above it */
+.tonk-expand::before,
+.tonk-line .tonk-link::after,
+.tonk-strip .tonk-link::after,
+.tonk-failed .tonk-link::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  height: var(--in-agent-line-size);
+  translate: 0 -50%;
+}
+.tonk-expand::before { left: -9px; right: -9px; }
+.tonk-line .tonk-link,
+.tonk-strip .tonk-link,
+.tonk-failed .tonk-link { position: relative; }
+/* centred on the word, so a short one like undo still gets its 44px */
+.tonk-line .tonk-link::after,
+.tonk-strip .tonk-link::after,
+.tonk-failed .tonk-link::after { left: 50%; width: max(100% + 8px, 44px); translate: -50% -50%; }
+
+/* the view runs edge to edge in every display mode: a plain rectangle, with
+   no frame or corners from Tonk. Everything inside .tonk-view is the space's */
+.tonk-well { position: relative; }
+.tonk-view {
+  display: block;
+  width: 100%;
+  height: 120px;               /* until the view reports its own height */
+  border: 0;
+  background: var(--tonk-view-ground);
+}
+
+/* loading: frame.js marks a well aria-busy until its view reports a size,
+   and starts it at the height that view had last time. The wash shows
+   behind the view until it paints. After 400ms the well names what's
+   loading (data-slow, data-loading="loading Packing list") */
+.tonk-well[aria-busy="true"] .tonk-view { background: var(--tonk-wash); }
+.tonk-well[data-slow]::after {
+  content: attr(data-loading);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 0 var(--in-agent-pad);
+  color: var(--tonk-text-soft);
+  font: 400 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label);
+  text-align: center;
+  pointer-events: none;
+}
+/* a view that never reported: frame.js stops saying loading, says what
+   happened, and offers to load it again */
+.tonk-well[data-failed] .tonk-view { visibility: hidden; }
+.tonk-failed {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: center;
+  justify-content: center;
+  gap: 2px 8px;
+  margin: 0;
+  padding: 0 var(--in-agent-pad);
+  font: 400 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label);
+  text-align: center;
+}
+/* a snapshot is read only. Its well also carries `inert`, so a keyboard
+   can't reach the view either */
+.tonk-well[data-live="snapshot"] .tonk-view { pointer-events: none; }
+
+/* =============================================================================
+   5 · CONTENT — the statement, the ledger, a list of changes, fine print
+   Sentences are set in Plex Sans. The ask's one-line request and the ledger
+   stay in the condensed face
+============================================================================= */
+.tonk-say {
+  max-width: 65ch;
+  margin: 0;
+  padding: 6px var(--in-agent-pad) 2px;
+  font: 400 var(--tonk-size-sentence)/var(--tonk-leading-sentence) var(--tonk-font-sentence);
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+}
+.tonk--ask .tonk-say {
+  font: 600 var(--tonk-size-heading)/var(--tonk-leading-label) var(--tonk-font-label);
+  text-wrap: balance;
+}
+
+.tonk-ledger {
+  margin: 0;
+  padding: 6px var(--in-agent-pad) 8px;
+  display: grid;
+  grid-template-columns: minmax(72px, 104px) minmax(0, 1fr);
+  gap: 2px 10px;
+  font-size: var(--tonk-size-label);
+}
+.tonk-ledger dt { color: var(--tonk-text-soft); }
+.tonk-ledger dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+/* what an ask will change, one line each: + adds · − removes · ~ changes */
+.tonk-changes {
+  list-style: none;
+  margin: 4px var(--in-agent-pad) 8px;
+  padding: 0;
+  box-shadow: inset 0 1px 0 var(--tonk-rule);
+  font-size: var(--tonk-size-label);
+}
+.tonk-changes li {
+  min-height: 28px;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 0 4px;
+  box-shadow: inset 0 -1px 0 var(--tonk-rule);
+  overflow-wrap: anywhere;
+}
+.tonk-mark {
+  font-family: var(--tonk-font-code);
+  font-size: var(--tonk-size-label);
+}
+.tonk-kind {
+  color: var(--tonk-text-soft);
+  font-size: var(--tonk-size-label);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* lines an ask adds to a text the space keeps, such as AGENTS.md */
+.tonk-lines {
+  margin: 0 var(--in-agent-pad) 8px;
+  padding: 6px 8px;
+  border-radius: var(--tonk-radius-control);
+  background: var(--tonk-wash);
+  font: 400 var(--tonk-size-code)/var(--tonk-leading-sentence) var(--tonk-font-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tonk-fine {
+  max-width: 65ch;
+  margin: 0;
+  padding: 0 var(--in-agent-pad) 8px;
+  color: var(--tonk-text-soft);
+  font: 400 var(--tonk-size-hint)/var(--tonk-leading-sentence) var(--tonk-font-sentence);
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+}
+.tonk-code {
+  font-family: var(--tonk-font-code);
+  font-size: var(--tonk-size-code);
+}
+/* a code someone compares takes the size around it, tracked */
+.tonk-ledger .tonk-code,
+.tonk-strip .tonk-code {
+  font-size: inherit;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+/* =============================================================================
+   6 · ACTIONS — primary · ring · quiet
+============================================================================= */
+/* the row gap keeps wrapped buttons' hit areas apart */
+.tonk-acts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 8px;
+  padding: 4px var(--in-agent-pad) var(--in-agent-pad);
+}
+.tonk-say + .tonk-acts { padding-top: 8px; }
+.tonk-btn {
+  appearance: none;
+  position: relative;
+  height: var(--tonk-height-control);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--tonk-radius-control);
+  background: var(--tonk-text);
+  color: var(--tonk-sheet);
+  font: 600 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label);
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: scale var(--tonk-change), background-color var(--tonk-change);
+}
+/* 30px to see, 44px to hit */
+.tonk-btn::before {
+  content: "";
+  position: absolute;
+  inset: -7px 0;
+}
+/* hover on a solid action mixes in the ground, not more ink */
+@media (hover: hover) and (pointer: fine) {
+  .tonk-btn:hover { background-color: color-mix(in oklch, var(--tonk-text) 84%, var(--tonk-sheet)); }
+}
+.tonk-btn:active { scale: 0.96; }
+.tonk-btn--ring {
+  background: transparent;
+  color: var(--tonk-text);
+  box-shadow: inset 0 0 0 1px var(--tonk-text);
+}
+@media (hover: hover) and (pointer: fine) {
+  .tonk-btn--ring:hover { background-color: var(--tonk-wash); }
+}
+.tonk-btn--ring:active { background-color: var(--tonk-wash-strong); }
+/* disabled: the pressed wash and faded text, no ring, on paper and on ink
+   alike. No opacity, so nothing behind the button shows through */
+.tonk-btn[disabled],
+.tonk-btn--ring[disabled] {
+  background: var(--tonk-wash-strong);
+  color: color-mix(in oklch, var(--tonk-text) 40%, var(--tonk-sheet));
+  box-shadow: none;
+  cursor: not-allowed;
+  scale: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tonk-btn, .tonk-expand, .tonk-link { transition: none; }
+  .tonk-btn:active, .tonk-expand:active, .tonk-link:active { scale: 1; }
+}
+/* high contrast drops backgrounds and box-shadows, which is all a button's edge
+   and the disc are made of */
+@media (forced-colors: active) {
+  .tonk-btn { border: 1px solid transparent; }
+  .tonk-disc { forced-color-adjust: none; --tonk-text: CanvasText; }
+}
+
+.tonk-link {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--tonk-text);
+  font: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: scale var(--tonk-change), background-color var(--tonk-change);
+}
+@media (hover: hover) and (pointer: fine) {
+  .tonk-link:hover { text-decoration-thickness: 2px; }
+}
+.tonk-link:active { background: var(--tonk-wash-strong); scale: 0.96; }
+/* a link among the buttons hits 44px tall, like them */
+.tonk-acts .tonk-link { position: relative; }
+.tonk-acts .tonk-link::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -4px;
+  right: -4px;
+  height: 44px;
+  translate: 0 -50%;
+}
+
+.tonk :focus-visible {
+  outline: 2px solid var(--tonk-text);
+  outline-offset: 2px;
+}
+/* a card that takes focus so it's read out, when what was pressed has gone */
+.tonk[tabindex="-1"]:focus { outline: none; }
+/* selection is Tonk's too, as in the browser: ink on paper, and paper on an
+   ask's ink. Never the agent app's or the browser's own colour */
+.tonk::selection,
+.tonk ::selection {
+  background: var(--tonk-text);
+  color: var(--tonk-sheet);
+}
+/* the full-screen button sits on the card's edge, which clips anything
+   drawn outside it */
+.tonk .tonk-expand:focus-visible { outline-offset: -2px; }
+
+@media (pointer: coarse) {
+  .tonk { --in-agent-line-size: 44px; }
+  .tonk-expand { width: 44px; height: 44px; }
+  .tonk-line .tonk-expand { margin-top: 0; }
+  .tonk-link { min-height: 44px; display: inline-flex; align-items: center; }
+}
+
+/* =============================================================================
+   7 · THE BOT TAG — an agent is its account's name plus this
+   A highlighted caption, not a control: no edge, nothing to press.
+   Works in the agent's text as well as Tonk's, so it carries its own fallbacks.
+   Inline, not inline-block, so a line never breaks between a name and its tag
+============================================================================= */
+.tonk-bot {
+  display: inline;
+  margin-left: 4px;
+  padding: 0 3px;
+  border-radius: var(--tonk-radius-tag, 3px);
+  background: var(--tonk-wash-strong, rgb(56 24 42 / 10%));
+  color: var(--tonk-text, #38182a);
+  font: 500 var(--tonk-size-tag, 12px)/1.333 var(--tonk-font-label, "IBM Plex Sans Condensed", sans-serif);
+  letter-spacing: 0.02em;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+
+/* =============================================================================
+   8 · SIZES
+   inline, in the conversation
+   chip         the agent app draws it: a linked name in the agent's text
+   strip        one Tonk line on its own: a receipt, or a fact
+   card         a view's short summary (4-5 rows, at most 2 actions) + line
+   carousel     3-8 like items side by side, 1 action each, + line; the view
+                lays them out and scrolls sideways
+   outside the conversation
+   full screen  the whole view, .tonk--fill, asked for with the line's button
+   docked       picture in picture, where the agent app has it (ChatGPT)
+   workspace    the whole space: a link into Tonk
+============================================================================= */
+/* on the first text line too, like Tonk's line; the rows stay centred */
+.tonk-strip {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-content: center;
+  align-items: baseline;
+  gap: 2px 6px;
+  min-height: var(--in-agent-line-size);
+  padding: 4px var(--in-agent-pad);
+  font-size: var(--tonk-size-label);
+}
+.tonk-strip .tonk-receipt { flex: 1; }
+/* a strip that asks or counts: the sentence, then the answers or the count in
+   the same line; on a narrow card they wrap below it, the count lined up with
+   the sentence */
+.tonk-strip:has(.tonk-strip-acts) { padding-block: 6px; }
+.tonk-strip:has(.tonk-strip-acts, .tonk-count) .tonk-receipt { flex: 1 1 220px; }
+.tonk-strip .tonk-count { margin-left: 16px; }
+.tonk-strip-acts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.tonk-handoff {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px var(--in-agent-pad);
+}
+.tonk-handoff p {
+  flex: 1 1 200px;
+  margin: 0;
+  color: var(--tonk-text-soft);
+  font: 400 var(--tonk-size-hint)/var(--tonk-leading-sentence) var(--tonk-font-sentence);
+}
+
+/* full screen or docked: the view fills the card above the line and scrolls.
+   A short view stretches, so its own ground still reaches the line. The line
+   stays put under it, clears the agent app's chat input (--tonk-safe-bottom)
+   and adds the way into Tonk */
+.tonk--fill { height: 100%; }
+.tonk--fill .tonk-well {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.tonk--fill .tonk-view { min-height: 100%; }
+.tonk--fill .tonk-line {
+  --in-agent-line-size: 40px;
+  padding-bottom: var(--tonk-safe-bottom, 0px);
+}
+@media (pointer: coarse) {
+  .tonk--fill .tonk-line { --in-agent-line-size: 44px; }
+}

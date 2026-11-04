@@ -397,7 +397,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 let uri = message["params"]["uri"].as_str().unwrap_or_default();
                 read_guide(uri)
                     .or_else(|| super::view::read_resource(uri, self.origin))
-                    .or_else(|| super::join::read_resource(uri))
+                    .or_else(|| super::join::read_resource(uri, self.origin))
                     .ok_or_else(
                         || json!({ "code": -32602, "message": format!("no resource {uri}") }),
                     )
