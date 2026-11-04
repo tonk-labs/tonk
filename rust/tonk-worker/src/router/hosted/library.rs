@@ -178,7 +178,7 @@ pub fn ask(context: &Context, id: &str, library: &Value) -> Card {
     if !catalog.agents.is_empty() {
         let count = catalog.agents.len();
         let lines = if count == 1 { "line" } else { "lines" };
-        card = card.change("~", "AGENTS.md", Some(format!("{mark} {count} {lines}")));
+        card = card.change("~", "`AGENTS.md`", Some(format!("{mark} {count} {lines}")));
         card.lines = Some(
             catalog
                 .agents
@@ -189,20 +189,62 @@ pub fn ask(context: &Context, id: &str, library: &Value) -> Card {
         );
     }
     let version = match &catalog.version {
-        Some(version) => format!("{} {version}", catalog.name),
-        None => catalog.name.clone(),
+        Some(version) => format!("`{} {version}`", catalog.name),
+        None => format!("`{}`", catalog.name),
     };
-    let who = if context.home {
-        "Only you and this agent see it.".to_owned()
-    } else {
-        match action {
-            Action::Install => format!("Everyone in {space} gets the view."),
-            Action::Uninstall => format!("It goes for everyone in {space}."),
-        }
+    let what = what_it_adds(&parts);
+    let who = match (context.home, action) {
+        (true, Action::Install) => format!("Only you and this agent get {what}."),
+        (true, Action::Uninstall) => format!("{} goes for you and this agent.", capital(&what)),
+        (false, Action::Install) => format!("Everyone in {space} gets {what}."),
+        (false, Action::Uninstall) => format!("{} goes for everyone in {space}.", capital(&what)),
     };
     card.fine(format!("From the Tonk library, {version}. {who}"))
         .answer(act, Look::Main, APPLY, arguments.clone())
         .answer(decline, Look::Ring, DISMISS, arguments)
+}
+
+/// What a component adds, as the fine print names it: its view where it
+/// adds views ("the view", "the 3 views"), else its concepts and commands
+/// ("the issue concept", "2 concepts and 1 command"), else "it".
+fn what_it_adds(parts: &[(String, String)]) -> String {
+    let of = |kind: &str| -> Vec<&String> {
+        parts
+            .iter()
+            .filter(|(_, of)| of == kind)
+            .map(|(name, _)| name)
+            .collect()
+    };
+    let views = of("view");
+    match views.len() {
+        0 => {}
+        1 => return "the view".to_owned(),
+        many => return format!("the {many} views"),
+    }
+    let (concepts, commands) = (of("concept"), of("command"));
+    let named = |names: &[&String], kind: &str| match names {
+        [] => None,
+        [one] => Some(format!("the {one} {kind}")),
+        many => Some(format!("{} {kind}s", many.len())),
+    };
+    let said: Vec<String> = [named(&concepts, "concept"), named(&commands, "command")]
+        .into_iter()
+        .flatten()
+        .collect();
+    if said.is_empty() {
+        "it".to_owned()
+    } else {
+        said.join(" and ")
+    }
+}
+
+/// `text` with its first letter in capitals.
+fn capital(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 /// The change a receipt's undo is called with: the inverse command.
@@ -250,17 +292,15 @@ pub fn receipt(context: &Context, library: &Value, undoing: bool) -> Card {
                     format!("I couldn’t uninstall {label} from {space}, so nothing changed."),
                 ),
             };
-            let mut card = Card::tell(
+            // The reason is the model's (see [`told`]); the person reads
+            // one plain sentence.
+            Card::tell(
                 Some(context.place.clone()),
                 context.role,
                 title,
                 say,
                 context.agent.clone(),
-            );
-            if let Some(reason) = library["reason"].as_str() {
-                card = card.fine(reason.to_owned());
-            }
-            card
+            )
         }
     }
 }
@@ -278,6 +318,24 @@ pub fn declined(context: &Context, library: &Value) -> Card {
         context.role,
         format!("{not} · nothing changed in {space}"),
         context.agent.clone(),
+    )
+}
+
+/// A tell that `command` did not run, in one plain sentence: the reason
+/// is the model's.
+pub fn failed(context: &Context, command: &Command) -> Card {
+    let name = command
+        .component
+        .strip_prefix("tonk:library/")
+        .unwrap_or(&command.component);
+    receipt(
+        context,
+        &json!({
+            "action": command.action.word(),
+            "status": "failed",
+            "catalog": { "name": name, "label": name, "agents": [], "adds": [] },
+        }),
+        false,
     )
 }
 
@@ -427,7 +485,7 @@ mod tests {
             ("+", "decision", "view"),
             ("+", "decision", "concept"),
             ("+", "log-decision", "command"),
-            ("~", "AGENTS.md", "+ 2 lines"),
+            ("~", "`AGENTS.md`", "+ 2 lines"),
         ]
         .iter()
         .map(|(a, b, c)| ((*a).to_owned(), (*b).to_owned(), (*c).to_owned()))
@@ -439,10 +497,45 @@ mod tests {
         );
         assert_eq!(
             card["fine"],
-            "From the Tonk library, decision-log 1.2. Everyone in Launch gets the view."
+            "From the Tonk library, `decision-log 1.2`. Everyone in Launch gets the view."
         );
         assert_eq!(card["answers"][0]["label"], "install");
         assert_eq!(card["answers"][1]["label"], "not now");
+    }
+
+    /// Without views, the fine print names what the component adds.
+    #[dialog_common::test]
+    fn it_names_what_a_component_without_views_adds() {
+        let library = json!({
+            "action": "install",
+            "catalog": {
+                "name": "issue", "label": "Issues", "version": "1.0",
+                "agents": [], "adds": ["concept issue"],
+            },
+        });
+        let card = ask(&context(false), "id", &library).to_value();
+        assert_eq!(
+            card["fine"],
+            "From the Tonk library, `issue 1.0`. Everyone in Launch gets the issue concept."
+        );
+        let parts = |adds: &[(&str, &str)]| -> Vec<(String, String)> {
+            adds.iter()
+                .map(|(name, kind)| ((*name).to_owned(), (*kind).to_owned()))
+                .collect()
+        };
+        assert_eq!(
+            what_it_adds(&parts(&[
+                ("a", "concept"),
+                ("b", "concept"),
+                ("c", "command")
+            ])),
+            "2 concepts and the c command"
+        );
+        assert_eq!(
+            what_it_adds(&parts(&[("a", "view"), ("b", "view")])),
+            "the 2 views"
+        );
+        assert_eq!(what_it_adds(&[]), "it");
     }
 
     #[dialog_common::test]
@@ -471,7 +564,10 @@ mod tests {
         let card = receipt(&context(false), &failed, false).to_value();
         assert_eq!(card["kind"], "tell");
         assert_eq!(card["label"], "not installed");
-        assert_eq!(card["fine"], "no such file");
+        assert!(
+            card.get("fine").is_none(),
+            "no raw reason for the person: {card}"
+        );
     }
 
     #[dialog_common::test]

@@ -59,6 +59,17 @@
           if (text != null) node.textContent = text;
           return node;
         }
+        // Text whose `quoted` runs are names to type, drawn as the mocks'
+        // code spans. Each run is set as text, never as markup.
+        function coded(tag, className, text) {
+          const node = el(tag, className);
+          String(text)
+            .split('`')
+            .forEach((part, index) => {
+              if (part) node.append(index % 2 ? el('span', 'tonk-code', part) : part);
+            });
+          return node;
+        }
         function bot() {
           return el('span', 'tonk-bot', 'bot');
         }
@@ -113,8 +124,11 @@
               const mark = el('span', 'tonk-mark', change.mark);
               mark.setAttribute('aria-hidden', 'true');
               const words = { '+': 'adds', '−': 'removes', '-': 'removes', '~': 'changes' };
-              const name = el('span', null, change.name);
-              name.setAttribute('aria-label', (words[change.mark] || '') + ' ' + change.name);
+              const name = coded('span', null, change.name);
+              name.setAttribute(
+                'aria-label',
+                (words[change.mark] || '') + ' ' + String(change.name).replaceAll('`', ''),
+              );
               item.append(mark, name);
               if (change.kind) item.append(el('span', 'tonk-kind', change.kind));
               list.append(item);
@@ -131,7 +145,7 @@
             }
             section.append(ledger);
           }
-          if (card.fine) section.append(el('p', 'tonk-fine', card.fine));
+          if (card.fine) section.append(coded('p', 'tonk-fine', card.fine));
           if (card.answers?.length) {
             const acts = el('div', 'tonk-acts');
             // In the order the server gives them: the main answer first.

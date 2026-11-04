@@ -1272,7 +1272,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
             let card = if unreachable(status) {
                 super::propose::not_saved(context)
             } else {
-                super::propose::rejected(context, false)
+                super::library::failed(context, command)
             };
             let mut answer = tool_result(json!(reason(&value)), true);
             answer["structuredContent"] = json!({ "card": card.to_value() });

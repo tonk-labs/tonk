@@ -34,13 +34,47 @@ use crate::TonkWorkerError;
 pub(super) fn location() -> Option<Url> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
-        // The directory the service worker serves the library from.
-        let origin = super::repository::worker_origin()?;
-        Url::parse(&format!("{origin}/library/")).ok()
+        let origin = super::repository::worker_origin();
+        match source(origin.is_some(), cfg!(feature = "volatile-storage")) {
+            // The directory the service worker serves the library from.
+            Source::Served => Url::parse(&format!("{}/library/", origin?)).ok(),
+            Source::Bundled => Url::parse(tonk_library::ROOT).ok(),
+            Source::Nowhere => None,
+        }
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
         Url::parse(tonk_library::ROOT).ok()
+    }
+}
+
+/// Where a worker reads the library from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+pub(super) enum Source {
+    /// Served beside it, from its origin.
+    Served,
+    /// Compiled into it: what a hosted peer, with no origin, carries.
+    Bundled,
+    /// Neither: a wasm test harness, which parses without includes.
+    Nowhere,
+}
+
+/// Where a wasm worker reads the library from: its origin when it has
+/// one, else, in a `hosted` build (a Durable Object, which has none), the
+/// copies compiled in.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+pub(super) fn source(has_origin: bool, hosted: bool) -> Source {
+    match (has_origin, hosted) {
+        (true, _) => Source::Served,
+        (false, true) => Source::Bundled,
+        (false, false) => Source::Nowhere,
     }
 }
 
@@ -74,6 +108,9 @@ impl Load for Library {
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
+    if uri.as_str().starts_with(tonk_library::ROOT) {
+        return tonk_library::Bundled.load(uri).await;
+    }
     super::repository::fetch_library_bytes(uri.path())
         .await
         .map_err(|error| error.to_string())
@@ -742,6 +779,16 @@ mod tests {
 
     fn library() -> Library {
         Library::new(Url::parse("https://tonk.test/library/").unwrap())
+    }
+
+    /// A hosted peer has no origin; it reads the library it was built
+    /// with, not a relative URL nothing can resolve.
+    #[dialog_common::test]
+    fn it_reads_the_bundled_library_where_there_is_no_origin() {
+        assert_eq!(source(true, true), Source::Served);
+        assert_eq!(source(true, false), Source::Served);
+        assert_eq!(source(false, true), Source::Bundled);
+        assert_eq!(source(false, false), Source::Nowhere);
     }
 
     #[dialog_common::test]

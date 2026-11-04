@@ -5715,6 +5715,14 @@ const SEED_NONE: &str = "seed:none";
 /// creation fails loudly rather than seeding an empty repo.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
+    // A hosted peer (a Durable Object) has no origin to fetch from, and
+    // carries the library it was built with instead.
+    #[cfg(feature = "volatile-storage")]
+    if super::library::source(crate::cache::has_asset_origin(), true)
+        == super::library::Source::Bundled
+    {
+        return embedded_standard_library(url);
+    }
     String::from_utf8(fetch_library_bytes(url).await?)
         .map_err(|_| TonkWorkerError::Internal(format!("library {url} is not UTF-8 text")))
 }
@@ -5810,7 +5818,12 @@ pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWork
 
 #[cfg(any(
     not(all(target_arch = "wasm32", target_os = "unknown")),
-    all(target_arch = "wasm32", target_os = "unknown", test)
+    all(target_arch = "wasm32", target_os = "unknown", test),
+    all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        feature = "volatile-storage"
+    )
 ))]
 fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     match url {
