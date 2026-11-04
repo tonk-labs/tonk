@@ -5002,7 +5002,7 @@ pub(super) async fn seed_empty_branch(
     key: &str,
     branch: &str,
 ) -> Result<(), RepositoryError> {
-    let library = fetch_standard_library(STANDARD_LIBRARY_URL)
+    let library = fetch_library_document(STANDARD_LIBRARY_URL)
         .await
         .map_err(|e| RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}")))?;
     install_fresh_seed(tonk, key, branch, &library, &[]).await

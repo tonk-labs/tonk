@@ -3705,7 +3705,7 @@ view!:
         <form class="space-unknown-wall" data-space={space-repo} data-branch={space-branch}
           data-site={this} on:branch-create=space/create-branch>
           <h1 class="space-unknown-statement">there is no branch {space-branch} here yet</h1>
-          <p class="space-unknown-narrator">Make it from main as it is now, or start it empty with only the standard library. If the space's remote already has a branch of this name, that one is used instead.</p>
+          <p class="branch-missing-narrator">Make it from main as it is now, or start it empty with only the standard library. If the space's remote already has a branch of this name, that one is used instead.</p>
           <div class="space-unknown-run">
             <button type="submit" name="base" value="main" class="space-unknown-home">branch off main<span aria-hidden="true">&#9656;</span></button>
           </div>
@@ -3786,14 +3786,15 @@ view!:
         :root.wa-dark .space-unknown-mast img { filter:invert(1); }
         .space-unknown-wall { width:min(576px, 100%); margin:0 auto;
           display:flex; flex-direction:column; gap:7px; }
-        .space-unknown-statement, .space-unknown-narrator { min-height:36px;
+        .space-unknown-statement, .space-unknown-narrator,
+        .branch-missing-narrator { min-height:36px;
           margin:0; background:var(--edge-card);
           box-shadow:0 0 0 1px var(--edge-ring); }
         .space-unknown-statement { padding:10px 14px; display:flex; align-items:flex-end;
           color:var(--edge-ink);
           font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
           font-weight:600; line-height:1.55; text-wrap:balance; }
-        .space-unknown-narrator { padding:10px 14px; color:var(--edge-soft);
+        .space-unknown-narrator, .branch-missing-narrator { padding:10px 14px; color:var(--edge-soft);
           font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
           font-weight:400; line-height:1.55; text-wrap:pretty; }
         .space-unknown-run { display:flex; }
