@@ -819,8 +819,8 @@ view!:
       .space-menu tonk-share[data-share-state="blocked"] [data-share-copy-label="failed"],
       .space-menu tonk-share[data-share-state="failed"] [data-share-copy-label="failed"] { display:inline; }
       /* a signed-out share is refused for want of an account: say so */
-      .space-menu tonk-share[data-share-state="blocked"][data-share-blocked="needs-account"] [data-share-copy-label="failed"] { display:none; }
-      .space-menu tonk-share[data-share-state="blocked"][data-share-blocked="needs-account"] [data-share-copy-label="sign-in"] { display:inline; }
+      .space-menu tonk-share[data-share-state="blocked"]:is([data-share-blocked="needs-account"],[data-share-blocked="account-required"]) [data-share-copy-label="failed"] { display:none; }
+      .space-menu tonk-share[data-share-state="blocked"]:is([data-share-blocked="needs-account"],[data-share-blocked="account-required"]) [data-share-copy-label="sign-in"] { display:inline; }
       /* creation is the collection's final card and the header's primary action */
       space-create { display:block; }
       [data-space-duplicate]:not([busy]) [data-duplicating-label],

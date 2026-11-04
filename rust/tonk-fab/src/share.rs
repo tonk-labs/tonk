@@ -1249,6 +1249,7 @@ fn handle_blocked(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, block
             ProductResult::Blocked,
             Some(match blocked.code.as_str() {
                 tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT
+                | tonk_worker_api::share::BLOCKED_ACCOUNT_REQUIRED
                 | tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION => FailureKind::AccessDenied,
                 tonk_worker_api::share::BLOCKED_NOT_SYNCED => FailureKind::LocalState,
                 _ => FailureKind::Unknown,
@@ -1256,7 +1257,12 @@ fn handle_blocked(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, block
         );
     }
 
-    if blocked.code == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT {
+    // Both mean "sign in first": `needs-account` when the space also has
+    // no remote, `account-required` when it has one. The remedy is the
+    // same account hand-off either way.
+    if blocked.code == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT
+        || blocked.code == tonk_worker_api::share::BLOCKED_ACCOUNT_REQUIRED
+    {
         abandon(state, &blocked.detail);
         set_state(host, ShareState::Blocked);
         // Outside the bar (the Hub's card menu) nothing hears the event
@@ -1272,7 +1278,7 @@ fn handle_blocked(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, block
             crate::shadow::emit(
                 &fab,
                 "fabb-account-needed",
-                &JsValue::from_str(tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT),
+                &JsValue::from_str(&blocked.code),
             );
         }
         return;
@@ -1492,7 +1498,8 @@ fn read_link_field(row: &JsValue) -> Option<String> {
 }
 
 /// The refusal code a `blocked` host names, so a surface with no bar to
-/// act on it (the Hub) can still word it. Today only `needs-account`.
+/// act on it (the Hub) can still word it. Today `needs-account` and
+/// `account-required`.
 const BLOCKED_ATTRIBUTE: &str = "data-share-blocked";
 
 /// Stamp the state on the host. The view stylesheet keys the label and spinner
