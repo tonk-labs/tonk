@@ -46,7 +46,8 @@ pub(crate) async fn invite_agent(
     agent: &Did,
     repo: &str,
 ) -> Result<(), TonkWorkerError> {
-    let tonk = state.read().await;
+    // A clone, not a guard: inviting pulls, proves and pushes over the network.
+    let tonk = state.read().await.clone();
     // Either may be listed in the account's directory and not be on this
     // device yet; opening it would mount it, so inviting does too.
     super::adopt::mount_on_first_use(&tonk, state, agent.repo_key()).await;
@@ -161,7 +162,8 @@ pub(crate) async fn invite_by_email(
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("the minted invite: {error}")))?;
 
-    let tonk = state.read().await;
+    // A clone, not a guard: the ticket is issued over the network.
+    let tonk = state.read().await.clone();
     let repository = tonk
         .profile
         .space(repo)
