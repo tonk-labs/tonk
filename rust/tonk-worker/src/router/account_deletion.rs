@@ -105,6 +105,20 @@ impl dialog_capability::Provider<tonk_schema::command::DeleteAccount>
         );
         {
             let tonk = self.state().read().await;
+            // The purge is signed by the root the custody cell opens, and
+            // the service keeps that cell closed until the emailed link is
+            // opened. Asking for the passkey now would only fail after it.
+            let registration = super::customer::registration(&tonk).await;
+            if let Some(reason) = not_deletable_yet(&registration) {
+                super::ceremony::report(
+                    &tonk,
+                    ceremony::DELETE_ACCOUNT,
+                    ceremony_state::REFUSED,
+                    &reason,
+                )
+                .await;
+                return;
+            }
             let plan = match load_plan(&tonk).await {
                 Ok(plan) => plan,
                 Err(error) => {
@@ -138,6 +152,48 @@ impl dialog_capability::Provider<tonk_schema::command::DeleteAccount>
     }
 }
 
+/// What to tell someone deleting an account that is still waiting on its
+/// emailed link to be opened.
+const AWAITING_ACTIVATION: &str = "this account is not confirmed yet. Open the link in your \
+     activation email, then delete it. If you already opened it, try again in a moment.";
+
+/// Why this account cannot be deleted yet, or `None` when it can.
+///
+/// Only an account awaiting activation is held back: its custody cell
+/// stays closed until the link is opened, so no passkey can sign the
+/// purge.
+fn not_deletable_yet(registration: &super::customer::Registration) -> Option<String> {
+    match registration {
+        super::customer::Registration::AwaitingActivation { .. } => {
+            Some(AWAITING_ACTIVATION.to_owned())
+        }
+        super::customer::Registration::Unregistered
+        | super::customer::Registration::Served { .. }
+        | super::customer::Registration::Suspended => None,
+    }
+}
+
+/// A purge failure as the settings page shows it.
+///
+/// A custody refusal travels as `code`, a unit separator, then the
+/// message, so the custody reply can carry the code. The status row is
+/// read by a person, so it carries the sentence and never the code.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+fn readable_failure(error: &str) -> String {
+    use tonk_identity::custody::CustodyDenial;
+
+    match error.split_once('\u{1f}') {
+        Some((code, message)) => match CustodyDenial::from_code(code, message) {
+            Some(CustodyDenial::AwaitingActivation) => AWAITING_ACTIVATION.to_owned(),
+            _ => message.to_owned(),
+        },
+        None => error.to_owned(),
+    }
+}
+
 /// Purge the account the passkey holds.
 ///
 /// One invocation: the root the custody cell opens signs
@@ -167,7 +223,7 @@ pub(crate) async fn purge(
                 &tonk,
                 ceremony::DELETE_ACCOUNT,
                 ceremony_state::FAILED,
-                error,
+                &readable_failure(error),
             )
             .await
         }
@@ -243,4 +299,133 @@ async fn purge_inner(
         super::profile::forget_branch(&tonk, &retired).await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[dialog_common::test]
+    fn it_names_the_missing_activation_rather_than_its_code() {
+        let refused =
+            readable_failure("awaiting-activation\u{1f}the account is awaiting email confirmation");
+        assert_eq!(refused, AWAITING_ACTIVATION);
+        assert!(!refused.contains("awaiting-activation"));
+    }
+
+    #[dialog_common::test]
+    fn it_keeps_the_sentence_of_any_other_refusal() {
+        assert_eq!(
+            readable_failure("suspended\u{1f}the account is suspended: unpaid"),
+            "the account is suspended: unpaid"
+        );
+        assert_eq!(
+            readable_failure("this passkey belongs to a different account"),
+            "this passkey belongs to a different account"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_holds_back_only_an_account_awaiting_activation() {
+        use super::super::customer::Registration;
+
+        assert!(
+            not_deletable_yet(&Registration::AwaitingActivation {
+                email: "person@example.test".into(),
+            })
+            .is_some()
+        );
+        for registration in [
+            Registration::Unregistered,
+            Registration::Served {
+                provider: "https://example.test/ucan/".into(),
+            },
+            Registration::Suspended,
+        ] {
+            assert_eq!(not_deletable_yet(&registration), None, "{registration:?}");
+        }
+    }
+
+    /// A pending account is refused before the passkey is asked for,
+    /// with a sentence a person can act on.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn it_refuses_to_delete_an_account_awaiting_activation() {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_varsig::Principal as _;
+        use tonk_schema::{CeremonyStatus, ceremony, ceremony_state};
+
+        let state = crate::router::command::tests::native::test_state().await;
+        {
+            let tonk = state.read().await;
+            let root = Ed25519Signer::import(&[91; 32]).await.unwrap();
+            let grant = tonk_identity::delegation::mint_device_delegation(
+                root.clone(),
+                &tonk.profile.did(),
+            )
+            .await
+            .unwrap();
+            super::super::identity::persist_root(
+                &tonk,
+                tonk_worker_api::SaveRootRequest {
+                    credential_id: "pending-test".into(),
+                    delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+                    passkey: None,
+                    encryption_key: None,
+                },
+            )
+            .await
+            .unwrap();
+            tonk.reactor
+                .profile_repository()
+                .branch(&tonk.active_branch)
+                .transaction()
+                .assert(tonk_schema::AccountRegistered::new(
+                    root.did().this(),
+                    "pending@example.test".into(),
+                    "https://example.test/ucan/".into(),
+                    1,
+                ))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+        }
+
+        let env =
+            crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+        dialog_capability::Provider::<tonk_schema::command::DeleteAccount>::execute(
+            &env,
+            tonk_schema::command::DeleteAccount {
+                this: "cmd:delete-account".parse().expect("entity"),
+                email: tonk_schema::domain::command::delete_account::Email(
+                    "pending@example.test".into(),
+                ),
+            },
+        )
+        .await;
+
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let rows: Vec<CeremonyStatus> = session
+            .handle()
+            .query()
+            .select(Query::<CeremonyStatus>::default())
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row.ceremony.0 == ceremony::DELETE_ACCOUNT)
+            .expect("the refusal is reported");
+        assert_eq!(row.state.0, ceremony_state::REFUSED);
+        assert_eq!(row.detail.0, AWAITING_ACTIVATION);
+    }
 }
