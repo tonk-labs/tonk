@@ -15,7 +15,6 @@ attribute!: &note-title
   description: "The note title"
   the: bench.note/title
   as: text
-  cardinality: one
 
 concept!: &note
   description: "A note"

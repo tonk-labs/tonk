@@ -28,10 +28,18 @@ view!:
 
 `{field}` placeholders interpolate the rendered entity's fields, drawn
 from the model concept's shape. Each entry lands as its own fact
-(`<model> xyz.tonk.view/<facet> <template>`) with cardinality one, so
+(`<model> xyz.tonk.view/<facet> <template>`) read under `:last`, so
 re-asserting a facet supersedes that template — there is no separate
 view entity to name or pin. The `view` concept itself is seeded by the
 standard library, pinned to `tonk:view`.
+
+A field declared `pick: :all` holds a set of values, and the smallest
+element around its placeholder repeats once per value:
+`<ul><li>{tag}</li></ul>` renders one `<li>` per tag. A field under the
+default pick renders once. A keyed collection (`as: {[symbol]: text}` or
+`as: {[position]: entity}`) iterates its entries the same way when it is
+declared `pick: :all`, and inside the repeat `{field/key}` is the entry's
+key. An optional (`maybe:`) field the entity lacks renders empty.
 
 ## Authoring ui, directory, label, and title facets
 
@@ -259,8 +267,9 @@ tonk element add tally-widget --description 'A running tally' \
 tonk element                       # every element defined on the branch
 ```
 
-`method` is the same construct as a view's `show`: one fact per entry,
-cardinality one. **A view is a dictionary of templates keyed by facet;
+`method` is the same construct as a view's `show`, a keyed collection
+declared `as: {[symbol]: text}`: one fact per entry, each read under
+`:last`. **A view is a dictionary of templates keyed by facet;
 an element is a dictionary of functions keyed by method.**
 
 ```yaml tonk=eval

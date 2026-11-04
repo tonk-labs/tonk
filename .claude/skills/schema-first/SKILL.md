@@ -66,6 +66,13 @@ Use `with:` for required fields and `maybe:` for optional ones. A required
 field that is sometimes absent makes the whole row unresolvable — that is
 the `project_sheet_missing_field_empty` failure.
 
+A field holding a set of values declares `pick: :all` (never
+`cardinality: many`, the deprecated spelling); the default pick, `:last`,
+holds one. A field keyed by name or position over a whole domain is a keyed
+collection: `the: "<domain>"` with `as: {[symbol]: <type>}` (a dictionary) or
+`as: {[position]: <type>}` (a sequence). A list under `the:` or `as:` is a
+ranked choice. `tonk help notation` covers all three.
+
 ## Never store an encoded copy of authority
 
 A delegation is stored by retaining the chain:

@@ -70,9 +70,11 @@ The `.` sigil disambiguates bookmark references from literal
 strings. Numeric / boolean / null saphyr scalars become
 `Literal(Integer | Float | Boolean | Null)` directly.
 
-Sequences are rejected with a diagnostic — the notation has no
-representation for cardinality-many writes (use repeated
-assertions).
+Sequences are rejected with a diagnostic except under the listing
+fields: an attribute's `the:` (relations) and `as:` (values), where a
+list is a ranked choice, and a command's `action:`. A list is not how a
+`pick: :all` field takes several values; write one assertion per
+value instead.
 
 ## What's intentionally not here
 

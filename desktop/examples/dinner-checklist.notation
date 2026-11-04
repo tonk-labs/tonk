@@ -5,12 +5,10 @@ concept!: &dinner-task
       description: "Task label"
       the: xyz.tonk.dinner-task/title
       as: text
-      cardinality: one
     completed:
       description: "Whether the task is complete"
       the: xyz.tonk.dinner-task/completed
       as: boolean
-      cardinality: one
 
 command!: &dinner-check
   description: "Save a dinner checkbox change"

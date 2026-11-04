@@ -5,22 +5,18 @@ concept!: &tonk-checklist
       description: The checklist heading
       the: tonk.checklist/title
       as: text
-      cardinality: one
     connect:
       description: Connection step status
       the: tonk.checklist/connect
       as: text
-      cardinality: one
     build:
       description: Build step status
       the: tonk.checklist/build
       as: text
-      cardinality: one
     verify:
       description: Follow-up verification status
       the: tonk.checklist/verify
       as: text
-      cardinality: one
 
 tonk-checklist!:
   this: id:tonk-checklist-smoke

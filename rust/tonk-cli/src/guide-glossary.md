@@ -22,10 +22,21 @@ its declaration.
 
 A **pick** says which of an entity's claims in the relation a read returns:
 `last` (the default) the newest, `all` every one, `top` the best ranked of the
-values listed in `as:` (a list implies `top`), `max` and `min` the greatest
-and least. Like a type, each pick is a built-in anchor naming the entity
-dialog knows it by, `all:` for `all`, and a document anchor of the same name
-shadows it.
+relations listed in `the:` or the values listed in `as:` (a list implies
+`top`), `max` and `min` the greatest and least. A field declares it as a
+keyword, `pick: :all`, which is the entity dialog knows the pick by, `all:`.
+`pick: :all` is what earlier releases spelled `cardinality: many`, and the
+default `last` what they spelled `cardinality: one`; the old spelling still
+reads, with a warning.
+
+A field is **required** when declared under a concept's `with:` and
+**optional** under its `maybe:`: an entity missing an optional field is still
+an instance, and a query returns it without that field.
+
+A **keyed collection** is a field over every relation of one domain, keyed by
+the relation's name: `as: {[symbol]: text}` is a **dictionary** (keyed by a
+symbol, like a view's facets) and `as: {[position]: entity}` a **sequence**
+(keyed by a position, read in order). Each entry is its own claim.
 
 An **assertion** adds a claim. Creating a new content-addressed instance is
 also called **minting**. Under any pick but `all`, a later assertion

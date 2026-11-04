@@ -5,12 +5,10 @@ concept!: &direct-build-task
       description: Checklist task label
       the: tonk.direct-build/title
       as: text
-      cardinality: one
     status:
       description: Local build verification status
       the: tonk.direct-build/status
       as: text
-      cardinality: one
 
 direct-build-task!:
   this: id:direct-build-task

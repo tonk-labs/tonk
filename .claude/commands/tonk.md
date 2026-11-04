@@ -75,7 +75,8 @@ tonk retract <concept> <entity> [--field <f>]        # whole instance, or one fi
 
 - `<entity>` is a bookmark name or exact `did:key:…` URI. Supersede requires
   the entity to already match the concept.
-- Asserting on a many-cardinality field appends a value.
+- Asserting on a `pick: :all` (many-valued, `[]` in `tonk show`) field adds a
+  value; any other field supersedes its value.
 - The receipt separates `committed`, `verification.status` (`verified`,
   `not-matched`, `failed`, `not-run`) and `sync.push` (`pushed`, `failed`,
   `no-upstream`, `disabled`, `not-committed`). `verified` needs no follow-up
@@ -89,7 +90,7 @@ tonk retract <concept> <entity> [--field <f>]        # whole instance, or one fi
 
 ```bash
 tonk concept                          # list concepts (bare `tonk view`, `tonk element` list too)
-tonk concept add <name> --field <field>:<type>:<one|many> [--field …] [--description <text>]
+tonk concept add <name> --field <field>:<type>[:last|all|max|min] [--field …] [--description <text>]
 tonk view add <concept> --template '<html>' | --template-file <path> \
     [--kind detail|directory|label|title] [--home]
 tonk space home <concept> [<concept> …]   # re-point the space home (replaces it)
@@ -102,7 +103,7 @@ tonk render <route> [--out file.html]     # {model} | {entity}@{model} | {entity
 - Shortest schema-to-visible path:
 
   ```bash
-  tonk concept add todo --field title:text:one
+  tonk concept add todo --field title:text
   tonk assert todo --title "Write the guide"
   tonk view add todo --kind directory --template-file todo.html --home
   tonk render todo
@@ -132,6 +133,19 @@ Notation reminders (details: `tonk help notation`, `views`, `events`):
   generated identities back before referencing them. YAML anchors don't create
   persistent identities.
 - To update, use the exact `this:` URI and only the changed fields.
+- Declaring fields in notation: required under `with:`, optional under
+  `maybe:`. A many-valued field is `pick: :all` (not `cardinality: many`,
+  which is the deprecated spelling); the default `:last` holds one value.
+  Write several values as separate assertions (one `concept!:` each); a list
+  is refused and a key repeated in one body keeps only the last value.
+- A list under `as:` (values) or `the:` (relations) is a ranked choice: the
+  field reads the best ranked value, or the first relation the entity has a
+  value in. (A listed `the:` currently fails at query time; see
+  `tonk help notation`.)
+- A keyed collection is `the: "<domain>"` (quoted) with `as: {[symbol]: <type>}` (a
+  dictionary) or `as: {[position]: <type>}` (a sequence). Assert entries as a
+  map (`swatch: {primary: "#3355ff"}`); query one with a literal key or all
+  with `{?key: ?value}`.
 - Don't invent aggregate or OR syntax; narrow oversized queries.
 
 ## Safety: sync, lost responses, verification

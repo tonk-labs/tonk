@@ -9,13 +9,13 @@ async () => {
  const endpoint='/api/repository/'+encodeURIComponent(space.subject)+'/branch/main/evaluate';
  const source=`concept!: &person
   with:
-    name: {description: Test fixture field, cardinality: one, the: test.person/name, as: text}
+    name: {description: Test fixture field, the: test.person/name, as: text}
 concept!: &issue
   with:
-    title: {description: Test fixture field, cardinality: one, the: test.issue/title, as: text}
-    assignee: {description: Test fixture field, cardinality: one, the: test.issue/assignee, as: entity}
-    status: {description: Test fixture field, cardinality: one, the: test.issue/status, as: text}
-    body: {description: Test fixture field, cardinality: one, the: test.issue/body, as: text}
+    title: {description: Test fixture field, the: test.issue/title, as: text}
+    assignee: {description: Test fixture field, the: test.issue/assignee, as: entity}
+    status: {description: Test fixture field, the: test.issue/status, as: text}
+    body: {description: Test fixture field, the: test.issue/body, as: text}
 person!:
   this: id:jack
   name: Jack Douglas

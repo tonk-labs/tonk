@@ -2,7 +2,7 @@
 
 This documents the template language `<tonk-display>` uses: how an
 HTML template with `{placeholder}` holes is filled from a concept's
-fields, how cardinality-many fields make a subtree repeat, and how a
+fields, how many-valued (`pick: :all`) fields make a subtree repeat, and how a
 single template renders either *one* entity or a *directory* of many.
 
 The planning half lives in `tonk-concept` (`template.rs` parses a
@@ -40,15 +40,15 @@ conclusion.fields  = { title: "...", summary: "...", ... }
 `{this}` resolves to `conclusion.this`; `{field}` resolves to
 `conclusion.fields[field]`.
 
-## Cardinality drives iteration
+## The pick drives iteration
 
-A field declared `cardinality: :many` holds a *list* of values, not a
+A field declared `pick: :all` holds a *list* of values, not a
 scalar. The engine renders a many-field by **repeating the smallest
 subtree that contains the hole**, once per value:
 
 ```html
 <ul>
-  <li>{ingredient}</li>   <!-- ingredient is cardinality-many -->
+  <li>{ingredient}</li>   <!-- ingredient is pick: :all -->
 </ul>
 ```
 
@@ -56,8 +56,13 @@ renders as one `<ul>` with one `<li>` per ingredient. The `<li>` is the
 **iteration root**: the outermost element whose content depends on the
 many-valued field, cloned per value.
 
-The rule that picks the iteration root is purely structural (it does
-*not* consult the descriptor at plan time):
+Which fields can iterate comes from the concept's descriptor: a field
+read under any pick but `:all` (the default `:last` included, and a keyed
+collection declared without `pick: :all`) is a **scalar**, planned as a
+plain substitution rendered once, so an absent optional value renders
+empty rather than dropping its host element (`scalar_field_names` in
+`tonk-template`). For the remaining fields, the rule that picks the
+iteration root is structural:
 
 1. For each field referenced in the template, collect the host element
    of every hole that mentions it (the smallest enclosing element).
@@ -69,10 +74,8 @@ The rule that picks the iteration root is purely structural (it does
    repeats independently.
 
 At **render** time the engine looks at the actual value: an
-`Ipld::List` iterates (one clone per item), a scalar renders once. So
-cardinality is observed from the data, not hard-coded in the plan — a
-`cardinality: :one` field is simply the degenerate case that iterates
-exactly once.
+`Ipld::List` iterates (one clone per item), a single value renders once.
+Inside an iterated keyed collection, `{field/key}` reads the entry's key.
 
 Inside a repeated clone, the iterating field is *shadowed* to the
 current item: `{ingredient}` resolves to this clone's value, while
@@ -83,7 +86,7 @@ inside the clone still refers to the subject (see below).
 
 The iteration root is the *outermost* element that references the
 many-field, so you control the repeated unit by where you place the
-hole. Given a cardinality-many `step` field, to repeat list items but
+hole. Given a `pick: :all` `step` field, to repeat list items but
 not the list:
 
 ```html
@@ -101,7 +104,7 @@ rule).
 ## `{this}` is the root scope, not a field
 
 `{this}` is the subject — the entity a conclusion is *about*. It is
-distinct from the cardinality-many field iteration above: a many-field
+distinct from the many-valued field iteration above: a many-field
 repeats a subtree over a list of values *within one conclusion*, while
 `{this}` is the **root scope**, one instance per *conclusion*. The
 renderer already loops over a frame of conclusions and renders one unit

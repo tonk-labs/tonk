@@ -2,25 +2,21 @@ attribute!: &habit-name
   description: "The habit display name"
   the: bench.habit/name
   as: text
-  cardinality: one
 
 attribute!: &habit-target
   description: "The daily target description"
   the: bench.habit/target
   as: text
-  cardinality: one
 
 attribute!: &entry-habit
   description: "The habit this entry completes"
   the: bench.entry/habit
   as: entity
-  cardinality: one
 
 attribute!: &entry-date
   description: "Completion date (YYYY-MM-DD)"
   the: bench.entry/date
   as: text
-  cardinality: one
 
 concept!: &habit
   description: "A tracked habit"
@@ -41,12 +37,10 @@ concept!: &view
     model:
       description: "Concept this view renders"
       the: xyz.tonk.view/model
-      cardinality: one
       as: entity
     display:
       description: "HTML template for the view"
       the: xyz.tonk.view/display
-      cardinality: one
       as: text
 
 habit!: &run

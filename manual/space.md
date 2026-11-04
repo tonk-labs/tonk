@@ -52,7 +52,7 @@ own `Replica` so tonk's and dialog's replica facts co-locate:
 | `xyz.tonk.replica/status` | `tonk:blank`, until the seed finishes |
 
 > **Not implemented yet.** `xyz.tonk.replica/subject` is the durable relation
-> between a device profile and a space it has replicated, cardinality-one. It
+> between a device profile and a space it has replicated, one value per profile (`:last`). It
 > is what makes "which spaces does this profile hold?" a single query, and it
 > replaces `xyz.tonk.space/local`, which is what exists today.
 >
@@ -187,7 +187,7 @@ On the kernel version's entity:
 | `xyz.tonk.kernel/rule` | a rule this version installed |
 | `xyz.tonk.kernel/route` | a route this version seeded |
 
-Each is cardinality-many, valued by the component's entity. The entity itself
+Each is read under `pick: :all` (many-valued), valued by the component's entity. The entity itself
 is the kernel's source URL carrying its content hash, e.g.
 `/library/core.yaml#42c2be0f…` — provenance and fingerprint in one, so the
 source can be re-fetched to compare or re-seed, and a custom kernel is just a
@@ -346,7 +346,7 @@ command!: &tonk/rename-repository
 ```
 
 A rule binds `subject` to `?this` so the name lands on the space entity
-directly. `name` is cardinality-one, so it overwrites in place.
+directly. `name` is read under `:last` (one value), so it overwrites in place.
 
 The editable source of truth is `tonk/repository` on the space's own content
 branch; `xyz.tonk.space/name` in the profile db is a mirror, so every device can

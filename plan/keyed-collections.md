@@ -82,14 +82,15 @@ but breaks the declaration/query symmetry) and a separate `each:` block
 beside `with:` and `maybe:` (most visible, but splits the concept's
 fields across two blocks).
 
-## Cardinality is orthogonal
+## The pick is orthogonal
 
-`cardinality:` keeps its current meaning and default of `one`. It is
-**per entry**, not about the collection: whether one entity may have
-two `tonk.view/basic` facts or just one. A collection field is
-many-*entried* by construction; each entry is independently
-cardinality-one or cardinality-many. Writing `cardinality: many`
-alongside `as: {[symbol]: entity}` is meaningful, not contradictory.
+The field's pick (`pick:`, which replaced `cardinality:`) keeps its
+meaning and default of `:last`. It is **per entry**, not about the
+collection: whether one entity may have two `tonk.view/basic` facts or
+just one. A collection field is many-*entried* by construction; each
+entry is independently one-valued (`:last`) or a set (`:all`). Writing
+`pick: :all` alongside `as: {[symbol]: entity}` is meaningful, not
+contradictory, and is what makes a template iterate the entries.
 
 ## Querying: the key is an ordinary pattern position
 
