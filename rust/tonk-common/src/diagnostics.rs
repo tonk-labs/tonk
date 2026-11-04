@@ -51,6 +51,12 @@ pub mod names {
     /// `<tonk-site>` rebuilt its guest frame because `with` or `allow`
     /// changed, or the frame it had was gone: a space switch.
     pub const SITE_GUEST_BOOT_NAVIGATION: &str = "site.guest_boot.navigation";
+    /// `<tonk-site>` built a guest frame again because the person asked a
+    /// site that failed to load to try again.
+    pub const SITE_GUEST_BOOT_RETRY: &str = "site.guest_boot.retry";
+    /// `<tonk-site>` showed that its page could not load: the guest did not
+    /// answer the handshake in time, or its `tonk:load` claim failed twice.
+    pub const SITE_LOAD_FAILED: &str = "site.load_failed";
     /// `<tonk-site>` re-routed a live guest frame in place, with no rebuild.
     pub const SITE_REROUTE: &str = "site.reroute";
 
@@ -86,6 +92,21 @@ pub mod names {
     pub const WORKER_LOCK_READ_HOLD: &str = "worker.lock.read.hold";
     /// How long a state lock write guard was held (milliseconds).
     pub const WORKER_LOCK_WRITE_HOLD: &str = "worker.lock.write.hold";
+
+    /// The hosted agent's `/mcp` answered a tool call without an error.
+    pub const MCP_TOOL_OK: &str = "mcp.tool.ok";
+    /// The hosted agent's `/mcp` refused a tool call for want of access: no
+    /// grant, a read-only grant for a write, or a lapsed grant.
+    pub const MCP_TOOL_REFUSED: &str = "mcp.tool.refused";
+    /// The hosted agent's `/mcp` rejected a tool call's own request:
+    /// malformed arguments or notation.
+    pub const MCP_TOOL_INVALID: &str = "mcp.tool.invalid";
+    /// A hosted agent's tool call failed: the writer, the sync or the
+    /// evaluation answered an error.
+    pub const MCP_TOOL_ERROR: &str = "mcp.tool.error";
+    /// How long a hosted agent's tool call took, from the request arriving
+    /// at `/mcp` to its answer (milliseconds).
+    pub const MCP_TOOL_CALL: &str = "mcp.tool.call";
 }
 
 /// Summary of every value recorded under one duration name.

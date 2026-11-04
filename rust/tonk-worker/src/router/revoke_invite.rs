@@ -522,6 +522,43 @@ mod tests {
             .map_err(|error| error.to_string())
     }
 
+    /// The connected handle of the remote `main` the `key` replica of
+    /// `state` pulls from, as a watch of it opens one.
+    async fn upstream_of(state: &AppState, key: &str) -> dialog_repository::ConnectedBranch {
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .repository(key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .expect("the branch opens");
+        let pulls = session.handle().pulls();
+        let Some(dialog_repository::Upstream::Remote { remote, branch, .. }) = pulls.iter().next()
+        else {
+            panic!("the replica pulls from a remote");
+        };
+        remote
+            .branch(branch.clone())
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .expect("the remote branch opens")
+    }
+
+    /// Where the `key` replica of `state` stands.
+    async fn head_of(state: &AppState, key: &str) -> Option<dialog_repository::Revision> {
+        let tonk = state.read().await;
+        tonk.reactor
+            .repository(key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .expect("the branch opens")
+            .handle()
+            .revision()
+    }
+
     /// Whether the member's device still retains the certificate `target`.
     async fn retains(member: &AppState, target: &str) -> bool {
         let member = member.read().await;
@@ -854,6 +891,203 @@ mod tests {
                 .key
                 .clone()
         };
+        let tonk = std::sync::Arc::try_unwrap(state)
+            .unwrap_or_else(|_| panic!("the state has no other holders"))
+            .into_inner();
+        crate::router::account_state::tests::discard(tonk, &account_key);
+        drop(service);
+    }
+
+    /// A member told of a head after its invite was revoked does not adopt
+    /// it. A watch begun before the revocation can deliver the owner's
+    /// next head, and a fast-forward adopts by reference without reading
+    /// the root; the member then held a head whose root the service no
+    /// longer serves it, and every later write failed on that root. The
+    /// pull now reads the root first, is refused, and leaves the head
+    /// where it was, so the member keeps writing to its own replica.
+    #[dialog_common::test]
+    async fn it_does_not_adopt_a_head_the_member_can_no_longer_read() {
+        let (tonk, service, root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        let grant =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &tonk.profile.did())
+                .await
+                .expect("the device grant mints");
+        crate::router::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "unreadable-head-test".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().expect("the grant serializes")),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await
+        .expect("the root persists");
+        let state: AppState = std::sync::Arc::new(crate::StateLock::new(tonk));
+        let key = super::super::repository::create_space_inner(&state, "Unreadable", None)
+            .await
+            .expect("the space creates");
+        super::super::repository::enable_sync_inner(&state, &key, &remote)
+            .await
+            .expect("the remote attaches");
+
+        let origin = crate::axum::RequestOrigin::parse("https://local.example/")
+            .unwrap_or_else(|_| panic!("the origin parses"));
+        let Json(invited) = super::super::create_invite::create_invite(
+            State(state.clone()),
+            Path(key.clone()),
+            Extension(origin),
+            axum::body::Bytes::new(),
+        )
+        .await
+        .expect("the founder mints an invite");
+        let push = |state: AppState| {
+            let key = key.clone();
+            async move {
+                let tonk = state.read().await;
+                tonk.reactor
+                    .repository(&key)
+                    .branch("main")
+                    .acquire(&tonk.operator)
+                    .await
+                    .expect("the branch opens")
+                    .handle()
+                    .push()
+                    .perform(&tonk.operator)
+                    .await
+                    .expect("the branch reaches the service");
+            }
+        };
+        push(state.clone()).await;
+
+        let member = crate::router::command::tests::native::test_state().await;
+        {
+            let member = member.read().await;
+            crate::router::join::join_invite(&member, invited.url().as_str())
+                .await
+                .expect("the member joins");
+        }
+        pull(&member, &key)
+            .await
+            .expect("a member reads the space it joined");
+        let declare = |description: &str| {
+            format!(
+                "attribute!: &revocation-marker\n  the: xyz.tonk.test/revocation\n  as: text\n  description: {description}\n"
+            )
+        };
+        {
+            let member = member.read().await;
+            crate::router::evaluate::evaluate_body(
+                &member,
+                &key,
+                "main",
+                declare("before revocation"),
+                true,
+            )
+            .await
+            .expect("the member writes before the revocation");
+        }
+        push(member.clone()).await;
+        {
+            // The founder builds on the member's head, so the head it
+            // pushes after revoking is a fast-forward for the member.
+            let tonk = state.read().await;
+            tonk.reactor
+                .repository(&key)
+                .branch("main")
+                .pull()
+                .perform(&tonk.operator)
+                .await
+                .expect("the founder pulls the member's write");
+        }
+
+        let Json(rows) = super::list(State(state.clone()), Path(key.clone()))
+            .await
+            .expect("the invitations list");
+        let target = rows
+            .first()
+            .map(|row| row.target_cid.clone())
+            .expect("one invitation is live");
+        let Json(receipt) = super::revoke(State(state.clone()), Path((key.clone(), target)))
+            .await
+            .expect("the founder revokes the link");
+        assert!(
+            receipt.recorded,
+            "the access service records the revocation"
+        );
+        push(state.clone()).await;
+
+        // What a watch begun before the revocation delivers: the head the
+        // founder just pushed, recorded on the member's side.
+        let founder_head = head_of(&state, &key).await;
+        let pushed = upstream_of(&state, &key)
+            .await
+            .cache()
+            .content()
+            .expect("the founder's push recorded the remote head");
+        assert_eq!(Some(&pushed.content), founder_head.as_ref());
+        let watched = upstream_of(&member, &key).await;
+        let observed = {
+            let member = member.read().await;
+            watched
+                .observe(pushed)
+                .perform(&member.operator)
+                .await
+                .expect("the delivered head is recorded")
+        };
+        assert!(
+            matches!(observed, dialog_repository::Observation::Advanced(_)),
+            "the founder's head is ahead of the one the member knew: {observed:?}"
+        );
+
+        let before = head_of(&member, &key).await;
+        assert_ne!(before, founder_head, "the member is behind the founder");
+        let pulled = {
+            let member = member.read().await;
+            member
+                .reactor
+                .repository(&key)
+                .branch("main")
+                .pull()
+                .assuming_upstream()
+                .perform(&member.operator)
+                .await
+        };
+        assert!(
+            matches!(
+                pulled,
+                Err(crate::reactor::ReactorError::UnreadableHead { .. })
+            ),
+            "a head whose root the member cannot read is refused: {pulled:?}"
+        );
+        assert_eq!(
+            head_of(&member, &key).await,
+            before,
+            "the refused pull leaves the member's head where it was"
+        );
+        {
+            let member = member.read().await;
+            crate::router::evaluate::evaluate_body(
+                &member,
+                &key,
+                "main",
+                declare("after revocation"),
+                true,
+            )
+            .await
+            .expect("a cut-off member still writes to its own replica");
+        }
+
+        let account_key = {
+            let tonk = state.read().await;
+            crate::router::account_state::require_ready_account_state(&tonk)
+                .await
+                .expect("the linked account is ready")
+                .key
+                .clone()
+        };
+        drop(member);
         let tonk = std::sync::Arc::try_unwrap(state)
             .unwrap_or_else(|_| panic!("the state has no other holders"))
             .into_inner();

@@ -896,14 +896,36 @@ fn it_mints_an_invite_when_copying_a_hub_space_link() {
 }
 
 #[dialog_common::test]
+fn it_answers_a_resend_activation_request_in_place() {
+    for contract in [
+        "<resend-activation><button type=\"button\" data-resend-activation>",
+        "data-resend-status role=\"status\"",
+        "element!: &resend-activation",
+        "the: 'xyz.tonk.resend-activation/at', as: 'natural:64'",
+        "the: 'xyz.tonk.resend-activation/status'",
+        "result?.status === 'requested'",
+        "result?.status === 'failed'",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the activation notice must show what came of a resend: `{contract}`"
+        );
+    }
+}
+
+#[dialog_common::test]
 fn it_renames_a_space_from_the_hub_menu() {
     for contract in [
-        "event!: &on/repository-rename-submit",
-        "on:repository-rename-submit=tonk/rename-repository",
         "data-space={subject}",
         "the: xyz.tonk.command.rename-repository/name",
         "the: xyz.tonk.rename-repository/space",
         "data-space-rename-open",
+        // The submit dispatches under its own receipt and closes the
+        // dialog only on the worker's answer for that receipt.
+        "the: 'xyz.tonk.command.rename-repository/name'",
+        "the: 'xyz.tonk.rename-repository/space'",
+        "the: 'xyz.tonk.repository-rename/status'",
+        "result?.status === 'renamed'",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
@@ -1045,11 +1067,13 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(panel.contains("data-delete-account-open"));
     assert!(panel.contains("data-sign-out-open"));
     assert!(panel.contains("<h2>Sign out</h2>"));
-    assert!(panel.contains("Disconnect this account. Keep local spaces on this device."));
+    assert!(panel.contains(
+        "Disconnect this account. Its spaces stay on this device for when you sign back in."
+    ));
     assert!(panel.contains("sign out on this device"));
     assert!(panel.contains("heading=\"confirm sign out\""));
     assert!(panel.contains(
-        "this disconnects the account from this browser. local spaces stay on this device, including spaces that have not been backed up or synced. you can sign into this or another account later."
+        "this disconnects the account from this browser. its spaces stay on this device, including spaces that have not been backed up or synced, but the hub lists them only while you are signed in. sign back into this account to see them again."
     ));
     assert!(panel.contains("data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>"));
     assert!(!panel.contains("remove this device"));
