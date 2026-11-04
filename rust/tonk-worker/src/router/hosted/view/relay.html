@@ -1,28 +1,36 @@
 <!doctype html>
 <html lang="en">
   <meta charset="utf-8" /><title>Tonk space</title>
+  <!-- tonk:in-agent -->
   <style>
+    /* The relay's own layout; Tonk's card, line and disc are the in-agent
+       stylesheet above. The view is the space's: edge to edge, then
+       Tonk's line under it. */
     html,
     body {
-      height: 100%;
       margin: 0;
-      color-scheme: light dark;
+      background: transparent;
     }
-    body {
-      display: flex;
-      flex-direction: column;
+    /* full screen or docked: the card fills what the agent app gives it */
+    html:has(.tonk--fill),
+    html:has(.tonk--fill) body {
+      height: 100%;
+    }
+    #error,
+    #report {
+      margin: 0;
     }
     #error {
-      margin: 0;
-      padding: 12px;
-      font: 14px system-ui;
+      padding: 6px var(--in-agent-pad, 12px) 2px;
     }
     #error[hidden],
-    #report[hidden] {
+    #report[hidden],
+    .tonk[hidden],
+    .tonk-line [hidden] {
       display: none;
     }
     #report {
-      margin: 0 12px 12px;
+      padding: 0 var(--in-agent-pad, 12px) 8px;
       font: 12px ui-monospace, monospace;
     }
     #report pre {
@@ -30,16 +38,40 @@
       user-select: all;
       -webkit-user-select: all;
     }
-    iframe {
-      flex: 1;
-      min-height: 560px;
-      border: 0;
-      width: 100%;
-    }
   </style>
-  <p id="error" role="alert" hidden></p>
-  <details id="report" hidden><summary>Details for a bug report</summary><pre></pre></details>
-  <iframe title="Tonk space" sandbox="allow-scripts allow-forms"></iframe>
+  <!-- One line with a link: a strip, or a space a view cannot reach. -->
+  <section class="tonk tonk-strip" id="strip" aria-label="Tonk" hidden>
+    <span class="tonk-receipt" role="status"></span>
+    <a class="tonk-link" href="#">open<span aria-hidden="true"> ↗</span></a>
+  </section>
+  <!-- The whole space: never shown in the chat, a way into Tonk. -->
+  <section class="tonk" id="handoff" aria-label="Tonk" hidden>
+    <header class="tonk-head">
+      <span class="tonk-place"><span class="tonk-space"></span></span>
+      <span class="tonk-role"></span>
+    </header>
+    <div class="tonk-handoff">
+      <p>Opens the whole space in Tonk.</p>
+      <a class="tonk-btn" href="#">open in tonk<span aria-hidden="true"> ↗</span></a>
+    </div>
+  </section>
+  <section class="tonk" id="card" aria-label="Tonk">
+    <div class="tonk-well">
+      <iframe class="tonk-view" title="A view in a Tonk space" sandbox="allow-scripts allow-forms"></iframe>
+    </div>
+    <p id="error" class="tonk-fine" role="status" hidden></p>
+    <details id="report" hidden><summary>Details for a bug report</summary><pre></pre></details>
+    <footer class="tonk-line" id="line">
+      <span class="tonk-disc" data-state="hollow" role="img" aria-label="local only" title="local only"></span>
+      <span class="tonk-place"><span class="tonk-space"></span><span class="tonk-where"></span></span>
+      <span class="tonk-receipt" role="status"></span>
+      <span class="tonk-role"></span>
+      <a class="tonk-link tonk-out" id="out" href="#" hidden>open in tonk<span aria-hidden="true"> ↗</span></a>
+      <button type="button" class="tonk-expand" id="expand" aria-label="Open full screen" hidden>
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9" /></svg>
+      </button>
+    </footer>
+  </section>
   <script>
     // The relay between an MCP Apps host and a space's page (plan #1200,
     // stage 7). The view's peer holds its own key, which never leaves it;
@@ -58,8 +90,16 @@
       const origin = __TONK_MCP_ORIGIN__,
         framed = __TONK_VIEW_FRAME__,
         frame = document.querySelector('iframe'),
+        card = document.querySelector('#card'),
+        strip = document.querySelector('#strip'),
+        handoff = document.querySelector('#handoff'),
+        well = document.querySelector('.tonk-well'),
+        line = document.querySelector('#line'),
         errorMessage = document.querySelector('#error'),
         report = document.querySelector('#report');
+      // The framed page is the view alone: the relay that frames it draws
+      // Tonk's line.
+      if (framed) line.remove();
       let route, pack, port, access, renewalTimer, viewFrame, rpcId = 0;
       const pending = new Map(),
         encode = new TextEncoder(),
@@ -159,6 +199,260 @@
         } else report.hidden = true;
         tellSize();
       }
+      // ---- Tonk's line ------------------------------------------------
+      // Under the view: the disc, space › view, the receipt's slot and the
+      // role. It names what the tool result says it shows; a page shown by
+      // path is named by its title once the page says it.
+      let title = '';
+      function viewName() {
+        return route?.viewName || title || '';
+      }
+      function label() {
+        if (framed) return;
+        const space = route?.name || '',
+          where = viewName();
+        line.querySelector('.tonk-space').textContent = space;
+        line.querySelector('.tonk-space').hidden = !space;
+        line.querySelector('.tonk-where').textContent = where ? (space ? '› ' : '') + where : '';
+        line.querySelector('.tonk-role').textContent = route?.role || (route?.edit ? 'write' : 'read');
+        if (route?.subject) out.href = inTonk();
+        const named = [space, where].filter(Boolean).join(', ');
+        card.setAttribute('aria-label', named ? 'Tonk: ' + named : 'Tonk');
+        frame.title = where
+          ? where + (space ? ', a view in ' + space : '')
+          : space
+            ? 'A view in ' + space
+            : 'A view in a Tonk space';
+      }
+      // The disc: filled while the view's peer is connected and synced
+      // (also while a save goes through), hollow while nothing syncs yet
+      // or Tonk cannot reach the space. A view cannot pause sync, so it
+      // is never drawn paused. A framed page tells the relay, whose line
+      // it is.
+      const DISC = { filled: 'synced', hollow: 'local only', paused: 'paused' };
+      function disc(state) {
+        if (framed) return parent.postMessage({ tonkFrame: 'sync', state }, '*');
+        if (!DISC[state]) return;
+        const element = line.querySelector('.tonk-disc');
+        if (state === 'filled') delete element.dataset.state;
+        else element.dataset.state = state;
+        element.setAttribute('aria-label', DISC[state]);
+        element.title = DISC[state];
+      }
+      // Whether the peer reaches the space now: asked after each write, on
+      // `online`, and every minute. A status that cannot be read for some
+      // other reason leaves the disc as it was.
+      let syncTimer;
+      async function checkSync() {
+        if (!route?.subject || (!framed && !peerWorker)) return;
+        try {
+          const status = await peerFetch(base() + '/sync/status');
+          if (status.ok) disc((await status.json()).state === 'no-upstream' ? 'hollow' : 'filled');
+          else if (status.status === 503) disc('hollow');
+        } catch {}
+      }
+      function synced() {
+        disc('filled');
+        clearInterval(syncTimer);
+        syncTimer = setInterval(checkSync, 60000);
+      }
+      addEventListener('offline', () => disc('hollow'));
+      addEventListener('online', () => checkSync());
+
+      // ---- The agent app ------------------------------------------------
+      // Its theme, display mode and safe area, from the host context at
+      // `ui/initialize` and each `host-context-changed` after it.
+      const expand = line.querySelector('#expand'),
+        out = line.querySelector('#out');
+      const host = { theme: undefined, displayMode: 'inline', available: [] };
+      function themed() {
+        return host.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      }
+      // Tonk's look follows the agent app's theme, and so does the view.
+      function applyTheme() {
+        const theme = themed();
+        document.documentElement.dataset.theme = theme;
+        if (viewFrame) frame.contentWindow?.postMessage({ tonkFrame: 'theme', theme }, origin);
+        else frame.contentWindow?.postMessage({ type: 'tonk-theme', theme }, '*');
+      }
+      matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => host.theme || applyTheme());
+      function context(changed) {
+        if (!changed || typeof changed !== 'object') return;
+        if (changed.theme === 'dark' || changed.theme === 'light') host.theme = changed.theme;
+        if (typeof changed.displayMode === 'string') host.displayMode = changed.displayMode;
+        if (Array.isArray(changed.availableDisplayModes)) host.available = changed.availableDisplayModes;
+        const bottom = Number(changed.safeAreaInsets?.bottom);
+        if (Number.isFinite(bottom))
+          card.style.setProperty('--tonk-safe-bottom', Math.max(0, bottom) + 'px');
+        applyTheme();
+        display();
+      }
+      // Inline, the card fits the view. Full screen and docked, it fills
+      // what the agent app gives it: the view scrolls above the line, and
+      // full screen adds the way into Tonk. No flow depends on docked,
+      // which only some agent apps have.
+      // The size the view is drawn at: full whenever it fills the card, else
+      // what the agent asked for. Inline, a view drops its own heading.
+      function sized() {
+        if (host.displayMode === 'fullscreen' || host.displayMode === 'pip') return 'full';
+        return route?.size || 'card';
+      }
+      function display() {
+        if (framed) return;
+        // The framed page passes the size on to its own view.
+        if (viewFrame && route) frame.contentWindow?.postMessage({ tonkFrame: 'size', size: sized() }, origin);
+        else if (pack && route) frame.contentWindow?.postMessage({ type: 'tonk-size', size: sized() }, '*');
+        const fill = host.displayMode === 'fullscreen' || host.displayMode === 'pip';
+        card.classList.toggle('tonk--fill', fill);
+        expand.hidden = fill || !host.available.includes('fullscreen');
+        out.hidden = host.displayMode !== 'fullscreen' || !route;
+        tellSize();
+      }
+      expand.addEventListener('click', async () => {
+        try {
+          const answer = await rpc('ui/request-display-mode', { mode: 'fullscreen' });
+          if (answer?.mode) context({ displayMode: answer.mode });
+        } catch (error) {
+          note('full screen refused: ' + error.message);
+        }
+      });
+      // Where the space opens in Tonk, in the person's browser.
+      function inTonk() {
+        return origin + '/space/' + route.subject + (route.path === '/' ? '' : route.path);
+      }
+      out.addEventListener('click', (event) => {
+        event.preventDefault();
+        openLink(inTonk());
+      });
+      // A link out of the card opens through the agent app, which may ask
+      // the person first.
+      async function openLink(url) {
+        if (framed) return parent.postMessage({ tonkFrame: 'open', url }, '*');
+        try {
+          await rpc('ui/open-link', { url });
+        } catch (error) {
+          note('open-link refused: ' + error.message);
+          if (typeof window.openai?.openExternal === 'function') window.openai.openExternal({ href: url });
+        }
+      }
+
+      // ---- A link instead of a view -----------------------------------
+      // The whole space opens in Tonk; a strip, or a space a view cannot
+      // reach, is one line with a link. Neither runs a peer, so neither
+      // has a disc: there is no sync to show.
+      function linkOnly(kind) {
+        card.hidden = true;
+        const link = route.link || inTonk(),
+          where = viewName(),
+          space = route.name || 'this space';
+        if (kind === 'handoff') {
+          handoff.querySelector('.tonk-space').textContent = space;
+          handoff.querySelector('.tonk-role').textContent = route.role || '';
+          handoff.setAttribute('aria-label', 'Tonk: open ' + space);
+          const button = handoff.querySelector('.tonk-btn');
+          button.href = link;
+          button.onclick = (event) => (event.preventDefault(), openLink(link));
+          handoff.hidden = false;
+        } else {
+          strip.querySelector('.tonk-receipt').textContent =
+            (where ? space + ' › ' + where : space) + ' opens in your browser';
+          strip.setAttribute('aria-label', 'Tonk: link to ' + (where || space));
+          const anchor = strip.querySelector('.tonk-link');
+          anchor.href = link;
+          anchor.onclick = (event) => (event.preventDefault(), openLink(link));
+          strip.hidden = false;
+        }
+        tellSize();
+      }
+
+      // ---- Loading and failed -----------------------------------------
+      // Until the page reports its size, the well is busy: it starts at the
+      // height this view had last time, with a wash, and after 400 ms says
+      // what is loading. Cold loads take 20 s and more, so there is no
+      // deadline for that: a view fails when something says it failed, or
+      // when its page has loaded and stays silent for 3 s (no bridge: an
+      // error page).
+      const SLOW_MS = 400,
+        QUIET_MS = 3000;
+      let slowTimer, quietTimer, heard;
+      const heightKey = () =>
+        'tonk-view-height:' + route.subject + (route.view ? JSON.stringify(route.view) : route.path);
+      function remembered() {
+        try {
+          return Number(sessionStorage.getItem(heightKey())) || 0;
+        } catch {
+          return 0;
+        }
+      }
+      function remember(height) {
+        try {
+          sessionStorage.setItem(heightKey(), String(height));
+        } catch {}
+      }
+      function loading() {
+        if (framed) return;
+        clearFailed();
+        clearTimeout(slowTimer);
+        const height = remembered();
+        if (height) frame.style.height = height + 'px';
+        well.setAttribute('aria-busy', 'true');
+        slowTimer = setTimeout(() => {
+          if (well.getAttribute('aria-busy') !== 'true') return;
+          well.dataset.slow = '';
+          well.dataset.loading = 'loading ' + (viewName() || route?.name || 'the view');
+        }, SLOW_MS);
+      }
+      function settled() {
+        clearTimeout(slowTimer);
+        clearTimeout(quietTimer);
+        well.removeAttribute('aria-busy');
+        delete well.dataset.slow;
+        delete well.dataset.loading;
+      }
+      function clearFailed() {
+        well.querySelector('.tonk-failed')?.remove();
+        delete well.dataset.failed;
+      }
+      // Say the view did not load, and offer to load it again. The reason
+      // stays below, with the details for a bug report.
+      function fail(message) {
+        if (message) showError(message);
+        if (framed) {
+          parent.postMessage({ tonkFrame: 'error', message: String(message || '') }, '*');
+          return;
+        }
+        settled();
+        clearFailed();
+        well.dataset.failed = '';
+        const note = document.createElement('p'),
+          name = viewName();
+        note.className = 'tonk-failed';
+        note.setAttribute('role', 'alert');
+        note.textContent = (name || 'This view') + ' didn’t load.';
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'tonk-link';
+        retry.textContent = 'try again';
+        retry.addEventListener('click', () => {
+          showError('');
+          loading();
+          frame.focus({ preventScroll: true });
+          open();
+        });
+        note.append(' ', retry);
+        well.append(note);
+        tellSize();
+      }
+      // The page has loaded: a page with a bridge speaks at once, so one
+      // silent for 3 s has none.
+      frame.addEventListener('load', () => {
+        if (framed || viewFrame || !frame.hasAttribute('srcdoc') || heard) return;
+        clearTimeout(quietTimer);
+        quietTimer = setTimeout(() => {
+          if (!heard && well.getAttribute('aria-busy') === 'true') fail('');
+        }, QUIET_MS);
+      });
+
       // What the view is waiting on, so one that never shows its page says
       // where it stopped rather than staying blank.
       let stage = 'waiting for the chat to hand over the view',
@@ -669,6 +963,7 @@
           body: '',
         });
         if (!pulled.ok) throw Error('Could not read the space (' + pulled.status + ').');
+        synced();
         await ask('follow', {});
         reached('loading the Tonk runtime');
         await packed;
@@ -677,7 +972,7 @@
         // fresh one before it runs out.
         clearTimeout(renewalTimer);
         renewalTimer = setTimeout(
-          () => connect().then(() => navigate(route.path)).catch((e) => showError(e.message)),
+          () => connect().then(() => navigate(route.path)).catch((e) => fail(e.message)),
           Math.max(60000, access.expiresAt - Date.now() - 5 * 60000),
         );
       }
@@ -740,6 +1035,7 @@
           body: '',
         });
         if (!pulled.ok) throw Error('Could not read the space (' + pulled.status + ').');
+        synced();
         clearTimeout(renewalTimer);
         renewalTimer = setTimeout(
           () => {
@@ -791,6 +1087,9 @@
         });
       }
       async function offer() {
+        // The framed page mounts its view with the agent app's theme, so it
+        // hears it before its access, each time it is (re)framed.
+        applyTheme();
         access = await grant(viewFrame.did);
         frame.contentWindow.postMessage(
           {
@@ -801,6 +1100,7 @@
               view: route.view,
               edit: route.edit,
               remote: route.remote,
+              size: sized(),
             },
             access,
           },
@@ -833,11 +1133,19 @@
         const guestPage = await fetch(origin + '/worker-guest', { credentials: 'omit' });
         if (!guestPage.ok) throw Error('Could not load the Tonk view.');
         frame.removeAttribute('src');
+        heard = false;
         frame.srcdoc = await guestPage.text();
       }
       async function guest(message, current) {
         if (message.type === 'title') {
           document.title = String(message.text || 'Tonk').slice(0, 200);
+          // A page shown by path is named by its title, unless it is the
+          // space's own name.
+          const text = String(message.text || '').trim().slice(0, 200);
+          if (!route.view && text !== route.name) {
+            title = text;
+            label();
+          }
           return;
         }
         if (message.type === 'navigate') {
@@ -846,12 +1154,27 @@
               'https://tonk.foundation/space/' + route.subject + route.path,
             ),
             prefix = '/space/' + route.subject;
+          // A link out of the space opens in the person's browser.
+          if (u.origin !== 'https://tonk.foundation' && /^https?:$/.test(u.protocol))
+            return openLink(u.href);
           if (u.origin !== 'https://tonk.foundation' || u.search)
             throw Error('Navigation outside this space is unavailable.');
           route = { ...route, view: undefined };
           return navigate(
             u.pathname.startsWith(prefix + '/') ? u.pathname.slice(prefix.length) : u.pathname,
           );
+        }
+        // A link the page opens outside itself, as the stock guest sends
+        // a click on an external link or a new-tab click: through the agent
+        // app. A link within the space opens the space in Tonk.
+        if (message.type === 'open') {
+          const u = new URL(
+            String(message.href ?? ''),
+            'https://tonk.foundation/space/' + route.subject + route.path,
+          );
+          if (u.origin === 'https://tonk.foundation') return openLink(origin + u.pathname + u.search + u.hash);
+          if (/^https?:$/.test(u.protocol)) return openLink(u.href);
+          throw Error('Only web links open from a view.');
         }
         if (['analytics', 'unsubscribe'].includes(message.type)) return;
         // A view of a space this connection may only read refuses a write
@@ -867,6 +1190,7 @@
             /\/(transact|evaluate)(\/|$)/.test(asked.pathname) &&
             asked.searchParams.get('transact') !== 'false');
         if (writes && !route.edit) throw Error('This space is read-only for this connection.');
+        if (writes) setTimeout(checkSync, 2000);
         if (message.type === 'fetch') {
           const target = new URL(message.path, 'https://tonk.foundation');
           if (target.origin !== 'https://tonk.foundation')
@@ -955,18 +1279,19 @@
       // host is told the view's (a framed page tells the relay instead).
       function resize(height) {
         if (!Number.isFinite(height)) return;
-        frame.style.minHeight = '0';
-        frame.style.flex = 'none';
-        frame.style.height = Math.min(Math.max(Math.ceil(height), 40), 4000) + 'px';
+        const fitted = Math.min(Math.max(Math.ceil(height), 40), 4000);
+        frame.style.height = fitted + 'px';
+        if (route) remember(fitted);
+        settled();
+        clearFailed();
         tellSize();
       }
       // The host sizes the view from what it is told, so an error shown
       // before the page reports its height is still in sight.
       function tellSize() {
-        const view =
-          frame.offsetHeight +
-          (errorMessage.hidden ? 0 : errorMessage.offsetHeight) +
-          (report.hidden ? 0 : report.offsetHeight + 12);
+        const view = Math.ceil(
+          [card, strip, handoff].reduce((height, each) => height + (each.hidden ? 0 : each.getBoundingClientRect().height), 0),
+        );
         if (framed) parent.postMessage({ tonkFrame: 'size', height: view }, '*');
         else
           parent.postMessage(
@@ -1023,24 +1348,33 @@
             const p = pending.get(m.id);
             pending.delete(m.id);
             m.error ? p.reject(Error(m.error.message)) : p.resolve(m.result);
+          } else if (m.method === 'ui/notifications/host-context-changed') {
+            context(m.params);
           } else if (
             m.method === 'ui/notifications/tool-result' &&
             m.params?.structuredContent?.remote
           ) {
-            initialized
-              .then(async (result) => {
-                route = m.params.structuredContent;
-                note('view handed over');
-                if (hostFrames(result) && (await tryFrame())) return note('framed'), offer();
-                if (viewFrame !== undefined) restoreSandbox();
-                await connect();
-                await navigate(route.path);
-              })
-              .catch((e) => showError(e.message));
+            route = m.params.structuredContent;
+            note('view handed over');
+            label();
+            if (route.show === 'handoff' || route.show === 'strip') return linkOnly(route.show);
+            display();
+            loading();
+            open();
           }
           return;
         }
         // The framed page: from the relay that frames it.
+        if (framed && event.source === parent && m?.tonkFrame === 'size') {
+          if (route) route = { ...route, size: m.size };
+          if (pack && route) send({ type: 'tonk-size', size: m.size });
+          return;
+        }
+        if (framed && event.source === parent && m?.tonkFrame === 'theme') {
+          host.theme = m.theme;
+          applyTheme();
+          return;
+        }
         if (framed && event.source === parent && m?.tonkFrame === 'access') {
           relayed.get('access')?.(m);
           relayed.delete('access');
@@ -1053,9 +1387,15 @@
           else if (m?.tonkFrame === 'hello' && typeof m.did === 'string') {
             viewFrame.did = m.did;
             viewFrame.hello();
-          } else if (m?.tonkFrame === 'renew') offer().catch((e) => showError(e.message));
-          else if (m?.tonkFrame === 'error') showError(String(m.message).slice(0, 300));
+          } else if (m?.tonkFrame === 'renew') offer().catch((e) => fail(e.message));
+          else if (m?.tonkFrame === 'sync') disc(m.state);
+          else if (m?.tonkFrame === 'open' && typeof m.url === 'string') openLink(m.url);
+          else if (m?.tonkFrame === 'error') fail(String(m.message).slice(0, 300));
           return;
+        }
+        if (event.source === frame.contentWindow) {
+          heard = true;
+          clearTimeout(quietTimer);
         }
         if (event.source !== frame.contentWindow || !pack || !route) return;
         if (m?.type === 'tonk-view-size') {
@@ -1094,7 +1434,7 @@
           });
         }
         if (m?.__tonkRuntime === 'runtime-ready') {
-          send({ type: 'tonk-mount', ...route, hideFab: true });
+          send({ type: 'tonk-mount', ...route, hideFab: true, theme: themed(), size: sized() });
           send({
             __tonkRuntime: 'inject',
             glue: pack.glue,
@@ -1113,7 +1453,7 @@
         if (m?.__tonkRuntime === 'need-code')
           send({ __tonkRuntime: 'inject-code', code: pack.code });
         if (m?.__tonkRuntime === 'error')
-          showError('Tonk runtime could not load: ' + String(m.error ?? '').split('\n')[0]);
+          fail('Tonk runtime could not load: ' + String(m.error ?? '').split('\n')[0]);
       });
       // Answer the host first: it waits on this handshake to show the app,
       // and the runtimes are large downloads that may be slow or blocked.
@@ -1121,36 +1461,52 @@
         ? null
         : rpc('ui/initialize', {
             appInfo: { name: 'tonk-space', version: '0.4.0' },
-            appCapabilities: {},
+            appCapabilities: { availableDisplayModes: ['inline', 'fullscreen', 'pip'] },
             protocolVersion: '2026-01-26',
           }).then((result) => {
             note('host answered');
+            context(result?.hostContext);
             parent.postMessage(
               { jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} },
               '*',
             );
             return result;
           });
-      let loading;
+      let packLoading;
       function loadPack() {
-        loading ??= (async () => {
+        packLoading ??= (async () => {
           const response = await fetch(origin + '/space-runtime.json', { credentials: 'omit' });
           if (!response.ok) throw Error('Could not load Tonk runtime.');
           pack = await response.json();
         })().catch(() => {
           throw Error('Could not load the Tonk runtime from ' + origin + '.');
         });
-        return loading;
+        return packLoading;
       }
+      // Show the route the tool result handed over: in the provider's
+      // framed page where the host frames it, else with a peer here.
+      function open() {
+        return initialized
+          .then(async (result) => {
+            // A whole view asks for full screen as soon as it is shown, on
+            // either route.
+            if (route.size === 'full' && host.available.includes('fullscreen') && host.displayMode === 'inline')
+              expand.click();
+            if (hostFrames(result) && (await tryFrame())) return note('framed'), offer();
+            if (viewFrame !== undefined) restoreSandbox();
+            // A host that runs no worker cannot run a view's peer: a link.
+            if (typeof Worker !== 'function') return note('no Worker here'), linkOnly('strip');
+            await connect();
+            await navigate(route.path);
+          })
+          .catch((e) => fail(e.message));
+      }
+      const observer = new ResizeObserver(() => tellSize());
+      for (const each of [card, strip, handoff]) observer.observe(each);
+      applyTheme();
       if (framed) parent.postMessage({ tonkFrame: 'loading' }, '*');
-      if (framed)
-        connectFramed()
-          .then(() => navigate(route.path))
-          .catch((e) => {
-            showError(e.message);
-            parent.postMessage({ tonkFrame: 'error', message: e.message }, '*');
-          });
-      else initialized.catch((e) => showError(e.message));
+      if (framed) connectFramed().then(() => navigate(route.path)).catch((e) => fail(e.message));
+      else initialized.catch((e) => fail(e.message));
     })();
   </script>
 </html>

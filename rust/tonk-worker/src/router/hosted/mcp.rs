@@ -62,6 +62,9 @@ pub use super::telemetry::{SERVER_TIMING, TRACE_HEADER};
 #[allow(dead_code)]
 mod output;
 
+mod undo;
+pub use undo::{CHANGE_META, UNDO, UNDO_ROUTE};
+
 #[path = "../../../../tonk-cli/src/guide.rs"]
 #[allow(dead_code)]
 mod guide;
@@ -192,8 +195,9 @@ pub trait Writers {
     /// Serve `request` on the writer of `space` for `mcp_session`.
     ///
     /// `request` is one of the writer's routes relative to the space:
-    /// `POST /api/query` (a read), `POST /api/evaluate` (a write), or
-    /// `GET` [`ACCESS_ROUTE`] (to the agent space's writer). A request to
+    /// `POST /api/query` (a read), `POST /api/evaluate` (a write),
+    /// `POST` [`UNDO_ROUTE`] (a write undoing one change), or `GET`
+    /// [`ACCESS_ROUTE`] (to the agent space's writer). A request to
     /// another space carries [`GRANTS_HEADER`] and, when the directory
     /// names one, [`ADDRESS_HEADER`], the remote its writer mounts.
     /// `bearer` is the token as it arrived, for writers that decode it
@@ -449,14 +453,17 @@ impl<W: Writers> McpEndpoint<'_, W> {
             "ping" => Ok(json!({})),
             "tools/list" => {
                 let mut tools = tools();
+                tools.push(undo::tool());
                 tools.extend(super::view::tools());
                 tools.extend(super::join::tools());
+                tools.extend(super::propose::tools());
                 Ok(json!({ "tools": tools }))
             }
             "resources/list" => {
                 let mut resources = guide_resources();
                 resources.extend(super::view::resources());
                 resources.extend(super::join::resources());
+                resources.extend(super::card::resources());
                 Ok(json!({ "resources": resources }))
             }
             "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
@@ -464,7 +471,8 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 let uri = message["params"]["uri"].as_str().unwrap_or_default();
                 read_guide(uri)
                     .or_else(|| super::view::read_resource(uri, self.origin))
-                    .or_else(|| super::join::read_resource(uri))
+                    .or_else(|| super::join::read_resource(uri, self.origin))
+                    .or_else(|| super::card::read_resource(uri, self.origin))
                     .ok_or_else(
                         || json!({ "code": -32602, "message": format!("no resource {uri}") }),
                     )
@@ -599,6 +607,12 @@ impl<W: Writers> McpEndpoint<'_, W> {
                     return tool_result(json!(format!("`{space}` is not a space DID.")), true);
                 };
                 call.space = Some(space.clone());
+                if write {
+                    let confirm = arguments["confirm"].as_bool().unwrap_or(false);
+                    return self
+                        .evaluate(verified, bearer, session, &space, document, confirm, call)
+                        .await;
+                }
                 // The agent space is reached through the powerline alone;
                 // any other space through what the agent space holds.
                 let granted = if &space == verified.agent() {
@@ -678,12 +692,25 @@ impl<W: Writers> McpEndpoint<'_, W> {
                         .unwrap_or_else(|| format!("http_{}", status.as_u16()));
                     call.end(writer_outcome(status), &kind);
                 }
+                // What a card needs to undo the write, in `_meta`, which
+                // hosts hand the app and not the model.
+                let change = (write && status.is_success())
+                    .then(|| undo::change_meta(&space, &body))
+                    .flatten();
                 let mut answer = tool_result(without_revisions(body), !status.is_success());
                 // The model reads notation; programs read the JSON beside it.
                 if let Some(text) = text {
                     answer["content"] = json!([{ "type": "text", "text": text }]);
                 }
+                if let Some(change) = change {
+                    answer["_meta"] = json!({ CHANGE_META: change });
+                }
                 answer
+            }
+            UNDO => self.undo(verified, bearer, session, arguments, call).await,
+            super::propose::APPLY | super::propose::DISMISS => {
+                self.answer_proposal(name, arguments, verified, bearer, session, call)
+                    .await
             }
             super::join::JOIN | super::join::ACCEPT => {
                 super::join::call(name, arguments, verified, self.writers, bearer, session)
@@ -705,6 +732,434 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 Some(result) => result,
                 None => tool_result(json!("Tool unavailable."), true),
             },
+        }
+    }
+
+    /// `tonk_evaluate`: write `document` to `space`, or with `confirm`,
+    /// propose it and write nothing (see [`super::propose`]). The result
+    /// carries the card the host draws: the receipt, the ask, or a tell.
+    #[allow(clippy::too_many_arguments)]
+    async fn evaluate(
+        &self,
+        verified: &Verified,
+        bearer: &str,
+        session: &str,
+        space: &Did,
+        document: &str,
+        confirm: bool,
+        call: &mut Call,
+    ) -> Value {
+        let reached = match self.reach(verified, bearer, session, space, call).await {
+            Ok(reached) => reached,
+            Err(refused) => return refused,
+        };
+        let route = if confirm {
+            super::propose::PROPOSE_ROUTE
+        } else {
+            "/api/evaluate"
+        };
+        let Some(request) = space_request(
+            route,
+            reached.granted.as_ref(),
+            "text/plain",
+            document,
+            &call.trace,
+        ) else {
+            call.end(Outcome::Error, "bad_directory_entry");
+            return tool_result(json!("The space's directory entry is malformed."), true);
+        };
+        let (status, body) = self
+            .send(verified, bearer, session, space, request, call)
+            .await;
+        let context = &reached.context;
+        if !status.is_success() {
+            let value = parsed(&body);
+            writer_failed(call, status, &value);
+            let reason = reason(&value);
+            let mut answer = tool_result(without_revisions(value), true);
+            if confirm {
+                answer["content"] = json!([{
+                    "type": "text",
+                    "text": format!("Nothing was proposed or written: {reason}"),
+                }]);
+                answer["structuredContent"] = json!({
+                    "card": super::card::Card::tell(
+                        Some(context.place.clone()),
+                        context.role,
+                        "not proposed",
+                        format!("I couldn’t prepare this change for {}.", context.place.label()),
+                        context.agent.clone(),
+                    )
+                    .fine(reason)
+                    .to_value(),
+                });
+            } else {
+                answer["structuredContent"] =
+                    json!({ "card": super::propose::not_saved(context, &reason).to_value() });
+            }
+            return answer;
+        }
+        if !confirm {
+            let text = notation(&body, true);
+            let evaluation = parsed(&body);
+            // What a card needs to undo the write, in `_meta`, which
+            // hosts hand the app and not the model.
+            let change = undo::change_meta(space, &evaluation);
+            let mut evaluation = without_revisions(evaluation);
+            let card = super::propose::receipt(context, &evaluation).to_value();
+            if let Some(fields) = evaluation.as_object_mut() {
+                fields.insert("card".into(), card);
+            }
+            let mut answer = tool_result(evaluation, false);
+            if let Some(text) = text {
+                answer["content"] = json!([{ "type": "text", "text": text }]);
+            }
+            if let Some(change) = change {
+                answer["_meta"] = json!({ CHANGE_META: change });
+            }
+            return answer;
+        }
+        let held = parsed(&body);
+        let id = held["proposal"]["id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let evaluation = without_revisions(held["evaluation"].clone());
+        let ask = super::propose::ask(context, &id, &evaluation);
+        let dry_run = serde_json::to_vec(&evaluation)
+            .ok()
+            .and_then(|bytes| notation(&bytes, false))
+            .unwrap_or_default();
+        let text = format!(
+            "Asked the person to confirm in a card: {}. Nothing is written unless they apply it \
+             there; the card tells you when they answer. Do not write it again with \
+             tonk_evaluate meanwhile. What it would change, as a dry run against {} now:\n{dry_run}",
+            ask.say,
+            context.place.label(),
+        );
+        json!({
+            "content": [{ "type": "text", "text": text }],
+            "structuredContent": {
+                "proposal": held["proposal"],
+                "evaluation": evaluation,
+                "card": ask.to_value(),
+            },
+            "isError": false,
+        })
+    }
+
+    /// `tonk_proposal_apply` and `tonk_proposal_dismiss`, which the card
+    /// calls with the person's answer.
+    async fn answer_proposal(
+        &self,
+        name: &str,
+        arguments: &Value,
+        verified: &Verified,
+        bearer: &str,
+        session: &str,
+        call: &mut Call,
+    ) -> Value {
+        let apply = name == super::propose::APPLY;
+        let Some(space) = arguments["space"]
+            .as_str()
+            .and_then(|space| space.parse::<Did>().ok())
+        else {
+            call.end(Outcome::Invalid, "bad_space");
+            return tool_result(json!("Name the proposal's space."), true);
+        };
+        let Some(id) = arguments["id"].as_str().filter(|id| !id.is_empty()) else {
+            call.end(Outcome::Invalid, "no_proposal");
+            return tool_result(json!("Name the proposal."), true);
+        };
+        call.space = Some(space.clone());
+        let reached = match self.reach(verified, bearer, session, &space, call).await {
+            Ok(reached) => reached,
+            Err(refused) => return refused,
+        };
+        let route = if apply {
+            super::propose::APPLY_ROUTE
+        } else {
+            super::propose::DISMISS_ROUTE
+        };
+        let body = json!({ "id": id }).to_string();
+        let Some(request) = space_request(
+            route,
+            reached.granted.as_ref(),
+            "application/json",
+            &body,
+            &call.trace,
+        ) else {
+            call.end(Outcome::Error, "bad_directory_entry");
+            return tool_result(json!("The space's directory entry is malformed."), true);
+        };
+        let (status, body) = self
+            .send(verified, bearer, session, &space, request, call)
+            .await;
+        if !status.is_success() {
+            writer_failed(call, status, &parsed(&body));
+        }
+        let context = &reached.context;
+        let label = context.place.label();
+        let card = |card: super::card::Card, text: String, error: bool| {
+            json!({
+                "content": [{ "type": "text", "text": text }],
+                "structuredContent": { "card": card.to_value() },
+                "isError": error,
+            })
+        };
+        if status == StatusCode::GONE {
+            return card(
+                super::propose::gone(context),
+                format!(
+                    "The person answered a proposal for {label} that was already answered or had \
+                     lapsed; nothing was written. Propose it again if they still want it."
+                ),
+                true,
+            );
+        }
+        if apply && status == StatusCode::PRECONDITION_FAILED {
+            return card(
+                super::propose::moved(context),
+                format!(
+                    "The person applied the change in {label}, but the space changed after the \
+                     preview they saw, so nothing was written. Read it again and propose the \
+                     change again if it still applies."
+                ),
+                true,
+            );
+        }
+        if !status.is_success() {
+            let reason = reason(&parsed(&body));
+            return card(
+                super::propose::not_saved(context, &reason),
+                format!(
+                    "The person {} the change in {label}, but the space did not confirm it: \
+                     {reason}. Query the space before proposing it again; never replay it \
+                     automatically.",
+                    if apply { "applied" } else { "declined" }
+                ),
+                true,
+            );
+        }
+        if !apply {
+            return card(
+                super::propose::dismissed(context),
+                format!(
+                    "The person chose not to apply the change in {label}. Nothing was written. \
+                     Do not propose it again unless they bring it up."
+                ),
+                false,
+            );
+        }
+        let evaluation = parsed(&body);
+        let change = undo::change_meta(&space, &evaluation);
+        let evaluation = without_revisions(evaluation);
+        let receipt = super::propose::receipt(context, &evaluation);
+        let mut text = format!(
+            "The person applied the change: {} (space {space}).",
+            receipt.say
+        );
+        if let Some(notation) = notation(&body, true) {
+            text.push('\n');
+            text.push_str(&notation);
+        }
+        let mut answer = card(receipt, text, false);
+        answer["structuredContent"]["evaluation"] = evaluation;
+        if let Some(change) = change {
+            answer["_meta"] = json!({ CHANGE_META: change });
+        }
+        answer
+    }
+
+    /// The space a write acts on, as a card names it, or the tool's
+    /// refusal: a tell, with no role where the connection cannot read the
+    /// space.
+    async fn reach(
+        &self,
+        verified: &Verified,
+        bearer: &str,
+        session: &str,
+        space: &Did,
+        call: &mut Call,
+    ) -> Result<Reached, Value> {
+        let access = match self.access(verified, bearer, session, call).await {
+            Ok(access) => access,
+            Err(error) => return Err(tool_result(json!(error), true)),
+        };
+        let agent = super::card::Agent {
+            did: verified.agent().to_string(),
+            name: access
+                .get(verified.agent())
+                .and_then(|own| own.name.clone()),
+        };
+        let home = space == verified.agent();
+        let held = access.get(space);
+        let place = super::card::Place {
+            did: space.to_string(),
+            name: held.and_then(|held| held.name.clone()),
+            item: None,
+        };
+        let role = held.filter(|held| held.read).map(|held| {
+            if home || held.write {
+                super::card::Role::Write
+            } else {
+                super::card::Role::Read
+            }
+        });
+        let context = super::propose::Context {
+            place,
+            role: if home {
+                Some(super::card::Role::Write)
+            } else {
+                role
+            },
+            agent,
+            home,
+        };
+        if home {
+            return Ok(Reached {
+                granted: None,
+                context,
+            });
+        }
+        if let Some((kind, refusal)) = refusal(held, space, true) {
+            call.end(Outcome::Refused, kind);
+            let label = if context.role.is_some() {
+                "read only"
+            } else {
+                "no access"
+            };
+            let card = super::card::Card::tell(
+                Some(context.place.clone()),
+                context.role,
+                label,
+                refusal.clone(),
+                context.agent.clone(),
+            );
+            return Err(json!({
+                "content": [{ "type": "text", "text": refusal }],
+                "structuredContent": { "card": card.to_value() },
+                "isError": true,
+            }));
+        }
+        Ok(Reached {
+            granted: held.cloned(),
+            context,
+        })
+    }
+
+    /// Send `request` to the writer of `space`, and read its answer.
+    async fn send(
+        &self,
+        verified: &Verified,
+        bearer: &str,
+        session: &str,
+        space: &Did,
+        request: Request<Body>,
+        call: &mut Call,
+    ) -> (StatusCode, axum::body::Bytes) {
+        call.steps.lap("prepare");
+        let response = self
+            .writers
+            .call(verified, bearer, session, space, request)
+            .await;
+        call.steps.lap("writer");
+        call.steps
+            .extend_within("writer", Steps::of(response.headers()));
+        let status = response.status();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .map(|body| body.to_bytes())
+            .unwrap_or_default();
+        (status, body)
+    }
+
+    /// `tonk_undo`: undo the change `arguments.revision` made to
+    /// `arguments.space`, through the session's writer of that space,
+    /// which the connection must be able to write.
+    async fn undo(
+        &self,
+        verified: &Verified,
+        bearer: &str,
+        session: &str,
+        arguments: &Value,
+        call: &mut Call,
+    ) -> Value {
+        let Some(space) = arguments["space"].as_str() else {
+            call.end(Outcome::Invalid, "no_space");
+            return tool_result(
+                json!("`space` is required: an exact subject from tonk_list_spaces."),
+                true,
+            );
+        };
+        let Ok(space) = space.parse::<Did>() else {
+            call.end(Outcome::Invalid, "bad_space");
+            return tool_result(json!(format!("`{space}` is not a space DID.")), true);
+        };
+        let Some(revision) = arguments["revision"]
+            .as_str()
+            .filter(|revision| !revision.is_empty() && revision.len() <= 256)
+        else {
+            call.end(Outcome::Invalid, "no_revision");
+            return tool_result(json!("`revision` is required."), true);
+        };
+        call.space = Some(space.clone());
+        let mut request = undo::request(revision);
+        if &space != verified.agent() {
+            let access = match self.access(verified, bearer, session, call).await {
+                Ok(access) => access,
+                Err(error) => return tool_result(json!(error), true),
+            };
+            if let Some((kind, refusal)) = refusal(access.get(&space), &space, true) {
+                call.end(Outcome::Refused, kind);
+                return tool_result(json!(refusal), true);
+            }
+            if let Some(granted) = access.get(&space) {
+                let headers = request.headers_mut();
+                if let Ok(grants) = HeaderValue::from_str(&granted.grants.join(",")) {
+                    headers.insert(GRANTS_HEADER, grants);
+                }
+                if let Some(address) = granted
+                    .address
+                    .as_deref()
+                    .and_then(|address| HeaderValue::from_str(address).ok())
+                {
+                    headers.insert(ADDRESS_HEADER, address);
+                }
+            }
+        }
+        let response = self
+            .writers
+            .call(verified, bearer, session, &space, request)
+            .await;
+        let status = response.status();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .map(|body| body.to_bytes())
+            .unwrap_or_default();
+        if !status.is_success() {
+            call.end(Outcome::Error, &format!("http_{}", status.as_u16()));
+            return tool_result(
+                json!(format!(
+                    "The undo did not land ({status}): {}. Read the space before trying again.",
+                    String::from_utf8_lossy(&body)
+                )),
+                true,
+            );
+        }
+        match serde_json::from_slice::<crate::UndoReport>(&body) {
+            Ok(report) => undo::result(&report),
+            Err(error) => {
+                call.end(Outcome::Error, "undo_unreadable");
+                tool_result(
+                    json!(format!("The writer answered an unreadable undo: {error}")),
+                    true,
+                )
+            }
         }
     }
 
@@ -813,6 +1268,62 @@ fn refusal(
         ));
     }
     None
+}
+
+/// A space a write reaches: the grant it goes through (none for the
+/// agent space), and what its card says.
+struct Reached {
+    granted: Option<SpaceAccess>,
+    context: super::propose::Context,
+}
+
+/// A `POST` of `body` to the writer route `path`, carrying the call's
+/// `trace` and the grants and address of `granted`, or `None` when they
+/// do not make headers.
+fn space_request(
+    path: &str,
+    granted: Option<&SpaceAccess>,
+    content_type: &str,
+    body: &str,
+    trace: &str,
+) -> Option<Request<Body>> {
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(TRACE_HEADER, trace);
+    if let Some(granted) = granted {
+        request = request.header(GRANTS_HEADER, granted.grants.join(","));
+        if let Some(address) = &granted.address {
+            request = request.header(ADDRESS_HEADER, address);
+        }
+    }
+    request.body(Body::from(body.to_owned())).ok()
+}
+
+/// End `call` for a writer's failed answer of `status` and `body`: the
+/// writer's own code where it gives one, the status otherwise.
+fn writer_failed(call: &mut Call, status: StatusCode, body: &Value) {
+    let kind = body["code"]
+        .as_str()
+        .and_then(writer_code)
+        .unwrap_or_else(|| format!("http_{}", status.as_u16()));
+    call.end(writer_outcome(status), &kind);
+}
+
+/// A writer's answer as JSON, or as a string when it is not.
+fn parsed(body: &[u8]) -> Value {
+    serde_json::from_slice::<Value>(body).unwrap_or_else(|_| json!(String::from_utf8_lossy(body)))
+}
+
+/// The reason a writer's refusal gives, for a person.
+fn reason(value: &Value) -> String {
+    value["error"]
+        .as_str()
+        .or_else(|| value["message"].as_str())
+        .or_else(|| value.as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string())
 }
 
 /// What `tonk_list_spaces` answers: the agent space first, marked
@@ -958,8 +1469,19 @@ pub fn tools() -> Vec<Value> {
                      once, answered after the write is saved. Needs write access to the \
                      space (see tonk_list_spaces). Read tonk_guide (notation, views, events) \
                      before authoring unfamiliar schemas or views. If a response is lost, query \
-                     before trying again; never replay automatically."
+                     before trying again; never replay automatically. With confirm: true \
+                     nothing is written: the person sees what the change would do in a card \
+                     and applies or declines it there. Use it for many changes at once, for \
+                     changes others will see that are hard to undo, or when the person asked \
+                     to confirm first."
                 );
+                tool["inputSchema"]["properties"]["confirm"] = json!({
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Propose the change for the person to confirm instead of \
+                        writing it.",
+                });
+                tool["_meta"] = super::card::tool_meta();
             }
             if name == "tonk_list_spaces" {
                 tool["description"] = json!(

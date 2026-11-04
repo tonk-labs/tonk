@@ -371,6 +371,38 @@ impl SpaceWriterObject {
         if let Err(error) = admitted {
             return failure(StatusCode::BAD_GATEWAY, &error.to_string());
         }
+        // A change the person confirms first (see `tonk_worker::propose`):
+        // held by this writer, so only its session answers it.
+        if method == worker::Method::Post
+            && path == tonk_worker::propose::PROPOSE_ROUTE.trim_start_matches('/')
+        {
+            self.reach("propose");
+            let document = request.text().await?;
+            return worker::Response::try_from(writer.propose(document).await);
+        }
+        let answer = if path == tonk_worker::propose::APPLY_ROUTE.trim_start_matches('/') {
+            Some(true)
+        } else if path == tonk_worker::propose::DISMISS_ROUTE.trim_start_matches('/') {
+            Some(false)
+        } else {
+            None
+        };
+        if let (worker::Method::Post, Some(apply)) = (&method, answer) {
+            let body: serde_json::Value = match request.json().await {
+                Ok(body) => body,
+                Err(error) => return failure(StatusCode::BAD_REQUEST, &error.to_string()),
+            };
+            let Some(id) = body["id"].as_str() else {
+                return failure(StatusCode::BAD_REQUEST, "name the proposal");
+            };
+            self.reach(if apply { "apply" } else { "dismiss" });
+            let response = if apply {
+                writer.apply(id).await
+            } else {
+                writer.dismiss(id)
+            };
+            return worker::Response::try_from(response);
+        }
         if method == worker::Method::Get && path == OUTLINE {
             let route: String = url
                 .query_pairs()
@@ -380,6 +412,22 @@ impl SpaceWriterObject {
             return match writer.outline(&route).await {
                 Ok(outline) => worker::Response::from_json(&outline),
                 Err(error) => failure(StatusCode::BAD_REQUEST, &error),
+            };
+        }
+        if method == worker::Method::Post
+            && path == tonk_worker::mcp::UNDO_ROUTE.trim_start_matches('/')
+        {
+            self.reach("undo");
+            let body: serde_json::Value = match request.json().await {
+                Ok(body) => body,
+                Err(error) => return failure(StatusCode::BAD_REQUEST, &error.to_string()),
+            };
+            let Some(revision) = body["revision"].as_str() else {
+                return failure(StatusCode::BAD_REQUEST, "name the revision");
+            };
+            return match writer.undo(revision).await {
+                Ok(report) => worker::Response::from_json(&report),
+                Err(error) => failure(StatusCode::BAD_GATEWAY, &error),
             };
         }
         let content_type = request

@@ -213,6 +213,9 @@ pub struct SpaceWriter {
     pulled_for: AtomicU64,
     /// The most one read answers.
     caps: ReadCaps,
+    /// Changes proposed in this writer's session, until the person
+    /// answers (see [`super::propose`]).
+    proposals: super::propose::Proposals,
     /// Fail the next push before it is sent, as a refusing remote would.
     #[cfg(test)]
     refuse_push: AtomicBool,
@@ -257,6 +260,7 @@ impl SpaceWriter {
             reads: AtomicU64::new(0),
             pulled_for: AtomicU64::new(0),
             caps: ReadCaps::default(),
+            proposals: super::propose::Proposals::default(),
             #[cfg(test)]
             refuse_push: AtomicBool::new(false),
         })
@@ -363,6 +367,42 @@ impl SpaceWriter {
         Response::from_parts(parts, Body::from(body))
     }
 
+    /// Undo the change `revision` made to the space, holding the lock from
+    /// the pull before it through the push after it, as a write does.
+    ///
+    /// Answered once the push has landed. A refusal is recorded and pushed
+    /// too, so whatever shows the change can say why; an undo that writes
+    /// nothing (the change is undone already) pushes nothing.
+    pub async fn undo(&self, revision: &str) -> Result<super::super::UndoReport, String> {
+        let _turn = self.lock.lock().await;
+        if self.stale.load(Ordering::SeqCst) {
+            self.reopen().await?;
+            self.stale.store(false, Ordering::SeqCst);
+        }
+        let peer = self.peer();
+        self.sync(&peer, "pull").await?;
+        let report = peer
+            .undo(&self.space, revision)
+            .await
+            .map_err(|error| error.to_string())?;
+        if report.committed.is_none() {
+            return Ok(report);
+        }
+        if let Err(error) = self.push(&peer).await {
+            if self.landed(&peer).await {
+                return Ok(report);
+            }
+            if let Err(reopen) = self.reopen().await {
+                self.stale.store(true, Ordering::SeqCst);
+                return Err(format!(
+                    "{error}; the writer reopens before its next write: {reopen}"
+                ));
+            }
+            return Err(error.into());
+        }
+        Ok(report)
+    }
+
     /// Answer one read without waiting for the lock.
     ///
     /// Only routes that cannot commit are served: `GET` and `HEAD`, a
@@ -416,6 +456,94 @@ impl SpaceWriter {
         };
         steps.lap("eval");
         response
+    }
+
+    /// Preview `document` as a read does (`transact=false&preview=true`:
+    /// what it would change, nothing committed), and hold it, with the
+    /// revision it was previewed at, to apply later only if it would
+    /// write something. Answers [`super::propose::held`]; a document that
+    /// does not evaluate is answered as its read is, and not held.
+    ///
+    /// A document that runs a command is not held: its effects are not
+    /// in the preview, and a revision-checked write refuses commands.
+    pub async fn propose(&self, document: String) -> Response<Body> {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/evaluate?transact=false&preview=true")
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(Body::from(document.clone()))
+            .expect("static request");
+        let response = self.read(request).await;
+        if !response.status().is_success() {
+            return response;
+        }
+        let evaluation: serde_json::Value = match response.into_body().collect().await {
+            Ok(body) => serde_json::from_slice(&body.to_bytes()).unwrap_or_default(),
+            Err(error) => {
+                return failure(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "DRY_RUN_UNREADABLE",
+                    &error.to_string(),
+                );
+            }
+        };
+        if evaluation["commits"]["claims"].as_u64().unwrap_or(0) == 0 {
+            return failure(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "NOTHING_TO_PROPOSE",
+                "this document writes nothing, so there is nothing to confirm: only a \
+                 `concept!:` head (with `!`) or a command writes",
+            );
+        }
+        let runs_a_command = evaluation["matches_after"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|block| block["results"].as_array())
+            .flatten()
+            .any(|result| result["transient"].as_bool().unwrap_or(false));
+        if runs_a_command {
+            return failure(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "COMMAND_NOT_CONFIRMABLE",
+                "this document runs a command, whose effects a preview cannot show, so it \
+                 cannot be confirmed first: write it without confirm",
+            );
+        }
+        let revision = evaluation["revision_before"].clone();
+        let now = dialog_ucan_core::time::Timestamp::now().to_unix();
+        let (id, expires) = self.proposals.hold(document, revision, now);
+        json_answer(super::propose::held(&id, expires, evaluation))
+    }
+
+    /// Write the change held as `id`, once, as [`Self::write`] does, and
+    /// only onto the revision it was previewed at: the person confirmed
+    /// what the preview showed, so a space that has moved since is
+    /// refused (`412`) and nothing is written. The id is spent before the
+    /// write runs, so a second answer finds nothing whatever the first
+    /// one's outcome.
+    pub async fn apply(&self, id: &str) -> Response<Body> {
+        let now = dialog_ucan_core::time::Timestamp::now().to_unix();
+        let Ok((document, revision)) = self.proposals.take(id, now) else {
+            return proposal_gone();
+        };
+        let body = serde_json::json!({ "document": document, "expected_revision": revision });
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/evaluate/conditional")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("static request");
+        self.write(request).await
+    }
+
+    /// Drop the change held as `id`.
+    pub fn dismiss(&self, id: &str) -> Response<Body> {
+        let now = dialog_ucan_core::time::Timestamp::now().to_unix();
+        match self.proposals.take(id, now) {
+            Ok(_) => json_answer(serde_json::json!({ "dismissed": true })),
+            Err(_) => proposal_gone(),
+        }
     }
 
     /// The views `route` mounts in this writer's space (its home when
@@ -791,6 +919,24 @@ fn is_read(method: &Method, uri: &Uri) -> bool {
         }
         _ => false,
     }
+}
+
+/// The answer for a proposal no writer holds any more.
+fn proposal_gone() -> Response<Body> {
+    failure(
+        StatusCode::GONE,
+        "PROPOSAL_GONE",
+        "no such proposal: it was answered, it lapsed, or another session made it",
+    )
+}
+
+fn json_answer(value: serde_json::Value) -> Response<Body> {
+    let mut response = Response::new(Body::from(value.to_string()));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/json"),
+    );
+    response
 }
 
 fn failure(status: StatusCode, code: &str, message: &str) -> Response<Body> {

@@ -4828,6 +4828,110 @@ pub(super) async fn install_component(
     }
 }
 
+/// Withdraw the library component at `source` from the branch `branch` of
+/// space `key`: what its install asserted and its install record, the way
+/// an upgrade reverts the version it replaces (see [`uninstall_claims`]),
+/// with nothing installed after. What another installed library also
+/// declares stays, and so does what the space wrote with the component.
+/// `Ok(false)` when it is not installed.
+pub(super) async fn uninstall_component(
+    tonk: &TonkState,
+    key: &str,
+    branch: &str,
+    source: &str,
+) -> Result<bool, RepositoryError> {
+    let session = tonk
+        .reactor
+        .repository(key)
+        .branch(branch)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("open '{key}' branch '{branch}': {e}")))?;
+    let subject = space_entity(key)?;
+    let _committing = session.transactor().lock().await;
+    let mut attempt = 0;
+    loop {
+        let Some(current) = read_installed_seed_in(tonk, &session, source)
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("read seed record: {e}")))?
+        else {
+            return Ok(false);
+        };
+        let uninstall = uninstall_claims(tonk, &session, &current, &subject).await?;
+        match retract_and_publish(tonk, &session, &uninstall).await {
+            Ok(()) => {
+                log!(
+                    "library uninstall: '{key}' withdrew {source}: reverted {}",
+                    uninstall.len()
+                );
+                break;
+            }
+            Err(error) => retry_after_race(tonk, key, &session, &mut attempt, error).await?,
+        }
+    }
+    session.poll(&tonk.operator).await;
+    Ok(true)
+}
+
+/// Write `instructions` in one commit on `session` and publish it. Each
+/// assertion keeps the pick its attribute is read under, so a
+/// cardinality-one value replaces the one before it.
+pub(super) async fn publish_instructions(
+    tonk: &TonkState,
+    session: &crate::reactor::BranchSession,
+    instructions: Vec<dialog_artifacts::Instruction>,
+) -> Result<(), dialog_repository::CommitError> {
+    let mut transaction = session.handle().transaction();
+    for instruction in instructions {
+        transaction = match instruction {
+            dialog_artifacts::Instruction::Assert(artifact, policy) => {
+                transaction.assert(super::claim::RawClaim {
+                    the: artifact.the,
+                    of: artifact.of,
+                    is: artifact.is,
+                    policy,
+                })
+            }
+            dialog_artifacts::Instruction::Retract(artifact) => {
+                transaction.retract(super::claim::RawClaim {
+                    the: artifact.the,
+                    of: artifact.of,
+                    is: artifact.is,
+                    policy: dialog_artifacts::Pick::All,
+                })
+            }
+        };
+    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await?
+        .publish()
+        .perform(&tonk.operator)
+        .await?;
+    Ok(())
+}
+
+/// Retract `claims` in one commit and publish it.
+async fn retract_and_publish(
+    tonk: &TonkState,
+    session: &crate::reactor::BranchSession,
+    claims: &[super::claim::RawClaim],
+) -> Result<(), dialog_repository::CommitError> {
+    let mut transaction = session.handle().transaction();
+    for claim in claims {
+        transaction = transaction.retract(claim.clone());
+    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await?
+        .publish()
+        .perform(&tonk.operator)
+        .await?;
+    Ok(())
+}
+
 /// The content branch of the space `key` names, under whichever key
 /// spelling opens it, and the seed it runs.
 ///
@@ -5414,7 +5518,7 @@ fn repository_name_claims(
 
 /// Refresh the head after a commit lost a race to a sync, or give up after
 /// a few tries; any other error is returned as is.
-async fn retry_after_race(
+pub(super) async fn retry_after_race(
     tonk: &TonkState,
     key: &str,
     session: &crate::reactor::BranchSession,
@@ -5437,7 +5541,7 @@ async fn retry_after_race(
 
 /// The entity a space's own facts are about: its subject DID, whichever
 /// key spelling names it.
-fn space_entity(key: &str) -> Result<dialog_artifacts::Entity, RepositoryError> {
+pub(super) fn space_entity(key: &str) -> Result<dialog_artifacts::Entity, RepositoryError> {
     let did = if key.starts_with("did:key:") {
         key.to_owned()
     } else {
@@ -16224,6 +16328,405 @@ attribute!: &probe/next
                 "nothing of the library is left on {concept}"
             );
         }
+    }
+
+    const TABLE: &str = "tonk:library/table";
+    const TABLE_SOURCE: &str = "/library/table.yaml";
+
+    fn entity(uri: &str) -> dialog_artifacts::Entity {
+        uri.parse().expect("an entity URI")
+    }
+
+    /// A space on the shipped core, and the command env a commit on its
+    /// content branch would run providers in.
+    async fn command_space(name: &str) -> (crate::router::AppState, String) {
+        let tonk = test_state().await;
+        let (key, _) = new_space(&tonk, CORE, name).await;
+        (std::sync::Arc::new(crate::StateLock::new(tonk)), key)
+    }
+
+    fn env_in(state: &crate::router::AppState, key: &str) -> crate::router::CommandEnv {
+        crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: key.to_owned(),
+                branch: CONTENT_BRANCH.into(),
+                client: None,
+            },
+        )
+    }
+
+    async fn ask_install(
+        state: &crate::router::AppState,
+        key: &str,
+        request: &str,
+        component: &str,
+        time: f64,
+    ) {
+        dialog_capability::Provider::<tonk_schema::command::InstallComponent>::execute(
+            &env_in(state, key),
+            tonk_schema::command::InstallComponent {
+                this: entity(request),
+                component: tonk_schema::domain::command::current::install_component::Component(
+                    entity(component),
+                ),
+                time: tonk_schema::domain::command::current::install_component::Time(time),
+            },
+        )
+        .await;
+    }
+
+    async fn ask_uninstall(
+        state: &crate::router::AppState,
+        key: &str,
+        request: &str,
+        component: &str,
+        time: f64,
+    ) {
+        dialog_capability::Provider::<tonk_schema::command::UninstallComponent>::execute(
+            &env_in(state, key),
+            tonk_schema::command::UninstallComponent {
+                this: entity(request),
+                component: tonk_schema::domain::command::current::uninstall_component::Component(
+                    entity(component),
+                ),
+                time: tonk_schema::domain::command::current::uninstall_component::Time(time),
+            },
+        )
+        .await;
+    }
+
+    /// The outcome recorded on the request `request`.
+    async fn outcome(tonk: &TonkState, key: &str, request: &str) -> tonk_schema::LibraryOutcome {
+        use dialog_query::{Output as _, Query, Term};
+        let mut rows: Vec<tonk_schema::LibraryOutcome> = content(tonk, key)
+            .await
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::LibraryOutcome> {
+                this: Term::from(entity(request)),
+                component: Term::var("component"),
+                action: Term::var("action"),
+                status: Term::var("status"),
+                time: Term::var("time"),
+                version: Term::var("version"),
+                lines: Term::var("lines"),
+                reason: Term::var("reason"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("the outcomes read");
+        assert_eq!(rows.len(), 1, "one outcome for {request}");
+        rows.remove(0)
+    }
+
+    /// The space's AGENTS.md, if it has one.
+    async fn agents_md(tonk: &TonkState, key: &str) -> Option<String> {
+        use dialog_query::{Output as _, Query, Term};
+        content(tonk, key)
+            .await
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::RepositoryAgents> {
+                this: Term::from(space_entity(key).expect("a space key")),
+                agents: Term::var("agents"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("AGENTS.md reads")
+            .into_iter()
+            .next()
+            .map(|row| row.agents.0)
+    }
+
+    /// Read-only notation against the space's content branch, as JSON.
+    async fn query_json(tonk: &TonkState, key: &str, document: &str) -> serde_json::Value {
+        let response = super::super::evaluate::evaluate_body(
+            tonk,
+            key,
+            CONTENT_BRANCH,
+            document.to_owned(),
+            false,
+        )
+        .await
+        .expect("the query evaluates");
+        serde_json::to_value(response).expect("the response serializes")
+    }
+
+    /// An agent can search the catalog before installing anything: every
+    /// component with its label and version, and what each one adds.
+    #[dialog_common::test]
+    async fn it_lists_the_catalog_with_versions_and_parts_before_any_install() {
+        let tonk = test_state().await;
+        let (key, _) = new_space(&tonk, CORE, "Catalog").await;
+        let catalog = query_json(
+            &tonk,
+            &key,
+            "library/component:\n  name: ?name\n  label: ?label\n  version: ?version\n",
+        )
+        .await
+        .to_string();
+        for name in super::super::library::COMPONENTS {
+            assert!(
+                catalog.contains(&format!("\"{name}\"")),
+                "{name} is listed: {catalog}"
+            );
+        }
+        assert!(catalog.contains("\"Version control\""), "{catalog}");
+        assert!(catalog.contains("\"1.0\""), "{catalog}");
+
+        let parts = query_json(
+            &tonk,
+            &key,
+            "library/part:\n  component: tonk:library/table\n  kind: \"command\"\n  name: ?name\n",
+        )
+        .await
+        .to_string();
+        assert!(parts.contains("\"table/edit-cell\""), "{parts}");
+        assert!(
+            !parts.contains("\"block/edit\""),
+            "only the table's parts: {parts}"
+        );
+    }
+
+    /// Installing a component adds its AGENTS.md lines and records what came
+    /// of the request, where the card that asked can read it.
+    #[dialog_common::test]
+    async fn it_installs_a_component_with_its_agents_lines_and_records_the_outcome() {
+        let (state, key) = command_space("Install").await;
+        ask_install(&state, &key, "id:request/install", TABLE, 1.0).await;
+
+        let tonk = state.read().await;
+        assert!(
+            component(&tonk, &key, TABLE_SOURCE).await.is_some(),
+            "the table is installed"
+        );
+        let recorded = outcome(&tonk, &key, "id:request/install").await;
+        assert_eq!(recorded.status.0, "installed");
+        assert_eq!(recorded.action.0, "install");
+        assert_eq!(recorded.component.0, entity(TABLE));
+        assert_eq!(recorded.time.0, 1.0);
+        assert_eq!(recorded.version.map(|v| v.0).as_deref(), Some("1.0"));
+        assert!(recorded.reason.is_none());
+        let lines = recorded.lines.expect("the lines it added are recorded").0;
+        assert!(lines.contains("`table/edit-cell`"), "{lines}");
+
+        let markdown = agents_md(&tonk, &key).await.expect("AGENTS.md is written");
+        assert_eq!(
+            markdown, lines,
+            "a space with no AGENTS.md gets just the lines"
+        );
+        drop(tonk);
+
+        // Asking again changes nothing and says so.
+        ask_install(&state, &key, "id:request/again", TABLE, 2.0).await;
+        let tonk = state.read().await;
+        let again = outcome(&tonk, &key, "id:request/again").await;
+        assert_eq!(again.status.0, "current");
+        assert!(again.lines.is_none(), "no line is added twice");
+        assert_eq!(
+            agents_md(&tonk, &key).await.as_deref(),
+            Some(markdown.as_str())
+        );
+    }
+
+    /// Uninstalling withdraws what the install added (definitions, install
+    /// record, AGENTS.md lines) and leaves the space's own writing, so an
+    /// undo of an install puts the space back.
+    #[dialog_common::test]
+    async fn it_uninstalls_what_the_install_added() {
+        let (state, key) = command_space("Uninstall").await;
+        {
+            let tonk = state.read().await;
+            author(
+                &tonk,
+                &key,
+                "tonk/agents!:\n  this: did:key:KEY\n  markdown: \"Be kind.\\n\"\n"
+                    .replace("did:key:KEY", &space_entity(&key).unwrap().to_string())
+                    .as_str(),
+            )
+            .await;
+        }
+        ask_install(&state, &key, "id:request/install", TABLE, 1.0).await;
+        let (table_only, core_claims) = {
+            let tonk = state.read().await;
+            let installed = component(&tonk, &key, TABLE_SOURCE)
+                .await
+                .expect("the table is installed");
+            let core = durable_claims(CORE).await;
+            let table_only: Vec<Triple> = install_claims(&tonk, &key, &installed)
+                .await
+                .into_iter()
+                .filter(|claim| !core.contains(claim))
+                .collect();
+            assert!(!table_only.is_empty());
+            assert!(
+                agents_md(&tonk, &key)
+                    .await
+                    .unwrap()
+                    .starts_with("Be kind.\n\n")
+            );
+            (table_only, core)
+        };
+        // The space's own writing with the component.
+        {
+            let tonk = state.read().await;
+            author(
+                &tonk,
+                &key,
+                "xyz.example.mine!:\n  this: id:mine\n  note: \"kept\"\n",
+            )
+            .await;
+        }
+
+        ask_uninstall(&state, &key, "id:request/undo", TABLE, 2.0).await;
+        let tonk = state.read().await;
+        let recorded = outcome(&tonk, &key, "id:request/undo").await;
+        assert_eq!(recorded.status.0, "uninstalled", "{:?}", recorded.reason);
+        assert_eq!(recorded.action.0, "uninstall");
+        assert!(
+            recorded.lines.is_some(),
+            "the lines it removed are recorded"
+        );
+        assert!(
+            component(&tonk, &key, TABLE_SOURCE).await.is_none(),
+            "no install record stays"
+        );
+        for claim in &table_only {
+            assert!(
+                !holds(&tonk, &key, claim).await,
+                "{claim:?} goes with the table"
+            );
+        }
+        // Where the table describes something core describes too, the
+        // library installed last says it; the rest of core must stand.
+        let sample: Vec<&Triple> = core_claims
+            .iter()
+            .filter(|claim| claim.0 != "db.meta/description")
+            .take(50)
+            .collect();
+        for claim in sample {
+            assert!(holds(&tonk, &key, claim).await, "core's {claim:?} stays");
+        }
+        assert_eq!(agents_md(&tonk, &key).await.as_deref(), Some("Be kind.\n"));
+        let mine = query_json(
+            &tonk,
+            &key,
+            "xyz.example.mine:\n  this: id:mine\n  note: ?note\n",
+        )
+        .await
+        .to_string();
+        assert!(mine.contains("kept"), "{mine}");
+        drop(tonk);
+
+        // And it installs again.
+        ask_install(&state, &key, "id:request/redo", TABLE, 3.0).await;
+        let tonk = state.read().await;
+        assert_eq!(
+            outcome(&tonk, &key, "id:request/redo").await.status.0,
+            "installed"
+        );
+        for claim in &table_only {
+            assert!(holds(&tonk, &key, claim).await, "{claim:?} is back");
+        }
+    }
+
+    /// The AGENTS.md text a space holds before anything is installed.
+    async fn write_agents(state: &crate::router::AppState, key: &str, markdown: &str) {
+        let tonk = state.read().await;
+        let document = format!(
+            "tonk/agents!:\n  this: {}\n  markdown: {}\n",
+            space_entity(key).unwrap(),
+            serde_json::to_string(markdown).unwrap()
+        );
+        author(&tonk, key, &document).await;
+    }
+
+    /// A line the space already had is not the install's to take away:
+    /// uninstall removes only what the install recorded adding.
+    #[dialog_common::test]
+    async fn it_keeps_agents_lines_the_space_had_before_the_install() {
+        let (state, key) = command_space("Prior lines").await;
+        let catalog = {
+            let tonk = state.read().await;
+            let session = content(&tonk, &key).await;
+            super::super::library::catalog_agents(&tonk, &session, &entity(TABLE))
+                .await
+                .expect("the table has AGENTS.md lines")
+        };
+        assert!(catalog.len() > 1, "{catalog:?}");
+        let prior = format!("Be kind.\n{}\n", catalog[0]);
+        write_agents(&state, &key, &prior).await;
+
+        ask_install(&state, &key, "id:request/install", TABLE, 1.0).await;
+        ask_uninstall(&state, &key, "id:request/undo", TABLE, 2.0).await;
+
+        let tonk = state.read().await;
+        let added = outcome(&tonk, &key, "id:request/install")
+            .await
+            .lines
+            .unwrap()
+            .0;
+        assert!(
+            !added.contains(&catalog[0]),
+            "the line it had was not added: {added}"
+        );
+        assert_eq!(
+            agents_md(&tonk, &key).await.as_deref(),
+            Some(prior.as_str()),
+            "uninstall leaves the space's own lines"
+        );
+    }
+
+    /// Two installs at once both land in AGENTS.md: each edit reads the
+    /// text under the writer lock, never a copy the other has replaced.
+    #[dialog_common::test]
+    async fn it_keeps_both_components_lines_when_installs_run_at_once() {
+        let (state, key) = command_space("Concurrent").await;
+        write_agents(&state, &key, "Be kind.\n").await;
+        futures_util::join!(
+            ask_install(&state, &key, "id:request/table", TABLE, 1.0),
+            ask_install(&state, &key, "id:request/prose", "tonk:library/prose", 1.0),
+        );
+        let tonk = state.read().await;
+        let markdown = agents_md(&tonk, &key).await.expect("AGENTS.md is written");
+        for request in ["id:request/table", "id:request/prose"] {
+            let recorded = outcome(&tonk, &key, request).await;
+            assert_eq!(recorded.status.0, "installed", "{:?}", recorded.reason);
+            for line in recorded.lines.expect("lines were added").0.lines() {
+                assert!(markdown.contains(line), "{line} is in {markdown}");
+            }
+        }
+        assert!(markdown.starts_with("Be kind.\n"));
+    }
+
+    /// A request that cannot be done says why, in the outcome.
+    #[dialog_common::test]
+    async fn it_records_why_a_request_failed() {
+        let (state, key) = command_space("Refusals").await;
+        ask_install(&state, &key, "id:request/unknown", "tonk:library/nope", 1.0).await;
+        ask_uninstall(&state, &key, "id:request/absent", TABLE, 2.0).await;
+
+        let tonk = state.read().await;
+        let unknown = outcome(&tonk, &key, "id:request/unknown").await;
+        assert_eq!(unknown.status.0, "failed");
+        assert!(
+            unknown
+                .reason
+                .expect("a reason")
+                .0
+                .contains("not a library component")
+        );
+        let absent = outcome(&tonk, &key, "id:request/absent").await;
+        assert_eq!(absent.status.0, "failed");
+        assert_eq!(absent.action.0, "uninstall");
+        assert!(absent.reason.expect("a reason").0.contains("not installed"));
+        assert!(
+            agents_md(&tonk, &key).await.is_none(),
+            "nothing was written"
+        );
     }
 }
 

@@ -86,6 +86,9 @@ pub use replica::*;
 pub mod repository;
 pub use repository::*;
 
+pub mod library;
+pub use library::*;
+
 pub mod membership;
 pub use membership::*;
 
@@ -109,6 +112,9 @@ pub use branch::*;
 
 pub mod remote;
 pub use remote::*;
+
+pub mod undo;
+pub use undo::{Undo, UndoReason, decode_revision, encode_revision};
 
 pub mod remote_execution;
 pub use remote_execution::*;

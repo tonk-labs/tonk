@@ -2794,15 +2794,47 @@ view!:
 # The library's components a space can install, each beside the others
 # and beside the space's seed: issue, meta, notebook, prose, table,
 # version-control (every library file but `core.yaml`, which every space
-# runs, and `profile.yaml`, the profile's). An install is recorded like the seed's and brought up to
-# date the same way when the space mounts; installing one already there
-# updates it, or does nothing when it is current.
+# runs, and `profile.yaml`, the profile's). An install is recorded like the
+# seed's and brought up to date the same way when the space mounts;
+# installing one already there updates it, or does nothing when it is
+# current.
+#
+# The catalog is readable before anything is installed, so an agent can
+# search it and an install ask can say what an install would change:
+#
+#   library/component:
+#     name: ?name
+#     label: ?label
+#     version: ?version
+#
+#   library/part:
+#     component: tonk:library/table
+#     kind: ?kind
+#     name: ?name
 concept!: &library/component
   description: A library component a space can install.
   with:
     name:
       description: The component's name, the file it is in without `.yaml`.
       the: xyz.tonk.library.component/name
+      as: text
+    label:
+      description: What a person calls the component, e.g. "Version control".
+      the: xyz.tonk.library.component/label
+      as: text
+    version:
+      description: >
+        The component's release, e.g. "1.0". Raise it when a change to the
+        component's file changes what an install adds.
+      the: xyz.tonk.library.component/version
+      as: text
+  maybe:
+    agents:
+      description: >
+        The lines installing the component adds to the space's AGENTS.md
+        (`tonk/agents`), one per line, so agents know how to use it.
+        Uninstalling removes exactly these lines again.
+      the: xyz.tonk.library.component/agents
       as: text
 
 view!:
@@ -2814,26 +2846,190 @@ view!:
 library/component!:
   this: tonk:library/issue
   name: "issue"
+  label: "Issues"
+  version: "1.0"
+  agents: |
+    Track work as `issue` records (title, description, type, priority, status); query `issue:` before adding one.
 
 library/component!:
   this: tonk:library/meta
   name: "meta"
+  label: "Branches"
+  version: "1.0"
+  agents: |
+    Read which branches this space has and what each one tracks through `branch`, `branch/upstream` and `replica`.
 
 library/component!:
   this: tonk:library/notebook
   name: "notebook"
+  label: "Notebook"
+  version: "1.0"
+  agents: |
+    Write notebooks as blocks with `block/insert`, `block/edit`, `block/move` and `block/remove`, never by asserting `notebook/block` directly.
+    A `dialog-yaml` fence in a notebook block is a live cell: it is evaluated against the space.
 
 library/component!:
   this: tonk:library/prose
   name: "prose"
+  label: "Prose"
+  version: "1.0"
+  agents: |
+    Edit `prose` documents (markdown) with `prose/edit`.
 
 library/component!:
   this: tonk:library/table
   name: "table"
+  label: "Table"
+  version: "1.0"
+  agents: |
+    Keep spreadsheets as `table` workbooks: one `table/cell` per non-empty cell, holding raw input only (`=B2*C2`, `3.5`).
+    Change cells with `table/create-cell`, `table/edit-cell` and `table/clear-cell`; computed values are derived, never stored.
 
 library/component!:
   this: tonk:library/version-control
   name: "version-control"
+  label: "Version control"
+  version: "1.0"
+  agents: |
+    Read the space's history through `version-control/revision`; comment on a revision with `version-control/comment-on`.
+
+# What each component adds: one row per concept, command and view its file
+# declares. Generated from the component files, not written by hand:
+# `cargo test -p tonk-worker --test standard_library` fails when this block
+# is out of date, and `TONK_BLESS_LIBRARY=1` rewrites it.
+concept!: &library/part
+  description: >
+    One thing a library component adds to a space when it is installed: a
+    concept, a command or a view.
+  with:
+    component:
+      description: The component that adds it, `tonk:library/<name>`.
+      the: xyz.tonk.library.part/component
+      as: entity
+    kind:
+      description: What it is, "concept", "command" or "view".
+      the: xyz.tonk.library.part/kind
+      as: text
+    name:
+      description: >
+        The concept's or command's name; for a view, the model it shows.
+      the: xyz.tonk.library.part/name
+      as: text
+  maybe:
+    slot:
+      description: For a view, the slot it fills (`ui`, `directory`, `label`, …).
+      the: xyz.tonk.library.part/slot
+      as: text
+
+# BEGIN library parts (generated)
+library/part!: { this: tonk:library/issue/concept/issue, component: tonk:library/issue, kind: "concept", name: "issue" }
+library/part!: { this: tonk:library/meta/concept/replica, component: tonk:library/meta, kind: "concept", name: "replica" }
+library/part!: { this: tonk:library/meta/concept/branch, component: tonk:library/meta, kind: "concept", name: "branch" }
+library/part!: { this: tonk:library/meta/concept/branch/upstream, component: tonk:library/meta, kind: "concept", name: "branch/upstream" }
+library/part!: { this: tonk:library/meta/concept/replica/active-branch, component: tonk:library/meta, kind: "concept", name: "replica/active-branch" }
+library/part!: { this: tonk:library/notebook/concept/notebook, component: tonk:library/notebook, kind: "concept", name: "notebook" }
+library/part!: { this: tonk:library/notebook/concept/notebook/named, component: tonk:library/notebook, kind: "concept", name: "notebook/named" }
+library/part!: { this: tonk:library/notebook/concept/notebook/blocks, component: tonk:library/notebook, kind: "concept", name: "notebook/blocks" }
+library/part!: { this: tonk:library/notebook/concept/block/position, component: tonk:library/notebook, kind: "concept", name: "block/position" }
+library/part!: { this: tonk:library/notebook/concept/notebook/block, component: tonk:library/notebook, kind: "concept", name: "notebook/block" }
+library/part!: { this: tonk:library/notebook/concept/block/chain, component: tonk:library/notebook, kind: "concept", name: "block/chain" }
+library/part!: { this: tonk:library/notebook/view/notebook/ui, component: tonk:library/notebook, kind: "view", name: "notebook", slot: "ui" }
+library/part!: { this: tonk:library/notebook/view/notebook/directory, component: tonk:library/notebook, kind: "view", name: "notebook", slot: "directory" }
+library/part!: { this: tonk:library/notebook/view/notebook/block/directory, component: tonk:library/notebook, kind: "view", name: "notebook/block", slot: "directory" }
+library/part!: { this: tonk:library/notebook/concept/notebook/index-route, component: tonk:library/notebook, kind: "concept", name: "notebook/index-route" }
+library/part!: { this: tonk:library/notebook/view/tonk.notebook/index-route/ui, component: tonk:library/notebook, kind: "view", name: "tonk:notebook/index-route", slot: "ui" }
+library/part!: { this: tonk:library/notebook/concept/notebook/route, component: tonk:library/notebook, kind: "concept", name: "notebook/route" }
+library/part!: { this: tonk:library/notebook/view/tonk.notebook/route/ui, component: tonk:library/notebook, kind: "view", name: "tonk:notebook/route", slot: "ui" }
+library/part!: { this: tonk:library/notebook/command/block/insert, component: tonk:library/notebook, kind: "command", name: "block/insert" }
+library/part!: { this: tonk:library/notebook/command/notebook/retitle, component: tonk:library/notebook, kind: "command", name: "notebook/retitle" }
+library/part!: { this: tonk:library/notebook/command/block/edit, component: tonk:library/notebook, kind: "command", name: "block/edit" }
+library/part!: { this: tonk:library/notebook/command/block/place, component: tonk:library/notebook, kind: "command", name: "block/place" }
+library/part!: { this: tonk:library/notebook/command/block/move, component: tonk:library/notebook, kind: "command", name: "block/move" }
+library/part!: { this: tonk:library/notebook/command/block/remove, component: tonk:library/notebook, kind: "command", name: "block/remove" }
+library/part!: { this: tonk:library/prose/concept/prose, component: tonk:library/prose, kind: "concept", name: "prose" }
+library/part!: { this: tonk:library/prose/command/prose/edit, component: tonk:library/prose, kind: "command", name: "prose/edit" }
+library/part!: { this: tonk:library/prose/view/prose/ui, component: tonk:library/prose, kind: "view", name: "prose", slot: "ui" }
+library/part!: { this: tonk:library/prose/view/prose/directory, component: tonk:library/prose, kind: "view", name: "prose", slot: "directory" }
+library/part!: { this: tonk:library/table/concept/table, component: tonk:library/table, kind: "concept", name: "table" }
+library/part!: { this: tonk:library/table/concept/table/sheet, component: tonk:library/table, kind: "concept", name: "table/sheet" }
+library/part!: { this: tonk:library/table/concept/table/sheet-name, component: tonk:library/table, kind: "concept", name: "table/sheet-name" }
+library/part!: { this: tonk:library/table/concept/table/cell, component: tonk:library/table, kind: "concept", name: "table/cell" }
+library/part!: { this: tonk:library/table/concept/table/cell-content, component: tonk:library/table, kind: "concept", name: "table/cell-content" }
+library/part!: { this: tonk:library/table/concept/table/cell-style, component: tonk:library/table, kind: "concept", name: "table/cell-style" }
+library/part!: { this: tonk:library/table/concept/table/column, component: tonk:library/table, kind: "concept", name: "table/column" }
+library/part!: { this: tonk:library/table/concept/table/column-width, component: tonk:library/table, kind: "concept", name: "table/column-width" }
+library/part!: { this: tonk:library/table/concept/table/row, component: tonk:library/table, kind: "concept", name: "table/row" }
+library/part!: { this: tonk:library/table/concept/table/row-height, component: tonk:library/table, kind: "concept", name: "table/row-height" }
+library/part!: { this: tonk:library/table/command/table/create-sheet, component: tonk:library/table, kind: "command", name: "table/create-sheet" }
+library/part!: { this: tonk:library/table/command/table/rename-sheet, component: tonk:library/table, kind: "command", name: "table/rename-sheet" }
+library/part!: { this: tonk:library/table/command/table/create-cell, component: tonk:library/table, kind: "command", name: "table/create-cell" }
+library/part!: { this: tonk:library/table/command/table/edit-cell, component: tonk:library/table, kind: "command", name: "table/edit-cell" }
+library/part!: { this: tonk:library/table/command/table/clear-cell, component: tonk:library/table, kind: "command", name: "table/clear-cell" }
+library/part!: { this: tonk:library/table/command/table/create-column, component: tonk:library/table, kind: "command", name: "table/create-column" }
+library/part!: { this: tonk:library/table/command/table/resize-column, component: tonk:library/table, kind: "command", name: "table/resize-column" }
+library/part!: { this: tonk:library/table/command/table/create-row, component: tonk:library/table, kind: "command", name: "table/create-row" }
+library/part!: { this: tonk:library/table/command/table/resize-row, component: tonk:library/table, kind: "command", name: "table/resize-row" }
+library/part!: { this: tonk:library/table/view/tonk.table/sheet/directory, component: tonk:library/table, kind: "view", name: "tonk:table/sheet", slot: "directory" }
+library/part!: { this: tonk:library/table/view/tonk.table/cell/directory, component: tonk:library/table, kind: "view", name: "tonk:table/cell", slot: "directory" }
+library/part!: { this: tonk:library/table/view/tonk.table/column/directory, component: tonk:library/table, kind: "view", name: "tonk:table/column", slot: "directory" }
+library/part!: { this: tonk:library/table/view/tonk.table/row/directory, component: tonk:library/table, kind: "view", name: "tonk:table/row", slot: "directory" }
+library/part!: { this: tonk:library/table/view/table/ui, component: tonk:library/table, kind: "view", name: "table", slot: "ui" }
+library/part!: { this: tonk:library/table/view/table/directory, component: tonk:library/table, kind: "view", name: "table", slot: "directory" }
+library/part!: { this: tonk:library/version-control/concept/version-control/revision, component: tonk:library/version-control, kind: "concept", name: "version-control/revision" }
+library/part!: { this: tonk:library/version-control/concept/version-control/parent, component: tonk:library/version-control, kind: "concept", name: "version-control/parent" }
+library/part!: { this: tonk:library/version-control/concept/version-control/head, component: tonk:library/version-control, kind: "concept", name: "version-control/head" }
+library/part!: { this: tonk:library/version-control/concept/version-control/comment, component: tonk:library/version-control, kind: "concept", name: "version-control/comment" }
+library/part!: { this: tonk:library/version-control/concept/version-control/session, component: tonk:library/version-control, kind: "concept", name: "version-control/session" }
+library/part!: { this: tonk:library/version-control/command/version-control/comment-on, component: tonk:library/version-control, kind: "command", name: "version-control/comment-on" }
+library/part!: { this: tonk:library/version-control/command/version-control/uncomment, component: tonk:library/version-control, kind: "command", name: "version-control/uncomment" }
+library/part!: { this: tonk:library/version-control/view/version-control/revision/vc-row, component: tonk:library/version-control, kind: "view", name: "version-control/revision", slot: "vc-row" }
+library/part!: { this: tonk:library/version-control/view/version-control/parent/vc-row, component: tonk:library/version-control, kind: "view", name: "version-control/parent", slot: "vc-row" }
+library/part!: { this: tonk:library/version-control/view/version-control/head/vc-row, component: tonk:library/version-control, kind: "view", name: "version-control/head", slot: "vc-row" }
+library/part!: { this: tonk:library/version-control/view/version-control/comment/vc-row, component: tonk:library/version-control, kind: "view", name: "version-control/comment", slot: "vc-row" }
+library/part!: { this: tonk:library/version-control/view/version-control/session/vc-row, component: tonk:library/version-control, kind: "view", name: "version-control/session", slot: "vc-row" }
+library/part!: { this: tonk:library/version-control/view/member/account/vc-row, component: tonk:library/version-control, kind: "view", name: "member/account", slot: "vc-row" }
+library/part!: { this: tonk:library/version-control/concept/version-control/console, component: tonk:library/version-control, kind: "concept", name: "version-control/console" }
+library/part!: { this: tonk:library/version-control/view/tonk.version-control/console/ui, component: tonk:library/version-control, kind: "view", name: "tonk:version-control/console", slot: "ui" }
+# END library parts (generated)
+
+# What came of one request to install or uninstall a component, keyed by
+# the request's own entity: the card that asked reads the answer to its
+# own request, by the component and time it asked with. One row per
+# request, so a history of installs and undos reads in order of `time`.
+concept!: &library/outcome
+  description: What came of asking this space to install or uninstall a library component.
+  with:
+    component:
+      description: The component asked for, `tonk:library/<name>`.
+      the: xyz.tonk.library.outcome/component
+      as: entity
+    action:
+      description: What was asked, "install" or "uninstall".
+      the: xyz.tonk.library.outcome/action
+      as: text
+    status:
+      description: >
+        What happened: "installed", "current" (installed already and up to
+        date, so nothing changed), "uninstalled", or "failed".
+      the: xyz.tonk.library.outcome/status
+      as: text
+    time:
+      description: The `time` the request was asked with.
+      the: xyz.tonk.library.outcome/time
+      as: float:64
+  maybe:
+    version:
+      description: The component's version the request installed or removed.
+      the: xyz.tonk.library.outcome/version
+      as: text
+    lines:
+      description: The AGENTS.md lines the request added or removed.
+      the: xyz.tonk.library.outcome/lines
+      as: text
+    reason:
+      description: Why the request failed, in words.
+      the: xyz.tonk.library.outcome/reason
+      as: text
 
 attribute!: &install-component/component
   description: Which component to install, `tonk:library/<name>`.
@@ -2854,6 +3050,52 @@ command!: &library/install
     component: install-component/component
     time: install-component/time
 
+# Undoing one change. A receipt that shows a change (on an MCP App card,
+# or any view) carries the revision the change's evaluate answered, and
+# asks for the undo with it. The worker commits the change's inverse:
+# what the change asserted is retracted, what it superseded or retracted
+# is asserted again. It refuses instead, undoing nothing, when a later
+# change touched an entity and attribute this one wrote, or the change is
+# not in this branch's recent history. Either way the outcome lands as a
+# `tonk:undo` on the content branch.
+attribute!: &undo-change/revision
+  description: The revision that made the change, base58 of its version's key bytes, as an evaluate answers it.
+  the: xyz.tonk.command.undo-change/revision
+  as: text
+
+attribute!: &undo-change/time
+  description: The moment it was asked; makes each dispatch a distinct transient.
+  the: xyz.tonk.command.undo-change/time
+  as: float:64
+  role: :now
+
+command!: &change/undo
+  description: Undo one earlier change to this space, named by the revision that made it.
+  with:
+    revision: undo-change/revision
+    time: undo-change/time
+
+# The outcome of an undo, on `tonk:undo/<revision>`: one per change, so a
+# receipt reads it by the revision it already holds. A later attempt on the
+# same change overwrites it.
+concept!: &undo
+  this: tonk:undo
+  description: Whether one change to this space was undone, or why not.
+  with:
+    revision:
+      description: The revision whose change was asked to be undone, encoded as `undo-change/revision` is.
+      the: xyz.tonk.undo/revision
+      as: text
+    status:
+      description: "`undone`, or `refused` when the change could not be undone."
+      the: xyz.tonk.undo/status
+      as: text
+  maybe:
+    reason:
+      description: Why it was refused, in words a person can read.
+      the: xyz.tonk.undo/reason
+      as: text
+
 # What "install" can be said of: every component.
 rule!:
   description: A library component is one an install from the palette can name.
@@ -2861,6 +3103,39 @@ rule!:
   when:
     - assert: intent
       where: { this: ?this, command: library/install }
+    - assert: library/component
+      where: { this: ?component }
+
+attribute!: &uninstall-component/component
+  description: Which component to uninstall, `tonk:library/<name>`.
+  the: xyz.tonk.command.uninstall-component/component
+  as: entity
+  role: :object
+
+attribute!: &uninstall-component/time
+  description: The moment it was asked; makes each dispatch a distinct transient.
+  the: xyz.tonk.command.uninstall-component/time
+  as: float:64
+  role: :now
+
+# The inverse of `library/install`: withdraws what the component's install
+# added (its concepts, commands, views and AGENTS.md lines) and its install
+# record. What the space wrote with it stays: uninstalling a table
+# component removes the table views, not the sheets.
+command!: &library/uninstall
+  description: Uninstall a library component from this space.
+  action: ["uninstall"]
+  with:
+    component: uninstall-component/component
+    time: uninstall-component/time
+
+# What "uninstall" can be said of: every component.
+rule!:
+  description: A library component is one an uninstall from the palette can name.
+  assert: uninstall-component/component
+  when:
+    - assert: intent
+      where: { this: ?this, command: library/uninstall }
     - assert: library/component
       where: { this: ?component }
 
