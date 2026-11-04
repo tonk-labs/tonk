@@ -498,7 +498,7 @@ async fn the_list_puts_home_first_with_names_and_expiry() {
     assert_eq!(spaces.len(), 3, "a lapsed space is not listed: {listed}");
     assert_eq!(spaces[0]["subject"], json!(agent.did().to_string()));
     assert_eq!(spaces[0]["home"], json!(true));
-    assert_eq!(spaces[0]["access"], json!("read-write"));
+    assert_eq!(spaces[0]["access"], json!("write"));
     assert_eq!(spaces[0]["name"], json!("Claude"));
     assert!(spaces[0]["about"].is_string());
     let entry = |did: &Did| {
@@ -519,7 +519,7 @@ async fn the_list_puts_home_first_with_names_and_expiry() {
     );
     assert_eq!(
         entry(&plans),
-        json!({ "subject": plans.to_string(), "access": "read-write" })
+        json!({ "subject": plans.to_string(), "access": "write" })
     );
 
     // The lapsed space is named by the error a call on it gets.
@@ -1167,7 +1167,7 @@ concept!: &mcp-note
         };
         assert_eq!(
             entry(&notes.did()),
-            json!({ "subject": notes.did().to_string(), "access": "read-write", "name": "Notes" })
+            json!({ "subject": notes.did().to_string(), "access": "write", "name": "Notes" })
         );
         assert_eq!(
             entry(&shelf.did()),
