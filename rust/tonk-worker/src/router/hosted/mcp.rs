@@ -1181,7 +1181,7 @@ fn refusal(
             "read_only",
             format!(
                 "This connection may only read {space}; tonk_evaluate is refused. Ask the user \
-             for read and write access."
+             for write access."
             ),
         ));
     }
@@ -1257,7 +1257,7 @@ fn list_spaces(access: &AgentAccess) -> Vec<Value> {
         .map(|(space, access)| {
             let mut entry = json!({
                 "subject": space,
-                "access": if access.write { "read-write" } else { "read" },
+                "access": if access.write { "write" } else { "read" },
             });
             if let Some(name) = &access.name {
                 entry["name"] = json!(name);
@@ -1382,7 +1382,7 @@ pub fn tools() -> Vec<Value> {
                 tool["description"] = json!(
                     "Write to a space with inline Tonk notation \
                      (https://tonk-labs.github.io/docs/notation.html): assertions and commands, run \
-                     once, answered after the write is saved. Needs read-write access to the \
+                     once, answered after the write is saved. Needs write access to the \
                      space (see tonk_list_spaces). Read tonk_guide (notation, views, events) \
                      before authoring unfamiliar schemas or views. If a response is lost, query \
                      before trying again; never replay automatically. With confirm: true \
@@ -1404,7 +1404,7 @@ pub fn tools() -> Vec<Value> {
                     "List the spaces you can use. The first, marked home, is your own space: \
                      it is yours to read and write, and it records the spaces the user granted \
                      you. Each other entry is a granted space with its name when the user gave \
-                     one, its access (read or read-write) and when that access expires. Use \
+                     one, its access (read or write) and when that access expires. Use \
                      the exact subject as the space argument of tonk_query and tonk_evaluate."
                 );
             }
