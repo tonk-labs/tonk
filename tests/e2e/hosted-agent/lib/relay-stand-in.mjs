@@ -119,7 +119,8 @@ export async function standIn({ peer = {}, guest = null } = {}) {
     if (pathname === '/view-peer/tonk_view_peer.js')
       return send(200, 'text/javascript', PEER(peer));
     if (pathname === '/view-peer/tonk_view_peer_bg.wasm') return send(200, 'application/wasm', '');
-    if (pathname === '/space-runtime.json') return send(200, 'application/json', '{}');
+    if (pathname === '/space-runtime.json')
+      return send(200, 'application/json', '{"wasm":"","wa":""}');
     if (pathname === '/worker-guest')
       return send(200, 'text/html', guest ? GUEST(guest) : '<!doctype html><p>silent');
     send(404, 'text/plain', 'not stood in');
