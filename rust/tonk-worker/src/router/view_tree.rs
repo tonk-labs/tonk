@@ -146,28 +146,6 @@ fn text_of(html: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.chars().take(TITLE_LIMIT).collect())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::text_of;
-
-    #[dialog_common::test]
-    fn it_reads_a_tab_title_without_its_suffix() {
-        assert_eq!(
-            text_of(r#"<tab-title text="Packing list — Tonk"></tab-title>"#).as_deref(),
-            Some("Packing list")
-        );
-    }
-
-    #[dialog_common::test]
-    fn it_reads_a_label_as_its_text() {
-        assert_eq!(
-            text_of("<span class=\"x\">Packing\n  list &amp; more</span>").as_deref(),
-            Some("Packing list & more")
-        );
-        assert_eq!(text_of("<span>  </span>"), None);
-    }
-}
-
 /// Whether `route` names the space home, which each peer mounts on its own
 /// replica, so a view shows it by path rather than by this entity.
 pub(crate) fn is_home(route: &RenderRoute) -> bool {
@@ -194,5 +172,27 @@ impl QueryBackend for Space {
             .perform(&tonk.operator)
             .await
             .map_err(|error| RenderError::Query(error.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::text_of;
+
+    #[dialog_common::test]
+    fn it_reads_a_tab_title_without_its_suffix() {
+        assert_eq!(
+            text_of(r#"<tab-title text="Packing list — Tonk"></tab-title>"#).as_deref(),
+            Some("Packing list")
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_reads_a_label_as_its_text() {
+        assert_eq!(
+            text_of("<span class=\"x\">Packing\n  list &amp; more</span>").as_deref(),
+            Some("Packing list & more")
+        );
+        assert_eq!(text_of("<span>  </span>"), None);
     }
 }
