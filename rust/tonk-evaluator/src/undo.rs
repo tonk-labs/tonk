@@ -33,7 +33,7 @@
 //! it refuses. The undo's commit is a revision like any other, so undoing
 //! it redoes the change.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use dialog_artifacts::history::{HistorySelector, Version};
 use dialog_artifacts::{ArtifactSelector, Entity, Pick, Relation, Statement, Value};
@@ -293,21 +293,35 @@ async fn inverse<Env: EvaluateEnv>(
     Ok(Ok(facts))
 }
 
-/// The records of the `later` revisions that still stand: a revision that
-/// was undone, and the undo that undid it, cancel out when both are among
-/// them.
+/// The records of the `later` revisions that still stand.
+///
+/// A revision that was undone, and the undo that undid it, cancel out when
+/// both are among them, unless that undo was itself undone: a redo leaves
+/// the undo and the redo cancelled and the original change standing.
 fn standing(later: Vec<(Version, Vec<Recorded>)>) -> Vec<Vec<Recorded>> {
     let versions: HashSet<Version> = later.iter().map(|(version, _)| *version).collect();
-    let mut cancelled = HashSet::new();
+    // Each undo among them, by what it undid.
+    let mut undoers: HashMap<Version, Vec<Version>> = HashMap::new();
+    let mut targets: HashMap<Version, Version> = HashMap::new();
     for (version, records) in &later {
-        for record in records {
-            let Some(undid) = undid(record) else {
-                continue;
-            };
+        for undid in records.iter().filter_map(undid) {
             if versions.contains(&undid) {
-                cancelled.insert(undid);
-                cancelled.insert(*version);
+                undoers.entry(undid).or_default().push(*version);
+                targets.insert(*version, undid);
             }
+        }
+    }
+    let mut undone = HashMap::new();
+    let mut cancelled = HashSet::new();
+    for version in &versions {
+        if is_undone(version, &undoers, &mut undone) {
+            cancelled.insert(*version);
+        }
+    }
+    // An undo in force cancels with what it undid.
+    for (undo, target) in &targets {
+        if !is_undone(undo, &undoers, &mut undone) && cancelled.contains(target) {
+            cancelled.insert(*undo);
         }
     }
     later
@@ -315,6 +329,23 @@ fn standing(later: Vec<(Version, Vec<Recorded>)>) -> Vec<Vec<Recorded>> {
         .filter(|(version, _)| !cancelled.contains(version))
         .map(|(_, records)| records)
         .collect()
+}
+
+/// Whether `version` was undone by an undo that is itself in force. An
+/// undo is always later than what it undid, so the chain ends.
+fn is_undone(
+    version: &Version,
+    undoers: &HashMap<Version, Vec<Version>>,
+    undone: &mut HashMap<Version, bool>,
+) -> bool {
+    if let Some(known) = undone.get(version) {
+        return *known;
+    }
+    let answer = undoers
+        .get(version)
+        .is_some_and(|by| by.iter().any(|undo| !is_undone(undo, undoers, undone)));
+    undone.insert(*version, answer);
+    answer
 }
 
 /// The revision `record` says was undone, when it is an undo's record of
@@ -664,6 +695,58 @@ concept!: &note
         .await
         .unwrap();
         assert!(reasons.is_empty(), "{reasons:?}");
+    }
+
+    /// A later change that was undone and then redone stands again, so it
+    /// still blocks undoing an earlier change to the same attribute.
+    #[dialog_common::test]
+    async fn it_refuses_a_change_a_redone_later_one_touched() {
+        let (operator, profile) = test_session_with_peer().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await.unwrap();
+        write(&branch, &operator, SCHEMA).await;
+        let first = write(
+            &branch,
+            &operator,
+            &format!("note!:\n  this: {NOTE}\n  title: \"one\"\n  tag: \"a\"\n"),
+        )
+        .await;
+        let later = write(
+            &branch,
+            &operator,
+            &format!("note!:\n  this: {NOTE}\n  tag: \"b\"\n"),
+        )
+        .await;
+        let staged = stage_undo(&branch, &later, &operator).await.unwrap();
+        let undone = staged
+            .transaction
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await
+            .unwrap();
+        let undone = encode_revision(&undone.version());
+        let redone = undo(&branch, &operator, &undone).await;
+        assert!(matches!(redone, UndoOutcome::Undone { .. }), "{redone:?}");
+        assert_eq!(
+            of(&branch, &operator, "io.undo.note/tag").await,
+            vec![text("a"), text("b")]
+        );
+
+        let outcome = undo(&branch, &operator, &first).await;
+
+        assert!(
+            matches!(
+                &outcome,
+                UndoOutcome::Refused(Refusal::ChangedSince { the, .. })
+                    if the.as_str() == "io.undo.note/tag"
+            ),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            of(&branch, &operator, "io.undo.note/title").await,
+            vec![text("one")]
+        );
     }
 
     #[dialog_common::test]
