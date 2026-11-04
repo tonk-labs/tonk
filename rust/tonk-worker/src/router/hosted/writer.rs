@@ -403,6 +403,37 @@ impl SpaceWriter {
         Ok(report)
     }
 
+    /// Run the library command `command`, holding the lock from the pull
+    /// before it through the push after it, as a write does, and answer
+    /// what came of it ([`super::library::answered`]) once the push has
+    /// landed. A command that fails records why, and that is pushed too.
+    pub async fn library(
+        &self,
+        command: &super::library::Command,
+    ) -> Result<serde_json::Value, String> {
+        let _turn = self.lock.lock().await;
+        if self.stale.load(Ordering::SeqCst) {
+            self.reopen().await?;
+            self.stale.store(false, Ordering::SeqCst);
+        }
+        let peer = self.peer();
+        self.sync(&peer, "pull").await?;
+        let answer = peer.library(&self.space, command).await?;
+        if let Err(error) = self.push(&peer).await {
+            if self.landed(&peer).await {
+                return Ok(answer);
+            }
+            if let Err(reopen) = self.reopen().await {
+                self.stale.store(true, Ordering::SeqCst);
+                return Err(format!(
+                    "{error}; the writer reopens before its next write: {reopen}"
+                ));
+            }
+            return Err(error.into());
+        }
+        Ok(answer)
+    }
+
     /// Answer one read without waiting for the lock.
     ///
     /// Only routes that cannot commit are served: `GET` and `HEAD`, a
@@ -467,6 +498,27 @@ impl SpaceWriter {
     /// A document that runs a command is not held: its effects are not
     /// in the preview, and a revision-checked write refuses commands.
     pub async fn propose(&self, document: String) -> Response<Body> {
+        // A library install or uninstall is held with what the catalog
+        // says it adds, in place of a dry run its command cannot have.
+        if let Some(command) = super::library::command_of(&document) {
+            let refreshed = self.refresh().await;
+            if let Err(error) = refreshed {
+                return error.answer("PULL_FAILED");
+            }
+            let catalog = match self
+                .peer()
+                .library_catalog(&self.space, &command.component)
+                .await
+            {
+                Ok(catalog) => catalog,
+                Err(error) => {
+                    return failure(StatusCode::UNPROCESSABLE_ENTITY, "NOT_A_COMPONENT", &error);
+                }
+            };
+            let now = dialog_ucan_core::time::Timestamp::now().to_unix();
+            let (id, expires) = self.proposals.hold(document, serde_json::Value::Null, now);
+            return json_answer(super::library::held(&id, expires, &command, &catalog));
+        }
         let request = Request::builder()
             .method(Method::POST)
             .uri("/evaluate?transact=false&preview=true")
@@ -529,6 +581,14 @@ impl SpaceWriter {
         let Ok((document, revision)) = self.proposals.take(id, now) else {
             return proposal_gone();
         };
+        // A held library command runs now; installing is idempotent, so
+        // a space that moved since the ask is no reason to refuse it.
+        if let Some(command) = super::library::command_of(&document) {
+            return match self.library(&command).await {
+                Ok(answer) => json_answer(answer),
+                Err(error) => failure(StatusCode::BAD_GATEWAY, "LIBRARY_FAILED", &error),
+            };
+        }
         let body = serde_json::json!({ "document": document, "expected_revision": revision });
         let request = Request::builder()
             .method(Method::POST)
@@ -563,7 +623,14 @@ impl SpaceWriter {
     pub fn dismiss(&self, id: &str) -> Response<Body> {
         let now = dialog_ucan_core::time::Timestamp::now().to_unix();
         match self.proposals.take(id, now) {
-            Ok(_) => json_answer(serde_json::json!({ "dismissed": true })),
+            // A declined library command says which, for its receipt.
+            Ok((document, _)) => match super::library::command_of(&document) {
+                Some(command) => json_answer(serde_json::json!({
+                    "dismissed": true,
+                    "library": { "action": command.action.word(), "component": command.component },
+                })),
+                None => json_answer(serde_json::json!({ "dismissed": true })),
+            },
             Err(_) => proposal_gone(),
         }
     }

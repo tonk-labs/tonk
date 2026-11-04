@@ -205,39 +205,163 @@ impl dialog_capability::Provider<tonk_schema::command::UninstallComponent>
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Action {
+/// What a request asks: install or uninstall.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    /// Install the component, or bring it up to date.
     Install,
+    /// Withdraw what its install added.
     Uninstall,
 }
 
 impl Action {
-    fn word(self) -> &'static str {
+    /// "install" or "uninstall".
+    pub fn word(self) -> &'static str {
         match self {
             Action::Install => "install",
             Action::Uninstall => "uninstall",
         }
     }
+
+    #[cfg(any(feature = "volatile-storage", test))]
+    /// The action an undo of this one runs.
+    pub fn inverse(self) -> Self {
+        match self {
+            Action::Install => Action::Uninstall,
+            Action::Uninstall => Action::Install,
+        }
+    }
+
+    #[cfg(any(feature = "volatile-storage", test))]
+    /// The action `word` names.
+    pub fn from_word(word: &str) -> Option<Self> {
+        match word {
+            "install" => Some(Action::Install),
+            "uninstall" => Some(Action::Uninstall),
+            _ => None,
+        }
+    }
 }
 
 /// One install or uninstall request, as its command carried it.
-struct Request {
-    this: dialog_artifacts::Entity,
-    component: dialog_artifacts::Entity,
-    time: f64,
-    action: Action,
+pub(crate) struct Request {
+    pub(crate) this: dialog_artifacts::Entity,
+    pub(crate) component: dialog_artifacts::Entity,
+    pub(crate) time: f64,
+    pub(crate) action: Action,
+}
+
+#[cfg(any(feature = "volatile-storage", test))]
+/// Run `request` against branch `branch` of space `repo` now, as its
+/// command would, and answer the outcome it recorded: what the hosted
+/// writer awaits, where a command's dispatch would answer before it ran.
+pub(crate) async fn run_now(
+    tonk: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+    request: Request,
+) -> Result<tonk_schema::LibraryOutcome, String> {
+    settle(tonk, repo, branch, request)
+        .await
+        .ok_or_else(|| "the outcome could not be recorded".to_owned())
+}
+
+#[cfg(any(feature = "volatile-storage", test))]
+/// What the catalog says of `component` on branch `branch` of space
+/// `repo`: its name, label and version, the AGENTS.md lines it adds, and
+/// one line per part it adds (`library/manifest`). Empty where the
+/// space's core predates them.
+pub(crate) async fn catalog(
+    tonk: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+    component: &dialog_artifacts::Entity,
+) -> Result<Catalog, String> {
+    use dialog_query::{Output as _, Query, Term};
+
+    let session = open(tonk, repo, branch).await?;
+    let entry = session
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::LibraryComponent> {
+            this: Term::from(component.clone()),
+            name: Term::var("name"),
+            label: Term::var("label"),
+            version: Term::var("version"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| format!("{e:?}"))?
+        .into_iter()
+        .next();
+    let (_, agents) = catalog_entry(tonk, &session, component).await?;
+    let adds = session
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::LibraryManifest> {
+            this: Term::from(component.clone()),
+            adds: Term::var("adds"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| format!("{e:?}"))?
+        .into_iter()
+        .next()
+        .map(|row| agent_lines(&row.adds.0))
+        .unwrap_or_default();
+    let fallback = component
+        .to_string()
+        .strip_prefix("tonk:library/")
+        .unwrap_or_default()
+        .to_owned();
+    Ok(Catalog {
+        name: entry
+            .as_ref()
+            .map(|entry| entry.name.0.clone())
+            .unwrap_or_else(|| fallback.clone()),
+        label: entry
+            .as_ref()
+            .map(|entry| entry.label.0.clone())
+            .unwrap_or(fallback),
+        version: entry.map(|entry| entry.version.0),
+        agents: agents.as_deref().map(agent_lines).unwrap_or_default(),
+        adds,
+    })
+}
+
+#[cfg(any(feature = "volatile-storage", test))]
+/// What the catalog says of one component.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct Catalog {
+    /// The component's file name without `.yaml`.
+    pub name: String,
+    /// What a person calls it.
+    pub label: String,
+    /// Its release, where the space's core says one.
+    pub version: Option<String>,
+    /// Its AGENTS.md lines.
+    pub agents: Vec<String>,
+    /// One line per part it adds: "concept x", "command x", "view x slot".
+    pub adds: Vec<String>,
 }
 
 /// Run `request` against branch `branch` of space `repo` and record what
 /// came of it, with the AGENTS.md edit it makes, in one commit.
-async fn settle(tonk: &crate::worker::TonkState, repo: &str, branch: &str, request: Request) {
+async fn settle(
+    tonk: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+    request: Request,
+) -> Option<tonk_schema::LibraryOutcome> {
     let settled = run(tonk, repo, branch, &request).await;
     let word = request.action.word();
     let outcome = match record(tonk, repo, branch, &request, &settled).await {
         Ok(outcome) => outcome,
         Err(error) => {
             tonk_common::log!("library/{word}: record outcome in {repo}: {error}");
-            return;
+            return None;
         }
     };
     match &outcome.reason {
@@ -252,6 +376,7 @@ async fn settle(tonk: &crate::worker::TonkState, repo: &str, branch: &str, reque
             outcome.status.0
         ),
     }
+    Some(outcome)
 }
 
 /// What came of running a request, before its AGENTS.md edit.

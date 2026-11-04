@@ -9,7 +9,7 @@
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
-use crate::domain::library::{component, outcome};
+use crate::domain::library::{component, manifest, outcome};
 
 /// A component a space can install (`library/component`), keyed by its
 /// entity, `tonk:library/<name>`.
@@ -33,6 +33,16 @@ pub struct LibraryComponentAgents {
     pub this: Entity,
     /// One line per line of AGENTS.md.
     pub agents: component::Agents,
+}
+
+/// What a component adds to a space (`library/manifest`), one line per
+/// concept, command or view.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LibraryManifest {
+    /// `tonk:library/<name>`.
+    pub this: Entity,
+    /// One line per part.
+    pub adds: manifest::Adds,
 }
 
 /// What came of one request to install or uninstall a component
