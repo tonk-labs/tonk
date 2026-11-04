@@ -4811,6 +4811,7 @@ dependencies = [
  "tonk-email",
  "tonk-identity",
  "tonk-invite",
+ "tonk-perf",
  "tonk-worker-api",
  "url",
  "urlencoding",
@@ -5349,6 +5350,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
