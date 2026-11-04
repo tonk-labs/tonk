@@ -25,6 +25,7 @@
     }
     #error[hidden],
     #report[hidden],
+    .tonk[hidden],
     .tonk-line [hidden] {
       display: none;
     }
@@ -38,6 +39,24 @@
       -webkit-user-select: all;
     }
   </style>
+  <!-- One line with a link: a strip, or a space a view cannot reach. -->
+  <section class="tonk tonk-strip" id="strip" aria-label="Tonk" hidden>
+    <span class="tonk-disc" role="img" aria-label="synced" title="synced"></span>
+    <span class="tonk-receipt" role="status"></span>
+    <a class="tonk-link" href="#">open ↗</a>
+  </section>
+  <!-- The whole space: never shown in the chat, a way into Tonk. -->
+  <section class="tonk" id="handoff" aria-label="Tonk" hidden>
+    <header class="tonk-head">
+      <span class="tonk-disc" role="img" aria-label="synced" title="synced"></span>
+      <span class="tonk-place"><span class="tonk-space"></span></span>
+      <span class="tonk-role"></span>
+    </header>
+    <div class="tonk-handoff">
+      <p>Opens the whole space in Tonk.</p>
+      <a class="tonk-btn" href="#">open in tonk ↗</a>
+    </div>
+  </section>
   <section class="tonk" id="card" aria-label="Tonk">
     <div class="tonk-well">
       <iframe class="tonk-view" title="A view in a Tonk space" sandbox="allow-scripts allow-forms"></iframe>
@@ -74,6 +93,8 @@
         framed = __TONK_VIEW_FRAME__,
         frame = document.querySelector('iframe'),
         card = document.querySelector('#card'),
+        strip = document.querySelector('#strip'),
+        handoff = document.querySelector('#handoff'),
         well = document.querySelector('.tonk-well'),
         line = document.querySelector('#line'),
         errorMessage = document.querySelector('#error'),
@@ -286,8 +307,17 @@
       // what the agent app gives it: the view scrolls above the line, and
       // full screen adds the way into Tonk. No flow depends on docked,
       // which only some agent apps have.
+      // The size the view is drawn at: full whenever it fills the card, else
+      // what the agent asked for. Inline, a view drops its own heading.
+      function sized() {
+        if (host.displayMode === 'fullscreen' || host.displayMode === 'pip') return 'full';
+        return route?.size || 'card';
+      }
       function display() {
         if (framed) return;
+        // The framed page passes the size on to its own view.
+        if (viewFrame && route) frame.contentWindow?.postMessage({ tonkFrame: 'size', size: sized() }, origin);
+        else if (pack && route) frame.contentWindow?.postMessage({ type: 'tonk-size', size: sized() }, '*');
         const fill = host.displayMode === 'fullscreen' || host.displayMode === 'pip';
         card.classList.toggle('tonk--fill', fill);
         expand.hidden = fill || !host.available.includes('fullscreen');
@@ -321,6 +351,36 @@
           note('open-link refused: ' + error.message);
           if (typeof window.openai?.openExternal === 'function') window.openai.openExternal({ href: url });
         }
+      }
+
+      // ---- A link instead of a view -----------------------------------
+      // The whole space opens in Tonk; a strip, or a space a view cannot
+      // reach, is one line with a link. Neither runs a peer: the disc is
+      // drawn filled, as the mock draws it, for a space this connection
+      // reaches.
+      function linkOnly(kind) {
+        card.hidden = true;
+        const link = route.link || inTonk(),
+          where = viewName(),
+          space = route.name || 'this space';
+        if (kind === 'handoff') {
+          handoff.querySelector('.tonk-space').textContent = space;
+          handoff.querySelector('.tonk-role').textContent = route.role || '';
+          handoff.setAttribute('aria-label', 'Tonk: open ' + space);
+          const button = handoff.querySelector('.tonk-btn');
+          button.href = link;
+          button.onclick = (event) => (event.preventDefault(), openLink(link));
+          handoff.hidden = false;
+        } else {
+          strip.querySelector('.tonk-receipt').textContent =
+            (where ? space + ' › ' + where : space) + ' opens in your browser';
+          strip.setAttribute('aria-label', 'Tonk: link to ' + (where || space));
+          const anchor = strip.querySelector('.tonk-link');
+          anchor.href = link;
+          anchor.onclick = (event) => (event.preventDefault(), openLink(link));
+          strip.hidden = false;
+        }
+        tellSize();
       }
 
       // ---- Loading and failed -----------------------------------------
@@ -1066,6 +1126,7 @@
               view: route.view,
               edit: route.edit,
               remote: route.remote,
+              size: sized(),
             },
             access,
           },
@@ -1257,7 +1318,9 @@
       // The host sizes the view from what it is told, so an error shown
       // before the page reports its height is still in sight.
       function tellSize() {
-        const view = Math.ceil(card.getBoundingClientRect().height);
+        const view = Math.ceil(
+          [card, strip, handoff].reduce((height, each) => height + (each.hidden ? 0 : each.getBoundingClientRect().height), 0),
+        );
         if (framed) parent.postMessage({ tonkFrame: 'size', height: view }, '*');
         else
           parent.postMessage(
@@ -1323,6 +1386,7 @@
             route = m.params.structuredContent;
             note('view handed over');
             label();
+            if (route.show === 'handoff' || route.show === 'strip') return linkOnly(route.show);
             display();
             loading();
             open();
@@ -1330,6 +1394,11 @@
           return;
         }
         // The framed page: from the relay that frames it.
+        if (framed && event.source === parent && m?.tonkFrame === 'size') {
+          if (route) route = { ...route, size: m.size };
+          if (pack && route) send({ type: 'tonk-size', size: m.size });
+          return;
+        }
         if (framed && event.source === parent && m?.tonkFrame === 'theme') {
           host.theme = m.theme;
           applyTheme();
@@ -1397,7 +1466,7 @@
           });
         }
         if (m?.__tonkRuntime === 'runtime-ready') {
-          send({ type: 'tonk-mount', ...route, hideFab: true, theme: themed() });
+          send({ type: 'tonk-mount', ...route, hideFab: true, theme: themed(), size: sized() });
           send({
             __tonkRuntime: 'inject',
             glue: pack.glue,
@@ -1451,15 +1520,22 @@
       function open() {
         return initialized
           .then(async (result) => {
+            // A whole view asks for full screen as soon as it is shown, on
+            // either route.
+            if (route.size === 'full' && host.available.includes('fullscreen') && host.displayMode === 'inline')
+              expand.click();
             if (hostFrames(result)) reached('framing the provider\'s page');
             if (hostFrames(result) && (await tryFrame())) return note('framed'), offer();
             if (viewFrame !== undefined) restoreSandbox();
+            // A host that runs no worker cannot run a view's peer: a link.
+            if (typeof Worker !== 'function') return note('no Worker here'), linkOnly('strip');
             await connect();
             await navigate(route.path);
           })
           .catch((e) => fail(e.message));
       }
-      new ResizeObserver(() => tellSize()).observe(card);
+      const observer = new ResizeObserver(() => tellSize());
+      for (const each of [card, strip, handoff]) observer.observe(each);
       applyTheme();
       if (framed) parent.postMessage({ tonkFrame: 'loading' }, '*');
       if (framed) connectFramed().then(() => navigate(route.path)).catch((e) => fail(e.message));
