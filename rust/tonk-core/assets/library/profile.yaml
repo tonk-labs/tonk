@@ -6775,6 +6775,8 @@ element!: &command-palette
         if (self.__keys) return;
         self.build();
         self.__keys = (event) => {
+          // A chord something on the page already took is theirs.
+          if (event.defaultPrevented) return;
           const key = (event.key || '').toLowerCase();
           const chord = (event.metaKey || event.ctrlKey)
             && (key === 'k' || (event.shiftKey && key === 'p'));
