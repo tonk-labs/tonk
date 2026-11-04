@@ -1567,7 +1567,11 @@ concept!: &mcp-note
         let revision = change["revision"].as_str().expect("a revision").to_owned();
         // The model's text and structured content carry no revision.
         assert!(!written["content"].to_string().contains(&revision));
-        assert!(!written["structuredContent"].to_string().contains(&revision));
+        // The receipt ends with undo, which the card calls with the
+        // change in `_meta`.
+        let strip = &written["structuredContent"]["card"];
+        assert_eq!(strip["kind"], "strip", "{written}");
+        assert_eq!(strip["undo"]["tool"], UNDO, "{strip}");
 
         let undone = client
             .result(UNDO, json!({ "space": space, "revision": revision }))
@@ -1582,6 +1586,15 @@ concept!: &mcp-note
             undone["structuredContent"]["committed"].is_string(),
             "{undone}"
         );
+        // The strip that takes the receipt's place says what stands, and
+        // offers no second undo.
+        let card = &undone["structuredContent"]["card"];
+        assert_eq!(card["kind"], "strip", "{undone}");
+        assert!(
+            card["say"].as_str().unwrap().starts_with("undone"),
+            "{card}"
+        );
+        assert!(card.get("undo").is_none(), "{card}");
 
         let (found, error) = client
             .call("tonk_query", json!({ "space": space, "document": find }))
@@ -1609,6 +1622,14 @@ concept!: &mcp-note
                 .unwrap()
                 .contains("undone already"),
             "{again}"
+        );
+        // Refused, the card is a tell with the reason in its fine print.
+        let tell = &again["structuredContent"]["card"];
+        assert_eq!(tell["kind"], "tell", "{again}");
+        assert_eq!(tell["label"], "not undone", "{tell}");
+        assert!(
+            tell["fine"].as_str().unwrap().contains("undone already"),
+            "{tell}"
         );
 
         let open: Vec<Arc<SpaceWriter>> =
@@ -1722,6 +1743,17 @@ concept!: &mcp-note
             "{strip}"
         );
         assert!(holds("asked").await, "the applied note is missing");
+        // Its receipt ends with undo, calling the app-only tool with the
+        // change the result carries for the card.
+        let change = &applied["_meta"][CHANGE_META];
+        assert!(change["revision"].is_string(), "{applied}");
+        assert_eq!(strip["undo"]["label"], "undo", "{strip}");
+        assert_eq!(strip["undo"]["tool"], UNDO, "{strip}");
+        assert!(
+            !applied["structuredContent"]
+                .to_string()
+                .contains(change["revision"].as_str().unwrap())
+        );
 
         // Twice: refused, nothing more written.
         let again = client.result("tonk_proposal_apply", arguments).await;

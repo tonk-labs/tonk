@@ -42,7 +42,9 @@
     <script>
       (() => {
         const root = document.getElementById('card'),
-          pending = new Map();
+          pending = new Map(),
+          // The `_meta` key a write's result carries its change under.
+          CHANGE = 'tonk/change';
         let rpcId = 0;
 
         function rpc(method, params) {
@@ -117,8 +119,8 @@
           return parts;
         }
 
-        function draw(card) {
-          if (card.kind === 'strip') return strip(card);
+        function draw(card, change) {
+          if (card.kind === 'strip') return strip(card, false, change);
           const section = el('section', 'tonk ' + (card.kind === 'ask' ? 'tonk--ask' : 'tonk--tell'));
           section.setAttribute(
             'aria-label',
@@ -168,7 +170,7 @@
 
         // A strip: one line, the receipt in a live region. Focus moves to
         // the receipt, since what was pressed has gone.
-        function strip(card, focus) {
+        function strip(card, focus, change) {
           const section = el('section', 'tonk tonk-strip');
           section.setAttribute('aria-label', 'Tonk');
           if (card.role) section.append(disc(card.disc));
@@ -176,6 +178,13 @@
           receipt.setAttribute('role', 'status');
           receipt.tabIndex = -1;
           section.append(receipt);
+          // Undo, called with the change the result carries in `_meta`.
+          if (card.undo && change) {
+            const link = el('button', 'tonk-link', card.undo.label);
+            link.type = 'button';
+            link.addEventListener('click', () => undo(card, section, card.undo.tool, change));
+            section.append(link);
+          }
           root.replaceChildren(section);
           // Filled after the region is in the document, so it is announced.
           requestAnimationFrame(() => {
@@ -210,7 +219,7 @@
           }
           const text = result?.content?.find((part) => part.type === 'text')?.text;
           const next = result?.structuredContent?.card;
-          if (next?.kind === 'strip') strip(next, true);
+          if (next?.kind === 'strip') strip(next, true, result?._meta?.[CHANGE]);
           else {
             const shown = draw(
               next || {
@@ -228,9 +237,44 @@
           await tellModel(text);
         }
 
+        // Undo from a strip: the receipt says so while it runs, and the
+        // card the tool answers takes the strip's place, a strip saying
+        // what stands or a tell saying why it is not undone.
+        async function undo(card, section, tool, change) {
+          for (const button of section.querySelectorAll('button')) button.disabled = true;
+          section.querySelector('.tonk-receipt').textContent = 'undoing';
+          let result;
+          try {
+            result = await rpc('tools/call', { name: tool, arguments: change });
+          } catch (error) {
+            result = {
+              isError: true,
+              content: [{ type: 'text', text: String(error?.message || error) }],
+            };
+          }
+          const text = result?.content?.find((part) => part.type === 'text')?.text;
+          const next = result?.structuredContent?.card;
+          if (next?.kind === 'strip') strip(next, true);
+          else {
+            const shown = draw(
+              next || {
+                kind: 'tell',
+                space: card.space,
+                role: card.role,
+                disc: card.disc,
+                label: 'not undone',
+                say: text || 'The space did not answer, so nothing changed.',
+              },
+            );
+            shown.tabIndex = -1;
+            shown.focus({ preventScroll: true });
+          }
+          await tellModel(text);
+        }
+
         function present(params) {
           const card = params?.structuredContent?.card;
-          if (card) return draw(card);
+          if (card) return draw(card, params?._meta?.[CHANGE]);
           draw({
             kind: 'tell',
             label: 'nothing to show',

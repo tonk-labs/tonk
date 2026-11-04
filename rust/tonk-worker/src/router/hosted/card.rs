@@ -110,6 +110,11 @@ pub struct Card {
     /// left to right, so the main one is on the right.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub answers: Vec<Answer>,
+    /// A strip's undo: the link at the end of its receipt, and the
+    /// app-only tool that takes the change back. Its arguments are the
+    /// change in the result's `_meta`, which the model does not read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub undo: Option<Undo>,
     /// The agent: its account's name, shown with the bot tag.
     pub agent: Agent,
     /// The person the agent works for.
@@ -209,6 +214,16 @@ pub struct Answer {
     pub arguments: Value,
 }
 
+/// A strip's undo link.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Undo {
+    /// The link's words, lowercase.
+    pub label: String,
+    /// The app-only tool it calls, with the change in the result's
+    /// `_meta`.
+    pub tool: String,
+}
+
 /// The agent a card names.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Agent {
@@ -247,6 +262,7 @@ impl Card {
             ledger: Vec::new(),
             fine: None,
             answers: Vec::new(),
+            undo: None,
             agent,
             person: Person::default(),
         }
@@ -335,6 +351,16 @@ impl Card {
             main,
             tool: tool.to_owned(),
             arguments,
+        });
+        self
+    }
+
+    /// Ends a strip's receipt with undo, which calls `tool` with the
+    /// change the result carries in `_meta`.
+    pub fn undo(mut self, tool: &str) -> Self {
+        self.undo = Some(Undo {
+            label: "undo".to_owned(),
+            tool: tool.to_owned(),
         });
         self
     }

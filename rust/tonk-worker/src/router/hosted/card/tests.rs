@@ -155,3 +155,29 @@ fn a_strip_by_the_agent_says_so() {
     assert_eq!(card["byAgent"], true);
     assert_eq!(card["role"], "read");
 }
+
+#[dialog_common::test]
+fn a_strip_ends_with_undo_whose_change_the_card_reads_from_meta() {
+    let receipt = || {
+        Card::strip(
+            Some(launch()),
+            Some(Role::Write),
+            "saved 1 item in Launch",
+            agent(),
+        )
+    };
+    let strip = receipt().by_agent().undo("tonk_undo").to_value();
+    // The label and the tool only: the change is in `_meta`, which the
+    // model does not read.
+    assert_eq!(
+        strip["undo"],
+        json!({ "label": "undo", "tool": "tonk_undo" })
+    );
+    assert!(receipt().to_value().get("undo").is_none());
+    let read = read_resource(CARD_URI, ORIGIN).unwrap();
+    let html = read["contents"][0]["text"].as_str().unwrap();
+    assert!(
+        html.contains(&format!("'{}'", super::super::mcp::CHANGE_META)),
+        "the card reads the change from another key"
+    );
+}

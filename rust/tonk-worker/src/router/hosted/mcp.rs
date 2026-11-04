@@ -806,7 +806,11 @@ impl<W: Writers> McpEndpoint<'_, W> {
             // hosts hand the app and not the model.
             let change = undo::change_meta(space, &evaluation);
             let mut evaluation = without_revisions(evaluation);
-            let card = super::propose::receipt(context, &evaluation).to_value();
+            let card = undo::offer(
+                super::propose::receipt(context, &evaluation),
+                change.as_ref(),
+            )
+            .to_value();
             if let Some(fields) = evaluation.as_object_mut() {
                 fields.insert("card".into(), card);
             }
@@ -954,7 +958,10 @@ impl<W: Writers> McpEndpoint<'_, W> {
         let evaluation = parsed(&body);
         let change = undo::change_meta(&space, &evaluation);
         let evaluation = without_revisions(evaluation);
-        let receipt = super::propose::receipt(context, &evaluation);
+        let receipt = undo::offer(
+            super::propose::receipt(context, &evaluation),
+            change.as_ref(),
+        );
         let mut text = format!(
             "The person applied the change: {} (space {space}).",
             receipt.say
@@ -1106,53 +1113,54 @@ impl<W: Writers> McpEndpoint<'_, W> {
             return tool_result(json!("`revision` is required."), true);
         };
         call.space = Some(space.clone());
-        let mut request = undo::request(revision);
-        if &space != verified.agent() {
-            let access = match self.access(verified, bearer, session, call).await {
-                Ok(access) => access,
-                Err(error) => return tool_result(json!(error), true),
-            };
-            if let Some((kind, refusal)) = refusal(access.get(&space), &space, true) {
-                call.end(Outcome::Refused, kind);
-                return tool_result(json!(refusal), true);
-            }
-            if let Some(granted) = access.get(&space) {
-                let headers = request.headers_mut();
-                if let Ok(grants) = HeaderValue::from_str(&granted.grants.join(",")) {
-                    headers.insert(GRANTS_HEADER, grants);
-                }
-                if let Some(address) = granted
-                    .address
-                    .as_deref()
-                    .and_then(|address| HeaderValue::from_str(address).ok())
-                {
-                    headers.insert(ADDRESS_HEADER, address);
-                }
-            }
-        }
-        let response = self
-            .writers
-            .call(verified, bearer, session, &space, request)
+        let reached = match self.reach(verified, bearer, session, &space, call).await {
+            Ok(reached) => reached,
+            Err(refused) => return refused,
+        };
+        let Some(request) = space_request(
+            UNDO_ROUTE,
+            reached.granted.as_ref(),
+            "application/json",
+            &undo::request(revision),
+            &call.trace,
+        ) else {
+            call.end(Outcome::Error, "bad_directory_entry");
+            return tool_result(json!("The space's directory entry is malformed."), true);
+        };
+        let (status, body) = self
+            .send(verified, bearer, session, &space, request, call)
             .await;
-        let status = response.status();
-        let body = response
-            .into_body()
-            .collect()
-            .await
-            .map(|body| body.to_bytes())
-            .unwrap_or_default();
         if !status.is_success() {
-            call.end(Outcome::Error, &format!("http_{}", status.as_u16()));
-            return tool_result(
-                json!(format!(
-                    "The undo did not land ({status}): {}. Read the space before trying again.",
-                    String::from_utf8_lossy(&body)
-                )),
-                true,
-            );
+            writer_failed(call, status, &parsed(&body));
+            let reason = reason(&parsed(&body));
+            let context = &reached.context;
+            return json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!(
+                        "The undo did not land ({status}): {reason}. Read the space before \
+                         trying again."
+                    ),
+                }],
+                "structuredContent": {
+                    "card": super::card::Card::tell(
+                        Some(context.place.clone()),
+                        context.role,
+                        "not undone",
+                        format!(
+                            "I couldn’t reach {} to undo this, so nothing changed.",
+                            context.place.label()
+                        ),
+                        context.agent.clone(),
+                    )
+                    .fine(reason)
+                    .to_value(),
+                },
+                "isError": true,
+            });
         }
         match serde_json::from_slice::<crate::UndoReport>(&body) {
-            Ok(report) => undo::result(&report),
+            Ok(report) => undo::result(&report, &reached.context),
             Err(error) => {
                 call.end(Outcome::Error, "undo_unreadable");
                 tool_result(
