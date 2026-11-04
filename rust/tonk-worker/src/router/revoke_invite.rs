@@ -195,7 +195,7 @@ pub async fn revoke(
     let target: Cid = target_cid
         .parse()
         .map_err(|error| TonkWorkerError::Router(format!("invalid target CID: {error}")))?;
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     let session = tonk
         .reactor
         .repository(&repo)

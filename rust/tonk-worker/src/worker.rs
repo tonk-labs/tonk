@@ -2106,7 +2106,10 @@ impl TonkServiceWorker {
         {
             let state = state.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                let tonk = state.read().await;
+                // A clone, not a guard: these chores pull the account and
+                // post to the access service, and no request should wait
+                // on them.
+                let tonk = state.read().await.clone();
                 // Best-effort roster upsert so existing installs
                 // self-populate a switcher entry for the profile they
                 // already have — the grandfathering path.
