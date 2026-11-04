@@ -1249,3 +1249,23 @@ fn the_hosted_guide_tells_the_agent_how_views_are_shown() {
     );
     assert!(guide.contains("Your text carries the answer"));
 }
+
+#[dialog_common::test]
+async fn it_links_a_view_where_the_browser_routes_it() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let subject = space.did().to_string();
+    let (verified, writer) = verified(&agent, &space, &["get"]).await;
+    let strip = shown(
+        &writer,
+        &verified,
+        json!({ "space": subject, "view": "tonk:trip#1@tonk/list!card", "size": "strip" }),
+    )
+    .await;
+    assert_eq!(strip["structuredContent"]["show"], "strip");
+    assert_eq!(
+        strip["structuredContent"]["link"],
+        format!("https://tonk.example/space/{subject}/tonk:trip%231@tonk/list!card"),
+        "the chosen view, not the space home"
+    );
+}

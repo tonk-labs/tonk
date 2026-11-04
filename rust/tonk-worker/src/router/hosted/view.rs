@@ -542,7 +542,11 @@ async fn open<W: Writers>(
     let home = url::Url::parse(shown.remote)
         .map(|url| url.origin().ascii_serialization())
         .unwrap_or_else(|_| shown.origin.trim_end_matches('/').to_owned());
-    let link = if path == "/" {
+    // A view opens where the browser routes it, `/entity@model!view`; a
+    // page by its path.
+    let link = if !view.is_null() {
+        format!("{home}/space/{space}/{}", route_path(route))
+    } else if path == "/" {
         format!("{home}/space/{space}")
     } else {
         format!("{home}/space/{space}{path}")
@@ -629,6 +633,27 @@ async fn open<W: Writers>(
         },
         "isError": false,
     })
+}
+
+/// `route` as a path segment run: what would end the path or break it is
+/// escaped, and the route's own `/` and `@` stay as the browser routes them.
+fn route_path(route: &str) -> String {
+    route
+        .chars()
+        .map(|c| match c {
+            '%' => "%25".to_owned(),
+            '?' => "%3F".to_owned(),
+            '#' => "%23".to_owned(),
+            c if c.is_whitespace() || c.is_control() => {
+                let mut bytes = [0; 4];
+                c.encode_utf8(&mut bytes)
+                    .bytes()
+                    .map(|byte| format!("%{byte:02X}"))
+                    .collect()
+            }
+            c => c.to_string(),
+        })
+        .collect()
 }
 
 /// Most characters of the text version of a view.

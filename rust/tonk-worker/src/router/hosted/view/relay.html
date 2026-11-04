@@ -299,7 +299,9 @@
       }
       function display() {
         if (framed) return;
-        if (pack && route) frame.contentWindow?.postMessage({ type: 'tonk-size', size: sized() }, '*');
+        // The framed page passes the size on to its own view.
+        if (viewFrame && route) frame.contentWindow?.postMessage({ tonkFrame: 'size', size: sized() }, origin);
+        else if (pack && route) frame.contentWindow?.postMessage({ type: 'tonk-size', size: sized() }, '*');
         const fill = host.displayMode === 'fullscreen' || host.displayMode === 'pip';
         card.classList.toggle('tonk--fill', fill);
         expand.hidden = fill || !host.available.includes('fullscreen');
@@ -1098,6 +1100,7 @@
               view: route.view,
               edit: route.edit,
               remote: route.remote,
+              size: sized(),
             },
             access,
           },
@@ -1362,6 +1365,11 @@
           return;
         }
         // The framed page: from the relay that frames it.
+        if (framed && event.source === parent && m?.tonkFrame === 'size') {
+          if (route) route = { ...route, size: m.size };
+          if (pack && route) send({ type: 'tonk-size', size: m.size });
+          return;
+        }
         if (framed && event.source === parent && m?.tonkFrame === 'theme') {
           host.theme = m.theme;
           applyTheme();
@@ -1480,13 +1488,14 @@
       function open() {
         return initialized
           .then(async (result) => {
+            // A whole view asks for full screen as soon as it is shown, on
+            // either route.
+            if (route.size === 'full' && host.available.includes('fullscreen') && host.displayMode === 'inline')
+              expand.click();
             if (hostFrames(result) && (await tryFrame())) return note('framed'), offer();
             if (viewFrame !== undefined) restoreSandbox();
             // A host that runs no worker cannot run a view's peer: a link.
             if (typeof Worker !== 'function') return note('no Worker here'), linkOnly('strip');
-            // A whole view asks for full screen as soon as it is shown.
-            if (route.size === 'full' && host.available.includes('fullscreen') && host.displayMode === 'inline')
-              expand.click();
             await connect();
             await navigate(route.path);
           })
