@@ -367,19 +367,24 @@ pub fn resources() -> Vec<Value> {
 }
 
 /// The `resources/read` result for `uri`, or `None` when it is not the
-/// card. The card loads nothing: it talks only to the host.
-pub fn read_resource(uri: &str) -> Option<Value> {
+/// card. The card talks only to the host; from `origin`, the provider the
+/// host reached, it loads nothing but Tonk's fonts.
+pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
     if uri != CARD_URI {
         return None;
     }
+    let origin = origin.trim_end_matches('/');
     Some(json!({
         "contents": [{
             "uri": CARD_URI,
             "mimeType": CARD_MIME,
-            "text": CARD,
+            "text": super::in_agent::splice(CARD, origin),
             "_meta": {
-                "ui": { "csp": { "connectDomains": [], "resourceDomains": [] }, "prefersBorder": true },
-                "openai/widgetCSP": { "connect_domains": [], "resource_domains": [] },
+                "ui": {
+                    "csp": { "connectDomains": [], "resourceDomains": [origin] },
+                    "prefersBorder": true,
+                },
+                "openai/widgetCSP": { "connect_domains": [], "resource_domains": [origin] },
             },
         }],
     }))

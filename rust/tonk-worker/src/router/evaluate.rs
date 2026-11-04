@@ -100,6 +100,13 @@ pub struct EvaluateQuery {
     /// behavior. Accepts `true`/`false`, `1`/`0`, `yes`/`no`.
     #[serde(default = "default_true", deserialize_with = "deserialize_bool")]
     pub transact: bool,
+    /// With `transact=false`: answer `matches_after` as the document
+    /// would leave the branch, and in `commits.claims` how many claims it
+    /// would write, still committing nothing (`revision_after ==
+    /// revision_before`). It costs a second match pass, so the editor's
+    /// per-keystroke dry run leaves it off. Ignored when committing.
+    #[serde(default, deserialize_with = "deserialize_bool")]
+    pub preview: bool,
     /// Set only by the conditional JSON endpoint. Outer None means unconditional;
     /// Some(None) requires an empty branch, Some(Some(revision)) an exact head.
     #[serde(skip)]
@@ -110,6 +117,7 @@ impl Default for EvaluateQuery {
     fn default() -> Self {
         Self {
             transact: true,
+            preview: false,
             expected_revision: None,
         }
     }
@@ -274,6 +282,7 @@ pub async fn evaluate_conditional(
         path,
         axum::extract::Query(EvaluateQuery {
             transact: true,
+            preview: false,
             expected_revision: Some(request.expected_revision),
         }),
         client,
@@ -776,6 +785,7 @@ async fn evaluate_on_branch_with<'a>(
         // for after, so they are not computed a second time.
         let t_matches = web_time::Instant::now();
         let answered_as_read = mode == EvaluationMode::Interactive
+            && !query.preview
             && !(query.transact && evaluated.analysis.analysis.has_statements());
         let matches_after = if answered_as_read {
             Vec::new()
@@ -808,15 +818,21 @@ async fn evaluate_on_branch_with<'a>(
             // pre-mutation matches double as "after". Zero out `claims` so the
             // response reflects what *did* commit (nothing) — the editor's
             // auto-evaluate relies on this to know the branch is untouched.
-            let _ = matches_after;
+            // A preview answers what the document would leave instead, and
+            // how many claims it would write: still nothing committed.
             let mut commits = evaluated.commits;
-            commits.claims = 0;
+            let matches_after = if query.preview && !query.transact {
+                matches_after
+            } else {
+                commits.claims = 0;
+                evaluated.matches.clone()
+            };
             return Ok((
                 Json(EvaluateResponse {
                     revision_before: revision_before.clone(),
                     revision_after: revision_before,
-                    matches_before: evaluated.matches.clone(),
-                    matches_after: evaluated.matches,
+                    matches_before: evaluated.matches,
+                    matches_after,
                     commits,
                 }),
                 None,
@@ -1346,11 +1362,58 @@ mod tests {
             body.to_owned().into(),
             super::EvaluateQuery {
                 transact: true,
+                preview: false,
                 expected_revision: Some(expected),
             },
         )
         .await
         .map(|(response, _)| response.0)
+    }
+
+    #[dialog_common::test]
+    async fn a_preview_answers_what_a_write_would_leave_and_commits_nothing() {
+        let (state, repo) = state_with_repo("preview").await;
+        let initial = evaluate(&state, &repo, CONCEPTS, true).await.revision_after;
+        let (app, _) = crate::router::api_router_from_state(state.clone());
+        let document = "person!:\n  this: id:previewed\n  name: Previewed\n  age: 1\n";
+        let ask = |query: &'static str| {
+            let app = app.clone();
+            let url = format!("/api/repository/{repo}/branch/main/evaluate?{query}");
+            async move {
+                let response = app
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri(&url)
+                            .header("content-type", "text/plain")
+                            .body(Body::from(document))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let body = http_body_util::BodyExt::collect(response.into_body())
+                    .await
+                    .unwrap()
+                    .to_bytes();
+                serde_json::from_slice::<EvaluateResponse>(&body).unwrap()
+            }
+        };
+        let dry = ask("transact=false").await;
+        assert_eq!(dry.commits.claims, 0);
+        assert!(dry.matches_after[0].results.is_empty());
+        let preview = ask("transact=false&preview=true").await;
+        assert!(preview.commits.claims > 0, "{preview:?}");
+        assert!(preview.matches_before[0].results.is_empty());
+        assert_eq!(preview.matches_after[0].results.len(), 1);
+        assert_eq!(preview.matches_after[0].results[0].this, "id:previewed");
+        assert_eq!(preview.revision_after, initial);
+        let read = evaluate(&state, &repo, "person:\n", false).await;
+        assert!(
+            read.matches_after[0].results.is_empty(),
+            "a preview committed"
+        );
+        assert_eq!(read.revision_after, initial);
     }
 
     #[dialog_common::test]
@@ -1498,6 +1561,7 @@ mod tests {
             ),
             super::EvaluateQuery {
                 transact: true,
+                preview: false,
                 expected_revision: Some(initial),
             },
             super::Retractions::Fixed(Vec::new()),

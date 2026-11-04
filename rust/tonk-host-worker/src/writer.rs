@@ -24,6 +24,7 @@ use futures_util::future::{Either, select};
 use futures_util::lock::Mutex;
 use http::{Method, Request, StatusCode, header};
 use js_sys::{Function, Reflect};
+use tonk_worker::telemetry::{SERVER_TIMING, Steps, TRACE_HEADER};
 use tonk_worker::{SpaceWriter, writer_seed};
 use wasm_bindgen::{JsCast as _, JsValue};
 use worker::{DurableObject, Env, State, durable_object};
@@ -105,6 +106,9 @@ pub(crate) async fn forward(
     let mut answer = http::Response::builder().status(response.status_code());
     if let Some(content_type) = response.headers().get("content-type")? {
         answer = answer.header(header::CONTENT_TYPE, content_type);
+    }
+    if let Some(timing) = response.headers().get(SERVER_TIMING)? {
+        answer = answer.header(SERVER_TIMING, timing);
     }
     answer
         .body(Body::from(response.bytes().await?))
@@ -190,6 +194,12 @@ impl DurableObject for SpaceWriterObject {
         self.in_flight.set(self.in_flight.get() + 1);
         let began = js_sys::Date::now();
         let path = request.path();
+        let trace = request
+            .headers()
+            .get(TRACE_HEADER)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
         let answer = std::pin::pin!(self.answer(request));
         let deadline = std::pin::pin!(worker::Delay::from(DEADLINE));
         let response = match select(answer, deadline).await {
@@ -197,7 +207,7 @@ impl DurableObject for SpaceWriterObject {
             Either::Right(((), _)) => {
                 let (step, since) = self.step.get();
                 let message = format!(
-                    "space writer: {path} unanswered after {} ms, at {step} for {} ms",
+                    "space writer: {path} (trace {trace}) unanswered after {} ms, at {step} for {} ms",
                     js_sys::Date::now() - began,
                     js_sys::Date::now() - since,
                 );
@@ -266,12 +276,41 @@ impl SpaceWriterObject {
         opened_at != 0 && now > self.high_water && now > opened_at
     }
 
-    async fn answer(&self, mut request: worker::Request) -> worker::Result<worker::Response> {
+    /// Answer `request`, with the time of this object's own steps (`open`
+    /// for a writer opened by this request, `attach` for one already open,
+    /// and `admit`) ahead of the writer's in `Server-Timing`.
+    async fn answer(&self, request: worker::Request) -> worker::Result<worker::Response> {
+        let mut steps = Steps::start();
+        let mut response = self.answer_timed(request, &mut steps).await?;
+        let mut timing = steps.header();
+        if let Some(inner) = response.headers().get(SERVER_TIMING)? {
+            timing = [timing, inner]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(", ");
+        }
+        if !timing.is_empty() {
+            response.headers_mut().set(SERVER_TIMING, &timing)?;
+        }
+        Ok(response)
+    }
+
+    async fn answer_timed(
+        &self,
+        mut request: worker::Request,
+        steps: &mut Steps,
+    ) -> worker::Result<worker::Response> {
         self.reach("open");
-        let writer = match self.writer(&request).await {
+        let (writer, opened) = match self.writer(&request).await {
             Ok(writer) => writer,
-            Err((status, message)) => return failure(status, &message),
+            Err((status, message)) => {
+                // A writer that failed to open says how long it tried.
+                steps.lap("open");
+                return failure(status, &message);
+            }
         };
+        steps.lap(if opened { "open" } else { "attach" });
         let url = request.url()?;
         let path = url.path().trim_start_matches('/').to_owned();
         let method = request.method();
@@ -279,7 +318,7 @@ impl SpaceWriterObject {
             self.reach("access");
             return match writer.agent_access().await {
                 Ok(access) => worker::Response::from_json(&access),
-                Err(error) => failure(StatusCode::BAD_GATEWAY, &error.to_string()),
+                Err(error) => upstream_failure(&error),
             };
         }
         if method == worker::Method::Get
@@ -327,8 +366,42 @@ impl SpaceWriterObject {
             })
             .unwrap_or_default();
         self.reach("admit");
-        if let Err(error) = writer.admit(&grants).await {
+        let admitted = writer.admit(&grants).await;
+        steps.lap("admit");
+        if let Err(error) = admitted {
             return failure(StatusCode::BAD_GATEWAY, &error.to_string());
+        }
+        // A change the person confirms first (see `tonk_worker::propose`):
+        // held by this writer, so only its session answers it.
+        if method == worker::Method::Post
+            && path == tonk_worker::propose::PROPOSE_ROUTE.trim_start_matches('/')
+        {
+            self.reach("propose");
+            let document = request.text().await?;
+            return worker::Response::try_from(writer.propose(document).await);
+        }
+        let answer = if path == tonk_worker::propose::APPLY_ROUTE.trim_start_matches('/') {
+            Some(true)
+        } else if path == tonk_worker::propose::DISMISS_ROUTE.trim_start_matches('/') {
+            Some(false)
+        } else {
+            None
+        };
+        if let (worker::Method::Post, Some(apply)) = (&method, answer) {
+            let body: serde_json::Value = match request.json().await {
+                Ok(body) => body,
+                Err(error) => return failure(StatusCode::BAD_REQUEST, &error.to_string()),
+            };
+            let Some(id) = body["id"].as_str() else {
+                return failure(StatusCode::BAD_REQUEST, "name the proposal");
+            };
+            self.reach(if apply { "apply" } else { "dismiss" });
+            let response = if apply {
+                writer.apply(id).await
+            } else {
+                writer.dismiss(id)
+            };
+            return worker::Response::try_from(response);
         }
         if method == worker::Method::Get && path == OUTLINE {
             let route: String = url
@@ -339,6 +412,22 @@ impl SpaceWriterObject {
             return match writer.outline(&route).await {
                 Ok(outline) => worker::Response::from_json(&outline),
                 Err(error) => failure(StatusCode::BAD_REQUEST, &error),
+            };
+        }
+        if method == worker::Method::Post
+            && path == tonk_worker::mcp::UNDO_ROUTE.trim_start_matches('/')
+        {
+            self.reach("undo");
+            let body: serde_json::Value = match request.json().await {
+                Ok(body) => body,
+                Err(error) => return failure(StatusCode::BAD_REQUEST, &error.to_string()),
+            };
+            let Some(revision) = body["revision"].as_str() else {
+                return failure(StatusCode::BAD_REQUEST, "name the revision");
+            };
+            return match writer.undo(revision).await {
+                Ok(report) => worker::Response::from_json(&report),
+                Err(error) => failure(StatusCode::BAD_GATEWAY, &error),
             };
         }
         let content_type = request
@@ -393,10 +482,12 @@ impl SpaceWriterObject {
     /// request. Every later request must carry the same session: the
     /// object is named by the writer's DID, so another writer key here
     /// means the name was reached some other way, and is refused.
+    ///
+    /// Also answers whether this request opened it.
     async fn writer(
         &self,
         request: &worker::Request,
-    ) -> Result<Rc<SpaceWriter>, (StatusCode, String)> {
+    ) -> Result<(Rc<SpaceWriter>, bool), (StatusCode, String)> {
         let header = |name: &str| {
             request
                 .headers()
@@ -426,7 +517,7 @@ impl SpaceWriterObject {
                     "this writer serves another session".to_owned(),
                 ));
             }
-            return Ok(writer.clone());
+            return Ok((writer.clone(), false));
         }
         let remote = url::Url::parse(&header(REMOTE)?)
             .map_err(|_| (StatusCode::BAD_REQUEST, "malformed remote".to_owned()))?;
@@ -444,7 +535,7 @@ impl SpaceWriterObject {
         self.opened_at.set(memory());
         worker::console_log!("space writer: opened at {} MiB", memory() / (1024 * 1024));
         *opened = Some((key, writer.clone()));
-        Ok(writer)
+        Ok((writer, true))
     }
 }
 
@@ -455,6 +546,24 @@ fn branch(method: Method, path: &str, content_type: &str, body: Body) -> Request
         request = request.header(header::CONTENT_TYPE, content_type);
     }
     request.body(body).expect("static request")
+}
+
+/// `error` as an answer: an upstream refusal (a revoked grant) keeps its
+/// status and code, so the front can tell it from a failure; anything
+/// else is `502`.
+fn upstream_failure(error: &tonk_worker::TonkWorkerError) -> worker::Result<worker::Response> {
+    let tonk_worker::TonkWorkerError::Upstream {
+        status,
+        code: Some(code),
+        message,
+    } = error
+    else {
+        return failure(StatusCode::BAD_GATEWAY, &error.to_string());
+    };
+    let mut response =
+        worker::Response::from_json(&serde_json::json!({ "error": message, "code": code }))?;
+    response = response.with_status(*status);
+    Ok(response)
 }
 
 fn failure(status: StatusCode, message: &str) -> worker::Result<worker::Response> {

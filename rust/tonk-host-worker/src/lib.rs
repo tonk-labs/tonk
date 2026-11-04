@@ -81,6 +81,7 @@ async fn fetch(
         key: &key,
         tickets: &tickets,
         writers: &writers,
+        events: &tonk_worker::telemetry::log,
     };
     let (parts, body) = request.into_parts();
     let request = http::Request::from_parts(parts, Body::new(body));

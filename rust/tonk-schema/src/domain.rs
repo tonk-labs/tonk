@@ -657,6 +657,31 @@ pub mod seed {
     pub struct InstallVersion(pub String);
 }
 
+/// Attributes of an [`Undo`](crate::Undo): the outcome of asking to undo
+/// one change, on an entity named for the change's revision.
+pub mod undo {
+    use super::Attribute;
+
+    /// The revision whose change was asked to be undone, encoded as
+    /// [`command::current::undo_change::Revision`] is.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.undo")]
+    #[pick(last)]
+    pub struct Revision(pub String);
+
+    /// `undone`, or `refused` when the change could not be undone.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.undo")]
+    #[pick(last)]
+    pub struct Status(pub String);
+
+    /// Why it was refused, in words a person can read.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.undo")]
+    #[pick(last)]
+    pub struct Reason(pub String);
+}
+
 /// Attributes for transient *command* concepts — the effect triggers
 /// dispatched to typed-Rust handlers after a commit. A command is a
 /// plain concept marked transient; these are the fields its triggers
@@ -1512,6 +1537,22 @@ pub mod command {
             /// The moment it was asked, so uninstalling twice re-fires.
             #[derive(Attribute, Clone, PartialEq, PartialOrd)]
             #[domain("xyz.tonk.command.uninstall-component")]
+            pub struct Time(pub f64);
+        }
+
+        /// `change/undo` — reverse one earlier change to this space.
+        pub mod undo_change {
+            use dialog_query::Attribute;
+
+            /// The revision that made the change, as an evaluate
+            /// answers it: its version's key bytes in base58.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.undo-change")]
+            pub struct Revision(pub String);
+
+            /// The moment it was asked, so asking again re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.undo-change")]
             pub struct Time(pub f64);
         }
 

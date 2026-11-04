@@ -144,8 +144,10 @@ pub struct CommandProviders {
     /// [`ExpelMember`](tonk_schema::command::ExpelMember), whose target
     /// is likewise the origin space, and installing a library component
     /// ([`InstallComponent`](tonk_schema::command::InstallComponent)) into
-    /// the origin space, which the profile has none of, or uninstalling one
-    /// ([`UninstallComponent`](tonk_schema::command::UninstallComponent)).
+    /// the origin space, which the profile has none of, uninstalling one
+    /// ([`UninstallComponent`](tonk_schema::command::UninstallComponent)),
+    /// and undoing one of the origin branch's own changes
+    /// ([`UndoChange`](tonk_schema::command::UndoChange)).
     space: CommandRegistry<CommandEnv>,
 }
 
@@ -295,6 +297,9 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::InstallComponent>()
         // And uninstalls one from itself, the inverse an undo asks for.
         .command::<tonk_schema::command::UninstallComponent>()
+        // A space undoes a change to itself: the change is named by a
+        // revision of the origin branch, which is the target.
+        .command::<tonk_schema::command::UndoChange>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
 }
@@ -568,6 +573,35 @@ pub(crate) mod tests {
                 );
             }
         }
+    }
+
+    /// A space undoes changes to its own history, so `change/undo` is in a
+    /// space branch's vocabulary; the profile has no content to undo.
+    #[dialog_common::test]
+    fn undo_is_a_space_command() {
+        let providers = command_providers();
+        let space = CommandOrigin {
+            repo: "did:key:zSomeSpace".to_string(),
+            branch: "main".to_string(),
+            client: None,
+        };
+        let mut undo = Changes::new();
+        let this = "cmd:undo".parse::<Entity>().expect("entity URI");
+        the!("xyz.tonk.command.undo-change/revision")
+            .of(this.clone())
+            .is("3yZe7d".to_string())
+            .assert(&mut undo);
+        the!("xyz.tonk.command.undo-change/time")
+            .of(this)
+            .is(1.0f64)
+            .assert(&mut undo);
+        assert_eq!(providers.select(&space).match_transients(&undo).len(), 1);
+        assert!(
+            providers
+                .select(&CommandOrigin::default())
+                .match_transients(&undo)
+                .is_empty()
+        );
     }
 
     // The `run` and `dispatch` tests build a real `CommandEnv` from an
