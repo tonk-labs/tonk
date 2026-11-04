@@ -118,6 +118,10 @@ mod revoke_invite;
 /// Space membership management: admins and removals, as commands.
 mod members;
 
+/// Undoing one change to a space, as a command and for the hosted writer.
+pub(crate) mod undo;
+pub use undo::UndoReport;
+
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
 

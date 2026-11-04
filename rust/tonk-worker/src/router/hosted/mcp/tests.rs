@@ -569,6 +569,7 @@ async fn a_session_id_of_another_token_is_refused() {
             "tonk_open_space",
             "tonk_outline",
             "tonk_query",
+            "tonk_undo",
             "tonk_view_access"
         ]
     );
@@ -615,6 +616,93 @@ async fn evaluate_on_a_read_grant_is_refused_before_any_writer() {
         &session,
         "tonk_evaluate",
         json!({ "space": space.did().to_string(), "document": "x!: {}" }),
+    )
+    .await;
+    assert!(error);
+    assert!(text.contains("only read"), "{text}");
+}
+
+#[dialog_common::test]
+async fn undo_is_listed_for_the_app_alone() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let endpoint = endpoint(&key, &tickets, &Unreachable);
+    let bearer = token(&agent, &home()).await;
+    let session = connect(&endpoint, &bearer).await;
+    let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
+    let (status, body) = answer(
+        endpoint
+            .serve(rpc_request(Some(&bearer), Some(&session), list))
+            .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let undo = body["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == json!(UNDO))
+        .cloned()
+        .expect("tonk_undo is listed");
+    assert_eq!(undo["_meta"]["ui"]["visibility"], json!(["app"]));
+    assert_eq!(
+        undo["inputSchema"]["required"],
+        json!(["space", "revision"])
+    );
+}
+
+#[dialog_common::test]
+async fn a_write_carries_its_change_for_the_card_and_a_read_does_not() {
+    let space = Ed25519Signer::generate().await.unwrap().did();
+    let before = json!({ "tree": "a" });
+    let revision = |answer: &Value| undo::change_meta(&space, answer);
+    // Nothing committed: no change to undo.
+    let unchanged = json!({
+        "revision_before": before,
+        "revision_after": before,
+        "commits": { "claims": 0, "entities": {} },
+    });
+    assert!(revision(&unchanged).is_none());
+    // An answer whose revision does not decode carries nothing rather
+    // than a revision the undo could not find.
+    let unreadable = json!({
+        "revision_before": null,
+        "revision_after": { "tree": "b" },
+        "commits": { "claims": 1, "entities": {} },
+    });
+    assert!(revision(&unreadable).is_none());
+}
+
+#[dialog_common::test]
+async fn undo_on_a_read_grant_is_refused_before_any_writer() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let mut access = own(&agent.did());
+    access.spaces.insert(
+        space.did().to_string(),
+        SpaceAccess {
+            read: true,
+            grants: vec!["bafy-read".into()],
+            ..SpaceAccess::default()
+        },
+    );
+    let writers = Granting {
+        agent: agent.did(),
+        access,
+    };
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let endpoint = endpoint(&key, &tickets, &writers);
+    let bearer = token(&agent, &home()).await;
+    let session = connect(&endpoint, &bearer).await;
+
+    let (text, error) = call_tool(
+        &endpoint,
+        &bearer,
+        &session,
+        UNDO,
+        json!({ "space": space.did().to_string(), "revision": "abc" }),
     )
     .await;
     assert!(error);
@@ -729,6 +817,14 @@ concept!: &mcp-note
                 .unwrap_or_default();
             if let Err(error) = writer.admit(&grants).await {
                 return plain(StatusCode::BAD_GATEWAY, &error.to_string());
+            }
+            if parts.uri.path() == UNDO_ROUTE {
+                let body = body.collect().await.unwrap().to_bytes();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                return match writer.undo(body["revision"].as_str().unwrap()).await {
+                    Ok(report) => rpc(StatusCode::OK, serde_json::to_value(report).unwrap()),
+                    Err(error) => plain(StatusCode::BAD_GATEWAY, &error),
+                };
             }
             let routed = |uri: &str| {
                 Request::builder()
@@ -850,6 +946,24 @@ concept!: &mcp-note
                 bearer,
                 session,
             }
+        }
+
+        /// Call a tool: its whole result.
+        async fn result(&self, name: &str, arguments: Value) -> Value {
+            let call = json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": { "name": name, "arguments": arguments },
+            });
+            let (status, body) = answer(
+                self.endpoint
+                    .serve(rpc_request(Some(&self.bearer), Some(&self.session), call))
+                    .await,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body["result"].clone()
         }
 
         /// Call a tool: its result and whether it is an error.
@@ -1035,5 +1149,102 @@ concept!: &mcp-note
         drop(open);
         service.stop().await.unwrap();
         other.stop().await.unwrap();
+    }
+
+    /// A card undoes a write with the revision its result carried, through
+    /// the app-only tool; the space then reads as before the write, the
+    /// outcome is recorded in it, and a second undo is refused.
+    #[dialog_common::test]
+    async fn a_card_undoes_a_write_with_the_revision_it_carried() {
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let agent = Ed25519Signer::import(&rand::random::<[u8; 32]>())
+            .await
+            .unwrap();
+        service
+            .address
+            .provision_subject(agent.did().as_ref())
+            .await
+            .unwrap();
+        let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+        let writers = NativeWriters {
+            remote: remote.clone(),
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = endpoint(&key, &tickets, &writers);
+        let client = Client::connect(&endpoint, token(&agent, &remote).await).await;
+        let space = agent.did().to_string();
+        let run: u64 = rand::random();
+        let note = format!("mcp-note!:\n  this: urn:mcp:{run}:undo\n  title: \"undo me\"\n");
+        let find = format!("mcp.note:\n  this: urn:mcp:{run}:undo\n  title: ?title\n");
+
+        let schema = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": SCHEMA }),
+            )
+            .await;
+        assert_eq!(schema["isError"], json!(false), "{schema}");
+        let written = client
+            .result("tonk_evaluate", json!({ "space": space, "document": note }))
+            .await;
+        assert_eq!(written["isError"], json!(false), "{written}");
+        let change = &written["_meta"][CHANGE_META];
+        assert_eq!(change["space"], json!(space), "{written}");
+        let revision = change["revision"].as_str().expect("a revision").to_owned();
+        // The model's text and structured content carry no revision.
+        assert!(!written["content"].to_string().contains(&revision));
+        assert!(!written["structuredContent"].to_string().contains(&revision));
+
+        let undone = client
+            .result(UNDO, json!({ "space": space, "revision": revision }))
+            .await;
+        assert_eq!(undone["isError"], json!(false), "{undone}");
+        assert_eq!(
+            undone["structuredContent"]["status"],
+            json!("undone"),
+            "{undone}"
+        );
+        assert!(
+            undone["structuredContent"]["committed"].is_string(),
+            "{undone}"
+        );
+
+        let (found, error) = client
+            .call("tonk_query", json!({ "space": space, "document": find }))
+            .await;
+        assert!(!error, "{found}");
+        assert!(!found.to_string().contains("undo me"), "{found}");
+        let outcome = format!("xyz.tonk.undo:\n  this: tonk:undo/{revision}\n  status: ?status\n");
+        let (recorded, error) = client
+            .call("tonk_query", json!({ "space": space, "document": outcome }))
+            .await;
+        assert!(!error, "{recorded}");
+        assert!(recorded.to_string().contains("undone"), "{recorded}");
+
+        let again = client
+            .result(UNDO, json!({ "space": space, "revision": revision }))
+            .await;
+        assert_eq!(
+            again["structuredContent"]["status"],
+            json!("refused"),
+            "{again}"
+        );
+        assert!(
+            again["structuredContent"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("undone already"),
+            "{again}"
+        );
+
+        let open: Vec<Arc<SpaceWriter>> =
+            writers.open.lock().await.drain().map(|(_, w)| w).collect();
+        drop(open);
+        service.stop().await.unwrap();
     }
 }

@@ -225,6 +225,17 @@ impl HostedPeer {
         super::view_tree::outline(&self.state, space, &route).await
     }
 
+    /// Undo the change `revision` made to the mounted space `space`, on
+    /// its `main`, as of the replica here. See [`super::undo`].
+    pub async fn undo(
+        &self,
+        space: &Did,
+        revision: &str,
+    ) -> Result<super::UndoReport, TonkWorkerError> {
+        let state = self.state.read().await;
+        super::undo::undo_change(&state, space.as_ref(), "main", revision).await
+    }
+
     /// The DID this peer signs as.
     pub async fn did(&self) -> Did {
         self.state.read().await.profile.did()

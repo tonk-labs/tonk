@@ -341,6 +341,22 @@ impl SpaceWriterObject {
                 Err(error) => failure(StatusCode::BAD_REQUEST, &error),
             };
         }
+        if method == worker::Method::Post
+            && path == tonk_worker::mcp::UNDO_ROUTE.trim_start_matches('/')
+        {
+            self.reach("undo");
+            let body: serde_json::Value = match request.json().await {
+                Ok(body) => body,
+                Err(error) => return failure(StatusCode::BAD_REQUEST, &error.to_string()),
+            };
+            let Some(revision) = body["revision"].as_str() else {
+                return failure(StatusCode::BAD_REQUEST, "name the revision");
+            };
+            return match writer.undo(revision).await {
+                Ok(report) => worker::Response::from_json(&report),
+                Err(error) => failure(StatusCode::BAD_GATEWAY, &error),
+            };
+        }
         let content_type = request
             .headers()
             .get("content-type")?

@@ -55,6 +55,9 @@ pub use super::access::{AgentAccess, SpaceAccess};
 #[allow(dead_code)]
 mod output;
 
+mod undo;
+pub use undo::{CHANGE_META, UNDO, UNDO_ROUTE};
+
 #[path = "../../../../tonk-cli/src/guide.rs"]
 #[allow(dead_code)]
 mod guide;
@@ -185,8 +188,9 @@ pub trait Writers {
     /// Serve `request` on the writer of `space` for `mcp_session`.
     ///
     /// `request` is one of the writer's routes relative to the space:
-    /// `POST /api/query` (a read), `POST /api/evaluate` (a write), or
-    /// `GET` [`ACCESS_ROUTE`] (to the agent space's writer). A request to
+    /// `POST /api/query` (a read), `POST /api/evaluate` (a write),
+    /// `POST` [`UNDO_ROUTE`] (a write undoing one change), or `GET`
+    /// [`ACCESS_ROUTE`] (to the agent space's writer). A request to
     /// another space carries [`GRANTS_HEADER`] and, when the directory
     /// names one, [`ADDRESS_HEADER`], the remote its writer mounts.
     /// `bearer` is the token as it arrived, for writers that decode it
@@ -382,6 +386,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
             "ping" => Ok(json!({})),
             "tools/list" => {
                 let mut tools = tools();
+                tools.push(undo::tool());
                 tools.extend(super::view::tools());
                 tools.extend(super::join::tools());
                 Ok(json!({ "tools": tools }))
@@ -531,13 +536,22 @@ impl<W: Writers> McpEndpoint<'_, W> {
                     Ok(value) => value,
                     Err(_) => json!(String::from_utf8_lossy(&body)),
                 };
+                // What a card needs to undo the write, in `_meta`, which
+                // hosts hand the app and not the model.
+                let change = (write && status.is_success())
+                    .then(|| undo::change_meta(&space, &body))
+                    .flatten();
                 let mut answer = tool_result(without_revisions(body), !status.is_success());
                 // The model reads notation; programs read the JSON beside it.
                 if let Some(text) = text {
                     answer["content"] = json!([{ "type": "text", "text": text }]);
                 }
+                if let Some(change) = change {
+                    answer["_meta"] = json!({ CHANGE_META: change });
+                }
                 answer
             }
+            UNDO => self.undo(verified, bearer, session, arguments).await,
             super::join::JOIN | super::join::ACCEPT => {
                 super::join::call(name, arguments, verified, self.writers, bearer, session)
                     .await
@@ -558,6 +572,83 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 Some(result) => result,
                 None => tool_result(json!("Tool unavailable."), true),
             },
+        }
+    }
+
+    /// `tonk_undo`: undo the change `arguments.revision` made to
+    /// `arguments.space`, through the session's writer of that space,
+    /// which the connection must be able to write.
+    async fn undo(
+        &self,
+        verified: &Verified,
+        bearer: &str,
+        session: &str,
+        arguments: &Value,
+    ) -> Value {
+        let Some(space) = arguments["space"].as_str() else {
+            return tool_result(
+                json!("`space` is required: an exact subject from tonk_list_spaces."),
+                true,
+            );
+        };
+        let Ok(space) = space.parse::<Did>() else {
+            return tool_result(json!(format!("`{space}` is not a space DID.")), true);
+        };
+        let Some(revision) = arguments["revision"]
+            .as_str()
+            .filter(|revision| !revision.is_empty() && revision.len() <= 256)
+        else {
+            return tool_result(json!("`revision` is required."), true);
+        };
+        let mut request = undo::request(revision);
+        if &space != verified.agent() {
+            let access = match self.access(verified, bearer, session).await {
+                Ok(access) => access,
+                Err(error) => return tool_result(json!(error), true),
+            };
+            if let Some(refusal) = refusal(access.get(&space), &space, true) {
+                return tool_result(json!(refusal), true);
+            }
+            if let Some(granted) = access.get(&space) {
+                let headers = request.headers_mut();
+                if let Ok(grants) = HeaderValue::from_str(&granted.grants.join(",")) {
+                    headers.insert(GRANTS_HEADER, grants);
+                }
+                if let Some(address) = granted
+                    .address
+                    .as_deref()
+                    .and_then(|address| HeaderValue::from_str(address).ok())
+                {
+                    headers.insert(ADDRESS_HEADER, address);
+                }
+            }
+        }
+        let response = self
+            .writers
+            .call(verified, bearer, session, &space, request)
+            .await;
+        let status = response.status();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .map(|body| body.to_bytes())
+            .unwrap_or_default();
+        if !status.is_success() {
+            return tool_result(
+                json!(format!(
+                    "The undo did not land ({status}): {}. Read the space before trying again.",
+                    String::from_utf8_lossy(&body)
+                )),
+                true,
+            );
+        }
+        match serde_json::from_slice::<crate::UndoReport>(&body) {
+            Ok(report) => undo::result(&report),
+            Err(error) => tool_result(
+                json!(format!("The writer answered an unreadable undo: {error}")),
+                true,
+            ),
         }
     }
 

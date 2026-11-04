@@ -341,6 +341,42 @@ impl SpaceWriter {
         Response::from_parts(parts, Body::from(body))
     }
 
+    /// Undo the change `revision` made to the space, holding the lock from
+    /// the pull before it through the push after it, as a write does.
+    ///
+    /// Answered once the push has landed. A refusal is recorded and pushed
+    /// too, so whatever shows the change can say why; an undo that writes
+    /// nothing (the change is undone already) pushes nothing.
+    pub async fn undo(&self, revision: &str) -> Result<super::super::UndoReport, String> {
+        let _turn = self.lock.lock().await;
+        if self.stale.load(Ordering::SeqCst) {
+            self.reopen().await?;
+            self.stale.store(false, Ordering::SeqCst);
+        }
+        let peer = self.peer();
+        self.sync(&peer, "pull").await?;
+        let report = peer
+            .undo(&self.space, revision)
+            .await
+            .map_err(|error| error.to_string())?;
+        if report.committed.is_none() {
+            return Ok(report);
+        }
+        if let Err(error) = self.push(&peer).await {
+            if self.landed(&peer).await {
+                return Ok(report);
+            }
+            if let Err(reopen) = self.reopen().await {
+                self.stale.store(true, Ordering::SeqCst);
+                return Err(format!(
+                    "{error}; the writer reopens before its next write: {reopen}"
+                ));
+            }
+            return Err(error);
+        }
+        Ok(report)
+    }
+
     /// Answer one read without waiting for the lock.
     ///
     /// Only routes that cannot commit are served: `GET` and `HEAD`, a
