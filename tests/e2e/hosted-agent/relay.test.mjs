@@ -238,3 +238,162 @@ test('access the space refuses fails the view with its reason', async () => {
     await card.close();
   }
 });
+
+// The stand-in guest page, once it has loaded.
+async function guestOf(card) {
+  for (let tries = 0; tries < 100; tries++) {
+    for (const frame of card.view.page.frames()) {
+      const found = await frame
+        .evaluate(() => document.body?.textContent.includes('stand-in guest') && Array.isArray(window.heard))
+        .catch(() => false);
+      if (found) return frame;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('the guest page never loaded');
+}
+
+test('the full-screen button asks the agent app, and full screen fills the card and opens Tonk', async () => {
+  const card = await shown({ context: { safeAreaInsets: { top: 0, right: 0, bottom: 24, left: 0 } } });
+  try {
+    const frame = await card.relay();
+    await until(frame, () => !document.querySelector('#expand').hidden);
+    assert.equal(await frame.evaluate(() => document.querySelector('#out').hidden), true);
+    await frame.click('#expand');
+    await until(frame, () => document.querySelector('#card').classList.contains('tonk--fill'));
+    const asked = await card.view.asked();
+    assert.deepEqual(
+      asked.filter((ask) => ask.method === 'ui/request-display-mode'),
+      [{ method: 'ui/request-display-mode', mode: 'fullscreen' }],
+    );
+    const fill = await frame.evaluate(() => ({
+      expand: document.querySelector('#expand').hidden,
+      out: document.querySelector('#out').hidden,
+      card: document.querySelector('#card').getBoundingClientRect().height,
+      viewport: innerHeight,
+      bottom: getComputedStyle(document.querySelector('#line')).paddingBottom,
+    }));
+    assert.equal(fill.expand, true, 'no full-screen button in full screen');
+    assert.equal(fill.out, false, 'open in tonk shows');
+    assert.equal(fill.card, fill.viewport, 'the card fills the agent app’s sheet');
+    assert.equal(fill.bottom, '24px', 'the line clears the chat input');
+    await frame.click('#out');
+    await until(frame, () => true);
+    const opened = (await card.view.asked()).filter((ask) => ask.method === 'ui/open-link');
+    assert.deepEqual(opened, [
+      { method: 'ui/open-link', url: `${card.provider.origin}/space/${SPACE}` },
+    ]);
+    // Back inline, as the agent app closes its sheet.
+    await card.view.changeContext({ displayMode: 'inline' });
+    await until(frame, () => !document.querySelector('#card').classList.contains('tonk--fill'));
+  } finally {
+    await card.close();
+  }
+});
+
+test('an agent app with no full screen gets no full-screen button', async () => {
+  const card = await shown({ context: { availableDisplayModes: ['inline'] } });
+  try {
+    const frame = await card.relay();
+    await until(frame, () => document.querySelector('#line .tonk-space').textContent);
+    assert.equal(await frame.evaluate(() => document.querySelector('#expand').hidden), true);
+  } finally {
+    await card.close();
+  }
+});
+
+test('docked, the card fills its frame and does not offer Tonk', async () => {
+  const card = await shown({ context: { displayMode: 'pip', availableDisplayModes: ['inline', 'pip', 'fullscreen'] } });
+  try {
+    const frame = await card.relay();
+    await until(frame, () => document.querySelector('#card').classList.contains('tonk--fill'));
+    assert.equal(await frame.evaluate(() => document.querySelector('#out').hidden), true);
+  } finally {
+    await card.close();
+  }
+});
+
+test("a link out of the view opens through the agent app's open-link", async () => {
+  const card = await shown({
+    guest: [
+      { hello: true },
+      { type: 'tonk-view-size', height: 120 },
+      { wait: 300 },
+      { port: { v: 1, type: 'navigate', href: 'https://example.com/a?b=c' } },
+    ],
+  });
+  try {
+    const frame = await card.relay();
+    await until(frame, () => !document.querySelector('.tonk-well').hasAttribute('aria-busy'));
+    for (let tries = 0; tries < 50; tries++) {
+      const asked = await card.view.asked();
+      if (asked.some((ask) => ask.method === 'ui/open-link')) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const opened = (await card.view.asked()).filter((ask) => ask.method === 'ui/open-link');
+    assert.deepEqual(opened, [{ method: 'ui/open-link', url: 'https://example.com/a?b=c' }]);
+    assert.equal(await frame.evaluate(() => document.querySelector('#error').hidden), true);
+  } finally {
+    await card.close();
+  }
+});
+
+test("Tonk's line and the view follow the agent app's theme", async () => {
+  const card = await shown({
+    context: { theme: 'dark' },
+    guest: [...SPEAKS, { __tonkRuntime: 'runtime-ready' }],
+  });
+  try {
+    const frame = await card.relay();
+    await until(frame, () => document.documentElement.dataset.theme === 'dark');
+    const sheet = await frame.evaluate(() => getComputedStyle(document.querySelector('#line')).color);
+    assert.equal(sheet, 'rgb(247, 246, 245)', 'paper text on the dark sheet');
+    const guest = await guestOf(card);
+    await until(guest, () => window.heard.some((m) => m?.type === 'tonk-mount'));
+    const mounted = await guest.evaluate(() => window.heard.find((m) => m?.type === 'tonk-mount'));
+    assert.equal(mounted.theme, 'dark');
+    await card.view.changeContext({ theme: 'light' });
+    await until(frame, () => document.documentElement.dataset.theme === 'light');
+    await until(guest, () => window.heard.some((m) => m?.type === 'tonk-theme' && m.theme === 'light'));
+  } finally {
+    await card.close();
+  }
+});
+
+test('the guest page takes the theme its host passes, over the system preference', async () => {
+  const { chromium } = await import('playwright');
+  const { readFile } = await import('node:fs/promises');
+  const ui = new URL('../../../mcp/apps/ui/', import.meta.url);
+  const scripts = await Promise.all(
+    ['space-theme.js', 'embed-bootstrap.js'].map((name) => readFile(new URL(name, ui), 'utf8')),
+  );
+  const browser = await chromium.launch({ channel: process.env.TONK_E2E_CHANNEL || undefined });
+  try {
+    const page = await browser.newPage({ colorScheme: 'light' });
+    // The guest as a host frames it: the host is the parent.
+    await page.setContent(
+      `<iframe srcdoc="${`<script>${scripts.join('</script><script>')}</script>`.replaceAll('"', '&quot;')}"></iframe>`,
+    );
+    const guest = page.frames()[1];
+    await guest.waitForFunction(() => typeof window.__tonkSetTheme === 'function');
+    const classes = () => guest.evaluate(() => document.documentElement.className);
+    assert.match(await classes(), /wa-light/);
+    await page.evaluate(() =>
+      document.querySelector('iframe').contentWindow.postMessage(
+        { type: 'tonk-mount', subject: 'did:key:z', site: 'urn:s', model: 'tonk:site', theme: 'dark' },
+        '*',
+      ),
+    );
+    await guest.waitForFunction(() => document.documentElement.classList.contains('wa-dark'));
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await page.emulateMedia({ colorScheme: 'light' });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.match(await classes(), /wa-dark/, 'the system preference no longer applies');
+    await page.evaluate(() =>
+      document.querySelector('iframe').contentWindow.postMessage({ type: 'tonk-theme', theme: 'light' }, '*'),
+    );
+    await guest.waitForFunction(() => document.documentElement.classList.contains('wa-light'));
+  } finally {
+    await browser.close();
+  }
+});

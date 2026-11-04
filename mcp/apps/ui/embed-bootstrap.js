@@ -1,7 +1,14 @@
 // Host supplies the route context and presentation options. Rendering stays
 // in the stock Tonk guest runtime, including installed space views.
+// The agent app's theme, which the host passes on mount and again
+// whenever it changes.
+addEventListener('message', (e) => {
+  if (e.source !== parent || e.data?.type !== 'tonk-theme') return;
+  window.__tonkSetTheme?.(e.data.theme);
+});
 addEventListener('message', (e) => {
   if (e.source !== parent || e.data?.type !== 'tonk-mount') return;
+  if (e.data.theme) window.__tonkSetTheme?.(e.data.theme);
   window.__tonkHideFab = e.data.hideFab === true;
   if (window.__tonkHideFab) {
     const style = document.createElement('style');
