@@ -1,6 +1,6 @@
 # Reference
 
-A quick lookup for the notation. For the full reference, run `tonk help notation`.
+A quick lookup for the notation. For the full reference, run `tonk guide`.
 
 ## Heads
 
@@ -84,7 +84,7 @@ the associative memory, referenced from it by a content-addressed
 |--------------------------|---------------------------------------------------------|
 | `tonk blob add <file>`   | Ingest a file, print its `blob:<hash>` reference.        |
 | `tonk blob cat <blob:hash>` | Write a blob's bytes to stdout.                       |
-| `tonk blob`              | List the branch's blobs from their metadata facts: reference, content type, name. |
+| `tonk blob ls`           | List the branch's blobs from their metadata facts: reference, content type, name. |
 
 The reference is just another URI value, so assert it onto any
 concept like `id:` or `did:key:…`:
@@ -98,10 +98,20 @@ photo!:
 Blobs sync with the rest of the branch: `tonk push`/`tonk pull` carry
 both the facts and the bytes they reference.
 
+In the web frontend, an image blob renders inline: embed
+
+```
+<tonk-display with="{branch}@{repo}" entity=blob:<hash> model="tonk:blob" />
+```
+
+in a view and the display mounts an `<img>` served from
+`/api/repository/{repo}/branch/{branch}/blob/{entity}` with the blob's
+recorded content type.
+
 ## CLI
 
 | Command        | Does                                            |
 |----------------|-------------------------------------------------|
-| `tonk help notation` | Print the full notation reference. |
-| `tonk show`   | List the concepts on the current branch.        |
-| `tonk join …` | Join a space from an agent link.                |
+| `tonk guide`  | Print the full notation reference.              |
+| `tonk schema` | List the concepts on the current branch.        |
+| `tonk join …` | Join a space from an invite link.               |
