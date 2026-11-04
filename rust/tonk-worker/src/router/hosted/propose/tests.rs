@@ -21,6 +21,7 @@ fn context(home: bool) -> Context {
             name: Some("Juno".into()),
         },
         home,
+        origin: "https://tonk.example".into(),
     }
 }
 
@@ -45,11 +46,15 @@ fn evaluation() -> Value {
 #[dialog_common::test]
 fn it_answers_a_held_change_once() {
     let proposals = Proposals::default();
-    let (id, expires) = proposals.hold("note!: {}".into(), json!(null), 100);
+    let (id, expires) = proposals.hold("note!: {}".into(), json!(null), json!({}), 100);
     assert_eq!(expires, 100 + LIFETIME);
     assert_eq!(
         proposals.take(&id, 101),
-        Ok(("note!: {}".to_owned(), json!(null)))
+        Ok(Taken {
+            document: "note!: {}".to_owned(),
+            revision: json!(null),
+            seen: json!({})
+        })
     );
     assert_eq!(proposals.take(&id, 101), Err(Gone));
 }
@@ -57,30 +62,34 @@ fn it_answers_a_held_change_once() {
 #[dialog_common::test]
 fn it_forgets_a_change_once_it_lapses() {
     let proposals = Proposals::default();
-    let (id, expires) = proposals.hold("a".into(), json!(null), 100);
+    let (id, expires) = proposals.hold("a".into(), json!(null), json!({}), 100);
     assert_eq!(proposals.take(&id, expires), Err(Gone));
 }
 
 #[dialog_common::test]
 fn it_never_answers_an_id_it_did_not_mint() {
     let proposals = Proposals::default();
-    let (id, _) = proposals.hold("a".into(), json!(null), 100);
+    let (id, _) = proposals.hold("a".into(), json!(null), json!({}), 100);
     assert_eq!(proposals.take("guessed", 101), Err(Gone));
     // Another writer (another session) holds nothing under this id.
     assert_eq!(Proposals::default().take(&id, 101), Err(Gone));
-    assert_eq!(proposals.take(&id, 101).unwrap().0, "a");
+    assert_eq!(proposals.take(&id, 101).unwrap().document, "a");
 }
 
 #[dialog_common::test]
 fn it_holds_at_most_a_few_dropping_the_oldest() {
     let proposals = Proposals::default();
-    let first = proposals.hold("first".into(), json!(null), 100).0;
+    let first = proposals
+        .hold("first".into(), json!(null), json!({}), 100)
+        .0;
     let mut last = String::new();
     for _ in 0..MOST {
-        last = proposals.hold("later".into(), json!(null), 100).0;
+        last = proposals
+            .hold("later".into(), json!(null), json!({}), 100)
+            .0;
     }
     assert_eq!(proposals.take(&first, 101), Err(Gone));
-    assert_eq!(proposals.take(&last, 101).unwrap().0, "later");
+    assert_eq!(proposals.take(&last, 101).unwrap().document, "later");
 }
 
 #[dialog_common::test]
@@ -93,8 +102,12 @@ fn it_reads_what_a_dry_run_adds_changes_and_removes() {
         .map(|change| (change.mark, change.name.as_str()))
         .collect();
     assert_eq!(marks, [("~", "Older"), ("+", "New")]);
-    // A record's concept is not shown as its kind.
-    assert!(changes.iter().all(|change| change.kind.is_none()));
+    // A record's concept is not shown as its kind: it is an item.
+    assert!(
+        changes
+            .iter()
+            .all(|change| change.kind.as_deref() == Some("item"))
+    );
     assert_eq!(changed(&removed)[0].mark, "−");
 }
 
@@ -162,7 +175,7 @@ fn the_ask_says_what_it_does_and_leads_with_the_main_answer() {
         [
             ("in", "Launch"),
             ("who sees it", "everyone in Launch"),
-            ("undo", "from the receipt")
+            ("undo", "from the receipt, or from Activity in Tonk")
         ]
     );
     assert!(card.fine.is_none());
@@ -248,31 +261,60 @@ fn a_refused_write_is_not_the_same_as_one_not_saved() {
 }
 
 #[dialog_common::test]
-fn a_space_that_moved_offers_theirs_first_then_mine() {
-    let card = moved(&context(false), Some(("id-2", &adding(&["Sun hat"]))));
+fn a_space_that_moved_shows_theirs_and_yours_then_offers_theirs_first() {
+    let again = json!({
+        "matches_before": [{
+            "label": "stay",
+            "results": [{ "this": "urn:stay:seeblick", "fields": { "name": "Seeblick Hotel", "nights": 4 } }],
+        }],
+        "matches_after": [{
+            "label": "stay",
+            "results": [{ "this": "urn:stay:seeblick", "fields": { "name": "Seeblick Hotel", "nights": 3 } }],
+        }],
+        "commits": { "claims": 1, "entities": {} },
+    });
+    let card = moved(&context(false), Some(("id-2", &again)));
     assert_eq!(
         card.space.as_ref().unwrap().item.as_deref(),
-        Some("Sun hat")
+        Some("Seeblick Hotel")
     );
-    assert_eq!(card.label.as_deref(), Some("Sun hat changed"));
-    assert_eq!(card.ledger[0].term, "yours");
-    assert_eq!(card.ledger[0].value, "add Sun hat");
+    assert_eq!(card.label.as_deref(), Some("Seeblick Hotel changed"));
+    let ledger: Vec<(&str, &str)> = card
+        .ledger
+        .iter()
+        .map(|entry| (entry.term.as_str(), entry.value.as_str()))
+        .collect();
+    assert_eq!(ledger, [("theirs", "4"), ("yours", "3")]);
     assert_eq!(card.answers[0].label, "keep theirs");
+    assert_eq!(card.answers[0].kind, Look::Main);
     assert_eq!(card.answers[1].label, "use mine");
     let stale = moved(&context(false), None);
     assert!(stale.answers.is_empty());
 }
 
 #[dialog_common::test]
-fn a_space_out_of_reach_shows_neither_disc_nor_role() {
-    let card = no_access(&context(false).place, &context(false).agent, false);
+fn a_space_out_of_reach_offers_to_grant_it_in_tonk() {
+    let card = no_access(&context(false), false);
     assert!(card.role.is_none());
     assert_eq!(card.label.as_deref(), Some("no access to Launch"));
     assert!(!card.say.contains("tonk_"), "{}", card.say);
+    assert_eq!(
+        card.answers[0].does,
+        Does::Open {
+            url: "https://tonk.example/settings".into()
+        }
+    );
     let read = read_only(&Context {
         role: Some(Role::Read),
         ..context(false)
     });
     assert_eq!(read.role, Some(Role::Read));
     assert_eq!(read.label.as_deref(), Some("read only in Launch"));
+    assert_eq!(
+        read.answers[0].does,
+        Does::Open {
+            url: "https://tonk.example/space/did:key:zLaunch".into()
+        }
+    );
+    assert_eq!(read.answers[1].label, "skip");
 }

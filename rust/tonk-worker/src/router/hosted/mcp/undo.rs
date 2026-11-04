@@ -90,6 +90,37 @@ pub fn offer(card: Card, change: Option<&Value>) -> Card {
     }
 }
 
+/// What stands once `reverted` is undone in `space`, as the strip says
+/// it: "undone · Hiking boots is no longer in Family trip". When the one
+/// entity has no name, or nothing is listed, it says the space is as it
+/// was.
+pub fn stands(reverted: &[crate::router::undo::Reverted], space: &str) -> String {
+    let all = |was: &str| reverted.iter().all(|reverted| reverted.was == was);
+    match reverted {
+        [] | [crate::router::undo::Reverted { name: None, .. }] => {
+            format!("undone · {space} is as it was before")
+        }
+        [one] => {
+            let name = one.name.as_deref().unwrap_or_default();
+            match one.was.as_str() {
+                "added" => format!("undone · {name} is no longer in {space}"),
+                "removed" => format!("undone · {name} is back in {space}"),
+                _ => format!("undone · {name} is back as it was"),
+            }
+        }
+        many => {
+            let count = many.len();
+            if all("added") {
+                format!("undone · {count} items are no longer in {space}")
+            } else if all("removed") {
+                format!("undone · {count} items are back in {space}")
+            } else {
+                format!("undone · {count} items are back as they were")
+            }
+        }
+    }
+}
+
 /// The tool's result for a writer's answer `report`, with the card the
 /// host draws in place of the receipt: a strip once the change is undone,
 /// a tell when it is refused. A refusal is an outcome, not a tool error,
@@ -105,7 +136,7 @@ pub fn result(report: &crate::UndoReport, context: &Context) -> Value {
             Card::strip(
                 Some(context.place.clone()),
                 context.role,
-                format!("undone · {space} is as it was before"),
+                stands(&report.reverted, space),
                 context.agent.clone(),
             ),
         ),

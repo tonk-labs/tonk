@@ -116,18 +116,20 @@ async function drawn(frame) {
   });
 }
 
-async function receipt(frame) {
+// The strip's receipt, once it says something other than `past` (the
+// "saving" strip an answer shows first).
+async function receipt(frame, past = 'saving') {
   for (let tries = 0; tries < 50; tries++) {
-    const shown = await frame.evaluate(() => {
+    const shown = await frame.evaluate((past) => {
       const receipt = document.querySelector('.tonk-strip .tonk-receipt');
-      if (!receipt?.textContent) return null;
+      if (!receipt?.textContent || receipt.textContent === past) return null;
       return {
         text: receipt.textContent,
         status: receipt.getAttribute('role'),
         bot: !!receipt.querySelector('.tonk-bot'),
         focused: document.activeElement === receipt,
       };
-    });
+    }, past);
     if (shown) return shown;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -270,7 +272,7 @@ test('an answer shows a saving strip until the space answers', async () => {
   const shown = await showCard({ result: ask, answers: ANSWERS, delay: 1500 });
   try {
     await shown.card().click('button:text-is("change 2 items")');
-    const saving = await receipt(shown.card());
+    const saving = await receipt(shown.card(), null);
     assert.equal(saving.text, 'saving');
     assert.equal(
       await shown.card().evaluate(() => !!document.querySelector('.tonk--ask')),
@@ -331,6 +333,48 @@ test('the ledger keeps two columns on a narrow card', async () => {
   try {
     const card = await drawn(shown.card());
     assert.equal(card.ledgerColumns, 2);
+  } finally {
+    await shown.close();
+  }
+});
+
+test('a tell can open Tonk through the agent app, and stays as it is', async () => {
+  const readOnly = {
+    isError: true,
+    content: [{ type: 'text', text: 'read only' }],
+    structuredContent: {
+      card: {
+        kind: 'tell',
+        space: { did: SPACE, name: 'Family trip' },
+        role: 'read',
+        disc: 'filled',
+        label: 'read only in Family trip',
+        say: 'I can only read Family trip, so I didn’t change it.',
+        ledger: [{ term: 'this agent', value: 'read · sees and searches only' }],
+        answers: [
+          { label: 'open in tonk ↗', kind: 'main', url: `https://tonk.example/space/${SPACE}` },
+          { label: 'skip', kind: 'ring', receipt: 'nothing changed · Family trip stays as it is', context: 'Skipped.' },
+        ],
+        agent: AGENT,
+        person: PERSON,
+      },
+    },
+  };
+  const shown = await showCard({ result: readOnly });
+  try {
+    const card = await drawn(shown.card());
+    assert.equal(card.label, 'Tonk: read only in Family trip');
+    assert.equal(
+      await shown.card().evaluate(() => document.querySelector('.tonk--tell').getAttribute('role')),
+      null,
+      'a tell is not an alert',
+    );
+    await shown.card().click('button:text-is("open in tonk ↗")');
+    await shown.card().waitForTimeout(300);
+    const opened = (await shown.asked()).filter((m) => m.method === 'ui/open-link');
+    assert.deepEqual(opened.map((m) => m.params.url), [`https://tonk.example/space/${SPACE}`]);
+    assert.equal((await drawn(shown.card())).classes.includes('tonk--tell'), true);
+    assert.deepEqual(shown.calls, []);
   } finally {
     await shown.close();
   }

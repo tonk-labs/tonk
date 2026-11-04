@@ -62,7 +62,29 @@ struct Held {
     /// The revision the document was previewed at, as the worker
     /// answered it (`null` for an empty branch).
     revision: Value,
+    /// What the preview showed the person: its matches before and after.
+    seen: Value,
     expires: u64,
+}
+
+/// A held change, taken to be answered.
+#[derive(Debug, PartialEq)]
+pub struct Taken {
+    /// The document.
+    pub document: String,
+    /// The revision it was previewed at.
+    pub revision: Value,
+    /// What its preview showed: [`seen`] of the preview's evaluation.
+    pub seen: Value,
+}
+
+/// What a preview `evaluation` shows the person: its matches before and
+/// after, which an answer compares with a fresh preview.
+pub fn seen(evaluation: &Value) -> Value {
+    json!({
+        "before": evaluation["matches_before"],
+        "after": evaluation["matches_after"],
+    })
 }
 
 /// Why a held change cannot be answered.
@@ -70,9 +92,9 @@ struct Held {
 pub struct Gone;
 
 impl Proposals {
-    /// Hold `document`, previewed at `revision`, until `now + LIFETIME`.
-    /// Answers its id and when it lapses.
-    pub fn hold(&self, document: String, revision: Value, now: u64) -> (String, u64) {
+    /// Hold `document`, previewed at `revision` and showing `seen`, until
+    /// `now + LIFETIME`. Answers its id and when it lapses.
+    pub fn hold(&self, document: String, revision: Value, seen: Value, now: u64) -> (String, u64) {
         let id = B64.encode(rand::random::<[u8; 16]>());
         let expires = now + LIFETIME;
         let mut held = self.held.lock();
@@ -84,6 +106,7 @@ impl Proposals {
             id: id.clone(),
             document,
             revision,
+            seen,
             expires,
         });
         (id, expires)
@@ -96,12 +119,16 @@ impl Proposals {
     ///
     /// [`Gone`] when no change is held as `id`: it was answered, it lapsed,
     /// or another writer holds it.
-    pub fn take(&self, id: &str, now: u64) -> Result<(String, Value), Gone> {
+    pub fn take(&self, id: &str, now: u64) -> Result<Taken, Gone> {
         let mut held = self.held.lock();
         held.retain(|held| held.expires > now);
         let at = held.iter().position(|held| held.id == id).ok_or(Gone)?;
         let held = held.remove(at);
-        Ok((held.document, held.revision))
+        Ok(Taken {
+            document: held.document,
+            revision: held.revision,
+            seen: held.seen,
+        })
     }
 }
 
@@ -156,6 +183,24 @@ pub struct Context {
     pub agent: Agent,
     /// Whether the space is the agent's own.
     pub home: bool,
+    /// The provider's origin, where Tonk opens in the person's browser.
+    pub origin: String,
+}
+
+impl Context {
+    /// The space in Tonk.
+    fn in_tonk(&self) -> String {
+        format!(
+            "{}/space/{}",
+            self.origin.trim_end_matches('/'),
+            self.place.did
+        )
+    }
+
+    /// Where the person manages their agents' access in Tonk.
+    fn agents_in_tonk(&self) -> String {
+        format!("{}/settings", self.origin.trim_end_matches('/'))
+    }
 }
 
 /// One line of what a dry run or a write changes.
@@ -165,9 +210,11 @@ pub struct Changed {
     pub mark: &'static str,
     /// The entity's name for a person.
     pub name: String,
-    /// What kind of thing it is, where that is a part of the space's
-    /// schema (`view`, `concept`, ...) or a command; `None` for a record.
+    /// What kind of thing it is: a part of the space's schema (`view`,
+    /// `concept`, ...), a `command`, or an `item` for a record.
     pub kind: Option<String>,
+    /// The entity's URI.
+    pub this: String,
     /// The label of the expression it came from.
     pub of: String,
     /// Whether it is a command the document runs, not a durable fact.
@@ -220,11 +267,12 @@ pub fn changed(evaluation: &Value) -> Vec<Changed> {
             changed.push(Changed {
                 mark: if existed { "~" } else { "+" },
                 name: name_of(result, &label),
-                kind: if command {
-                    Some("command".to_owned())
+                kind: Some(if command {
+                    "command".to_owned()
                 } else {
-                    part.clone()
-                },
+                    part.clone().unwrap_or_else(|| "item".to_owned())
+                }),
+                this: this(result),
                 of: label.clone(),
                 command,
             });
@@ -234,7 +282,8 @@ pub fn changed(evaluation: &Value) -> Vec<Changed> {
                 changed.push(Changed {
                     mark: "−",
                     name: name_of(result, &label),
-                    kind: part.clone(),
+                    kind: Some(part.clone().unwrap_or_else(|| "item".to_owned())),
+                    this: this(result),
                     of: label.clone(),
                     command: false,
                 });
@@ -385,7 +434,7 @@ pub fn ask(context: &Context, id: &str, evaluation: &Value) -> Card {
     } else {
         card.entry("who sees it", format!("everyone in {space}"))
     };
-    card.entry("undo", "from the receipt")
+    card.entry("undo", "from the receipt, or from Activity in Tonk")
         .answer(act, Look::Main, APPLY, arguments.clone())
         .answer(decline, Look::Ring, DISMISS, arguments)
 }
@@ -408,6 +457,16 @@ pub fn receipt(context: &Context, evaluation: &Value, moved: bool) -> Card {
         None if moved => strip(format!("changed {space}")).by_agent(),
         None => strip(format!("nothing changed in {space}")),
     }
+}
+
+/// The strip for a change that would change nothing, so is not asked.
+pub fn nothing(context: &Context) -> Card {
+    Card::strip(
+        Some(context.place.clone()),
+        context.role,
+        format!("nothing changed in {}", context.place.label()),
+        context.agent.clone(),
+    )
 }
 
 /// The receipt for a change the person declined.
@@ -469,23 +528,25 @@ pub fn rejected(context: &Context, proposing: bool) -> Card {
 
 /// A tell that the space moved after the preview the person answered.
 /// `again` is the same change held afresh at the space's new head, with
-/// its preview, when it could be: keep theirs drops it, use mine applies
-/// it.
+/// its preview, when it could be: its matches before are what the space
+/// holds now (theirs), its matches after what the change would leave
+/// (yours). Keep theirs drops it, use mine applies it. Who made the other
+/// change is not known, so the sentence says "Someone".
 pub fn moved(context: &Context, again: Option<(&str, &Value)>) -> Card {
     let changes = again
         .map(|(_, evaluation)| changed(evaluation))
         .unwrap_or_default();
-    let item = match changes.as_slice() {
-        [one] => Some(one.name.clone()),
+    let one = match changes.as_slice() {
+        [one] => Some(one),
         _ => None,
     };
     let mut place = context.place.clone();
-    place.item = item.clone();
+    place.item = one.map(|one| one.name.clone());
     let label = format!(
         "{} changed",
-        item.as_deref().unwrap_or(context.place.label())
+        one.map_or(context.place.label(), |one| one.name.as_str())
     );
-    let Some((id, _)) = again else {
+    let Some((id, evaluation)) = again else {
         return Card::tell(
             Some(place),
             context.role,
@@ -502,11 +563,62 @@ pub fn moved(context: &Context, again: Option<(&str, &Value)>) -> Card {
         "Someone changed this after I read it. Nothing is overwritten yet.",
         context.agent.clone(),
     );
-    if let Some(summary) = Summary::of(&changes) {
-        card = card.entry("yours", summary.act());
+    match one {
+        Some(one) => {
+            let theirs = fields(evaluation, "matches_before", &one.this);
+            let yours = fields(evaluation, "matches_after", &one.this);
+            let (theirs, yours) = differing(theirs.as_ref(), yours.as_ref());
+            card = card.entry("theirs", theirs.unwrap_or_else(|| "not there".to_owned()));
+            card = card.entry("yours", yours.unwrap_or_else(|| "removed".to_owned()));
+        }
+        None => {
+            if let Some(summary) = Summary::of(&changes) {
+                card = card.entry("yours", summary.act());
+            }
+        }
     }
     card.answer("keep theirs", Look::Main, DISMISS, arguments.clone())
         .answer("use mine", Look::Ring, APPLY, arguments)
+}
+
+/// The fields `evaluation`'s `key` matches hold for the entity `this`.
+fn fields(evaluation: &Value, key: &str, this: &str) -> Option<serde_json::Map<String, Value>> {
+    evaluation[key]
+        .as_array()?
+        .iter()
+        .filter_map(|block| block["results"].as_array())
+        .flatten()
+        .find(|result| result["this"].as_str() == Some(this))
+        .and_then(|result| result["fields"].as_object().cloned())
+}
+
+/// The fields that differ between `theirs` and `yours`, each side's
+/// values in words: "4 nights · needs parking". All of a side's fields
+/// where the other has none.
+fn differing(
+    theirs: Option<&serde_json::Map<String, Value>>,
+    yours: Option<&serde_json::Map<String, Value>>,
+) -> (Option<String>, Option<String>) {
+    let words = |value: &Value| match value {
+        Value::String(text) => text.clone(),
+        Value::Null => "none".to_owned(),
+        other => other.to_string(),
+    };
+    let side = |this: Option<&serde_json::Map<String, Value>>,
+                other: Option<&serde_json::Map<String, Value>>| {
+        let this = this?;
+        let shown: Vec<String> = this
+            .iter()
+            .filter(|(field, value)| other.is_none_or(|other| other.get(*field) != Some(*value)))
+            .map(|(_, value)| words(value))
+            .collect();
+        Some(if shown.is_empty() {
+            this.values().map(words).collect::<Vec<_>>().join(" · ")
+        } else {
+            shown.join(" · ")
+        })
+    };
+    (side(theirs, yours), side(yours, theirs))
 }
 
 /// A tell that a held change can no longer be answered.
@@ -520,16 +632,18 @@ pub fn gone(context: &Context) -> Card {
     )
 }
 
-/// A tell that this connection may not reach `place`: neither disc nor
+/// A tell that this connection may not reach the space: neither disc nor
 /// role, since the agent is not in it. `lapsed` when its access ran out.
-pub fn no_access(place: &Place, agent: &Agent, lapsed: bool) -> Card {
-    let space = place.label();
-    let (label, say) = if lapsed {
+/// The alternative is to grant it in Tonk.
+pub fn no_access(context: &Context, lapsed: bool) -> Card {
+    let space = context.place.label();
+    let (label, say, act) = if lapsed {
         (
             format!("access ended in {space}"),
             format!(
                 "My access to {space} has ended. You can grant it again from your agents in Tonk."
             ),
+            "grant it again ↗",
         )
     } else {
         (
@@ -537,23 +651,39 @@ pub fn no_access(place: &Place, agent: &Agent, lapsed: bool) -> Card {
             format!(
                 "I can’t open {space}: this agent has no access to it. You can grant it from your agents in Tonk."
             ),
+            "grant it in tonk ↗",
         )
     };
-    Card::tell(Some(place.clone()), None, label, say, agent.clone())
+    Card::tell(
+        Some(context.place.clone()),
+        None,
+        label,
+        say,
+        context.agent.clone(),
+    )
+    .answer_opening(act, Look::Ring, context.agents_in_tonk())
 }
 
 /// A tell that the connection may only read the space it was asked to
-/// change.
+/// change. The alternatives: make the change in Tonk, or skip it.
 pub fn read_only(context: &Context) -> Card {
     let space = context.place.label();
     Card::tell(
         Some(context.place.clone()),
         context.role,
         format!("read only in {space}"),
-        format!(
-            "I can only read {space}, so I didn’t change it. You can let me write from your agents in Tonk."
-        ),
+        format!("I can only read {space}, so I didn’t change it. You can make the change in Tonk, or let me write from your agents."),
         context.agent.clone(),
+    )
+    .entry("this agent", "read · sees and searches only")
+    .entry("to let it write", "your agents in Tonk")
+    .answer_opening("open in tonk ↗", Look::Main, context.in_tonk())
+    .answer_saying(
+        "skip",
+        Look::Ring,
+        format!("nothing changed · {space} stays as it is"),
+        "The person skipped the change: this connection may only read the space. Do not try \
+         to write it again unless they grant write access.",
     )
 }
 
