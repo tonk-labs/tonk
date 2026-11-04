@@ -201,7 +201,7 @@ impl dialog_capability::Provider<tonk_schema::command::ResendActivation>
     for crate::router::CommandEnv
 {
     async fn execute(&self, _command: tonk_schema::command::ResendActivation) {
-        let state = self.state().read().await;
+        let state = self.state().read().await.clone();
         let account = match super::identity::root_did(&state).await {
             Ok(account) => account,
             Err(error) => {
@@ -244,7 +244,8 @@ pub async fn get_state(
     State(state): State<AppState>,
     Extension(origin): Extension<RequestOrigin>,
 ) -> Result<Json<CustomerState>, TonkWorkerError> {
-    let state = state.read().await;
+    // A clone, not a guard: the probe is a round trip to the service.
+    let state = state.read().await.clone();
     let root = super::identity::root_did(&state).await?;
     let record = load_customer(&state).await?;
     let endpoint = origin
@@ -341,7 +342,7 @@ pub async fn provision_custody(
     State(state): State<AppState>,
     Json(request): Json<ProvisionCustodyRequest>,
 ) -> Result<Json<()>, TonkWorkerError> {
-    let state = state.read().await;
+    let state = state.read().await.clone();
     let custody: dialog_varsig::Did = request
         .custody
         .parse()
@@ -399,7 +400,7 @@ pub async fn queue_custody(
     State(state): State<AppState>,
     Json(request): Json<QueueCustodyRequest>,
 ) -> Result<Json<()>, TonkWorkerError> {
-    let state = state.read().await;
+    let state = state.read().await.clone();
     if let Some(consent_hex) = &request.consent_hex {
         // Reject malformed recovery material before it can poison the durable
         // queue. The access service still verifies its authority on replay.

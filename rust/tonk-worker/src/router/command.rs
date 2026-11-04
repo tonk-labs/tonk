@@ -651,7 +651,7 @@ pub(crate) mod tests {
             // Install the registry on the state so `dispatch` sees it.
             {
                 let mut tonk = state.write().await;
-                tonk.commands = CommandProviders::new(
+                tonk.shared_mut().commands = CommandProviders::new(
                     CommandRegistry::new().command::<Ping>(),
                     CommandRegistry::new(),
                 );
@@ -681,7 +681,7 @@ pub(crate) mod tests {
             let (state, _env) = env().await;
             {
                 let mut tonk = state.write().await;
-                tonk.commands = CommandProviders::new(
+                tonk.shared_mut().commands = CommandProviders::new(
                     CommandRegistry::new().command::<Ping>(),
                     CommandRegistry::new(),
                 );
@@ -730,30 +730,32 @@ pub(crate) mod tests {
                 .unwrap();
             let session = crate::session::open(&profile).await.unwrap();
             let reactor = crate::Reactor::new(profile.credential().clone());
-            let state = TonkState {
-                profile,
-                operator: session.operator,
-                storage,
-                session_expires_at: session.expires_at,
-                profile_name: name.clone(),
-                active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
-                reactor,
-                admission: Default::default(),
-                reject_admission_content_reads: Default::default(),
-                retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                view_bindings: Default::default(),
-                bridges: Default::default(),
-                sync_queue: Default::default(),
-                commands: crate::router::command_providers(),
-                clients: Default::default(),
-                seed_upgrades: Default::default(),
-                account_keys: Default::default(),
-                profile_library: Default::default(),
-                registry: crate::device::Registry::new(name.clone(), directory),
-                profile_transition: Default::default(),
-                context_generation: Default::default(),
-                profile_swaps: Default::default(),
-            };
+            let state = TonkState::from_parts(
+                session.operator,
+                session.expires_at,
+                crate::router::repository::PROFILE_BRANCH.to_owned(),
+                crate::worker::TonkShared {
+                    profile,
+                    storage,
+                    profile_name: name.clone(),
+                    reactor,
+                    admission: Default::default(),
+                    reject_admission_content_reads: Default::default(),
+                    retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    view_bindings: Default::default(),
+                    bridges: Default::default(),
+                    sync_queue: Default::default(),
+                    commands: crate::router::command_providers(),
+                    clients: Default::default(),
+                    seed_upgrades: Default::default(),
+                    account_keys: Default::default(),
+                    profile_library: Default::default(),
+                    registry: crate::device::Registry::new(name.clone(), directory),
+                    profile_transition: Default::default(),
+                    context_generation: Default::default(),
+                    profile_swaps: Default::default(),
+                },
+            );
             crate::router::repository::bootstrap_profile(&state)
                 .await
                 .unwrap();

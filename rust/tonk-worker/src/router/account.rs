@@ -290,7 +290,7 @@ pub async fn set_display_name(
     State(state): State<AppState>,
     Json(request): Json<AccountDisplayNameRequest>,
 ) -> Result<Json<AccountDisplayNameResponse>, TonkWorkerError> {
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     match super::account_state::rename_display_name(&tonk, &request.name).await? {
         Some(response) => Ok(Json(response)),
         None => Ok(Json(AccountDisplayNameResponse {
@@ -399,7 +399,7 @@ pub async fn link(
     Json(request): Json<AccountLinkRequest>,
 ) -> Result<Json<AccountStatus>, TonkWorkerError> {
     let app = state.clone();
-    let state = state.read().await;
+    let state = state.read().await.clone();
     persist_link(&state, &request).await?;
     if request.initialize_name
         && let Err(error) = super::account_state::initialize_display_name(&state).await

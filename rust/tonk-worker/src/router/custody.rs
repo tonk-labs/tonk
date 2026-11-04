@@ -102,7 +102,7 @@ pub(crate) async fn receive(
             .ok()
             .and_then(|value| value.as_string())
             .as_deref(),
-        Some("authorize-device" | "authorize-agent")
+        Some("authorize-device" | "authorize-agent" | "revoke-agent")
     );
     let progress_requested = js_sys::Reflect::get(&data, &"progress".into())
         .ok()
@@ -197,7 +197,8 @@ async fn complete_authorization<T>(
     let intent = serde_wasm_bindgen::from_value::<tonk_worker_api::CustodyIntent>(request.clone());
     if let Ok(
         intent @ (tonk_worker_api::CustodyIntent::AuthorizeDevice(_)
-        | tonk_worker_api::CustodyIntent::AuthorizeAgent(_)),
+        | tonk_worker_api::CustodyIntent::AuthorizeAgent(_)
+        | tonk_worker_api::CustodyIntent::RevokeAgent(_)),
     ) = intent
     {
         let report = async {
@@ -207,6 +208,22 @@ async fn complete_authorization<T>(
                     super::ceremony::report_authorization(
                         &tonk,
                         authorization,
+                        tonk_schema::ceremony_state::FAILED,
+                        error,
+                    )
+                    .await
+                }
+                tonk_worker_api::CustodyIntent::RevokeAgent(request) => {
+                    super::agents::withdraw::note(
+                        &request.agent,
+                        &request.space,
+                        Some(super::agents::withdraw::Removal::Failed {
+                            reason: "The removal took too long to finish. The access stays listed; try again.".into(),
+                        }),
+                    );
+                    super::ceremony::report(
+                        &tonk,
+                        tonk_schema::ceremony::REVOKE_AGENT,
                         tonk_schema::ceremony_state::FAILED,
                         error,
                     )
@@ -474,6 +491,9 @@ async fn perform(
         tonk_worker_api::CustodyIntent::AuthorizeAgent(authorization) => {
             let target = super::agent_session::authorize(&state, &custodian, authorization).await?;
             navigate_reply(&target)
+        }
+        tonk_worker_api::CustodyIntent::RevokeAgent(request) => {
+            super::agents::withdraw::authorize(&state, &custodian, request).await
         }
     }
 }
