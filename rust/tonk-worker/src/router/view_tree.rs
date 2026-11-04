@@ -76,8 +76,96 @@ pub(crate) async fn outline(
         .map_err(|error| error.to_string())?;
     if outline.model == HOME_MODEL {
         outline.route = String::new();
+        return Ok(json!({ "space": space.to_string(), "outline": outline }));
     }
-    Ok(json!({ "space": space.to_string(), "outline": outline }))
+    let mut answer = json!({ "space": space.to_string(), "outline": outline });
+    if let Some(title) = title(&backend, route).await {
+        answer["outline"]["title"] = json!(title);
+    }
+    Ok(answer)
+}
+
+/// Longest title a view is named by, in characters.
+const TITLE_LIMIT: usize = 120;
+
+/// What a view calls itself, as text: its model's `title` facet, else, for
+/// one entity, its `label` facet. A directory renders a facet once per
+/// instance, so it has no title of its own. `None` when the model has
+/// neither facet, or it renders empty.
+async fn title(backend: &Space, route: &RenderRoute) -> Option<String> {
+    let entity = route.entity.as_ref()?;
+    for facet in ["title", "label"] {
+        let faceted = RenderRoute {
+            model: route.model.clone(),
+            entity: Some(entity.clone()),
+            view: Some(facet.into()),
+        };
+        let Ok(html) = tonk_render::render_page(backend, &faceted).await else {
+            continue;
+        };
+        if let Some(text) = text_of(&html) {
+            return Some(text);
+        }
+    }
+    None
+}
+
+/// The text a facet's markup says: a `<tab-title text="…">` (the browser
+/// tab's title, without its " — Tonk" suffix), else the markup's text.
+fn text_of(html: &str) -> Option<String> {
+    let text = match html.split_once("<tab-title text=\"") {
+        Some((_, rest)) => rest
+            .split_once('"')
+            .map_or(rest, |(text, _)| text)
+            .to_owned(),
+        None => {
+            let mut text = String::new();
+            let mut tag = false;
+            for c in html.chars() {
+                match c {
+                    '<' => tag = true,
+                    '>' => {
+                        tag = false;
+                        text.push(' ');
+                    }
+                    c if !tag => text.push(c),
+                    _ => {}
+                }
+            }
+            text
+        }
+    };
+    let text = text
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text = text.strip_suffix(" — Tonk").unwrap_or(&text).trim();
+    (!text.is_empty()).then(|| text.chars().take(TITLE_LIMIT).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::text_of;
+
+    #[dialog_common::test]
+    fn it_reads_a_tab_title_without_its_suffix() {
+        assert_eq!(
+            text_of(r#"<tab-title text="Packing list — Tonk"></tab-title>"#).as_deref(),
+            Some("Packing list")
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_reads_a_label_as_its_text() {
+        assert_eq!(
+            text_of("<span class=\"x\">Packing\n  list &amp; more</span>").as_deref(),
+            Some("Packing list & more")
+        );
+        assert_eq!(text_of("<span>  </span>"), None);
+    }
 }
 
 /// Whether `route` names the space home, which each peer mounts on its own

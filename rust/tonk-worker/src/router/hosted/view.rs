@@ -421,9 +421,14 @@ pub async fn call<W: Writers>(
             .ok(),
             _ => None,
         };
+        // The view's own title, else its concept's name.
         let view_name = shown
             .as_ref()
-            .and_then(|outline| outline["outline"]["name"].as_str())
+            .and_then(|outline| {
+                outline["outline"]["title"]
+                    .as_str()
+                    .or_else(|| outline["outline"]["name"].as_str())
+            })
             .map(str::to_owned);
         return Some(json!({
             "content": [{ "type": "text", "text": text }],
