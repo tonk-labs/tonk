@@ -27,6 +27,7 @@ import {
   createSpace,
   syncedSpaces,
   approve,
+  revoke,
 } from './lib/browser.mjs';
 import { showView } from './lib/view-host.mjs';
 
@@ -63,6 +64,17 @@ const NOTES = 'e2e-note:\n  label: ?label\n';
 // How long a write the agent makes may take to reach an open view: the
 // provider's `live.rs` tells the view's peer, which pulls.
 const LIVE = 30_000;
+// How long after the person revokes a grant the agent may still be
+// answered. A grant this profile issued is revoked at the access service,
+// which the writer's next pull meets. A grant from a share link is revoked
+// by the agent's own key after the passkey, and timed from when the access
+// service acknowledged it. Both are today's measures with room to spare,
+// to tighten once the numbers are known. `revoking_refuses_reads_and_writes` in
+// rust/tonk-worker/src/router/hosted/mcp/tests.rs runs the same scenario
+// against a local access service with the same budgets: keep the two in
+// step.
+const REVOKE_BUDGET = 30_000;
+const LINK_REVOKE_BUDGET = 60_000;
 
 test('the hosted agent connects, is approved, and reads and writes spaces', async (t) => {
   const mail = inbox({ run, base: process.env.TONK_E2E_CAPTURED_EMAILS || origin });
@@ -176,6 +188,25 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       assert.notEqual(result.isError, true, `${name}: ${JSON.stringify(result.content)}`);
       return result;
     };
+    // Call `name` until the agent is refused, from `since` for at most
+    // `budget` ms: how long the refusal took, and what it said. `args` is
+    // called for each attempt.
+    const untilRefused = async (client, name, args, { since, budget }) => {
+      for (;;) {
+        const result = await client.callTool({ name, arguments: args() });
+        const ms = Date.now() - since;
+        const text = JSON.stringify(result.content);
+        // Past the budget fails whether this call was refused or not: a
+        // refusal that arrives late is a late revocation.
+        if (ms > budget)
+          assert.fail(
+            `${name} was ${result.isError ? 'refused only' : 'still answered'} ${ms} ms ` +
+              `after the revocation (budget ${budget} ms): ${text.slice(0, 400)}`,
+          );
+        if (result.isError) return { ms, text };
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    };
 
     // The agent sees exactly the spaces it was granted, and each allows
     // what it was granted.
@@ -245,6 +276,61 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       assert.deepEqual(lost, [], `${lost.length} of ${labels.length} writes were lost`);
     });
 
+    // The raw response, which the SDK client does not show: the call's
+    // trace id, and the time of each step from the front to the space
+    // writer.
+    await step('a tool call answers its trace and the time of each step', async () => {
+      const post = (body, session) =>
+        fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            authorization: `Bearer ${token}`,
+            ...(session && { 'mcp-session-id': session }),
+          },
+          body: JSON.stringify(body),
+        });
+      const initialized = await post({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'tonk-e2e', version: '0' },
+        },
+      });
+      assert.equal(initialized.status, 200, await initialized.clone().text());
+      const session = initialized.headers.get('mcp-session-id');
+      assert.ok(session, 'initialize answered no session id');
+      const response = await post(
+        {
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: { name: 'tonk_query', arguments: { space: spaces.writable, document: NOTES } },
+        },
+        session,
+      );
+      assert.equal(response.status, 200);
+      const trace = response.headers.get('x-tonk-trace') ?? '';
+      const timing = response.headers.get('server-timing') ?? '';
+      console.log(`trace ${trace}: ${timing}`);
+      assert.match(trace, /^[0-9a-f]{16}$/, 'the call answered no trace id');
+      // A failed call answers only the steps it reached, so say why first.
+      const { result } = await response.json();
+      assert.equal(
+        result?.isError,
+        false,
+        `trace ${trace} failed: ${JSON.stringify(result?.content).slice(0, 600)}`,
+      );
+      const steps = timing.split(',').map((entry) => entry.trim().split(';')[0]);
+      for (const name of ['access', 'writer', 'writer.pull', 'writer.eval', 'total']) {
+        assert.ok(steps.includes(name), `${name} missing from ${timing}`);
+      }
+    });
+
     // A link the person shares in the chat, joined as the card joins it:
     // `tonk_join_space` only reads the link, and `tonk_join_accept` (the
     // card's app-only tool) joins with the access the person chose. The
@@ -304,6 +390,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       // Revoked from "your agents" in the person's browser, which pulls
       // the agent space to see the link's grants, then answers the
       // passkey with the virtual one.
+      const asked = Date.now();
       const removal = await person.page.evaluate(
         async ({ space, deadline }) => {
           const agents = async () => (await fetch('/api/agents')).json();
@@ -337,22 +424,21 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       );
       assert.equal(removal.pending, true, 'a link grant asks for the passkey');
       assert.deepEqual(removal, { pending: true, removed: true }, JSON.stringify(removal));
-      // Not necessarily on the next call: an open session reuses the
-      // access service's read permits for a few minutes (dialog's permit
-      // cache), and the hosted agent drops the space from its own list
-      // once the retraction syncs. Refusal of cached grants by the access
-      // service itself is checked natively in
+      // The removal includes the wait for the grant to list and for the
+      // passkey, so the refusal is timed from the service's acknowledgement.
+      const since = Date.now();
+      console.log(`revoke a grant from a share link: acknowledged after ${since - asked} ms`);
+      // Not necessarily on the next call: the hosted agent drops the space
+      // from its own list once the retraction syncs. Refusal of cached
+      // grants by the access service itself is checked natively in
       // `the_account_withdraws_a_link_grant_as_its_agent`.
-      let denied;
-      const deadline = Date.now() + 60_000;
-      do {
-        denied = await client.callTool({
-          name: 'tonk_query',
-          arguments: { space: subject, document: 'concept:\n' },
-        });
-        if (!denied.isError) await new Promise((resolve) => setTimeout(resolve, 3000));
-      } while (!denied.isError && Date.now() < deadline);
-      assert.equal(denied.isError, true, `${name} still read after the revocation`);
+      const { ms, text } = await untilRefused(
+        client,
+        'tonk_query',
+        () => ({ space: subject, document: 'concept:\n' }),
+        { since, budget: LINK_REVOKE_BUDGET },
+      );
+      console.log(`revoke a grant from a share link: tonk_query refused after ${ms} ms: ${text.slice(0, 300)}`);
     });
 
     // A view, as a host shows `tonk_open_space`: first as a host that
@@ -491,6 +577,35 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
         );
       },
     );
+
+    // The person takes access away from their agents list, and the agent's
+    // next calls on that space are refused within the budget. Each is
+    // timed from the moment the person asked. A grant from a share link is
+    // revoked and timed in the join step above.
+    for (const [kind, space, budget] of [['an approved grant', () => spaces.writable, REVOKE_BUDGET]]) {
+      await step(`revoking ${kind} refuses the agent within ${budget} ms`, async () => {
+        const subject = space();
+        const client = await connect();
+        const read = { space: subject, document: 'concept:\n' };
+        // Answered before, so a refusal after is the revocation's.
+        await call(client, 'tonk_query', read);
+        await boot(person.page, origin);
+        const since = Date.now();
+        await revoke(person.page, { agent, space: subject });
+        console.log(`revoke ${kind}: answered in ${Date.now() - since} ms`);
+        // A read, then a write that needs a fresh upload: both must be
+        // refused, each timed from the moment the person asked.
+        let probe = 0;
+        for (const [name, args] of [
+          ['tonk_query', () => read],
+          ['tonk_evaluate', () => ({ space: subject, document: note(`${run} probe ${probe++}`) })],
+        ]) {
+          const { ms, text } = await untilRefused(client, name, args, { since, budget });
+          console.log(`revoke ${kind}: ${name} refused after ${ms} ms: ${text.slice(0, 300)}`);
+          assert.match(text, /revoked|no access/i, `refused for another reason: ${text}`);
+        }
+      });
+    }
   } finally {
     await Promise.allSettled(sessions.map((client) => client.close()));
     await person.close({ keepTrace: failed });
