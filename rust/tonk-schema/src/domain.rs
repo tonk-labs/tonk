@@ -551,6 +551,24 @@ pub mod route_http {
     pub struct Body(pub String);
 }
 
+/// Attributes for the `tonk:route/asset` table: a path pattern and the asset
+/// a request for it is answered with.
+pub mod route_asset {
+    use super::{Attribute, Entity};
+
+    /// The path pattern, in the same syntax a `route` uses.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.route.asset")]
+    #[pick(last)]
+    pub struct Path(pub String);
+
+    /// The asset whose bytes answer the request, a blob of the space.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.route.asset")]
+    #[pick(last)]
+    pub struct Asset(pub Entity);
+}
+
 /// Attributes describing a seed update this device has looked for —
 /// overlay-only, so they die with the worker rather than replicating a
 /// device-local observation.

@@ -83,6 +83,32 @@ pub async fn serve(
     let entity: Entity = params.entity.parse().map_err(|e| {
         TonkWorkerError::Router(format!("Invalid blob entity '{}': {}", params.entity, e))
     })?;
+    answer(
+        &state,
+        &params.repo,
+        &params.branch,
+        entity,
+        method,
+        headers,
+    )
+    .await
+}
+
+/// Answer `entity`, a blob of `branch` of the space `repo`, as [`serve`]
+/// does: whole, or the range `headers` ask for, under its media type.
+pub(super) async fn answer(
+    state: &AppState,
+    repo: &str,
+    branch: &str,
+    entity: Entity,
+    method: Method,
+    headers: HeaderMap,
+) -> Result<Response, TonkWorkerError> {
+    let params = BlobPath {
+        repo: repo.to_owned(),
+        branch: branch.to_owned(),
+        entity: entity.to_string(),
+    };
     if entity.blob_hash().is_none() {
         return Err(TonkWorkerError::Router(format!(
             "Not a blob reference: {}",
@@ -90,7 +116,7 @@ pub async fn serve(
         )));
     }
 
-    hydrate_media(&state, &params.repo, &params.branch, &entity).await?;
+    hydrate_media(state, &params.repo, &params.branch, &entity).await?;
 
     let tonk = state.read().await;
     let repo = tonk
@@ -222,9 +248,9 @@ pub struct BlobUploadResponse {
 }
 
 /// The asset media type attribute every writer records (`tonk:asset`).
-const MEDIA_TYPE: &str = "tonk.dialog.asset/media-type";
+pub(super) const MEDIA_TYPE: &str = "tonk.dialog.asset/media-type";
 /// The asset name attribute every writer records (`tonk:asset`).
-const NAME: &str = "tonk.dialog.asset/name";
+pub(super) const NAME: &str = "tonk.dialog.asset/name";
 /// The media type blobs were described with before `tonk:asset`, which
 /// older blobs and templates writing `tonk:blob` themselves still carry.
 const LEGACY_CONTENT_TYPE: &str = "xyz.tonk.blob/content-type";

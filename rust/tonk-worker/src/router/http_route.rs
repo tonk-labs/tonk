@@ -1,24 +1,27 @@
 //! `GET /api/repository/{repo}/branch/{branch}/http/{*path}`: what the
 //! branch's routes answer a request for `path` with.
 //!
-//! A `route/http!` declares a path pattern, headers and a body. A site's
-//! worker hands this route every request its own handlers do not claim,
-//! and answers with what comes back: the body, under the declared headers,
-//! when the most specific route for the path is one of those, and 404 when
-//! the path matches a route a page shows or no route at all.
+//! A `route/http!` declares a path pattern, headers and a body, and a
+//! `route/asset!` a path pattern and an asset of the space. A site's worker
+//! hands this route every request its own handlers do not claim, and answers
+//! with what comes back: the body, under the declared headers, or the
+//! asset's bytes, under its media type, when the most specific route for the
+//! path is one of those, and 404 when the path matches a route a page shows
+//! or no route at all.
 //!
 //! The headers are the route's `header` dictionary, read by the same
 //! query a page would run. A route that declares no `content-type` is
 //! served as plain text, never sniffed.
 
 use ::axum::extract::{Path, State};
-use ::axum::http::{HeaderName, HeaderValue, StatusCode, header};
+use ::axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use ::axum::response::{IntoResponse, Response};
 use ipld_core::ipld::Ipld;
 use serde::Deserialize;
 use serde_json::json;
 use tonk_macros::handler;
 
+use super::blob;
 use super::session::{Matched, match_route};
 use crate::reactor::Query;
 use crate::{TonkWorkerError, router::AppState};
@@ -30,7 +33,8 @@ pub struct HttpRoutePath {
     pub repo: String,
     /// The branch name.
     pub branch: String,
-    /// The requested path, without its leading slash.
+    /// The requested path, without its leading slash: empty for `/`.
+    #[serde(default)]
     pub path: String,
 }
 
@@ -62,6 +66,8 @@ fn header_query(route: &str) -> Result<Query, TonkWorkerError> {
 pub async fn respond(
     State(state): State<AppState>,
     Path(path): Path<HttpRoutePath>,
+    method: Method,
+    headers: HeaderMap,
 ) -> Result<Response, TonkWorkerError> {
     let profile = super::names_profile(&state, &path.repo).await;
     let tonk = state.read().await;
@@ -74,8 +80,21 @@ pub async fn respond(
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
     let rest = format!("/{}", path.path);
-    let Some(Matched::Http(matched)) = match_route(&tonk, &session, &rest).await else {
-        return Ok(StatusCode::NOT_FOUND.into_response());
+    let matched = match match_route(&tonk, &session, &rest).await {
+        Some(Matched::Http(matched)) => matched,
+        Some(Matched::Asset(matched)) => {
+            drop(tonk);
+            return blob::answer(
+                &state,
+                &path.repo,
+                &path.branch,
+                matched.asset,
+                method,
+                headers,
+            )
+            .await;
+        }
+        Some(Matched::View(_)) | None => return Ok(StatusCode::NOT_FOUND.into_response()),
     };
 
     let query = header_query(&matched.route.to_string())?

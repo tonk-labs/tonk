@@ -2,7 +2,9 @@
 //! says it is; the space's assets, which a page of the space stores with
 //! `PUT /` and reads at `/asset:{hash}`, whole or in part; at any other
 //! address, the content the space's routes keep there; and a page load of an
-//! address they keep none at, with the site's page. A persona also
+//! address a page of the space shows, with what the space keeps at `/`, the
+//! page its renderer renders the address with. A persona answers a page load
+//! of the profile with the profile's page. A persona also
 //! answers its host, at `/_kernel/seed/{space}`, what a space it created is to
 //! be created from, and takes `POST /_kernel/seed/{space}/settled` once the
 //! space's own kernel did. A space's kernel answers `/_kernel/snapshot` with
@@ -38,8 +40,8 @@ pub enum Routed {
     /// its own: a site renders framed by the app.
     Away(String),
     /// A page load, to the worker: its answer if it has what is asked for,
-    /// otherwise the site's page where `viewed`, or a page saying what it
-    /// answered.
+    /// otherwise, where `viewed`, what the space keeps at `/`, or a page
+    /// saying what it answered.
     Visit {
         request: Request<Body>,
         viewed: bool,
@@ -99,7 +101,7 @@ pub fn route(request: Request<Body>, site: &Site) -> Routed {
     let Some(space) = &site.space else {
         // The profile keeps no content: every page load is its page.
         if visits {
-            return Routed::Answer(page());
+            return Routed::Answer(profile_page());
         }
         #[cfg(feature = "persona")]
         if let Some(rest) = path.strip_prefix("/_kernel/space/")
@@ -201,23 +203,48 @@ fn accepts_page(request: &Request<Body>) -> bool {
         .is_some_and(|accept| accept.contains("text/html"))
 }
 
-/// The site's page, which renders its view.
+/// The profile's page, which renders its view. A space keeps its own, with
+/// the renderer it was created with.
+#[cfg(feature = "persona")]
 pub fn page() -> Response<Body> {
     html(StatusCode::OK, PAGE.to_owned())
 }
 
+#[cfg(feature = "persona")]
 const PAGE: &str = include_str!("../assets/page.html");
 
+/// What a page load of the profile is answered with: its page, which only a
+/// persona serves.
+fn profile_page() -> Response<Body> {
+    #[cfg(feature = "persona")]
+    return page();
+    #[cfg(not(feature = "persona"))]
+    {
+        let mut nothing = Response::new(Body::empty());
+        *nothing.status_mut() = StatusCode::NOT_FOUND;
+        visited(nothing)
+    }
+}
+
+/// The request for what `site` keeps at `/`, which a page load is answered
+/// with where `viewed` and the worker's `reply` keeps nothing at the address
+/// itself: the address is one a page of the space shows.
+pub fn shown(reply: &Response<Body>, viewed: bool, site: &Site) -> Option<Request<Body>> {
+    if !viewed || reply.status() != StatusCode::NOT_FOUND {
+        return None;
+    }
+    let space = site.space.as_ref()?;
+    Request::get(format!("/api/repository/{space}/branch/main/http/"))
+        .body(Body::empty())
+        .ok()
+}
+
 /// What a page load is answered with, from the worker's `reply`: the reply,
-/// if it has what was asked for; the site's page, where `viewed` and the
-/// worker keeps nothing there; or else a page that says what it answered.
-pub fn visited(reply: Response<Body>, viewed: bool) -> Response<Body> {
+/// if it has what was asked for, or else a page that says what it answered.
+pub fn visited(reply: Response<Body>) -> Response<Body> {
     let status = reply.status();
     if status.is_success() {
         return reply;
-    }
-    if viewed && status == StatusCode::NOT_FOUND {
-        return page();
     }
     let said = match status {
         StatusCode::NOT_FOUND => "Nothing is here.".to_owned(),
@@ -230,6 +257,17 @@ pub fn visited(reply: Response<Body>, viewed: bool) -> Response<Body> {
             r#"<!doctype html><html><head><meta charset="utf-8"><title>{code}</title><style>body{{font:14px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;opacity:.7}}</style></head><body><p>{said}</p></body></html>"#,
             code = status.as_u16(),
         ),
+    )
+}
+
+/// A page that loads again in a moment, for what the kernel cannot answer
+/// yet: where the app is, or the page of a space whose content has not
+/// landed.
+pub fn unready() -> Response<Body> {
+    html(
+        StatusCode::SERVICE_UNAVAILABLE,
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="1"><title>503</title></head><body></body></html>"#
+            .to_owned(),
     )
 }
 

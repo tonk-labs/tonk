@@ -448,14 +448,11 @@ async fn stamp_site_on(tonk: &crate::worker::TonkState, client: ClientId, stamp:
         );
         return;
     };
-    let matched = match match_route(tonk, &state, rest).await {
-        Some(Matched::View(matched)) => matched,
-        // A path answered with content is not a page to show in place: the
-        // worker answers a request for it, and there is no model to mount.
-        Some(Matched::Http(_)) => {
-            tonk_common::log!("[stamp] {site} SKIPPED: rest={rest:?} answers with content");
-            return;
-        }
+    // Only the routes a page shows: a route answered with content at the
+    // same path, such as the page a space's `/` answers a load with, is what
+    // the request got, not what the page shows.
+    let matched = match match_view(tonk, &state, rest).await {
+        Some(matched) => matched,
         None => {
             tonk_common::log!("[stamp] {site} SKIPPED: no route match for rest={rest:?}");
             return;
@@ -724,6 +721,12 @@ pub(super) struct MatchedRoute {
     params: tonk_router::Params,
 }
 
+/// A matched `route/asset`: the asset it answers with.
+pub(super) struct MatchedAsset {
+    /// The asset whose bytes answer the request.
+    pub(super) asset: dialog_artifacts::Entity,
+}
+
 /// A matched `route/http`: the entry and the body it answers with.
 pub(super) struct MatchedHttp {
     /// The route-table entry's entity, which its headers are read from.
@@ -738,6 +741,8 @@ pub(super) enum Matched {
     View(MatchedRoute),
     /// A `route/http`: a request is answered with its content.
     Http(MatchedHttp),
+    /// A `route/asset`: a request is answered with an asset's bytes.
+    Asset(MatchedAsset),
 }
 
 /// Order routes for insertion into the router: the space's own routes first,
@@ -765,7 +770,8 @@ fn route_order(routes: &mut [tonk_schema::Route], pinned: &std::collections::Has
 
 /// Match `rest` (the Level 1 remaining path) against the branch's durable
 /// route tables: `tonk:route`, whose match a page shows, and
-/// `tonk:route/http`, whose match the worker answers with.
+/// `tonk:route/http` and `tonk:route/asset`, whose match the worker answers
+/// with.
 ///
 /// Builds a fresh [`tonk_router::Router`] per call from the queried routes:
 /// each route's `path` pattern compiles via [`Route::parse_pattern`], paired
@@ -782,15 +788,40 @@ pub(super) async fn match_route(
     state: &dialog_reactor::BranchSession,
     rest: &str,
 ) -> Option<Matched> {
+    recognize(tonk, state, rest, true).await
+}
+
+/// Match `rest` against the routes a page shows alone, as [`match_route`]
+/// matches it against every route.
+pub(super) async fn match_view(
+    tonk: &crate::worker::TonkState,
+    state: &dialog_reactor::BranchSession,
+    rest: &str,
+) -> Option<MatchedRoute> {
+    match recognize(tonk, state, rest, false).await? {
+        Matched::View(matched) => Some(matched),
+        Matched::Http(_) | Matched::Asset(_) => None,
+    }
+}
+
+/// Match `rest` against the routes a page shows, and, where `answered`, the
+/// routes the worker answers with.
+async fn recognize(
+    tonk: &crate::worker::TonkState,
+    state: &dialog_reactor::BranchSession,
+    rest: &str,
+    answered: bool,
+) -> Option<Matched> {
     use dialog_query::{Output as _, Query, Term};
     use tonk_router::Route as RoutePattern;
-    use tonk_schema::{HttpRoute, Route};
+    use tonk_schema::{AssetRoute, HttpRoute, Route};
 
     /// What a pattern in the router stands for.
     #[derive(Clone)]
     enum Target {
         View(dialog_artifacts::Entity, dialog_artifacts::Entity),
         Http(dialog_artifacts::Entity, String),
+        Asset(dialog_artifacts::Entity),
     }
 
     let mut routes: Vec<Route> = state
@@ -814,23 +845,46 @@ pub(super) async fn match_route(
         .collect();
     route_order(&mut routes, &pinned);
 
-    let mut answered: Vec<HttpRoute> = state
-        .handle()
-        .query()
-        .select(Query::<HttpRoute> {
-            this: Term::var("this"),
-            path: Term::var("path"),
-            body: Term::var("body"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .unwrap_or_default();
-    answered.sort_by_key(|route| route.this.to_string());
+    let mut contents: Vec<(String, String, Target)> = Vec::new();
+    if answered {
+        let http: Vec<HttpRoute> = state
+            .handle()
+            .query()
+            .select(Query::<HttpRoute> {
+                this: Term::var("this"),
+                path: Term::var("path"),
+                body: Term::var("body"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap_or_default();
+        let assets: Vec<AssetRoute> = state
+            .handle()
+            .query()
+            .select(Query::<AssetRoute> {
+                this: Term::var("this"),
+                path: Term::var("path"),
+                asset: Term::var("asset"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap_or_default();
+        contents.extend(http.into_iter().map(|route| {
+            let key = route.this.to_string();
+            (key, route.path.0, Target::Http(route.this, route.body.0))
+        }));
+        contents.extend(assets.into_iter().map(|route| {
+            let key = route.this.to_string();
+            (key, route.path.0, Target::Asset(route.asset.0))
+        }));
+        contents.sort_by(|a, b| a.0.cmp(&b.0));
+    }
 
-    let patterns = answered
+    let patterns = contents
         .into_iter()
-        .map(|route| (route.path.0, Target::Http(route.this, route.body.0)))
+        .map(|(_, path, target)| (path, target))
         .chain(
             routes
                 .into_iter()
@@ -857,6 +911,7 @@ pub(super) async fn match_route(
             params: matched.params,
         }),
         Target::Http(route, body) => Matched::Http(MatchedHttp { route, body }),
+        Target::Asset(asset) => Matched::Asset(MatchedAsset { asset }),
     })
 }
 
@@ -871,6 +926,7 @@ pub(super) async fn matched_route(
     match match_route(tonk, state, rest).await? {
         Matched::View(matched) => Some(matched.route),
         Matched::Http(matched) => Some(matched.route),
+        Matched::Asset(_) => None,
     }
 }
 

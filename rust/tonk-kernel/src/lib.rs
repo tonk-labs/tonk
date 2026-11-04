@@ -373,8 +373,18 @@ impl handler::Guest for Kernel {
                 answer
             }
             Routed::Visit { request, viewed } => {
-                let Ok(answer) = router.oneshot(request).await;
-                site::visited(answer, viewed)
+                let Ok(answer) = router.clone().oneshot(request).await;
+                match site::shown(&answer, viewed, &site) {
+                    Some(page) => {
+                        let Ok(page) = router.oneshot(page).await;
+                        if page.status() == StatusCode::NOT_FOUND && !holds(&site).await {
+                            site::unready()
+                        } else {
+                            site::visited(page)
+                        }
+                    }
+                    None => site::visited(answer),
+                }
             }
             Routed::Store(request) => {
                 let Ok(answer) = router.oneshot(request).await;
@@ -513,11 +523,11 @@ async fn take_up(state: &TonkState, space: &Space) {
 }
 
 /// Send a whole tab to `address` in the app, which frames the site there.
-/// Until the deployment named its app, the tab gets the site's page.
+/// Until the deployment named its app, the tab is asked to load again.
 fn away(address: &str) -> axum::http::Response<axum::body::Body> {
     match tonk_worker::app_origin() {
         Some(app) => site::redirect(&format!("{app}{address}")),
-        None => site::page(),
+        None => site::unready(),
     }
 }
 
@@ -606,8 +616,8 @@ async fn found(state: &TonkState, space: &Space) -> Result<(), String> {
 }
 
 /// Create the space taken up for the first time: its content from what the
-/// person's persona kept for it, or, when it kept nothing, as for a space
-/// joined, only its first commit.
+/// person's persona kept for it, with the renderer its deployment serves,
+/// or, when it kept nothing, as for a space joined, only its first commit.
 async fn create(state: &AppState, space: &Space) {
     let seeded = match seed(state, space).await {
         Ok(seeded) => seeded,
@@ -616,6 +626,9 @@ async fn create(state: &AppState, space: &Space) {
             false
         }
     };
+    if seeded && let Err(error) = furnish(state, space).await {
+        tonk_common::log!("tonk-kernel: {} keeps no renderer: {error}", space.subject);
+    }
     if !seeded && let Err(error) = found(&*state.read().await, space).await {
         tonk_common::log!("tonk-kernel: {} was not founded: {error}", space.subject);
     }
@@ -665,6 +678,81 @@ async fn seed(state: &AppState, space: &Space) -> Result<bool, String> {
         .await
         .map_err(|error| format!("the persona was not told: {error:?}"))?;
     Ok(true)
+}
+
+/// Whether the space `site` serves holds any content yet: a space joined here
+/// holds none until its remote's head lands, and with it the page it keeps.
+async fn holds(site: &Site) -> bool {
+    let (Some(space), Some(state)) = (&site.space, state()) else {
+        return true;
+    };
+    let holds = state.read().await.holds_content(space).await;
+    holds.unwrap_or(true)
+}
+
+/// Give the space the renderer its deployment serves, unless it keeps one,
+/// as a copy of a space that kept one does. Nothing is locked while the host
+/// reads the files.
+async fn furnish(state: &AppState, space: &Space) -> Result<(), String> {
+    let kept = state.read().await.keeps_renderer(&space.subject).await;
+    if kept.map_err(|error| error.to_string())? {
+        return Ok(());
+    }
+    let files = renderer().await?;
+    let kept = state
+        .read()
+        .await
+        .keep_renderer(&space.subject, files)
+        .await;
+    kept.map_err(|error| error.to_string())
+}
+
+/// The renderer the deployment serves, each file with the path a space keeps
+/// it at: the files the guest manifest names, under `/guest/`, the stylesheet
+/// at the root, where its `url()`s resolve as they were written, the
+/// manifest itself, and the page, at `/`.
+async fn renderer() -> Result<Vec<(String, Vec<u8>)>, String> {
+    const MANIFEST: &str = "/guest/manifest.json";
+    let manifest = fetched(MANIFEST).await?;
+    let named: Value = serde_json::from_slice(&manifest)
+        .map_err(|error| format!("the guest manifest: {error}"))?;
+    let named = named
+        .as_object()
+        .ok_or("the guest manifest names no files")?;
+    let mut paths = Vec::new();
+    for (key, value) in named {
+        match (key.as_str(), value) {
+            ("css", Value::String(name)) => paths.push((format!("/{name}"), format!("/{name}"))),
+            ("page", Value::String(name)) => paths.push(("/".to_owned(), format!("/guest/{name}"))),
+            ("snippets", Value::Array(names)) => {
+                for name in names.iter().filter_map(Value::as_str) {
+                    let path = format!("/guest/{name}");
+                    paths.push((path.clone(), path));
+                }
+            }
+            (_, Value::String(name)) => {
+                let path = format!("/guest/{name}");
+                paths.push((path.clone(), path));
+            }
+            _ => {}
+        }
+    }
+    let mut files = vec![(MANIFEST.to_owned(), manifest)];
+    for (kept, read) in paths {
+        files.push((kept, fetched(&read).await?));
+    }
+    Ok(files)
+}
+
+/// The deployment's file at `path`.
+async fn fetched(path: &str) -> Result<Vec<u8>, String> {
+    let read = tonk_kernel_world::application::read_bytes(path)
+        .await
+        .map_err(|error| format!("{path}: {error:?}"))?;
+    if !(200..300).contains(&read.status) {
+        return Err(format!("{path} answered {}", read.status));
+    }
+    Ok(read.body)
 }
 
 /// The kernel the space's boot cell pins, as its BLAKE3 hash and size, which

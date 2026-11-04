@@ -502,12 +502,18 @@ function cancelCall(call) {
 //
 // A site's pages are its kernel's: it answers a page load with the content
 // its routes keep at the address, or with its page, which brings up the hub
-// or the space from the app's static files this worker serves, and asks the
-// kernel through `/api/`. A space's host reaches the profile over a port a
-// page of the space's origin hands up, bound to that space.
+// or the space, and asks the kernel through `/api/`. A space keeps its page
+// and the renderer it loads, which its kernel answers; the profile's are the
+// app's static files this worker serves. A space's host reaches the profile
+// over a port a page of the space's origin hands up, bound to that space.
 
-// The app's static files, which the shell loads from this origin.
-const STATIC_PREFIXES = ["/guest/", "/styles-", "/images/", "/fonts/", "/tonk-code/", "/tonk-prose/", "/tonk-table/"];
+// The app's static files, which the shell loads from this origin: on a
+// space's, all but the renderer the space keeps.
+const RENDERER_PREFIXES = ["/guest/", "/styles-"];
+const STATIC_PREFIXES = [
+    ...(PROFILE ? RENDERER_PREFIXES : []),
+    "/images/", "/fonts/", "/tonk-code/", "/tonk-prose/", "/tonk-table/",
+];
 // The icons `<wa-icon>` reads, which the app ships.
 const ICON_PATH = /^\/webawesome\/icons\/[a-z0-9-]+\/[a-z0-9-]+\.svg$/;
 // No document on a site's origin may use the app's passkeys.

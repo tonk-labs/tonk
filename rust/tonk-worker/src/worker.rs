@@ -356,6 +356,27 @@ impl TonkState {
             .map(|snapshot| (snapshot.content, snapshot.revision)))
     }
 
+    /// Whether `space`'s `main` holds any content: a space joined holds
+    /// none until its remote's head lands.
+    pub async fn holds_content(&self, space: &str) -> Result<bool, crate::TonkWorkerError> {
+        crate::router::renderer::holds(self, space).await
+    }
+
+    /// Whether `space` keeps the renderer a page of it is loaded with.
+    pub async fn keeps_renderer(&self, space: &str) -> Result<bool, crate::TonkWorkerError> {
+        crate::router::renderer::kept(self, space).await
+    }
+
+    /// Keep `files`, each a path and the bytes served there, as the renderer
+    /// of `space`, in place of any it kept before.
+    pub async fn keep_renderer(
+        &self,
+        space: &str,
+        files: Vec<(String, Vec<u8>)>,
+    ) -> Result<(), crate::TonkWorkerError> {
+        crate::router::renderer::keep(self, space, files).await
+    }
+
     /// Put back what a restart lost about `space`, a space this worker took
     /// up before.
     #[cfg(target_arch = "wasm32")]

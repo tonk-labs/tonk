@@ -177,6 +177,7 @@ mod host;
 pub use host::{ClientId, ViewBinding, ViewBindings};
 
 mod blob;
+pub(crate) mod renderer;
 
 #[cfg(feature = "persona")]
 mod migration;
@@ -455,6 +456,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             get(blob::serve),
         )
         // What the branch's `route/http!` routes answer a path with.
+        .route(
+            "/api/repository/{repo}/branch/{branch}/http/",
+            get(http_route::respond),
+        )
         .route(
             "/api/repository/{repo}/branch/{branch}/http/{*path}",
             get(http_route::respond),

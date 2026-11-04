@@ -17,8 +17,8 @@
 #
 # The guest's own `snippets/*` are imported by RELATIVE path inside
 # guest.js and fetched as-is by the portal, so they stay unhashed (their
-# content rarely changes and they're small); only the four top-level assets
-# are hashed.
+# content rarely changes and they're small); the manifest lists them, so a
+# space's kernel can copy every file of the renderer it is created with.
 set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
@@ -80,21 +80,26 @@ WA_CSS=$(hash_rename "wa.css")
 BOOTSTRAP=$(hash_rename "bootstrap.js")
 RUNTIME=$(hash_rename "runtime_bootstrap.js")
 PREVIEW=$(hash_rename "preview_capture.js")
+PAGE=$(hash_rename "page.html")
 CSS=$(hash_stylesheet)
 
 # The wasm-bindgen `.d.ts` files are dev-only type stubs; drop them from the
 # served dist (the portal never fetches them).
 rm -f "$GUEST_DIR"/guest.d.ts "$GUEST_DIR"/guest_bg.wasm.d.ts
 
-# All eight assets are required by the portal at runtime (bridge.rs names
-# each one from the manifest); a missing file here is a broken build, not
+# All nine assets are required at runtime (the portal names each file from
+# the manifest, and a space's kernel copies the page with the rest); a
+# missing file here is a broken build, not
 # a variant to tolerate. Fail before writing a manifest with empty entries.
 for entry in "js=$JS" "wasm=$WASM" "waJs=$WA_JS" "waCss=$WA_CSS" "css=$CSS" \
-    "bootstrap=$BOOTSTRAP" "runtime=$RUNTIME" "preview=$PREVIEW"; do
+    "bootstrap=$BOOTSTRAP" "runtime=$RUNTIME" "preview=$PREVIEW" "page=$PAGE"; do
     case "$entry" in
         *=) echo "hash-guest: missing guest asset (${entry%=})" >&2; exit 1 ;;
     esac
 done
+
+# The snippets under the guest dir, as JSON strings relative to it.
+SNIPPETS=$(cd "$GUEST_DIR" && find snippets -type f 2>/dev/null | LC_ALL=C sort | sed 's/.*/"&"/' | paste -sd, -)
 
 cat > "$GUEST_DIR/manifest.json" <<EOF
 {
@@ -105,7 +110,9 @@ cat > "$GUEST_DIR/manifest.json" <<EOF
   "css": "$CSS",
   "bootstrap": "$BOOTSTRAP",
   "runtime": "$RUNTIME",
-  "preview": "$PREVIEW"
+  "preview": "$PREVIEW",
+  "page": "$PAGE",
+  "snippets": [$SNIPPETS]
 }
 EOF
 

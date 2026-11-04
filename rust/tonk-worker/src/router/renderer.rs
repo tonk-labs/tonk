@@ -98,6 +98,18 @@ pub async fn keep(
     Ok(())
 }
 
+/// Whether the space `key`'s `main` holds any content.
+pub async fn holds(tonk: &TonkState, key: &str) -> Result<bool, TonkWorkerError> {
+    let main = tonk
+        .reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("{key} main: {error}")))?;
+    Ok(main.handle().revision().is_some())
+}
+
 /// Whether the space `key` keeps a page to be loaded with.
 pub async fn kept(tonk: &TonkState, key: &str) -> Result<bool, TonkWorkerError> {
     let session = tonk

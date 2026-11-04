@@ -1785,6 +1785,23 @@ concept!: &route/http
       pick: :all
       as: {[symbol]: text}
 
+# A route answered with an asset the space keeps: a request for a matching
+# path gets the asset's bytes, under its media type. This is how a space
+# keeps the renderer it was created with, such as the element runtime's
+# wasm, at the paths its page loads them from.
+concept!: &route/asset
+  this: tonk:route/asset
+  description: A route answered with an asset, a path pattern and the asset to give.
+  with:
+    path:
+      description: The path pattern, in the syntax a `route` uses.
+      the: xyz.tonk.route.asset/path
+      as: text
+    asset:
+      description: The asset whose bytes answer the request, a blob of this space.
+      the: xyz.tonk.route.asset/asset
+      as: entity
+
 # The routes this library ships are `seed/route` commands, not routes. The
 # rule writes a route for each one whose path no route claims yet, and
 # nothing of the command stays. An upgrade reverts everything the previous

@@ -74,6 +74,7 @@ temp/**
 .claude/scheduled_tasks.lock
 .Trunk.dev.toml
 .index.dev.html
+.index.e2e.html
 # Kernels the dev server keeps so a site pinned to an older one still boots.
 .kernels
 
