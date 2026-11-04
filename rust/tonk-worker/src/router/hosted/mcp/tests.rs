@@ -163,12 +163,58 @@ fn endpoint<'a, W: Writers>(
     tickets: &'a crate::router::hosted::view::TicketKey,
     writers: &'a W,
 ) -> McpEndpoint<'a, W> {
+    fn ignore(_: &ToolEvent) {}
+    recording(key, tickets, writers, &ignore)
+}
+
+/// [`endpoint`], handing each tool call's event to `events`.
+fn recording<'a, W: Writers>(
+    key: &'a SessionKey,
+    tickets: &'a crate::router::hosted::view::TicketKey,
+    writers: &'a W,
+    events: telemetry::Sink<'a>,
+) -> McpEndpoint<'a, W> {
     McpEndpoint {
         origin: ORIGIN,
         key,
         tickets,
         writers,
+        events,
     }
+}
+
+/// Events an endpoint handed its sink.
+#[derive(Default)]
+struct Events(std::cell::RefCell<Vec<ToolEvent>>);
+
+impl Events {
+    fn sink(&self) -> impl Fn(&ToolEvent) + '_ {
+        |event| self.0.borrow_mut().push(event.clone())
+    }
+
+    fn only(&self) -> ToolEvent {
+        let events = self.0.borrow();
+        assert_eq!(events.len(), 1, "{events:?}");
+        events[0].clone()
+    }
+
+    fn last(&self) -> ToolEvent {
+        self.0.borrow().last().cloned().expect("an event")
+    }
+}
+
+/// A `tools/call` request.
+fn tool_request(bearer: &str, session: &str, name: &str, arguments: Value) -> Request<Body> {
+    rpc_request(
+        Some(bearer),
+        Some(session),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": { "name": name, "arguments": arguments },
+        }),
+    )
 }
 
 async fn assert_unauthorized<W: Writers>(endpoint: &McpEndpoint<'_, W>, bearer: Option<&str>) {
@@ -920,7 +966,9 @@ concept!: &mcp-note
         };
         let key = SessionKey::derive("test");
         let tickets = crate::router::hosted::view::TicketKey::derive("test");
-        let endpoint = endpoint(&key, &tickets, &writers);
+        let events = Events::default();
+        let sink = events.sink();
+        let endpoint = recording(&key, &tickets, &writers, &sink);
         let client = Client::connect(&endpoint, token(&agent, &remote).await).await;
 
         // The list is read from the agent space, names and all.
@@ -956,6 +1004,12 @@ concept!: &mcp-note
                 )
                 .await;
             assert!(!error, "evaluate: {result}");
+        }
+        // The write's own steps, as the writer timed them, reach the event.
+        let written = events.last();
+        assert_eq!(written.outcome, telemetry::Outcome::Ok);
+        for step in ["writer.lock", "writer.pull", "writer.eval", "writer.push"] {
+            assert!(written.step(step).is_some(), "{step}: {:?}", written.steps);
         }
         let (found, error) = client
             .call(
@@ -1036,4 +1090,249 @@ concept!: &mcp-note
         service.stop().await.unwrap();
         other.stop().await.unwrap();
     }
+}
+
+/// Writers that answer the agent space's grants with `access`, and a
+/// space's reads and writes with `answer`; each records the trace id the
+/// request carried.
+struct Scripted {
+    agent: Did,
+    access: AgentAccess,
+    answer: fn() -> Response<Body>,
+    traces: std::cell::RefCell<Vec<Option<String>>>,
+}
+
+impl Writers for Scripted {
+    async fn call(
+        &self,
+        _verified: &Verified,
+        _bearer: &str,
+        _mcp_session: &str,
+        space: &Did,
+        request: Request<Body>,
+    ) -> Response<Body> {
+        self.traces
+            .borrow_mut()
+            .push(telemetry::trace_of(request.headers()));
+        if request.uri().path() == ACCESS_ROUTE {
+            assert_eq!(space, &self.agent);
+            let mut response = rpc(StatusCode::OK, serde_json::to_value(&self.access).unwrap());
+            response
+                .headers_mut()
+                .insert(SERVER_TIMING, HeaderValue::from_static("pull;dur=7"));
+            return response;
+        }
+        (self.answer)()
+    }
+}
+
+/// The agent's own space and `space`, granted read and write.
+fn writable(agent: &Did, space: &Did) -> AgentAccess {
+    let mut access = own(agent);
+    access.spaces.insert(
+        space.to_string(),
+        SpaceAccess {
+            read: true,
+            write: true,
+            grants: vec!["bafy-write".into()],
+            ..SpaceAccess::default()
+        },
+    );
+    access
+}
+
+#[dialog_common::test]
+async fn a_tool_call_answers_its_trace_and_the_time_of_each_step() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let writers = Scripted {
+        agent: agent.did(),
+        access: own(&agent.did()),
+        answer: || panic!("no space was named"),
+        traces: Default::default(),
+    };
+    let events = Events::default();
+    let sink = events.sink();
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let endpoint = recording(&key, &tickets, &writers, &sink);
+    let bearer = token(&agent, &home()).await;
+    let session = connect(&endpoint, &bearer).await;
+
+    let response = endpoint
+        .serve(tool_request(
+            &bearer,
+            &session,
+            "tonk_list_spaces",
+            json!({}),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let trace = response.headers()[TRACE_HEADER]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let timing = response.headers()[SERVER_TIMING]
+        .to_str()
+        .unwrap()
+        .to_owned();
+
+    // The trace reached the writer, and comes back to the client.
+    assert_eq!(*writers.traces.borrow(), vec![Some(trace.clone())]);
+    for step in ["verify;", "access;", "access.pull;dur=7", "total;"] {
+        assert!(timing.contains(step), "{step} missing from {timing}");
+    }
+    let event = events.only();
+    assert_eq!(event.trace, trace);
+    assert_eq!(event.tool, "tonk_list_spaces");
+    assert_eq!(event.outcome, telemetry::Outcome::Ok);
+    assert_eq!(event.kind, None);
+    assert_eq!(event.agent, telemetry::short_did(&agent.did()));
+    assert_eq!(event.step("access.pull"), Some(7.0));
+    assert!(event.ms >= 0.0);
+}
+
+#[dialog_common::test]
+async fn a_refusal_is_recorded_with_its_reason_and_space() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let mut access = own(&agent.did());
+    access.spaces.insert(
+        space.did().to_string(),
+        SpaceAccess {
+            read: true,
+            grants: vec!["bafy-read".into()],
+            ..SpaceAccess::default()
+        },
+    );
+    let writers = Scripted {
+        agent: agent.did(),
+        access,
+        answer: || panic!("a refused call reached a writer"),
+        traces: Default::default(),
+    };
+    let events = Events::default();
+    let sink = events.sink();
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let endpoint = recording(&key, &tickets, &writers, &sink);
+    let bearer = token(&agent, &home()).await;
+    let session = connect(&endpoint, &bearer).await;
+
+    let (_, error) = call_tool(
+        &endpoint,
+        &bearer,
+        &session,
+        "tonk_evaluate",
+        json!({ "space": space.did().to_string(), "document": "x!: {}" }),
+    )
+    .await;
+    assert!(error);
+    let event = events.only();
+    assert_eq!(event.outcome, telemetry::Outcome::Refused);
+    assert_eq!(event.kind.as_deref(), Some("read_only"));
+    assert_eq!(event.space, Some(telemetry::short_did(&space.did())));
+}
+
+#[dialog_common::test]
+async fn a_malformed_call_is_invalid_not_a_failure() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let events = Events::default();
+    let sink = events.sink();
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let endpoint = recording(&key, &tickets, &Unreachable, &sink);
+    let bearer = token(&agent, &home()).await;
+    let session = connect(&endpoint, &bearer).await;
+
+    let (_, error) = call_tool(
+        &endpoint,
+        &bearer,
+        &session,
+        "tonk_query",
+        json!({ "document": "x: {}" }),
+    )
+    .await;
+    assert!(error);
+    let event = events.only();
+    assert_eq!(event.outcome, telemetry::Outcome::Invalid);
+    assert_eq!(event.kind.as_deref(), Some("no_space"));
+
+    // A name this endpoint could not serve is not written as given.
+    call_tool(&endpoint, &bearer, &session, "Not A Tool!", json!({})).await;
+    assert_eq!(events.last().tool, "other");
+}
+
+#[dialog_common::test]
+async fn a_writer_failure_is_recorded_with_its_code_and_steps() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let writers = Scripted {
+        agent: agent.did(),
+        access: writable(&agent.did(), &space.did()),
+        answer: || {
+            let mut response = rpc(
+                StatusCode::BAD_GATEWAY,
+                json!({ "error": "push: 503", "code": "WRITE_NOT_LANDED" }),
+            );
+            response.headers_mut().insert(
+                SERVER_TIMING,
+                HeaderValue::from_static("lock;dur=1, pull;dur=20, eval;dur=3, push;dur=40"),
+            );
+            response
+        },
+        traces: Default::default(),
+    };
+    let events = Events::default();
+    let sink = events.sink();
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let endpoint = recording(&key, &tickets, &writers, &sink);
+    let bearer = token(&agent, &home()).await;
+    let session = connect(&endpoint, &bearer).await;
+
+    let response = endpoint
+        .serve(tool_request(
+            &bearer,
+            &session,
+            "tonk_evaluate",
+            json!({ "space": space.did().to_string(), "document": "x!: {}" }),
+        ))
+        .await;
+    let timing = response.headers()[SERVER_TIMING]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(timing.contains("writer.push;dur=40.0"), "{timing}");
+    let trace = response.headers()[TRACE_HEADER]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    // The access read and the write carried the same trace.
+    assert_eq!(
+        *writers.traces.borrow(),
+        vec![Some(trace.clone()), Some(trace)]
+    );
+
+    let event = events.only();
+    assert_eq!(event.outcome, telemetry::Outcome::Error);
+    assert_eq!(event.kind.as_deref(), Some("write_not_landed"));
+    assert_eq!(event.step("writer.pull"), Some(20.0));
+    assert_eq!(event.step("writer.push"), Some(40.0));
+    assert!(event.step("writer").is_some(), "{:?}", event.steps);
+}
+
+#[dialog_common::test]
+fn a_rejected_request_is_invalid_and_a_refused_one_refused() {
+    assert_eq!(
+        writer_outcome(StatusCode::BAD_REQUEST),
+        telemetry::Outcome::Invalid
+    );
+    assert_eq!(
+        writer_outcome(StatusCode::FORBIDDEN),
+        telemetry::Outcome::Refused
+    );
+    assert_eq!(
+        writer_outcome(StatusCode::GATEWAY_TIMEOUT),
+        telemetry::Outcome::Error
+    );
 }
