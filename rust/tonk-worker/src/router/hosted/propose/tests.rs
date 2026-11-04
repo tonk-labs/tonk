@@ -34,7 +34,7 @@ fn evaluation() -> Value {
         "matches_after": [{
             "label": "note",
             "results": [
-                { "this": "urn:note:old", "fields": { "title": "Old" } },
+                { "this": "urn:note:old", "fields": { "title": "Older" } },
                 { "this": "urn:note:new", "fields": { "title": "New" } },
             ],
         }],
@@ -45,39 +45,42 @@ fn evaluation() -> Value {
 #[dialog_common::test]
 fn it_answers_a_held_change_once() {
     let proposals = Proposals::default();
-    let (id, expires) = proposals.hold("note!: {}".into(), 100);
+    let (id, expires) = proposals.hold("note!: {}".into(), json!(null), 100);
     assert_eq!(expires, 100 + LIFETIME);
-    assert_eq!(proposals.take(&id, 101), Ok("note!: {}".to_owned()));
+    assert_eq!(
+        proposals.take(&id, 101),
+        Ok(("note!: {}".to_owned(), json!(null)))
+    );
     assert_eq!(proposals.take(&id, 101), Err(Gone));
 }
 
 #[dialog_common::test]
 fn it_forgets_a_change_once_it_lapses() {
     let proposals = Proposals::default();
-    let (id, expires) = proposals.hold("a".into(), 100);
+    let (id, expires) = proposals.hold("a".into(), json!(null), 100);
     assert_eq!(proposals.take(&id, expires), Err(Gone));
 }
 
 #[dialog_common::test]
 fn it_never_answers_an_id_it_did_not_mint() {
     let proposals = Proposals::default();
-    let (id, _) = proposals.hold("a".into(), 100);
+    let (id, _) = proposals.hold("a".into(), json!(null), 100);
     assert_eq!(proposals.take("guessed", 101), Err(Gone));
     // Another writer (another session) holds nothing under this id.
     assert_eq!(Proposals::default().take(&id, 101), Err(Gone));
-    assert_eq!(proposals.take(&id, 101), Ok("a".to_owned()));
+    assert_eq!(proposals.take(&id, 101).unwrap().0, "a");
 }
 
 #[dialog_common::test]
 fn it_holds_at_most_a_few_dropping_the_oldest() {
     let proposals = Proposals::default();
-    let first = proposals.hold("first".into(), 100).0;
+    let first = proposals.hold("first".into(), json!(null), 100).0;
     let mut last = String::new();
     for _ in 0..MOST {
-        last = proposals.hold("later".into(), 100).0;
+        last = proposals.hold("later".into(), json!(null), 100).0;
     }
     assert_eq!(proposals.take(&first, 101), Err(Gone));
-    assert_eq!(proposals.take(&last, 101), Ok("later".to_owned()));
+    assert_eq!(proposals.take(&last, 101).unwrap().0, "later");
 }
 
 #[dialog_common::test]
@@ -89,7 +92,7 @@ fn it_reads_what_a_dry_run_adds_changes_and_removes() {
         vec![
             Changed {
                 mark: "~",
-                name: "Old".into(),
+                name: "Older".into(),
                 kind: "note".into()
             },
             Changed {
@@ -100,6 +103,24 @@ fn it_reads_what_a_dry_run_adds_changes_and_removes() {
         ]
     );
     assert_eq!(changed(&removed)[0].mark, "−");
+}
+
+#[dialog_common::test]
+fn a_match_the_same_before_and_after_is_no_change() {
+    let mut read = evaluation();
+    // A second expression that only reads: the same answer twice.
+    let query = json!({
+        "label": "person",
+        "results": [{ "this": "urn:person:sam", "fields": { "name": "Sam" } }],
+    });
+    read["matches_before"]
+        .as_array_mut()
+        .unwrap()
+        .push(query.clone());
+    read["matches_after"].as_array_mut().unwrap().push(query);
+    let changes = changed(&read);
+    assert_eq!(changes.len(), 2, "{changes:?}");
+    assert!(changes.iter().all(|change| change.kind == "note"));
 }
 
 #[dialog_common::test]

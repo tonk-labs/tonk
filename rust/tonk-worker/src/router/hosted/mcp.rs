@@ -724,6 +724,17 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 true,
             );
         }
+        if apply && status == StatusCode::PRECONDITION_FAILED {
+            return card(
+                super::propose::moved(context),
+                format!(
+                    "The person applied the change in {label}, but the space changed after the \
+                     preview they saw, so nothing was written. Read it again and propose the \
+                     change again if it still applies."
+                ),
+                true,
+            );
+        }
         if !status.is_success() {
             let reason = reason(&parsed(&body));
             return card(

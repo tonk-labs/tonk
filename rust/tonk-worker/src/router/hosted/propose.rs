@@ -59,6 +59,9 @@ pub struct Proposals {
 struct Held {
     id: String,
     document: String,
+    /// The revision the document was previewed at, as the worker
+    /// answered it (`null` for an empty branch).
+    revision: Value,
     expires: u64,
 }
 
@@ -67,9 +70,9 @@ struct Held {
 pub struct Gone;
 
 impl Proposals {
-    /// Hold `document` until `now + LIFETIME`. Answers its id and when it
-    /// lapses.
-    pub fn hold(&self, document: String, now: u64) -> (String, u64) {
+    /// Hold `document`, previewed at `revision`, until `now + LIFETIME`.
+    /// Answers its id and when it lapses.
+    pub fn hold(&self, document: String, revision: Value, now: u64) -> (String, u64) {
         let id = B64.encode(rand::random::<[u8; 16]>());
         let expires = now + LIFETIME;
         let mut held = self.held.lock();
@@ -80,22 +83,25 @@ impl Proposals {
         held.push(Held {
             id: id.clone(),
             document,
+            revision,
             expires,
         });
         (id, expires)
     }
 
-    /// The change held as `id`, no longer held: each is answered once.
+    /// The change held as `id` and the revision it was previewed at, no
+    /// longer held: each is answered once.
     ///
     /// # Errors
     ///
     /// [`Gone`] when no change is held as `id`: it was answered, it lapsed,
     /// or another writer holds it.
-    pub fn take(&self, id: &str, now: u64) -> Result<String, Gone> {
+    pub fn take(&self, id: &str, now: u64) -> Result<(String, Value), Gone> {
         let mut held = self.held.lock();
         held.retain(|held| held.expires > now);
         let at = held.iter().position(|held| held.id == id).ok_or(Gone)?;
-        Ok(held.remove(at).document)
+        let held = held.remove(at);
+        Ok((held.document, held.revision))
     }
 }
 
@@ -165,8 +171,9 @@ pub struct Changed {
 
 /// What `evaluation` (a worker `/evaluate` answer) changes: for each
 /// expression, each entity it matches after and not before is added,
-/// each it matches both before and after is changed, and each it matched
-/// only before is removed.
+/// each it matches before and after with other fields is changed, and
+/// each it matched only before is removed. A match the same before and
+/// after changed nothing, so an expression that only reads lists none.
 pub fn changed(evaluation: &Value) -> Vec<Changed> {
     let blocks = |key: &str| evaluation[key].as_array().cloned().unwrap_or_default();
     let before = blocks("matches_before");
@@ -183,6 +190,11 @@ pub fn changed(evaluation: &Value) -> Vec<Changed> {
         let now = results(Some(block));
         let this = |result: &Value| result["this"].as_str().unwrap_or_default().to_owned();
         for result in &now {
+            // A match that reads the same before and after is a query's
+            // answer, or a write of what was there already: no change.
+            if was.contains(result) {
+                continue;
+            }
             let existed = was.iter().any(|old| this(old) == this(result));
             let kind = if result["transient"].as_bool().unwrap_or(false) {
                 "command".to_owned()
@@ -327,6 +339,20 @@ pub fn not_saved(context: &Context, reason: &str) -> Card {
     )
     .disc(Disc::Hollow)
     .fine(reason.to_owned())
+}
+
+/// A tell that the space moved after the preview the person answered.
+pub fn moved(context: &Context) -> Card {
+    Card::tell(
+        Some(context.place.clone()),
+        context.role,
+        "changed since",
+        format!(
+            "{} changed after I showed you this, so nothing is overwritten. Ask me to show it again.",
+            context.place.label()
+        ),
+        context.agent.clone(),
+    )
 }
 
 /// A tell that a held change can no longer be answered.

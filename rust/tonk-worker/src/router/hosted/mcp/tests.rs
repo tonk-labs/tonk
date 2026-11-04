@@ -1318,6 +1318,30 @@ concept!: &mcp-note
         assert_eq!(late["isError"], true, "{late}");
         assert!(!holds("declined").await, "a dismissed proposal wrote");
 
+        // The space moves after the preview: the confirmed change is not
+        // written over what the person never saw.
+        let proposed = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": note("stale"), "confirm": true }),
+            )
+            .await;
+        let arguments = proposed["structuredContent"]["card"]["answers"][1]["arguments"].clone();
+        let (moved, error) = client
+            .call(
+                "tonk_evaluate",
+                json!({ "space": space, "document": note("meanwhile") }),
+            )
+            .await;
+        assert!(!error, "{moved}");
+        let stale = client.result("tonk_proposal_apply", arguments).await;
+        assert_eq!(stale["isError"], true, "{stale}");
+        assert_eq!(
+            stale["structuredContent"]["card"]["label"], "changed since",
+            "{stale}"
+        );
+        assert!(!holds("stale").await, "a stale proposal wrote");
+
         // A document that writes nothing has nothing to confirm.
         let read = client
             .result(
