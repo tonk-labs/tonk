@@ -10277,11 +10277,12 @@ pub(crate) mod tests {
         );
 
         // Revoking commits on the owner's branch, and the owner pushes
-        // it. The guest's watch, begun before the revocation, must not be
-        // told of that head: a guest that adopts a head it may no longer
-        // read cannot commit on top of it. Pushed and waited on here
-        // rather than left to the owner's background push, which the
-        // guest's write below used to race.
+        // it. The guest's watch, begun before the revocation, may still be
+        // told of that head, but the guest's pull reads a head's root
+        // before adopting it, and the service refuses that read: the
+        // guest's head stays on what it holds, so it can still commit.
+        // Pushed and waited on here rather than left to the owner's
+        // background push, which the guest's write below used to race.
         successful_body(
             "owner pushes its revocation",
             &post_json(

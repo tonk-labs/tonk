@@ -34,8 +34,8 @@ const only = process.env.STABILITY_SCENARIOS?.split(",");
 // How long a plain read may take while a sync stalls (write-while-sync-stalls).
 const READ_BUDGET_MS = 2_000;
 
-// The one place that talks to the network shaper. bench/trace/gate.mjs and
-// `tonk-perf link` both answer `GET /__gate?mode=...`.
+// The one place that talks to the network shaper: `tonk-perf link`'s
+// control server, in front of the page and the remote it syncs with.
 async function network(mode, extra = {}) {
   if (mode === "shaped") return network("latency", { ms: LATENCY_MS });
   const query = new URLSearchParams({ mode, ...extra });

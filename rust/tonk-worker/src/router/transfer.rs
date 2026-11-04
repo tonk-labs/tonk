@@ -108,7 +108,7 @@ pub async fn export_profile(
         .and_then(|value| value.to_str().ok())
         .is_some_and(|accept| accept.contains(SNAPSHOT_MEDIA_TYPE));
 
-    let tonk_state = state.read().await;
+    let tonk_state = state.read().await.clone();
     let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
 
     // CSV ships FACTS; the snapshot ships the tree itself -- every block
