@@ -2513,6 +2513,17 @@ pub mod library {
         pub struct Agents(pub String);
     }
 
+    /// What a component adds (`library/manifest`).
+    pub mod manifest {
+        use dialog_query::Attribute;
+
+        /// One line per part: "concept x", "command x", "view x slot".
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.library.manifest")]
+        #[pick(last)]
+        pub struct Adds(pub String);
+    }
+
     /// What came of one install or uninstall request.
     pub mod outcome {
         use dialog_artifacts::Entity;

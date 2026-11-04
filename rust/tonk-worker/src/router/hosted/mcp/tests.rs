@@ -611,6 +611,7 @@ async fn a_session_id_of_another_token_is_refused() {
             "tonk_guide",
             "tonk_join_accept",
             "tonk_join_space",
+            "tonk_library_undo",
             "tonk_list_spaces",
             "tonk_open_space",
             "tonk_outline",
@@ -720,6 +721,45 @@ async fn a_write_carries_its_change_for_the_card_and_a_read_does_not() {
         "commits": { "claims": 1, "entities": {} },
     });
     assert!(revision(&unreadable).is_none());
+}
+
+#[dialog_common::test]
+fn the_undone_strip_says_what_now_stands() {
+    use crate::router::undo::Reverted;
+    let one = |name: Option<&str>, was: &str| Reverted {
+        name: name.map(str::to_owned),
+        was: was.to_owned(),
+    };
+    let space = "Family trip";
+    assert_eq!(
+        undo::stands(&[one(Some("Hiking boots"), "added")], space),
+        "undone · Hiking boots is no longer in Family trip"
+    );
+    assert_eq!(
+        undo::stands(&[one(Some("Towels"), "removed")], space),
+        "undone · Towels is back in Family trip"
+    );
+    assert_eq!(
+        undo::stands(&[one(Some("Seeblick Hotel"), "changed")], space),
+        "undone · Seeblick Hotel is back as it was"
+    );
+    assert_eq!(
+        undo::stands(&[one(None, "added"), one(Some("Sun hat"), "added")], space),
+        "undone · 2 items are no longer in Family trip"
+    );
+    assert_eq!(
+        undo::stands(&[one(None, "removed"), one(None, "changed")], space),
+        "undone · 2 items are back as they were"
+    );
+    // No name to give: the space as it was.
+    assert_eq!(
+        undo::stands(&[one(None, "added")], space),
+        "undone · Family trip is as it was before"
+    );
+    assert_eq!(
+        undo::stands(&[], space),
+        "undone · Family trip is as it was before"
+    );
 }
 
 #[dialog_common::test]
@@ -991,6 +1031,15 @@ concept!: &mcp-note
                 .unwrap_or_default();
             if let Err(error) = writer.admit(&grants).await {
                 return plain(StatusCode::BAD_GATEWAY, &error.to_string());
+            }
+            if parts.uri.path() == crate::router::hosted::library::ROUTE {
+                let body = body.collect().await.unwrap().to_bytes();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                let command = crate::router::hosted::library::Command::from_body(&body).unwrap();
+                return match writer.library(&command).await {
+                    Ok(answer) => rpc(StatusCode::OK, answer),
+                    Err(error) => plain(StatusCode::BAD_GATEWAY, &error),
+                };
             }
             if parts.uri.path() == UNDO_ROUTE {
                 let body = body.collect().await.unwrap().to_bytes();
@@ -1594,7 +1643,10 @@ concept!: &mcp-note
         let card = &undone["structuredContent"]["card"];
         assert_eq!(card["kind"], "strip", "{undone}");
         assert!(
-            card["say"].as_str().unwrap().starts_with("undone"),
+            card["say"]
+                .as_str()
+                .unwrap()
+                .starts_with("undone · undo me is no longer in "),
             "{card}"
         );
         assert!(card.get("undo").is_none(), "{card}");
@@ -1634,6 +1686,139 @@ concept!: &mcp-note
             tell["fine"].as_str().unwrap().contains("undone already"),
             "{tell}"
         );
+
+        let open: Vec<Arc<SpaceWriter>> =
+            writers.open.lock().await.drain().map(|(_, w)| w).collect();
+        drop(open);
+        service.stop().await.unwrap();
+    }
+
+    /// A library install is asked first, listing what it adds; applied, its
+    /// receipt is by the agent and its undo uninstalls it. A command the
+    /// card cannot preview says so, not that the change does not fit.
+    #[dialog_common::test]
+    async fn a_library_install_is_asked_then_undone_by_uninstalling() {
+        use crate::router::hosted::library;
+
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let agent = Ed25519Signer::import(&rand::random::<[u8; 32]>())
+            .await
+            .unwrap();
+        service
+            .address
+            .provision_subject(agent.did().as_ref())
+            .await
+            .unwrap();
+        let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+        let writers = NativeWriters {
+            remote: remote.clone(),
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = endpoint(&key, &tickets, &writers);
+        let client = Client::connect(&endpoint, token(&agent, &remote).await).await;
+        let space = agent.did().to_string();
+        let install = "library/install!:\n  component: tonk:library/prose\n  time: 1.0\n";
+
+        let asked = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": install, "confirm": true }),
+            )
+            .await;
+        assert_eq!(asked["isError"], json!(false), "{asked}");
+        let ask = &asked["structuredContent"]["card"];
+        assert_eq!(ask["kind"], "ask", "{asked}");
+        assert!(
+            ask["say"]
+                .as_str()
+                .unwrap()
+                .starts_with("install prose in "),
+            "{ask}"
+        );
+        assert_eq!(ask["answers"][0]["label"], "install", "{ask}");
+        assert_eq!(ask["answers"][1]["label"], "not now", "{ask}");
+        assert!(
+            ask["fine"]
+                .as_str()
+                .unwrap()
+                .starts_with("From the Tonk library, prose"),
+            "{ask}"
+        );
+        let arguments = ask["answers"][0]["arguments"].clone();
+
+        let applied = client.result("tonk_proposal_apply", arguments).await;
+        assert_eq!(applied["isError"], json!(false), "{applied}");
+        assert_eq!(
+            applied["structuredContent"]["library"]["status"],
+            "installed"
+        );
+        let receipt = &applied["structuredContent"]["card"];
+        assert_eq!(receipt["kind"], "strip", "{applied}");
+        assert!(
+            receipt["say"]
+                .as_str()
+                .unwrap()
+                .starts_with("installed prose in ")
+        );
+        assert_eq!(receipt["byAgent"], json!(true), "{receipt}");
+        assert_eq!(receipt["undo"]["tool"], library::UNDO, "{receipt}");
+        let change = applied["_meta"][CHANGE_META].clone();
+        assert_eq!(change["action"], "uninstall", "{applied}");
+        assert_eq!(change["component"], "tonk:library/prose", "{applied}");
+        let (found, error) = client
+            .call(
+                "tonk_query",
+                json!({ "space": space, "document": "concept:\n  this: prose\n" }),
+            )
+            .await;
+        assert!(!error, "{found}");
+
+        let undone = client.result(library::UNDO, change).await;
+        assert_eq!(undone["isError"], json!(false), "{undone}");
+        assert_eq!(
+            undone["structuredContent"]["library"]["status"],
+            "uninstalled"
+        );
+        let strip = &undone["structuredContent"]["card"];
+        assert_eq!(strip["kind"], "strip", "{undone}");
+        assert!(
+            strip["say"]
+                .as_str()
+                .unwrap()
+                .starts_with("undone · prose is no longer in "),
+            "{strip}"
+        );
+        assert!(strip.get("undo").is_none(), "{strip}");
+
+        // Run directly, the receipt is the same, with its undo.
+        let direct = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": install }),
+            )
+            .await;
+        assert_eq!(direct["isError"], json!(false), "{direct}");
+        assert_eq!(
+            direct["structuredContent"]["card"]["undo"]["tool"],
+            library::UNDO
+        );
+
+        // Another command cannot be previewed, and the card says so.
+        let other = "attribute!: &probe/when\n  description: \"When.\"\n  the: xyz.example.probe/when\n  as: float:64\n\ncommand!: &probe/run\n  description: \"A probe.\"\n  with:\n    when: probe/when\n\nprobe/run!:\n  when: 1.0\n";
+        let refused = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": other, "confirm": true }),
+            )
+            .await;
+        let tell = &refused["structuredContent"]["card"];
+        assert_eq!(tell["kind"], "tell", "{refused}");
+        assert_eq!(tell["label"], "can’t preview", "{refused}");
 
         let open: Vec<Arc<SpaceWriter>> =
             writers.open.lock().await.drain().map(|(_, w)| w).collect();
@@ -1784,12 +1969,12 @@ concept!: &mcp-note
         assert_eq!(late["isError"], true, "{late}");
         assert!(!holds("declined").await, "a dismissed proposal wrote");
 
-        // The space moves after the preview: the confirmed change is not
-        // written over what the person never saw.
+        // The space moves elsewhere after the preview: the change still does
+        // what the person saw, so it is applied at the new head.
         let proposed = client
             .result(
                 "tonk_evaluate",
-                json!({ "space": space, "document": note("stale"), "confirm": true }),
+                json!({ "space": space, "document": note("kept"), "confirm": true }),
             )
             .await;
         let arguments = proposed["structuredContent"]["card"]["answers"][0]["arguments"].clone();
@@ -1800,10 +1985,42 @@ concept!: &mcp-note
             )
             .await;
         assert!(!error, "{moved}");
+        let kept = client.result("tonk_proposal_apply", arguments).await;
+        assert_eq!(kept["isError"], false, "{kept}");
+        assert!(
+            holds("kept").await,
+            "a change unaffected by the move was refused"
+        );
+
+        // Someone changes the same item after the preview: the confirmed
+        // change is not written over what the person never saw.
+        let proposed = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": note("stale"), "confirm": true }),
+            )
+            .await;
+        let arguments = proposed["structuredContent"]["card"]["answers"][0]["arguments"].clone();
+        let theirs = format!("mcp-note!:\n  this: urn:mcp:{run}:stale\n  title: \"theirs\"\n");
+        let (moved, error) = client
+            .call(
+                "tonk_evaluate",
+                json!({ "space": space, "document": theirs }),
+            )
+            .await;
+        assert!(!error, "{moved}");
         let stale = client.result("tonk_proposal_apply", arguments).await;
         assert_eq!(stale["isError"], true, "{stale}");
         let tell = &stale["structuredContent"]["card"];
         assert_eq!(tell["label"], "note stale changed", "{stale}");
+        assert_eq!(
+            tell["ledger"][0],
+            json!({ "term": "theirs", "value": "theirs" })
+        );
+        assert_eq!(
+            tell["ledger"][1],
+            json!({ "term": "yours", "value": "note stale" })
+        );
         assert!(!holds("stale").await, "a stale proposal wrote");
         // The same change, held again at the new head: use mine writes it.
         let answers = tell["answers"].as_array().unwrap();
@@ -1826,12 +2043,29 @@ concept!: &mcp-note
                 }),
             )
             .await;
-        assert_eq!(read["isError"], true, "{read}");
+        assert_eq!(read["isError"], false, "{read}");
+        assert_eq!(read["structuredContent"]["card"]["kind"], "strip", "{read}");
         assert!(
             read["content"][0]["text"]
                 .as_str()
                 .unwrap()
-                .contains("writes nothing")
+                .contains("would change nothing")
+        );
+        // Nor has one that writes what is there already.
+        let same = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": note("asked"), "confirm": true }),
+            )
+            .await;
+        assert_eq!(same["isError"], false, "{same}");
+        let strip = &same["structuredContent"]["card"];
+        assert_eq!(strip["kind"], "strip", "{same}");
+        assert!(
+            strip["say"]
+                .as_str()
+                .unwrap()
+                .starts_with("nothing changed in")
         );
 
         let open: Vec<Arc<SpaceWriter>> =

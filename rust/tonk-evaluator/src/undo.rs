@@ -92,10 +92,40 @@ pub enum UndoOutcome {
     Undone {
         /// How many inverse claims were staged.
         claims: usize,
+        /// Each entity the undo takes back, in the order the change first
+        /// touched it.
+        reverted: Vec<Reverted>,
     },
     /// Nothing but the refusal is staged.
     Refused(Refusal),
 }
+
+/// One entity an undo takes back, as a receipt names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reverted {
+    /// The entity.
+    pub of: Entity,
+    /// Its name, title, label or text, as it stands once undone (or, for
+    /// what the change added, as the change wrote it). `None` when it has
+    /// none of them.
+    pub name: Option<String>,
+    /// What the change did to it.
+    pub was: Was,
+}
+
+/// What a change did to an entity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Was {
+    /// Every claim on it was new: the change added it.
+    Added,
+    /// Every claim was a retraction: the change removed it.
+    Removed,
+    /// Anything else.
+    Changed,
+}
+
+/// The attributes a receipt names an entity by, the first it has first.
+const NAMES: &[&str] = &["name", "title", "label", "text"];
 
 /// An undo staged on a transaction the caller commits.
 pub struct StagedUndo<'a> {
@@ -184,7 +214,7 @@ pub async fn stage_undo<'a, Env: EvaluateEnv>(
                 outcome: UndoOutcome::Refused(refusal),
             })
         }
-        Ok(facts) => {
+        Ok((facts, reverted)) => {
             let claims = facts.len();
             let mut transaction = transaction;
             for (assert, fact) in facts {
@@ -203,19 +233,19 @@ pub async fn stage_undo<'a, Env: EvaluateEnv>(
             }
             Ok(StagedUndo {
                 transaction,
-                outcome: UndoOutcome::Undone { claims },
+                outcome: UndoOutcome::Undone { claims, reverted },
             })
         }
     }
 }
 
-/// The inverse of `version` on `branch`, as `(assert, fact)` pairs, or why
-/// it may not be applied.
+/// The inverse of `version` on `branch`, as `(assert, fact)` pairs, with
+/// the entities it takes back, or why it may not be applied.
 async fn inverse<Env: EvaluateEnv>(
     branch: &Branch,
     version: &Version,
     env: &Env,
-) -> Result<Result<Vec<(bool, Fact)>, Refusal>, UndoError> {
+) -> Result<Result<(Vec<(bool, Fact)>, Vec<Reverted>), Refusal>, UndoError> {
     let Some(later) = later_revisions(branch, version, env).await? else {
         return Ok(Err(Refusal::NotFound));
     };
@@ -240,6 +270,7 @@ async fn inverse<Env: EvaluateEnv>(
         }
     }
 
+    let reverted = reverted(branch, &recorded, env).await?;
     let mut facts = Vec::new();
     for record in recorded {
         let now = values(branch, env, &record.of, record.the.as_str()).await?;
@@ -290,7 +321,137 @@ async fn inverse<Env: EvaluateEnv>(
             }
         }
     }
-    Ok(Ok(facts))
+    Ok(Ok((facts, reverted)))
+}
+
+/// The entities `recorded` (one revision's records) touched, each with
+/// what the revision did to it and its name. The record of an undo
+/// (`tonk:undo/…`) is the undo's own, not something it takes back.
+async fn reverted<Env: EvaluateEnv>(
+    branch: &Branch,
+    recorded: &[Recorded],
+    env: &Env,
+) -> Result<Vec<Reverted>, UndoError> {
+    let mut entities: Vec<&Entity> = Vec::new();
+    for record in recorded {
+        if !entities.contains(&&record.of) && !record.of.to_string().starts_with("tonk:undo/") {
+            entities.push(&record.of);
+        }
+    }
+    let mut reverted = Vec::new();
+    for of in entities {
+        let records: Vec<&Recorded> = recorded.iter().filter(|record| &record.of == of).collect();
+        // Added when every claim it has is one the change wrote, removed
+        // when the change retracted the last of them.
+        let standing = claims_of(branch, of, env).await?;
+        let was = if records
+            .iter()
+            .all(|record| record.assertion && record.supersedes.is_empty())
+            && standing == records.len()
+        {
+            Was::Added
+        } else if records.iter().all(|record| !record.assertion) && standing == 0 {
+            Was::Removed
+        } else {
+            Was::Changed
+        };
+        reverted.push(Reverted {
+            of: of.clone(),
+            name: name(branch, of, &records, was, env).await?,
+            was,
+        });
+    }
+    Ok(reverted)
+}
+
+/// How many claims `of` has on `branch`.
+async fn claims_of<Env: EvaluateEnv>(
+    branch: &Branch,
+    of: &Entity,
+    env: &Env,
+) -> Result<usize, UndoError> {
+    let claims = branch
+        .claims()
+        .select(ArtifactSelector::new().of(of.clone()))
+        .perform(env)
+        .await
+        .map_err(|error| UndoError(format!("read the branch: {error}")))?;
+    futures_util::pin_mut!(claims);
+    let mut count = 0;
+    while let Some(claim) = claims.next().await {
+        claim.map_err(|error| UndoError(format!("read the branch: {error}")))?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// The name of `of`, which `records` touched: what the change added it
+/// with, or else what stands once it is undone, read from each domain the
+/// records name before the undo lands (so a name the change wrote is
+/// skipped there, and a name it superseded is read from what it was).
+async fn name<Env: EvaluateEnv>(
+    branch: &Branch,
+    of: &Entity,
+    records: &[&Recorded],
+    was: Was,
+    env: &Env,
+) -> Result<Option<String>, UndoError> {
+    let named = |record: &&&Recorded| {
+        let the = record.the.to_string();
+        let attribute = the.rsplit('/').next().unwrap_or_default().to_owned();
+        NAMES.iter().position(|name| *name == attribute)
+    };
+    let text = |value: &Value| match value {
+        Value::String(text) if !text.is_empty() => Some(text.clone()),
+        _ => None,
+    };
+    // Added or removed, the change's own claims say it.
+    if was != Was::Changed {
+        let mut names: Vec<(usize, &&Recorded)> = records
+            .iter()
+            .filter_map(|record| named(&record).map(|rank| (rank, record)))
+            .collect();
+        names.sort_by_key(|(rank, _)| *rank);
+        return Ok(names.into_iter().find_map(|(_, record)| text(&record.is)));
+    }
+    // Changed: what will stand, attribute by attribute, in each domain.
+    let mut domains: Vec<String> = Vec::new();
+    for record in records {
+        let the = record.the.to_string();
+        if let Some((domain, _)) = the.rsplit_once('/')
+            && !domains.iter().any(|known| known == domain)
+        {
+            domains.push(domain.to_owned());
+        }
+    }
+    for attribute in NAMES {
+        for domain in &domains {
+            let the = format!("{domain}/{attribute}");
+            let touched: Vec<&&Recorded> = records
+                .iter()
+                .filter(|record| record.the.to_string() == the)
+                .collect();
+            let mut stands = values(branch, env, of, &the).await?;
+            for record in &touched {
+                if record.assertion {
+                    stands.retain(|value| value != &record.is);
+                    for prior in &record.supersedes {
+                        for earlier in records_at(branch, prior, env).await? {
+                            if earlier.assertion && &earlier.of == of && earlier.the == record.the {
+                                stands.push(earlier.is);
+                            }
+                        }
+                    }
+                } else {
+                    stands.push(record.is.clone());
+                }
+            }
+            if let Some(name) = stands.iter().find_map(text) {
+                return Ok(Some(name));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// The records of the `later` revisions that still stand.
@@ -518,6 +679,18 @@ concept!: &note
         found
     }
 
+    /// What an undone outcome names: each entity, its name, and what the
+    /// change did to it.
+    fn reverted(outcome: &UndoOutcome) -> Vec<(String, Option<String>, Was)> {
+        match outcome {
+            UndoOutcome::Undone { reverted, .. } => reverted
+                .iter()
+                .map(|reverted| (reverted.of.to_string(), reverted.name.clone(), reverted.was))
+                .collect(),
+            UndoOutcome::Refused(refusal) => panic!("refused: {refusal}"),
+        }
+    }
+
     fn text(value: &str) -> Value {
         Value::String(value.to_owned())
     }
@@ -544,8 +717,12 @@ concept!: &note
         let outcome = undo(&branch, &operator, &added).await;
 
         assert!(
-            matches!(outcome, UndoOutcome::Undone { claims: 2 }),
+            matches!(outcome, UndoOutcome::Undone { claims: 2, .. }),
             "{outcome:?}"
+        );
+        assert_eq!(
+            reverted(&outcome),
+            vec![(NOTE.to_owned(), Some("one".to_owned()), Was::Added)]
         );
         assert!(
             of(&branch, &operator, "io.undo.note/title")
@@ -582,6 +759,11 @@ concept!: &note
         let outcome = undo(&branch, &operator, &removed).await;
 
         assert!(matches!(outcome, UndoOutcome::Undone { .. }), "{outcome:?}");
+        // A tag came off a note that stays: changed, named by its title.
+        assert_eq!(
+            reverted(&outcome),
+            vec![(NOTE.to_owned(), Some("one".to_owned()), Was::Changed)]
+        );
         assert_eq!(
             of(&branch, &operator, "io.undo.note/tag").await,
             vec![text("a")]
@@ -618,6 +800,11 @@ concept!: &note
         let outcome = undo(&branch, &operator, &renamed).await;
 
         assert!(matches!(outcome, UndoOutcome::Undone { .. }), "{outcome:?}");
+        // Named as it stands once undone.
+        assert_eq!(
+            reverted(&outcome),
+            vec![(NOTE.to_owned(), Some("one".to_owned()), Was::Changed)]
+        );
         assert_eq!(
             of(&branch, &operator, "io.undo.note/title").await,
             vec![text("one")]
@@ -817,6 +1004,42 @@ concept!: &note
             vec![text("one")]
         );
         assert!(status(&branch, &operator, &added).await.is_empty());
+        // The redo names the note it brings back, not the undo's record.
+        assert_eq!(
+            reverted(&outcome),
+            vec![(NOTE.to_owned(), Some("one".to_owned()), Was::Removed)]
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_names_a_removed_note_by_what_it_was() {
+        let (operator, profile) = test_session_with_peer().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await.unwrap();
+        write(&branch, &operator, SCHEMA).await;
+        write(
+            &branch,
+            &operator,
+            &format!("note!:\n  this: {NOTE}\n  title: \"one\"\n  tag: \"a\"\n"),
+        )
+        .await;
+        let removed = write(
+            &branch,
+            &operator,
+            &format!("note!:\n  this: {NOTE}\n  title: _\n  tag: _\n"),
+        )
+        .await;
+
+        let outcome = undo(&branch, &operator, &removed).await;
+
+        assert_eq!(
+            reverted(&outcome),
+            vec![(NOTE.to_owned(), Some("one".to_owned()), Was::Removed)]
+        );
+        assert_eq!(
+            of(&branch, &operator, "io.undo.note/title").await,
+            vec![text("one")]
+        );
     }
 
     #[dialog_common::test]

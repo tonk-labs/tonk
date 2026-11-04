@@ -42,6 +42,12 @@ you which. Use it for many changes at once, for changes others will see that
 are hard to undo, or when the person asked to confirm first. Wait for their
 answer; do not write the same change again meanwhile.
 
+To add a finished component from the Tonk library, search `library/component:`
+(name, label, version) and `library/manifest:` (what it adds), then propose
+`library/install!:` with its `component:` and a `time:`, with `confirm: true`.
+The card lists what it adds and the AGENTS.md lines it brings; its receipt
+undoes by uninstalling. `library/uninstall!:` removes what an install added.
+
 Read only what the task needs. Discover a space's schema by querying
 `concept:`; inspect a concept's `source` descriptors for exact attribute
 domains, field types and commands. Schema presence does not prove records
