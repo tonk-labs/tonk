@@ -568,6 +568,8 @@ async fn a_session_id_of_another_token_is_refused() {
             "tonk_list_spaces",
             "tonk_open_space",
             "tonk_outline",
+            "tonk_proposal_apply",
+            "tonk_proposal_dismiss",
             "tonk_query",
             "tonk_view_access"
         ]
@@ -619,6 +621,119 @@ async fn evaluate_on_a_read_grant_is_refused_before_any_writer() {
     .await;
     assert!(error);
     assert!(text.contains("only read"), "{text}");
+}
+
+/// Call a tool: its whole result.
+async fn call_result<W: Writers>(
+    endpoint: &McpEndpoint<'_, W>,
+    bearer: &str,
+    session: &str,
+    name: &str,
+    arguments: Value,
+) -> Value {
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": { "name": name, "arguments": arguments },
+    });
+    let (status, body) = answer(
+        endpoint
+            .serve(rpc_request(Some(bearer), Some(session), call))
+            .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["result"].clone()
+}
+
+#[dialog_common::test]
+async fn evaluate_offers_to_confirm_first_and_draws_its_result_in_the_card() {
+    let evaluate = tools()
+        .into_iter()
+        .find(|tool| tool["name"] == "tonk_evaluate")
+        .unwrap();
+    assert_eq!(
+        evaluate["inputSchema"]["properties"]["confirm"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        evaluate["_meta"]["ui"]["resourceUri"],
+        super::super::card::CARD_URI
+    );
+    assert_eq!(evaluate["_meta"]["openai/widgetAccessible"], true);
+    for tool in super::super::propose::tools() {
+        assert_eq!(tool["_meta"]["ui"]["visibility"], json!(["app"]), "{tool}");
+        assert_eq!(tool["_meta"]["openai/visibility"], "private", "{tool}");
+    }
+}
+
+#[dialog_common::test]
+async fn a_refused_write_is_a_tell_with_a_role_only_where_the_space_is_open() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let shelf = Ed25519Signer::generate().await.unwrap();
+    let elsewhere = Ed25519Signer::generate().await.unwrap();
+    let mut access = own(&agent.did());
+    access.spaces.insert(
+        shelf.did().to_string(),
+        SpaceAccess {
+            read: true,
+            name: Some("Shelf".into()),
+            grants: vec!["bafy-read".into()],
+            ..SpaceAccess::default()
+        },
+    );
+    let writers = Granting {
+        agent: agent.did(),
+        access,
+    };
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let endpoint = endpoint(&key, &tickets, &writers);
+    let bearer = token(&agent, &home()).await;
+    let session = connect(&endpoint, &bearer).await;
+
+    for (space, confirm) in [(&shelf, false), (&shelf, true)] {
+        let result = call_result(
+            &endpoint,
+            &bearer,
+            &session,
+            "tonk_evaluate",
+            json!({ "space": space.did().to_string(), "document": "x!: {}", "confirm": confirm }),
+        )
+        .await;
+        assert_eq!(result["isError"], true);
+        let card = &result["structuredContent"]["card"];
+        assert_eq!(card["kind"], "tell", "{result}");
+        assert_eq!(card["label"], "read only");
+        assert_eq!(card["role"], "read");
+        assert_eq!(card["space"]["name"], "Shelf");
+        assert_eq!(card["agent"]["name"], "Claude");
+    }
+
+    let result = call_result(
+        &endpoint,
+        &bearer,
+        &session,
+        "tonk_evaluate",
+        json!({ "space": elsewhere.did().to_string(), "document": "x!: {}" }),
+    )
+    .await;
+    let card = &result["structuredContent"]["card"];
+    assert_eq!(card["label"], "no access", "{result}");
+    assert!(card.get("role").is_none(), "{card}");
+
+    // An answer to a proposal is checked the same way, before any writer.
+    let result = call_result(
+        &endpoint,
+        &bearer,
+        &session,
+        "tonk_proposal_apply",
+        json!({ "space": shelf.did().to_string(), "id": "held" }),
+    )
+    .await;
+    assert_eq!(result["isError"], true);
+    assert_eq!(result["structuredContent"]["card"]["label"], "read only");
 }
 
 #[cfg(all(feature = "integration-tests", not(target_arch = "wasm32")))]
@@ -730,7 +845,7 @@ concept!: &mcp-note
             if let Err(error) = writer.admit(&grants).await {
                 return plain(StatusCode::BAD_GATEWAY, &error.to_string());
             }
-            let routed = |uri: &str| {
+            let routed = |uri: &str, body: Body| {
                 Request::builder()
                     .method(Method::POST)
                     .uri(uri)
@@ -738,9 +853,29 @@ concept!: &mcp-note
                     .body(body)
                     .unwrap()
             };
+            let id = |body: &[u8]| {
+                serde_json::from_slice::<Value>(body).unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            };
             match parts.uri.path() {
-                "/api/query" => writer.read(routed("/evaluate?transact=false")).await,
-                "/api/evaluate" => writer.write(routed("/evaluate?transact=true")).await,
+                "/api/query" => writer.read(routed("/evaluate?transact=false", body)).await,
+                "/api/evaluate" => writer.write(routed("/evaluate?transact=true", body)).await,
+                path if path == crate::router::hosted::propose::PROPOSE_ROUTE => {
+                    let body = body.collect().await.unwrap().to_bytes();
+                    writer
+                        .propose(String::from_utf8(body.to_vec()).unwrap())
+                        .await
+                }
+                path if path == crate::router::hosted::propose::APPLY_ROUTE => {
+                    let body = body.collect().await.unwrap().to_bytes();
+                    writer.apply(&id(&body)).await
+                }
+                path if path == crate::router::hosted::propose::DISMISS_ROUTE => {
+                    let body = body.collect().await.unwrap().to_bytes();
+                    writer.dismiss(&id(&body))
+                }
                 other => panic!("no writer route {other}"),
             }
         }
@@ -850,6 +985,24 @@ concept!: &mcp-note
                 bearer,
                 session,
             }
+        }
+
+        /// Call a tool: its whole result.
+        async fn result(&self, name: &str, arguments: Value) -> Value {
+            let call = json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": { "name": name, "arguments": arguments },
+            });
+            let (status, body) = answer(
+                self.endpoint
+                    .serve(rpc_request(Some(&self.bearer), Some(&self.session), call))
+                    .await,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body["result"].clone()
         }
 
         /// Call a tool: its result and whether it is an error.
@@ -1035,5 +1188,158 @@ concept!: &mcp-note
         drop(open);
         service.stop().await.unwrap();
         other.stop().await.unwrap();
+    }
+
+    #[dialog_common::test]
+    async fn a_proposal_is_applied_once_and_only_in_its_own_session() {
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let agent = Ed25519Signer::import(&rand::random::<[u8; 32]>())
+            .await
+            .unwrap();
+        service
+            .address
+            .provision_subject(agent.did().as_ref())
+            .await
+            .unwrap();
+        let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+        let writers = NativeWriters {
+            remote: remote.clone(),
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = endpoint(&key, &tickets, &writers);
+        let bearer = token(&agent, &remote).await;
+        let client = Client::connect(&endpoint, bearer.clone()).await;
+        // Another MCP session of the same connection: another writer.
+        let other = Client::connect(&endpoint, bearer).await;
+        let space = agent.did().to_string();
+        let run: u64 = rand::random();
+        let note = |label: &str| {
+            format!("mcp-note!:\n  this: urn:mcp:{run}:{label}\n  title: \"note {label}\"\n")
+        };
+        let holds = |label: &str| {
+            let find = format!("mcp.note:\n  this: urn:mcp:{run}:{label}\n  title: ?title\n");
+            let client = &client;
+            let space = space.clone();
+            let label = label.to_owned();
+            async move {
+                let (found, error) = client
+                    .call("tonk_query", json!({ "space": space, "document": find }))
+                    .await;
+                assert!(!error, "{found}");
+                found.to_string().contains(&format!("note {label}"))
+            }
+        };
+
+        // A plain write is saved at once, and its card is the receipt.
+        let wrote = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": SCHEMA }),
+            )
+            .await;
+        assert_eq!(wrote["isError"], false, "{wrote}");
+        let receipt = &wrote["structuredContent"]["card"];
+        assert_eq!(receipt["kind"], "strip", "{wrote}");
+        assert_eq!(receipt["byAgent"], true);
+        assert_eq!(receipt["agent"]["did"], json!(space));
+
+        // Proposed: an ask, and nothing written.
+        let proposed = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": note("asked"), "confirm": true }),
+            )
+            .await;
+        assert_eq!(proposed["isError"], false, "{proposed}");
+        let ask = &proposed["structuredContent"]["card"];
+        assert_eq!(ask["kind"], "ask", "{proposed}");
+        assert_eq!(ask["role"], "write");
+        assert_eq!(ask["changes"][0]["mark"], "+", "{ask}");
+        assert_eq!(ask["changes"][0]["name"], "note asked");
+        let answers = ask["answers"].as_array().unwrap();
+        assert_eq!(answers[0]["tool"], "tonk_proposal_dismiss");
+        assert_eq!(answers[1]["tool"], "tonk_proposal_apply");
+        let arguments = answers[1]["arguments"].clone();
+        assert!(
+            proposed["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Nothing is written unless they apply it")
+        );
+        assert!(!holds("asked").await, "a proposal wrote");
+
+        // Another session does not hold it, and leaves it held.
+        let elsewhere = other.result("tonk_proposal_apply", arguments.clone()).await;
+        assert_eq!(elsewhere["isError"], true, "{elsewhere}");
+        assert_eq!(
+            elsewhere["structuredContent"]["card"]["label"],
+            "not applied"
+        );
+        assert!(!holds("asked").await, "another session applied it");
+
+        // Applied once, by its own session.
+        let applied = client
+            .result("tonk_proposal_apply", arguments.clone())
+            .await;
+        assert_eq!(applied["isError"], false, "{applied}");
+        let strip = &applied["structuredContent"]["card"];
+        assert_eq!(strip["kind"], "strip", "{applied}");
+        assert_eq!(strip["byAgent"], true);
+        assert!(
+            strip["say"].as_str().unwrap().starts_with("saved 1 item"),
+            "{strip}"
+        );
+        assert!(holds("asked").await, "the applied note is missing");
+
+        // Twice: refused, nothing more written.
+        let again = client.result("tonk_proposal_apply", arguments).await;
+        assert_eq!(again["isError"], true, "{again}");
+        assert_eq!(again["structuredContent"]["card"]["kind"], "tell");
+
+        // Dismissed: nothing written, and it cannot be applied after.
+        let proposed = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": note("declined"), "confirm": true }),
+            )
+            .await;
+        let arguments = proposed["structuredContent"]["card"]["answers"][0]["arguments"].clone();
+        let dismissed = client
+            .result("tonk_proposal_dismiss", arguments.clone())
+            .await;
+        assert_eq!(dismissed["isError"], false, "{dismissed}");
+        assert_eq!(dismissed["structuredContent"]["card"]["kind"], "strip");
+        let late = client.result("tonk_proposal_apply", arguments).await;
+        assert_eq!(late["isError"], true, "{late}");
+        assert!(!holds("declined").await, "a dismissed proposal wrote");
+
+        // A document that writes nothing has nothing to confirm.
+        let read = client
+            .result(
+                "tonk_evaluate",
+                json!({
+                    "space": space,
+                    "document": format!("mcp.note:\n  this: urn:mcp:{run}:asked\n  title: ?t\n"),
+                    "confirm": true,
+                }),
+            )
+            .await;
+        assert_eq!(read["isError"], true, "{read}");
+        assert!(
+            read["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("writes nothing")
+        );
+
+        let open: Vec<Arc<SpaceWriter>> =
+            writers.open.lock().await.drain().map(|(_, w)| w).collect();
+        drop(open);
+        service.stop().await.unwrap();
     }
 }

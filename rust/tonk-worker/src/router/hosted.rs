@@ -23,9 +23,11 @@ use super::{AppState, LspHub};
 use crate::TonkWorkerError;
 
 pub mod access;
+pub mod card;
 pub mod in_agent;
 pub mod join;
 pub mod mcp;
+pub mod propose;
 pub mod view;
 mod writer;
 pub use writer::{NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, writer_seed};

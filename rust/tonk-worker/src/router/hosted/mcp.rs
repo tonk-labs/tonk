@@ -384,12 +384,14 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 let mut tools = tools();
                 tools.extend(super::view::tools());
                 tools.extend(super::join::tools());
+                tools.extend(super::propose::tools());
                 Ok(json!({ "tools": tools }))
             }
             "resources/list" => {
                 let mut resources = guide_resources();
                 resources.extend(super::view::resources());
                 resources.extend(super::join::resources());
+                resources.extend(super::card::resources());
                 Ok(json!({ "resources": resources }))
             }
             "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
@@ -398,6 +400,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 read_guide(uri)
                     .or_else(|| super::view::read_resource(uri, self.origin))
                     .or_else(|| super::join::read_resource(uri, self.origin))
+                    .or_else(|| super::card::read_resource(uri, self.origin))
                     .ok_or_else(
                         || json!({ "code": -32602, "message": format!("no resource {uri}") }),
                     )
@@ -466,6 +469,12 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 let Ok(space) = space.parse::<Did>() else {
                     return tool_result(json!(format!("`{space}` is not a space DID.")), true);
                 };
+                if write {
+                    let confirm = arguments["confirm"].as_bool().unwrap_or(false);
+                    return self
+                        .evaluate(verified, bearer, session, &space, document, confirm)
+                        .await;
+                }
                 // The agent space is reached through the powerline alone;
                 // any other space through what the agent space holds.
                 let granted = if &space == verified.agent() {
@@ -538,6 +547,10 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 }
                 answer
             }
+            super::propose::APPLY | super::propose::DISMISS => {
+                self.answer_proposal(name, arguments, verified, bearer, session)
+                    .await
+            }
             super::join::JOIN | super::join::ACCEPT => {
                 super::join::call(name, arguments, verified, self.writers, bearer, session)
                     .await
@@ -559,6 +572,292 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 None => tool_result(json!("Tool unavailable."), true),
             },
         }
+    }
+
+    /// `tonk_evaluate`: write `document` to `space`, or with `confirm`,
+    /// propose it and write nothing (see [`super::propose`]). The result
+    /// carries the card the host draws: the receipt, the ask, or a tell.
+    async fn evaluate(
+        &self,
+        verified: &Verified,
+        bearer: &str,
+        session: &str,
+        space: &Did,
+        document: &str,
+        confirm: bool,
+    ) -> Value {
+        let reached = match self.reach(verified, bearer, session, space).await {
+            Ok(reached) => reached,
+            Err(refused) => return refused,
+        };
+        let route = if confirm {
+            super::propose::PROPOSE_ROUTE
+        } else {
+            "/api/evaluate"
+        };
+        let Some(request) = space_request(route, reached.granted.as_ref(), "text/plain", document)
+        else {
+            return tool_result(json!("The space's directory entry is malformed."), true);
+        };
+        let (status, body) = self.send(verified, bearer, session, space, request).await;
+        let context = &reached.context;
+        if !status.is_success() {
+            let value = parsed(&body);
+            let reason = reason(&value);
+            let mut answer = tool_result(without_revisions(value), true);
+            if confirm {
+                answer["content"] = json!([{
+                    "type": "text",
+                    "text": format!("Nothing was proposed or written: {reason}"),
+                }]);
+                answer["structuredContent"] = json!({
+                    "card": super::card::Card::tell(
+                        Some(context.place.clone()),
+                        context.role,
+                        "not proposed",
+                        format!("I couldn’t prepare this change for {}.", context.place.label()),
+                        context.agent.clone(),
+                    )
+                    .fine(reason)
+                    .to_value(),
+                });
+            } else {
+                answer["structuredContent"] =
+                    json!({ "card": super::propose::not_saved(context, &reason).to_value() });
+            }
+            return answer;
+        }
+        if !confirm {
+            let text = notation(&body, true);
+            let mut evaluation = without_revisions(parsed(&body));
+            let card = super::propose::receipt(context, &evaluation).to_value();
+            if let Some(fields) = evaluation.as_object_mut() {
+                fields.insert("card".into(), card);
+            }
+            let mut answer = tool_result(evaluation, false);
+            if let Some(text) = text {
+                answer["content"] = json!([{ "type": "text", "text": text }]);
+            }
+            return answer;
+        }
+        let held = parsed(&body);
+        let id = held["proposal"]["id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let evaluation = without_revisions(held["evaluation"].clone());
+        let ask = super::propose::ask(context, &id, &evaluation);
+        let dry_run = serde_json::to_vec(&evaluation)
+            .ok()
+            .and_then(|bytes| notation(&bytes, false))
+            .unwrap_or_default();
+        let text = format!(
+            "Asked the person to confirm in a card: {}. Nothing is written unless they apply it \
+             there; the card tells you when they answer. Do not write it again with \
+             tonk_evaluate meanwhile. What it would change, as a dry run against {} now:\n{dry_run}",
+            ask.say,
+            context.place.label(),
+        );
+        json!({
+            "content": [{ "type": "text", "text": text }],
+            "structuredContent": {
+                "proposal": held["proposal"],
+                "evaluation": evaluation,
+                "card": ask.to_value(),
+            },
+            "isError": false,
+        })
+    }
+
+    /// `tonk_proposal_apply` and `tonk_proposal_dismiss`, which the card
+    /// calls with the person's answer.
+    async fn answer_proposal(
+        &self,
+        name: &str,
+        arguments: &Value,
+        verified: &Verified,
+        bearer: &str,
+        session: &str,
+    ) -> Value {
+        let apply = name == super::propose::APPLY;
+        let Some(space) = arguments["space"]
+            .as_str()
+            .and_then(|space| space.parse::<Did>().ok())
+        else {
+            return tool_result(json!("Name the proposal's space."), true);
+        };
+        let Some(id) = arguments["id"].as_str().filter(|id| !id.is_empty()) else {
+            return tool_result(json!("Name the proposal."), true);
+        };
+        let reached = match self.reach(verified, bearer, session, &space).await {
+            Ok(reached) => reached,
+            Err(refused) => return refused,
+        };
+        let route = if apply {
+            super::propose::APPLY_ROUTE
+        } else {
+            super::propose::DISMISS_ROUTE
+        };
+        let body = json!({ "id": id }).to_string();
+        let Some(request) =
+            space_request(route, reached.granted.as_ref(), "application/json", &body)
+        else {
+            return tool_result(json!("The space's directory entry is malformed."), true);
+        };
+        let (status, body) = self.send(verified, bearer, session, &space, request).await;
+        let context = &reached.context;
+        let label = context.place.label();
+        let card = |card: super::card::Card, text: String, error: bool| {
+            json!({
+                "content": [{ "type": "text", "text": text }],
+                "structuredContent": { "card": card.to_value() },
+                "isError": error,
+            })
+        };
+        if status == StatusCode::GONE {
+            return card(
+                super::propose::gone(context),
+                format!(
+                    "The person answered a proposal for {label} that was already answered or had \
+                     lapsed; nothing was written. Propose it again if they still want it."
+                ),
+                true,
+            );
+        }
+        if !status.is_success() {
+            let reason = reason(&parsed(&body));
+            return card(
+                super::propose::not_saved(context, &reason),
+                format!(
+                    "The person {} the change in {label}, but the space did not confirm it: \
+                     {reason}. Query the space before proposing it again; never replay it \
+                     automatically.",
+                    if apply { "applied" } else { "declined" }
+                ),
+                true,
+            );
+        }
+        if !apply {
+            return card(
+                super::propose::dismissed(context),
+                format!(
+                    "The person chose not to apply the change in {label}. Nothing was written. \
+                     Do not propose it again unless they bring it up."
+                ),
+                false,
+            );
+        }
+        let evaluation = without_revisions(parsed(&body));
+        let receipt = super::propose::receipt(context, &evaluation);
+        let mut text = format!(
+            "The person applied the change: {} (space {space}).",
+            receipt.say
+        );
+        if let Some(notation) = notation(&body, true) {
+            text.push('\n');
+            text.push_str(&notation);
+        }
+        let mut answer = card(receipt, text, false);
+        answer["structuredContent"]["evaluation"] = evaluation;
+        answer
+    }
+
+    /// The space a write acts on, as a card names it, or the tool's
+    /// refusal: a tell, with no role where the connection cannot read the
+    /// space.
+    async fn reach(
+        &self,
+        verified: &Verified,
+        bearer: &str,
+        session: &str,
+        space: &Did,
+    ) -> Result<Reached, Value> {
+        let access = match self.access(verified, bearer, session).await {
+            Ok(access) => access,
+            Err(error) => return Err(tool_result(json!(error), true)),
+        };
+        let agent = super::card::Agent {
+            did: verified.agent().to_string(),
+            name: access
+                .get(verified.agent())
+                .and_then(|own| own.name.clone()),
+        };
+        let home = space == verified.agent();
+        let held = access.get(space);
+        let place = super::card::Place {
+            did: space.to_string(),
+            name: held.and_then(|held| held.name.clone()),
+            item: None,
+        };
+        let role = held.filter(|held| held.read).map(|held| {
+            if home || held.write {
+                super::card::Role::Write
+            } else {
+                super::card::Role::Read
+            }
+        });
+        let context = super::propose::Context {
+            place,
+            role: if home {
+                Some(super::card::Role::Write)
+            } else {
+                role
+            },
+            agent,
+            home,
+        };
+        if home {
+            return Ok(Reached {
+                granted: None,
+                context,
+            });
+        }
+        if let Some(refusal) = refusal(held, space, true) {
+            let label = if context.role.is_some() {
+                "read only"
+            } else {
+                "no access"
+            };
+            let card = super::card::Card::tell(
+                Some(context.place.clone()),
+                context.role,
+                label,
+                refusal.clone(),
+                context.agent.clone(),
+            );
+            return Err(json!({
+                "content": [{ "type": "text", "text": refusal }],
+                "structuredContent": { "card": card.to_value() },
+                "isError": true,
+            }));
+        }
+        Ok(Reached {
+            granted: held.cloned(),
+            context,
+        })
+    }
+
+    /// Send `request` to the writer of `space`, and read its answer.
+    async fn send(
+        &self,
+        verified: &Verified,
+        bearer: &str,
+        session: &str,
+        space: &Did,
+        request: Request<Body>,
+    ) -> (StatusCode, axum::body::Bytes) {
+        let response = self
+            .writers
+            .call(verified, bearer, session, space, request)
+            .await;
+        let status = response.status();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .map(|body| body.to_bytes())
+            .unwrap_or_default();
+        (status, body)
     }
 
     /// What the agent space reaches, as its own writer reads it.
@@ -632,6 +931,49 @@ fn refusal(access: Option<&SpaceAccess>, space: &Did, write: bool) -> Option<Str
         ));
     }
     None
+}
+
+/// A space a write reaches: the grant it goes through (none for the
+/// agent space), and what its card says.
+struct Reached {
+    granted: Option<SpaceAccess>,
+    context: super::propose::Context,
+}
+
+/// A `POST` of `body` to the writer route `path`, carrying the grants and
+/// address of `granted`, or `None` when they do not make headers.
+fn space_request(
+    path: &str,
+    granted: Option<&SpaceAccess>,
+    content_type: &str,
+    body: &str,
+) -> Option<Request<Body>> {
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header(header::CONTENT_TYPE, content_type);
+    if let Some(granted) = granted {
+        request = request.header(GRANTS_HEADER, granted.grants.join(","));
+        if let Some(address) = &granted.address {
+            request = request.header(ADDRESS_HEADER, address);
+        }
+    }
+    request.body(Body::from(body.to_owned())).ok()
+}
+
+/// A writer's answer as JSON, or as a string when it is not.
+fn parsed(body: &[u8]) -> Value {
+    serde_json::from_slice::<Value>(body).unwrap_or_else(|_| json!(String::from_utf8_lossy(body)))
+}
+
+/// The reason a writer's refusal gives, for a person.
+fn reason(value: &Value) -> String {
+    value["error"]
+        .as_str()
+        .or_else(|| value["message"].as_str())
+        .or_else(|| value.as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string())
 }
 
 /// What `tonk_list_spaces` answers: the agent space first, marked
@@ -777,8 +1119,19 @@ pub fn tools() -> Vec<Value> {
                      once, answered after the write is saved. Needs read-write access to the \
                      space (see tonk_list_spaces). Read tonk_guide (notation, views, events) \
                      before authoring unfamiliar schemas or views. If a response is lost, query \
-                     before trying again; never replay automatically."
+                     before trying again; never replay automatically. With confirm: true \
+                     nothing is written: the person sees what the change would do in a card \
+                     and applies or declines it there. Use it for many changes at once, for \
+                     changes others will see that are hard to undo, or when the person asked \
+                     to confirm first."
                 );
+                tool["inputSchema"]["properties"]["confirm"] = json!({
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Propose the change for the person to confirm instead of \
+                        writing it.",
+                });
+                tool["_meta"] = super::card::tool_meta();
             }
             if name == "tonk_list_spaces" {
                 tool["description"] = json!(
