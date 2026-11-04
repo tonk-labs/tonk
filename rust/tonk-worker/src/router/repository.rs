@@ -953,6 +953,39 @@ async fn report_profile_rename(
     }
 }
 
+/// The Hub's rename dialog waits on this receipt to close or show why not.
+async fn report_repository_rename(
+    state: &AppState,
+    receipt: &dialog_artifacts::Entity,
+    status: &str,
+    detail: &str,
+) {
+    let tonk = state.read().await;
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .overlay()
+        .assert(
+            dialog_query::the!("xyz.tonk.repository-rename/status")
+                .of(receipt.clone())
+                .is(status.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .assert(
+            dialog_query::the!("xyz.tonk.repository-rename/detail")
+                .of(receipt.clone())
+                .is(detail.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .write()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("RenameRepository: failed to publish result: {error}");
+    }
+}
+
 /// The FAB's routeless share claim's target-space attribute — the
 /// `xyz.tonk.invite/space` fact asserted alongside the `tonk:invite`
 /// transient. Kept in sync with
@@ -2748,8 +2781,11 @@ impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
     async fn execute(&self, command: tonk_schema::command::RenameRepository) {
         use tonk_schema::prelude::DidExt as _;
 
+        const REFUSED: &str = "This space can't be renamed from here.";
+
         let Ok(did) = command.space.0.to_string().parse::<dialog_varsig::Did>() else {
             log!("RenameRepository: unparseable target space, skipping");
+            report_repository_rename(self.state(), &command.this, "failed", REFUSED).await;
             return;
         };
         // `repo_key()` is the FULL DID, not a suffix.
@@ -2760,6 +2796,7 @@ impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
                 self.origin().repo,
                 repo
             );
+            report_repository_rename(self.state(), &command.this, "failed", REFUSED).await;
             return;
         }
         {
@@ -2768,6 +2805,8 @@ impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
             let tonk = self.state().read().await;
             if let Err(error) = require_real_space(&tonk, &did).await {
                 log!("RenameRepository '{}' refused: {}", repo, error);
+                drop(tonk);
+                report_repository_rename(self.state(), &command.this, "failed", REFUSED).await;
                 return;
             }
         }
@@ -2775,13 +2814,18 @@ impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
 
         let result = run_rename_repository(self, &repo, &command.name.0).await;
         let failure_detail = result.as_ref().err().map(ToString::to_string);
-        if rename_outcome(result) == RenameOutcome::Failed {
-            log!(
-                "RenameRepository for repo '{}' failed: {}",
-                repo,
-                failure_detail.unwrap_or_default()
-            );
-        }
+        let (status, detail) = match rename_outcome(result) {
+            RenameOutcome::Renamed => ("renamed", "Space renamed."),
+            RenameOutcome::Failed => {
+                log!(
+                    "RenameRepository for repo '{}' failed: {}",
+                    repo,
+                    failure_detail.unwrap_or_default()
+                );
+                ("failed", "Couldn't rename this space. Try again.")
+            }
+        };
+        report_repository_rename(self.state(), &command.this, status, detail).await;
     }
 }
 
@@ -10041,8 +10085,11 @@ route!: &foreign-profile-route
         let tonk = test_state().await;
         install_recorded(&tonk, PROFILE_LIBRARY_URL, CURRENT).await;
 
-        let wire = tonk_template::resolve::view_bindings_query("tonk:space")
-            .expect("bindings query builds");
+        // The Hub view binds sign-out declaratively; the
+        // space list's own forms all dispatch through receipt-aware
+        // elements, so it carries no bindings to read.
+        let wire =
+            tonk_template::resolve::view_bindings_query("tonk:hub").expect("bindings query builds");
         let query = wire
             .into_concept_query()
             .expect("bindings query is a concept query");
@@ -10057,7 +10104,7 @@ route!: &foreign-profile-route
         let rendered = serde_json::to_string(&rows).expect("rows serialize");
         assert!(
             !rows.is_empty(),
-            "the space view carries compiled bindings: {rendered}",
+            "the hub view carries compiled bindings: {rendered}",
         );
     }
 
