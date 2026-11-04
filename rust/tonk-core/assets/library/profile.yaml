@@ -2667,7 +2667,7 @@ element!: &hub-discover
         if (status) status.textContent = '';
         self.agentsRender(agents);
         if (!held) {
-          if (status) status.textContent = 'Access revoked. The access service refuses the agent’s grants for that space; a session already open may keep reading for a few minutes. The share link still works for whoever has it.';
+          if (status) status.textContent = 'Access revoked. The access service refuses the agent’s grants for that space; a session already open may keep reading for a few minutes. The passlink still works for whoever has it.';
         } else if (state === 'failed') {
           // agentsRender has said why; the row offers to retry.
         } else if ((state === 'pending' || state === 'working') && Date.now() - started < 4 * 60 * 1000) {
