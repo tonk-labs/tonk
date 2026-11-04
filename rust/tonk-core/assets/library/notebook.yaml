@@ -141,13 +141,136 @@ concept!: &block/chain
 # landing page re-points the alias themselves, which is what that slot is for.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Saving a notebook as a Markdown file
+# ---------------------------------------------------------------------------
+
+# Cmd+S on macOS, Ctrl+S elsewhere, saves what the editor shows.
+#
+# It wraps the `<tonk-notebook>` rather than sitting beside it, so "focus is
+# in the notebook" is just "the key reached this element": a press anywhere
+# else on the page never gets here, and the browser's own Cmd+S still
+# behaves normally there. It listens in the BUBBLE phase and steps aside
+# for a press something inside already handled: neither prose's keymap nor
+# a `<tonk-code>` cell's binds Mod-S today, but if one ever does, the editor
+# keeps it.
+#
+# The text is the `<tonk-prose>` editor's live `value`, the same string the
+# notebook commits from, read at the moment of the press: typing that has
+# not been committed yet is saved as shown, not re-read from the store.
+#
+# The file name is the leading heading, the way the notebook takes its
+# title from it, made safe for the common file systems.
+#
+# Where it is written: `showSaveFilePicker` when the realm can use it, and
+# otherwise an `<a download>` over a Blob URL (Firefox and Safari have no
+# picker, and a sandboxed or cross-origin frame such as the guest the
+# notebook renders in is refused one). The guest's sandbox grants
+# `allow-downloads`, and a browser set to ask where to save shows its own
+# save dialog for the download. A cancelled picker is a choice, not a
+# failure, so nothing is downloaded after it.
+element!: &notebook-save
+  description: "Saves the notebook it wraps as a Markdown file on Cmd+S / Ctrl+S."
+  method:
+    connected: |
+      (self) => {
+        self.__keydown ??= (event) => self.keydown(event);
+        self.addEventListener('keydown', self.__keydown);
+      }
+    disconnected: |
+      (self) => {
+        if (self.__keydown) self.removeEventListener('keydown', self.__keydown);
+      }
+    released: |
+      (self) => {
+        if (self.__keydown) self.removeEventListener('keydown', self.__keydown);
+        self.__keydown = null;
+      }
+    keydown: |
+      (self, event) => {
+        if (event.defaultPrevented || event.isComposing) return;
+        if (!self.isSaveChord(event)) return;
+        event.preventDefault();
+        self.save();
+      }
+    is-save-chord: |
+      (self, event) => {
+        if ((event.key || '').toLowerCase() !== 's') return false;
+        if (event.altKey || event.shiftKey) return false;
+        const platform = navigator.userAgentData?.platform || navigator.platform || '';
+        const mac = /mac|iphone|ipad|ipod/i.test(platform);
+        return mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+      }
+    markdown: |
+      (self) => {
+        const prose = self.querySelector('tonk-notebook tonk-prose');
+        const value = prose?.value;
+        return typeof value === 'string' ? value : '';
+      }
+    heading: |
+      (self, markdown) => {
+        const first = String(markdown ?? '').trimStart().split('\n')[0] ?? '';
+        const line = first.replace(/^ +/, '');
+        const hashes = line.match(/^#*/)[0].length;
+        if (hashes < 1 || hashes > 6) return '';
+        return line.slice(hashes).trim().replace(/#+$/, '').trim();
+      }
+    file-name: |
+      (self, markdown) => {
+        let name = self.heading(markdown)
+          .replace(/[\u0000-\u001f\u007f<>:"/\\|?*]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .replace(/^[\s.]+|[\s.]+$/g, '');
+        if (name.length > 120) name = name.slice(0, 120).replace(/[\s.]+$/, '');
+        if (/^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(name)) name = `${name}_`;
+        return `${name || 'notebook'}.md`;
+      }
+    save: |
+      async (self) => {
+        const markdown = self.markdown();
+        const name = self.fileName(markdown);
+        const type = 'text/markdown';
+        if (typeof window.showSaveFilePicker === 'function') {
+          try {
+            const handle = await window.showSaveFilePicker({
+              suggestedName: name,
+              types: [{ description: 'Markdown', accept: { [type]: ['.md'] } }],
+            });
+            const writable = await handle.createWritable();
+            await writable.write(new Blob([markdown], { type }));
+            await writable.close();
+            self.dispatchEvent(new CustomEvent('notebook-saved',
+              { bubbles: true, detail: { name: handle.name, via: 'picker' } }));
+            return;
+          } catch (error) {
+            if (error?.name === 'AbortError') return;
+          }
+        }
+        // The link is never attached. A guest catches every click on an
+        // `<a href>` at its document to relay navigation to the host, and a
+        // `blob:` URL reads to it as an external link to open, so a link in
+        // the document would never download. Clicked detached, the click
+        // reaches no document and the browser downloads it.
+        const url = URL.createObjectURL(new Blob([markdown], { type: `${type};charset=utf-8` }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = name;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        self.dispatchEvent(new CustomEvent('notebook-saved',
+          { bubbles: true, detail: { name, via: 'download' } }));
+      }
+
 # ONE notebook. The element reads two hidden row sets: the notebook's own
 # `block` sequence, one `.notebook-order__item` per entry in position order
 # carrying the entry's key, and the block rows carrying each block's source.
+#
+# Wrapped in `<notebook-save>` (above) so Cmd/Ctrl+S saves it.
 view!:
   this: notebook
   show:
     ui: |
+      <notebook-save style="display: block;">
       <tonk-notebook
         data-subject={this}
         data-notebook={this}
@@ -165,6 +288,7 @@ view!:
           <tonk-display model=notebook/block></tonk-display>
         </div>
       </tonk-notebook>
+      </notebook-save>
 
 # EVERY notebook — the directory view, which is what core's `/{*model}` route
 # renders at `/space/{repo}/notebook`. A list of links, one per notebook.
@@ -257,6 +381,7 @@ view!:
   show:
     ui: |
       <tonk-notebook-index class="notebook-index">
+        <notebook-save style="display: block;">
         <tonk-notebook
           draft
           with="{branch}@{repo}"
@@ -266,6 +391,7 @@ view!:
           on:notebook-retitle=notebook/retitle
           style="display: block;"
         ></tonk-notebook>
+        </notebook-save>
         <tonk-display with="{branch}@{repo}" model=notebook></tonk-display>
       </tonk-notebook-index>
 

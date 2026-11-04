@@ -739,7 +739,7 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
                     "A duplicate cannot also have a seed URL".into(),
                 ))
             } else {
-                let tonk = env.state().read().await;
+                let tonk = env.state().read().await.clone();
                 duplication::prepare(&tonk, source).await
             };
             match result {
@@ -1969,7 +1969,7 @@ async fn run_invite(
     use tonk_schema::domain::credential::{Link, Seed};
     use tonk_schema::{Invitation, InvitationExecution};
 
-    let tonk = env.state().read().await;
+    let tonk = env.state().read().await.clone();
 
     let repository = tonk
         .profile
@@ -2683,7 +2683,7 @@ async fn run_profile_rename(
     env: &crate::router::CommandEnv,
     name: &str,
 ) -> Result<(), TonkWorkerError> {
-    let tonk = env.state().read().await;
+    let tonk = env.state().read().await.clone();
     crate::router::account_state::rename_display_name(&tonk, name).await?;
 
     // Prompt an immediate push so peers see the new name without waiting for
@@ -2914,7 +2914,7 @@ impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::r
         // device's own authority. The passkey belongs to deleting the
         // ACCOUNT, which is a different command.
         {
-            let tonk = self.state().read().await;
+            let tonk = self.state().read().await.clone();
             // The account's home service: a command has no request behind
             // it to carry one, and the space was provided where the
             // account syncs, which for a browser signed in through another
@@ -3655,11 +3655,11 @@ pub(super) async fn enable_sync_inner(
     key: &str,
     remote: &str,
 ) -> Result<(), RepositoryError> {
-    // A read guard, as the other callers of the lock-free core take: the
-    // attach provisions the space with the access service and records the
-    // mount in the account directory, both round trips, and a write guard
-    // held across them stalls every other request.
-    let tonk = state.read().await;
+    // A clone, not a guard: the attach provisions the space with the
+    // access service and records the mount in the account directory, both
+    // round trips, and a guard held across them keeps a queued writer, and
+    // every request behind it, waiting on the service.
+    let tonk = state.read().await.clone();
     enable_sync_for_repository(&tonk, key, remote, true).await
 }
 
@@ -3672,8 +3672,8 @@ pub(super) async fn attach_provisioned_remote(
     key: &str,
     remote: &str,
 ) -> Result<(), RepositoryError> {
-    // A read lock, as in `create_unseeded_space_from_seed`.
-    let tonk = state.read().await;
+    // A clone, not a guard: the attach is a round trip, as above.
+    let tonk = state.read().await.clone();
     let provisioned = super::customer::is_active(&tonk).await;
     enable_sync_for_repository(&tonk, key, remote, !provisioned).await
 }
@@ -7410,7 +7410,8 @@ pub async fn get_repository(
     }
     log!("GET /api/repository/{}", name);
 
-    let tonk = state.read().await;
+    // A clone, not a guard: a first-use mount can pull over the network.
+    let tonk = state.read().await.clone();
 
     // First use of a directory-listed space this device has not
     // replicated mounts it on demand — same lazy adoption the query
@@ -8286,7 +8287,7 @@ pub async fn attach_remote(
 
     // A read guard: provisioning is a round trip to the access service,
     // and the remote configuration commits serialize on their branch.
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
 
     let repository = tonk
         .profile
