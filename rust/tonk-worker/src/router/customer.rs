@@ -244,7 +244,8 @@ pub async fn get_state(
     State(state): State<AppState>,
     Extension(origin): Extension<RequestOrigin>,
 ) -> Result<Json<CustomerState>, TonkWorkerError> {
-    let state = state.read().await;
+    // A clone, not a guard: the probe is a round trip to the service.
+    let state = state.read().await.clone();
     let root = super::identity::root_did(&state).await?;
     let record = load_customer(&state).await?;
     let endpoint = origin
