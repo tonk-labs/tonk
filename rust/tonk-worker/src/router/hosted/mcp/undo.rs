@@ -9,11 +9,15 @@
 //! and its push ([`UNDO_ROUTE`]), answering once the undo has landed. The
 //! outcome is also recorded in the space as a `tonk:undo`, so a view
 //! repainting from sync shows it without a message from the card.
+//!
+//! The receipt strip of such a write ends with undo ([`offer`]), and the
+//! tool answers the card that takes its place ([`result`]).
 
-use axum::body::Body;
-use axum::http::{Method, Request, header};
 use dialog_varsig::Did;
 use serde_json::{Value, json};
+
+use super::super::card::Card;
+use super::super::propose::Context;
 
 /// The app-only tool a card undoes a change with.
 pub const UNDO: &str = "tonk_undo";
@@ -71,26 +75,59 @@ pub fn change_meta(space: &Did, answer: &Value) -> Option<Value> {
     }))
 }
 
-/// The request asking a writer to undo `revision`.
-pub fn request(revision: &str) -> Request<Body> {
-    Request::builder()
-        .method(Method::POST)
-        .uri(UNDO_ROUTE)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(json!({ "revision": revision }).to_string()))
-        .expect("static request")
+/// The body asking a writer to undo `revision`, `POST`ed to
+/// [`UNDO_ROUTE`].
+pub fn request(revision: &str) -> String {
+    json!({ "revision": revision }).to_string()
 }
 
-/// The tool's result for a writer's answer `report`: a refusal is an
-/// outcome, not a tool error, so the card reads it either way.
-pub fn result(report: &crate::UndoReport) -> Value {
-    let text = match &report.reason {
-        None => "Undone.".to_owned(),
-        Some(reason) => format!("Not undone: {reason}"),
+/// A write's receipt `card`, ending with undo when the write made a
+/// `change` (its [`change_meta`], which the card calls [`UNDO`] with).
+pub fn offer(card: Card, change: Option<&Value>) -> Card {
+    match change {
+        Some(_) => card.undo(UNDO),
+        None => card,
+    }
+}
+
+/// The tool's result for a writer's answer `report`, with the card the
+/// host draws in place of the receipt: a strip once the change is undone,
+/// a tell when it is refused. A refusal is an outcome, not a tool error,
+/// so the card reads it either way.
+pub fn result(report: &crate::UndoReport, context: &Context) -> Value {
+    let space = context.place.label();
+    let (text, card) = match &report.reason {
+        None => (
+            format!(
+                "The person undid the change in {space} (revision {}).",
+                report.revision
+            ),
+            Card::strip(
+                Some(context.place.clone()),
+                context.role,
+                format!("undone · {space} is as it was before"),
+                context.agent.clone(),
+            ),
+        ),
+        Some(reason) => (
+            format!(
+                "The person tried to undo a change in {space}, but it was not undone: {reason}"
+            ),
+            Card::tell(
+                Some(context.place.clone()),
+                context.role,
+                "not undone",
+                format!("I couldn’t undo this in {space}, so nothing changed."),
+                context.agent.clone(),
+            )
+            .fine(reason.clone()),
+        ),
     };
+    let mut structured = serde_json::to_value(report).expect("a report serializes");
+    structured["card"] = card.to_value();
     json!({
         "content": [{ "type": "text", "text": text }],
-        "structuredContent": report,
+        "structuredContent": structured,
         "isError": false,
     })
 }

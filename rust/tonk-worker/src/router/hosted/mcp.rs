@@ -777,36 +777,35 @@ impl<W: Writers> McpEndpoint<'_, W> {
             writer_failed(call, status, &value);
             let reason = reason(&value);
             let mut answer = tool_result(without_revisions(value), true);
+            // The model reads the worker's reason; the card says it in
+            // words for the person, and never shows the reason itself.
+            let card = if unreachable(status) {
+                super::propose::not_saved(context)
+            } else {
+                super::propose::rejected(context, confirm)
+            };
             if confirm {
                 answer["content"] = json!([{
                     "type": "text",
                     "text": format!("Nothing was proposed or written: {reason}"),
                 }]);
-                answer["structuredContent"] = json!({
-                    "card": super::card::Card::tell(
-                        Some(context.place.clone()),
-                        context.role,
-                        "not proposed",
-                        format!("I couldn’t prepare this change for {}.", context.place.label()),
-                        context.agent.clone(),
-                    )
-                    .fine(reason)
-                    .to_value(),
-                });
-            } else {
-                answer["structuredContent"] =
-                    json!({ "card": super::propose::not_saved(context, &reason).to_value() });
             }
+            answer["structuredContent"] = json!({ "card": card.to_value() });
             return answer;
         }
         if !confirm {
             let text = notation(&body, true);
-            let evaluation = parsed(&body);
+            let written = parsed(&body);
+            let moved = written["revision_before"] != written["revision_after"];
             // What a card needs to undo the write, in `_meta`, which
             // hosts hand the app and not the model.
-            let change = undo::change_meta(space, &evaluation);
-            let mut evaluation = without_revisions(evaluation);
-            let card = super::propose::receipt(context, &evaluation).to_value();
+            let change = undo::change_meta(space, &written);
+            let mut evaluation = without_revisions(written);
+            let card = undo::offer(
+                super::propose::receipt(context, &evaluation, moved),
+                change.as_ref(),
+            )
+            .to_value();
             if let Some(fields) = evaluation.as_object_mut() {
                 fields.insert("card".into(), card);
             }
@@ -918,20 +917,39 @@ impl<W: Writers> McpEndpoint<'_, W> {
             );
         }
         if apply && status == StatusCode::PRECONDITION_FAILED {
+            // The writer held the same change again at the space's new
+            // head, when it still previews, for the person to choose.
+            let moved = parsed(&body);
+            let again = moved["proposal"]["id"].as_str().map(|id| {
+                (
+                    id.to_owned(),
+                    without_revisions(moved["evaluation"].clone()),
+                )
+            });
             return card(
-                super::propose::moved(context),
+                super::propose::moved(
+                    context,
+                    again
+                        .as_ref()
+                        .map(|(id, evaluation)| (id.as_str(), evaluation)),
+                ),
                 format!(
                     "The person applied the change in {label}, but the space changed after the \
-                     preview they saw, so nothing was written. Read it again and propose the \
-                     change again if it still applies."
+                     preview they saw, so nothing was written. The card asks them to keep what \
+                     is there now or use the change anyway; wait for their answer."
                 ),
                 true,
             );
         }
         if !status.is_success() {
             let reason = reason(&parsed(&body));
+            let shown = if unreachable(status) {
+                super::propose::not_saved(context)
+            } else {
+                super::propose::rejected(context, false)
+            };
             return card(
-                super::propose::not_saved(context, &reason),
+                shown,
                 format!(
                     "The person {} the change in {label}, but the space did not confirm it: \
                      {reason}. Query the space before proposing it again; never replay it \
@@ -951,10 +969,14 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 false,
             );
         }
-        let evaluation = parsed(&body);
-        let change = undo::change_meta(&space, &evaluation);
-        let evaluation = without_revisions(evaluation);
-        let receipt = super::propose::receipt(context, &evaluation);
+        let written = parsed(&body);
+        let moved = written["revision_before"] != written["revision_after"];
+        let change = undo::change_meta(&space, &written);
+        let evaluation = without_revisions(written);
+        let receipt = undo::offer(
+            super::propose::receipt(context, &evaluation, moved),
+            change.as_ref(),
+        );
         let mut text = format!(
             "The person applied the change: {} (space {space}).",
             receipt.say
@@ -1024,18 +1046,14 @@ impl<W: Writers> McpEndpoint<'_, W> {
         }
         if let Some((kind, refusal)) = refusal(held, space, true) {
             call.end(Outcome::Refused, kind);
-            let label = if context.role.is_some() {
-                "read only"
-            } else {
-                "no access"
+            // The model reads the refusal; the card says it for the person.
+            let card = match held {
+                Some(held) if held.read => super::propose::read_only(&context),
+                Some(held) => {
+                    super::propose::no_access(&context.place, &context.agent, held.lapsed > 0)
+                }
+                None => super::propose::no_access(&context.place, &context.agent, false),
             };
-            let card = super::card::Card::tell(
-                Some(context.place.clone()),
-                context.role,
-                label,
-                refusal.clone(),
-                context.agent.clone(),
-            );
             return Err(json!({
                 "content": [{ "type": "text", "text": refusal }],
                 "structuredContent": { "card": card.to_value() },
@@ -1106,53 +1124,54 @@ impl<W: Writers> McpEndpoint<'_, W> {
             return tool_result(json!("`revision` is required."), true);
         };
         call.space = Some(space.clone());
-        let mut request = undo::request(revision);
-        if &space != verified.agent() {
-            let access = match self.access(verified, bearer, session, call).await {
-                Ok(access) => access,
-                Err(error) => return tool_result(json!(error), true),
-            };
-            if let Some((kind, refusal)) = refusal(access.get(&space), &space, true) {
-                call.end(Outcome::Refused, kind);
-                return tool_result(json!(refusal), true);
-            }
-            if let Some(granted) = access.get(&space) {
-                let headers = request.headers_mut();
-                if let Ok(grants) = HeaderValue::from_str(&granted.grants.join(",")) {
-                    headers.insert(GRANTS_HEADER, grants);
-                }
-                if let Some(address) = granted
-                    .address
-                    .as_deref()
-                    .and_then(|address| HeaderValue::from_str(address).ok())
-                {
-                    headers.insert(ADDRESS_HEADER, address);
-                }
-            }
-        }
-        let response = self
-            .writers
-            .call(verified, bearer, session, &space, request)
+        let reached = match self.reach(verified, bearer, session, &space, call).await {
+            Ok(reached) => reached,
+            Err(refused) => return refused,
+        };
+        let Some(request) = space_request(
+            UNDO_ROUTE,
+            reached.granted.as_ref(),
+            "application/json",
+            &undo::request(revision),
+            &call.trace,
+        ) else {
+            call.end(Outcome::Error, "bad_directory_entry");
+            return tool_result(json!("The space's directory entry is malformed."), true);
+        };
+        let (status, body) = self
+            .send(verified, bearer, session, &space, request, call)
             .await;
-        let status = response.status();
-        let body = response
-            .into_body()
-            .collect()
-            .await
-            .map(|body| body.to_bytes())
-            .unwrap_or_default();
         if !status.is_success() {
-            call.end(Outcome::Error, &format!("http_{}", status.as_u16()));
-            return tool_result(
-                json!(format!(
-                    "The undo did not land ({status}): {}. Read the space before trying again.",
-                    String::from_utf8_lossy(&body)
-                )),
-                true,
-            );
+            writer_failed(call, status, &parsed(&body));
+            let reason = reason(&parsed(&body));
+            let context = &reached.context;
+            return json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!(
+                        "The undo did not land ({status}): {reason}. Read the space before \
+                         trying again."
+                    ),
+                }],
+                "structuredContent": {
+                    "card": super::card::Card::tell(
+                        Some(context.place.clone()),
+                        context.role,
+                        "not undone",
+                        format!(
+                            "I couldn’t reach {} to undo this, so nothing changed.",
+                            context.place.label()
+                        ),
+                        context.agent.clone(),
+                    )
+                    .fine(reason)
+                    .to_value(),
+                },
+                "isError": true,
+            });
         }
         match serde_json::from_slice::<crate::UndoReport>(&body) {
-            Ok(report) => undo::result(&report),
+            Ok(report) => undo::result(&report, &reached.context),
             Err(error) => {
                 call.end(Outcome::Error, "undo_unreadable");
                 tool_result(
@@ -1309,6 +1328,16 @@ fn writer_failed(call: &mut Call, status: StatusCode, body: &Value) {
         .and_then(writer_code)
         .unwrap_or_else(|| format!("http_{}", status.as_u16()));
     call.end(writer_outcome(status), &kind);
+}
+
+/// Whether a writer's failure `status` means the space could not be
+/// reached (a pull, a push or the writer itself failed), rather than that
+/// it refused the document.
+fn unreachable(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT
+    )
 }
 
 /// A writer's answer as JSON, or as a string when it is not.

@@ -13,26 +13,8 @@
         margin: 0;
         background: transparent;
       }
-      /* empty, it leaves the row but stays a live region, so "saving" is
-         announced */
-      .tonk-head .tonk-receipt:empty {
-        position: absolute;
-      }
-      .tonk-head .tonk-receipt {
-        margin-left: auto;
-        color: var(--tonk-text-soft);
-      }
       .tonk-receipt:focus {
         outline: none;
-      }
-      @media (max-width: 480px) {
-        .tonk-ledger {
-          grid-template-columns: minmax(0, 1fr);
-          gap: 0;
-        }
-        .tonk-ledger dd + dt {
-          margin-top: 4px;
-        }
       }
     </style>
   </head>
@@ -42,7 +24,9 @@
     <script>
       (() => {
         const root = document.getElementById('card'),
-          pending = new Map();
+          pending = new Map(),
+          // The `_meta` key a write's result carries its change under.
+          CHANGE = 'tonk/change';
         let rpcId = 0;
 
         function rpc(method, params) {
@@ -105,9 +89,6 @@
           const node = el('header', 'tonk-head');
           if (card.role) node.append(disc(card.disc));
           if (card.space) node.append(place(card.space));
-          const receipt = el('span', 'tonk-receipt');
-          receipt.setAttribute('role', 'status');
-          node.append(receipt);
           if (card.role) node.append(el('span', 'tonk-role', card.role));
           return node;
         }
@@ -117,8 +98,8 @@
           return parts;
         }
 
-        function draw(card) {
-          if (card.kind === 'strip') return strip(card);
+        function draw(card, change) {
+          if (card.kind === 'strip') return strip(card, false, change);
           const section = el('section', 'tonk ' + (card.kind === 'ask' ? 'tonk--ask' : 'tonk--tell'));
           section.setAttribute(
             'aria-label',
@@ -153,9 +134,10 @@
           if (card.fine) section.append(el('p', 'tonk-fine', card.fine));
           if (card.answers?.length) {
             const acts = el('div', 'tonk-acts');
-            // The safe answer on the left, the main one on the right.
+            // In the order the server gives them: the main answer first.
+            const LOOK = { main: 'tonk-btn', ring: 'tonk-btn tonk-btn--ring', link: 'tonk-link' };
             for (const answer of card.answers) {
-              const button = el('button', answer.main ? 'tonk-btn' : 'tonk-btn tonk-btn--ring', answer.label);
+              const button = el('button', LOOK[answer.kind] || LOOK.ring, answer.label);
               button.type = 'button';
               button.addEventListener('click', () => choose(card, section, answer));
               acts.append(button);
@@ -168,7 +150,7 @@
 
         // A strip: one line, the receipt in a live region. Focus moves to
         // the receipt, since what was pressed has gone.
-        function strip(card, focus) {
+        function strip(card, focus, change) {
           const section = el('section', 'tonk tonk-strip');
           section.setAttribute('aria-label', 'Tonk');
           if (card.role) section.append(disc(card.disc));
@@ -176,6 +158,13 @@
           receipt.setAttribute('role', 'status');
           receipt.tabIndex = -1;
           section.append(receipt);
+          // Undo, called with the change the result carries in `_meta`.
+          if (card.undo && change) {
+            const link = el('button', 'tonk-link', card.undo.label);
+            link.type = 'button';
+            link.addEventListener('click', () => undo(card, section, card.undo.tool, change));
+            section.append(link);
+          }
           root.replaceChildren(section);
           // Filled after the region is in the document, so it is announced.
           requestAnimationFrame(() => {
@@ -195,13 +184,51 @@
 
         async function choose(card, section, answer) {
           for (const button of section.querySelectorAll('button')) button.disabled = true;
-          // Saving is a filled disc and the word, not a spinner.
-          const headDisc = section.querySelector('.tonk-head .tonk-disc');
-          if (headDisc) setDisc(headDisc, 'filled', 'saving');
-          section.querySelector('.tonk-head .tonk-receipt').textContent = 'saving';
+          // An answer that calls nothing: its strip, and what the model is told.
+          if (!answer.tool) {
+            strip({ ...card, kind: 'strip', say: answer.receipt, byAgent: false }, true);
+            return tellModel(answer.context);
+          }
+          // Saving is a strip with a filled disc and the word, not a spinner.
+          strip({ kind: 'strip', role: card.role, disc: 'filled', say: 'saving' }, false);
           let result;
           try {
             result = await rpc('tools/call', { name: answer.tool, arguments: answer.arguments });
+          } catch (error) {
+            result = {
+              isError: true,
+              content: [{ type: 'text', text: String(error?.message || error) }],
+            };
+          }
+          const text = result?.content?.find((part) => part.type === 'text')?.text;
+          const next = result?.structuredContent?.card;
+          if (next?.kind === 'strip') strip(next, true, result?._meta?.[CHANGE]);
+          else {
+            const shown = draw(
+              next || {
+                kind: 'tell',
+                space: card.space,
+                role: card.role,
+                disc: card.disc,
+                label: 'not answered',
+                say: 'The space did not answer, so nothing changed. Ask me again.',
+              },
+            );
+            shown.tabIndex = -1;
+            shown.focus({ preventScroll: true });
+          }
+          await tellModel(text);
+        }
+
+        // Undo from a strip: the receipt says so while it runs, and the
+        // card the tool answers takes the strip's place, a strip saying
+        // what stands or a tell saying why it is not undone.
+        async function undo(card, section, tool, change) {
+          for (const button of section.querySelectorAll('button')) button.disabled = true;
+          section.querySelector('.tonk-receipt').textContent = 'undoing';
+          let result;
+          try {
+            result = await rpc('tools/call', { name: tool, arguments: change });
           } catch (error) {
             result = {
               isError: true,
@@ -218,8 +245,8 @@
                 space: card.space,
                 role: card.role,
                 disc: card.disc,
-                label: 'not answered',
-                say: text || 'The space did not answer.',
+                label: 'not undone',
+                say: text || 'The space did not answer, so nothing changed.',
               },
             );
             shown.tabIndex = -1;
@@ -230,12 +257,10 @@
 
         function present(params) {
           const card = params?.structuredContent?.card;
-          if (card) return draw(card);
-          draw({
-            kind: 'tell',
-            label: 'nothing to show',
-            say: params?.content?.find((part) => part.type === 'text')?.text || 'Tonk sent nothing to show.',
-          });
+          if (card) return draw(card, params?._meta?.[CHANGE]);
+          // A result with no card is one the model has to fix; its words
+          // are for the model, so the person is told only what stands.
+          draw({ kind: 'tell', label: 'nothing changed', say: 'Nothing changed.' });
         }
 
         addEventListener('message', (event) => {
