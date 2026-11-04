@@ -2,6 +2,7 @@
 //! Cross-platform utilities for the Tonk project.
 
 pub mod device_label;
+pub mod diagnostics;
 
 /// Cross-platform logging macro that uses `console.log` on web and `println!` on native.
 ///

@@ -123,6 +123,12 @@ const UPGRADING_CONTROL: &str = "upgrading";
 /// consumer's `error` method as an `upgrade` error, with the reason.
 const UPGRADE_FAILED_CONTROL: &str = "upgrade-failed";
 
+/// The control frame the worker sends when the branch a page asked for is
+/// not here yet. It is not an answer: the rows follow on the same stream
+/// when the branch arrives. Delivered to the consumer's `notice` method,
+/// which decides what "not here yet" means for what it already shows.
+const PENDING_CONTROL: &str = "pending";
+
 /// Handle a control frame on a subscription stream. Returns `true` when the
 /// frame was a control message (consumed here, not delivered as rows).
 ///
@@ -136,6 +142,7 @@ fn handle_control_frame(
     entry_id: EntryId,
     frame: &str,
     consumer: &Element,
+    tag: Option<&JsValue>,
 ) -> bool {
     let trimmed = frame.trim();
     if trimmed == UPDATE_PENDING_FRAME {
@@ -165,6 +172,18 @@ fn handle_control_frame(
                     .unwrap_or_else(|| "the upgrade failed".to_string()),
             );
             invoke_method(consumer, "error", &error_to_js(&detail), None);
+        }
+        PENDING_CONTROL => {
+            // A consumer that can tell "not here yet" from "nothing
+            // matched" hears the notice, with the subscription's tag. One
+            // that cannot gets the empty set it always got.
+            if has_method(consumer, "notice") {
+                let payload = js_sys::Object::new();
+                let _ = Reflect::set(&payload, &"control".into(), &PENDING_CONTROL.into());
+                invoke_method(consumer, "notice", &payload, tag);
+            } else {
+                invoke_method(consumer, "reset", &js_sys::Array::new(), tag);
+            }
         }
         _ => {}
     }
@@ -623,7 +642,13 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
                 if !state_frame.borrow().registry.is_current(entry_id, attempt) {
                     return;
                 }
-                if handle_control_frame(&state_frame, entry_id, frame, &consumer_frame) {
+                if handle_control_frame(
+                    &state_frame,
+                    entry_id,
+                    frame,
+                    &consumer_frame,
+                    tag_frame.as_ref(),
+                ) {
                     return;
                 }
                 if !consumer_frame.is_connected() {
@@ -865,7 +890,13 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
             if !state_frame.borrow().registry.is_current(entry_id, attempt) {
                 return;
             }
-            if handle_control_frame(&state_frame, entry_id, frame, &consumer_frame) {
+            if handle_control_frame(
+                &state_frame,
+                entry_id,
+                frame,
+                &consumer_frame,
+                tag_frame.as_ref(),
+            ) {
                 return;
             }
             if !consumer_frame.is_connected() {
@@ -946,6 +977,11 @@ fn handle_unsubscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
 
 /// Invoke a method on a consumer element with one positional
 /// payload + an `{ tag }` opts object.
+/// Whether `consumer` has a callable `method`.
+fn has_method(consumer: &Element, method: &str) -> bool {
+    Reflect::get(consumer, &JsValue::from_str(method)).is_ok_and(|value| value.is_function())
+}
+
 fn invoke_method(consumer: &Element, method: &str, payload: &JsValue, tag: Option<&JsValue>) {
     invoke_method_marked(consumer, method, payload, tag, false);
 }

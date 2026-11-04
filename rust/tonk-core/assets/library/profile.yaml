@@ -2591,32 +2591,58 @@ element!: &hub-discover
             const link = el('a', '', space.name || space.subject, row);
             link.href = `/space/${space.subject}`;
             const access = space.access === 'write' ? 'read and write' : 'read';
-            el('span', 'contact-access', space.expiresAt ? `${access} · until ${date(space.expiresAt)}` : access, row);
-            const revoke = el('button', 'cta', 'revoke', row);
+            const via = space.viaLink ? ' · from a share link' : '';
+            el('span', 'contact-access', (space.expiresAt ? `${access} · until ${date(space.expiresAt)}` : access) + via, row);
+            // A removal under way or failed, as the worker reports it: the
+            // grant stays listed until the access service acknowledges it.
+            const state = space.removal?.state;
+            const label = state === 'pending' ? 'waiting for passkey…'
+              : state === 'working' ? 'revoking…'
+              : state === 'failed' ? 'retry revoke' : 'revoke';
+            const revoke = el('button', 'cta', label, row);
             revoke.type = 'button';
+            // Waiting for the passkey stays pressable: a dismissed prompt
+            // is not reported back, and asking again is harmless.
+            revoke.disabled = state === 'working';
             revoke.dataset.agentRevoke = agent.key;
             revoke.dataset.agentSpace = space.subject;
+            if (space.viaLink) revoke.dataset.agentLink = 'true';
             revoke.setAttribute('aria-label', `revoke ${name}’s access to ${space.name || space.subject}`);
+            if (state === 'failed' && status && !status.textContent)
+              status.textContent = `Removing ${name}’s access to ${space.name || 'a space'} did not finish, so it is still listed: ${space.removal.reason}`;
           }
         }
       }
     agents-revoke: |
       async (self, button) => {
         const status = self.querySelector('[data-contacts-status]');
+        const viaLink = button.dataset.agentLink === 'true';
         if (button.dataset.confirming !== 'true') {
           button.dataset.confirming = 'true';
           button.textContent = 'confirm revoke';
+          // A share link's grant is revoked by the agent itself, whose key
+          // only the passkey opens. The link stays usable either way.
+          if (viaLink && status) status.textContent = 'Tonk will ask for your passkey. This revokes the agent’s access; it does not end the share link, which still works for whoever has it.';
           return;
         }
         button.disabled = true;
         button.textContent = 'revoking…';
+        const agent = button.dataset.agentRevoke;
+        const space = button.dataset.agentSpace;
         try {
           const origin = window.tonk?.context?.origin ?? window.location.origin;
-          const response = await fetch(`${origin}/api/agents/${encodeURIComponent(button.dataset.agentRevoke)}/revoke`, {
+          const response = await fetch(`${origin}/api/agents/${encodeURIComponent(agent)}/revoke`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ space: button.dataset.agentSpace }),
+            body: JSON.stringify({ space }),
           });
           if (!response.ok) { const error = new Error(await response.text()); error.status = response.status; throw error; }
+          const answer = await response.json().catch(() => null);
+          if (answer?.pending) {
+            button.textContent = 'waiting for passkey…';
+            if (status) status.textContent = 'Use your passkey to finish revoking the access.';
+            self.agentsWatch(agent, space, Date.now());
+            return;
+          }
           if (status) status.textContent = 'Access revoked. Enforcement may take a moment; anything already read stays read.';
           await self.agents();
         } catch (error) {
@@ -2624,6 +2650,37 @@ element!: &hub-discover
           button.dataset.confirming = '';
           button.textContent = 'retry revoke';
           if (status) status.textContent = 'The revocation could not be confirmed. Try again.';
+        }
+      }
+    # After the passkey is asked for: the space leaves the list once the
+    # access service has acknowledged every revocation. Until then it
+    # stays, with the removal's state; a dismissed passkey leaves it there
+    # to try again.
+    agents-watch: |
+      async (self, agent, space, started) => {
+        const status = self.querySelector('[data-contacts-status]');
+        const again = () => setTimeout(() => self.agentsWatch(agent, space, started), 1500);
+        let agents;
+        try {
+          const origin = window.tonk?.context?.origin ?? window.location.origin;
+          const response = await fetch(`${origin}/api/agents`);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          agents = await response.json();
+        } catch { if (Date.now() - started < 4 * 60 * 1000) again(); return; }
+        if (!self.isConnected || !Array.isArray(agents)) return;
+        const held = agents.find((each) => each.key === agent)?.spaces?.find((each) => each.subject === space);
+        const state = held?.removal?.state;
+        if (status) status.textContent = '';
+        self.agentsRender(agents);
+        if (!held) {
+          if (status) status.textContent = 'Access revoked. The access service refuses the agent’s grants for that space; a session already open may keep reading for a few minutes. The share link still works for whoever has it.';
+        } else if (state === 'failed') {
+          // agentsRender has said why; the row offers to retry.
+        } else if ((state === 'pending' || state === 'working') && Date.now() - started < 4 * 60 * 1000) {
+          if (status) status.textContent = state === 'working' ? 'Revoking the agent’s access…' : 'Use your passkey to finish revoking the access. If you closed the prompt, press revoke again.';
+          again();
+        } else if (status) {
+          status.textContent = 'The revocation did not finish, so the access is still listed. Try again.';
         }
       }
     load: |

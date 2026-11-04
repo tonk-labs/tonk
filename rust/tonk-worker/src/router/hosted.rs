@@ -23,10 +23,27 @@ use super::{AppState, LspHub};
 use crate::TonkWorkerError;
 
 pub mod access;
+pub mod join;
 pub mod mcp;
 pub mod view;
 mod writer;
 pub use writer::{NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, writer_seed};
+
+async fn save_proofs(
+    state: &crate::worker::TonkState,
+    proofs: &[DelegationChain],
+) -> Result<(), TonkWorkerError> {
+    for chain in proofs {
+        state
+            .profile
+            .access()
+            .save(UcanDelegation(chain.clone()))
+            .perform(&state.operator)
+            .await
+            .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+    }
+    Ok(())
+}
 
 /// The ordinary worker router over a peer that exists for one request.
 pub struct HostedPeer {
@@ -64,20 +81,38 @@ impl HostedPeer {
         caches: HeldCaches,
     ) -> Result<Self, TonkWorkerError> {
         let internal = |error: &dyn std::fmt::Display| TonkWorkerError::Internal(error.to_string());
-        let (credentials, _) = crate::device::open_system(directory.clone())
-            .await
-            .map_err(|error| internal(&error))?;
         let signer = Ed25519Signer::import(seed)
             .await
             .map_err(|error| internal(&error))?;
+        Self::open_as(directory, signer, proofs, caches).await
+    }
+
+    /// [`open_in`](Self::open_in), acting as `signer` itself rather than a
+    /// key derived from a seed: a browser view's key, which is generated
+    /// non-extractable and so has no seed to hand over.
+    pub async fn open_as(
+        directory: Directory,
+        signer: Ed25519Signer,
+        proofs: &[DelegationChain],
+        caches: HeldCaches,
+    ) -> Result<Self, TonkWorkerError> {
+        let internal = |error: &dyn std::fmt::Display| TonkWorkerError::Internal(error.to_string());
+        let (credentials, _) = crate::device::open_system(directory.clone())
+            .await
+            .map_err(|error| internal(&error))?;
         let did = signer.did();
-        Subject::from(did!("local:storage"))
+        let created = Subject::from(did!("local:storage"))
             .attenuate(storage_fx::Storage)
             .attenuate(Location::new(directory.clone(), "hosted"))
             .create(Credential::Signer(SignerCredential::from(signer)))
             .perform(&credentials)
-            .await
-            .map_err(|error| internal(&error))?;
+            .await;
+        // A store opened before keeps its key: reopening it reads what it
+        // already pulled, and the identity check below refuses another key.
+        match created {
+            Ok(_) | Err(storage_fx::StorageError::AlreadyExists(_)) => {}
+            Err(error) => return Err(internal(&error)),
+        }
         let registry =
             crate::device::Registry::holding("hosted".to_owned(), directory.clone(), caches);
         let storage = registry.storage().await?;
@@ -95,15 +130,7 @@ impl HostedPeer {
         if state.profile.did() != did {
             return Err(TonkWorkerError::Internal("hosted identity mismatch".into()));
         }
-        for chain in proofs {
-            state
-                .profile
-                .access()
-                .save(UcanDelegation(chain.clone()))
-                .perform(&state.operator)
-                .await
-                .map_err(|error| internal(&error))?;
-        }
+        save_proofs(&state, proofs).await?;
         let (router, state, hub) = super::api_router_with_state(state);
         Ok(Self {
             router,
@@ -111,6 +138,26 @@ impl HostedPeer {
             hub,
             directory,
         })
+    }
+
+    /// Hold `proofs` too: a renewed delegation, or another view's, for a
+    /// peer already open.
+    pub async fn grant(&self, proofs: &[DelegationChain]) -> Result<(), TonkWorkerError> {
+        let state = self.state.read().await;
+        save_proofs(&state, proofs).await
+    }
+
+    /// Read `space`'s head again from the store and repaint the views over
+    /// it: another peer over the same store committed or pulled.
+    pub async fn refresh(&self, space: &Did) -> Result<(), TonkWorkerError> {
+        let state = self.state.read().await;
+        state
+            .reactor
+            .refresh_branch(space.as_ref(), "main", &state.operator)
+            .await
+            .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+        state.reactor.run_scheduled_polls(&state.operator).await;
+        Ok(())
     }
 
     /// Mount `subject` as a replica of the space served at `remote`. Its
@@ -122,6 +169,25 @@ impl HostedPeer {
             .await
             .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
         Ok(())
+    }
+
+    /// Keep the mounted spaces live until `stopped`, as the service worker
+    /// keeps its open spaces: each space's upstream is watched (through
+    /// the provider's `live.rs`), a head it delivers is pulled and the
+    /// views over it repainted, and what this peer commits is pushed.
+    ///
+    /// A watch that ends is begun again on the next of the ticks every
+    /// `rewatch`; the ticks pull nothing themselves.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub fn follow(&self, rewatch: web_time::Duration, stopped: std::rc::Rc<dyn Fn() -> bool>) {
+        wasm_bindgen_futures::spawn_local(super::push_loops(self.state.clone(), stopped.clone()));
+        let state = self.state.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            while !stopped() {
+                super::watch_open_repos(&state).await;
+                let _ = crate::sleep(rewatch).await;
+            }
+        });
     }
 
     /// Point this peer's access branch at the agent space `agent`, served
@@ -137,6 +203,26 @@ impl HostedPeer {
     pub async fn agent_access(&self, agent: &Did) -> Result<access::AgentAccess, TonkWorkerError> {
         let state = self.state.read().await;
         access::read_agent_access(&state, agent).await
+    }
+
+    /// The grants in force the agent space `agent` holds for `space`,
+    /// read from its replica here. See [`access::space_chains`].
+    pub async fn space_chains(
+        &self,
+        agent: &Did,
+        space: &Did,
+    ) -> Result<Vec<DelegationChain>, TonkWorkerError> {
+        let state = self.state.read().await;
+        access::space_chains(&state, agent, space).await
+    }
+
+    /// The tree of `<tonk-display>` elements `route` mounts in the mounted
+    /// space `space`, or its home when `route` is empty, read from the
+    /// replica here as it is now. Each node carries the route that shows it
+    /// alone. See [`super::view_tree`].
+    pub async fn outline(&self, space: &Did, route: &str) -> Result<serde_json::Value, String> {
+        let route = super::view_tree::route(&self.state, space, route).await?;
+        super::view_tree::outline(&self.state, space, &route).await
     }
 
     /// The DID this peer signs as.

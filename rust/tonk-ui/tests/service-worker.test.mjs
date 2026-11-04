@@ -148,9 +148,17 @@ async function loadWith({
   assetManifestHash = "dev",
   assetPaths = ["/", "/ui-abc.js"],
   activateSource = "async () => ({})",
+  navigationNetworkMs = null,
   exports = [],
 }) {
-  const body = source
+  let patched = source;
+  if (navigationNetworkMs != null) {
+    patched = patched.replace(
+      /^const NAVIGATION_NETWORK_MS = .*$/m,
+      `const NAVIGATION_NETWORK_MS = ${navigationNetworkMs};`,
+    );
+  }
+  const body = patched
     .replace(/^const BUILD_ID = .*$/m, `const BUILD_ID = "${buildId}";`)
     .replace(/^const WORKER_WASM_HASH = .*$/m, `const WORKER_WASM_HASH = "${wasmHash}";`)
     .replace(
@@ -2449,4 +2457,79 @@ test("optional download retention failure does not break verified foreground loa
   caches.open = async () => { throw new Error("quota exceeded"); };
   const mod = await loadWith({ exports: ["sharedVerifiedAsset"] });
   assert.equal(await (await mod.sharedVerifiedAsset("/", await sha256Hex(utf8(body)))).text(), body);
+});
+
+describe("navigation before the offline copy is adopted", () => {
+  async function rootFixture(buildId) {
+    const root = "<!doctype html><title>root</title>";
+    const manifestText = JSON.stringify({
+      version: 1,
+      build: buildId,
+      assets: { "/": await sha256Hex(utf8(root)) },
+    });
+    return { root, manifestText, manifestHash: await sha256Hex(utf8(manifestText)) };
+  }
+
+  test("a restarted worker serves a page it already downloaded without the network", async () => {
+    const buildId = "nav-restart";
+    const { root, manifestText, manifestHash } = await rootFixture(buildId);
+    let stalled = false;
+    withGlobals({
+      fetchImpl: async input => {
+        if (stalled) return new Promise(() => {});
+        const path = new URL(input).pathname;
+        if (path === "/asset-manifest.json") return new Response(manifestText);
+        if (path === "/") return new Response(root);
+        return new Response("", { status: 404 });
+      },
+    });
+    const options = { buildId, assetManifestHash: manifestHash, assetPaths: ["/"], exports: ["serveNavigation"] };
+    let mod = await loadWith(options);
+    assert.equal(await (await mod.serveNavigation()).text(), root);
+
+    stalled = true;
+    mod = await loadWith(options);
+    const response = await Promise.race([
+      mod.serveNavigation(),
+      new Promise(resolve => setTimeout(() => resolve(null), 500)),
+    ]);
+    assert.ok(response, "navigation waited on a stalled network for bytes it already had");
+    assert.equal(await response.text(), root);
+  });
+
+  test("a page the worker never downloaded does not wait forever on a stalled network", async () => {
+    const buildId = "nav-stall";
+    const { manifestHash } = await rootFixture(buildId);
+    withGlobals({ fetchImpl: () => new Promise(() => {}) });
+    const mod = await loadWith({
+      buildId,
+      assetManifestHash: manifestHash,
+      assetPaths: ["/"],
+      navigationNetworkMs: 50,
+      exports: ["serveNavigation"],
+    });
+    const response = await Promise.race([
+      mod.serveNavigation(),
+      new Promise(resolve => setTimeout(() => resolve(null), 1_000)),
+    ]);
+    assert.ok(response, "navigation never answered");
+    assert.match(await response.text(), /Checking for a recoverable Tonk version/);
+  });
+
+  test("a development build never answers from a retained manifest", async () => {
+    let manifest = JSON.stringify({ version: 1, build: "dev-nav", assets: { "/": "0".repeat(64) } });
+    let requests = 0;
+    withGlobals({
+      fetchImpl: async () => {
+        requests++;
+        return new Response(manifest);
+      },
+    });
+    const options = { buildId: "dev-nav", exports: ["fetchVerifiedAssetManifest"] };
+    await (await loadWith(options)).fetchVerifiedAssetManifest();
+    manifest = JSON.stringify({ version: 1, build: "dev-nav", assets: { "/": "0".repeat(64), "/new.js": "1".repeat(64) } });
+    const entries = await (await loadWith(options)).fetchVerifiedAssetManifest();
+    assert.equal(requests, 2);
+    assert.equal(entries.length, 2);
+  });
 });

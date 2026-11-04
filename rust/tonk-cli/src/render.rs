@@ -38,3 +38,11 @@ impl QueryBackend for TonkSite {
 pub async fn render(site: &TonkSite, route: &RenderRoute) -> Result<String, RenderError> {
     tonk_render::render_page(site, route).await
 }
+
+/// The `<tonk-display>` tree that rendering `route` against `site` mounts.
+pub async fn outline(
+    site: &TonkSite,
+    route: &RenderRoute,
+) -> Result<tonk_render::Outline, RenderError> {
+    tonk_render::outline(site, route).await
+}

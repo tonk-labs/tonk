@@ -151,7 +151,9 @@ async fn targets(
             "each space may be chosen once".into(),
         ));
     }
-    let tonk = state.read().await;
+    // A clone, not a guard: a first-use mount below can pull over the
+    // network.
+    let tonk = state.read().await.clone();
     if super::account::provider(&tonk).await.is_none() {
         return Err(TonkWorkerError::Forbidden(
             "sign in before connecting an agent".into(),
@@ -646,7 +648,7 @@ async fn push_new_space(state: &AppState, key: &str) -> Result<(), String> {
     super::sync::ensure_session_authority(state)
         .await
         .map_err(|error| error.to_string())?;
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     tonk.reactor
         .repository(key)
         .branch(super::repository::CONTENT_BRANCH)
@@ -755,14 +757,18 @@ const DIALOG_PRINCIPAL_KEY: &str = "dialog.principal/key";
 
 /// Open the key of `agent`, which this browser's peer holds sealed to
 /// the account `root`, as the account: what lets the agent sign a new
-/// session without its key ever being sealed to anyone else.
+/// session, or withdraw grants issued to it, without its key ever being
+/// sealed to anyone else.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-async fn open_held(
+pub(super) async fn open_held(
     tonk: &crate::TonkState,
-    root: &Ed25519Signer,
+    root: &dialog_credentials::Ed25519Signer,
     agent: &Did,
-) -> Result<Ed25519Signer, String> {
+) -> Result<dialog_credentials::Ed25519Signer, String> {
+    use dialog_credentials::Ed25519Signer;
     use dialog_credentials::secret::{Context, SealedSecret};
+    use dialog_varsig::Principal as _;
+    use zeroize::Zeroizing;
     let held =
         dialog_repository::secrets::held_principal(tonk.profile.state(), agent, &tonk.profile)
             .await
@@ -801,7 +807,7 @@ async fn open_held(
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 /// Mark the agent space as one, and note which provider's apps it is for.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-async fn mark(
+pub(super) async fn mark(
     tonk: &crate::TonkState,
     key: &str,
     agent: &Did,
@@ -827,11 +833,11 @@ async fn mark(
 
 /// One space granted to an agent, as its space records it.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-struct Granted {
-    subject: Did,
-    name: String,
-    home: url::Url,
-    chains: Vec<dialog_ucan_core::DelegationChain>,
+pub(super) struct Granted {
+    pub(super) subject: Did,
+    pub(super) name: String,
+    pub(super) home: url::Url,
+    pub(super) chains: Vec<dialog_ucan_core::DelegationChain>,
 }
 
 /// Record in the agent space what it may reach, the way the account
@@ -841,7 +847,7 @@ struct Granted {
 /// `xyz.tonk.space/home-address` on the space's entity). What the agent
 /// may do there is read off the chains themselves.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-async fn record_grants(
+pub(super) async fn record_grants(
     tonk: &crate::TonkState,
     key: &str,
     granted: &[Granted],
@@ -1093,7 +1099,6 @@ mod tests {
     use super::*;
     use dialog_effects::storage::Directory;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
 
     /// A token minted the way the approval page's request mints one is
     /// one the hosted front accepts, with the access that was chosen.
@@ -1108,7 +1113,7 @@ mod tests {
         let registry = crate::device::Registry::new("agent-session".into(), location);
         let tonk =
             crate::worker::boot_state(storage, "agent-session".into(), profile, registry).await?;
-        let state: AppState = Arc::new(RwLock::new(tonk));
+        let state: AppState = Arc::new(crate::StateLock::new(tonk));
 
         let mut keys = Vec::new();
         for name in ["Notes", "Plans"] {
@@ -1195,7 +1200,7 @@ mod tests {
         let registry = crate::device::Registry::new("agent-grants".into(), location);
         let tonk =
             crate::worker::boot_state(storage, "agent-grants".into(), profile, registry).await?;
-        let state: AppState = Arc::new(RwLock::new(tonk));
+        let state: AppState = Arc::new(crate::StateLock::new(tonk));
 
         let mut keys = Vec::new();
         for name in ["Notes", "Plans"] {
@@ -1311,6 +1316,28 @@ mod tests {
         }
         assert!(access.get(&agent).is_some_and(|own| own.agent));
         assert_eq!(access.spaces.len(), 3, "{access:?}");
+
+        // What a view's delegation of a space extends: each grant whole,
+        // from the space to the agent space, as the approval signed it.
+        for space in &granted {
+            let chains =
+                super::super::hosted::access::space_chains(&tonk, &agent, &space.subject).await?;
+            assert_eq!(chains.len(), space.chains.len(), "{}", space.name);
+            for chain in &chains {
+                assert_eq!(chain.issuer(), &space.subject, "rooted at {}", space.name);
+                assert_eq!(chain.audience(), &agent);
+                assert!(
+                    space.chains.iter().any(|signed| signed.proofs().count()
+                        == chain.proofs().count()
+                        && signed
+                            .proofs()
+                            .zip(chain.proofs())
+                            .all(|(a, b)| a.to_cid() == b.to_cid())),
+                    "{} answers a chain the approval signed",
+                    space.name
+                );
+            }
+        }
         Ok(())
     }
 
@@ -1372,7 +1399,7 @@ mod tests {
         )
         .await?;
         tonk_account::peer::hand_over(&tonk.profile, &union).await?;
-        let state: AppState = Arc::new(RwLock::new(tonk));
+        let state: AppState = Arc::new(crate::StateLock::new(tonk));
 
         let mut agents = Vec::new();
         for (name, byte, provider) in [

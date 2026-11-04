@@ -204,7 +204,6 @@ mod tests {
 
     use dialog_credentials::Ed25519Signer;
     use dialog_varsig::Principal as _;
-    use tokio::sync::RwLock;
 
     use super::*;
 
@@ -222,7 +221,7 @@ mod tests {
             .await
             .unwrap();
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
-        let state = Arc::new(RwLock::new(tonk));
+        let state = Arc::new(crate::StateLock::new(tonk));
 
         let report = run_migration(state.clone()).await.unwrap();
         assert_eq!(report.migrated, 0);
