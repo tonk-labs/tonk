@@ -431,6 +431,7 @@
       }
       watch();
       function reached(next) {
+        if (framed) parent.postMessage({ tonkFrame: 'stage', stage: next }, '*');
         if (next) note(next);
         else if (stage) note('shown');
         stage = next;
@@ -966,14 +967,18 @@
         ]);
       }
       async function connectFramed() {
+        reached('starting the Tonk worker');
         await controlled();
+        reached('getting access to the space');
         const identified = await fetch('/api/identify');
         if (!identified.ok) throw Error('The Tonk worker has no key (' + identified.status + ').');
         const { did } = await identified.json();
         const offered = fromRelay('access');
         parent.postMessage({ tonkFrame: 'hello', did }, '*');
         await accept(await offered);
+        reached('loading the Tonk runtime');
         await loadPack();
+        reached('rendering the page');
       }
       async function accept(offer) {
         if (new URL(offer.route.remote).origin !== location.origin)
@@ -1338,6 +1343,9 @@
         // The relay: from the provider's framed page.
         if (!framed && viewFrame && event.source === frame.contentWindow && event.origin === origin) {
           if (m?.tonkFrame === 'size') resize(m.height);
+          // How far the framed page has got, so this relay's note names
+          // the stage it waits on, and clears once its view has drawn.
+          else if (m?.tonkFrame === 'stage') reached(String(m.stage ?? '').slice(0, 120));
           else if (m?.tonkFrame === 'loading') viewFrame.loading?.();
           else if (m?.tonkFrame === 'hello' && typeof m.did === 'string') {
             viewFrame.did = m.did;
@@ -1443,6 +1451,7 @@
       function open() {
         return initialized
           .then(async (result) => {
+            if (hostFrames(result)) reached('framing the provider\'s page');
             if (hostFrames(result) && (await tryFrame())) return note('framed'), offer();
             if (viewFrame !== undefined) restoreSandbox();
             await connect();
