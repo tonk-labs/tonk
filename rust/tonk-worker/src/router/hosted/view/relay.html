@@ -1085,6 +1085,9 @@
         });
       }
       async function offer() {
+        // The framed page mounts its view with the agent app's theme, so it
+        // hears it before its access, each time it is (re)framed.
+        applyTheme();
         access = await grant(viewFrame.did);
         frame.contentWindow.postMessage(
           {
@@ -1157,6 +1160,18 @@
           return navigate(
             u.pathname.startsWith(prefix + '/') ? u.pathname.slice(prefix.length) : u.pathname,
           );
+        }
+        // A link the page opens outside itself, as the stock guest sends
+        // a click on an external link or a new-tab click: through the agent
+        // app. A link within the space opens the space in Tonk.
+        if (message.type === 'open') {
+          const u = new URL(
+            String(message.href ?? ''),
+            'https://tonk.foundation/space/' + route.subject + route.path,
+          );
+          if (u.origin === 'https://tonk.foundation') return openLink(origin + u.pathname + u.search + u.hash);
+          if (/^https?:$/.test(u.protocol)) return openLink(u.href);
+          throw Error('Only web links open from a view.');
         }
         if (['analytics', 'unsubscribe'].includes(message.type)) return;
         // A view of a space this connection may only read refuses a write

@@ -320,6 +320,9 @@ test("a link out of the view opens through the agent app's open-link", async () 
       { type: 'tonk-view-size', height: 120 },
       { wait: 300 },
       { port: { v: 1, type: 'navigate', href: 'https://example.com/a?b=c' } },
+      // What the stock guest sends for an external or new-tab link.
+      { port: { v: 1, type: 'open', href: 'https://example.org/doc' } },
+      { port: { v: 1, type: 'open', href: '/packing?tab=2' } },
     ],
   });
   try {
@@ -327,11 +330,15 @@ test("a link out of the view opens through the agent app's open-link", async () 
     await until(frame, () => !document.querySelector('.tonk-well').hasAttribute('aria-busy'));
     for (let tries = 0; tries < 50; tries++) {
       const asked = await card.view.asked();
-      if (asked.some((ask) => ask.method === 'ui/open-link')) break;
+      if (asked.filter((ask) => ask.method === 'ui/open-link').length >= 3) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     const opened = (await card.view.asked()).filter((ask) => ask.method === 'ui/open-link');
-    assert.deepEqual(opened, [{ method: 'ui/open-link', url: 'https://example.com/a?b=c' }]);
+    assert.deepEqual(opened, [
+      { method: 'ui/open-link', url: 'https://example.com/a?b=c' },
+      { method: 'ui/open-link', url: 'https://example.org/doc' },
+      { method: 'ui/open-link', url: `${card.provider.origin}/packing?tab=2` },
+    ]);
     assert.equal(await frame.evaluate(() => document.querySelector('#error').hidden), true);
   } finally {
     await card.close();
