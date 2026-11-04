@@ -100,45 +100,49 @@ fn a_tell_where_the_person_is_not_in_the_space_has_no_role() {
 }
 
 #[dialog_common::test]
-fn an_ask_lists_its_answers_safe_first() {
+fn an_ask_lists_its_answers_main_first() {
     let card = Card::ask(
         launch(),
         Some(Role::Write),
-        "change 2 items in Launch",
+        "install Decision log in Launch",
         agent(),
     )
-    .change("+", "Parked", Some("group".into()))
+    .change("+", "Decision log", Some("view".into()))
     .entry("in", "Launch")
-    .entry_bot("made by", "Juno")
+    .entry_bot("changed by", "you")
     .answer(
-        "not now",
-        false,
-        "tonk_proposal_dismiss",
-        json!({ "id": "a" }),
-    )
-    .answer(
-        "change 2 items",
-        true,
+        "install",
+        Look::Main,
         "tonk_proposal_apply",
         json!({ "id": "a" }),
     )
+    .answer(
+        "not now",
+        Look::Ring,
+        "tonk_proposal_dismiss",
+        json!({ "id": "a" }),
+    )
+    .answer_saying("drop it", Look::Link, "dropped", "The person dropped it.")
     .to_value();
     assert_eq!(card["role"], "write");
     assert_eq!(card["disc"], "filled");
     assert_eq!(card["space"]["item"], "Review");
     assert_eq!(
         card["changes"],
-        json!([{ "mark": "+", "name": "Parked", "kind": "group" }])
+        json!([{ "mark": "+", "name": "Decision log", "kind": "view" }])
     );
     assert_eq!(
         card["ledger"][1],
-        json!({ "term": "made by", "value": "Juno", "bot": true })
+        json!({ "term": "changed by", "value": "you", "bot": true })
     );
-    let answers = card["answers"].as_array().unwrap();
-    assert_eq!(answers[0]["label"], "not now");
-    assert!(answers[0].get("main").is_none());
-    assert_eq!(answers[1]["main"], true);
-    assert_eq!(answers[1]["tool"], "tonk_proposal_apply");
+    assert_eq!(
+        card["answers"],
+        json!([
+            { "label": "install", "kind": "main", "tool": "tonk_proposal_apply", "arguments": { "id": "a" } },
+            { "label": "not now", "kind": "ring", "tool": "tonk_proposal_dismiss", "arguments": { "id": "a" } },
+            { "label": "drop it", "kind": "link", "receipt": "dropped", "context": "The person dropped it." },
+        ])
+    );
 }
 
 #[dialog_common::test]

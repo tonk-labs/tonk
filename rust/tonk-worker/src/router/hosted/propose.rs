@@ -22,7 +22,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use serde_json::{Value, json};
 
-use super::card::{Agent, Card, Disc, Place, Role};
+use super::card::{Agent, Card, Disc, Look, Place, Role};
 
 /// The app-only tool that applies a held change.
 pub const APPLY: &str = "tonk_proposal_apply";
@@ -165,9 +165,25 @@ pub struct Changed {
     pub mark: &'static str,
     /// The entity's name for a person.
     pub name: String,
-    /// What it is: its expression's label, or `command`.
-    pub kind: String,
+    /// What kind of thing it is, where that is a part of the space's
+    /// schema (`view`, `concept`, ...) or a command; `None` for a record.
+    pub kind: Option<String>,
+    /// The label of the expression it came from.
+    pub of: String,
+    /// Whether it is a command the document runs, not a durable fact.
+    pub command: bool,
 }
+
+/// The labels of the space's own parts, which a change list names as
+/// they are; any other label is a record's concept.
+const PARTS: &[&str] = &[
+    "view",
+    "concept",
+    "attribute",
+    "rule",
+    "component",
+    "effect",
+];
 
 /// What `evaluation` (a worker `/evaluate` answer) changes: for each
 /// expression, each entity it matches after and not before is added,
@@ -189,6 +205,10 @@ pub fn changed(evaluation: &Value) -> Vec<Changed> {
         let was = results(before.get(index));
         let now = results(Some(block));
         let this = |result: &Value| result["this"].as_str().unwrap_or_default().to_owned();
+        let part = PARTS
+            .iter()
+            .find(|part| label.trim_end_matches('!') == **part)
+            .map(|part| (*part).to_owned());
         for result in &now {
             // A match that reads the same before and after is a query's
             // answer, or a write of what was there already: no change.
@@ -196,15 +216,17 @@ pub fn changed(evaluation: &Value) -> Vec<Changed> {
                 continue;
             }
             let existed = was.iter().any(|old| this(old) == this(result));
-            let kind = if result["transient"].as_bool().unwrap_or(false) {
-                "command".to_owned()
-            } else {
-                label.clone()
-            };
+            let command = result["transient"].as_bool().unwrap_or(false);
             changed.push(Changed {
                 mark: if existed { "~" } else { "+" },
                 name: name_of(result, &label),
-                kind,
+                kind: if command {
+                    Some("command".to_owned())
+                } else {
+                    part.clone()
+                },
+                of: label.clone(),
+                command,
             });
         }
         for result in &was {
@@ -212,7 +234,9 @@ pub fn changed(evaluation: &Value) -> Vec<Changed> {
                 changed.push(Changed {
                     mark: "−",
                     name: name_of(result, &label),
-                    kind: label.clone(),
+                    kind: part.clone(),
+                    of: label.clone(),
+                    command: false,
                 });
             }
         }
@@ -243,35 +267,114 @@ fn name_of(result: &Value, label: &str) -> String {
     }
 }
 
-/// How many things `evaluation` changes, in words: "3 items", or "1
-/// change" for a write that touches no listed entity.
-fn count(changes: usize, claims: u64) -> String {
-    match (changes, claims) {
-        (1, _) => "1 item".to_owned(),
-        (0, 1) => "1 change".to_owned(),
-        (0, claims) => format!("{claims} changes"),
-        (changes, _) => format!("{changes} items"),
+/// What a change does, as one verb and its object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Summary {
+    verb: Verb,
+    /// The one thing it changes by name, or how many: "Sun hat", "3 items".
+    object: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verb {
+    Add,
+    Remove,
+    Change,
+    Run,
+}
+
+impl Summary {
+    /// What `changes` do: durable changes first (all added, all removed,
+    /// or otherwise changed), else the command they run. `None` when they
+    /// do nothing.
+    pub fn of(changes: &[Changed]) -> Option<Self> {
+        let durable: Vec<&Changed> = changes.iter().filter(|change| !change.command).collect();
+        if durable.is_empty() {
+            let command = changes.iter().find(|change| change.command)?;
+            return Some(Self {
+                verb: Verb::Run,
+                object: command.of.replace(['/', '-', '_'], " "),
+            });
+        }
+        let verb = if durable.iter().all(|change| change.mark == "+") {
+            Verb::Add
+        } else if durable.iter().all(|change| change.mark == "−") {
+            Verb::Remove
+        } else {
+            Verb::Change
+        };
+        let object = match durable.as_slice() {
+            [one] => one.name.clone(),
+            many => format!("{} items", many.len()),
+        };
+        Some(Self { verb, object })
+    }
+
+    /// The request, as an ask says it: "add 3 items to Family trip".
+    pub fn ask(&self, space: &str) -> String {
+        let object = &self.object;
+        match self.verb {
+            Verb::Add => format!("add {object} to {space}"),
+            Verb::Remove => format!("remove {object} from {space}"),
+            Verb::Change => format!("change {object} in {space}"),
+            Verb::Run => format!("run {object} in {space}"),
+        }
+    }
+
+    /// The main answer's words: "add 3 items".
+    pub fn act(&self) -> String {
+        let object = &self.object;
+        match self.verb {
+            Verb::Add => format!("add {object}"),
+            Verb::Remove => format!("remove {object}"),
+            Verb::Change => format!("change {object}"),
+            Verb::Run => format!("run {object}"),
+        }
+    }
+
+    /// The safe answer's words.
+    fn decline(&self) -> &'static str {
+        match self.verb {
+            Verb::Add | Verb::Run => "not now",
+            Verb::Change | Verb::Remove => "keep as is",
+        }
+    }
+
+    /// The receipt, as a strip says it: "added 3 items to Family trip".
+    pub fn done(&self, space: &str) -> String {
+        let object = &self.object;
+        match self.verb {
+            Verb::Add => format!("added {object} to {space}"),
+            Verb::Remove => format!("removed {object} from {space}"),
+            Verb::Change => format!("changed {object} in {space}"),
+            Verb::Run => format!("ran {object} in {space}"),
+        }
     }
 }
 
-fn claims(evaluation: &Value) -> u64 {
-    evaluation["commits"]["claims"].as_u64().unwrap_or(0)
-}
-
-/// The ask for a change held as `id`, from its dry run `evaluation`.
+/// The ask for a change held as `id`, from its preview `evaluation`.
 pub fn ask(context: &Context, id: &str, evaluation: &Value) -> Card {
     let changes = changed(evaluation);
-    let what = count(changes.len(), claims(evaluation));
     let space = context.place.label().to_owned();
+    let summary = Summary::of(&changes);
+    let (say, act, decline) = match &summary {
+        Some(summary) => (summary.ask(&space), summary.act(), summary.decline()),
+        // A write the preview lists nothing for, such as a rule.
+        None => (
+            format!("change {space}"),
+            "change it".to_owned(),
+            "keep as is",
+        ),
+    };
     let arguments = json!({ "space": context.place.did, "id": id });
     let mut card = Card::ask(
         context.place.clone(),
         context.role,
-        format!("change {what} in {space}"),
+        say,
         context.agent.clone(),
     );
     for change in changes.iter().take(LISTED) {
-        card = card.change(change.mark, change.name.clone(), Some(change.kind.clone()));
+        card = card.change(change.mark, change.name.clone(), change.kind.clone());
     }
     if changes.len() > LISTED {
         card = card.change("…", format!("{} more", changes.len() - LISTED), None);
@@ -282,37 +385,29 @@ pub fn ask(context: &Context, id: &str, evaluation: &Value) -> Card {
     } else {
         card.entry("who sees it", format!("everyone in {space}"))
     };
-    let agent = context
-        .agent
-        .name
-        .clone()
-        .unwrap_or_else(|| "this agent".to_owned());
-    card.entry_bot("made by", agent)
-        .fine("Nothing changes until you answer.")
-        .answer("not now", false, DISMISS, arguments.clone())
-        .answer(format!("change {what}"), true, APPLY, arguments)
+    card.entry("undo", "from the receipt")
+        .answer(act, Look::Main, APPLY, arguments.clone())
+        .answer(decline, Look::Ring, DISMISS, arguments)
 }
 
-/// The receipt for a write whose answer is `evaluation`.
-pub fn receipt(context: &Context, evaluation: &Value) -> Card {
+/// The receipt for a write whose answer is `evaluation`; `moved` says
+/// whether it moved the branch's head.
+pub fn receipt(context: &Context, evaluation: &Value, moved: bool) -> Card {
     let space = context.place.label();
-    let changes = changed(evaluation).len();
-    let claims = claims(evaluation);
-    if claims == 0 {
-        return Card::strip(
+    let strip = |say: String| {
+        Card::strip(
             Some(context.place.clone()),
             context.role,
-            format!("nothing changed in {space}"),
+            say,
             context.agent.clone(),
-        );
+        )
+    };
+    match Summary::of(&changed(evaluation)) {
+        Some(summary) => strip(summary.done(space)).by_agent(),
+        // A write the matches do not show, such as a rule or a schema.
+        None if moved => strip(format!("changed {space}")).by_agent(),
+        None => strip(format!("nothing changed in {space}")),
     }
-    Card::strip(
-        Some(context.place.clone()),
-        context.role,
-        format!("saved {} in {space}", count(changes, claims)),
-        context.agent.clone(),
-    )
-    .by_agent()
 }
 
 /// The receipt for a change the person declined.
@@ -320,39 +415,98 @@ pub fn dismissed(context: &Context) -> Card {
     Card::strip(
         Some(context.place.clone()),
         context.role,
-        format!("kept as is · nothing changed in {}", context.place.label()),
+        format!("nothing changed · {} stays as it is", context.place.label()),
         context.agent.clone(),
     )
 }
 
-/// A tell that a change was not saved, because of `reason`.
-pub fn not_saved(context: &Context, reason: &str) -> Card {
+/// A tell that a change is not saved because the space could not be
+/// reached: the hollow disc, and try again or drop it.
+pub fn not_saved(context: &Context) -> Card {
+    let space = context.place.label();
     Card::tell(
         Some(context.place.clone()),
         context.role,
         "not saved",
-        format!(
-            "This change isn’t saved in {}. Ask me to try again.",
-            context.place.label()
-        ),
+        format!("This change isn’t saved because Tonk can’t reach {space}. Nothing in it changed."),
         context.agent.clone(),
     )
     .disc(Disc::Hollow)
-    .fine(reason.to_owned())
+    .answer_saying(
+        "try again",
+        Look::Main,
+        "asked to try again",
+        "The person asked you to try the same change again. It was not saved: query the space \
+         first, then write it once.",
+    )
+    .answer_saying(
+        "drop it",
+        Look::Link,
+        format!("dropped · nothing changed in {space}"),
+        "The person dropped the change that was not saved. Do not try it again unless they ask.",
+    )
 }
 
-/// A tell that the space moved after the preview the person answered.
-pub fn moved(context: &Context) -> Card {
+/// A tell that the space refused a change as written: it was reached,
+/// so the disc stays filled, and nothing changed.
+pub fn rejected(context: &Context, proposing: bool) -> Card {
+    let space = context.place.label();
+    let say = if proposing {
+        format!(
+            "I couldn’t prepare this change for {space}: it doesn’t fit the space as I wrote it."
+        )
+    } else {
+        format!("I didn’t change {space}: the change doesn’t fit the space as I wrote it.")
+    };
     Card::tell(
         Some(context.place.clone()),
         context.role,
-        "changed since",
-        format!(
-            "{} changed after I showed you this, so nothing is overwritten. Ask me to show it again.",
-            context.place.label()
-        ),
+        "not changed",
+        say,
         context.agent.clone(),
     )
+}
+
+/// A tell that the space moved after the preview the person answered.
+/// `again` is the same change held afresh at the space's new head, with
+/// its preview, when it could be: keep theirs drops it, use mine applies
+/// it.
+pub fn moved(context: &Context, again: Option<(&str, &Value)>) -> Card {
+    let changes = again
+        .map(|(_, evaluation)| changed(evaluation))
+        .unwrap_or_default();
+    let item = match changes.as_slice() {
+        [one] => Some(one.name.clone()),
+        _ => None,
+    };
+    let mut place = context.place.clone();
+    place.item = item.clone();
+    let label = format!(
+        "{} changed",
+        item.as_deref().unwrap_or(context.place.label())
+    );
+    let Some((id, _)) = again else {
+        return Card::tell(
+            Some(place),
+            context.role,
+            label,
+            "Someone changed this after I read it, so nothing is overwritten. Ask me to show it again.",
+            context.agent.clone(),
+        );
+    };
+    let arguments = json!({ "space": context.place.did, "id": id });
+    let mut card = Card::tell(
+        Some(place),
+        context.role,
+        label,
+        "Someone changed this after I read it. Nothing is overwritten yet.",
+        context.agent.clone(),
+    );
+    if let Some(summary) = Summary::of(&changes) {
+        card = card.entry("yours", summary.act());
+    }
+    card.answer("keep theirs", Look::Main, DISMISS, arguments.clone())
+        .answer("use mine", Look::Ring, APPLY, arguments)
 }
 
 /// A tell that a held change can no longer be answered.
@@ -361,7 +515,44 @@ pub fn gone(context: &Context) -> Card {
         Some(context.place.clone()),
         context.role,
         "not applied",
-        "This was already answered, or waited too long. Nothing changed. Ask me again.",
+        "This was already answered, or waited too long, so nothing changed. Ask me again.",
+        context.agent.clone(),
+    )
+}
+
+/// A tell that this connection may not reach `place`: neither disc nor
+/// role, since the agent is not in it. `lapsed` when its access ran out.
+pub fn no_access(place: &Place, agent: &Agent, lapsed: bool) -> Card {
+    let space = place.label();
+    let (label, say) = if lapsed {
+        (
+            format!("access ended in {space}"),
+            format!(
+                "My access to {space} has ended. You can grant it again from your agents in Tonk."
+            ),
+        )
+    } else {
+        (
+            format!("no access to {space}"),
+            format!(
+                "I can’t open {space}: this agent has no access to it. You can grant it from your agents in Tonk."
+            ),
+        )
+    };
+    Card::tell(Some(place.clone()), None, label, say, agent.clone())
+}
+
+/// A tell that the connection may only read the space it was asked to
+/// change.
+pub fn read_only(context: &Context) -> Card {
+    let space = context.place.label();
+    Card::tell(
+        Some(context.place.clone()),
+        context.role,
+        format!("read only in {space}"),
+        format!(
+            "I can only read {space}, so I didn’t change it. You can let me write from your agents in Tonk."
+        ),
         context.agent.clone(),
     )
 }
