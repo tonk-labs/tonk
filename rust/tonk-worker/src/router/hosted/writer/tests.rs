@@ -294,6 +294,41 @@ concept!: &writer-note
     }
 
     #[dialog_common::test]
+    async fn an_outline_reads_the_views_of_the_space_as_it_is_now() {
+        let fixture = Fixture::start().await;
+        let writer = fixture.writer("mcp-outline").await;
+        let (status, body) = evaluate(
+            &writer,
+            "view!:\n  this: writer-note\n  show:\n    directory: \"<ul><li>{title}</li></ul>\"\n"
+                .to_owned(),
+        )
+        .await;
+        assert!(status.is_success(), "view: {status}: {body}");
+        for label in ["first", "second"] {
+            let (status, body) = evaluate(&writer, fixture.note(label)).await;
+            assert!(status.is_success(), "note: {status}: {body}");
+        }
+        // A reader in another session sees the writes, as an agent's next
+        // call would.
+        let reader = fixture.writer("mcp-outline-reader").await;
+        let outline = reader.outline("writer-note").await.unwrap();
+        assert_eq!(outline["space"], fixture.space.did().to_string());
+        assert_eq!(outline["outline"]["model"], "writer-note", "{outline}");
+        assert_eq!(outline["outline"]["route"], "writer-note");
+        assert!(
+            outline["outline"]["records"].as_u64().unwrap() >= 2,
+            "{outline}"
+        );
+        assert!(
+            reader.outline("@writer-note").await.is_err(),
+            "a malformed route is refused"
+        );
+        reader.close().await;
+        writer.close().await;
+        fixture.stop().await;
+    }
+
+    #[dialog_common::test]
     async fn parallel_writes_through_one_session_all_land() {
         let fixture = Fixture::start().await;
         let writer = fixture.writer("mcp-1").await;
@@ -875,6 +910,843 @@ concept!: &writer-note
             }
         }
         assert_eq!(seen, total, "every concept, one page each");
+        reader.close().await;
+        fixture.stop().await;
+    }
+
+    /// A share link a member made through their device, as Tonk makes
+    /// one: `space -> member -> device` (a powerline, naming no subject)
+    /// `-> link key`, the key's seed beside it.
+    async fn member_share_link(space: &Ed25519Signer, home: &url::Url) -> tonk_invite::Invite {
+        use dialog_credentials::Signer;
+        use dialog_ucan_core::DelegationBuilder;
+        use dialog_ucan_core::subject::Subject as UcanSubject;
+        let member = Ed25519Signer::generate().await.unwrap();
+        let device = Ed25519Signer::generate().await.unwrap();
+        let seed: [u8; 32] = rand::random();
+        let key = Ed25519Signer::import(&seed).await.unwrap();
+        let first = DelegationBuilder::new()
+            .issuer(Signer::from(space.clone()))
+            .audience(&member.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .meta(tonk_invite::home_address_meta(home))
+            .try_build()
+            .await
+            .unwrap();
+        let second = DelegationBuilder::new()
+            .issuer(Signer::from(member))
+            .audience(&device.did())
+            .subject(UcanSubject::Any)
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let third = DelegationBuilder::new()
+            .issuer(Signer::from(device))
+            .audience(&key.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let chain = DelegationChain::new(first)
+            .push(second)
+            .unwrap()
+            .push(third)
+            .unwrap();
+        tonk_invite::Invite::new(
+            chain,
+            tonk_invite::InviteAudience::Open { seed },
+            Some(home.clone()),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// A member's share link to `space`, as `tonk_join_space` reads one:
+    /// `space -> link key` for every command, syncing at `home`, the key's
+    /// seed beside it.
+    async fn share_link(space: &Ed25519Signer, home: &url::Url) -> tonk_invite::Invite {
+        use dialog_credentials::Signer;
+        use dialog_ucan_core::DelegationBuilder;
+        use dialog_ucan_core::subject::Subject as UcanSubject;
+        let seed: [u8; 32] = rand::random();
+        let key = Ed25519Signer::import(&seed).await.unwrap();
+        let root = DelegationBuilder::new()
+            .issuer(Signer::from(space.clone()))
+            .audience(&key.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .meta(tonk_invite::home_address_meta(home))
+            .try_build()
+            .await
+            .unwrap();
+        tonk_invite::Invite::new(
+            DelegationChain::new(root),
+            tonk_invite::InviteAudience::Open { seed },
+            Some(home.clone()),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// The browser's authority over its agent space does not extend to an
+    /// external space granted to that agent. Contrast its rejected revocation
+    /// with the hosted session's successful withdrawal of the same grant.
+    #[dialog_common::test]
+    async fn browser_cannot_revoke_link_issued_agent_grants_but_session_can() {
+        use crate::router::{agent_connections::issue_to_recipient, repository};
+        use dialog_capability::{
+            Subject,
+            access::{Access, Prove},
+        };
+        use dialog_credentials::Signer;
+        use dialog_ucan::{Parameters, Scope, Ucan};
+        use dialog_ucan_core::{
+            command::Command, subject::Subject as UcanSubject, time::Timestamp,
+        };
+        use tonk_invite::connection::{AgentAccess, agent_grant_scopes};
+
+        let fixture = Fixture::start().await;
+        let browser = crate::router::command::tests::native::test_state().await;
+        let (agent, agent_session, chains) = {
+            let root = Ed25519Signer::generate().await.unwrap();
+            {
+                let tonk = browser.read().await;
+                let device_grant = tonk_identity::delegation::mint_device_delegation(
+                    root.clone(),
+                    &tonk.profile.did(),
+                )
+                .await
+                .unwrap();
+                crate::router::identity::persist_root(
+                    &tonk,
+                    tonk_worker_api::SaveRootRequest {
+                        credential_id: "spike-no-passkey".into(),
+                        delegation_hex: hex::encode(device_grant.to_bytes().unwrap()),
+                        passkey: None,
+                        encryption_key: None,
+                    },
+                )
+                .await
+                .unwrap();
+            }
+            let seed = Zeroizing::new(rand::random::<[u8; 32]>());
+            let agent_signer = Ed25519Signer::import(&*seed).await.unwrap();
+            let agent = agent_signer.did();
+            repository::create_space_from_seed(&browser, "Revocation spike agent", None, seed)
+                .await
+                .unwrap();
+            fixture
+                .service
+                .address
+                .provision_subject(agent.as_ref())
+                .await
+                .unwrap();
+            let agent_session =
+                session(&agent_signer, "recipient-revocation", &fixture.remote).await;
+
+            let invite = share_link(&fixture.space, &fixture.remote).await;
+            let link_signer = invite.signer().await.unwrap().unwrap();
+            let scopes = agent_grant_scopes(&fixture.space.did(), AgentAccess::Read);
+            let now = Timestamp::now();
+            let expires = Timestamp::try_from(i128::from(now.to_unix() + 3600)).unwrap();
+            let chains = issue_to_recipient(
+                &agent,
+                Signer::from(link_signer),
+                vec![invite.chain.clone(); scopes.len()],
+                &scopes,
+                &fixture.remote,
+                now,
+                expires,
+            )
+            .await
+            .unwrap()
+            .chains()
+            .to_vec();
+            (agent, agent_session, chains)
+        };
+        // No account root, agent key, link key, or passkey is available below.
+        let own = SpaceWriter::open(&scratch_root(), &agent_session, &agent, &fixture.remote)
+            .await
+            .unwrap();
+        own.approve(
+            &chains,
+            &[super::super::super::access::DirectoryEntry {
+                space: fixture.space.did(),
+                name: Some("Target".into()),
+                address: Some(fixture.remote.to_string()),
+            }],
+        )
+        .await
+        .unwrap();
+
+        let reader = SpaceWriter::open(
+            &scratch_root(),
+            &agent_session,
+            &fixture.space.did(),
+            &fixture.remote,
+        )
+        .await
+        .unwrap();
+        let (status, body) = query(&reader, "concept:\n").await;
+        assert!(
+            status.is_success(),
+            "agent read before revocation: {status}: {body}"
+        );
+
+        let (device, authority) = {
+            let tonk = browser.read().await;
+            assert!(
+                !crate::router::join::find_replica_for_subject(&tonk, &fixture.space.did())
+                    .await
+                    .unwrap(),
+                "the browser must not join the target space"
+            );
+            let scope = Scope {
+                subject: UcanSubject::Specific(agent.clone()),
+                command: Command(vec![]),
+                parameters: Parameters::default(),
+            };
+            let proof = Subject::from(tonk.profile.did())
+                .attenuate(Access)
+                .invoke(Prove::<Ucan>::new(tonk.profile.did(), scope))
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            let mut certificates = proof.proofs.into_iter().map(|proof| proof.0);
+            let mut authority = DelegationChain::new(certificates.next().unwrap());
+            for certificate in certificates {
+                authority = authority.push(certificate).unwrap();
+            }
+            assert_eq!(authority.issuer(), &agent);
+            assert_eq!(authority.audience(), &tonk.profile.did());
+            assert_eq!(authority.proofs().count(), 2, "agent -> account -> device");
+            assert_eq!(
+                authority.proofs().next().unwrap().subject(),
+                &UcanSubject::Specific(agent.clone()),
+                "the browser controls the agent's own space, not arbitrary external capabilities"
+            );
+            (tonk.profile.credential().signer().clone(), authority)
+        };
+        for chain in &chains {
+            let target = *chain.proof_cids().last().unwrap();
+            let artifact = tonk_identity::revocation::mint_delegated_revocation_with_witness(
+                device.clone(),
+                chain,
+                &target,
+                &authority,
+            )
+            .await
+            .unwrap();
+            assert!(
+                matches!(
+                    tonk_identity::revocation::verify(&artifact).await,
+                    Err(tonk_identity::revocation::VerifyError::Unauthorized(_))
+                ),
+                "the scoped agent-space grant does not witness possession of target-space authority"
+            );
+            let refused = crate::router::http::post_cbor(&fixture.remote, &artifact)
+                .await
+                .expect_err("the service must reject the browser's revocation");
+            assert!(
+                matches!(refused, crate::router::http::HttpError::Upstream(ref error)
+                if matches!(error.status, 401 | 403) && error.message.contains("witness path")),
+                "{refused}"
+            );
+        }
+        let (status, body) = query(&reader, "concept:\n").await;
+        assert!(
+            status.is_success(),
+            "a refused browser revocation leaves the agent able to read: {status}: {body}"
+        );
+
+        // Positive control: the hosted session holds an actual powerline from
+        // the agent. This secret belongs to the hosted client, not the browser.
+        let session_signer = Ed25519Signer::import(&*agent_session.seed).await.unwrap();
+        for chain in &chains {
+            let target = *chain.proof_cids().last().unwrap();
+            let artifact = tonk_identity::revocation::mint_delegated_revocation_with_witness(
+                session_signer.clone(),
+                chain,
+                &target,
+                &agent_session.powerline,
+            )
+            .await
+            .unwrap();
+            let verified = tonk_identity::revocation::verify(&artifact).await.unwrap();
+            assert_eq!(verified.issuer, session_signer.did());
+            assert_eq!(verified.subject, agent);
+            let response = crate::router::http::post_cbor(&fixture.remote, &artifact)
+                .await
+                .unwrap();
+            let receipt: tonk_account::customer::RevokeReceipt =
+                serde_json::from_slice(&response.body).unwrap();
+            assert_eq!(receipt.revoked, target);
+        }
+        // Keep both the writer's cached proofs and the published grants intact.
+        let (status, body) = query(&reader, "concept:\n").await;
+        assert!(
+            !status.is_success(),
+            "same writer read after revocation: {body}"
+        );
+        assert!(
+            body.to_string().contains("CREDENTIAL_REVOKED"),
+            "{status}: {body}"
+        );
+        assert!(
+            own.agent_access()
+                .await
+                .unwrap()
+                .get(&fixture.space.did())
+                .unwrap()
+                .read,
+            "published grants are still present: revocation, not deletion, blocks the read"
+        );
+
+        reader.close().await;
+        own.close().await;
+        fixture.stop().await;
+    }
+
+    /// The person removes access a share link gave their agent, with the
+    /// passkey: the account opens the agent's sealed key and the agent
+    /// revokes, as the grants' audience, every leaf the link issued to
+    /// it. The agent joined straight from the link; the person never
+    /// joined the space. The access service then refuses the grants
+    /// wherever they are presented, while the hosted copy still lists
+    /// them: revocation, not deletion, is what refuses them.
+    #[dialog_common::test]
+    async fn the_account_withdraws_a_link_grant_as_its_agent() {
+        use crate::router::{
+            agent_connections::issue_to_recipient,
+            agent_session::{Granted, mark, record_grants},
+            agents::withdraw,
+            repository,
+        };
+        use dialog_credentials::Signer;
+        use dialog_ucan_core::time::Timestamp;
+        use tonk_invite::connection::{AgentAccess, agent_grant_scopes};
+        use tonk_schema::prelude::DidExt as _;
+
+        let fixture = Fixture::start().await;
+        let space = Ed25519Signer::generate().await.unwrap();
+        fixture
+            .service
+            .address
+            .provision_subject(space.did().as_ref())
+            .await
+            .unwrap();
+        {
+            let owner = super::session(&space, "owner", &fixture.remote).await;
+            let owner = SpaceWriter::open(&scratch_root(), &owner, &space.did(), &fixture.remote)
+                .await
+                .unwrap();
+            let (status, body) = evaluate(&owner, SCHEMA.to_owned()).await;
+            assert!(status.is_success(), "schema: {status}: {body}");
+            let (status, body) = evaluate(&owner, fixture.note("owner")).await;
+            assert!(status.is_success(), "owner: {status}: {body}");
+            owner.close().await;
+        }
+
+        // A browser signed in to an account, which makes the agent the
+        // way the approval page does: its key seals to the account.
+        let state = crate::router::command::tests::native::test_state().await;
+        let root = Ed25519Signer::generate().await.unwrap();
+        {
+            let tonk = state.read().await;
+            let device = tonk_identity::delegation::mint_device_delegation(
+                root.clone(),
+                &tonk.profile.did(),
+            )
+            .await
+            .unwrap();
+            crate::router::identity::persist_root(
+                &tonk,
+                tonk_worker_api::SaveRootRequest {
+                    credential_id: "withdraw-test".into(),
+                    delegation_hex: hex::encode(device.to_bytes().unwrap()),
+                    passkey: None,
+                    encryption_key: None,
+                },
+            )
+            .await
+            .unwrap();
+            let union = tonk_account::delegations::mint_account_union(
+                &Signer::from(root.clone()),
+                &tonk.profile.did(),
+            )
+            .await
+            .unwrap();
+            tonk_account::peer::hand_over(&tonk.profile, &union)
+                .await
+                .unwrap();
+        }
+        let seed = Zeroizing::new(rand::random::<[u8; 32]>());
+        let agent_signer = Ed25519Signer::import(&*seed).await.unwrap();
+        let agent = agent_signer.did();
+        let key = repository::create_space_from_seed(&state, "Claude", None, seed)
+            .await
+            .unwrap();
+        mark(&*state.read().await, &key, &agent, Some("claude"))
+            .await
+            .unwrap();
+        fixture
+            .service
+            .address
+            .provision_subject(agent.as_ref())
+            .await
+            .unwrap();
+        let agent_session = session(&agent_signer, "recipient", &fixture.remote).await;
+
+        // The link, made through a member's device, so its chain has a
+        // powerline hop. Its key grants read and write straight to the
+        // agent, as the chat card's join does, and grants read again, as a second
+        // join from the same link does: every leaf is live.
+        let invite = member_share_link(&space, &fixture.remote).await;
+        let link_key = Signer::from(invite.signer().await.unwrap().unwrap());
+        let mut chains = Vec::new();
+        for access in [AgentAccess::ReadWrite, AgentAccess::Read] {
+            let scopes = agent_grant_scopes(&space.did(), access);
+            let now = Timestamp::now();
+            let expires = Timestamp::try_from(i128::from(now.to_unix() + 3_600)).unwrap();
+            chains.extend(
+                issue_to_recipient(
+                    &agent,
+                    link_key.clone(),
+                    vec![invite.chain.clone(); scopes.len()],
+                    &scopes,
+                    &fixture.remote,
+                    now,
+                    expires,
+                )
+                .await
+                .unwrap()
+                .chains()
+                .to_vec(),
+            );
+        }
+        assert!(
+            chains
+                .iter()
+                .any(|chain| chain.ability().starts_with("/use/put"))
+                && chains
+                    .iter()
+                    .any(|chain| chain.ability().starts_with("/use/get")),
+            "read and write leaves"
+        );
+        let own = SpaceWriter::open(&scratch_root(), &agent_session, &agent, &fixture.remote)
+            .await
+            .unwrap();
+        own.approve(
+            &chains,
+            &[super::super::super::access::DirectoryEntry {
+                space: space.did(),
+                name: Some("Shared".into()),
+                address: Some(fixture.remote.to_string()),
+            }],
+        )
+        .await
+        .unwrap();
+        // The browser's copy of the agent space, as it pulls it: here the
+        // directory names an address that does not answer, to check a
+        // failed publication first.
+        let dead = url::Url::parse("http://127.0.0.1:9/ucan/").unwrap();
+        record_grants(
+            &*state.read().await,
+            &key,
+            &[Granted {
+                subject: space.did(),
+                name: "Shared".into(),
+                home: dead.clone(),
+                chains: chains.clone(),
+            }],
+        )
+        .await
+        .unwrap();
+        {
+            let tonk = state.read().await;
+            assert!(
+                !crate::router::join::find_replica_for_subject(&tonk, &space.did())
+                    .await
+                    .unwrap(),
+                "the person never joins the space"
+            );
+            assert_eq!(
+                withdraw::link_grants(&tonk, &agent, &space.did())
+                    .await
+                    .unwrap()
+                    .len(),
+                chains.len(),
+                "every leaf is listed for removal"
+            );
+        }
+
+        let reader = SpaceWriter::open(
+            &scratch_root(),
+            &agent_session,
+            &space.did(),
+            &fixture.remote,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            notes(&reader, fixture.run).await,
+            labels(fixture.run, &["owner".into()]),
+            "the agent reads the space"
+        );
+        let (status, body) = evaluate(&reader, fixture.note("agent")).await;
+        assert!(status.is_success(), "the agent writes: {status}: {body}");
+
+        // Another account's passkey opens nothing and revokes nothing.
+        let other = Ed25519Signer::generate().await.unwrap();
+        let refused = withdraw::withdraw(&*state.read().await, &other, &key, &space.did())
+            .await
+            .unwrap_err();
+        assert!(refused.contains("different account"), "{refused}");
+
+        // A publication that fails leaves every grant listed to retry.
+        let failed = withdraw::withdraw(&*state.read().await, &root, &key, &space.did())
+            .await
+            .unwrap();
+        assert!(failed.revoked.is_empty(), "{failed:?}");
+        assert_eq!(failed.unresolved.len(), chains.len());
+        assert!(failed.finished().is_err());
+        {
+            let tonk = state.read().await;
+            assert_eq!(
+                withdraw::link_grants(&tonk, &agent, &space.did())
+                    .await
+                    .unwrap()
+                    .len(),
+                chains.len(),
+                "nothing unacknowledged is dropped"
+            );
+        }
+        let (status, body) = query(&reader, "concept:\n").await;
+        assert!(
+            status.is_success(),
+            "after a refused attempt the agent still reads: {status}: {body}"
+        );
+
+        // Retry once the directory names the space's access service.
+        {
+            let tonk = state.read().await;
+            tonk.reactor
+                .repository(agent.repo_key())
+                .branch(crate::router::repository::CONTENT_BRANCH)
+                .transaction()
+                .retract(tonk_schema::SpaceHomeAddress::new(
+                    &space.did(),
+                    dead.as_str(),
+                ))
+                .assert(tonk_schema::SpaceHomeAddress::new(
+                    &space.did(),
+                    fixture.remote.as_str(),
+                ))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+        }
+        let done = withdraw::withdraw(&*state.read().await, &root, &key, &space.did())
+            .await
+            .unwrap();
+        assert_eq!(done.revoked.len(), chains.len(), "{done:?}");
+        assert_eq!(done.finished().unwrap(), chains.len());
+        {
+            let tonk = state.read().await;
+            assert!(
+                withdraw::link_grants(&tonk, &agent, &space.did())
+                    .await
+                    .unwrap()
+                    .is_empty(),
+                "acknowledged grants are dropped from the agent space"
+            );
+            assert!(
+                tonk.sync_queue.is_dirty(agent.repo_key()),
+                "the agent space is queued to sync"
+            );
+        }
+
+        // The writer already open, with its proofs in hand, is refused.
+        let (status, body) = query(&reader, "concept:\n").await;
+        assert!(!status.is_success(), "same writer reads after: {body}");
+        assert!(
+            body.to_string().contains("CREDENTIAL_REVOKED"),
+            "{status}: {body}"
+        );
+        let (status, body) = evaluate(&reader, fixture.note("late")).await;
+        assert!(!status.is_success(), "same writer writes after: {body}");
+        // The hosted copy still holds every grant: deletion is not why.
+        let held = own.agent_access().await.unwrap();
+        let held = held.get(&space.did()).expect("published grants remain");
+        assert!(held.read && held.write, "{held:?}");
+        // A fresh session of the agent, presenting the same grants.
+        let fresh = session(&agent_signer, "fresh", &fixture.remote).await;
+        let fresh = SpaceWriter::open(&scratch_root(), &fresh, &space.did(), &fixture.remote)
+            .await
+            .unwrap();
+        let (status, body) = query(&fresh, "concept:\n").await;
+        assert!(!status.is_success(), "a fresh reader is refused: {body}");
+        assert!(
+            body.to_string().contains("CREDENTIAL_REVOKED"),
+            "{status}: {body}"
+        );
+
+        fresh.close().await;
+        reader.close().await;
+        own.close().await;
+        fixture.stop().await;
+    }
+
+    /// Joining from the chat with read access lets the agent read the
+    /// space and nothing more: the access service refuses its write,
+    /// whatever the model sends. Joined with read and write, its write
+    /// lands.
+    #[dialog_common::test]
+    async fn a_join_from_the_chat_grants_only_the_access_chosen() {
+        use super::super::super::join::{GrantBody, LinkRequest, Offer};
+        use tonk_invite::connection::AgentAccess as Level;
+
+        let fixture = Fixture::start().await;
+        let mut shared = Vec::new();
+        for _ in 0..2 {
+            let space = Ed25519Signer::generate().await.unwrap();
+            fixture
+                .service
+                .address
+                .provision_subject(space.did().as_ref())
+                .await
+                .unwrap();
+            let owner = super::session(&space, "owner", &fixture.remote).await;
+            let owner = SpaceWriter::open(&scratch_root(), &owner, &space.did(), &fixture.remote)
+                .await
+                .unwrap();
+            let (status, body) = evaluate(&owner, SCHEMA.to_owned()).await;
+            assert!(status.is_success(), "schema: {status}: {body}");
+            let (status, body) = evaluate(&owner, fixture.note("owner")).await;
+            assert!(status.is_success(), "owner: {status}: {body}");
+            owner.close().await;
+            shared.push(space);
+        }
+        let [read_only, writable] = &shared[..] else {
+            unreachable!()
+        };
+
+        let session = session(&fixture.space, "mcp-join", &fixture.remote).await;
+        let own = fixture.writer_for(&session).await;
+        // Through the agent writer's link route, as the tools reach it:
+        // an `access=` link, which needs no ticket fetched. Reading the
+        // link joins nothing; joining keeps only the access asked for.
+        let base = fixture.remote.origin().ascii_serialization();
+        for (space, access) in [(read_only, "read"), (writable, "write")] {
+            let link = share_link(space, &fixture.remote)
+                .await
+                .to_url(&base)
+                .unwrap();
+            let offer = own
+                .join_link(&LinkRequest {
+                    link: link.clone(),
+                    access: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(offer.space, space.did().to_string());
+            assert!(offer.write, "a member's link allows writing");
+            assert_eq!(offer.granted, None);
+            assert!(
+                own.agent_access()
+                    .await
+                    .unwrap()
+                    .get(&space.did())
+                    .is_none()
+            );
+            let joined = own
+                .join_link(&LinkRequest {
+                    link,
+                    access: Some(access.into()),
+                })
+                .await
+                .unwrap();
+            assert_eq!(joined.granted.as_deref(), Some(access));
+        }
+        let access = own.agent_access().await.unwrap();
+        let entry = access.get(&read_only.did()).expect("the read join");
+        assert!(entry.read && !entry.write, "{entry:?}");
+        let entry = access.get(&writable.did()).expect("the write join");
+        assert!(entry.read && entry.write, "{entry:?}");
+
+        let reader =
+            SpaceWriter::open(&scratch_root(), &session, &read_only.did(), &fixture.remote)
+                .await
+                .unwrap();
+        assert_eq!(
+            notes(&reader, fixture.run).await,
+            labels(fixture.run, &["owner".into()]),
+            "the agent reads the space"
+        );
+        let (status, body) = evaluate(&reader, fixture.note("agent")).await;
+        assert!(!status.is_success(), "a read join cannot write: {body}");
+
+        let writer = SpaceWriter::open(&scratch_root(), &session, &writable.did(), &fixture.remote)
+            .await
+            .unwrap();
+        let (status, body) = evaluate(&writer, fixture.note("agent")).await;
+        assert!(status.is_success(), "a write join writes: {status}: {body}");
+
+        // A grant to another agent is not this agent's to keep.
+        let other = Ed25519Signer::generate().await.unwrap().did();
+        let foreign = Offer::of(share_link(read_only, &fixture.remote).await).unwrap();
+        let chains = foreign
+            .grant(
+                &other,
+                Level::Read,
+                dialog_ucan_core::time::Timestamp::now(),
+            )
+            .await
+            .unwrap();
+        let refused = own
+            .keep_grant(&GrantBody::new(&foreign, &chains).unwrap())
+            .await
+            .unwrap_err();
+        assert!(
+            refused.contains("not this space's to the agent"),
+            "{refused}"
+        );
+
+        reader.close().await;
+        writer.close().await;
+        own.close().await;
+        fixture.stop().await;
+    }
+
+    /// A grant the person's account issued to the agent, under authority
+    /// the account holds over the space (here, a link it claimed): the
+    /// agent reads with it and the access service refuses its write.
+    /// When the account revokes the grant at the access service, the
+    /// agent's next read is refused too. No agent key is needed for this.
+    #[dialog_common::test]
+    async fn the_account_revokes_an_agent_it_let_in() {
+        use crate::router::agent_connections::issue_to_recipient;
+        use dialog_credentials::Signer;
+        use dialog_ucan_core::DelegationBuilder;
+        use dialog_ucan_core::subject::Subject as UcanSubject;
+        use dialog_ucan_core::time::Timestamp;
+        use tonk_invite::connection::{AgentAccess, agent_grant_scopes};
+
+        let fixture = Fixture::start().await;
+        let space = Ed25519Signer::generate().await.unwrap();
+        fixture
+            .service
+            .address
+            .provision_subject(space.did().as_ref())
+            .await
+            .unwrap();
+        let owner = super::session(&space, "owner", &fixture.remote).await;
+        let owner = SpaceWriter::open(&scratch_root(), &owner, &space.did(), &fixture.remote)
+            .await
+            .unwrap();
+        let (status, body) = evaluate(&owner, SCHEMA.to_owned()).await;
+        assert!(status.is_success(), "schema: {status}: {body}");
+        let (status, body) = evaluate(&owner, fixture.note("owner")).await;
+        assert!(status.is_success(), "owner: {status}: {body}");
+        owner.close().await;
+
+        // The account claims the link, as a person's own join does.
+        let account = Ed25519Signer::generate().await.unwrap();
+        let link = share_link(&space, &fixture.remote).await;
+        let link_key = link.signer().await.unwrap().unwrap();
+        let claim = DelegationBuilder::new()
+            .issuer(Signer::from(link_key))
+            .audience(&account.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let held = link.chain.clone().push(claim).unwrap();
+
+        // The account lets the agent read.
+        let agent = fixture.space.did();
+        let scopes = agent_grant_scopes(&space.did(), AgentAccess::Read);
+        let now = Timestamp::now();
+        let expires = Timestamp::try_from(i128::from(now.to_unix() + 3_600)).unwrap();
+        let chains = issue_to_recipient(
+            &agent,
+            Signer::from(account.clone()),
+            vec![held.clone(); scopes.len()],
+            &scopes,
+            &fixture.remote,
+            now,
+            expires,
+        )
+        .await
+        .unwrap()
+        .chains()
+        .to_vec();
+        let session = session(&fixture.space, "mcp-join", &fixture.remote).await;
+        let own = fixture.writer_for(&session).await;
+        own.approve(
+            &chains,
+            &[super::super::super::access::DirectoryEntry {
+                space: space.did(),
+                name: Some("Shared".into()),
+                address: Some(fixture.remote.to_string()),
+            }],
+        )
+        .await
+        .unwrap();
+        let entry = own.agent_access().await.unwrap();
+        let entry = entry.get(&space.did()).expect("the grant").clone();
+        assert!(entry.read && !entry.write, "{entry:?}");
+        own.close().await;
+
+        let reader = SpaceWriter::open(&scratch_root(), &session, &space.did(), &fixture.remote)
+            .await
+            .unwrap();
+        assert_eq!(
+            notes(&reader, fixture.run).await,
+            labels(fixture.run, &["owner".into()]),
+            "the agent reads the space"
+        );
+        let (status, body) = evaluate(&reader, fixture.note("agent")).await;
+        assert!(!status.is_success(), "a read grant cannot write: {body}");
+        reader.close().await;
+
+        // The account withdraws each leaf it signed, witnessed by its own
+        // path to the space, at the space's access service.
+        for chain in &chains {
+            let target = *chain.proof_cids().last().unwrap();
+            let artifact =
+                tonk_identity::revocation::mint_root_revocation(account.clone(), chain, &target)
+                    .await
+                    .unwrap();
+            let response = crate::router::http::post_cbor(&fixture.remote, &artifact)
+                .await
+                .unwrap();
+            let receipt: tonk_account::customer::RevokeReceipt =
+                serde_json::from_slice(&response.body).unwrap();
+            assert_eq!(receipt.revoked, target);
+        }
+
+        let reader = SpaceWriter::open(&scratch_root(), &session, &space.did(), &fixture.remote)
+            .await
+            .unwrap();
+        let (status, body) = query(
+            &reader,
+            &format!("writer.note:\n  this: ?n\n  tag: \"{}\"\n", fixture.run),
+        )
+        .await;
+        assert!(
+            !status.is_success(),
+            "a revoked agent reads nothing: {body}"
+        );
+        assert!(
+            body.to_string().contains("CREDENTIAL_REVOKED"),
+            "refused for the revocation: {body}"
+        );
         reader.close().await;
         fixture.stop().await;
     }

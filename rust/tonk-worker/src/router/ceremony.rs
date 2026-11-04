@@ -486,7 +486,7 @@ mod authorization_tests {
         use dialog_query::{ConceptQuery, Query};
         use tonk_schema::{CeremonyStatus, ceremony_state};
 
-        let state = std::sync::Arc::new(tokio::sync::RwLock::new(
+        let state = std::sync::Arc::new(crate::StateLock::new(
             crate::router::tests::test_state().await,
         ));
         let request = tonk_worker_api::DeviceAuthorization {

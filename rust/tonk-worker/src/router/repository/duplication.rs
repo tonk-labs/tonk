@@ -176,7 +176,11 @@ pub(super) async fn create(
         .await
         .map_err(error)?;
     write_replica_status(&tonk, &subject, Replica::initialized_status(), None).await?;
-    Ok(key.to_owned())
+    let key = key.to_owned();
+    let created = (*tonk).clone();
+    drop(tonk);
+    provision_created_space(&created, &subject).await;
+    Ok(key)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

@@ -26,7 +26,7 @@
 //!    matched `{concept}`; a later route change restamps the site, and the
 //!    subscription re-renders — downward propagation with no custom channel.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
@@ -53,6 +53,38 @@ pub(crate) struct TonkSite {
     /// The self-heal subscription on this site's own `tonk:site` stamp.
     /// Held for the element's lifetime; its `Drop` cancels upstream.
     heal: Rc<RefCell<Option<Subscription>>>,
+    /// Whether a resolve pass is already queued for this turn, and why.
+    /// The renderer writes `with`, `allow` and `path` one `setAttribute` at
+    /// a time; each fires a callback, and they all coalesce into the one
+    /// queued pass, which reads the attributes as they stand once the burst
+    /// is over.
+    scheduled: Rc<Cell<Option<Trigger>>>,
+    /// Whether this element has been connected before, so a later connect
+    /// is counted as a remount rather than a first mount.
+    connected_before: bool,
+}
+
+/// Why `<tonk-site>` is resolving its route, so a guest frame it builds is
+/// counted under the cause that made it build one.
+#[derive(Clone, Copy)]
+enum Trigger {
+    /// The element was connected for the first time.
+    Mount,
+    /// The element was connected again after being disconnected.
+    Remount,
+    /// `path`, `with` or `allow` changed on a connected element.
+    Navigation,
+}
+
+impl Trigger {
+    fn guest_boot(self) -> &'static str {
+        use tonk_common::diagnostics::names;
+        match self {
+            Trigger::Mount => names::SITE_GUEST_BOOT_MOUNT,
+            Trigger::Remount => names::SITE_GUEST_BOOT_REMOUNT,
+            Trigger::Navigation => names::SITE_GUEST_BOOT_NAVIGATION,
+        }
+    }
 }
 
 impl CustomElement for TonkSite {
@@ -67,18 +99,29 @@ impl CustomElement for TonkSite {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        resolve_and_render(this, self.inner.clone());
-        install_self_heal(this, self.heal.clone());
+        let trigger = if self.connected_before {
+            Trigger::Remount
+        } else {
+            Trigger::Mount
+        };
+        self.connected_before = true;
+        self.schedule(this, trigger);
         // Navigation is just a `path` attribute change, handled by
         // `attribute_changed_callback`. The element never reads `window.location`;
         // whoever mounts the top-level site (`ui.rs`) owns updating `path` on URL
         // change, so this element stays uniform for top-level and nested alike.
     }
 
-    fn disconnected_callback(&mut self, _this: &HtmlElement) {
+    fn disconnected_callback(&mut self, this: &HtmlElement) {
         teardown(&self.inner);
-        // Cancel the self-heal subscription (Drop cancels upstream).
+        // Cancel the self-heal subscription (Drop cancels upstream), and drop
+        // its probe with it: a probe left behind would read as "already
+        // watching" when the element is reconnected, and the heal would
+        // never subscribe again.
         self.heal.borrow_mut().take();
+        if let Ok(Some(probe)) = this.query_selector(":scope > [data-site-heal]") {
+            probe.remove();
+        }
     }
 
     fn attribute_changed_callback(
@@ -102,8 +145,8 @@ impl CustomElement for TonkSite {
         // path is a routed state (`/`), so the empty → value transition IS a
         // navigation (the bare space route gaining a `{rest}` sub-path), not
         // mount noise. Pre-connect callbacks are already no-ops inside
-        // `resolve_and_render` (`is_connected` gate), and a mount-time double
-        // resolve is absorbed by the same-route iframe reuse.
+        // `resolve_and_render` (`is_connected` gate), and every callback in
+        // one turn coalesces into a single pass (`schedule`).
         let first_set = old.as_deref().is_none_or(str::is_empty);
         let re_route = match name.as_str() {
             "path" => old != new,
@@ -111,8 +154,48 @@ impl CustomElement for TonkSite {
             _ => false,
         };
         if re_route {
-            resolve_and_render(this, self.inner.clone());
+            self.schedule(this, Trigger::Navigation);
         }
+    }
+}
+
+impl TonkSite {
+    /// Queue one resolve pass for this turn, unless one is already queued.
+    ///
+    /// Deciding per callback was the bug this guards: a space-to-space
+    /// switch writes `with`, then `allow`, then `path`, and each callback
+    /// judged iframe reuse against the state from before any of them had
+    /// run. None matched, so each built its own iframe and the next tore it
+    /// down again: two or three guest boots for one navigation, each a blank
+    /// frame and a spinner. One pass after the burst sees the final
+    /// attributes and builds (or reuses) once.
+    fn schedule(&self, this: &HtmlElement, trigger: Trigger) {
+        // A connect in the burst names the pass: the attribute writes
+        // around it are part of mounting, not a navigation.
+        if let Some(queued) = self.scheduled.get() {
+            if matches!(queued, Trigger::Navigation) {
+                self.scheduled.set(Some(trigger));
+            }
+            return;
+        }
+        self.scheduled.set(Some(trigger));
+        let host = this.clone();
+        let cell = self.inner.clone();
+        let heal = self.heal.clone();
+        let scheduled = self.scheduled.clone();
+        // Deferred off the callback: rendering touches the element's method
+        // delegates and the bridge, and doing that inside a custom-element
+        // callback re-enters the lock the `custom_elements` runtime holds
+        // ("cannot recursively acquire mutex"). A microtask still runs
+        // before the browser paints, so the burst never shows half-applied.
+        spawn_local(async move {
+            let _ =
+                wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::UNDEFINED))
+                    .await;
+            let trigger = scheduled.take().unwrap_or(Trigger::Navigation);
+            resolve_and_render(&host, cell, trigger);
+            install_self_heal(&host, heal);
+        });
     }
 }
 
@@ -197,7 +280,7 @@ fn render_site_error(host: &HtmlElement, message: &str) {
 /// bring up the sealed iframe rendering the matched route. A missing or
 /// malformed `with`/`allow` renders a visible error; a failed registration
 /// leaves the element empty rather than throwing.
-fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
+fn resolve_and_render(this: &HtmlElement, cell: StateCell, trigger: Trigger) {
     let host = this.clone();
 
     // Attribute callbacks fire on `setAttribute` even before the element is
@@ -268,14 +351,9 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
     // `LoadHandler` matches `path` against the route table and stamps
     // `tonk:site` onto `site`.
     let request = load_claim(&site, &path);
-    // Defer BOTH the claim and the iframe bring-up off this turn. `resolve_and_render`
-    // runs synchronously inside `connected_callback` / `attribute_changed_callback`,
-    // and `render_in_iframe` tears down + rebuilds the portal (touching the element's
-    // method delegates and the bridge). Doing that synchronously inside a custom-
-    // element callback re-enters the single-threaded lock the `custom_elements`
-    // runtime holds across the callback → "cannot recursively acquire mutex". A
-    // `spawn_local` lets the callback return first, so the render happens on a clean
-    // stack.
+    // This runs from the pass `TonkSite::schedule` queued, already off the
+    // custom-element callback, so it can tear down and rebuild the portal
+    // directly.
     //
     // Bring the iframe up FIRST, then fire the load claim WITHOUT awaiting it. The
     // iframe boot (wasm + Web Awesome + chrome upgrade) has no dependency on the
@@ -298,16 +376,15 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
             && s.iframe.as_ref().is_some_and(|f| f.is_connected())
             && s.same_route(&with, &allow)
     });
-    let host_for_task = host.clone();
+    if !reuse {
+        tonk_common::diagnostics::count(trigger.guest_boot());
+        render_in_iframe(&host, &cell, &site, with, allow);
+    } else if let Some(state) = cell.borrow().as_ref() {
+        tonk_common::diagnostics::count(tonk_common::diagnostics::names::SITE_REROUTE);
+        crate::bridge::refresh_context(&host, state);
+    }
     spawn_local(async move {
-        if !reuse {
-            render_in_iframe(&host_for_task, &cell, &site, with, allow);
-        } else if let Some(state) = cell.borrow().as_ref() {
-            crate::bridge::refresh_context(&host_for_task, state);
-        }
-        if let Err(error) =
-            tonk_host::consumer::claim(&host_for_task.clone().into(), &request).await
-        {
+        if let Err(error) = tonk_host::consumer::claim(&host.clone().into(), &request).await {
             tonk_common::log!("tonk-site: load claim failed for {path}: {error:?}");
         }
     });
@@ -327,18 +404,44 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
 ///
 /// The subscription rides a hidden probe child (its own `reset` property),
 /// not the site element itself — the portal's `reset` shim is the bridge
-/// relay's. Ambient `with` resolution walks up from the probe to the site,
-/// and the host's `with` observer re-routes the entry if the context is
-/// restamped. Deferred a microtask: inside a render pass this callback can
-/// be delivered after the element was detached again (the reaction-queue
+/// relay's. The probe carries a copy of the site's `with`, so every resolve
+/// pass calls this again: a probe already watching the current `with` is
+/// kept, and one left on a previous `with` (a space-to-space switch of a
+/// nested site) is replaced, or it would go on healing the old branch while
+/// the new one stays unstamped. A site that first connected with a
+/// `{…}`-placeholder `with` gets its heal on the pass that resolves it.
+/// Deferred a microtask: inside a render pass this callback can be
+/// delivered after the element was detached again (the reaction-queue
 /// hazard), and the dispatch must come from a connected tree.
 fn install_self_heal(this: &HtmlElement, slot: Rc<RefCell<Option<Subscription>>>) {
     let host = this.clone();
     spawn_local(async move {
         let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::UNDEFINED))
             .await;
-        if !host.is_connected() || slot.borrow().is_some() {
+        if !host.is_connected() {
             return;
+        }
+        // The probe routes by the site's OWN `with` (routing is self-only, no
+        // ancestor walk); without one it would subscribe to a bare `/query`, a
+        // 404 the heal then retries forever. A `{…}` placeholder (unstamped
+        // template) waits for the pass that resolves it.
+        let Some(with) = host
+            .get_attribute("with")
+            .filter(|v| !v.is_empty() && !v.contains('{'))
+        else {
+            return;
+        };
+        let current = host
+            .query_selector(":scope > [data-site-heal]")
+            .ok()
+            .flatten();
+        if let Some(existing) = current {
+            if existing.get_attribute("with").as_deref() == Some(with.as_str()) {
+                return;
+            }
+            existing.remove();
+            // Dropping the subscription cancels the old branch's watch.
+            slot.borrow_mut().take();
         }
         let Some(document) = window().and_then(|w| w.document()) else {
             return;
@@ -348,22 +451,7 @@ fn install_self_heal(this: &HtmlElement, slot: Rc<RefCell<Option<Subscription>>>
         };
         let _ = probe.set_attribute("hidden", "");
         let _ = probe.set_attribute("data-site-heal", "");
-        // The probe carries the site's OWN `with` so its subscription routes
-        // to the site's branch. Routing is self-only now (no ancestor walk),
-        // so without this the probe resolves to no context and subscribes to
-        // a bare `/query` — a 404 that the self-heal then retries forever.
-        // A `{…}`-placeholder `with` (unstamped template) is skipped: the
-        // site re-runs once stamped.
-        if let Some(with) = host
-            .get_attribute("with")
-            .filter(|v| !v.is_empty() && !v.contains('{'))
-        {
-            let _ = probe.set_attribute("with", &with);
-        } else {
-            // No usable routing context yet — a later re-resolve installs
-            // the heal; don't subscribe to a bare endpoint.
-            return;
-        }
+        let _ = probe.set_attribute("with", &with);
         let _ = host.append_child(&probe);
 
         let site = site_entity(&host);
@@ -383,7 +471,10 @@ fn install_self_heal(this: &HtmlElement, slot: Rc<RefCell<Option<Subscription>>>
         };
         let tag = JsValue::from_str("site-heal");
         match consumer::subscribe_claimed(&probe, &body, Some(&tag)).await {
-            Ok(subscription) => *slot.borrow_mut() = Some(subscription),
+            // A probe replaced while its subscribe was in flight drops the
+            // late subscription rather than overwrite its successor's.
+            Ok(subscription) if probe.is_connected() => *slot.borrow_mut() = Some(subscription),
+            Ok(_) => {}
             Err(error) => {
                 tonk_common::log!("tonk-site: heal subscribe failed: {error:?}");
             }
@@ -535,6 +626,9 @@ fn render_in_iframe(
 /// since `<tonk-site>` owns sealed iframes that hand-shake and request the
 /// element runtime through it.
 pub fn register() {
+    // Expose this realm's counters as `globalThis.__tonkDiagnostics`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    tonk_common::diagnostics::install_global();
     crate::bridge::install_message_listener();
     if let Some(win) = window()
         && win.custom_elements().get("tonk-site").is_undefined()
@@ -695,6 +789,74 @@ mod tests {
             claim.contains("/space/x") && claim.contains("site:test-heal"),
             "the re-claim carries the current path and site entity, got: {claim}"
         );
+    }
+
+    /// Count the iframes added under `site`, through a JS `MutationObserver`
+    /// (its records arrive as microtasks, which `flush` drains).
+    fn count_iframe_builds(site: &HtmlElement) -> Object {
+        let observe = Function::new_with_args(
+            "site",
+            "const box = {n: 0};\
+             new MutationObserver((records) => {\
+               for (const record of records)\
+                 for (const node of record.addedNodes)\
+                   if (node.tagName === 'IFRAME') box.n += 1;\
+             }).observe(site, {childList: true});\
+             return box;",
+        );
+        observe
+            .call1(&JsValue::NULL, site)
+            .expect("observer installed")
+            .dyn_into()
+            .expect("counter object")
+    }
+
+    fn builds(counter: &Object) -> f64 {
+        Reflect::get(counter, &"n".into())
+            .ok()
+            .and_then(|n| n.as_f64())
+            .unwrap_or(0.0)
+    }
+
+    /// A space-to-space switch writes `with`, `allow` and `path` one
+    /// attribute at a time, all in one turn. The site must boot ONE guest
+    /// for it: deciding reuse per attribute judged each write against the
+    /// state from before any of them ran, and booted two or three guests,
+    /// each tearing down the one before (a blank frame and the pulsing dot
+    /// for every extra boot).
+    #[dialog_common::test]
+    async fn it_boots_one_guest_for_a_space_switch() {
+        register();
+        let fake = FakeHost::install();
+        let host: HtmlElement = document()
+            .create_element("tonk-site")
+            .expect("site")
+            .dyn_into()
+            .expect("html element");
+        let _ = host.set_attribute("with", "main@did:key:zSpaceA");
+        let _ = host.set_attribute("allow", "main@did:key:zSpaceA");
+        let counter = count_iframe_builds(&host);
+        fake.container.append_child(&host).expect("attach site");
+        flush().await;
+        assert_eq!(builds(&counter), 1.0, "connecting boots the first guest");
+
+        let _ = host.set_attribute("with", "main@did:key:zSpaceB");
+        let _ = host.set_attribute("allow", "main@did:key:zSpaceB");
+        let _ = host.set_attribute("path", "/inspector");
+        flush().await;
+        assert_eq!(
+            builds(&counter),
+            2.0,
+            "one space switch boots exactly one more guest"
+        );
+
+        // A pure path change keeps the live guest.
+        let _ = host.set_attribute("path", "/");
+        flush().await;
+        assert_eq!(builds(&counter), 2.0, "a path change re-routes in place");
+
+        host.remove();
+        fake.container.remove();
     }
 
     #[dialog_common::test]

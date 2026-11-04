@@ -383,11 +383,13 @@ impl<W: Writers> McpEndpoint<'_, W> {
             "tools/list" => {
                 let mut tools = tools();
                 tools.extend(super::view::tools());
+                tools.extend(super::join::tools());
                 Ok(json!({ "tools": tools }))
             }
             "resources/list" => {
                 let mut resources = guide_resources();
                 resources.extend(super::view::resources());
+                resources.extend(super::join::resources());
                 Ok(json!({ "resources": resources }))
             }
             "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
@@ -395,6 +397,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 let uri = message["params"]["uri"].as_str().unwrap_or_default();
                 read_guide(uri)
                     .or_else(|| super::view::read_resource(uri, self.origin))
+                    .or_else(|| super::join::read_resource(uri))
                     .ok_or_else(
                         || json!({ "code": -32602, "message": format!("no resource {uri}") }),
                     )
@@ -535,10 +538,16 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 }
                 answer
             }
+            super::join::JOIN | super::join::ACCEPT => {
+                super::join::call(name, arguments, verified, self.writers, bearer, session)
+                    .await
+                    .unwrap_or_else(|| tool_result(json!("Tool unavailable."), true))
+            }
             _ => match super::view::call(
                 name,
                 arguments,
                 verified,
+                self.writers,
                 bearer,
                 session,
                 self.origin,
