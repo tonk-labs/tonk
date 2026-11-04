@@ -125,7 +125,7 @@ async fn send(env: &CommandEnv, command: &SendEmailInvitation) -> Result<(), Ton
         return Err(unavailable());
     }
     let root = account(env, &command.account.0.to_string()).await?;
-    let tonk = env.state().read().await;
+    let tonk = env.state().read().await.clone();
     let origin = origin(&tonk).await?;
     let mut args = BTreeMap::from([
         ("invitation".into(), Promised::String(id.clone())),
@@ -171,7 +171,7 @@ async fn send(env: &CommandEnv, command: &SendEmailInvitation) -> Result<(), Ton
     args.clear();
     args.insert("invitation".into(), Promised::String(id.clone()));
     args.insert("original".into(), Promised::String(original));
-    let tonk = env.state().read().await;
+    let tonk = env.state().read().await.clone();
     let answer = call(&tonk, &root, &origin, "send", args).await?;
     if answer["state"] != "sent" {
         return Err(unavailable());

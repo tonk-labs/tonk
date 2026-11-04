@@ -595,7 +595,7 @@ async fn push_new_space(state: &AppState, key: &str) -> Result<(), String> {
     super::sync::ensure_session_authority(state)
         .await
         .map_err(|error| error.to_string())?;
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     tonk.reactor
         .repository(key)
         .branch(super::repository::CONTENT_BRANCH)
