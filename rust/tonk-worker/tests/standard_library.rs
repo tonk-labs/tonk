@@ -881,7 +881,7 @@ fn it_mints_an_invite_when_copying_a_hub_space_link() {
     );
     assert!(
         PROFILE_LIBRARY.contains(
-            r#"[data-share-state="blocked"][data-share-blocked="needs-account"] [data-share-copy-label="sign-in"]"#
+            r#"[data-share-state="blocked"]:is([data-share-blocked="needs-account"],[data-share-blocked="account-required"]) [data-share-copy-label="sign-in"]"#
         ),
         "a signed-out copy must say an account is needed, not fail silently"
     );
