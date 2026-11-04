@@ -149,7 +149,9 @@ async fn targets(
             "each space may be chosen once".into(),
         ));
     }
-    let tonk = state.read().await;
+    // A clone, not a guard: a first-use mount below can pull over the
+    // network.
+    let tonk = state.read().await.clone();
     if super::account::provider(&tonk).await.is_none() {
         return Err(TonkWorkerError::Forbidden(
             "sign in before connecting an agent".into(),
@@ -594,7 +596,7 @@ async fn push_new_space(state: &AppState, key: &str) -> Result<(), String> {
     super::sync::ensure_session_authority(state)
         .await
         .map_err(|error| error.to_string())?;
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     tonk.reactor
         .repository(key)
         .branch(super::repository::CONTENT_BRANCH)

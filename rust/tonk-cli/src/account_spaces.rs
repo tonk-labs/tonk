@@ -155,7 +155,9 @@ async fn ready_account_branch(
             .await?;
     match outcome.status {
         AccountStateStatus::Unconfigured => {
-            bail!("no account is linked on this profile; run `tonk account login`")
+            bail!(
+                "no account is linked on this profile; this CLI cannot link an account itself any more, so manage account spaces in Tonk; to work on an existing space here, import a tool invitation for it with `tonk join <URL>`"
+            )
         }
         AccountStateStatus::Unhydrated => bail!(
             "the account is linked but its first sync has not succeeded yet{}",
