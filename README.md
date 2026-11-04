@@ -68,7 +68,7 @@ version, channel and source commit. Downloads are manual.
 
 ## The `tonk` CLI
 
-`tonk` is a local-first command-line companion for reading and writing Tonk data without a browser. It operates on a *space* — a named Dialog repository in a central registry. `tonk space use <name>` binds the current directory to a space without copying data there; `--space` and `TONK_SPACE` override that binding for one invocation or process. The CLI speaks the same asserted-notation as the rest of the substrate: you assert claims, query them, and define concepts and rules with `tonk eval`, plus read-only introspection (`tonk schema`, `tonk concept ls`, `tonk view ls`) and a built-in notation reference (`tonk guide`).
+`tonk` is a local-first command-line companion for reading and writing Tonk data without a browser. It operates on a *space* — a named Dialog repository in a central registry. `tonk space use <name>` binds the current directory to a space without copying data there; `--space` and `TONK_SPACE` override that binding for one invocation or process. The CLI speaks the same asserted-notation as the rest of the substrate: you assert claims, query them, and define concepts and rules with `tonk eval`, plus read-only introspection (`tonk show`, `tonk concept`, `tonk view`) and built-in guides (`tonk help -g`, e.g. `tonk help notation`).
 
 ### Install
 
@@ -132,8 +132,8 @@ curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh
 ```sh
 tonk space new garden      # register a space and select it
 tonk eval -c 'person:'     # run a notation document (inline, file, or piped)
-tonk schema                # every named attribute + concept on the branch
-tonk guide                 # built-in asserted-notation reference
+tonk show                  # the schema: concepts and their fields
+tonk help notation         # built-in asserted-notation reference
 ```
 
 # What's in This Repo
