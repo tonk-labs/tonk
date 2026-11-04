@@ -2807,10 +2807,9 @@ view!:
 #     label: ?label
 #     version: ?version
 #
-#   library/part:
-#     component: tonk:library/table
-#     kind: ?kind
-#     name: ?name
+#   library/manifest:
+#     this: tonk:library/table
+#     adds: ?adds
 concept!: &library/component
   description: A library component a space can install.
   with:
@@ -2893,104 +2892,31 @@ library/component!:
   agents: |
     Read the space's history through `version-control/revision`; comment on a revision with `version-control/comment-on`.
 
-# What each component adds: one row per concept, command and view its file
-# declares. Generated from the component files, not written by hand:
-# `cargo test -p tonk-worker --test standard_library` fails when this block
-# is out of date, and `TONK_BLESS_LIBRARY=1` rewrites it.
-concept!: &library/part
-  description: >
-    One thing a library component adds to a space when it is installed: a
-    concept, a command or a view.
+# What each component adds, one line per concept, command and view its
+# file declares: `concept <name>`, `command <name>`, or `view <model>
+# <slot>`. One fact per component rather than a row per part, so every
+# space's seed stays small. Generated from the component files, not
+# written by hand: `cargo test -p tonk-worker --test standard_library`
+# fails when this block is out of date, and `TONK_BLESS_LIBRARY=1`
+# rewrites it.
+concept!: &library/manifest
+  description: What a library component adds to a space when it is installed.
   with:
-    component:
-      description: The component that adds it, `tonk:library/<name>`.
-      the: xyz.tonk.library.part/component
-      as: entity
-    kind:
-      description: What it is, "concept", "command" or "view".
-      the: xyz.tonk.library.part/kind
-      as: text
-    name:
+    adds:
       description: >
-        The concept's or command's name; for a view, the model it shows.
-      the: xyz.tonk.library.part/name
-      as: text
-  maybe:
-    slot:
-      description: For a view, the slot it fills (`ui`, `directory`, `label`, …).
-      the: xyz.tonk.library.part/slot
+        One line per thing it adds: "concept <name>", "command <name>", or
+        "view <model> <slot>" for a view of `model` in `slot`.
+      the: xyz.tonk.library.manifest/adds
       as: text
 
-# BEGIN library parts (generated)
-library/part!: { this: tonk:library/issue/concept/issue, component: tonk:library/issue, kind: "concept", name: "issue" }
-library/part!: { this: tonk:library/meta/concept/replica, component: tonk:library/meta, kind: "concept", name: "replica" }
-library/part!: { this: tonk:library/meta/concept/branch, component: tonk:library/meta, kind: "concept", name: "branch" }
-library/part!: { this: tonk:library/meta/concept/branch/upstream, component: tonk:library/meta, kind: "concept", name: "branch/upstream" }
-library/part!: { this: tonk:library/meta/concept/replica/active-branch, component: tonk:library/meta, kind: "concept", name: "replica/active-branch" }
-library/part!: { this: tonk:library/notebook/concept/notebook, component: tonk:library/notebook, kind: "concept", name: "notebook" }
-library/part!: { this: tonk:library/notebook/concept/notebook/named, component: tonk:library/notebook, kind: "concept", name: "notebook/named" }
-library/part!: { this: tonk:library/notebook/concept/notebook/blocks, component: tonk:library/notebook, kind: "concept", name: "notebook/blocks" }
-library/part!: { this: tonk:library/notebook/concept/block/position, component: tonk:library/notebook, kind: "concept", name: "block/position" }
-library/part!: { this: tonk:library/notebook/concept/notebook/block, component: tonk:library/notebook, kind: "concept", name: "notebook/block" }
-library/part!: { this: tonk:library/notebook/concept/block/chain, component: tonk:library/notebook, kind: "concept", name: "block/chain" }
-library/part!: { this: tonk:library/notebook/view/notebook/ui, component: tonk:library/notebook, kind: "view", name: "notebook", slot: "ui" }
-library/part!: { this: tonk:library/notebook/view/notebook/directory, component: tonk:library/notebook, kind: "view", name: "notebook", slot: "directory" }
-library/part!: { this: tonk:library/notebook/view/notebook/block/directory, component: tonk:library/notebook, kind: "view", name: "notebook/block", slot: "directory" }
-library/part!: { this: tonk:library/notebook/concept/notebook/index-route, component: tonk:library/notebook, kind: "concept", name: "notebook/index-route" }
-library/part!: { this: tonk:library/notebook/view/tonk.notebook/index-route/ui, component: tonk:library/notebook, kind: "view", name: "tonk:notebook/index-route", slot: "ui" }
-library/part!: { this: tonk:library/notebook/concept/notebook/route, component: tonk:library/notebook, kind: "concept", name: "notebook/route" }
-library/part!: { this: tonk:library/notebook/view/tonk.notebook/route/ui, component: tonk:library/notebook, kind: "view", name: "tonk:notebook/route", slot: "ui" }
-library/part!: { this: tonk:library/notebook/command/block/insert, component: tonk:library/notebook, kind: "command", name: "block/insert" }
-library/part!: { this: tonk:library/notebook/command/notebook/retitle, component: tonk:library/notebook, kind: "command", name: "notebook/retitle" }
-library/part!: { this: tonk:library/notebook/command/block/edit, component: tonk:library/notebook, kind: "command", name: "block/edit" }
-library/part!: { this: tonk:library/notebook/command/block/place, component: tonk:library/notebook, kind: "command", name: "block/place" }
-library/part!: { this: tonk:library/notebook/command/block/move, component: tonk:library/notebook, kind: "command", name: "block/move" }
-library/part!: { this: tonk:library/notebook/command/block/remove, component: tonk:library/notebook, kind: "command", name: "block/remove" }
-library/part!: { this: tonk:library/prose/concept/prose, component: tonk:library/prose, kind: "concept", name: "prose" }
-library/part!: { this: tonk:library/prose/command/prose/edit, component: tonk:library/prose, kind: "command", name: "prose/edit" }
-library/part!: { this: tonk:library/prose/view/prose/ui, component: tonk:library/prose, kind: "view", name: "prose", slot: "ui" }
-library/part!: { this: tonk:library/prose/view/prose/directory, component: tonk:library/prose, kind: "view", name: "prose", slot: "directory" }
-library/part!: { this: tonk:library/table/concept/table, component: tonk:library/table, kind: "concept", name: "table" }
-library/part!: { this: tonk:library/table/concept/table/sheet, component: tonk:library/table, kind: "concept", name: "table/sheet" }
-library/part!: { this: tonk:library/table/concept/table/sheet-name, component: tonk:library/table, kind: "concept", name: "table/sheet-name" }
-library/part!: { this: tonk:library/table/concept/table/cell, component: tonk:library/table, kind: "concept", name: "table/cell" }
-library/part!: { this: tonk:library/table/concept/table/cell-content, component: tonk:library/table, kind: "concept", name: "table/cell-content" }
-library/part!: { this: tonk:library/table/concept/table/cell-style, component: tonk:library/table, kind: "concept", name: "table/cell-style" }
-library/part!: { this: tonk:library/table/concept/table/column, component: tonk:library/table, kind: "concept", name: "table/column" }
-library/part!: { this: tonk:library/table/concept/table/column-width, component: tonk:library/table, kind: "concept", name: "table/column-width" }
-library/part!: { this: tonk:library/table/concept/table/row, component: tonk:library/table, kind: "concept", name: "table/row" }
-library/part!: { this: tonk:library/table/concept/table/row-height, component: tonk:library/table, kind: "concept", name: "table/row-height" }
-library/part!: { this: tonk:library/table/command/table/create-sheet, component: tonk:library/table, kind: "command", name: "table/create-sheet" }
-library/part!: { this: tonk:library/table/command/table/rename-sheet, component: tonk:library/table, kind: "command", name: "table/rename-sheet" }
-library/part!: { this: tonk:library/table/command/table/create-cell, component: tonk:library/table, kind: "command", name: "table/create-cell" }
-library/part!: { this: tonk:library/table/command/table/edit-cell, component: tonk:library/table, kind: "command", name: "table/edit-cell" }
-library/part!: { this: tonk:library/table/command/table/clear-cell, component: tonk:library/table, kind: "command", name: "table/clear-cell" }
-library/part!: { this: tonk:library/table/command/table/create-column, component: tonk:library/table, kind: "command", name: "table/create-column" }
-library/part!: { this: tonk:library/table/command/table/resize-column, component: tonk:library/table, kind: "command", name: "table/resize-column" }
-library/part!: { this: tonk:library/table/command/table/create-row, component: tonk:library/table, kind: "command", name: "table/create-row" }
-library/part!: { this: tonk:library/table/command/table/resize-row, component: tonk:library/table, kind: "command", name: "table/resize-row" }
-library/part!: { this: tonk:library/table/view/tonk.table/sheet/directory, component: tonk:library/table, kind: "view", name: "tonk:table/sheet", slot: "directory" }
-library/part!: { this: tonk:library/table/view/tonk.table/cell/directory, component: tonk:library/table, kind: "view", name: "tonk:table/cell", slot: "directory" }
-library/part!: { this: tonk:library/table/view/tonk.table/column/directory, component: tonk:library/table, kind: "view", name: "tonk:table/column", slot: "directory" }
-library/part!: { this: tonk:library/table/view/tonk.table/row/directory, component: tonk:library/table, kind: "view", name: "tonk:table/row", slot: "directory" }
-library/part!: { this: tonk:library/table/view/table/ui, component: tonk:library/table, kind: "view", name: "table", slot: "ui" }
-library/part!: { this: tonk:library/table/view/table/directory, component: tonk:library/table, kind: "view", name: "table", slot: "directory" }
-library/part!: { this: tonk:library/version-control/concept/version-control/revision, component: tonk:library/version-control, kind: "concept", name: "version-control/revision" }
-library/part!: { this: tonk:library/version-control/concept/version-control/parent, component: tonk:library/version-control, kind: "concept", name: "version-control/parent" }
-library/part!: { this: tonk:library/version-control/concept/version-control/head, component: tonk:library/version-control, kind: "concept", name: "version-control/head" }
-library/part!: { this: tonk:library/version-control/concept/version-control/comment, component: tonk:library/version-control, kind: "concept", name: "version-control/comment" }
-library/part!: { this: tonk:library/version-control/concept/version-control/session, component: tonk:library/version-control, kind: "concept", name: "version-control/session" }
-library/part!: { this: tonk:library/version-control/command/version-control/comment-on, component: tonk:library/version-control, kind: "command", name: "version-control/comment-on" }
-library/part!: { this: tonk:library/version-control/command/version-control/uncomment, component: tonk:library/version-control, kind: "command", name: "version-control/uncomment" }
-library/part!: { this: tonk:library/version-control/view/version-control/revision/vc-row, component: tonk:library/version-control, kind: "view", name: "version-control/revision", slot: "vc-row" }
-library/part!: { this: tonk:library/version-control/view/version-control/parent/vc-row, component: tonk:library/version-control, kind: "view", name: "version-control/parent", slot: "vc-row" }
-library/part!: { this: tonk:library/version-control/view/version-control/head/vc-row, component: tonk:library/version-control, kind: "view", name: "version-control/head", slot: "vc-row" }
-library/part!: { this: tonk:library/version-control/view/version-control/comment/vc-row, component: tonk:library/version-control, kind: "view", name: "version-control/comment", slot: "vc-row" }
-library/part!: { this: tonk:library/version-control/view/version-control/session/vc-row, component: tonk:library/version-control, kind: "view", name: "version-control/session", slot: "vc-row" }
-library/part!: { this: tonk:library/version-control/view/member/account/vc-row, component: tonk:library/version-control, kind: "view", name: "member/account", slot: "vc-row" }
-library/part!: { this: tonk:library/version-control/concept/version-control/console, component: tonk:library/version-control, kind: "concept", name: "version-control/console" }
-library/part!: { this: tonk:library/version-control/view/tonk.version-control/console/ui, component: tonk:library/version-control, kind: "view", name: "tonk:version-control/console", slot: "ui" }
-# END library parts (generated)
+# BEGIN library manifest (generated)
+library/manifest!: { this: tonk:library/issue, adds: "concept issue\n" }
+library/manifest!: { this: tonk:library/meta, adds: "concept replica\nconcept branch\nconcept branch/upstream\nconcept replica/active-branch\n" }
+library/manifest!: { this: tonk:library/notebook, adds: "concept notebook\nconcept notebook/named\nconcept notebook/blocks\nconcept block/position\nconcept notebook/block\nconcept block/chain\nview notebook ui\nview notebook directory\nview notebook/block directory\nconcept notebook/index-route\nview tonk:notebook/index-route ui\nconcept notebook/route\nview tonk:notebook/route ui\ncommand block/insert\ncommand notebook/retitle\ncommand block/edit\ncommand block/place\ncommand block/move\ncommand block/remove\n" }
+library/manifest!: { this: tonk:library/prose, adds: "concept prose\ncommand prose/edit\nview prose ui\nview prose directory\n" }
+library/manifest!: { this: tonk:library/table, adds: "concept table\nconcept table/sheet\nconcept table/sheet-name\nconcept table/cell\nconcept table/cell-content\nconcept table/cell-style\nconcept table/column\nconcept table/column-width\nconcept table/row\nconcept table/row-height\ncommand table/create-sheet\ncommand table/rename-sheet\ncommand table/create-cell\ncommand table/edit-cell\ncommand table/clear-cell\ncommand table/create-column\ncommand table/resize-column\ncommand table/create-row\ncommand table/resize-row\nview tonk:table/sheet directory\nview tonk:table/cell directory\nview tonk:table/column directory\nview tonk:table/row directory\nview table ui\nview table directory\n" }
+library/manifest!: { this: tonk:library/version-control, adds: "concept version-control/revision\nconcept version-control/parent\nconcept version-control/head\nconcept version-control/comment\nconcept version-control/session\ncommand version-control/comment-on\ncommand version-control/uncomment\nview version-control/revision vc-row\nview version-control/parent vc-row\nview version-control/head vc-row\nview version-control/comment vc-row\nview version-control/session vc-row\nview member/account vc-row\nconcept version-control/console\nview tonk:version-control/console ui\n" }
+# END library manifest (generated)
 
 # What came of one request to install or uninstall a component, keyed by
 # the request's own entity: the card that asked reads the answer to its

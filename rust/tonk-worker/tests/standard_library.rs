@@ -117,8 +117,8 @@ const COMPONENTS: [(&str, &str); 6] = [
     ("version-control", VERSION_CONTROL_LIBRARY),
 ];
 
-const PARTS_BEGIN: &str = "# BEGIN library parts (generated)\n";
-const PARTS_END: &str = "# END library parts (generated)\n";
+const PARTS_BEGIN: &str = "# BEGIN library manifest (generated)\n";
+const PARTS_END: &str = "# END library manifest (generated)\n";
 
 /// The text a field holds, when it is a name, URI or string.
 fn field_text(value: &tonk_notation::FieldValue) -> Option<String> {
@@ -182,24 +182,21 @@ fn parts_of(document: &str) -> Vec<(String, String, Option<String>)> {
     parts
 }
 
-/// The `library/part!:` rows core.yaml should carry for every component.
+/// The `library/manifest!:` facts core.yaml should carry, one per component.
 fn generated_parts() -> String {
     let mut block = String::new();
     for (component, document) in COMPONENTS {
-        for (kind, name, slot) in parts_of(document) {
-            let key = match &slot {
-                Some(slot) => format!("{kind}/{name}/{slot}"),
-                None => format!("{kind}/{name}"),
-            }
-            .replace(':', ".");
-            block.push_str(&format!(
-                "library/part!: {{ this: tonk:library/{component}/{key}, component: tonk:library/{component}, kind: \"{kind}\", name: \"{name}\""
-            ));
-            if let Some(slot) = slot {
-                block.push_str(&format!(", slot: \"{slot}\""));
-            }
-            block.push_str(" }\n");
-        }
+        let adds: Vec<String> = parts_of(document)
+            .into_iter()
+            .map(|(kind, name, slot)| match slot {
+                Some(slot) => format!("{kind} {name} {slot}"),
+                None => format!("{kind} {name}"),
+            })
+            .collect();
+        block.push_str(&format!(
+            "library/manifest!: {{ this: tonk:library/{component}, adds: \"{}\\n\" }}\n",
+            adds.join("\\n")
+        ));
     }
     block
 }
@@ -208,11 +205,11 @@ fn generated_parts() -> String {
 fn recorded_parts(library: &str) -> (usize, usize) {
     let begin = library
         .find(PARTS_BEGIN)
-        .expect("core.yaml marks where the library parts begin")
+        .expect("core.yaml marks where the library manifest begin")
         + PARTS_BEGIN.len();
     let end = library
         .find(PARTS_END)
-        .expect("core.yaml marks where the library parts end");
+        .expect("core.yaml marks where the library manifest end");
     (begin, end)
 }
 
@@ -240,7 +237,7 @@ fn it_lists_what_each_component_declares() {
         return;
     }
     panic!(
-        "core.yaml's library parts are out of date; rerun with TONK_BLESS_LIBRARY=1, or paste:\n{expected}"
+        "core.yaml's library manifest is out of date; rerun with TONK_BLESS_LIBRARY=1, or paste:\n{expected}"
     );
 }
 

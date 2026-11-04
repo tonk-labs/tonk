@@ -16480,13 +16480,14 @@ attribute!: &probe/next
         let parts = query_json(
             &tonk,
             &key,
-            "library/part:\n  component: tonk:library/table\n  kind: \"command\"\n  name: ?name\n",
+            "library/manifest:\n  this: tonk:library/table\n  adds: ?adds\n",
         )
         .await
         .to_string();
-        assert!(parts.contains("\"table/edit-cell\""), "{parts}");
+        assert!(parts.contains("command table/edit-cell"), "{parts}");
+        assert!(parts.contains("view table ui"), "{parts}");
         assert!(
-            !parts.contains("\"block/edit\""),
+            !parts.contains("block/edit"),
             "only the table's parts: {parts}"
         );
     }
