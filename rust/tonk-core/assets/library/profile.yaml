@@ -6889,22 +6889,39 @@ rule!:
     - assert: space
       where: { this: ?space }
 
+# A space that syncs: `home-address` is optional on `space`, absent for a
+# local-only space, so a rule binds it through this required field. Only a
+# space that syncs can be shared: an invitee reaches it through its
+# upstream, so "invite" is said only of these.
+concept!: &space/synced
+  this: tonk:space/synced
+  description: A space on this account whose main branch syncs through an upstream.
+  with:
+    home-address:
+      description: The sync endpoint the space is served from.
+      the: xyz.tonk.space/home-address
+      as: text
+
 rule!:
-  description: A space on this account is one "invite" from the palette can let an agent into.
+  description: A space on this account that syncs is one "invite" from the palette can let an agent into.
   assert: invite-agent/space
   when:
     - assert: intent
       where: { this: ?this, command: space/invite-agent }
     - assert: space
       where: { this: ?space }
+    - assert: space/synced
+      where: { this: ?space }
 
 rule!:
-  description: A space on this account is one "invite" from the palette can let an account into.
+  description: A space on this account that syncs is one "invite" from the palette can let an account into.
   assert: invite-email/space
   when:
     - assert: intent
       where: { this: ?this, command: space/invite-email }
     - assert: space
+      where: { this: ?space }
+    - assert: space/synced
       where: { this: ?space }
 
 # The agent-space mark, as the profile holds it: the same fact the agent

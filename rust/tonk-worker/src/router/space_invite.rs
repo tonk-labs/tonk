@@ -438,7 +438,7 @@ mod integration {
 
     /// Inviting an address resolves the confirmed account registered
     /// under it and leaves it a ticket: that account's device opening the
-    /// space's bare address joins it as a writer, though the space is not
+    /// space's bare address opens it to write, though the space is not
     /// published. Another account opening the same address is refused as
     /// a private space, and holds nothing.
     #[dialog_common::test]

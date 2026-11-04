@@ -783,13 +783,16 @@ async fn it_says_inviting_an_agent_or_an_address_in_the_palette() {
     }
     let space = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
     let agent = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH";
+    // A space with no upstream: local to this device.
+    let local = "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG";
     send(
         &app,
         "POST",
         &format!("{profile}/evaluate"),
         "application/yaml",
         format!(
-            "space!:\n  this: {space}\n  subject: {space}\n  kind: tonk:repository\n  name: \"little writer\"\n\n\
+            "space!:\n  this: {space}\n  subject: {space}\n  kind: tonk:repository\n  name: \"little writer\"\n  home-address: \"https://sync.example.test/ucan/\"\n\n\
+             space!:\n  this: {local}\n  subject: {local}\n  kind: tonk:repository\n  name: \"scratch pad\"\n\n\
              space!:\n  this: {agent}\n  subject: {agent}\n  kind: tonk:repository\n  name: \"Claude\"\n\n\
              agent-space!:\n  this: {agent}\n  kind: case:agent\n"
         ),
@@ -829,6 +832,25 @@ async fn it_says_inviting_an_agent_or_an_address_in_the_palette() {
         assert!(
             claim.contains(space),
             "{said:?} is said of the space: {claim}"
+        );
+    }
+
+    // On the page of a space that does not sync, "invite" is not said of
+    // it: no reading takes it, as it is or listed, since nobody could
+    // reach it through an upstream it does not have.
+    for (n, said) in ["invite Claude", "invite bob@example.com"]
+        .into_iter()
+        .enumerate()
+    {
+        let expression = format!("intent:test-invite-local-{n}");
+        interpreted(&app, &profile, &expression, said, site, 10.0 + n as f64).await;
+        let rows = readings(&app, &profile, &expression, local).await;
+        assert!(
+            rows.iter().all(|row| {
+                !field(row, "entities").to_string().contains(local)
+                    && !field(row, "claim").to_string().contains(local)
+            }),
+            "{said:?} is never said of a space that does not sync: {rows:?}"
         );
     }
 }
