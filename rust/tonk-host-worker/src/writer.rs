@@ -304,7 +304,11 @@ impl SpaceWriterObject {
         self.reach("open");
         let (writer, opened) = match self.writer(&request).await {
             Ok(writer) => writer,
-            Err((status, message)) => return failure(status, &message),
+            Err((status, message)) => {
+                // A writer that failed to open says how long it tried.
+                steps.lap("open");
+                return failure(status, &message);
+            }
         };
         steps.lap(if opened { "open" } else { "attach" });
         let url = request.url()?;
