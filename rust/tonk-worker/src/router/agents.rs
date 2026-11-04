@@ -350,7 +350,7 @@ pub async fn revoke(
     client: Option<axum::Extension<super::ClientId>>,
     Json(request): Json<RevokeRequest>,
 ) -> Result<Json<RevokeAnswer>, TonkWorkerError> {
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     let agent = find(&tonk, &key).await?;
     let (leaves, links): (Vec<_>, Vec<_>) = grants(&tonk, &agent)
         .await?
