@@ -242,6 +242,12 @@ impl dialog_capability::Provider<tonk_schema::command::UninstallComponent>
     }
 }
 
+/// How a request's reason says the component is not in the library.
+pub const NOT_A_COMPONENT: &str = "is not a library component";
+
+/// How a request's reason says the component is not installed in the space.
+pub const NOT_INSTALLED: &str = "is not installed here";
+
 /// What a request asks: install or uninstall.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -444,7 +450,7 @@ async fn run(
 ) -> Settled {
     let component = request.component.to_string();
     let Some(source) = component_url(&component) else {
-        return Settled::failed(format!("'{component}' is not a library component"));
+        return Settled::failed(format!("'{component}' {NOT_A_COMPONENT}"));
     };
     let session = match open(tonk, repo, branch).await {
         Ok(session) => session,
@@ -460,7 +466,7 @@ async fn run(
             .map(|removed| if removed { "uninstalled" } else { "absent" }),
     };
     let status = match done {
-        Ok("absent") => return Settled::failed(format!("{component} is not installed here")),
+        Ok("absent") => return Settled::failed(format!("{component} {NOT_INSTALLED}")),
         Ok(status) => status,
         Err(error) => return Settled::failed(error.to_string()),
     };

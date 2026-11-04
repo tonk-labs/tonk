@@ -501,6 +501,13 @@ impl SpaceWriter {
         // A library install or uninstall is held with what the catalog
         // says it adds, in place of a dry run its command cannot have.
         if let Some(command) = super::library::command_of(&document) {
+            if !super::library::is_component(&command.component) {
+                return failure(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    super::library::UNKNOWN,
+                    &format!("'{}' is not in the Tonk library", command.component),
+                );
+            }
             let refreshed = self.refresh().await;
             if let Err(error) = refreshed {
                 return error.answer("PULL_FAILED");

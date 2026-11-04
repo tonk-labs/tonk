@@ -1808,6 +1808,21 @@ concept!: &mcp-note
             library::UNDO
         );
 
+        // A component the library does not have is told, not asked.
+        let unknown = client
+            .result(
+                "tonk_evaluate",
+                json!({
+                    "space": space,
+                    "document": "library/install!:\n  component: tonk:library/no-such-component\n  time: 3.0\n",
+                    "confirm": true,
+                }),
+            )
+            .await;
+        let told = &unknown["structuredContent"]["card"];
+        assert_eq!(told["kind"], "tell", "{unknown}");
+        assert_eq!(told["label"], "not in the library", "{unknown}");
+
         // Another command cannot be previewed, and the card says so.
         let other = "attribute!: &probe/when\n  description: \"When.\"\n  the: xyz.example.probe/when\n  as: float:64\n\ncommand!: &probe/run\n  description: \"A probe.\"\n  with:\n    when: probe/when\n\nprobe/run!:\n  when: 1.0\n";
         let refused = client

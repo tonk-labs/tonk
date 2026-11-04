@@ -25,6 +25,14 @@ pub const ROUTE: &str = "/api/library";
 /// `{space, component, action}`, `action` being the one the undo runs.
 pub const UNDO: &str = "tonk_library_undo";
 
+/// The writer's refusal code for a component the library does not have.
+pub const UNKNOWN: &str = "NOT_IN_LIBRARY";
+
+/// Whether `component` names one of the library's components.
+pub fn is_component(component: &str) -> bool {
+    crate::router::library::component_url(component).is_some()
+}
+
 /// The changes an ask lists before it says how many more there are.
 const LISTED: usize = 5;
 
@@ -282,24 +290,33 @@ pub fn receipt(context: &Context, library: &Value, undoing: bool) -> Card {
             .undo(UNDO),
         "current" => strip(format!("{label} is in {space} already · nothing changed")),
         _ => {
-            let (title, say) = match action_of(library) {
-                Action::Install => (
-                    "not installed",
-                    format!("I couldn’t install {label} in {space}, so nothing changed."),
-                ),
-                Action::Uninstall => (
-                    "not uninstalled",
-                    format!("I couldn’t uninstall {label} from {space}, so nothing changed."),
-                ),
-            };
             // The reason is the model's (see [`told`]); the person reads
-            // one plain sentence.
-            Card::tell(
-                Some(context.place.clone()),
-                context.role,
-                title,
-                say,
-                context.agent.clone(),
+            // one plain sentence, with its cause where it is known.
+            let reason = library["reason"].as_str().unwrap_or_default();
+            let cause = if reason.contains(crate::router::library::NOT_A_COMPONENT) {
+                Some("there’s no such component in the Tonk library")
+            } else if reason.contains(crate::router::library::NOT_INSTALLED) {
+                Some("it isn’t installed there")
+            } else {
+                None
+            };
+            let (title, act) = match action_of(library) {
+                Action::Install => ("not installed", format!("install {label} in {space}")),
+                Action::Uninstall => ("not uninstalled", format!("uninstall {label} from {space}")),
+            };
+            let say = match cause {
+                Some(cause) => format!("I couldn’t {act}: {cause}. Nothing changed."),
+                None => format!("I couldn’t {act}, so nothing changed."),
+            };
+            alternatives(
+                Card::tell(
+                    Some(context.place.clone()),
+                    context.role,
+                    title,
+                    say,
+                    context.agent.clone(),
+                ),
+                context,
             )
         }
     }
@@ -318,6 +335,45 @@ pub fn declined(context: &Context, library: &Value) -> Card {
         context.role,
         format!("{not} · nothing changed in {space}"),
         context.agent.clone(),
+    )
+}
+
+/// What a library tell offers instead: open the space in Tonk, or skip.
+fn alternatives(card: Card, context: &Context) -> Card {
+    let space = context.place.label();
+    card.answer_opening("open in tonk ↗", Look::Main, context.in_tonk())
+        .answer_saying(
+            "skip",
+            Look::Ring,
+            format!("nothing changed · {space} stays as it is"),
+            "The person skipped it. Do not try the library change again unless they ask.",
+        )
+}
+
+/// A tell that the library has no component `document` names, in place of
+/// an ask for something that cannot be installed.
+pub fn unknown(context: &Context, document: &str) -> Card {
+    let name = command_of(document)
+        .map(|command| {
+            command
+                .component
+                .trim_start_matches("tonk:library/")
+                .to_owned()
+        })
+        .unwrap_or_else(|| "such component".to_owned());
+    alternatives(
+        Card::tell(
+            Some(context.place.clone()),
+            context.role,
+            "not in the library",
+            format!(
+                "There’s no {name} in the Tonk library, so there is nothing to install. Nothing \
+                 changed in {}.",
+                context.place.label()
+            ),
+            context.agent.clone(),
+        ),
+        context,
     )
 }
 
@@ -568,6 +624,56 @@ mod tests {
             card.get("fine").is_none(),
             "no raw reason for the person: {card}"
         );
+        assert_eq!(card["answers"][0]["label"], "open in tonk ↗", "{card}");
+        assert_eq!(card["answers"][1]["label"], "skip", "{card}");
+
+        let absent = json!({
+            "action": "uninstall",
+            "status": "failed",
+            "reason": format!("tonk:library/table {}", crate::router::library::NOT_INSTALLED),
+            "catalog": { "name": "table", "label": "Table", "agents": [], "adds": [] },
+        });
+        let card = receipt(&context(false), &absent, false).to_value();
+        assert_eq!(
+            card["say"],
+            "I couldn’t uninstall Table from Launch: it isn’t installed there. Nothing changed."
+        );
+        let missing = json!({
+            "action": "install",
+            "status": "failed",
+            "reason": format!("'tonk:library/nope' {}", crate::router::library::NOT_A_COMPONENT),
+            "catalog": { "name": "nope", "label": "nope", "agents": [], "adds": [] },
+        });
+        let card = receipt(&context(false), &missing, false).to_value();
+        assert!(
+            card["say"]
+                .as_str()
+                .unwrap()
+                .contains("there’s no such component in the Tonk library"),
+            "{card}"
+        );
+    }
+
+    /// A component the library does not have is told, never asked.
+    #[dialog_common::test]
+    fn it_tells_that_an_unknown_component_is_not_in_the_library() {
+        assert!(is_component("tonk:library/table"));
+        assert!(!is_component("tonk:library/no-such-component"));
+        let card = unknown(
+            &context(false),
+            "library/install!:\n  component: tonk:library/no-such-component\n",
+        )
+        .to_value();
+        assert_eq!(card["kind"], "tell");
+        assert_eq!(card["label"], "not in the library");
+        assert!(
+            card["say"]
+                .as_str()
+                .unwrap()
+                .starts_with("There’s no no-such-component in the Tonk library"),
+            "{card}"
+        );
+        assert_eq!(card["answers"][1]["label"], "skip");
     }
 
     #[dialog_common::test]
