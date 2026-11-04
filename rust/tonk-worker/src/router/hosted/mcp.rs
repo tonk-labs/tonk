@@ -791,6 +791,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
             writer_failed(call, status, &value);
             let reason = reason(&value);
             let command = value["code"] == "COMMAND_NOT_CONFIRMABLE";
+            let unknown_component = value["code"] == super::library::UNKNOWN;
             // A change that would change nothing is not asked: it is said.
             if confirm && value["code"] == "NOTHING_TO_PROPOSE" {
                 let card = super::propose::nothing(context);
@@ -814,6 +815,8 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 super::propose::not_saved(context)
             } else if confirm && command {
                 super::library::not_previewable(context)
+            } else if unknown_component {
+                super::library::unknown(context, document)
             } else {
                 super::propose::rejected(context, confirm)
             };
