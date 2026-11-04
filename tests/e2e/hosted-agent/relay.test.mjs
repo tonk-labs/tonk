@@ -176,9 +176,12 @@ test('the well is busy until the view reports its size, and says what is loading
       return { busy: well.getAttribute('aria-busy'), says: well.dataset.loading };
     });
     assert.deepEqual(busy, { busy: 'true', says: 'loading Packing list' });
+    const label = () => frame.evaluate(() => document.querySelector('#card').getAttribute('aria-label'));
+    assert.equal(await label(), 'Tonk: Family trip, Packing list, loading');
     await until(frame, () => !document.querySelector('.tonk-well').hasAttribute('aria-busy'));
     const height = await frame.evaluate(() => document.querySelector('.tonk-view').offsetHeight);
     assert.equal(height, 220);
+    assert.equal(await label(), 'Tonk: Family trip, Packing list');
     // The host is told the whole card: the view and the line under it.
     assert.equal(await card.view.height(), 250);
   } finally {
@@ -199,6 +202,10 @@ test('a page that loads and stays silent fails after 3 s, and try again loads it
     assert.equal(failed.says, 'Packing list didn’t load. try again');
     assert.equal(failed.role, 'alert');
     assert.equal(failed.busy, null, 'it no longer says loading');
+    assert.equal(
+      await frame.evaluate(() => document.querySelector('#card').getAttribute('aria-label')),
+      'Tonk: Family trip, Packing list, didn’t load',
+    );
     const pulls = card.provider.served.filter((path) => path === '/worker-guest').length;
     await frame.click('.tonk-failed .tonk-link');
     await until(frame, () => !document.querySelector('.tonk-failed'));

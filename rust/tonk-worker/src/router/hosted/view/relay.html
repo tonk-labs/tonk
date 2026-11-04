@@ -197,13 +197,21 @@
         line.querySelector('.tonk-where').textContent = where ? (space ? '› ' : '') + where : '';
         line.querySelector('.tonk-role').textContent = route?.role || (route?.edit ? 'write' : 'read');
         if (route?.subject) out.href = inTonk();
-        const named = [space, where].filter(Boolean).join(', ');
-        card.setAttribute('aria-label', named ? 'Tonk: ' + named : 'Tonk');
+        named();
         frame.title = where
           ? where + (space ? ', a view in ' + space : '')
           : space
             ? 'A view in ' + space
             : 'A view in a Tonk space';
+      }
+      // The card's name for screen readers, as the mock names it: "Tonk:
+      // Family trip, Packing list", then its state (loading, didn't load).
+      function named() {
+        if (framed) return;
+        const parts = [route?.name, viewName()].filter(Boolean);
+        if (well.hasAttribute('data-failed')) parts.push('didn\u2019t load');
+        else if (well.getAttribute('aria-busy') === 'true') parts.push('loading');
+        card.setAttribute('aria-label', parts.length ? 'Tonk: ' + parts.join(', ') : 'Tonk');
       }
       // The disc: filled while the view's peer is connected and synced
       // (also while a save goes through), hollow while nothing syncs yet
@@ -339,6 +347,7 @@
         const height = remembered();
         if (height) frame.style.height = height + 'px';
         well.setAttribute('aria-busy', 'true');
+        named();
         slowTimer = setTimeout(() => {
           if (well.getAttribute('aria-busy') !== 'true') return;
           well.dataset.slow = '';
@@ -351,6 +360,7 @@
         well.removeAttribute('aria-busy');
         delete well.dataset.slow;
         delete well.dataset.loading;
+        named();
       }
       function clearFailed() {
         well.querySelector('.tonk-failed')?.remove();
@@ -384,6 +394,7 @@
         });
         note.append(' ', retry);
         well.append(note);
+        named();
         tellSize();
       }
       // The page has loaded: a page with a bridge speaks at once, so one

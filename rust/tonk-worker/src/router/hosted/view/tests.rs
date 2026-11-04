@@ -362,14 +362,18 @@ impl Writers for Outlining {
             .lock()
             .unwrap()
             .push((request.uri().query().unwrap_or_default().to_owned(), grants));
-        let name = if request.uri().query().unwrap_or_default().is_empty() {
-            Value::Null
+        // A view names its concept, and its own title where it has one.
+        let (name, title) = if request.uri().query().unwrap_or_default().is_empty() {
+            (Value::Null, Value::Null)
         } else {
-            json!("Packing list")
+            (json!("trip-item"), json!("Packing list"))
         };
         Response::new(Body::from(
-            json!({ "space": space.to_string(), "outline": { "model": "tonk/space", "name": name } })
-                .to_string(),
+            json!({
+                "space": space.to_string(),
+                "outline": { "model": "tonk/space", "name": name, "title": title },
+            })
+            .to_string(),
         ))
     }
 }
