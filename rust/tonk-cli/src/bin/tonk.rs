@@ -2007,6 +2007,8 @@ async fn export_op(out: Option<PathBuf>, branch: &str, space: Option<&str>) -> E
             }
             ExitCode::Success
         }
+        // The reader (e.g. `head`) closed stdout early: exit quietly.
+        Err(transfer::TransferError::ReaderClosed) => ExitCode::Success,
         Err(err) => print_coded(err),
     }
 }
@@ -4246,6 +4248,38 @@ mod account_spaces_parser_tests {
             assert!(
                 Cli::try_parse_from(args).is_ok(),
                 "guide command no longer parses: {args:?}"
+            );
+        }
+    }
+
+    /// The commands the README quick start and the no-account recovery
+    /// messages send people to.
+    #[dialog_common::test]
+    fn it_parses_the_commands_docs_and_recovery_messages_name() {
+        for args in [
+            &["tonk", "show"][..],
+            &["tonk", "concept"],
+            &["tonk", "view"],
+            &["tonk", "help", "-g"],
+            &["tonk", "help", "notation"],
+            &["tonk", "join", "https://tonk.example/space/x#y"],
+            &["tonk", "space", "link", "garden"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args).is_ok(),
+                "advertised command no longer parses: {args:?}"
+            );
+        }
+        for retired in [
+            &["tonk", "schema"][..],
+            &["tonk", "guide"],
+            &["tonk", "concept", "ls"],
+            &["tonk", "view", "ls"],
+            &["tonk", "account", "login"],
+        ] {
+            assert!(
+                Cli::try_parse_from(retired).is_err(),
+                "retired command parses again; restore it in the docs: {retired:?}"
             );
         }
     }
