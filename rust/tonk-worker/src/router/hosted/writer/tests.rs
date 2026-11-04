@@ -1289,7 +1289,7 @@ concept!: &writer-note
         let key = repository::create_space_from_seed(&state, "Claude", None, seed)
             .await
             .unwrap();
-        mark(&*state.read().await, &key, &agent, Some("claude"))
+        mark(&*state.read().await, &key, &agent, "Claude", Some("claude"))
             .await
             .unwrap();
         fixture

@@ -445,7 +445,9 @@ impl SpaceWriter {
     /// Write the change held as `id`, once, as [`Self::write`] does, and
     /// only onto the revision it was previewed at: the person confirmed
     /// what the preview showed, so a space that has moved since is
-    /// refused (`412`) and nothing is written. The id is spent before the
+    /// refused (`412`) and nothing is written. The `412` carries the same
+    /// change held afresh at the new head (`proposal`, `evaluation`),
+    /// when it still previews, for the person to choose. The id is spent before the
     /// write runs, so a second answer finds nothing whatever the first
     /// one's outcome.
     pub async fn apply(&self, id: &str) -> Response<Body> {
@@ -460,7 +462,27 @@ impl SpaceWriter {
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body.to_string()))
             .expect("static request");
-        self.write(request).await
+        let response = self.write(request).await;
+        if response.status() != StatusCode::PRECONDITION_FAILED {
+            return response;
+        }
+        // The space moved: hold the same change afresh at its new head, so
+        // the person can choose it over what changed, having been told.
+        let again = self.propose(document).await;
+        let mut moved = serde_json::json!({
+            "error": "the space changed after the preview; nothing was written",
+            "code": "CHANGED_SINCE",
+        });
+        if again.status().is_success()
+            && let Ok(body) = again.into_body().collect().await
+            && let Ok(held) = serde_json::from_slice::<serde_json::Value>(&body.to_bytes())
+        {
+            moved["proposal"] = held["proposal"].clone();
+            moved["evaluation"] = held["evaluation"].clone();
+        }
+        let mut response = json_answer(moved);
+        *response.status_mut() = StatusCode::PRECONDITION_FAILED;
+        response
     }
 
     /// Drop the change held as `id`.

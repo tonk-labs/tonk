@@ -23,9 +23,9 @@ const ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const HOSTED = `${ROOT}rust/tonk-worker/src/router/hosted/`;
 const FONTS = `${ROOT}rust/tonk-ui/assets/in-agent/fonts/`;
 
-const CHAT = (sandbox) => `<!doctype html><meta charset="utf-8"><title>chat</title>
+const CHAT = (sandbox, width) => `<!doctype html><meta charset="utf-8"><title>chat</title>
 <iframe id="card" src="${sandbox}" sandbox="allow-scripts allow-same-origin allow-forms"
-  style="width:520px;height:600px;border:0"></iframe>`;
+  style="width:${width}px;height:600px;border:0"></iframe>`;
 
 const SANDBOX = `<!doctype html><meta charset="utf-8"><title>sandbox</title>
 <style>html,body,iframe{margin:0;width:100%;border:0}</style>
@@ -98,10 +98,18 @@ async function cardResource(origin) {
 
 /**
  * Show a tool `result` whose `structuredContent.card` the card draws, in
- * a fresh browser, with the host's `context`. `answers` gives the result
- * of each tool the card calls.
+ * a fresh browser, with the host's `context`, in a chat `width` wide.
+ * `answers` gives the result of each tool the card calls, after `delay`
+ * milliseconds.
  */
-export async function showCard({ result, answers = {}, context = { theme: 'light' }, headed }) {
+export async function showCard({
+  result,
+  answers = {},
+  context = { theme: 'light' },
+  width = 520,
+  delay = 0,
+  headed,
+}) {
   const fonts = createServer(async (request, response) => {
     const name = new URL(request.url, 'http://fonts').pathname.replace('/in-agent/fonts/', '');
     try {
@@ -129,7 +137,7 @@ export async function showCard({ result, answers = {}, context = { theme: 'light
       return response.end(SANDBOX);
     }
     response.writeHead(200, { 'content-type': 'text/html' });
-    response.end(CHAT(`http://localhost:${server.address().port}/sandbox`));
+    response.end(CHAT(`http://localhost:${server.address().port}/sandbox`, width));
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const browser = await chromium.launch({
@@ -140,6 +148,8 @@ export async function showCard({ result, answers = {}, context = { theme: 'light
   const calls = [];
   await page.exposeFunction('hostCall', async (name, args) => {
     calls.push({ name, arguments: args });
+    // As a host's round trip does, so the card shows that it is saving.
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
     return answers[name] ?? { isError: true, content: [{ type: 'text', text: `no ${name}` }] };
   });
   const violations = [];

@@ -605,32 +605,28 @@ impl<W: Writers> McpEndpoint<'_, W> {
             let value = parsed(&body);
             let reason = reason(&value);
             let mut answer = tool_result(without_revisions(value), true);
+            // The model reads the worker's reason; the card says it in
+            // words for the person, and never shows the reason itself.
+            let card = if unreachable(status) {
+                super::propose::not_saved(context)
+            } else {
+                super::propose::rejected(context, confirm)
+            };
             if confirm {
                 answer["content"] = json!([{
                     "type": "text",
                     "text": format!("Nothing was proposed or written: {reason}"),
                 }]);
-                answer["structuredContent"] = json!({
-                    "card": super::card::Card::tell(
-                        Some(context.place.clone()),
-                        context.role,
-                        "not proposed",
-                        format!("I couldn’t prepare this change for {}.", context.place.label()),
-                        context.agent.clone(),
-                    )
-                    .fine(reason)
-                    .to_value(),
-                });
-            } else {
-                answer["structuredContent"] =
-                    json!({ "card": super::propose::not_saved(context, &reason).to_value() });
             }
+            answer["structuredContent"] = json!({ "card": card.to_value() });
             return answer;
         }
         if !confirm {
             let text = notation(&body, true);
-            let mut evaluation = without_revisions(parsed(&body));
-            let card = super::propose::receipt(context, &evaluation).to_value();
+            let written = parsed(&body);
+            let moved = written["revision_before"] != written["revision_after"];
+            let mut evaluation = without_revisions(written);
+            let card = super::propose::receipt(context, &evaluation, moved).to_value();
             if let Some(fields) = evaluation.as_object_mut() {
                 fields.insert("card".into(), card);
             }
@@ -725,20 +721,39 @@ impl<W: Writers> McpEndpoint<'_, W> {
             );
         }
         if apply && status == StatusCode::PRECONDITION_FAILED {
+            // The writer held the same change again at the space's new
+            // head, when it still previews, for the person to choose.
+            let moved = parsed(&body);
+            let again = moved["proposal"]["id"].as_str().map(|id| {
+                (
+                    id.to_owned(),
+                    without_revisions(moved["evaluation"].clone()),
+                )
+            });
             return card(
-                super::propose::moved(context),
+                super::propose::moved(
+                    context,
+                    again
+                        .as_ref()
+                        .map(|(id, evaluation)| (id.as_str(), evaluation)),
+                ),
                 format!(
                     "The person applied the change in {label}, but the space changed after the \
-                     preview they saw, so nothing was written. Read it again and propose the \
-                     change again if it still applies."
+                     preview they saw, so nothing was written. The card asks them to keep what \
+                     is there now or use the change anyway; wait for their answer."
                 ),
                 true,
             );
         }
         if !status.is_success() {
             let reason = reason(&parsed(&body));
+            let shown = if unreachable(status) {
+                super::propose::not_saved(context)
+            } else {
+                super::propose::rejected(context, false)
+            };
             return card(
-                super::propose::not_saved(context, &reason),
+                shown,
                 format!(
                     "The person {} the change in {label}, but the space did not confirm it: \
                      {reason}. Query the space before proposing it again; never replay it \
@@ -758,8 +773,10 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 false,
             );
         }
-        let evaluation = without_revisions(parsed(&body));
-        let receipt = super::propose::receipt(context, &evaluation);
+        let written = parsed(&body);
+        let moved = written["revision_before"] != written["revision_after"];
+        let evaluation = without_revisions(written);
+        let receipt = super::propose::receipt(context, &evaluation, moved);
         let mut text = format!(
             "The person applied the change: {} (space {space}).",
             receipt.say
@@ -824,18 +841,14 @@ impl<W: Writers> McpEndpoint<'_, W> {
             });
         }
         if let Some(refusal) = refusal(held, space, true) {
-            let label = if context.role.is_some() {
-                "read only"
-            } else {
-                "no access"
+            // The model reads the refusal; the card says it for the person.
+            let card = match held {
+                Some(held) if held.read => super::propose::read_only(&context),
+                Some(held) => {
+                    super::propose::no_access(&context.place, &context.agent, held.lapsed > 0)
+                }
+                None => super::propose::no_access(&context.place, &context.agent, false),
             };
-            let card = super::card::Card::tell(
-                Some(context.place.clone()),
-                context.role,
-                label,
-                refusal.clone(),
-                context.agent.clone(),
-            );
             return Err(json!({
                 "content": [{ "type": "text", "text": refusal }],
                 "structuredContent": { "card": card.to_value() },
@@ -970,6 +983,16 @@ fn space_request(
         }
     }
     request.body(Body::from(body.to_owned())).ok()
+}
+
+/// Whether a writer's failure `status` means the space could not be
+/// reached (a pull, a push or the writer itself failed), rather than that
+/// it refused the document.
+fn unreachable(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT
+    )
 }
 
 /// A writer's answer as JSON, or as a string when it is not.

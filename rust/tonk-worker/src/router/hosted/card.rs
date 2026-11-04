@@ -106,8 +106,8 @@ pub struct Card {
     /// The fine print.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fine: Option<String>,
-    /// A button for each answer, the safe one first: the card draws them
-    /// left to right, so the main one is on the right.
+    /// A button for each answer, the main one first: the card draws them
+    /// left to right, as the in-agent mocks do.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub answers: Vec<Answer>,
     /// The agent: its account's name, shown with the bot tag.
@@ -200,13 +200,46 @@ pub struct Entry {
 pub struct Answer {
     /// The button's words, lowercase.
     pub label: String,
-    /// Whether it is the main answer (solid), or the safe one (ring).
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub main: bool,
-    /// The app-only tool the answer calls. Its result is the next card.
-    pub tool: String,
-    /// The tool's arguments.
-    pub arguments: Value,
+    /// How it is drawn.
+    pub kind: Look,
+    /// What pressing it does.
+    #[serde(flatten)]
+    pub does: Does,
+}
+
+/// How an answer is drawn: the main one solid and first, the others a
+/// ring or a link after it, as the in-agent asks and tells draw them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Look {
+    /// A solid button: the answer the card leads with.
+    Main,
+    /// A ringed button.
+    Ring,
+    /// An underlined link, for the least weighty answer.
+    Link,
+}
+
+/// What an answer does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum Does {
+    /// Calls the app-only `tool` with `arguments`; its result is the next
+    /// card, and its text is what the model is told.
+    Call {
+        /// The tool.
+        tool: String,
+        /// Its arguments.
+        arguments: Value,
+    },
+    /// Calls nothing: the card becomes the strip `receipt`, and the model
+    /// is told `context`.
+    Say {
+        /// The strip's words.
+        receipt: String,
+        /// What the model is told.
+        context: String,
+    },
 }
 
 /// The agent a card names.
@@ -322,19 +355,41 @@ impl Card {
         self
     }
 
-    /// An answer, in order: the safe one first.
+    /// An answer that calls `tool`, in order: the main one first.
     pub fn answer(
         mut self,
         label: impl Into<String>,
-        main: bool,
+        kind: Look,
         tool: &str,
         arguments: Value,
     ) -> Self {
         self.answers.push(Answer {
             label: label.into(),
-            main,
-            tool: tool.to_owned(),
-            arguments,
+            kind,
+            does: Does::Call {
+                tool: tool.to_owned(),
+                arguments,
+            },
+        });
+        self
+    }
+
+    /// An answer that calls nothing: the card becomes the strip
+    /// `receipt`, and the model is told `context`.
+    pub fn answer_saying(
+        mut self,
+        label: impl Into<String>,
+        kind: Look,
+        receipt: impl Into<String>,
+        context: impl Into<String>,
+    ) -> Self {
+        self.answers.push(Answer {
+            label: label.into(),
+            kind,
+            does: Does::Say {
+                receipt: receipt.into(),
+                context: context.into(),
+            },
         });
         self
     }

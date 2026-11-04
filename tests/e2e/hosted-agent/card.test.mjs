@@ -28,18 +28,18 @@ const ask = {
       disc: 'filled',
       say: 'change 2 items in Family trip',
       changes: [
-        { mark: '+', name: 'Towels', kind: 'item' },
-        { mark: '~', name: 'Sunscreen', kind: 'item' },
+        { mark: '+', name: 'Towels', kind: 'view' },
+        { mark: '~', name: 'Sunscreen' },
       ],
       lines: '+ Pack towels.',
       ledger: [
         { term: 'in', value: 'Family trip' },
-        { term: 'made by', value: 'Juno', bot: true },
+        { term: 'changed by', value: 'you', bot: true },
       ],
-      fine: 'Nothing changes until you answer.',
+      fine: 'From the Tonk library.',
       answers: [
-        { label: 'not now', tool: 'tonk_proposal_dismiss', arguments: HELD },
-        { label: 'change 2 items', main: true, tool: 'tonk_proposal_apply', arguments: HELD },
+        { label: 'change 2 items', kind: 'main', tool: 'tonk_proposal_apply', arguments: HELD },
+        { label: 'keep as is', kind: 'ring', tool: 'tonk_proposal_dismiss', arguments: HELD },
       ],
       agent: AGENT,
       person: PERSON,
@@ -64,8 +64,8 @@ const strip = (say, byAgent) => ({
 });
 
 const ANSWERS = {
-  tonk_proposal_apply: strip('saved 2 items in Family trip', true),
-  tonk_proposal_dismiss: strip('kept as is · nothing changed in Family trip', false),
+  tonk_proposal_apply: strip('changed 2 items in Family trip', true),
+  tonk_proposal_dismiss: strip('nothing changed · Family trip stays as it is', false),
 };
 
 const tell = {
@@ -76,8 +76,8 @@ const tell = {
       kind: 'tell',
       space: { did: SPACE, name: 'Family trip' },
       disc: 'filled',
-      label: 'no access',
-      say: 'This connection has no access to Family trip.',
+      label: 'no access to Family trip',
+      say: 'I can’t open Family trip: this agent has no access to it. You can grant it from your agents in Tonk.',
       agent: AGENT,
       person: PERSON,
     },
@@ -102,9 +102,15 @@ async function drawn(frame) {
       fine: card.querySelector('.tonk-fine')?.textContent ?? null,
       buttons: [...card.querySelectorAll('.tonk-acts button')].map((b) => ({
         text: b.textContent,
-        ring: b.classList.contains('tonk-btn--ring'),
+        look: b.className,
         x: b.getBoundingClientRect().x,
       })),
+      receiptInHead: !!head?.querySelector('.tonk-receipt'),
+      ledgerColumns: (() => {
+        const ledger = card.querySelector('.tonk-ledger');
+        return ledger ? getComputedStyle(ledger).gridTemplateColumns.split(' ').length : 0;
+      })(),
+      height: card.getBoundingClientRect().height,
       background: getComputedStyle(card).backgroundColor,
     };
   });
@@ -128,7 +134,7 @@ async function receipt(frame) {
   throw new Error('no strip');
 }
 
-test('an ask draws its request, what changes and its answers, safe first', async () => {
+test('an ask draws its request, what changes and its answers, main first', async () => {
   const shown = await showCard({ result: ask, answers: ANSWERS });
   try {
     const card = await drawn(shown.card());
@@ -139,18 +145,19 @@ test('an ask draws its request, what changes and its answers, safe first', async
     assert.equal(card.space, 'Family trip');
     assert.equal(card.where, '› Packing list');
     assert.equal(card.say, 'change 2 items in Family trip');
-    assert.deepEqual(card.changes, ['+Towelsitem', '~Sunscreenitem']);
+    assert.deepEqual(card.changes, ['+Towelsview', '~Sunscreen']);
     assert.equal(card.lines, '+ Pack towels.');
-    assert.deepEqual(card.ledger, ['Family trip', 'Junobot']);
-    assert.equal(card.fine, 'Nothing changes until you answer.');
+    assert.deepEqual(card.ledger, ['Family trip', 'youbot']);
+    assert.equal(card.fine, 'From the Tonk library.');
     assert.deepEqual(
-      card.buttons.map(({ text, ring }) => ({ text, ring })),
+      card.buttons.map(({ text, look }) => ({ text, look })),
       [
-        { text: 'not now', ring: true },
-        { text: 'change 2 items', ring: false },
+        { text: 'change 2 items', look: 'tonk-btn' },
+        { text: 'keep as is', look: 'tonk-btn tonk-btn--ring' },
       ],
     );
-    assert.ok(card.buttons[0].x < card.buttons[1].x, 'the safe answer is not on the left');
+    assert.ok(card.buttons[0].x < card.buttons[1].x, 'the main answer is not on the left');
+    assert.equal(card.receiptInHead, false, 'an empty receipt in the head');
     assert.equal(card.background, 'rgb(56, 24, 42)');
     assert.deepEqual(shown.violations, []);
   } finally {
@@ -163,7 +170,7 @@ test('applying swaps the ask for a receipt by you and the bot, and tells the mod
   try {
     await shown.card().click('button:text-is("change 2 items")');
     const shownReceipt = await receipt(shown.card());
-    assert.equal(shownReceipt.text, 'saved 2 items in Family trip · by youbot');
+    assert.equal(shownReceipt.text, 'changed 2 items in Family trip · by youbot');
     assert.equal(shownReceipt.status, 'status');
     assert.equal(shownReceipt.bot, true);
     assert.equal(shownReceipt.focused, true, 'focus did not move to the receipt');
@@ -172,19 +179,19 @@ test('applying swaps the ask for a receipt by you and the bot, and tells the mod
     assert.equal(context.length, 1);
     assert.equal(
       context[0].params.content[0].text,
-      'The person answered: saved 2 items in Family trip.',
+      'The person answered: changed 2 items in Family trip.',
     );
   } finally {
     await shown.close();
   }
 });
 
-test('not now dismisses, and its receipt names no agent', async () => {
+test('keep as is dismisses, and its receipt names no agent', async () => {
   const shown = await showCard({ result: ask, answers: ANSWERS });
   try {
-    await shown.card().click('button:text-is("not now")');
+    await shown.card().click('button:text-is("keep as is")');
     const shownReceipt = await receipt(shown.card());
-    assert.equal(shownReceipt.text, 'kept as is · nothing changed in Family trip');
+    assert.equal(shownReceipt.text, 'nothing changed · Family trip stays as it is');
     assert.equal(shownReceipt.bot, false);
     assert.deepEqual(shown.calls, [{ name: 'tonk_proposal_dismiss', arguments: HELD }]);
   } finally {
@@ -230,7 +237,7 @@ test('a tell where the person is not in the space shows no disc and no role', as
   try {
     const card = await drawn(shown.card());
     assert.match(card.classes, /tonk--tell/);
-    assert.equal(card.label, 'Tonk: no access');
+    assert.equal(card.label, 'Tonk: no access to Family trip');
     assert.equal(card.disc, false);
     assert.equal(card.role, null);
     assert.equal(card.space, 'Family trip');
@@ -256,5 +263,75 @@ test('the card follows the host theme, and an ask stays on ink', async () => {
     assert.equal((await drawn(inked.card())).background, 'rgb(56, 24, 42)');
   } finally {
     await inked.close();
+  }
+});
+
+test('an answer shows a saving strip until the space answers', async () => {
+  const shown = await showCard({ result: ask, answers: ANSWERS, delay: 1500 });
+  try {
+    await shown.card().click('button:text-is("change 2 items")');
+    const saving = await receipt(shown.card());
+    assert.equal(saving.text, 'saving');
+    assert.equal(
+      await shown.card().evaluate(() => !!document.querySelector('.tonk--ask')),
+      false,
+      'the ask stays while saving',
+    );
+    await shown.card().waitForFunction(() =>
+      document.querySelector('.tonk-strip .tonk-receipt')?.textContent.startsWith('changed'),
+    );
+  } finally {
+    await shown.close();
+  }
+});
+
+test('a change not saved offers try again and drop it, and drop it calls nothing', async () => {
+  const unsaved = {
+    isError: true,
+    content: [{ type: 'text', text: 'PULL_FAILED' }],
+    structuredContent: {
+      card: {
+        kind: 'tell',
+        space: { did: SPACE, name: 'Family trip' },
+        role: 'write',
+        disc: 'hollow',
+        label: 'not saved',
+        say: 'This change isn’t saved because Tonk can’t reach Family trip. Nothing in it changed.',
+        answers: [
+          { label: 'try again', kind: 'main', receipt: 'asked to try again', context: 'Try again.' },
+          { label: 'drop it', kind: 'link', receipt: 'dropped · nothing changed in Family trip', context: 'Dropped.' },
+        ],
+        agent: AGENT,
+        person: PERSON,
+      },
+    },
+  };
+  const shown = await showCard({ result: unsaved });
+  try {
+    const card = await drawn(shown.card());
+    assert.deepEqual(
+      card.buttons.map(({ text, look }) => ({ text, look })),
+      [
+        { text: 'try again', look: 'tonk-btn' },
+        { text: 'drop it', look: 'tonk-link' },
+      ],
+    );
+    await shown.card().click('button:text-is("drop it")');
+    assert.equal((await receipt(shown.card())).text, 'dropped · nothing changed in Family trip');
+    assert.deepEqual(shown.calls, []);
+    const context = (await shown.asked()).filter((m) => m.method === 'ui/update-model-context');
+    assert.equal(context[0].params.content[0].text, 'Dropped.');
+  } finally {
+    await shown.close();
+  }
+});
+
+test('the ledger keeps two columns on a narrow card', async () => {
+  const shown = await showCard({ result: ask, width: 360 });
+  try {
+    const card = await drawn(shown.card());
+    assert.equal(card.ledgerColumns, 2);
+  } finally {
+    await shown.close();
   }
 });

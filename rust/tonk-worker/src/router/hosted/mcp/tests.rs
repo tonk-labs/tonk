@@ -705,7 +705,7 @@ async fn a_refused_write_is_a_tell_with_a_role_only_where_the_space_is_open() {
         assert_eq!(result["isError"], true);
         let card = &result["structuredContent"]["card"];
         assert_eq!(card["kind"], "tell", "{result}");
-        assert_eq!(card["label"], "read only");
+        assert_eq!(card["label"], "read only in Shelf");
         assert_eq!(card["role"], "read");
         assert_eq!(card["space"]["name"], "Shelf");
         assert_eq!(card["agent"]["name"], "Claude");
@@ -720,7 +720,7 @@ async fn a_refused_write_is_a_tell_with_a_role_only_where_the_space_is_open() {
     )
     .await;
     let card = &result["structuredContent"]["card"];
-    assert_eq!(card["label"], "no access", "{result}");
+    assert_eq!(card["label"], "no access to this space", "{result}");
     assert!(card.get("role").is_none(), "{card}");
 
     // An answer to a proposal is checked the same way, before any writer.
@@ -733,7 +733,10 @@ async fn a_refused_write_is_a_tell_with_a_role_only_where_the_space_is_open() {
     )
     .await;
     assert_eq!(result["isError"], true);
-    assert_eq!(result["structuredContent"]["card"]["label"], "read only");
+    assert_eq!(
+        result["structuredContent"]["card"]["label"],
+        "read only in Shelf"
+    );
 }
 
 #[cfg(all(feature = "integration-tests", not(target_arch = "wasm32")))]
@@ -1262,9 +1265,10 @@ concept!: &mcp-note
         assert_eq!(ask["changes"][0]["mark"], "+", "{ask}");
         assert_eq!(ask["changes"][0]["name"], "note asked");
         let answers = ask["answers"].as_array().unwrap();
-        assert_eq!(answers[0]["tool"], "tonk_proposal_dismiss");
-        assert_eq!(answers[1]["tool"], "tonk_proposal_apply");
-        let arguments = answers[1]["arguments"].clone();
+        assert_eq!(answers[0]["tool"], "tonk_proposal_apply");
+        assert_eq!(answers[0]["kind"], "main");
+        assert_eq!(answers[1]["tool"], "tonk_proposal_dismiss");
+        let arguments = answers[0]["arguments"].clone();
         assert!(
             proposed["content"][0]["text"]
                 .as_str()
@@ -1291,7 +1295,10 @@ concept!: &mcp-note
         assert_eq!(strip["kind"], "strip", "{applied}");
         assert_eq!(strip["byAgent"], true);
         assert!(
-            strip["say"].as_str().unwrap().starts_with("saved 1 item"),
+            strip["say"]
+                .as_str()
+                .unwrap()
+                .starts_with("added note asked to"),
             "{strip}"
         );
         assert!(holds("asked").await, "the applied note is missing");
@@ -1308,7 +1315,7 @@ concept!: &mcp-note
                 json!({ "space": space, "document": note("declined"), "confirm": true }),
             )
             .await;
-        let arguments = proposed["structuredContent"]["card"]["answers"][0]["arguments"].clone();
+        let arguments = proposed["structuredContent"]["card"]["answers"][1]["arguments"].clone();
         let dismissed = client
             .result("tonk_proposal_dismiss", arguments.clone())
             .await;
@@ -1326,7 +1333,7 @@ concept!: &mcp-note
                 json!({ "space": space, "document": note("stale"), "confirm": true }),
             )
             .await;
-        let arguments = proposed["structuredContent"]["card"]["answers"][1]["arguments"].clone();
+        let arguments = proposed["structuredContent"]["card"]["answers"][0]["arguments"].clone();
         let (moved, error) = client
             .call(
                 "tonk_evaluate",
@@ -1336,11 +1343,18 @@ concept!: &mcp-note
         assert!(!error, "{moved}");
         let stale = client.result("tonk_proposal_apply", arguments).await;
         assert_eq!(stale["isError"], true, "{stale}");
-        assert_eq!(
-            stale["structuredContent"]["card"]["label"], "changed since",
-            "{stale}"
-        );
+        let tell = &stale["structuredContent"]["card"];
+        assert_eq!(tell["label"], "note stale changed", "{stale}");
         assert!(!holds("stale").await, "a stale proposal wrote");
+        // The same change, held again at the new head: use mine writes it.
+        let answers = tell["answers"].as_array().unwrap();
+        assert_eq!(answers[0]["label"], "keep theirs");
+        assert_eq!(answers[1]["label"], "use mine");
+        let mine = client
+            .result("tonk_proposal_apply", answers[1]["arguments"].clone())
+            .await;
+        assert_eq!(mine["isError"], false, "{mine}");
+        assert!(holds("stale").await, "use mine wrote nothing");
 
         // A document that writes nothing has nothing to confirm.
         let read = client

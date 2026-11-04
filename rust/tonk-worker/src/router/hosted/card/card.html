@@ -13,26 +13,8 @@
         margin: 0;
         background: transparent;
       }
-      /* empty, it leaves the row but stays a live region, so "saving" is
-         announced */
-      .tonk-head .tonk-receipt:empty {
-        position: absolute;
-      }
-      .tonk-head .tonk-receipt {
-        margin-left: auto;
-        color: var(--tonk-text-soft);
-      }
       .tonk-receipt:focus {
         outline: none;
-      }
-      @media (max-width: 480px) {
-        .tonk-ledger {
-          grid-template-columns: minmax(0, 1fr);
-          gap: 0;
-        }
-        .tonk-ledger dd + dt {
-          margin-top: 4px;
-        }
       }
     </style>
   </head>
@@ -105,9 +87,6 @@
           const node = el('header', 'tonk-head');
           if (card.role) node.append(disc(card.disc));
           if (card.space) node.append(place(card.space));
-          const receipt = el('span', 'tonk-receipt');
-          receipt.setAttribute('role', 'status');
-          node.append(receipt);
           if (card.role) node.append(el('span', 'tonk-role', card.role));
           return node;
         }
@@ -153,9 +132,10 @@
           if (card.fine) section.append(el('p', 'tonk-fine', card.fine));
           if (card.answers?.length) {
             const acts = el('div', 'tonk-acts');
-            // The safe answer on the left, the main one on the right.
+            // In the order the server gives them: the main answer first.
+            const LOOK = { main: 'tonk-btn', ring: 'tonk-btn tonk-btn--ring', link: 'tonk-link' };
             for (const answer of card.answers) {
-              const button = el('button', answer.main ? 'tonk-btn' : 'tonk-btn tonk-btn--ring', answer.label);
+              const button = el('button', LOOK[answer.kind] || LOOK.ring, answer.label);
               button.type = 'button';
               button.addEventListener('click', () => choose(card, section, answer));
               acts.append(button);
@@ -195,10 +175,13 @@
 
         async function choose(card, section, answer) {
           for (const button of section.querySelectorAll('button')) button.disabled = true;
-          // Saving is a filled disc and the word, not a spinner.
-          const headDisc = section.querySelector('.tonk-head .tonk-disc');
-          if (headDisc) setDisc(headDisc, 'filled', 'saving');
-          section.querySelector('.tonk-head .tonk-receipt').textContent = 'saving';
+          // An answer that calls nothing: its strip, and what the model is told.
+          if (!answer.tool) {
+            strip({ ...card, kind: 'strip', say: answer.receipt, byAgent: false }, true);
+            return tellModel(answer.context);
+          }
+          // Saving is a strip with a filled disc and the word, not a spinner.
+          strip({ kind: 'strip', role: card.role, disc: 'filled', say: 'saving' }, false);
           let result;
           try {
             result = await rpc('tools/call', { name: answer.tool, arguments: answer.arguments });
@@ -219,7 +202,7 @@
                 role: card.role,
                 disc: card.disc,
                 label: 'not answered',
-                say: text || 'The space did not answer.',
+                say: 'The space did not answer, so nothing changed. Ask me again.',
               },
             );
             shown.tabIndex = -1;
@@ -231,11 +214,9 @@
         function present(params) {
           const card = params?.structuredContent?.card;
           if (card) return draw(card);
-          draw({
-            kind: 'tell',
-            label: 'nothing to show',
-            say: params?.content?.find((part) => part.type === 'text')?.text || 'Tonk sent nothing to show.',
-          });
+          // A result with no card is one the model has to fix; its words
+          // are for the model, so the person is told only what stands.
+          draw({ kind: 'tell', label: 'nothing changed', say: 'Nothing changed.' });
         }
 
         addEventListener('message', (event) => {
