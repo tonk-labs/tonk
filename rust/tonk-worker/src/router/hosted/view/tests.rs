@@ -362,14 +362,18 @@ impl Writers for Outlining {
             .lock()
             .unwrap()
             .push((request.uri().query().unwrap_or_default().to_owned(), grants));
-        let name = if request.uri().query().unwrap_or_default().is_empty() {
-            Value::Null
+        // A view names its concept, and its own title where it has one.
+        let (name, title) = if request.uri().query().unwrap_or_default().is_empty() {
+            (Value::Null, Value::Null)
         } else {
-            json!("Packing list")
+            (json!("trip-item"), json!("Packing list"))
         };
         Response::new(Body::from(
-            json!({ "space": space.to_string(), "outline": { "model": "tonk/space", "name": name } })
-                .to_string(),
+            json!({
+                "space": space.to_string(),
+                "outline": { "model": "tonk/space", "name": name, "title": title },
+            })
+            .to_string(),
         ))
     }
 }
@@ -1267,5 +1271,28 @@ async fn it_links_a_view_where_the_browser_routes_it() {
         strip["structuredContent"]["link"],
         format!("https://tonk.example/space/{subject}/tonk:trip%231@tonk/list!card"),
         "the chosen view, not the space home"
+    );
+}
+
+#[dialog_common::test]
+async fn it_names_the_view_in_a_strip() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let (verified, writer) = verified(&agent, &space, &["get"]).await;
+    let strip = shown(
+        &Listing(writer),
+        &verified,
+        json!({ "space": space.did().to_string(), "view": "tonk:trip@tonk/list", "size": "strip" }),
+    )
+    .await;
+    assert_eq!(strip["structuredContent"]["show"], "strip");
+    assert_eq!(
+        strip["structuredContent"]["viewName"], "Packing list",
+        "{strip}"
+    );
+    let said = strip["content"][0]["text"].as_str().unwrap();
+    assert!(
+        said.contains("a link to Family trip › Packing list"),
+        "{said}"
     );
 }

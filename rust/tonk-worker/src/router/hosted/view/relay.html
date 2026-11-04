@@ -41,18 +41,20 @@
   </style>
   <!-- One line with a link: a strip, or a space a view cannot reach. -->
   <section class="tonk tonk-strip" id="strip" aria-label="Tonk" hidden>
+    <span class="tonk-disc" role="img" aria-label="synced" title="synced"></span>
     <span class="tonk-receipt" role="status"></span>
-    <a class="tonk-link" href="#">open<span aria-hidden="true"> ↗</span></a>
+    <a class="tonk-link" href="#">open ↗</a>
   </section>
   <!-- The whole space: never shown in the chat, a way into Tonk. -->
   <section class="tonk" id="handoff" aria-label="Tonk" hidden>
     <header class="tonk-head">
+      <span class="tonk-disc" role="img" aria-label="synced" title="synced"></span>
       <span class="tonk-place"><span class="tonk-space"></span></span>
       <span class="tonk-role"></span>
     </header>
     <div class="tonk-handoff">
       <p>Opens the whole space in Tonk.</p>
-      <a class="tonk-btn" href="#">open in tonk<span aria-hidden="true"> ↗</span></a>
+      <a class="tonk-btn" href="#">open in tonk ↗</a>
     </div>
   </section>
   <section class="tonk" id="card" aria-label="Tonk">
@@ -66,7 +68,7 @@
       <span class="tonk-place"><span class="tonk-space"></span><span class="tonk-where"></span></span>
       <span class="tonk-receipt" role="status"></span>
       <span class="tonk-role"></span>
-      <a class="tonk-link tonk-out" id="out" href="#" hidden>open in tonk<span aria-hidden="true"> ↗</span></a>
+      <a class="tonk-link tonk-out" id="out" href="#" hidden>open in tonk ↗</a>
       <button type="button" class="tonk-expand" id="expand" aria-label="Open full screen" hidden>
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9" /></svg>
       </button>
@@ -216,13 +218,23 @@
         line.querySelector('.tonk-where').textContent = where ? (space ? '› ' : '') + where : '';
         line.querySelector('.tonk-role').textContent = route?.role || (route?.edit ? 'write' : 'read');
         if (route?.subject) out.href = inTonk();
-        const named = [space, where].filter(Boolean).join(', ');
-        card.setAttribute('aria-label', named ? 'Tonk: ' + named : 'Tonk');
+        named();
         frame.title = where
           ? where + (space ? ', a view in ' + space : '')
           : space
             ? 'A view in ' + space
             : 'A view in a Tonk space';
+      }
+      // The card's name for screen readers, as the mock names it: "Tonk:
+      // Family trip, Packing list", then its state (loading, didn't load).
+      function named() {
+        if (framed) return;
+        const parts = [route?.name, viewName()].filter(Boolean);
+        if (well.hasAttribute('data-failed')) parts.push('didn\u2019t load');
+        else if (well.getAttribute('aria-busy') === 'true') parts.push('loading');
+        if (host.displayMode === 'fullscreen') parts.push('full screen');
+        else if (host.displayMode === 'pip') parts.push('docked');
+        card.setAttribute('aria-label', parts.length ? 'Tonk: ' + parts.join(', ') : 'Tonk');
       }
       // The disc: filled while the view's peer is connected and synced
       // (also while a save goes through), hollow while nothing syncs yet
@@ -273,7 +285,11 @@
         const theme = themed();
         document.documentElement.dataset.theme = theme;
         if (viewFrame) frame.contentWindow?.postMessage({ tonkFrame: 'theme', theme }, origin);
-        else frame.contentWindow?.postMessage({ type: 'tonk-theme', theme }, '*');
+        else {
+          frame.contentWindow?.postMessage({ type: 'tonk-theme', theme }, '*');
+          // The runtime's own message, which it passes on to nested views.
+          frame.contentWindow?.postMessage({ __tonkRuntime: 'mode', mode: theme }, '*');
+        }
       }
       matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => host.theme || applyTheme());
       function context(changed) {
@@ -306,6 +322,7 @@
         card.classList.toggle('tonk--fill', fill);
         expand.hidden = fill || !host.available.includes('fullscreen');
         out.hidden = host.displayMode !== 'fullscreen' || !route;
+        named();
         tellSize();
       }
       expand.addEventListener('click', async () => {
@@ -338,8 +355,9 @@
 
       // ---- A link instead of a view -----------------------------------
       // The whole space opens in Tonk; a strip, or a space a view cannot
-      // reach, is one line with a link. Neither runs a peer, so neither
-      // has a disc: there is no sync to show.
+      // reach, is one line with a link. Neither runs a peer: the disc is
+      // drawn filled, as the mock draws it, for a space this connection
+      // reaches.
       function linkOnly(kind) {
         card.hidden = true;
         const link = route.link || inTonk(),
@@ -396,6 +414,7 @@
         const height = remembered();
         if (height) frame.style.height = height + 'px';
         well.setAttribute('aria-busy', 'true');
+        named();
         slowTimer = setTimeout(() => {
           if (well.getAttribute('aria-busy') !== 'true') return;
           well.dataset.slow = '';
@@ -408,6 +427,7 @@
         well.removeAttribute('aria-busy');
         delete well.dataset.slow;
         delete well.dataset.loading;
+        named();
       }
       function clearFailed() {
         well.querySelector('.tonk-failed')?.remove();
@@ -441,6 +461,7 @@
         });
         note.append(' ', retry);
         well.append(note);
+        named();
         tellSize();
       }
       // The page has loaded: a page with a bridge speaks at once, so one
@@ -1282,6 +1303,9 @@
         const fitted = Math.min(Math.max(Math.ceil(height), 40), 4000);
         frame.style.height = fitted + 'px';
         if (route) remember(fitted);
+        // The view has drawn: tell it the theme again, in case its runtime
+        // set its own after it mounted.
+        if (well.getAttribute('aria-busy') === 'true') applyTheme();
         settled();
         clearFailed();
         tellSize();
