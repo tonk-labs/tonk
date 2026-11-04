@@ -5677,15 +5677,27 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         "/library/version-control.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/version-control.yaml").to_owned())
         }
-        // A language (`library::LANGUAGES`): generated, so not listed
-        // here; `tonk-library` bundles every document in a subdirectory.
-        other => other
-            .strip_prefix("/library/")
-            .filter(|path| path.starts_with(super::library::LANGUAGES))
-            .and_then(|path| tonk_library::Bundled.get(&tonk_library::location(path)))
-            .and_then(|bytes| String::from_utf8(bytes.to_vec()).ok())
+        other => embedded_language(other)
             .ok_or_else(|| TonkWorkerError::Internal(format!("no embedded library for '{other}'"))),
     }
+}
+
+/// A language (`library::LANGUAGES`): generated, so not listed above;
+/// `tonk-library` bundles every document in a library subdirectory.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn embedded_language(url: &str) -> Option<String> {
+    let path = url
+        .strip_prefix("/library/")
+        .filter(|path| path.starts_with(super::library::LANGUAGES))?;
+    let bytes = tonk_library::Bundled.get(&tonk_library::location(path))?;
+    String::from_utf8(bytes.to_vec()).ok()
+}
+
+/// The wasm tests embed no bundled library: a service worker fetches the
+/// served one.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn embedded_language(_url: &str) -> Option<String> {
+    None
 }
 
 /// Build the notation document asserting the repository's own
