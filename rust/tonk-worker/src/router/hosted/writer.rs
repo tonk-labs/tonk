@@ -431,15 +431,29 @@ impl SpaceWriter {
     /// Only the agent space's own writer answers: it already holds the
     /// agent space warm, so the front asks it rather than opening a peer.
     pub async fn agent_access(&self) -> Result<super::access::AgentAccess, TonkWorkerError> {
+        self.agent_access_timed().await.0
+    }
+
+    /// [`agent_access`](Self::agent_access), with the time of each step:
+    /// `pull` (including waiting for a pull another read began) and
+    /// `read` (the grants proved from the replica).
+    pub async fn agent_access_timed(
+        &self,
+    ) -> (Result<super::access::AgentAccess, TonkWorkerError>, Steps) {
+        let mut steps = Steps::start();
         if self.space != self.agent {
-            return Err(TonkWorkerError::Forbidden(
-                "only the agent space's writer reads its grants".into(),
-            ));
+            let refused =
+                TonkWorkerError::Forbidden("only the agent space's writer reads its grants".into());
+            return (Err(refused), steps);
         }
-        self.refresh()
-            .await
-            .map_err(SyncFailure::into_worker_error)?;
-        self.peer().agent_access(&self.agent).await
+        let refreshed = self.refresh().await;
+        steps.lap("pull");
+        if let Err(error) = refreshed {
+            return (Err(error.into_worker_error()), steps);
+        }
+        let access = self.peer().agent_access(&self.agent).await;
+        steps.lap("read");
+        (access, steps)
     }
 
     /// The grants in force the agent space holds for `space`, read from

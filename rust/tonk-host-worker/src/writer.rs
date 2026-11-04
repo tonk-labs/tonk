@@ -316,10 +316,13 @@ impl SpaceWriterObject {
         let method = request.method();
         if method == worker::Method::Get && path == ACCESS {
             self.reach("access");
-            return match writer.agent_access().await {
+            let (access, timed) = writer.agent_access_timed().await;
+            let mut response = match access {
                 Ok(access) => worker::Response::from_json(&access),
                 Err(error) => upstream_failure(&error),
-            };
+            }?;
+            response.headers_mut().set(SERVER_TIMING, &timed.header())?;
+            return Ok(response);
         }
         if method == worker::Method::Get
             && path == tonk_worker::view::CHAINS_ROUTE.trim_start_matches('/')
