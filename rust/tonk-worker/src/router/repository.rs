@@ -293,7 +293,9 @@ pub async fn put_repository(
     //
     // The spawned task takes an owned `AppState` (the lock is released
     // when `tonk` drops at the end of this scope) and re-acquires it.
+    let created = (*tonk).clone();
     drop(tonk);
+    provision_created_space(&created, &subject).await;
     let branches: Vec<String> = configuration.branch.keys().cloned().collect();
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     spawn_seed(state, display_name, key, subject, branches);
@@ -3006,6 +3008,13 @@ pub(crate) async fn remove_space_inner(
     state: &AppState,
     subject: &Did,
 ) -> Result<(), RepositoryError> {
+    // Syncs hold no guard over the state across their round trips, so the
+    // write guards below no longer wait for one of this space to finish.
+    // Its gate does: closing it waits out every pull, push and sync of the
+    // space in flight, and keeps a new one from starting until the space
+    // is gone. Only this space's syncs wait; nothing else does.
+    let gate = state.read().await.sync_queue.gate(subject.repo_key());
+    let _closed = gate.write().await;
     {
         let tonk = state.write().await;
         if let Err(error) = require_real_space(&tonk, subject).await
@@ -3574,6 +3583,7 @@ pub(super) async fn create_space_from_seed(
     let configuration =
         RepositoryConfiguration::default().branch("main", BranchConfiguration::default());
 
+    let provisioning;
     let (subject, key, branches) = {
         let tonk = state.write().await;
 
@@ -3583,8 +3593,10 @@ pub(super) async fn create_space_from_seed(
         let subject = repository.did();
         let key = subject.repo_key().to_owned();
         let branches: Vec<String> = configuration.branch.keys().cloned().collect();
+        provisioning = (*tonk).clone();
         (subject, key, branches)
     };
+    provision_created_space(&provisioning, &subject).await;
 
     // Seed + flip to initialized once the lock is released (seeding is
     // the slow part; holding the lock would stall the page).
@@ -3610,6 +3622,9 @@ pub(super) async fn create_unseeded_space_from_seed(
     let tonk = state.read().await;
     let repository = create_repository_from_seed(&tonk, name, &configuration, seed).await?;
     let subject = repository.did();
+    let created = (*tonk).clone();
+    drop(tonk);
+    provision_created_space(&created, &subject).await;
     Ok((subject.repo_key().to_owned(), subject))
 }
 
@@ -3640,7 +3655,11 @@ pub(super) async fn enable_sync_inner(
     key: &str,
     remote: &str,
 ) -> Result<(), RepositoryError> {
-    let tonk = state.write().await;
+    // A read guard, as the other callers of the lock-free core take: the
+    // attach provisions the space with the access service and records the
+    // mount in the account directory, both round trips, and a write guard
+    // held across them stalls every other request.
+    let tonk = state.read().await;
     enable_sync_for_repository(&tonk, key, remote, true).await
 }
 
@@ -5553,6 +5572,9 @@ pub(super) async fn fetch_library_bytes(url: &str) -> Result<Vec<u8>, TonkWorker
     {
         return Ok(bytes);
     }
+    if let Some(bytes) = crate::cache::downloaded_library_bytes(url).await {
+        return Ok(bytes);
+    }
 
     let init = RequestInit::new();
     init.set_cache(RequestCache::NoStore);
@@ -5870,30 +5892,10 @@ pub(super) async fn create_repository_from_seed(
     // access by pulling the account rather than by fetching an artifact.
     super::account_state::retain_space_delegation(tonk, &prefix).await;
 
-    // The billing half of the same act: provision the new space as a
-    // consumer of the access service, depositing the powerline as its
-    // consent. Best effort for the same reason retain is — a space is
-    // usable the moment its delegations exist locally.
-    //
-    // Only for an ACTIVE customer. A device has an account from first
-    // boot (the onboarding account), so "an account exists" says nothing
-    // about whether the access service will serve this subject: until
-    // the user enrols an email and confirms it, `/provider/add` refuses
-    // and the space would be left wired to a remote that answers 403 on
-    // every presign. A space created in that window is local-only by
-    // design, and the share button provisions it on demand.
-    if super::customer::is_active(tonk).await {
-        if let Err(error) =
-            super::customer::provision_or_defer(tonk, &repository.did(), &prefix, None).await
-        {
-            log!("consumer provisioning skipped: {error}");
-        }
-    } else {
-        log!(
-            "space '{}' created local-only: no active customer to provision it under",
-            repository.did()
-        );
-    }
+    // The billing half of the same act, provisioning the space with the
+    // access service, is a round trip to that service, so it is not done
+    // here: a caller holds the state guard across this function. Each
+    // caller runs [`provision_created_space`] once it has let go.
 
     let prefix_bytes = prefix.to_bytes().map_err(|error| {
         RepositoryError::Internal(format!(
@@ -5926,6 +5928,37 @@ pub(super) async fn create_repository_from_seed(
     .await?;
 
     Ok(repository)
+}
+
+/// Provision a space [`create_repository`] just made as a consumer of the
+/// access service, depositing its root delegation as the consent.
+///
+/// A round trip to that service, so the caller passes a clone of the state
+/// rather than a guard over it: a create that held the guard here kept
+/// every other request waiting on the service, as long as its timeout.
+///
+/// Only for an ACTIVE customer. A device has an account from first boot
+/// (the onboarding account), so "an account exists" says nothing about
+/// whether the access service will serve this subject: until the user
+/// enrols an email and confirms it, `/provider/add` refuses and the space
+/// would be left wired to a remote that answers 403 on every presign. A
+/// space created in that window is local-only by design, and the share
+/// button provisions it on demand.
+///
+/// Best effort, as the rest of the create is not: a space is usable the
+/// moment its delegations exist locally, and a retryable refusal is queued.
+pub(crate) async fn provision_created_space(tonk: &TonkState, subject: &Did) {
+    if !super::customer::is_active(tonk).await {
+        log!("space '{subject}' created local-only: no active customer to provision it under");
+        return;
+    }
+    let prefix = match space_root_prefix(tonk, subject).await {
+        Ok(prefix) => prefix,
+        Err(error) => return log!("consumer provisioning skipped: {error}"),
+    };
+    if let Err(error) = super::customer::provision_or_defer(tonk, subject, &prefix, None).await {
+        log!("consumer provisioning skipped: {error}");
+    }
 }
 
 /// Provision owned `subject` under this profile's account, repairing a stale
@@ -6675,7 +6708,10 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
     // harness that serves no library) costs a degraded Hub until the
     // next attempt — not a worker that refuses to boot or a profile
     // switch that dies half-way.
-    if let Err(error) = reconcile_profile_library(tonk).await {
+    //
+    // Bounded, because every request waits for boot: a network that never
+    // answers must cost a degraded Hub, not a worker that never boots.
+    if let Err(error) = reconcile_profile_library_within(tonk, PROFILE_LIBRARY_BOOT_WAIT).await {
         log!("profile library reconciliation skipped: {error}");
     }
     // A fresh state, a fresh overlay: say whether this device is linked
@@ -6688,6 +6724,33 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     Ok(())
+}
+
+/// How long a boot waits for the profile library's bytes before it boots
+/// without reconciling them.
+const PROFILE_LIBRARY_BOOT_WAIT: web_time::Duration = web_time::Duration::from_secs(5);
+
+/// [`reconcile_profile_library`], giving up when the library's bytes have
+/// not arrived within `limit`. Only the acquisition is bounded: once the
+/// bytes are here, the reconciliation's commits run to the end.
+pub(crate) async fn reconcile_profile_library_within(
+    tonk: &TonkState,
+    limit: web_time::Duration,
+) -> Result<ProfileLibraryOutcome, RepositoryError> {
+    use futures_util::future::{Either, select};
+    let acquire = tonk.profile_library.acquire();
+    let deadline = crate::sleep(limit);
+    futures_util::pin_mut!(acquire, deadline);
+    let prepared = match select(acquire, deadline).await {
+        Either::Left((prepared, _)) => prepared?,
+        Either::Right(_) => {
+            return Err(RepositoryError::Internal(format!(
+                "the profile library did not arrive within {} s",
+                limit.as_secs()
+            )));
+        }
+    };
+    reconcile_prepared_profile_library(tonk, prepared).await
 }
 
 /// Fetch and reconcile the lean profile library onto profile `main`.
@@ -7347,7 +7410,8 @@ pub async fn get_repository(
     }
     log!("GET /api/repository/{}", name);
 
-    let tonk = state.read().await;
+    // A clone, not a guard: a first-use mount can pull over the network.
+    let tonk = state.read().await.clone();
 
     // First use of a directory-listed space this device has not
     // replicated mounts it on demand — same lazy adoption the query
@@ -8221,7 +8285,9 @@ pub async fn attach_remote(
             .map_err(|e| TonkWorkerError::Router(format!("Invalid request body: {e}")))?
     };
 
-    let tonk = state.write().await;
+    // A read guard: provisioning is a round trip to the access service,
+    // and the remote configuration commits serialize on their branch.
+    let tonk = state.read().await;
 
     let repository = tonk
         .profile
@@ -9765,30 +9831,32 @@ route!: &foreign-profile-route
         let session = crate::session::open(&profile)
             .await
             .expect("test session opens");
-        TonkState {
-            seed_upgrades: Default::default(),
-            profile: profile.clone(),
-            operator: session.operator,
-            storage,
-            session_expires_at: session.expires_at,
-            profile_name: name.clone(),
-            active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
-            reactor: crate::Reactor::new(profile.credential().clone()),
-            admission: Default::default(),
-            reject_admission_content_reads: Default::default(),
-            retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            view_bindings: Default::default(),
-            bridges: Default::default(),
-            sync_queue: Default::default(),
-            commands: crate::router::command_providers(),
-            clients: Default::default(),
-            account_keys: Default::default(),
-            profile_library: Default::default(),
-            registry: crate::device::Registry::new(name, directory),
-            profile_transition: Default::default(),
-            context_generation: Default::default(),
-            profile_swaps: Default::default(),
-        }
+        TonkState::from_parts(
+            session.operator,
+            session.expires_at,
+            crate::router::repository::PROFILE_BRANCH.to_owned(),
+            crate::worker::TonkShared {
+                seed_upgrades: Default::default(),
+                profile: profile.clone(),
+                storage,
+                profile_name: name.clone(),
+                reactor: crate::Reactor::new(profile.credential().clone()),
+                admission: Default::default(),
+                reject_admission_content_reads: Default::default(),
+                retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                view_bindings: Default::default(),
+                bridges: Default::default(),
+                sync_queue: Default::default(),
+                commands: crate::router::command_providers(),
+                clients: Default::default(),
+                account_keys: Default::default(),
+                profile_library: Default::default(),
+                registry: crate::device::Registry::new(name, directory),
+                profile_transition: Default::default(),
+                context_generation: Default::default(),
+                profile_swaps: Default::default(),
+            },
+        )
     }
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -10064,7 +10132,7 @@ route!: &foreign-profile-route
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
         while subscriber.receiver.try_recv().is_ok() {}
 
-        tonk.profile_library = Default::default();
+        tonk.shared_mut().profile_library = Default::default();
         let outcome = reconcile_profile_library(&tonk)
             .await
             .expect("profile library reconciles");
@@ -10224,7 +10292,7 @@ route!: &foreign-profile-route
             .await
             .expect("retained definition is damaged");
 
-        tonk.profile_library = Default::default();
+        tonk.shared_mut().profile_library = Default::default();
         let outcome = reconcile_profile_library(&tonk)
             .await
             .expect("damaged retained definition reconciles");
@@ -10361,7 +10429,7 @@ route!: &foreign-profile-route
         );
 
         let mut switched = test_state().await;
-        switched.profile_library = tonk.profile_library.clone();
+        switched.shared_mut().profile_library = tonk.profile_library.clone();
         reconcile_profile_library(&switched)
             .await
             .expect("a switched profile uses the running worker input");

@@ -13,7 +13,8 @@
 # the proxy's requests.jsonl.
 #
 # Usage: bench/trace/run.sh [--dist DIR] [--notes N]
-# Expects release builds of tonk-access-local, tonk and tonk-perf, and a
+# Expects release builds of tonk-access-local, tonk and tonk-perf (or their
+# paths in TRACE_ACCESS_LOCAL, TRACE_TONK and TRACE_PERF), and a
 # trunk dist (default rust/tonk-ui/dist).
 set -euo pipefail
 
@@ -36,9 +37,10 @@ echo "trace: run dir $RUN_DIR" >&2
 PROXY_PORT="${TRACE_PROXY_PORT:-8798}"
 GATE_PORT="${TRACE_GATE_PORT:-8799}"
 BASE="http://127.0.0.1:$GATE_PORT"
-TONK="$ROOT/target/release/tonk"
-PERF="$ROOT/target/release/tonk-perf"
-for bin in "$ROOT/target/release/tonk-access-local" "$TONK" "$PERF"; do
+TONK="${TRACE_TONK:-$ROOT/target/release/tonk}"
+PERF="${TRACE_PERF:-$ROOT/target/release/tonk-perf}"
+ACCESS_LOCAL="${TRACE_ACCESS_LOCAL:-$ROOT/target/release/tonk-access-local}"
+for bin in "$ACCESS_LOCAL" "$TONK" "$PERF"; do
   [ -x "$bin" ] || { echo "trace: missing $bin" >&2; exit 1; }
 done
 
@@ -50,7 +52,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-"$ROOT/target/release/tonk-access-local" > "$RUN_DIR/access.log" 2>&1 &
+"$ACCESS_LOCAL" > "$RUN_DIR/access.log" 2>&1 &
 echo $! > "$RUN_DIR/access.pid"
 ACCESS_URL=""
 for _ in $(seq 1 60); do

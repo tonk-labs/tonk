@@ -727,9 +727,10 @@ fn install_method_delegates(host: &Element, state: &Rc<RefCell<Inner>>) {
     error.forget();
 
     let host_for_notice = host.clone();
+    let state_for_notice = state.clone();
     let notice: Closure<dyn FnMut(JsValue, JsValue)> =
         Closure::wrap(Box::new(move |payload, opts| {
-            on_notice(&host_for_notice, payload, opts);
+            on_notice(&host_for_notice, &state_for_notice, payload, opts);
         }));
     let _ = Reflect::set(host, &"__tonkNotice".into(), notice.as_ref());
     notice.forget();
@@ -739,12 +740,29 @@ fn install_method_delegates(host: &Element, state: &Rc<RefCell<Inner>>) {
 /// rather than its rows. `upgrading` says the worker is moving the branch
 /// to this release's storage format before it answers: the display shows
 /// so until the rows arrive, in place of a bare loading state.
-fn on_notice(host: &Element, payload: JsValue, _opts: JsValue) {
+///
+/// `pending` says the branch is not here yet. A display that already shows
+/// something keeps it: the rows follow on the same
+/// stream, so clearing now would only delete what is about to be inserted
+/// again. One with nothing yet treats it as the empty set it was sent
+/// before, which lands it in its absence state (`no-model`, `no-entity`),
+/// the slot an embedder fills to say the space is on its way.
+fn on_notice(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: JsValue) {
     let control = Reflect::get(&payload, &"control".into())
         .ok()
         .and_then(|v| v.as_string());
-    if control.as_deref() == Some("upgrading") {
-        state::set_upgrading(host);
+    match control.as_deref() {
+        Some("upgrading") => state::set_upgrading(host),
+        Some("pending") => {
+            let shows_rows = {
+                let s = state.borrow();
+                !s.slides.is_empty() || !s.last_frame.is_empty()
+            };
+            if !shows_rows {
+                on_reset(host, state, js_sys::Array::new().into(), opts);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -6137,6 +6155,121 @@ mod tests {
                 ],
                 "inline mode watches the name, model, view, and entity",
             );
+        }
+
+        /// A branch that is not here yet answers `pending`, not an empty
+        /// set. A display with nothing to show lands in its absence state,
+        /// as the empty set put it before: that is the slot a space page
+        /// fills with "downloading".
+        #[dialog_common::test]
+        async fn it_reads_pending_as_absent_when_it_shows_nothing() {
+            let host = FakeHost::install(resolve_responses());
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"model".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            let payload = Object::new();
+            let _ = Reflect::set(&payload, &"control".into(), &"pending".into());
+            let opts = Object::new();
+            let _ = Reflect::set(&opts, &"tag".into(), &"model".into());
+            let notice: Function = Reflect::get(&display, &"notice".into())
+                .unwrap()
+                .dyn_into()
+                .unwrap();
+            let _ = notice.call2(&display, &payload, &opts);
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("no-model") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("no-model"),
+                "a fresh display reads `pending` as absent",
+            );
+
+            // The space arrives: the model subscription pushes a non-empty
+            // frame, the downstream view + entity subs open, and a view +
+            // entity frame render the row live.
+            host.push_frame("model", &model_concept_frame());
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"view".to_owned())
+                    && host.subscribe_tags().contains(&"entity".to_owned())
+                {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("view", &view_frame("<p>{count}</p>"));
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "7")])]));
+
+            assert!(
+                await_selector(&display, "tonk-view").await.is_some(),
+                "the display recovers and renders once the concept lands",
+            );
+            assert!(
+                display.query_selector("wa-callout").unwrap().is_none(),
+                "recovery leaves no latched callout behind",
+            );
+        }
+
+        /// A display that already shows rows keeps them through `pending`
+        /// (a reconnect to a worker that has not mounted the branch yet):
+        /// the rows follow on the same stream, so clearing would delete
+        /// what is about to be inserted again.
+        #[dialog_common::test]
+        async fn it_keeps_its_rows_through_pending() {
+            let dictionary = || {
+                show_rows(
+                    "tonk:_",
+                    &[("directory", "<ul><li data-id={this}>{title}</li></ul>")],
+                )
+            };
+            let host = FakeHost::install_with_model(
+                vec![name_row("did:key:zModel"), dictionary(), dictionary()],
+                Some(directory_model_frame()),
+            );
+            let display = mount_directory(&host, "item");
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame(
+                "entity",
+                &rows(&[("did:key:zItem1", &[("title", "Hello")])]),
+            );
+            host.push_frame("view", &rows(&[]));
+            await_selector(&display, "li[data-id]")
+                .await
+                .expect("the row renders");
+
+            for tag in ["entity", "model"] {
+                let payload = Object::new();
+                let _ = Reflect::set(&payload, &"control".into(), &"pending".into());
+                let opts = Object::new();
+                let _ = Reflect::set(&opts, &"tag".into(), &tag.into());
+                let notice: Function = Reflect::get(&display, &"notice".into())
+                    .unwrap()
+                    .dyn_into()
+                    .unwrap();
+                let _ = notice.call2(&display, &payload, &opts);
+            }
+            sleep(100).await;
+            assert!(
+                display.query_selector("li[data-id]").unwrap().is_some(),
+                "`pending` took down rows the display already showed",
+            );
+            assert_ne!(
+                display.get_attribute("data-state").as_deref(),
+                Some("no-model"),
+            );
+            host.container.remove();
         }
 
         // The fix for the latched red box on a still-seeding space: when

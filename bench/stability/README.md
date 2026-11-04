@@ -31,6 +31,16 @@ and exits non-zero when an invariant fails.
 
 `STABILITY_SCENARIOS=switch-spaces,worker-restart` runs a subset.
 
+CI runs it as the `Stability scenarios` job in `.github/workflows/test.yml`,
+on the release web build and the Nix `tonk-bench-stack` package, and uploads
+`stability.json` and the screenshots. It is not a required check yet: the
+spread on CI runners has to be measured first.
+
+`write-while-sync-stalls` needs `tonk-perf link` (it stalls only the remote
+leg, `link=ucan`) and is skipped behind bench/trace/gate.mjs. It stalls a
+pull of space A, has the page create a space (a writer on the state lock),
+then times a plain read, which must answer within 2 s.
+
 ## Invariants and ratchets
 
 An invariant has a fixed target that is never re-recorded: no content
