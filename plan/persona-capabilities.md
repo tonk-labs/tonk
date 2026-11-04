@@ -76,6 +76,33 @@ command. Today every kernel asks for its chain
 itself (`representative.delegate` at boot, `tonk-kernel/src/lib.rs`); that
 goes.
 
+## Rotation
+
+Two things are called rotation today, and only one of them touches what a
+store holds.
+
+- **A session's renewal** (`tonk-worker/src/session.rs`, run from the sync
+  drain by `ensure_session_authority`) makes a new session key and a
+  delegation to it that lapses after `SESSION_TTL_SECONDS`, held in memory
+  only. Nothing in a store is sealed to a session's key or delegated to it
+  durably: custody is sealed to the persona and its custodians, and the
+  delegations a space retains name accounts and profiles. So renewal signs
+  one hop and reseals nothing. It moves to the host, which signs the hop
+  from the device to the new session and hands the kernel the chain, as it
+  does at boot (`lifecycle.renewed(delegations)`, beside `sync`). The kernel
+  takes it up as it takes up the boot's and proves with it from then on.
+- **An account's rotation** (`router/rotation.rs`, run as the person signs
+  in) moves what the provisional persona held to the permanent one: custody
+  is unsealed and resealed (`migrate_custody`), principals are re-issued to
+  the new root, and the onboarding account is retired. This is the
+  kernel's, as it is now: it reads and rewrites its own store, and it
+  invokes `/be/persona/confide` and `/be/persona/delegate` for what only the
+  persona signs, inside the window the sign-in holds its key.
+
+Should a store ever keep something sealed to a session, renewing it would
+need the kernel too; the design keeps sessions out of what is sealed so it
+never does.
+
 ## The persona's key
 
 The host opens it with one of the person's recoveries, such as a passkey,
