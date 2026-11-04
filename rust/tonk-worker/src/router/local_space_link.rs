@@ -194,7 +194,7 @@ pub(crate) async fn complete(
     // A read guard: what follows is round trips (the join's pull, the
     // access service's provisioning), and a write guard held across them
     // stalls every other request.
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     let root = super::identity::local_root(&tonk).await?;
     let approval = local_space_link::LocalSpaceLinkApproval::from_bytes(&decode(
         &body.approval,
@@ -252,7 +252,7 @@ pub(crate) async fn provision(
     // A read guard: what follows is round trips (the join's pull, the
     // access service's provisioning), and a write guard held across them
     // stalls every other request.
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     let root = super::identity::local_root(&tonk).await?;
     let approval = local_space_link::LocalSpaceLinkApproval::from_bytes(&decode(
         &body.approval,

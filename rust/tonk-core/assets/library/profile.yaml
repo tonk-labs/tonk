@@ -278,13 +278,6 @@ command!: &space/remove
       the: xyz.tonk.command.remove-space/subject
       as: entity
 
-event!: &on/repository-rename-submit
-  type: "submit"
-  prevent-default: true
-  where:
-    space: ".currentTarget.dataset.space"
-    name: ".currentTarget.elements.name.value"
-
 #
 # Named field attributes, so the palette's arguments can point at them. The
 # descriptors are unchanged, and so is the command's identity.
@@ -891,6 +884,12 @@ view!:
       .account-email-notice button { min-height:44px; padding:10px 12px; color:inherit;
         font:600 15px/1.15 var(--cond); text-decoration:underline;
         text-underline-offset:3px; white-space:nowrap; }
+      .account-email-notice button:disabled { opacity:.6; cursor:default; }
+      .account-email-notice resend-activation { display:flex; flex-direction:column;
+        align-items:flex-start; gap:2px; margin-left:auto; }
+      .account-email-notice .resend-status { max-width:32ch; padding:0 12px;
+        font:400 14px/1.35 var(--cond); }
+      .account-email-notice .resend-status:empty { display:none; }
       .visually-hidden { position:absolute; width:1px; height:1px; padding:0; margin:-1px;
         overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
       @media (hover:none) {
@@ -1034,7 +1033,7 @@ view!:
               </space-create>
               <tonk-dialog appearance="hub" data-space-rename-dialog heading="Rename space">
                 <form id="rename-{subject}" class="space-create-form" data-space-rename-form
-                  data-space={subject} on:repository-rename-submit=tonk/rename-repository>
+                  data-space={subject}>
                   <label class="space-create-field"><span>space name</span><input name="name" type="text"
                     value={name} required maxlength="100" autocomplete="off" data-space-rename-input></label>
                   <p class="space-create-error" data-space-rename-error role="alert"></p>
@@ -1148,12 +1147,10 @@ command!: &profile/rename
       the: xyz.tonk.command.profile-rename/name
       as: text
 
-event!: &on/resend-activation
-  type: "click"
-  prevent-default: true
-  where:
-    at: ".timeStamp"
-
+# The worker answers each request on its command entity with
+# `xyz.tonk.resend-activation/{status,detail}` (overlay, per tab):
+# `requested` or `failed`. `<resend-activation>` dispatches it under its
+# own receipt so it can show that answer.
 command!: &account/resend-activation
   description: Ask the account service to send the pending activation email again.
   with:
@@ -3081,7 +3078,7 @@ view!:
                     </section>
                     <section class="settings-panel signout-panel">
                       <h2>Sign out</h2>
-                      <p>Disconnect this account. Keep local spaces on this device.</p>
+                      <p>Disconnect this account. Its spaces stay on this device for when you sign back in.</p>
                       <button class="cta panel-action" type="button" data-sign-out-open>sign out on this device <span aria-hidden="true">↗</span></button>
                     </section>
                     <section class="settings-panel danger-panel">
@@ -3195,7 +3192,7 @@ view!:
               </div>
               <tonk-dialog data-sign-out-dialog heading="confirm sign out">
                 <div class="confirm-body">
-                  this disconnects the account from this browser. local spaces stay on this device, including spaces that have not been backed up or synced. you can sign into this or another account later.
+                  this disconnects the account from this browser. its spaces stay on this device, including spaces that have not been backed up or synced, but the hub lists them only while you are signed in. sign back into this account to see them again.
                 </div>
                 <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
                 <button class="m-go" slot="actions" type="button" data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>
@@ -4177,7 +4174,7 @@ view!:
     notice: |
       <aside class="account-email-notice" data-account-status={status} aria-label="account activation">
         <span>Check your email to finish setting up this account.</span>
-        <button type="button" on:resend-activation=account/resend-activation>resend activation email</button>
+        <resend-activation><button type="button" data-resend-activation>resend activation email</button><span class="resend-status" data-resend-status role="status"></span></resend-activation>
       </aside>
 
 # An onboarding account that has not been handed over is interim.
@@ -4942,6 +4939,88 @@ element!: &inline-editable
         });
       }
 
+# Asks for another activation email and says what came of it. The
+# service sends at most one mail a minute and answers a throttled
+# request like a sent one (so it never says whether an account exists),
+# so the button rests for that minute rather than offering a press that
+# would quietly send nothing.
+element!: &resend-activation
+  description: Requests another activation email and shows the answer.
+  method:
+    say: |
+      (self, text) => {
+        const status = self.querySelector('[data-resend-status]');
+        if (status) status.textContent = text;
+      }
+    request: |
+      async (self) => {
+        const button = self.querySelector('[data-resend-activation]');
+        if (!button || button.disabled) return;
+        button.disabled = true;
+        self.say('Requesting…');
+        let reader;
+        let rest = false;
+        try {
+          await window.tonk.ready;
+          if (!self.isConnected) return;
+          const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+          reader = window.tonk.subscribe({
+            predicate: { with: {
+              status: { the: 'xyz.tonk.resend-activation/status', as: 'Text', cardinality: 'one' },
+              detail: { the: 'xyz.tonk.resend-activation/detail', as: 'Text', cardinality: 'one' },
+            } },
+            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+          }).getReader();
+          self.__reader = reader;
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              at: { the: 'xyz.tonk.resend-activation/at', as: 'natural:64' },
+            } } },
+            parameters: { this: id, at: Date.now() },
+          } }] });
+          while (self.isConnected) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('Resend status stream ended');
+            const result = value.find(row => row.this === id)?.fields;
+            if (result?.status === 'failed') {
+              self.say(result.detail);
+              return;
+            }
+            if (result?.status === 'requested') {
+              self.say(result.detail + ' Check your inbox and spam folder. You can ask again in a minute.');
+              rest = true;
+              return;
+            }
+          }
+        } catch (failure) {
+          self.say("Couldn't confirm the request. Try again.");
+        } finally {
+          if (reader) await reader.cancel().catch(() => {});
+          if (self.__reader === reader) self.__reader = null;
+          clearTimeout(self.__rest);
+          if (rest) {
+            self.__rest = setTimeout(() => { button.disabled = false; }, 60000);
+          } else {
+            button.disabled = false;
+          }
+        }
+      }
+    connected: |
+      (self) => {
+        if (self.__wired) return;
+        self.__wired = true;
+        self.addEventListener('click', event => {
+          if (event.target?.closest?.('[data-resend-activation]')) self.request();
+        });
+      }
+    disconnected: |
+      (self) => {
+        self.__reader?.cancel().catch(() => {});
+        self.__reader = null;
+      }
+    released: |
+      (self) => self.disconnected()
+
 # Opens account recovery over the missing-space screen: a click asks the
 # top page to raise the passkey ceremony, which needs a `window` and a
 # user gesture this opaque realm has neither of.
@@ -4981,10 +5060,66 @@ element!: &space-actions
           event.stopImmediatePropagation();
           return;
         }
+        event.preventDefault();
+        event.stopImmediatePropagation();
         if (error) error.textContent = '';
+        if (input.value === input.defaultValue.trim()) {
+          self.querySelector('[data-space-rename-dialog]')?.close?.();
+          return;
+        }
         self.setAttribute('busy', '');
         const submit = self.querySelector('[data-space-rename-submit]');
         if (submit) submit.disabled = true;
+        self.rename(form, input.value);
+      }
+    # Dispatch the rename under a fresh receipt and wait for the worker's
+    # answer on it: close on `renamed`, show the detail on `failed`.
+    rename: |
+      async (self, form, name) => {
+        let reader;
+        const error = self.querySelector('[data-space-rename-error]');
+        try {
+          await window.tonk.ready;
+          if (!self.isConnected) return;
+          const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+          reader = window.tonk.subscribe({
+            predicate: { with: {
+              status: { the: 'xyz.tonk.repository-rename/status', as: 'Text', cardinality: 'one' },
+              detail: { the: 'xyz.tonk.repository-rename/detail', as: 'Text', cardinality: 'one' },
+            } },
+            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+          }).getReader();
+          self.__renameReader = reader;
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              name: { the: 'xyz.tonk.command.rename-repository/name', as: 'Text' },
+              space: { the: 'xyz.tonk.rename-repository/space', as: 'Entity' },
+            } } },
+            parameters: { this: id, name, space: form.dataset.space },
+          } }] });
+          while (self.isConnected) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('Rename status stream ended');
+            const result = value.find(row => row.this === id)?.fields;
+            if (result?.status === 'failed') {
+              if (error) error.textContent = result.detail;
+              return;
+            }
+            if (result?.status === 'renamed') {
+              form.elements.name.defaultValue = name;
+              self.querySelector('[data-space-rename-dialog]')?.close?.();
+              return;
+            }
+          }
+        } catch (failure) {
+          if (error) error.textContent = "Couldn't confirm the rename. Check the space's name before trying again.";
+        } finally {
+          if (reader) await reader.cancel().catch(() => {});
+          if (self.__renameReader === reader) self.__renameReader = null;
+          self.removeAttribute('busy');
+          const submit = self.querySelector('[data-space-rename-submit]');
+          if (submit) submit.disabled = false;
+        }
       }
     connected: |
       (self) => {
@@ -5027,7 +5162,11 @@ element!: &space-actions
         document.addEventListener('pointerdown', self._outside, true);
       }
     disconnected: |
-      (self) => document.removeEventListener('pointerdown', self._outside, true)
+      (self) => {
+        document.removeEventListener('pointerdown', self._outside, true);
+        self.__renameReader?.cancel().catch(() => {});
+        self.__renameReader = null;
+      }
     released: |
       (self) => self.disconnected()
 
@@ -6732,6 +6871,8 @@ element!: &command-palette
         if (self.__keys) return;
         self.build();
         self.__keys = (event) => {
+          // A chord something on the page already took is theirs.
+          if (event.defaultPrevented) return;
           const key = (event.key || '').toLowerCase();
           const chord = (event.metaKey || event.ctrlKey)
             && (key === 'k' || (event.shiftKey && key === 'p'));
