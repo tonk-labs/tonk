@@ -38,6 +38,11 @@
 //! Nothing here knows where the writers live: [`Writers`] is a Durable
 //! Object namespace in the Host Worker and a map of [`super::SpaceWriter`]s
 //! in native tests.
+//!
+//! Each `tools/call` gets a trace id, sent to the writers it reaches and
+//! answered in [`TRACE_HEADER`], and its steps' times are answered in
+//! `Server-Timing`. The endpoint hands one [`ToolEvent`] per call to its
+//! sink (see [`super::telemetry`]).
 
 use axum::body::Body;
 use axum::http::{HeaderValue, Method, Request, Response, StatusCode, header};
@@ -50,6 +55,8 @@ use tonk_identity::agent::{AgentSessionToken, decode_agent_session_token};
 
 use super::WriterSession;
 pub use super::access::{AgentAccess, SpaceAccess};
+use super::telemetry::{self, Outcome, Steps, ToolEvent};
+pub use super::telemetry::{SERVER_TIMING, TRACE_HEADER};
 
 #[path = "../../../../tonk-cli/src/output.rs"]
 #[allow(dead_code)]
@@ -262,11 +269,70 @@ pub struct McpEndpoint<'a, W> {
     pub writers: &'a W,
     /// The key view tickets are bound under.
     pub tickets: &'a super::view::TicketKey,
+    /// Where each tool call's [`ToolEvent`] goes: [`telemetry::log`] in
+    /// the Host Worker.
+    pub events: telemetry::Sink<'a>,
+}
+
+/// What one tool call records as it runs.
+struct Call {
+    trace: String,
+    /// When the request arrived ([`tonk_common::diagnostics::now_ms`]).
+    began: f64,
+    steps: Steps,
+    /// Set where a call is refused, rejected or fails; otherwise read
+    /// from the answer's `isError`.
+    outcome: Option<(Outcome, String)>,
+    space: Option<Did>,
+}
+
+impl Call {
+    fn end(&mut self, outcome: Outcome, kind: &str) {
+        self.outcome = Some((outcome, kind.to_owned()));
+    }
+}
+
+/// How a writer's failed answer of `status` ends a call.
+fn writer_outcome(status: StatusCode) -> Outcome {
+    match status {
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => Outcome::Invalid,
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Outcome::Refused,
+        _ => Outcome::Error,
+    }
+}
+
+/// A writer's error code as an event's reason: one in the writer's own
+/// shape, such as `WRITE_NOT_LANDED`, lowercased; none for anything else.
+fn writer_code(code: &str) -> Option<String> {
+    let shaped = !code.is_empty()
+        && code.len() <= 40
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte == b'_');
+    shaped.then(|| code.to_ascii_lowercase())
+}
+
+/// The name a tool is recorded under: its own when it could be one this
+/// endpoint serves, `other` otherwise, so a client cannot write arbitrary
+/// text into the logs.
+fn recorded_tool(name: &str) -> String {
+    let plausible = !name.is_empty()
+        && name.len() <= 40
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_');
+    if plausible {
+        name.to_owned()
+    } else {
+        "other".to_owned()
+    }
 }
 
 impl<W: Writers> McpEndpoint<'_, W> {
     /// Answer one request to `/mcp`.
     pub async fn serve(&self, request: Request<Body>) -> Response<Body> {
+        let began = tonk_common::diagnostics::now_ms();
+        let mut steps = Steps::start();
         let bearer = request
             .headers()
             .get(header::AUTHORIZATION)
@@ -284,6 +350,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
             Ok(verified) => verified,
             Err(error) => return self.unauthorized(&error),
         };
+        steps.lap("verify");
         match *request.method() {
             Method::POST => {}
             // No server-initiated stream, and sessions end on their own.
@@ -407,9 +474,26 @@ impl<W: Writers> McpEndpoint<'_, W> {
                         || json!({ "code": -32602, "message": format!("no resource {uri}") }),
                     )
             }
-            "tools/call" => Ok(self
-                .call_tool(&verified, &bearer, &session, &message["params"])
-                .await),
+            "tools/call" => {
+                let params = &message["params"];
+                steps.lap("request");
+                let mut call = Call {
+                    trace: telemetry::trace(),
+                    began,
+                    steps,
+                    outcome: None,
+                    space: None,
+                };
+                let result = self
+                    .call_tool(&verified, &bearer, &session, params, &mut call)
+                    .await;
+                let tool = recorded_tool(params["name"].as_str().unwrap_or_default());
+                let answer = rpc(
+                    StatusCode::OK,
+                    json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                );
+                return self.record(answer, call, tool, &verified, &session, &result);
+            }
             _ => Err(json!({ "code": -32601, "message": format!("no method {method}") })),
         };
         rpc(
@@ -421,17 +505,59 @@ impl<W: Writers> McpEndpoint<'_, W> {
         )
     }
 
+    /// Send `call`'s event to the sink, and answer `answer` with its trace
+    /// id and steps.
+    fn record(
+        &self,
+        mut answer: Response<Body>,
+        mut call: Call,
+        tool: String,
+        verified: &Verified,
+        session: &str,
+        result: &Value,
+    ) -> Response<Body> {
+        call.steps.lap("answer");
+        let ms = tonk_common::diagnostics::now_ms() - call.began;
+        let (outcome, kind) = match call.outcome {
+            Some((outcome, kind)) => (outcome, Some(kind)),
+            None if result["isError"] == json!(true) => (Outcome::Error, None),
+            None => (Outcome::Ok, None),
+        };
+        let event = ToolEvent {
+            event: "mcp.tool",
+            trace: call.trace,
+            tool,
+            outcome,
+            kind,
+            ms: telemetry::round(ms),
+            steps: telemetry::step_map(&call.steps),
+            space: call.space.as_ref().map(telemetry::short_did),
+            agent: telemetry::short_did(verified.agent()),
+            session: telemetry::short(session),
+        };
+        let headers = answer.headers_mut();
+        if let Ok(value) = HeaderValue::from_str(&event.trace) {
+            headers.insert(TRACE_HEADER, value);
+        }
+        let mut timing = call.steps;
+        timing.push("total", ms);
+        timing.insert(headers);
+        (self.events)(&event);
+        answer
+    }
+
     async fn call_tool(
         &self,
         verified: &Verified,
         bearer: &str,
         session: &str,
         params: &Value,
+        call: &mut Call,
     ) -> Value {
         let name = params["name"].as_str().unwrap_or_default();
         let arguments = &params["arguments"];
         match name {
-            "tonk_list_spaces" => match self.access(verified, bearer, session).await {
+            "tonk_list_spaces" => match self.access(verified, bearer, session, call).await {
                 Ok(access) => tool_result(json!({ "spaces": list_spaces(&access) }), false),
                 Err(error) => tool_result(json!(error), true),
             },
@@ -451,12 +577,16 @@ impl<W: Writers> McpEndpoint<'_, W> {
                         false,
                     ),
                     (_, Some(body)) => tool_result(json!(body), false),
-                    (_, None) => tool_result(json!("Unknown guide topic."), true),
+                    (_, None) => {
+                        call.end(Outcome::Invalid, "unknown_topic");
+                        tool_result(json!("Unknown guide topic."), true)
+                    }
                 }
             }
             "tonk_query" | "tonk_evaluate" => {
                 let write = name == "tonk_evaluate";
                 let Some(space) = arguments["space"].as_str() else {
+                    call.end(Outcome::Invalid, "no_space");
                     return tool_result(
                         json!("`space` is required: an exact subject from tonk_list_spaces."),
                         true,
@@ -466,21 +596,25 @@ impl<W: Writers> McpEndpoint<'_, W> {
                     .as_str()
                     .filter(|document| !document.is_empty())
                 else {
+                    call.end(Outcome::Invalid, "no_document");
                     return tool_result(json!("`document` is required."), true);
                 };
                 let Ok(space) = space.parse::<Did>() else {
+                    call.end(Outcome::Invalid, "bad_space");
                     return tool_result(json!(format!("`{space}` is not a space DID.")), true);
                 };
+                call.space = Some(space.clone());
                 // The agent space is reached through the powerline alone;
                 // any other space through what the agent space holds.
                 let granted = if &space == verified.agent() {
                     None
                 } else {
-                    let access = match self.access(verified, bearer, session).await {
+                    let access = match self.access(verified, bearer, session, call).await {
                         Ok(access) => access,
                         Err(error) => return tool_result(json!(error), true),
                     };
-                    if let Some(refusal) = refusal(access.get(&space), &space, write) {
+                    if let Some((kind, refusal)) = refusal(access.get(&space), &space, write) {
+                        call.end(Outcome::Refused, kind);
                         return tool_result(json!(refusal), true);
                     }
                     access.get(&space).cloned()
@@ -506,7 +640,8 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 let mut request = Request::builder()
                     .method(Method::POST)
                     .uri(path)
-                    .header(header::CONTENT_TYPE, "text/plain");
+                    .header(header::CONTENT_TYPE, "text/plain")
+                    .header(TRACE_HEADER, &call.trace);
                 if let Some(granted) = &granted {
                     request = request.header(GRANTS_HEADER, granted.grants.join(","));
                     if let Some(address) = &granted.address {
@@ -514,12 +649,17 @@ impl<W: Writers> McpEndpoint<'_, W> {
                     }
                 }
                 let Ok(request) = request.body(Body::from(document.to_owned())) else {
+                    call.end(Outcome::Error, "bad_directory_entry");
                     return tool_result(json!("The space's directory entry is malformed."), true);
                 };
+                call.steps.lap("prepare");
                 let response = self
                     .writers
                     .call(verified, bearer, session, &space, request)
                     .await;
+                call.steps.lap("writer");
+                call.steps
+                    .extend_within("writer", Steps::of(response.headers()));
                 let status = response.status();
                 let body = response
                     .into_body()
@@ -536,6 +676,13 @@ impl<W: Writers> McpEndpoint<'_, W> {
                     Ok(value) => value,
                     Err(_) => json!(String::from_utf8_lossy(&body)),
                 };
+                if !status.is_success() {
+                    let kind = body["code"]
+                        .as_str()
+                        .and_then(writer_code)
+                        .unwrap_or_else(|| format!("http_{}", status.as_u16()));
+                    call.end(writer_outcome(status), &kind);
+                }
                 // What a card needs to undo the write, in `_meta`, which
                 // hosts hand the app and not the model.
                 let change = (write && status.is_success())
@@ -551,7 +698,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 }
                 answer
             }
-            UNDO => self.undo(verified, bearer, session, arguments).await,
+            UNDO => self.undo(verified, bearer, session, arguments, call).await,
             super::join::JOIN | super::join::ACCEPT => {
                 super::join::call(name, arguments, verified, self.writers, bearer, session)
                     .await
@@ -584,29 +731,35 @@ impl<W: Writers> McpEndpoint<'_, W> {
         bearer: &str,
         session: &str,
         arguments: &Value,
+        call: &mut Call,
     ) -> Value {
         let Some(space) = arguments["space"].as_str() else {
+            call.end(Outcome::Invalid, "no_space");
             return tool_result(
                 json!("`space` is required: an exact subject from tonk_list_spaces."),
                 true,
             );
         };
         let Ok(space) = space.parse::<Did>() else {
+            call.end(Outcome::Invalid, "bad_space");
             return tool_result(json!(format!("`{space}` is not a space DID.")), true);
         };
         let Some(revision) = arguments["revision"]
             .as_str()
             .filter(|revision| !revision.is_empty() && revision.len() <= 256)
         else {
+            call.end(Outcome::Invalid, "no_revision");
             return tool_result(json!("`revision` is required."), true);
         };
+        call.space = Some(space.clone());
         let mut request = undo::request(revision);
         if &space != verified.agent() {
-            let access = match self.access(verified, bearer, session).await {
+            let access = match self.access(verified, bearer, session, call).await {
                 Ok(access) => access,
                 Err(error) => return tool_result(json!(error), true),
             };
-            if let Some(refusal) = refusal(access.get(&space), &space, true) {
+            if let Some((kind, refusal)) = refusal(access.get(&space), &space, true) {
+                call.end(Outcome::Refused, kind);
                 return tool_result(json!(refusal), true);
             }
             if let Some(granted) = access.get(&space) {
@@ -635,6 +788,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
             .map(|body| body.to_bytes())
             .unwrap_or_default();
         if !status.is_success() {
+            call.end(Outcome::Error, &format!("http_{}", status.as_u16()));
             return tool_result(
                 json!(format!(
                     "The undo did not land ({status}): {}. Read the space before trying again.",
@@ -645,10 +799,13 @@ impl<W: Writers> McpEndpoint<'_, W> {
         }
         match serde_json::from_slice::<crate::UndoReport>(&body) {
             Ok(report) => undo::result(&report),
-            Err(error) => tool_result(
-                json!(format!("The writer answered an unreadable undo: {error}")),
-                true,
-            ),
+            Err(error) => {
+                call.end(Outcome::Error, "undo_unreadable");
+                tool_result(
+                    json!(format!("The writer answered an unreadable undo: {error}")),
+                    true,
+                )
+            }
         }
     }
 
@@ -658,16 +815,21 @@ impl<W: Writers> McpEndpoint<'_, W> {
         verified: &Verified,
         bearer: &str,
         session: &str,
+        call: &mut Call,
     ) -> Result<AgentAccess, String> {
         let request = Request::builder()
             .method(Method::GET)
             .uri(ACCESS_ROUTE)
+            .header(TRACE_HEADER, &call.trace)
             .body(Body::empty())
             .expect("static request");
         let response = self
             .writers
             .call(verified, bearer, session, verified.agent(), request)
             .await;
+        call.steps.lap("access");
+        call.steps
+            .extend_within("access", Steps::of(response.headers()));
         let status = response.status();
         let body = response
             .into_body()
@@ -676,14 +838,29 @@ impl<W: Writers> McpEndpoint<'_, W> {
             .map(|body| body.to_bytes())
             .unwrap_or_default();
         if !status.is_success() {
+            // A refusal (the session's own grant revoked) is recorded as
+            // one, with the writer's code; anything else failed.
+            if writer_outcome(status) == Outcome::Refused {
+                let code = serde_json::from_slice::<Value>(&body)
+                    .ok()
+                    .and_then(|body| body["code"].as_str().and_then(writer_code));
+                call.end(
+                    Outcome::Refused,
+                    code.as_deref().unwrap_or("access_refused"),
+                );
+            } else {
+                call.end(Outcome::Error, "access");
+            }
             return Err(format!(
                 "Could not read this agent's spaces from its own space ({status}): {}. Try \
                  again; if it persists, ask the user to reconnect.",
                 String::from_utf8_lossy(&body)
             ));
         }
-        serde_json::from_slice(&body)
-            .map_err(|error| format!("The agent space answered unreadable grants: {error}"))
+        serde_json::from_slice(&body).map_err(|error| {
+            call.end(Outcome::Error, "access_unreadable");
+            format!("The agent space answered unreadable grants: {error}")
+        })
     }
 
     fn unauthorized(&self, reason: &str) -> Response<Body> {
@@ -701,25 +878,39 @@ impl<W: Writers> McpEndpoint<'_, W> {
     }
 }
 
-/// Why a tool may not act on `space`, open to `access`, if it may not.
-fn refusal(access: Option<&SpaceAccess>, space: &Did, write: bool) -> Option<String> {
+/// Why a tool may not act on `space`, open to `access`, if it may not: a
+/// reason to record, and the message to answer.
+fn refusal(
+    access: Option<&SpaceAccess>,
+    space: &Did,
+    write: bool,
+) -> Option<(&'static str, String)> {
     let Some(access) = access else {
-        return Some(format!(
-            "This connection has no access to {space}. Use a subject from tonk_list_spaces, \
+        return Some((
+            "no_access",
+            format!(
+                "This connection has no access to {space}. Use a subject from tonk_list_spaces, \
              or ask the person to grant you this space."
+            ),
         ));
     };
     if !access.read {
         return Some(if access.lapsed > 0 {
-            format!("Access to {space} has lapsed. Ask the person to grant it to you again.")
+            (
+                "lapsed",
+                format!("Access to {space} has lapsed. Ask the person to grant it to you again."),
+            )
         } else {
-            format!("This connection cannot read {space}.")
+            ("no_read", format!("This connection cannot read {space}."))
         });
     }
     if write && !access.write {
-        return Some(format!(
-            "This connection may only read {space}; tonk_evaluate is refused. Ask the user \
+        return Some((
+            "read_only",
+            format!(
+                "This connection may only read {space}; tonk_evaluate is refused. Ask the user \
              for read and write access."
+            ),
         ));
     }
     None
