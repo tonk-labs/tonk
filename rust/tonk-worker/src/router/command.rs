@@ -258,6 +258,8 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::Inspect>()
         // What the page in a tab has selected, recorded on its site.
         .command::<tonk_schema::command::SiteSelect>()
+        // A branch a page asked for that its space does not have yet.
+        .command::<tonk_schema::command::CreateBranch>()
         // What was typed in the command palette, interpreted.
         .command::<tonk_schema::command::Interpret>()
         .command::<tonk_schema::command::ReplicateSpace>()

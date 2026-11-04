@@ -118,6 +118,9 @@ mod revoke_invite;
 /// Space membership management: admins and removals, as commands.
 mod members;
 
+/// Making a branch a space does not have yet, as a command.
+mod branch;
+
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
 

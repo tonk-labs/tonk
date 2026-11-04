@@ -4932,6 +4932,21 @@ pub(super) async fn install_fresh_seed(
     install_fresh_from(tonk, key, branch, STANDARD_LIBRARY_URL, library, own).await
 }
 
+/// Start `branch` of `key` with the standard library and nothing else: a
+/// branch begun empty rather than from another branch. It carries the
+/// library a new space does, recorded as the same first install, so the
+/// branch upgrades like any space's content branch.
+pub(super) async fn seed_empty_branch(
+    tonk: &TonkState,
+    key: &str,
+    branch: &str,
+) -> Result<(), RepositoryError> {
+    let library = fetch_standard_library(STANDARD_LIBRARY_URL)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}")))?;
+    install_fresh_seed(tonk, key, branch, &library, &[]).await
+}
+
 /// [`install_fresh_seed`] for a library fetched from `source`, recorded as
 /// that source's first install: the main seed's, or a component's (see
 /// [`lineage`]).
