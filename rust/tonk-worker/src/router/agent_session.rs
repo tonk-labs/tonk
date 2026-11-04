@@ -148,7 +148,9 @@ async fn targets(
             "each space may be chosen once".into(),
         ));
     }
-    let tonk = state.read().await;
+    // A clone, not a guard: a first-use mount below can pull over the
+    // network.
+    let tonk = state.read().await.clone();
     if super::account::provider(&tonk).await.is_none() {
         return Err(TonkWorkerError::Forbidden(
             "sign in before connecting an agent".into(),

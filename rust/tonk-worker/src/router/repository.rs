@@ -7410,7 +7410,8 @@ pub async fn get_repository(
     }
     log!("GET /api/repository/{}", name);
 
-    let tonk = state.read().await;
+    // A clone, not a guard: a first-use mount can pull over the network.
+    let tonk = state.read().await.clone();
 
     // First use of a directory-listed space this device has not
     // replicated mounts it on demand — same lazy adoption the query
