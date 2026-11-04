@@ -877,7 +877,8 @@ pub(crate) async fn push_after_answer(app: crate::router::AppState) {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         wasm_bindgen_futures::spawn_local(async move {
-            let tonk = app.read().await;
+            // A clone, not a guard: the push is a round trip.
+            let tonk = app.read().await.clone();
             if let Err(error) = push_account_main(&tonk).await {
                 log!("push behind the login's answer did not land: {error}");
             }
@@ -885,7 +886,7 @@ pub(crate) async fn push_after_answer(app: crate::router::AppState) {
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
-        let tonk = app.read().await;
+        let tonk = app.read().await.clone();
         if let Err(error) = push_account_main(&tonk).await {
             log!("push behind the login's answer did not land: {error}");
         }
