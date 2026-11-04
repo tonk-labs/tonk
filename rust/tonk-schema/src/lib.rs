@@ -86,6 +86,9 @@ pub use replica::*;
 pub mod repository;
 pub use repository::*;
 
+pub mod library;
+pub use library::*;
+
 pub mod membership;
 pub use membership::*;
 

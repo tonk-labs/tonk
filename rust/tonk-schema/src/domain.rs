@@ -1499,6 +1499,22 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `library/uninstall` — remove a library component from the space.
+        pub mod uninstall_component {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The component (`tonk:library/<name>`): which library file.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.uninstall-component")]
+            pub struct Component(pub Entity);
+
+            /// The moment it was asked, so uninstalling twice re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.uninstall-component")]
+            pub struct Time(pub f64);
+        }
+
         pub mod expel_member {
             use dialog_artifacts::Entity;
             use dialog_query::Attribute;
@@ -2422,6 +2438,87 @@ pub mod agent_handoff {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.agent-handoff")]
     pub struct Account(pub Entity);
+}
+
+/// The library's component catalog and the outcomes of installing from it
+/// (`library/component`, `library/outcome` in core.yaml).
+pub mod library {
+    /// A component's catalog entry.
+    pub mod component {
+        use dialog_query::Attribute;
+
+        /// The component's name, its library file without `.yaml`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.library.component")]
+        #[pick(last)]
+        pub struct Name(pub String);
+
+        /// What a person calls it.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.library.component")]
+        #[pick(last)]
+        pub struct Label(pub String);
+
+        /// Its release, e.g. "1.0".
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.library.component")]
+        #[pick(last)]
+        pub struct Version(pub String);
+
+        /// The lines installing it adds to the space's AGENTS.md.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.library.component")]
+        #[pick(last)]
+        pub struct Agents(pub String);
+    }
+
+    /// What came of one install or uninstall request.
+    pub mod outcome {
+        use dialog_artifacts::Entity;
+        use dialog_query::Attribute;
+
+        /// The component asked for.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.library.outcome")]
+        #[pick(last)]
+        pub struct Component(pub Entity);
+
+        /// "install" or "uninstall".
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.library.outcome")]
+        #[pick(last)]
+        pub struct Action(pub String);
+
+        /// "installed", "current", "uninstalled" or "failed".
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.library.outcome")]
+        #[pick(last)]
+        pub struct Status(pub String);
+
+        /// The `time` the request was asked with.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.library.outcome")]
+        #[pick(last)]
+        pub struct Time(pub f64);
+
+        /// The component's version the request installed or removed.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.library.outcome")]
+        #[pick(last)]
+        pub struct Version(pub String);
+
+        /// The AGENTS.md lines the request added or removed.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.library.outcome")]
+        #[pick(last)]
+        pub struct Lines(pub String);
+
+        /// Why the request failed.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.library.outcome")]
+        #[pick(last)]
+        pub struct Reason(pub String);
+    }
 }
 
 /// Email invitation command and outcome vocabulary.

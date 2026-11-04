@@ -639,6 +639,25 @@ impl Command for InstallComponent {
     type Output = ();
 }
 
+/// `library/uninstall`: remove a library component from the space it is
+/// said in. The inverse of [`InstallComponent`]: what the component's
+/// install added is withdrawn, with its install record and its AGENTS.md
+/// lines; what the space wrote with the component stays.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct UninstallComponent {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// Which component: `tonk:library/<name>`.
+    pub component: crate::domain::command::current::uninstall_component::Component,
+    /// The moment it was asked.
+    pub time: crate::domain::command::current::uninstall_component::Time,
+}
+
+impl Command for UninstallComponent {
+    type Input = Self;
+    type Output = ();
+}
+
 /// `tonk:sign-in-via`: sign this browser in through another deployment.
 ///
 /// The browser-side `tonk account login --via`: the worker sends the page
