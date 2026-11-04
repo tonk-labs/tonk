@@ -284,6 +284,11 @@ test('the full-screen button asks the agent app, and full screen fills the card 
     assert.equal(fill.out, false, 'open in tonk shows');
     assert.equal(fill.card, fill.viewport, 'the card fills the agent app’s sheet');
     assert.equal(fill.bottom, '24px', 'the line clears the chat input');
+    await until(frame, () => document.querySelector('#card').getAttribute('aria-label').endsWith(', full screen'));
+    assert.equal(
+      await frame.evaluate(() => document.querySelector('#out').textContent),
+      'open in tonk ↗',
+    );
     await frame.click('#out');
     await until(frame, () => true);
     const opened = (await card.view.asked()).filter((ask) => ask.method === 'ui/open-link');
@@ -403,6 +408,13 @@ test('the guest page takes the theme its host passes, over the system preference
     await page.emulateMedia({ colorScheme: 'light' });
     await new Promise((resolve) => setTimeout(resolve, 200));
     assert.match(await classes(), /wa-dark/, 'the system preference no longer applies');
+    // The runtime, injected after mount, sets the system's theme again.
+    await guest.evaluate(() => {
+      document.documentElement.classList.toggle('wa-dark', false);
+      document.documentElement.classList.toggle('wa-light', true);
+    });
+    await guest.waitForFunction(() => document.documentElement.classList.contains('wa-dark'));
+    assert.doesNotMatch(await classes(), /wa-light/, 'the host’s theme is kept');
     await page.evaluate(() =>
       document.querySelector('iframe').contentWindow.postMessage({ type: 'tonk-theme', theme: 'light' }, '*'),
     );

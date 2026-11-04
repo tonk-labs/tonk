@@ -49,7 +49,7 @@
       <span class="tonk-place"><span class="tonk-space"></span><span class="tonk-where"></span></span>
       <span class="tonk-receipt" role="status"></span>
       <span class="tonk-role"></span>
-      <a class="tonk-link tonk-out" id="out" href="#" hidden>open in tonk<span aria-hidden="true"> ↗</span></a>
+      <a class="tonk-link tonk-out" id="out" href="#" hidden>open in tonk ↗</a>
       <button type="button" class="tonk-expand" id="expand" aria-label="Open full screen" hidden>
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9" /></svg>
       </button>
@@ -211,6 +211,8 @@
         const parts = [route?.name, viewName()].filter(Boolean);
         if (well.hasAttribute('data-failed')) parts.push('didn\u2019t load');
         else if (well.getAttribute('aria-busy') === 'true') parts.push('loading');
+        if (host.displayMode === 'fullscreen') parts.push('full screen');
+        else if (host.displayMode === 'pip') parts.push('docked');
         card.setAttribute('aria-label', parts.length ? 'Tonk: ' + parts.join(', ') : 'Tonk');
       }
       // The disc: filled while the view's peer is connected and synced
@@ -262,7 +264,11 @@
         const theme = themed();
         document.documentElement.dataset.theme = theme;
         if (viewFrame) frame.contentWindow?.postMessage({ tonkFrame: 'theme', theme }, origin);
-        else frame.contentWindow?.postMessage({ type: 'tonk-theme', theme }, '*');
+        else {
+          frame.contentWindow?.postMessage({ type: 'tonk-theme', theme }, '*');
+          // The runtime's own message, which it passes on to nested views.
+          frame.contentWindow?.postMessage({ __tonkRuntime: 'mode', mode: theme }, '*');
+        }
       }
       matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => host.theme || applyTheme());
       function context(changed) {
@@ -286,6 +292,7 @@
         card.classList.toggle('tonk--fill', fill);
         expand.hidden = fill || !host.available.includes('fullscreen');
         out.hidden = host.displayMode !== 'fullscreen' || !route;
+        named();
         tellSize();
       }
       expand.addEventListener('click', async () => {
@@ -1235,6 +1242,9 @@
         const fitted = Math.min(Math.max(Math.ceil(height), 40), 4000);
         frame.style.height = fitted + 'px';
         if (route) remember(fitted);
+        // The view has drawn: tell it the theme again, in case its runtime
+        // set its own after it mounted.
+        if (well.getAttribute('aria-busy') === 'true') applyTheme();
         settled();
         clearFailed();
         tellSize();
