@@ -117,6 +117,9 @@ mod registry;
 pub mod space_origin;
 #[cfg(target_arch = "wasm32")]
 pub mod sse;
+// Upstream subscription streams shared by identical subscriptions.
+#[cfg(target_arch = "wasm32")]
+mod stream;
 #[cfg(target_arch = "wasm32")]
 mod url;
 

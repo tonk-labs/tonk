@@ -240,6 +240,13 @@ async function run(name, fn) {
   } catch (error) {
     outcome = { error: String(error).slice(0, 300) };
   }
+  // What the page was still waiting on from the network as the scenario
+  // ended: a request open for long was never answered.
+  const inflight = await fetch(`${config.gate}/inflight`)
+    .then((r) => r.json())
+    .catch(() => []);
+  const stuck = inflight.filter((e) => e.first_byte_ms == null && Date.now() - e.t0 > 5_000);
+  if (stuck.length) record({ kind: "inflight", exchanges: stuck });
   record({ kind: "scenario-end", ...outcome });
   await page.screenshot({ path: join(OUT, `${name}.png`), timeout: 10_000 }).catch(() => {});
   results.push({ scenario: name, ...outcome });
@@ -346,16 +353,37 @@ await run("two-reloads-on-stall", async () => {
   return { settled_ms: times, after_network_returns_ms: await settled(30_000) };
 });
 
+// The CLI writes to the first space, so a scenario that waits for its
+// write must be looking at that space; a scenario before it may have left
+// the page on the second.
+async function viewFirstSpace() {
+  if (page.url().includes(spaceA)) return;
+  await page.goto(url(spaceA), { timeout: 60_000 }).catch((e) => record({ kind: "goto-failed", error: String(e).slice(0, 200) }));
+}
+
 await run("remote-write-while-viewing", async () => {
+  await viewFirstSpace();
   await settled();
   const title = remoteWrite("remote");
   return { shown_after_ms: await shows(title, 60_000), settled_ms: await settled(30_000) };
+});
+
+// The tab sits untouched on a space (TRACE_IDLE_MS, default 90 s) long
+// enough for the browser to stop an idle worker and for quiet connections
+// to be closed, then another device writes: does the write still arrive?
+await run("idle-then-remote-write", async () => {
+  await viewFirstSpace();
+  await settled();
+  await page.waitForTimeout(Number(process.env.TRACE_IDLE_MS || 90_000));
+  const title = remoteWrite("after-idle");
+  return { shown_after_ms: await shows(title, 60_000) };
 });
 
 // Another device writes; the browser syncs the new head in the background
 // while the network is fine. Then the network stalls and the person opens
 // the space again: does reading what was just synced wait on the network?
 await run("remote-write-then-stall", async () => {
+  await viewFirstSpace();
   await settled();
   const title = remoteWrite("stalled");
   const synced = await shows(title, 60_000);
@@ -370,6 +398,7 @@ await run("remote-write-then-stall", async () => {
 // Same, but the network stalls before the browser has seen the write:
 // the page must stay usable and show what it already had.
 await run("stall-before-sync", async () => {
+  await viewFirstSpace();
   await settled();
   await gate("stall");
   const title = remoteWrite("unseen");

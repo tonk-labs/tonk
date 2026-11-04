@@ -9,6 +9,7 @@
 //! nextest still runs every test in a process of its own.
 
 mod account_remote;
+mod behind_link;
 mod connections;
 mod deployment_config;
 mod email_invitation_signup;

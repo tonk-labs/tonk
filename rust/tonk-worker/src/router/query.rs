@@ -71,7 +71,8 @@ pub async fn query(
         return query_profile(State(state), Path(path), headers, request).await;
     }
     let client = request_client(&request);
-    let tonk = state.read().await;
+    // A clone, not a guard: a first-use mount can pull over the network.
+    let tonk = state.read().await.clone();
     // First use of a directory-listed space this device has not
     // replicated mounts it on demand — the lazy half of
     // directory-driven adoption. A no-op for mounted repos.
@@ -447,6 +448,7 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
         | ReactorError::Commit(_)
         | ReactorError::Pull(_)
         | ReactorError::Download(_)
+        | ReactorError::UnreadableHead { .. }
         | ReactorError::Push(_)
         | ReactorError::Upgrade { .. } => TonkWorkerError::Internal(err.to_string()),
     }
@@ -541,6 +543,7 @@ mod tests {
                 | ReactorError::Commit(_)
                 | ReactorError::Pull(_)
                 | ReactorError::Download(_)
+                | ReactorError::UnreadableHead { .. }
                 | ReactorError::Push(_)
                 | ReactorError::Upgrade { .. } => false,
             }
