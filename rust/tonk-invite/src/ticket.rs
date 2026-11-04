@@ -79,8 +79,8 @@ impl Ticket {
     }
 
     /// The public ticket of the space a bare space address opens,
-    /// `/space/{did}` with no seed beside it, or `None` when `url` is not
-    /// one.
+    /// `/space/{did}` (or any route under it) with no seed beside it, or
+    /// `None` when `url` is not one.
     ///
     /// # Errors
     ///
@@ -137,7 +137,8 @@ impl Ticket {
 
     /// Read a ticket link, or `None` when `url` is not one.
     ///
-    /// A ticket link is a space's address, `/space/{did}`, with a
+    /// A ticket link is a space's address, `/space/{did}` or a route
+    /// under it, with a
     /// fragment that decodes to a key seed. The same address without one
     /// is just the space, and a fragment that is not a seed is the page's
     /// own; neither is a ticket, and neither is an error. Query
@@ -239,11 +240,12 @@ fn claim_endpoint(url: &Url) -> Result<Url> {
 /// The space a `/space/{did}` address opens. The DID may arrive
 /// percent-encoded (`did%3Akey%3A…`), as an address bar, a chat client or
 /// `encodeURIComponent` leaves it; it names the same space.
+/// The space a `/space/{did}` address names, with or without a route
+/// of the space after it (`/space/{did}/notebook/...`): a link into a
+/// page of the space opens the same space as its root does.
 fn space_subject(url: &Url) -> Option<Did> {
     let mut segments = url.path_segments()?;
-    let (Some(SPACE_PATH), Some(subject), None) =
-        (segments.next(), segments.next(), segments.next())
-    else {
+    let (Some(SPACE_PATH), Some(subject)) = (segments.next(), segments.next()) else {
         return None;
     };
     urlencoding::decode(subject).ok()?.parse().ok()
@@ -326,14 +328,21 @@ mod tests {
             format!("https://tonk.example/space/{subject}"),
             // A fragment that is the page's own.
             format!("https://tonk.example/space/{subject}#notes"),
-            // A path within the space.
-            format!("https://tonk.example/space/{subject}/inspector#{seed}"),
+            // A route within the space whose fragment is the page's own.
+            format!("https://tonk.example/space/{subject}/inspector#notes"),
             // Not a space's address.
             format!("https://tonk.example/join#{seed}"),
             format!("https://tonk.example/space/not-a-did#{seed}"),
         ] {
             assert!(Ticket::parse_url(&url).unwrap().is_none(), "{url}");
         }
+        // A seed beside a route within the space is that space's ticket:
+        // a link into one of its pages opens the space like its root.
+        let routed = format!("https://tonk.example/space/{subject}/inspector#{seed}");
+        assert_eq!(
+            Ticket::parse_url(&routed).unwrap().unwrap().subject(),
+            &subject
+        );
     }
 
     #[dialog_common::test]
@@ -428,9 +437,35 @@ mod tests {
             Ticket::parse_url(&encoded_link).unwrap().unwrap().subject(),
             &subject
         );
-        for elsewhere in [
+        // A route of the space, as a link into one of its pages carries,
+        // opens the same space: raw, percent-encoded, or as a ticket link.
+        for routed in [
             format!("https://tonk.example/space/{subject}/inspector"),
+            format!("{encoded}/notebook/notebook%3A5d314db6-4bea-4c04-bd8a-0ef2be8a0b5d"),
+            format!("https://tonk.example/space/{subject}/"),
+        ] {
+            let public = Ticket::public_for_url(&routed)
+                .unwrap()
+                .unwrap_or_else(|| panic!("a route of the space: {routed}"));
+            assert!(public.is_public());
+            assert_eq!(public.subject(), &subject);
+            assert_eq!(public.remote().as_str(), "https://tonk.example/ucan/");
+        }
+        let routed_link = format!(
+            "{encoded}/notebook/x#{}",
+            bs58::encode(TICKET_SEED).into_string()
+        );
+        assert!(Ticket::public_for_url(&routed_link).unwrap().is_none());
+        assert_eq!(
+            Ticket::parse_url(&routed_link).unwrap().unwrap().subject(),
+            &subject
+        );
+
+        for elsewhere in [
             "https://tonk.example/join".to_owned(),
+            "https://tonk.example/space/".to_owned(),
+            "https://tonk.example/space/not-a-did/notebook".to_owned(),
+            format!("https://tonk.example/spaces/{subject}"),
         ] {
             assert!(Ticket::public_for_url(&elsewhere).unwrap().is_none());
         }
