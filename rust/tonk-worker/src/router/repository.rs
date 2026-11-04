@@ -4873,6 +4873,45 @@ pub(super) async fn uninstall_component(
     Ok(true)
 }
 
+/// Write `instructions` in one commit on `session` and publish it. Each
+/// assertion keeps the pick its attribute is read under, so a
+/// cardinality-one value replaces the one before it.
+pub(super) async fn publish_instructions(
+    tonk: &TonkState,
+    session: &crate::reactor::BranchSession,
+    instructions: Vec<dialog_artifacts::Instruction>,
+) -> Result<(), dialog_repository::CommitError> {
+    let mut transaction = session.handle().transaction();
+    for instruction in instructions {
+        transaction = match instruction {
+            dialog_artifacts::Instruction::Assert(artifact, policy) => {
+                transaction.assert(super::claim::RawClaim {
+                    the: artifact.the,
+                    of: artifact.of,
+                    is: artifact.is,
+                    policy,
+                })
+            }
+            dialog_artifacts::Instruction::Retract(artifact) => {
+                transaction.retract(super::claim::RawClaim {
+                    the: artifact.the,
+                    of: artifact.of,
+                    is: artifact.is,
+                    policy: dialog_artifacts::Pick::All,
+                })
+            }
+        };
+    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await?
+        .publish()
+        .perform(&tonk.operator)
+        .await?;
+    Ok(())
+}
+
 /// Retract `claims` in one commit and publish it.
 async fn retract_and_publish(
     tonk: &TonkState,
@@ -5479,7 +5518,7 @@ fn repository_name_claims(
 
 /// Refresh the head after a commit lost a race to a sync, or give up after
 /// a few tries; any other error is returned as is.
-async fn retry_after_race(
+pub(super) async fn retry_after_race(
     tonk: &TonkState,
     key: &str,
     session: &crate::reactor::BranchSession,
@@ -16592,6 +16631,75 @@ attribute!: &probe/next
         for claim in &table_only {
             assert!(holds(&tonk, &key, claim).await, "{claim:?} is back");
         }
+    }
+
+    /// The AGENTS.md text a space holds before anything is installed.
+    async fn write_agents(state: &crate::router::AppState, key: &str, markdown: &str) {
+        let tonk = state.read().await;
+        let document = format!(
+            "tonk/agents!:\n  this: {}\n  markdown: {}\n",
+            space_entity(key).unwrap(),
+            serde_json::to_string(markdown).unwrap()
+        );
+        author(&tonk, key, &document).await;
+    }
+
+    /// A line the space already had is not the install's to take away:
+    /// uninstall removes only what the install recorded adding.
+    #[dialog_common::test]
+    async fn it_keeps_agents_lines_the_space_had_before_the_install() {
+        let (state, key) = command_space("Prior lines").await;
+        let catalog = {
+            let tonk = state.read().await;
+            let session = content(&tonk, &key).await;
+            super::super::library::catalog_agents(&tonk, &session, &entity(TABLE))
+                .await
+                .expect("the table has AGENTS.md lines")
+        };
+        assert!(catalog.len() > 1, "{catalog:?}");
+        let prior = format!("Be kind.\n{}\n", catalog[0]);
+        write_agents(&state, &key, &prior).await;
+
+        ask_install(&state, &key, "id:request/install", TABLE, 1.0).await;
+        ask_uninstall(&state, &key, "id:request/undo", TABLE, 2.0).await;
+
+        let tonk = state.read().await;
+        let added = outcome(&tonk, &key, "id:request/install")
+            .await
+            .lines
+            .unwrap()
+            .0;
+        assert!(
+            !added.contains(&catalog[0]),
+            "the line it had was not added: {added}"
+        );
+        assert_eq!(
+            agents_md(&tonk, &key).await.as_deref(),
+            Some(prior.as_str()),
+            "uninstall leaves the space's own lines"
+        );
+    }
+
+    /// Two installs at once both land in AGENTS.md: each edit reads the
+    /// text under the writer lock, never a copy the other has replaced.
+    #[dialog_common::test]
+    async fn it_keeps_both_components_lines_when_installs_run_at_once() {
+        let (state, key) = command_space("Concurrent").await;
+        write_agents(&state, &key, "Be kind.\n").await;
+        futures_util::join!(
+            ask_install(&state, &key, "id:request/table", TABLE, 1.0),
+            ask_install(&state, &key, "id:request/prose", "tonk:library/prose", 1.0),
+        );
+        let tonk = state.read().await;
+        let markdown = agents_md(&tonk, &key).await.expect("AGENTS.md is written");
+        for request in ["id:request/table", "id:request/prose"] {
+            let recorded = outcome(&tonk, &key, request).await;
+            assert_eq!(recorded.status.0, "installed", "{:?}", recorded.reason);
+            for line in recorded.lines.expect("lines were added").0.lines() {
+                assert!(markdown.contains(line), "{line} is in {markdown}");
+            }
+        }
+        assert!(markdown.starts_with("Be kind.\n"));
     }
 
     /// A request that cannot be done says why, in the outcome.
