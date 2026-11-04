@@ -60,7 +60,7 @@ pub struct SpaceContext {
     /// `flag`, `env`, or `directory <path>`.
     pub selected_via: String,
     /// Tonk's writable branch.
-    pub branch: &'static str,
+    pub branch: String,
     /// Explicit reminder that changing directory cannot change Tonk data.
     pub cwd_selects_space: bool,
 }
@@ -281,11 +281,13 @@ pub async fn inspect(
         })
         .collect();
 
+    let mut space = SpaceContext::new(resolved);
+    space.branch = crate::branches::active_name(site).await?;
     Ok(ContextReport {
         schema_version: SCHEMA_VERSION,
         sync,
         account,
-        space: SpaceContext::new(resolved),
+        space,
         agents: space_agents,
         concepts,
         empty_space_workflow: vec![
@@ -354,7 +356,7 @@ impl SpaceContext {
             name: resolved.name.clone(),
             site: resolved.site.display().to_string(),
             selected_via: resolved.source.to_string(),
-            branch: crate::site::BRANCH_NAME,
+            branch: crate::site::BRANCH_NAME.to_owned(),
             cwd_selects_space: false,
         }
     }

@@ -1,16 +1,15 @@
 //! Site open and init.
 //!
 //! A *site* is a directory that contains a single dialog
-//! repository named `main`. Tonk only reads and writes that one
-//! repository on the `main` branch — multi-branch / multi-repo
-//! UX is intentionally not exposed. A site's directory is never
+//! repository named `main`. Commands use its active branch, defaulting
+//! to `main` until the replica switches. A site's directory is never
 //! located by walking the current directory: the caller resolves
 //! it through the space registry (see [`crate::space`]) and passes
 //! the path in directly.
 //!
 //! [`TonkSite`] is the assembled context every command works
 //! against: profile, operator (rooted at the site directory), the
-//! repository, and the opened `main` branch.
+//! repository, and the active branch.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -115,7 +114,7 @@ fn pinned_entity(line: &str) -> Option<&str> {
 /// Name of the dialog repository tonk uses inside `.tonk/`.
 pub const REPO_NAME: &str = "main";
 
-/// The single branch tonk reads and writes against.
+/// Default branch before the replica selects another one.
 pub const BRANCH_NAME: &str = "main";
 
 /// Profile name used for the local identity.
@@ -357,23 +356,11 @@ impl TonkSite {
         .map_err(|e| anyhow::anyhow!("failed to seed standard library: {e}"))
     }
 
-    /// Acquire the `main` branch through the reactor, returning a
-    /// [`BranchSession`] whose `handle()` is the cached dialog
-    /// `Branch`. The first call opens the branch; later calls reuse
-    /// the cached handle and its warm node cache.
-    ///
-    /// Hold the returned session for as long as you use its
-    /// `handle()`: the handle borrows from the session.
-    /// Acquire the site's branch, naming the remedy when the data predates
-    /// this build's format.
-    ///
-    /// Every command reaches its data through here, so this is where an
-    /// unreadable old space becomes a sentence someone can act on rather than
-    /// `missing field \`branch\`` from inside block decoding.
     /// Acquire a named branch on this site's repository.
     ///
     /// Branches hold separate data and are migrated separately, so anything
     /// walking a whole space names each in turn rather than assuming `main`.
+    /// Hold the session while using its cached branch handle.
     pub async fn named_branch(&self, branch: &str) -> Result<BranchSession, ReactorError> {
         self.reactor
             .repository(REPO_NAME)
@@ -382,7 +369,7 @@ impl TonkSite {
             .await
     }
 
-    /// Acquire the site's `main` branch, naming the remedy when the data
+    /// Acquire the site's active branch, naming the remedy when the data
     /// predates this build's format.
     ///
     /// The first acquisition in a process also moves what an earlier
@@ -396,7 +383,14 @@ impl TonkSite {
     ///
     /// [`BranchReference::migrate_once`]: dialog_reactor::BranchReference::migrate_once
     pub async fn branch(&self) -> Result<BranchSession, ReactorError> {
-        let branch = self.reactor.repository(REPO_NAME).branch(BRANCH_NAME);
+        let name = crate::branches::active_name(self).await.map_err(|error| {
+            ReactorError::BranchNotFound {
+                repo: REPO_NAME.to_owned(),
+                branch: "active".to_owned(),
+                reason: error.to_string(),
+            }
+        })?;
+        let branch = self.reactor.repository(REPO_NAME).branch(&name);
         let session = branch.acquire(&self.operator).await.map_err(|error| {
             let text = error.to_string();
             if tonk_account::is_legacy_format(&text) {
@@ -404,7 +398,7 @@ impl TonkSite {
                 // existing variant rather than needing a new one here.
                 return ReactorError::BranchNotFound {
                     repo: REPO_NAME.to_owned(),
-                    branch: BRANCH_NAME.to_owned(),
+                    branch: name.clone(),
                     reason: tonk_account::LEGACY_FORMAT_REMEDY.to_owned(),
                 };
             }

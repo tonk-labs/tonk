@@ -56,13 +56,21 @@ tonk show habit <entity>                      # one instance
 tonk retract habit <entity> --field target    # retract one field (a many field loses every value)
 tonk retract habit <entity>                   # retract the whole instance
 
+# History and restoration. Copy VERSION from the log.
+tonk log
+tonk log habit <entity>
+tonk restore --revision '<VERSION>' --dry-run
+tonk restore --revision '<VERSION>'
+tonk branch                                 # active branch marked with *
+tonk switch main                            # return to the preserved branch
+
 # Authoring — schema, views, and the space home.
 tonk concept add habit --field name:text:one  # anchored concept + typed fields
 tonk view add habit --template '<b>{name}</b>'  # declarative view (auto-surfaces an unset home)
 tonk view add habit --kind directory --template-file habit.html --home
 tonk space home habit                         # put habit's directory on the space home
 
-# CSV transfer over the main branch.
+# CSV transfer over the active branch.
 tonk export --out data.csv
 tonk import data.csv
 
@@ -85,6 +93,30 @@ tonk join 'TOOL_LINK'           # scoped tool access; no CLI login or browser fl
 `label`, and `title`. A first detail or directory view auto-surfaces only while
 the home is blank. `--home` is explicit replacement authority: it installs the
 view and replaces the prior home with this one concept in the same transaction.
+
+`restore --revision <VERSION>` creates a new branch at the exact saved revision
+and switches this device to it. It uses Dialog's native branch creation and
+active-branch reference; no application changes are replayed or committed.
+The original branch and its later history remain intact. `tonk branch` lists
+branches; `tonk switch main` returns to the original branch.
+
+Reads, writes, rendering, export/import, history and status follow the active
+branch across CLI invocations. The new branch has **no upstream**. Restoring
+is a local checkout: it does not roll back other devices or a shared remote.
+Later automatic sync therefore cannot merge the original branch back in.
+
+Pass a full `edition@origin` from `tonk log`, or a tree hash from `tonk status`.
+The CLI retains complete signed heads it reads or publishes in local
+repository memory, without adding application revisions. Older history entries
+and revisions seen only on other devices may lack these saved heads; the
+command reports that it cannot check them out. A log record alone does not
+contain the signed tree root, and the CLI does not reconstruct or guess one.
+
+`--dry-run` resolves the target without creating or switching branches and
+without syncing. `--json` emits a `tonk.restore.v2` checkout receipt naming the
+previous branch, new branch, revision and tree. Restoring the current revision
+is a no-op. Creation precedes switching, so a failed switch preserves the old
+selection and reports the created branch for recovery.
 
 ## Telemetry
 

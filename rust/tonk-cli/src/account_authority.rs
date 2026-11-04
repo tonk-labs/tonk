@@ -320,8 +320,59 @@ forward!(dialog_effects::blob::Import);
 forward!(dialog_effects::blob::Size);
 forward!(dialog_effects::credential::Load<dialog_effects::credential::Secret>);
 forward!(dialog_effects::credential::Save<dialog_effects::credential::Secret>);
-forward!(dialog_effects::memory::Resolve);
-forward!(dialog_effects::memory::Publish);
+// Keep complete signed heads as they are observed or published. Dialog's
+// in-tree log deliberately omits their tree roots; native checkout needs them.
+#[async_trait::async_trait]
+impl Provider<dialog_effects::memory::Resolve> for AccountBoundOperator {
+    async fn execute(
+        &self,
+        input: Capability<dialog_effects::memory::Resolve>,
+    ) -> Result<Option<dialog_effects::memory::Edition<Vec<u8>>>, dialog_effects::memory::MemoryError>
+    {
+        use dialog_effects::memory::prelude::ResolveExt as _;
+        let subject = Subject::from(input.subject().clone());
+        let head = input.space().starts_with("branch/") && input.cell() == "revision";
+        let result = input.perform(&self.inner).await?;
+        if head && let Some(edition) = &result {
+            self.remember_head(subject, &edition.content).await;
+        }
+        Ok(result)
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider<dialog_effects::memory::Publish> for AccountBoundOperator {
+    async fn execute(
+        &self,
+        input: Capability<dialog_effects::memory::Publish>,
+    ) -> Result<dialog_effects::memory::Version, dialog_effects::memory::MemoryError> {
+        use dialog_effects::memory::prelude::PublishExt as _;
+        let subject = Subject::from(input.subject().clone());
+        let head = input.space().starts_with("branch/") && input.cell() == "revision";
+        let bytes = head.then(|| input.content().to_vec());
+        let version = input.perform(&self.inner).await?;
+        if let Some(bytes) = bytes {
+            self.remember_head(subject, &bytes).await;
+        }
+        Ok(version)
+    }
+}
+
+impl AccountBoundOperator {
+    async fn remember_head(&self, subject: Subject, bytes: &[u8]) {
+        // Legacy/unsigned heads still need to reach the existing migration and
+        // validation paths. They cannot become checkout targets.
+        if let Ok(revision) = serde_ipld_dagcbor::from_slice::<dialog_repository::Revision>(bytes)
+            && revision.verify().is_ok()
+            && let Err(error) = crate::revisions::remember(subject, bytes, &self.inner).await
+        {
+            eprintln!("warning: could not retain revision for checkout: {error}");
+        }
+    }
+}
+
+forward!(dialog_effects::branch::Create);
+forward!(dialog_effects::branch::Switch);
 forward!(dialog_effects::memory::Retract);
 forward!(dialog_effects::memory::List);
 forward!(dialog_effects::credential::Retract<dialog_effects::credential::Secret>);

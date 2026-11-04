@@ -37,6 +37,7 @@ mod live_migration;
 mod log;
 mod notation;
 mod render;
+mod restore;
 #[cfg(feature = "integration-tests")]
 mod revoked_device;
 mod schema_read;

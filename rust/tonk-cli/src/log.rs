@@ -148,7 +148,7 @@ fn io(error: impl std::fmt::Display) -> LogError {
     LogError::Io(error.to_string())
 }
 
-/// The newest `limit` revisions of `main`, newest first, each before
+/// The newest `limit` revisions of the active branch, newest first, each before
 /// any of its ancestors.
 pub async fn revisions(site: &TonkSite, limit: usize) -> Result<Vec<RevisionRow>, LogError> {
     let session = site.branch().await.map_err(io)?;

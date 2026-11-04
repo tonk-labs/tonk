@@ -329,7 +329,9 @@ pub async fn set_upstream(
     let address = SiteAddress::from(UcanAddress::new(&remote_record.endpoint));
     let remote_concept = replica.remote(remote_name, remote_record.subject.clone(), &address);
     let tracked = remote_concept.branch(site::BRANCH_NAME);
-    let tracking = replica.branch(site::BRANCH_NAME).set_upstream(&tracked);
+    let tracking = replica
+        .branch(session.handle().name())
+        .set_upstream(&tracked);
 
     meta.transaction()
         .assert(tracked)
@@ -341,7 +343,7 @@ pub async fn set_upstream(
         .map_err(|e| RemoteError::Io(format!("failed to write tracking-branch records: {e}")))?;
 
     Ok(UpstreamOutcome {
-        local_branch: site::BRANCH_NAME.to_owned(),
+        local_branch: session.handle().name().to_owned(),
         remote: remote_name.to_owned(),
         remote_branch: site::BRANCH_NAME.to_owned(),
     })

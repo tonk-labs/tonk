@@ -42,6 +42,7 @@ pub mod agents;
 pub mod authoring;
 pub mod auto_sync;
 pub mod blob;
+pub mod branches;
 /// A loopback callback server for browser authorization ceremonies.
 pub mod callback;
 pub mod connections;
@@ -68,6 +69,8 @@ pub mod recovery;
 pub mod remote;
 pub mod remote_deadline;
 pub mod render;
+pub mod restore;
+pub mod revisions;
 pub mod schema;
 pub mod site;
 pub mod space;
