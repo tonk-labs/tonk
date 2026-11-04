@@ -232,6 +232,12 @@ pub enum Does {
         /// Its arguments.
         arguments: Value,
     },
+    /// Opens `url` in Tonk, through the agent app (`ui/open-link`); the
+    /// card stays as it is.
+    Open {
+        /// Where, on the provider's origin.
+        url: String,
+    },
     /// Calls nothing: the card becomes the strip `receipt`, and the model
     /// is told `context`.
     Say {
@@ -390,6 +396,16 @@ impl Card {
                 receipt: receipt.into(),
                 context: context.into(),
             },
+        });
+        self
+    }
+
+    /// An answer that opens `url` in Tonk.
+    pub fn answer_opening(mut self, label: impl Into<String>, kind: Look, url: String) -> Self {
+        self.answers.push(Answer {
+            label: label.into(),
+            kind,
+            does: Does::Open { url },
         });
         self
     }

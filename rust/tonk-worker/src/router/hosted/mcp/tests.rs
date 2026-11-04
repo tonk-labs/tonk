@@ -1325,12 +1325,12 @@ concept!: &mcp-note
         assert_eq!(late["isError"], true, "{late}");
         assert!(!holds("declined").await, "a dismissed proposal wrote");
 
-        // The space moves after the preview: the confirmed change is not
-        // written over what the person never saw.
+        // The space moves elsewhere after the preview: the change still does
+        // what the person saw, so it is applied at the new head.
         let proposed = client
             .result(
                 "tonk_evaluate",
-                json!({ "space": space, "document": note("stale"), "confirm": true }),
+                json!({ "space": space, "document": note("kept"), "confirm": true }),
             )
             .await;
         let arguments = proposed["structuredContent"]["card"]["answers"][0]["arguments"].clone();
@@ -1341,10 +1341,42 @@ concept!: &mcp-note
             )
             .await;
         assert!(!error, "{moved}");
+        let kept = client.result("tonk_proposal_apply", arguments).await;
+        assert_eq!(kept["isError"], false, "{kept}");
+        assert!(
+            holds("kept").await,
+            "a change unaffected by the move was refused"
+        );
+
+        // Someone changes the same item after the preview: the confirmed
+        // change is not written over what the person never saw.
+        let proposed = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": note("stale"), "confirm": true }),
+            )
+            .await;
+        let arguments = proposed["structuredContent"]["card"]["answers"][0]["arguments"].clone();
+        let theirs = format!("mcp-note!:\n  this: urn:mcp:{run}:stale\n  title: \"theirs\"\n");
+        let (moved, error) = client
+            .call(
+                "tonk_evaluate",
+                json!({ "space": space, "document": theirs }),
+            )
+            .await;
+        assert!(!error, "{moved}");
         let stale = client.result("tonk_proposal_apply", arguments).await;
         assert_eq!(stale["isError"], true, "{stale}");
         let tell = &stale["structuredContent"]["card"];
         assert_eq!(tell["label"], "note stale changed", "{stale}");
+        assert_eq!(
+            tell["ledger"][0],
+            json!({ "term": "theirs", "value": "theirs" })
+        );
+        assert_eq!(
+            tell["ledger"][1],
+            json!({ "term": "yours", "value": "note stale" })
+        );
         assert!(!holds("stale").await, "a stale proposal wrote");
         // The same change, held again at the new head: use mine writes it.
         let answers = tell["answers"].as_array().unwrap();
@@ -1367,12 +1399,29 @@ concept!: &mcp-note
                 }),
             )
             .await;
-        assert_eq!(read["isError"], true, "{read}");
+        assert_eq!(read["isError"], false, "{read}");
+        assert_eq!(read["structuredContent"]["card"]["kind"], "strip", "{read}");
         assert!(
             read["content"][0]["text"]
                 .as_str()
                 .unwrap()
-                .contains("writes nothing")
+                .contains("would change nothing")
+        );
+        // Nor has one that writes what is there already.
+        let same = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": note("asked"), "confirm": true }),
+            )
+            .await;
+        assert_eq!(same["isError"], false, "{same}");
+        let strip = &same["structuredContent"]["card"];
+        assert_eq!(strip["kind"], "strip", "{same}");
+        assert!(
+            strip["say"]
+                .as_str()
+                .unwrap()
+                .starts_with("nothing changed in")
         );
 
         let open: Vec<Arc<SpaceWriter>> =

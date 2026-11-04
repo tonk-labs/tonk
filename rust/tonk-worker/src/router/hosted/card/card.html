@@ -103,7 +103,6 @@
             'aria-label',
             card.kind === 'ask' ? 'Tonk asks: ' + card.say : 'Tonk: ' + (card.label || card.say),
           );
-          if (card.kind === 'tell') section.setAttribute('role', 'alert');
           section.append(head(card), el('p', 'tonk-say', card.say));
           if (card.changes?.length) {
             const list = el('ul', 'tonk-changes');
@@ -114,7 +113,8 @@
               const words = { '+': 'adds', '−': 'removes', '-': 'removes', '~': 'changes' };
               const name = el('span', null, change.name);
               name.setAttribute('aria-label', (words[change.mark] || '') + ' ' + change.name);
-              item.append(mark, name, el('span', 'tonk-kind', change.kind || ''));
+              item.append(mark, name);
+              if (change.kind) item.append(el('span', 'tonk-kind', change.kind));
               list.append(item);
             }
             section.append(list);
@@ -173,7 +173,19 @@
           } catch {}
         }
 
+        // A link out of the card opens in the person's browser, through
+        // the agent app, which may ask them first.
+        async function openLink(url) {
+          try {
+            await rpc('ui/open-link', { url });
+          } catch {
+            if (typeof window.openai?.openExternal === 'function') window.openai.openExternal({ href: url });
+          }
+        }
+
         async function choose(card, section, answer) {
+          // An answer that opens Tonk leaves the card as it is.
+          if (answer.url) return openLink(answer.url);
           for (const button of section.querySelectorAll('button')) button.disabled = true;
           // An answer that calls nothing: its strip, and what the model is told.
           if (!answer.tool) {
