@@ -314,7 +314,7 @@ impl SpaceWriterObject {
             self.reach("access");
             return match writer.agent_access().await {
                 Ok(access) => worker::Response::from_json(&access),
-                Err(error) => failure(StatusCode::BAD_GATEWAY, &error.to_string()),
+                Err(error) => upstream_failure(&error),
             };
         }
         if method == worker::Method::Get
@@ -494,6 +494,24 @@ fn branch(method: Method, path: &str, content_type: &str, body: Body) -> Request
         request = request.header(header::CONTENT_TYPE, content_type);
     }
     request.body(body).expect("static request")
+}
+
+/// `error` as an answer: an upstream refusal (a revoked grant) keeps its
+/// status and code, so the front can tell it from a failure; anything
+/// else is `502`.
+fn upstream_failure(error: &tonk_worker::TonkWorkerError) -> worker::Result<worker::Response> {
+    let tonk_worker::TonkWorkerError::Upstream {
+        status,
+        code: Some(code),
+        message,
+    } = error
+    else {
+        return failure(StatusCode::BAD_GATEWAY, &error.to_string());
+    };
+    let mut response =
+        worker::Response::from_json(&serde_json::json!({ "error": message, "code": code }))?;
+    response = response.with_status(*status);
+    Ok(response)
 }
 
 fn failure(status: StatusCode, message: &str) -> worker::Result<worker::Response> {

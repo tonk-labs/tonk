@@ -297,6 +297,17 @@ fn writer_outcome(status: StatusCode) -> Outcome {
     }
 }
 
+/// A writer's error code as an event's reason: one in the writer's own
+/// shape, such as `WRITE_NOT_LANDED`, lowercased; none for anything else.
+fn writer_code(code: &str) -> Option<String> {
+    let shaped = !code.is_empty()
+        && code.len() <= 40
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte == b'_');
+    shaped.then(|| code.to_ascii_lowercase())
+}
+
 /// The name a tool is recorded under: its own when it could be one this
 /// endpoint serves, `other` otherwise, so a client cannot write arbitrary
 /// text into the logs.
@@ -661,19 +672,10 @@ impl<W: Writers> McpEndpoint<'_, W> {
                     Err(_) => json!(String::from_utf8_lossy(&body)),
                 };
                 if !status.is_success() {
-                    // A code in the writer's own shape, such as
-                    // `WRITE_NOT_LANDED`; the status for anything else.
-                    let code = body["code"].as_str().filter(|code| {
-                        !code.is_empty()
-                            && code.len() <= 40
-                            && code
-                                .bytes()
-                                .all(|byte| byte.is_ascii_uppercase() || byte == b'_')
-                    });
-                    let kind = match code {
-                        Some(code) => code.to_ascii_lowercase(),
-                        None => format!("http_{}", status.as_u16()),
-                    };
+                    let kind = body["code"]
+                        .as_str()
+                        .and_then(writer_code)
+                        .unwrap_or_else(|| format!("http_{}", status.as_u16()));
                     call.end(writer_outcome(status), &kind);
                 }
                 let mut answer = tool_result(without_revisions(body), !status.is_success());
@@ -735,7 +737,19 @@ impl<W: Writers> McpEndpoint<'_, W> {
             .map(|body| body.to_bytes())
             .unwrap_or_default();
         if !status.is_success() {
-            call.end(Outcome::Error, "access");
+            // A refusal (the session's own grant revoked) is recorded as
+            // one, with the writer's code; anything else failed.
+            if writer_outcome(status) == Outcome::Refused {
+                let code = serde_json::from_slice::<Value>(&body)
+                    .ok()
+                    .and_then(|body| body["code"].as_str().and_then(writer_code));
+                call.end(
+                    Outcome::Refused,
+                    code.as_deref().unwrap_or("access_refused"),
+                );
+            } else {
+                call.end(Outcome::Error, "access");
+            }
             return Err(format!(
                 "Could not read this agent's spaces from its own space ({status}): {}. Try \
                  again; if it persists, ask the user to reconnect.",

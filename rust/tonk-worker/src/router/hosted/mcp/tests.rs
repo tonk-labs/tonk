@@ -764,6 +764,16 @@ concept!: &mcp-note
             if parts.uri.path() == ACCESS_ROUTE {
                 return match writer.agent_access().await {
                     Ok(access) => rpc(StatusCode::OK, serde_json::to_value(access).unwrap()),
+                    // As the Host Worker does: an upstream refusal keeps
+                    // its status and code.
+                    Err(crate::TonkWorkerError::Upstream {
+                        status,
+                        code: Some(code),
+                        message,
+                    }) => rpc(
+                        StatusCode::from_u16(status).unwrap(),
+                        json!({ "error": message, "code": code }),
+                    ),
                     Err(error) => plain(StatusCode::BAD_GATEWAY, &error.to_string()),
                 };
             }
@@ -857,7 +867,7 @@ concept!: &mcp-note
         name: Option<&str>,
         home: Option<&url::Url>,
         address: &str,
-    ) {
+    ) -> Vec<DelegationChain> {
         let chains = grants(space, &agent.did(), verbs, None, home).await;
         let session = owner(agent, remote, "approval").await;
         let writer = SpaceWriter::open(&scratch_root(), &session, &agent.did(), remote)
@@ -875,6 +885,7 @@ concept!: &mcp-note
             .await
             .unwrap();
         writer.close().await;
+        chains
     }
 
     struct Client<'a> {
@@ -905,6 +916,175 @@ concept!: &mcp-note
             let value = serde_json::from_str(&text).unwrap_or(json!(text));
             (value, error)
         }
+    }
+
+    /// How long after a revocation the agent may still be answered. The
+    /// same budgets as the hosted-agent e2e (`REVOKE_BUDGET` and
+    /// `LINK_REVOKE_BUDGET` in `tests/e2e/hosted-agent/agent.test.mjs`):
+    /// the two run one scenario and must agree.
+    const REVOKE_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+    const LINK_REVOKE_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// How the person takes a grant away.
+    #[derive(Clone, Copy, Debug)]
+    enum Revocation {
+        /// A grant this profile issued: revoked at the access service.
+        AtTheService,
+        /// A grant joined from a share link: dropped from the agent space
+        /// only, as `agents::revoke` does.
+        FromTheAgentSpace,
+    }
+
+    /// Call a tool built by `arguments` (given the attempt's number) until
+    /// the agent is refused, from `since` for at most `budget`: how long
+    /// that took, and the refusal's event.
+    async fn refused_within(
+        client: &Client<'_>,
+        events: &Events,
+        name: &str,
+        arguments: impl Fn(usize) -> Value,
+        since: std::time::Instant,
+        budget: std::time::Duration,
+    ) -> (std::time::Duration, ToolEvent) {
+        for attempt in 0.. {
+            let (result, error) = client.call(name, arguments(attempt)).await;
+            let elapsed = since.elapsed();
+            // Past the budget fails whether or not this call was refused:
+            // a refusal that arrives late is a late revocation.
+            assert!(
+                elapsed <= budget,
+                "{name} was {} {elapsed:?} after the revocation (budget {budget:?}): {result}",
+                if error {
+                    "refused only"
+                } else {
+                    "still answered"
+                },
+            );
+            if error {
+                println!("{name} refused: {result}");
+                return (elapsed, events.last());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        unreachable!()
+    }
+
+    /// The person takes the agent's read and write grant away, `how`, and
+    /// both its reads and its writes on the space are refused within
+    /// `budget`: the scenario the hosted-agent e2e runs on a preview.
+    async fn revoking_refuses_reads_and_writes(how: Revocation, budget: std::time::Duration) {
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let agent = Ed25519Signer::import(&rand::random::<[u8; 32]>())
+            .await
+            .unwrap();
+        let notes = Ed25519Signer::generate().await.unwrap();
+        for subject in [agent.did(), notes.did()] {
+            service
+                .address
+                .provision_subject(subject.as_ref())
+                .await
+                .unwrap();
+        }
+        let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+        let chains = approve(
+            &agent,
+            &remote,
+            &notes,
+            &["get", "put"],
+            Some("Notes"),
+            None,
+            remote.as_str(),
+        )
+        .await;
+
+        let writers = NativeWriters {
+            remote: remote.clone(),
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let events = Events::default();
+        let sink = events.sink();
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = recording(&key, &tickets, &writers, &sink);
+        let client = Client::connect(&endpoint, token(&agent, &remote).await).await;
+        let subject = notes.did().to_string();
+        let read = |_: usize| json!({ "space": subject, "document": "concept:\n" });
+        let run: u64 = rand::random();
+        let write = |attempt: usize| {
+            json!({
+                "space": subject,
+                "document": format!(
+                    "mcp-note!:\n  this: urn:mcp:{run}:{attempt}\n  title: \"probe {attempt}\"\n"
+                ),
+            })
+        };
+        // Answered before, so a refusal after is the revocation's.
+        let (result, error) = client
+            .call(
+                "tonk_evaluate",
+                json!({ "space": subject, "document": SCHEMA }),
+            )
+            .await;
+        assert!(!error, "evaluate before the revocation: {result}");
+        let (result, error) = client.call("tonk_query", read(0)).await;
+        assert!(!error, "query before the revocation: {result}");
+
+        let since = std::time::Instant::now();
+        match how {
+            Revocation::AtTheService => {
+                for chain in &chains {
+                    let leaf = crate::router::revoke_invite::leaf_cid(chain).unwrap();
+                    let revocation = tonk_identity::revocation::mint_root_revocation(
+                        notes.clone(),
+                        chain,
+                        &leaf,
+                    )
+                    .await
+                    .unwrap();
+                    crate::router::http::post_cbor(&remote, &revocation)
+                        .await
+                        .unwrap();
+                }
+            }
+            Revocation::FromTheAgentSpace => {
+                let session = owner(&agent, &remote, "withdrawal").await;
+                let writer = SpaceWriter::open(&scratch_root(), &session, &agent.did(), &remote)
+                    .await
+                    .unwrap();
+                writer.withdraw(&chains).await.unwrap();
+                writer.close().await;
+            }
+        }
+
+        for (name, arguments) in [
+            ("tonk_query", &read as &dyn Fn(usize) -> Value),
+            ("tonk_evaluate", &write),
+        ] {
+            let (elapsed, refused) =
+                refused_within(&client, &events, name, arguments, since, budget).await;
+            println!("{how:?}: {name} refused {elapsed:?} after the revocation");
+            assert_eq!(refused.outcome, telemetry::Outcome::Refused, "{refused:?}");
+            assert!(
+                matches!(
+                    refused.kind.as_deref(),
+                    Some("credential_revoked" | "access_denied" | "no_access")
+                ),
+                "{name} refused for another reason: {refused:?}"
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    async fn revoking_an_approved_grant_refuses_reads_and_writes_within_the_budget() {
+        revoking_refuses_reads_and_writes(Revocation::AtTheService, REVOKE_BUDGET).await;
+    }
+
+    #[dialog_common::test]
+    async fn revoking_a_share_link_grant_refuses_reads_and_writes_within_the_budget() {
+        revoking_refuses_reads_and_writes(Revocation::FromTheAgentSpace, LINK_REVOKE_BUDGET).await;
     }
 
     #[dialog_common::test]
@@ -1335,4 +1515,73 @@ fn a_rejected_request_is_invalid_and_a_refused_one_refused() {
         writer_outcome(StatusCode::GATEWAY_TIMEOUT),
         telemetry::Outcome::Error
     );
+}
+
+/// Writers whose every answer is a revoked refusal, as the writers answer
+/// once the session's grant is revoked.
+struct Revoked;
+
+impl Writers for Revoked {
+    async fn call(
+        &self,
+        _verified: &Verified,
+        _bearer: &str,
+        _mcp_session: &str,
+        _space: &Did,
+        _request: Request<Body>,
+    ) -> Response<Body> {
+        rpc(
+            StatusCode::FORBIDDEN,
+            json!({ "error": "pull: 403: revoked", "code": "CREDENTIAL_REVOKED" }),
+        )
+    }
+}
+
+#[dialog_common::test]
+async fn a_revoked_grant_is_recorded_as_a_refusal_not_a_failure() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let events = Events::default();
+    let sink = events.sink();
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let bearer = token(&agent, &home()).await;
+
+    // The session's own space: the agent space's writer refuses the read
+    // of its grants.
+    let endpoint = recording(&key, &tickets, &Revoked, &sink);
+    let session = connect(&endpoint, &bearer).await;
+    let (_, error) = call_tool(&endpoint, &bearer, &session, "tonk_list_spaces", json!({})).await;
+    assert!(error);
+    let event = events.last();
+    assert_eq!(event.outcome, telemetry::Outcome::Refused);
+    assert_eq!(event.kind.as_deref(), Some("credential_revoked"));
+
+    // A granted space: the front still lists the grant, and the space's
+    // writer is refused at its pull.
+    let writers = Scripted {
+        agent: agent.did(),
+        access: writable(&agent.did(), &space.did()),
+        answer: || {
+            rpc(
+                StatusCode::FORBIDDEN,
+                json!({ "error": "pull: 403: revoked", "code": "CREDENTIAL_REVOKED" }),
+            )
+        },
+        traces: Default::default(),
+    };
+    let endpoint = recording(&key, &tickets, &writers, &sink);
+    let session = connect(&endpoint, &bearer).await;
+    let (_, error) = call_tool(
+        &endpoint,
+        &bearer,
+        &session,
+        "tonk_evaluate",
+        json!({ "space": space.did().to_string(), "document": "x!: {}" }),
+    )
+    .await;
+    assert!(error);
+    let event = events.last();
+    assert_eq!(event.outcome, telemetry::Outcome::Refused);
+    assert_eq!(event.kind.as_deref(), Some("credential_revoked"));
 }
