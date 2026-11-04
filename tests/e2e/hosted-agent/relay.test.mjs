@@ -176,9 +176,12 @@ test('the well is busy until the view reports its size, and says what is loading
       return { busy: well.getAttribute('aria-busy'), says: well.dataset.loading };
     });
     assert.deepEqual(busy, { busy: 'true', says: 'loading Packing list' });
+    const label = () => frame.evaluate(() => document.querySelector('#card').getAttribute('aria-label'));
+    assert.equal(await label(), 'Tonk: Family trip, Packing list, loading');
     await until(frame, () => !document.querySelector('.tonk-well').hasAttribute('aria-busy'));
     const height = await frame.evaluate(() => document.querySelector('.tonk-view').offsetHeight);
     assert.equal(height, 220);
+    assert.equal(await label(), 'Tonk: Family trip, Packing list');
     // The host is told the whole card: the view and the line under it.
     assert.equal(await card.view.height(), 250);
   } finally {
@@ -199,6 +202,10 @@ test('a page that loads and stays silent fails after 3 s, and try again loads it
     assert.equal(failed.says, 'Packing list didn’t load. try again');
     assert.equal(failed.role, 'alert');
     assert.equal(failed.busy, null, 'it no longer says loading');
+    assert.equal(
+      await frame.evaluate(() => document.querySelector('#card').getAttribute('aria-label')),
+      'Tonk: Family trip, Packing list, didn’t load',
+    );
     const pulls = card.provider.served.filter((path) => path === '/worker-guest').length;
     await frame.click('.tonk-failed .tonk-link');
     await until(frame, () => !document.querySelector('.tonk-failed'));
@@ -277,6 +284,11 @@ test('the full-screen button asks the agent app, and full screen fills the card 
     assert.equal(fill.out, false, 'open in tonk shows');
     assert.equal(fill.card, fill.viewport, 'the card fills the agent app’s sheet');
     assert.equal(fill.bottom, '24px', 'the line clears the chat input');
+    await until(frame, () => document.querySelector('#card').getAttribute('aria-label').endsWith(', full screen'));
+    assert.equal(
+      await frame.evaluate(() => document.querySelector('#out').textContent),
+      'open in tonk ↗',
+    );
     await frame.click('#out');
     await until(frame, () => true);
     const opened = (await card.view.asked()).filter((ask) => ask.method === 'ui/open-link');
@@ -396,6 +408,13 @@ test('the guest page takes the theme its host passes, over the system preference
     await page.emulateMedia({ colorScheme: 'light' });
     await new Promise((resolve) => setTimeout(resolve, 200));
     assert.match(await classes(), /wa-dark/, 'the system preference no longer applies');
+    // The runtime, injected after mount, sets the system's theme again.
+    await guest.evaluate(() => {
+      document.documentElement.classList.toggle('wa-dark', false);
+      document.documentElement.classList.toggle('wa-light', true);
+    });
+    await guest.waitForFunction(() => document.documentElement.classList.contains('wa-dark'));
+    assert.doesNotMatch(await classes(), /wa-light/, 'the host’s theme is kept');
     await page.evaluate(() =>
       document.querySelector('iframe').contentWindow.postMessage({ type: 'tonk-theme', theme: 'light' }, '*'),
     );
@@ -416,14 +435,16 @@ test('the whole space is a card that opens it in Tonk, with no view and no peer'
       space: document.querySelector('#handoff .tonk-space').textContent,
       role: document.querySelector('#handoff .tonk-role').textContent,
       says: document.querySelector('#handoff .tonk-handoff p').textContent,
-      disc: !!document.querySelector('#handoff .tonk-disc'),
+      disc: document.querySelector('#handoff .tonk-disc')?.getAttribute('aria-label'),
+      arrow: document.querySelector('#handoff .tonk-btn').innerHTML,
     }));
     assert.deepEqual(drawn, {
       card: true,
       space: 'Family trip',
       role: 'write',
       says: 'Opens the whole space in Tonk.',
-      disc: false,
+      disc: 'synced',
+      arrow: 'open in tonk ↗',
     });
     await frame.click('#handoff .tonk-btn');
     await until(frame, () => true);
@@ -444,6 +465,10 @@ test('a strip is one line with a link that opens the view in the browser', async
     await until(frame, () => !document.querySelector('#strip').hidden);
     const says = await frame.evaluate(() => document.querySelector('#strip .tonk-receipt').textContent);
     assert.equal(says, 'Family trip › Packing list opens in your browser');
+    assert.equal(
+      await frame.evaluate(() => document.querySelector('#strip .tonk-disc').getAttribute('role')),
+      'img',
+    );
     await frame.click('#strip .tonk-link');
     await until(frame, () => true);
     const opened = (await card.view.asked()).filter((ask) => ask.method === 'ui/open-link');

@@ -23,4 +23,12 @@
     apply(theme === 'dark');
     document.documentElement.style.colorScheme = theme;
   };
+  // A runtime that sets the classes again after the host chose keeps the
+  // host's theme: only a change to the other one is undone.
+  new MutationObserver(() => {
+    if (!chosen) return;
+    const dark = chosen === 'dark',
+      cls = document.documentElement.classList;
+    if (cls.contains('wa-dark') !== dark || cls.contains('wa-light') === dark) apply(dark);
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
 })();

@@ -554,7 +554,8 @@ async fn open<W: Writers>(
     // What Tonk's line names, and the text version: the view's outline.
     // A view whose outline cannot be read is still shown; the line then
     // names the space alone.
-    let outline = if view.is_null() || !shown.reachable || size == "strip" {
+    // A strip names the view too, so it reads the outline as a card does.
+    let outline = if view.is_null() {
         None
     } else {
         read_outline(route, access, writers, verified, bearer, mcp_session, space)
@@ -562,8 +563,9 @@ async fn open<W: Writers>(
             .ok()
     };
     let node = outline.as_ref().map(|outline| &outline["outline"]);
+    // The view's own title, else its concept's name.
     let view_name = node
-        .and_then(|node| node["name"].as_str())
+        .and_then(|node| node["title"].as_str().or_else(|| node["name"].as_str()))
         .map(str::to_owned);
     let show = if whole {
         "handoff"
