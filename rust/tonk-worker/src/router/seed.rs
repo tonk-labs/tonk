@@ -234,57 +234,22 @@ impl Load for Scoped {
 }
 
 /// Fetch `url` the way a seed is fetched: no credentials, no redirects, at
-/// most [`MAX_BYTES`].
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+/// most [`MAX_BYTES`]. A kernel has no HTTP client: its embedder reads it.
+#[cfg(target_arch = "wasm32")]
 async fn fetch(url: &Url) -> Result<Vec<u8>, String> {
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen_futures::JsFuture;
-    use web_sys::{
-        Request, RequestCache, RequestCredentials, RequestInit, RequestMode, RequestRedirect,
-        Response, ServiceWorkerGlobalScope,
-    };
-
-    let init = RequestInit::new();
-    init.set_mode(RequestMode::Cors);
-    init.set_credentials(RequestCredentials::Omit);
-    init.set_redirect(RequestRedirect::Error);
-    init.set_cache(RequestCache::NoStore);
-    let request = Request::new_with_str_and_init(url.as_str(), &init)
-        .map_err(|error| format!("cannot request {url}: {error:?}"))?;
-    let global: ServiceWorkerGlobalScope = js_sys::global()
-        .dyn_into()
-        .map_err(|_| "seeds are fetched by the service worker".to_owned())?;
-    // A cross-origin server that does not allow Tonk to read it fails here
-    // the same way an unreachable one does: the browser does not say which.
-    let response: Response = JsFuture::from(global.fetch_with_request(&request))
+    let answer = tonk_kernel_world::application::read(url.as_str())
         .await
-        .and_then(|response| response.dyn_into())
-        .map_err(|_| {
-            format!(
-                "could not read {url}: it is unreachable, redirects, or does not allow \
-                 Tonk to read it (CORS)"
-            )
-        })?;
-    if !response.ok() {
-        return Err(format!("{url} returned HTTP {}", response.status()));
+        .map_err(|error| format!("could not read {url}: {error:?}"))?;
+    if !(200..300).contains(&answer.status) {
+        return Err(format!("{url} returned HTTP {}", answer.status));
     }
-    let buffer = JsFuture::from(
-        response
-            .array_buffer()
-            .map_err(|error| format!("cannot read {url}: {error:?}"))?,
-    )
-    .await
-    .map_err(|error| format!("cannot read {url}: {error:?}"))?;
-    let bytes = js_sys::Uint8Array::new(&buffer);
-    if bytes.length() as usize > MAX_BYTES {
+    if answer.body.len() > MAX_BYTES {
         return Err(format!("{url} is larger than a seed may be"));
     }
-    Ok(bytes.to_vec())
+    Ok(answer.body.into_bytes())
 }
 
-/// Fetch `url` the way a seed is fetched: no credentials, no redirects, at
-/// most [`MAX_BYTES`].
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 async fn fetch(url: &Url) -> Result<Vec<u8>, String> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())

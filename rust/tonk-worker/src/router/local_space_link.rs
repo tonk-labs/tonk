@@ -5,12 +5,10 @@
 //! account key or account-wide grant to the waiting CLI.
 
 use axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_ucan_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_invite::local_space_link;
+use tonk_macros::handler;
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -104,7 +102,7 @@ fn encode(bytes: &[u8]) -> Result<String, TonkWorkerError> {
 /// POST `/api/local-space-link/describe`: the request's name, space and
 /// callback. The page cannot read the transport encoding itself, so it
 /// asks; nothing is validated or signed here, that is `approve`'s.
-#[wasm_compat]
+#[handler]
 pub(crate) async fn describe(
     State(_state): State<AppState>,
     Json(body): Json<ApproveRequest>,
@@ -122,7 +120,7 @@ pub(crate) async fn describe(
     }))
 }
 
-#[wasm_compat]
+#[handler]
 pub(crate) async fn approve(
     State(state): State<AppState>,
     Json(body): Json<ApproveRequest>,
@@ -152,7 +150,7 @@ pub(crate) async fn approve(
     }))
 }
 
-#[wasm_compat]
+#[handler]
 pub(crate) async fn complete(
     State(state): State<AppState>,
     Json(body): Json<CompleteRequest>,
@@ -211,7 +209,7 @@ pub(crate) async fn complete(
     }))
 }
 
-#[wasm_compat]
+#[handler]
 pub(crate) async fn provision(
     State(state): State<AppState>,
     Json(body): Json<ProvisionRequest>,

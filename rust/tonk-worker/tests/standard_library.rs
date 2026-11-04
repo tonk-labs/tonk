@@ -240,12 +240,12 @@ fn it_raises_the_signup_from_an_unlinked_account_cell() {
         "the panel must be able to tell whether an account is linked",
     );
     assert!(
-        panel.contains("else self.openRegistration();"),
-        "and open the panel that adds an account when none is",
+        panel.contains("self.signIn();"),
+        "and ask the host to sign the person in when none is",
     );
     assert!(
-        PROFILE_LIBRARY.contains("on:open-registration=tonk:open-registration"),
-        "by the command the worker records the panel's first stage for",
+        PROFILE_LIBRARY.contains("on:sign-in=tonk:sign-in"),
+        "by the command that asks the host for a sign-in",
     );
     assert!(
         PROFILE_LIBRARY.contains(
@@ -638,7 +638,7 @@ fn it_recovers_from_every_absent_space_directory_state() {
     );
     assert_eq!(
         directory_probe
-            .matches("on:retry-registration=tonk:open-registration")
+            .matches("on:ask-sign-in=tonk:sign-in")
             .count(),
         2,
         "both absence states must offer sign-in recovery"
@@ -697,7 +697,7 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         // What a visit to a space that keeps no public ticket ends on.
         "this space is private",
         "class=\"space-unknown-back\" href=\"/\">go to home",
-        "<button type=\"button\" class=\"space-unknown-home\" on:retry-registration=tonk:open-registration>",
+        "<button type=\"button\" class=\"space-unknown-home\" on:ask-sign-in=tonk:sign-in>",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),

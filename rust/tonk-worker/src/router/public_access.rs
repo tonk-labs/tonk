@@ -44,6 +44,7 @@ pub(crate) async fn ensure_powerline(
 
 /// Whether this profile can already read `subject`: a membership, or a
 /// public ticket saved here before.
+#[cfg(feature = "persona")]
 pub(crate) async fn can_read(tonk: &TonkState, subject: &Did) -> bool {
     proves(tonk, &tonk.profile.did(), subject, "/use/get").await
 }

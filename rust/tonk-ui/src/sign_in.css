@@ -1,0 +1,221 @@
+/* The host's sign-in panel, from `fabb/onboard.html`: a column of blocks
+   over a dimmed page, "the page dims, the surface never". Rows settle into
+   records as their step completes, so what has been answered stays legible
+   above what is being answered now.
+
+   The top page loads no site's stylesheet, so the panel names the tokens
+   it reads itself, with each scheme's values. */
+@font-face {
+  font-family: "IBM Plex Sans Condensed";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-condensed-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans Condensed";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-condensed-latin-600-normal.woff2") format("woff2");
+}
+#tonk-register {
+  --ink: light-dark(#38182a, #e2dfdd);
+  --on-ink: light-dark(#f7f6f5, #161313);
+  --soft: light-dark(#5b4953, #b7aeb2);
+  --card: light-dark(#fcfbfb, #261f20);
+  --ring: color-mix(in srgb, var(--ink) 85%, transparent);
+  --wash: color-mix(in srgb, var(--ink) 6%, transparent);
+  --dim: light-dark(color-mix(in srgb, #38182a 32%, transparent), rgb(0 0 0 / 45%));
+  --cond: "IBM Plex Sans Condensed", "Bahnschrift", "Arial Narrow", sans-serif;
+  --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  --anchor-top: 79px;
+  --anchor-left: 0px;
+  --anchor-width: calc(100vw - 42px);
+
+  position: fixed; inset: 0; z-index: 2147483646;
+  box-sizing: border-box;
+  margin: 0; padding: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--dim);
+  color: var(--ink);
+}
+#tonk-register[hidden] { display: none; }
+html:has(#tonk-register:not([hidden])),
+body:has(#tonk-register:not([hidden])) {
+  overflow: hidden;
+}
+
+/* The study's chrome type: condensed, 600, 13px, slightly tracked and
+   lowercased. */
+.tonk-ceremony {
+  font-family: var(--cond);
+  font-weight: 600;
+  font-size: 13px;
+  line-height: 1;
+  letter-spacing: .02em;
+  text-transform: lowercase;
+}
+.tonk-ceremony ::selection {
+  background: var(--ink);
+  color: var(--on-ink);
+}
+.tonk-ceremony .ocol {
+  box-sizing: border-box;
+  position: absolute; left: auto; top: var(--anchor-top);
+  right: max(16px, calc(100vw - var(--anchor-left) - var(--anchor-width)));
+  bottom: auto; margin: 0;
+  width: min(360px, calc(100vw - 32px));
+  max-height: calc(100dvh - 110px); overflow: auto;
+  overscroll-behavior: none;
+  display: flex; flex-flow: row wrap; align-content: flex-start;
+  border: 1.5px solid var(--ink); border-radius: 25px;
+  background: var(--card);
+}
+.tonk-ceremony .ostack { display: contents; }
+.tonk-ceremony .mblk {
+  background: var(--card);
+  color: var(--ink);
+}
+.tonk-ceremony .m-head {
+  box-sizing: border-box; flex: 0 0 100%;
+  display: flex;
+  min-height: 48px; height: 48px; padding: 0 18px;
+  align-items: center; gap: 16px;
+  background: var(--wash); font-size: 17px; white-space: nowrap;
+}
+.tonk-ceremony .fabb-task-disc {
+  display: block; box-sizing: border-box;
+  width: 18px; height: 18px; flex: 0 0 18px;
+  background: var(--ink); border-radius: 50%;
+}
+.tonk-ceremony .fabb-task-title {
+  margin-left: auto; text-align: right;
+}
+
+/* One row per step. An active editor opens into a two-line workspace: the
+   noun stays at the upper left while the value gets the full row below. */
+.tonk-ceremony .orow {
+  box-sizing: border-box; flex: 0 0 100%;
+  position: relative;
+  display: flex; align-items: flex-end; justify-content: space-between;
+  min-height: 48px; padding: 12px 18px 9px; gap: 16px;
+  overflow: hidden;
+  background: var(--wash);
+}
+.tonk-ceremony .orow .k {
+  color: var(--soft);
+  white-space: nowrap; display: flex; align-items: flex-end; gap: 8px;
+}
+.tonk-ceremony .orow .v {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; text-align: right;
+  display: flex; align-items: flex-end; justify-content: flex-end;
+  flex: 1;
+}
+.tonk-ceremony .orow.editing {
+  min-height: 104px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 48px;
+  align-items: stretch;
+  gap: 8px;
+  padding: 18px 18px 14px;
+}
+.tonk-ceremony .orow.editing .k {
+  color: var(--ink); font: 600 17px/1.1 var(--cond);
+  align-items: flex-start;
+}
+.tonk-ceremony .orow.editing .v {
+  width: 100%;
+  align-items: stretch;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+/* The editor: a real input wearing the row's own type, with the browser's
+   native caret. */
+.tonk-ceremony .ed {
+  appearance: none; -webkit-appearance: none;
+  box-sizing: border-box;
+  display: block;
+  inline-size: 100%; max-inline-size: none; min-width: 0;
+  min-height: 48px; height: 48px; margin: 0;
+  padding: 12px 14px 9px; border: 0; outline: none;
+  background: var(--wash);
+  font: 400 18px/1.5 var(--cond); letter-spacing: inherit; text-transform: none;
+  color: var(--ink); caret-color: var(--ink);
+  text-align: left;
+}
+.tonk-ceremony .ed:focus-visible {
+  outline: 2px solid var(--ink); outline-offset: -2px;
+}
+.tonk-ceremony .ed::placeholder {
+  color: var(--soft); opacity: .55; text-transform: none;
+}
+/* Autofill (an address fill or a passkey's) otherwise repaints the field
+   yellow with the vendor's own ink. */
+.tonk-ceremony .ed:-webkit-autofill,
+.tonk-ceremony .ed:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--ink);
+  box-shadow: 0 0 0 100px var(--card) inset;
+}
+
+/* The narrator: one block whose sentence changes with the step. */
+.tonk-ceremony .oexp {
+  order: 90; box-sizing: border-box; flex: 0 0 100%;
+  min-height: 105px; margin: 0; padding: 10px 18px 18px;
+  background: var(--wash);
+}
+.tonk-ceremony .oexp p {
+  margin: 0;
+  font: 400 18px/1.5 var(--cond); letter-spacing: 0;
+  text-transform: none;
+  color: var(--soft);
+}
+.tonk-ceremony .oexp a {
+  color: var(--ink);
+  text-decoration: underline; text-underline-offset: 3px;
+}
+
+/* The way out, and the step: half a row each. While a ceremony is out of
+   our hands the step blinks rather than spins. */
+.tonk-ceremony .ghost,
+.tonk-ceremony .obtn {
+  box-sizing: border-box; flex: 0 0 50%;
+  display: flex;
+  min-height: 48px; height: 48px; margin: 0;
+  padding: 12px 18px; border: 0;
+  font: 600 17px/1.1 var(--cond); letter-spacing: 0;
+  text-decoration: none; text-transform: lowercase;
+  cursor: pointer;
+}
+.tonk-ceremony .ghost {
+  order: 100; align-items: center; justify-content: flex-start; text-align: left;
+  background: none; color: var(--ink);
+}
+.tonk-ceremony .obtn {
+  order: 101; align-items: center; justify-content: flex-end;
+  background: var(--ink); color: var(--on-ink);
+}
+.tonk-ceremony .obtn[disabled] { cursor: default; opacity: .55; }
+.tonk-ceremony .obtn.wait {
+  cursor: default; opacity: 1;
+  animation: tonk-register-wait 2.4s var(--ease) infinite;
+}
+@keyframes tonk-register-wait { 0%, 100% { opacity: 1 } 50% { opacity: .72 } }
+.tonk-ceremony .ocol:has(.obtn[hidden]) .ghost { flex-basis: 100%; }
+
+@media (max-width: 600px) {
+  .tonk-ceremony .ocol {
+    top: auto; right: 16px; bottom: calc(82px + env(safe-area-inset-bottom, 0px));
+    max-height: calc(100dvh - 110px - env(safe-area-inset-bottom, 0px));
+  }
+}
+@media (max-width: 519px) {
+  .tonk-ceremony .ed { font-size: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tonk-ceremony .obtn.wait { animation: none; }
+}

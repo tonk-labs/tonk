@@ -106,33 +106,3 @@ pub(crate) async fn load<R: Principal>(
         .connect(operator)
         .await
 }
-
-/// Whether `branch` of the repository `repo` pulls from the branch
-/// `remote_branch` of the remote the repository names `remote`.
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn tracks(
-    tonk: &crate::worker::TonkState,
-    repo: &str,
-    branch: &dialog_repository::Branch,
-    remote: &str,
-    remote_branch: &str,
-) -> bool {
-    use dialog_repository::{RepositoryExt as _, Upstream};
-
-    let Ok(repository) = tonk
-        .profile
-        .space(repo)
-        .load()
-        .perform(&tonk.operator)
-        .await
-    else {
-        return false;
-    };
-    let Ok(Some(recorded)) = find(&repository, remote, &tonk.operator).await else {
-        return false;
-    };
-    branch.pulls().iter().any(|upstream| {
-        matches!(upstream, Upstream::Remote { remote, branch, .. }
-            if recorded.is(remote) && branch == remote_branch)
-    })
-}

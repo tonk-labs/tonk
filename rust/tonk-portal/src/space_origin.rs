@@ -328,9 +328,22 @@ fn on_profile_origin() -> bool {
         .is_some_and(|label| label.starts_with(PROFILE_LABEL))
 }
 
+/// Whether this document is the tab's own, framed by nothing.
+pub(crate) fn on_top() -> bool {
+    window().is_some_and(|window| {
+        window
+            .parent()
+            .ok()
+            .flatten()
+            .is_none_or(|parent| JsValue::from(parent) == JsValue::from(window))
+    })
+}
+
 /// Get the frame at `origin` a port to the profile's worker for `with`. The
-/// document on the profile's origin mints it; any other asks its parent,
-/// which answers with a `relay-port` that [`relay_port`] passes down.
+/// document on the profile's origin mints it; the app's page, showing a
+/// space itself, has the profile's origin mint it in a frame of its own;
+/// any other asks its parent, which answers with a `relay-port` that
+/// [`relay_port`] passes down.
 pub(crate) fn broker_port(iframe: &HtmlIFrameElement, origin: &str, with: &Location) {
     let Some(space) = with.space() else {
         return;
@@ -344,12 +357,14 @@ pub(crate) fn broker_port(iframe: &HtmlIFrameElement, origin: &str, with: &Locat
         }
         return;
     }
-    let top = window
-        .parent()
-        .ok()
-        .flatten()
-        .is_none_or(|parent| JsValue::from(parent) == JsValue::from(window.clone()));
-    if top {
+    if on_top() {
+        let (frame, origin, with) = (iframe.clone(), origin.to_owned(), with.clone());
+        let Some(pattern) = iframe.parent_element().and_then(|host| site_pattern(&host)) else {
+            return;
+        };
+        connector::mint(&pattern, &with.clone(), move |port| {
+            post_port(&frame, &origin, "port", &with, port);
+        });
         return;
     }
     let (Some(parent), Some(host)) = (window.parent().ok().flatten(), context_origin()) else {
@@ -364,6 +379,228 @@ pub(crate) fn broker_port(iframe: &HtmlIFrameElement, origin: &str, with: &Locat
         &JsValue::from_str(with.effective_branch()),
     );
     let _ = parent.post_message(&request, &host);
+}
+
+/// Whether `did`, the first segment of an app address, names one of the
+/// person's accounts, asked of the profile's origin where sites render at
+/// `pattern`. An account not signed in to is switched to first, so the
+/// profile the app shows is that account's; the frame that asked is then
+/// let go, since the profile renders as the app's site. `answered` hears
+/// `false` for anything else, a space.
+pub fn account(pattern: &str, did: &str, answered: impl FnOnce(bool) + 'static) {
+    connector::account(pattern, did, answered);
+}
+
+/// Whether the person is signed in to an account, asked of the profile's
+/// origin where sites render at `pattern`: what a space the app shows
+/// itself needs before it asks the account for anything.
+pub fn signed_in(pattern: &str, answered: impl FnOnce(bool) + 'static) {
+    connector::signed_in(pattern, answered);
+}
+
+/// The profile's origin, framed unseen by the app's page while it shows a
+/// space itself: only the profile's worker answers a space's worker for the
+/// person's persona, and only a page of its origin opens a port to it. The
+/// frame comes up the first time it is asked something, and answers each
+/// ask by its id.
+mod connector {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::str::FromStr;
+
+    use js_sys::{Object, Reflect};
+    use tonk_host::bridge::profile_with;
+    use tonk_host::location::Location;
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::{JsCast, JsValue};
+    use web_sys::{HtmlIFrameElement, MessageEvent, MessagePort, window};
+
+    use super::{expose_profile_worker, shell_url, site_origin};
+
+    type Answered = Box<dyn FnOnce(&MessageEvent)>;
+
+    struct Connector {
+        iframe: HtmlIFrameElement,
+        origin: String,
+        ready: bool,
+        /// Asked before the frame was ready, to ask once it is.
+        waiting: Vec<(Object, Answered)>,
+        asked: HashMap<u32, Answered>,
+        next: u32,
+    }
+
+    thread_local! {
+        static CONNECTOR: RefCell<Option<Connector>> = const { RefCell::new(None) };
+    }
+
+    /// Have the profile's origin, where sites render at `pattern`, mint a
+    /// port to its worker for `with`, and hand it to `minted`.
+    pub(super) fn mint(pattern: &str, with: &Location, minted: impl FnOnce(MessagePort) + 'static) {
+        let message = said("mint-port");
+        if let Some(space) = with.space() {
+            let _ = Reflect::set(&message, &"repo".into(), &JsValue::from_str(space));
+        }
+        let _ = Reflect::set(
+            &message,
+            &"branch".into(),
+            &JsValue::from_str(with.effective_branch()),
+        );
+        send(pattern, message, move |event: &MessageEvent| {
+            if let Ok(port) = event.ports().get(0).dyn_into::<MessagePort>() {
+                minted(port);
+            }
+        });
+    }
+
+    /// See [`super::account`].
+    pub(super) fn account(pattern: &str, did: &str, answered: impl FnOnce(bool) + 'static) {
+        let message = said("account");
+        let _ = Reflect::set(&message, &"did".into(), &JsValue::from_str(did));
+        send(pattern, message, move |event: &MessageEvent| {
+            let account = Reflect::get(&event.data(), &"account".into())
+                .ok()
+                .and_then(|account| account.as_bool())
+                .unwrap_or(false);
+            if account {
+                close();
+            }
+            answered(account);
+        });
+    }
+
+    /// See [`super::signed_in`].
+    pub(super) fn signed_in(pattern: &str, answered: impl FnOnce(bool) + 'static) {
+        send(pattern, said("signed-in"), move |event: &MessageEvent| {
+            answered(
+                Reflect::get(&event.data(), &"signedIn".into())
+                    .ok()
+                    .and_then(|signed_in| signed_in.as_bool())
+                    .unwrap_or(false),
+            );
+        });
+    }
+
+    fn said(what: &str) -> Object {
+        let message = Object::new();
+        let _ = Reflect::set(&message, &"__tonkOrigin".into(), &JsValue::from_str(what));
+        message
+    }
+
+    fn send(pattern: &str, message: Object, answered: impl FnOnce(&MessageEvent) + 'static) {
+        let answered: Answered = Box::new(answered);
+        CONNECTOR.with_borrow_mut(|connector| {
+            if connector.is_none() {
+                *connector = open(pattern);
+            }
+            let Some(connector) = connector.as_mut() else {
+                tonk_common::log!("site origin: the profile's origin could not be framed");
+                return;
+            };
+            if connector.ready {
+                ask(connector, message, answered);
+            } else {
+                connector.waiting.push((message, answered));
+            }
+        });
+    }
+
+    fn open(pattern: &str) -> Option<Connector> {
+        let profile = Location::from_str(&profile_with()).ok()?;
+        let origin = site_origin(&profile, pattern)?;
+        let document = window()?.document()?;
+        let iframe = document
+            .create_element("iframe")
+            .ok()?
+            .dyn_into::<HtmlIFrameElement>()
+            .ok()?;
+        iframe.set_hidden(true);
+        let _ = iframe.set_attribute("sandbox", "allow-scripts allow-same-origin");
+        let _ = iframe.set_attribute("title", "profile");
+        iframe.set_src(&format!("{}#connector", shell_url(&origin)));
+        hear(&iframe, &origin);
+        // What a passkey ceremony this page runs for the space derived is
+        // the profile's worker's to hear, through this frame.
+        expose_profile_worker(&iframe, &origin);
+        document.body()?.append_child(&iframe).ok()?;
+        Some(Connector {
+            iframe,
+            origin,
+            ready: false,
+            waiting: Vec::new(),
+            asked: HashMap::new(),
+            next: 0,
+        })
+    }
+
+    /// Let the frame go: what it was asked for is no longer the app's to
+    /// ask.
+    fn close() {
+        if let Some(connector) = CONNECTOR.with_borrow_mut(Option::take) {
+            connector.iframe.remove();
+        }
+    }
+
+    fn ask(connector: &mut Connector, message: Object, answered: Answered) {
+        let Some(target) = connector.iframe.content_window() else {
+            return;
+        };
+        let id = connector.next;
+        connector.next += 1;
+        connector.asked.insert(id, answered);
+        let _ = Reflect::set(&message, &"id".into(), &id.into());
+        let _ = target.post_message(&message, &connector.origin);
+    }
+
+    /// What the frame says: that it is ready to be asked, and each answer.
+    /// Heard only from the frame, on the profile's origin.
+    fn hear(iframe: &HtmlIFrameElement, origin: &str) {
+        let Some(window) = window() else {
+            return;
+        };
+        let (iframe, origin) = (iframe.clone(), origin.to_owned());
+        let heard = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
+            let from_frame = iframe
+                .content_window()
+                .zip(event.source())
+                .is_some_and(|(frame, source)| JsValue::from(frame) == JsValue::from(source));
+            if !from_frame || event.origin() != origin {
+                return;
+            }
+            let data = event.data();
+            let said = Reflect::get(&data, &"__tonkOrigin".into())
+                .ok()
+                .and_then(|said| said.as_string());
+            match said.as_deref() {
+                Some("connector-ready") => CONNECTOR.with_borrow_mut(|connector| {
+                    let Some(connector) = connector.as_mut() else {
+                        return;
+                    };
+                    connector.ready = true;
+                    for (message, answered) in std::mem::take(&mut connector.waiting) {
+                        ask(connector, message, answered);
+                    }
+                }),
+                Some("answered") => {
+                    let answered = Reflect::get(&data, &"id".into())
+                        .ok()
+                        .and_then(|id| id.as_f64())
+                        .and_then(|id| {
+                            CONNECTOR.with_borrow_mut(|connector| {
+                                connector
+                                    .as_mut()
+                                    .and_then(|connector| connector.asked.remove(&(id as u32)))
+                            })
+                        });
+                    if let Some(answered) = answered {
+                        answered(&event);
+                    }
+                }
+                _ => {}
+            }
+        });
+        let _ = window.add_event_listener_with_callback("message", heard.as_ref().unchecked_ref());
+        heard.forget();
+    }
 }
 
 /// A frame this page keeps, unseen, on the origin of a space that is not on

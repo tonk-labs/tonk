@@ -4,11 +4,11 @@ use super::{
     create_invite::{RemoteRequirement, generate_ephemeral, resolve_remote_url},
 };
 use crate::{TonkState, TonkWorkerError, axum::RequestOrigin};
+#[cfg(feature = "persona")]
 use axum::{
     Json,
     extract::{Path, State},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_capability::{
     Subject,
     access::{Access, Prove},
@@ -21,12 +21,12 @@ use dialog_ucan::{Ucan, UcanDelegation};
 use dialog_ucan_core::{DelegationBuilder, DelegationChain, time::Timestamp};
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_invite::connection::{
     AgentInvite, DEFAULT_GRANT_TTL_SECONDS, SpaceGrantBundle, candidate_build_scopes, grant_set_id,
     require_grant_deadline,
 };
+#[cfg(feature = "persona")]
+use tonk_macros::handler;
 use tonk_schema::{AgentGrantGroup, AgentGrantRevocation, agent_connection as fields};
 use tonk_worker_api::{
     AgentConnectionInviteResponse, AgentConnectionSummary, AgentConnectionTarget,
@@ -268,22 +268,6 @@ pub(crate) async fn mint(
             ));
         }
     };
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if super::repository::remote_is_own_service(&tonk, remote.as_str()).await
-        && !super::customer::space_provider_recorded(&tonk, &subject).await
-    {
-        match super::repository::provision_space_consumer(&tonk, &subject).await {
-            Ok(()) => {}
-            Err(error @ TonkWorkerError::Upstream { .. })
-                if !super::customer::is_retryable(&error) =>
-            {
-                return Err(error);
-            }
-            // Shared-space members can lack the owner's billing credential.
-            // Only a terminal service response establishes refusal.
-            Err(error) => tonk_common::log!("agent invitation provisioning skipped: {error}"),
-        }
-    }
     let now = Timestamp::now();
     let expires = Timestamp::try_from((now.to_unix() + DEFAULT_GRANT_TTL_SECONDS) as i128)
         .map_err(failure)?;
@@ -686,7 +670,8 @@ fn reported_installations(
         .collect()
 }
 
-#[wasm_compat]
+#[cfg(feature = "persona")]
+#[handler]
 pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<AgentConnectionSummary>>, TonkWorkerError> {
@@ -702,6 +687,7 @@ pub async fn list(
 // The ordinary invitation publisher requires `/` over the space. A member
 // holding `/use` can withdraw their own issued leaf without gaining that right:
 // sign as its issuer, or delegate the account's withdrawal of its witnessed path.
+#[cfg(feature = "persona")]
 async fn publish_target(
     tonk: &TonkState,
     group: &PublicGroup,
@@ -746,7 +732,8 @@ async fn publish_target(
     Ok(receipt)
 }
 
-#[wasm_compat]
+#[cfg(feature = "persona")]
+#[handler]
 pub async fn revoke(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -775,6 +762,7 @@ pub async fn revoke(
     Ok(Json(result))
 }
 
+#[cfg(feature = "persona")]
 async fn revoke_group<F, Fut>(
     tonk: &TonkState,
     group: &PublicGroup,
@@ -1437,118 +1425,5 @@ mod tests {
         drop(reopened);
         std::fs::remove_dir_all(directory)?;
         Ok(())
-    }
-}
-
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod elsewhere_tests {
-    use std::sync::atomic::Ordering;
-
-    use js_sys::{Array, Function, Reflect};
-    use wasm_bindgen::JsValue;
-
-    use super::*;
-
-    const SUBJECT: &str = "did:key:z6MkiEQKV5qNCggaAfPDQ6E85p5K4pHuVHt7Maj466QrCkMD";
-
-    /// Stand in for the space's worker: answers a query for installation
-    /// receipts with `receipts`, any other with nothing, and keeps what it
-    /// was asked in `tonkAsked`.
-    fn answer_for_the_space(receipts: &str) {
-        let hook = Function::new_with_args(
-            "space, method, path, body",
-            &format!(
-                r#"
-                (globalThis.tonkAsked ??= []).push([space, method, path].join(" "));
-                const rows = body.includes("agent-installation") ? {receipts:?} : "[]";
-                return Promise.resolve({{ status: 200, body: rows }});
-                "#
-            ),
-        );
-        Reflect::set(&js_sys::global(), &"tonkAskSpace".into(), &hook).unwrap();
-        Reflect::set(&js_sys::global(), &"tonkAsked".into(), &Array::new()).unwrap();
-    }
-
-    fn asked() -> Vec<String> {
-        let asked = Reflect::get(&js_sys::global(), &"tonkAsked".into()).unwrap();
-        Array::from(&asked)
-            .iter()
-            .filter_map(|entry| entry.as_string())
-            .collect()
-    }
-
-    fn group() -> PublicGroup {
-        PublicGroup {
-            terminal_request: None,
-            version: 1,
-            id: "a".repeat(64),
-            account: SUBJECT.into(),
-            repo: SUBJECT.trim_start_matches("did:key:").into(),
-            subject: SUBJECT.into(),
-            recipient: SUBJECT.into(),
-            label: "tool".into(),
-            remote: String::new(),
-            issued_at: 0,
-            chains: Vec::new(),
-        }
-    }
-
-    /// A profile that holds none of a space's content learns whether a tool
-    /// connected from the worker that does hold it.
-    #[dialog_common::test]
-    async fn it_asks_the_spaces_worker_whether_a_connection_was_confirmed() {
-        let tonk = crate::router::tests::test_state().await;
-        tonk.site_origins.store(true, Ordering::Relaxed);
-        let group = group();
-        let installation = "0123456789abcdef0123456789abcdef";
-        let receipt = serde_json::json!([{
-            "this": format!("id:tonk:agent-installation:{}:{installation}", group.id),
-            "fields": { "installation": installation, "name": "Codex" }
-        }])
-        .to_string();
-        answer_for_the_space(&receipt);
-
-        let setup = confirmation(&tonk, &group)
-            .await
-            .expect("the space answers");
-
-        Reflect::set(
-            &js_sys::global(),
-            &"tonkAskSpace".into(),
-            &JsValue::UNDEFINED,
-        )
-        .unwrap();
-        assert!(setup.confirmed);
-        assert_eq!(setup.installations.len(), 1);
-        assert_eq!(setup.installations[0].name, "Codex");
-        let path = format!("POST /api/repository/{}/branch/main/query", group.repo);
-        assert_eq!(
-            asked(),
-            [
-                format!("{} {path}", group.repo),
-                format!("{} {path}", group.repo)
-            ],
-            "both questions go to the space's own worker"
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_reports_no_confirmation_when_the_space_has_none() {
-        let tonk = crate::router::tests::test_state().await;
-        tonk.site_origins.store(true, Ordering::Relaxed);
-        answer_for_the_space("[]");
-
-        let setup = confirmation(&tonk, &group())
-            .await
-            .expect("the space answers");
-
-        Reflect::set(
-            &js_sys::global(),
-            &"tonkAskSpace".into(),
-            &JsValue::UNDEFINED,
-        )
-        .unwrap();
-        assert!(!setup.confirmed);
-        assert!(setup.installations.is_empty());
     }
 }

@@ -96,99 +96,18 @@ impl Command for AddPasskey {
     type Output = ();
 }
 
-/// Ask whether an address is already registered, so the form can route
-/// before anyone runs a ceremony.
-///
-/// Answers on the overlay as [`crate::EmailStatus`], not in a response
-/// body: the form subscribes to that row and renders the branch it
-/// names. Asserted as the user types, which is why the answer is
-/// overlay-only.
-///
-/// Creating an account with an address that already has one runs the
-/// whole WebAuthn ceremony and fails at the end, leaving an orphan
-/// passkey in the authenticator. Asking first is what avoids that.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CheckEmail {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The address to look up.
-    pub email: crate::domain::command::current::check_email::Email,
-}
-
-impl From<legacy::CheckEmail> for CheckEmail {
-    fn from(legacy: legacy::CheckEmail) -> Self {
-        Self {
-            email: crate::domain::command::current::check_email::Email(legacy.email.0),
-            this: legacy.this,
-        }
-    }
-}
-
-impl Command for CheckEmail {
-    type Input = Self;
-    type Output = ();
-}
-
-/// Raise the panel that adds an account to this profile.
-///
-/// The panel is views of the [`crate::registration`] stages, so raising
-/// it is recording its first stage.
+/// Ask the host to sign the person in: the provisional persona asks to
+/// merge into the persona they sign in as, and the host asks them who they
+/// are.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
-pub struct OpenRegistration {
+pub struct SignIn {
     /// The command entity, minted per invocation.
     pub this: Entity,
     /// The activation's timestamp, so each click is its own command.
-    pub time: crate::domain::command::current::open_registration::Time,
+    pub time: crate::domain::command::current::sign_in::Time,
 }
 
-impl Command for OpenRegistration {
-    type Input = Self;
-    type Output = ();
-}
-
-/// Go on with the address typed into the panel: name a new account for a
-/// free address, or log in to the one an address already has.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct StartRegistration {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The address given.
-    pub email: crate::domain::command::current::start_registration::Email,
-}
-
-impl Command for StartRegistration {
-    type Input = Self;
-    type Output = ();
-}
-
-/// Create the account for a free address, with a new passkey the page is
-/// asked to make.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CreateAccount {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The account's address.
-    pub email: crate::domain::command::current::create_account::Email,
-    /// What to call the account.
-    pub name: crate::domain::command::current::create_account::Name,
-}
-
-impl Command for CreateAccount {
-    type Input = Self;
-    type Output = ();
-}
-
-/// Log in with a passkey the person picks: the page asks the browser for
-/// any passkey this site has, and the one picked names the account.
-#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
-pub struct LogIn {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The activation's timestamp, so each click is its own command.
-    pub time: crate::domain::command::current::log_in::Time,
-}
-
-impl Command for LogIn {
+impl Command for SignIn {
     type Input = Self;
     type Output = ();
 }
@@ -209,34 +128,6 @@ pub struct ActivateAccount {
 }
 
 impl Command for ActivateAccount {
-    type Input = Self;
-    type Output = ();
-}
-
-/// Raise the panel that signs this browser in through another Tonk.
-#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
-pub struct OpenSignInVia {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The activation's timestamp, so each click is its own command.
-    pub time: crate::domain::command::current::open_sign_in_via::Time,
-}
-
-impl Command for OpenSignInVia {
-    type Input = Self;
-    type Output = ();
-}
-
-/// Put the panel away, wherever it got to.
-#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
-pub struct DismissRegistration {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The activation's timestamp, so each click is its own command.
-    pub time: crate::domain::command::current::dismiss_registration::Time,
-}
-
-impl Command for DismissRegistration {
     type Input = Self;
     type Output = ();
 }
@@ -523,6 +414,26 @@ pub struct RecordInvite {
 }
 
 impl Command for RecordInvite {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Record, in a space, a publication of it that the person's profile
+/// minted: the invitation to the public principal, of the `public` kind,
+/// and the delegation retained so making the space private again revokes
+/// it. As with [`RecordInvite`], the profile holds the authority and signs,
+/// and the space's own worker writes what the publication leaves in the
+/// space. It fires on the space's own branch and records for that space
+/// only.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RecordPublication {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The delegation chain the publication grants.
+    pub proof: crate::domain::command::current::record_publication::Proof,
+}
+
+impl Command for RecordPublication {
     type Input = Self;
     type Output = ();
 }
@@ -1131,7 +1042,7 @@ impl Command for EnrollCustomer {
 /// self-subjected `/customer/resend` invocation with its own device key.
 /// Deliberately NOT a re-enrollment — that path runs a passkey ceremony
 /// the person waiting on an email never asked for.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct ResendActivation {
     /// The command entity (a fresh id per press).
     pub this: Entity,

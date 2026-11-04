@@ -11,6 +11,10 @@ path = "src/bin/hosted.rs"
 required-features = ["native-host"]
 
 [features]
+default = ["persona"]
+# The person's own worker: their profile, their account, and what they do
+# across spaces. Without it, only what a space's own worker serves.
+persona = []
 native-host = ["axum/tokio", "axum/http1", "tokio/net", "tokio/rt-multi-thread", "tokio/macros", "tokio/signal"]
 # Local opt-in until a compatible CLI is published.
 connection-invites = []
@@ -25,6 +29,7 @@ web-integration-tests = []
 helpers = ["dep:tower"]
 
 [dependencies]
+tonk-macros = { workspace = true }
 sha2_0_10 = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true, features = ["json", "macros", "query"] }
@@ -33,9 +38,7 @@ base64 = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
-axum-wasm-macros = { workspace = true }
 bs58 = { workspace = true }
-console_error_panic_hook = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 dialog-artifacts = { workspace = true }
@@ -58,14 +61,11 @@ futures-util = { workspace = true }
 hex = { workspace = true }
 http-body-util = { workspace = true }
 ipld-core = { workspace = true }
-js-sys = { workspace = true }
 lsp-types = { workspace = true }
-rand = { workspace = true }
 send_wrapper = { workspace = true }
 serde = { workspace = true }
 serde_ipld_dagcbor = { workspace = true }
 serde_json = { workspace = true }
-serde-wasm-bindgen = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true, features = ["sync"] }
@@ -86,61 +86,20 @@ tonk-worker-api = { workspace = true }
 tower-service = { workspace = true }
 tower = { workspace = true, optional = true }
 url = { workspace = true }
-wasm-bindgen = { workspace = true }
-wasm-bindgen-futures = { workspace = true }
-wasm-streams = { workspace = true }
-web-sys = { workspace = true, features = [
-    "AbortController",
-    "AbortSignal",
-    "Blob",
-    "BroadcastChannel",
-    "Cache",
-    "CacheQueryOptions",
-    "CacheStorage",
-    "Client",
-    "ClientQueryOptions",
-    "ClientType",
-    "Clients",
-    "FrameType",
-    "CryptoKey",
-    "ExtendableEvent",
-    "ExtendableMessageEvent",
-    "FetchEvent",
-    "Headers",
-    "ReadableStream",
-    "MessageChannel",
-    "MessageEvent",
-    "MessagePort",
-    "Request",
-    "RequestCache",
-    "RequestCredentials",
-    "RequestInit",
-    "RequestMode",
-    "RequestRedirect",
-    "Response",
-    "ResponseInit",
-    "ResponseType",
-    "ServiceWorker",
-    "ServiceWorkerGlobalScope",
-    "ServiceWorkerRegistration",
-    "VisibilityState",
-    "WindowClient",
-    "WorkerGlobalScope",
-    "WorkerLocation",
-    "WorkerNavigator",
-] }
 web-time = { workspace = true }
+# The files library documents include, compiled in: a worker seeds the
+# library from compiled-in copies.
+tonk-library = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 reqwest = { workspace = true }
-# The files library documents include, compiled in: a native worker seeds
-# the library from compiled-in copies, with no served `/library/` to
-# fetch from.
-tonk-library = { workspace = true }
 
+# A kernel on WASI: the component's own async runtime, for work a handler
+# starts and does not wait on; the session a kernel acts as, and how the
+# person's profile hands a space's host the key of its session.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { workspace = true, features = ["wasm_js"] }
-getrandom_0_3 = { workspace = true }
+wit-bindgen = { workspace = true }
+tonk-kernel-world = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 axum = { workspace = true, features = ["tokio", "http1"] }
@@ -156,7 +115,6 @@ tonk-access-service = { workspace = true, features = ["helpers"] }
 tonk-fab = { path = "../tonk-fab" }
 tonk-inspector = { workspace = true }
 tower = { workspace = true }
-wasm-bindgen-test = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

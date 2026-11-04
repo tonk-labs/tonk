@@ -31,14 +31,12 @@ use ::axum::{
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::{ArtifactSelector, Entity, Relation, Value};
 use dialog_repository::RepositoryExt as _;
 use futures_util::StreamExt;
 use serde::Deserialize;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_macros::handler;
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -188,7 +186,7 @@ fn wrap_html_body(body: &str) -> String {
 /// a bare entity defaults to `text/html`. The selected MIME is
 /// used both as the claim's `the` attribute and as the
 /// response's `Content-Type`.
-#[wasm_compat]
+#[handler]
 pub async fn guest(
     State(state): State<AppState>,
     Path(params): Path<GuestPath>,
@@ -233,8 +231,6 @@ pub async fn guest(
     // Stamp the self-identity overlay so the topbar chip can render the
     // member's sigil + name immediately on space open, before the first
     // sync-status sweep arrives.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    crate::router::sync::publish_self_identity(&tonk, &params.repo, &params.branch).await;
 
     let repo = tonk
         .profile

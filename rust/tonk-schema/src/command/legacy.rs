@@ -85,25 +85,6 @@ pub struct CreateSpace {
     pub name: SpaceName,
 }
 
-/// Ask whether an address is already registered, so the form can route
-/// before anyone runs a ceremony.
-///
-/// Answers on the overlay as [`crate::EmailStatus`], not in a response
-/// body: the form subscribes to that row and renders the branch it
-/// names. Asserted as the user types, which is why the answer is
-/// overlay-only.
-///
-/// Creating an account with an address that already has one runs the
-/// whole WebAuthn ceremony and fails at the end, leaving an orphan
-/// passkey in the authenticator. Asking first is what avoids that.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CheckEmail {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The address to ask about, read from the form's `email` input.
-    pub email: crate::domain::command::email::Value,
-}
-
 /// `tonk:add-passkey`: seal the account under a second passkey.
 ///
 /// The worker asks the page for both ceremonies — the passkey that

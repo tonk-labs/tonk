@@ -25,29 +25,11 @@
                 }
             })();
         </script>
-        <!-- Rewritten alongside service_worker.js at post-build. This is the
-             worker API generation this DOCUMENT was emitted against; unlike
-             /version.json it never changes during the document's lifetime. -->
-        <meta name="tonk-worker-build" content="dev" />
         <!-- Identity of this document's own resources, excluding the guest
              runtime and library data. When a new worker reports the same
              page build, this document keeps running and remounts its guests
              instead of reloading. -->
         <meta name="tonk-page-build" content="dev" />
-        <script>
-            (() => {
-                const build = document.querySelector(
-                    'meta[name="tonk-worker-build"]',
-                )?.content;
-                // `dev` deliberately remains unstamped: the worker uses the
-                // same placeholder but the production wire format is exactly
-                // 16 lowercase hex characters. The post-build step replaces
-                // the meta value before anything can be deployed.
-                if (/^[0-9a-f]{16}$/.test(build || "")) {
-                    globalThis.tonkBuild = build;
-                }
-            })();
-        </script>
         <!-- Tell the browser to render native chrome (scrollbars, form
        controls, etc.) in either mode — the actual mode is selected
        reactively by the script below based on the OS preference. -->
@@ -307,27 +289,14 @@
             data-wasm-opt="z"
             data-initializer="assets/boot-progress.mjs"
         />
-        <link
-            data-trunk
-            rel="rust"
-            data-bin="worker"
-            data-cargo-profile-release="wasm-worker-release"
-            data-type="worker"
-            data-bindgen-target="web"
-            data-wasm-opt="z"
-        />
 
         <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
-        <!-- Served on every space origin: its shell, and its worker, which
-             is the bootloader. `release.js` is what the publisher bundles
-             into the release the bootloader loads. `space_worker.js` is
-             where a site's worker was registered before, and retires one
-             still registered there. -->
+        <!-- Served on every site's origin: its shell, and its worker, which
+             hosts the kernel the site runs, with the relay its pages load. -->
         <link data-trunk rel="copy-file" href="./assets/space.html" />
         <link data-trunk rel="copy-file" href="./assets/profile.html" />
-        <link data-trunk rel="copy-file" href="./assets/boot.js" />
-        <link data-trunk rel="copy-file" href="./assets/release.js" />
-        <link data-trunk rel="copy-file" href="./assets/space_worker.js" />
+        <link data-trunk rel="copy-file" href="./assets/kernel_boot.js" />
+        <link data-trunk rel="copy-file" href="./assets/kernel/relay.js" data-target-path="kernel" />
         <!-- What a site's shell runs before the element runtime: the bridge
              to the page around it, the loader of that runtime, and the
              preview capture. Named by their content in the guest manifest
@@ -335,6 +304,9 @@
         <link data-trunk rel="copy-file" href="../tonk-portal/src/bootstrap.js" data-target-path="guest" />
         <link data-trunk rel="copy-file" href="../tonk-portal/src/runtime_bootstrap.js" data-target-path="guest" />
         <link data-trunk rel="copy-file" href="../tonk-portal/src/preview_capture.js" data-target-path="guest" />
+        <!-- The page a space answers a page load with, which a space's kernel
+             copies with the rest of the renderer when the space is created. -->
+        <link data-trunk rel="copy-file" href="../tonk-kernel/assets/page.html" data-target-path="guest" />
         <link
             data-trunk
             rel="copy-file"

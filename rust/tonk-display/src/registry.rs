@@ -31,17 +31,18 @@
 //!    method, and a wholesale swap alike through to instances already
 //!    on the page.
 //!
-//! Each frame re-reads rather than merging the delta it was handed: a
-//! subscription is used as a change notification, and the truth comes
-//! from a fresh read. Method dictionaries are small, and it keeps this
-//! code from having to agree with the wire's delta shape.
+//! A subscription's first frame is a snapshot of its query, and that is
+//! what the registry reads. A later frame, a delta, is used as a change
+//! notification instead: the stream it came on is read afresh, which keeps
+//! this code from having to agree with the wire's delta shape. So a tag
+//! costs its five subscriptions and nothing more until something changes.
 //!
 //! A tag that resolves to nothing is left alone — the element stays
 //! inert, exactly as before it announced — but its subscriptions stay
 //! open, which is what makes "define it later" work.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use js_sys::Reflect;
@@ -78,6 +79,13 @@ struct Watch {
     /// The entity the tag currently names, so a name frame that does
     /// not actually move it does not churn the methods subscription.
     entity: Option<String>,
+    /// What each of the entity's dictionaries holds, as its stream last
+    /// said: the definition the module is rendered from.
+    definition: ElementDefinition,
+    /// The dictionaries whose streams have said what they hold. The module
+    /// is first rendered once every one has, so an element is defined once
+    /// with all of it rather than again as each part arrives.
+    reported: BTreeSet<String>,
     /// The last module source applied, so an unchanged frame does not
     /// re-run every instance's `connected`.
     applied: Option<String>,
@@ -191,6 +199,8 @@ async fn watch(source: &Element, tag: &str) {
         _name: None,
         dictionaries: Vec::new(),
         entity: None,
+        definition: ElementDefinition::default(),
+        reported: BTreeSet::new(),
         applied: None,
     }));
     WATCHED.with(|watched| {
@@ -203,7 +213,8 @@ async fn watch(source: &Element, tag: &str) {
 
     // Subscribe to the NAME first and keep it open even when it
     // resolves to nothing: that open subscription is what turns "this
-    // tag has no definition" into "not yet".
+    // tag has no definition" into "not yet". Its first frame says what
+    // the name means now.
     let Ok(body) = serde_wasm_bindgen::to_value(&name_query(tag)) else {
         return;
     };
@@ -215,31 +226,29 @@ async fn watch(source: &Element, tag: &str) {
             );
         }
     }
-
-    // Resolve once now rather than waiting to be told. A host may or
-    // may not open a subscription with a frame carrying current state;
-    // depending on that would make first registration a race against a
-    // detail of the transport. From here on the subscription carries
-    // changes, which is all it is needed for.
-    refresh(tag, "name").await;
 }
 
 /// Attach the `reset` / `update` / `error` methods the host calls on a
-/// consumer. Every frame means the same thing here — something under
-/// this tag changed — so all three route to one re-read.
+/// consumer. A `reset` carries the stream's rows, which are read as they
+/// are; an `update` says only that the stream changed, so it is read
+/// afresh.
 fn install_frame_handlers(consumer: &Element, tag: &str) {
     for method in ["reset", "update"] {
         let tag = tag.to_owned();
-        let handler = Closure::<dyn Fn(JsValue, JsValue)>::new(move |_payload, opts: JsValue| {
-            let stream = Reflect::get(&opts, &"tag".into())
-                .ok()
-                .and_then(|value| value.as_string())
-                .unwrap_or_default();
-            let tag = tag.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                refresh(&tag, &stream).await;
+        let handler =
+            Closure::<dyn Fn(JsValue, JsValue)>::new(move |payload: JsValue, opts: JsValue| {
+                let stream = Reflect::get(&opts, &"tag".into())
+                    .ok()
+                    .and_then(|value| value.as_string())
+                    .unwrap_or_default();
+                let rows = (method == "reset")
+                    .then(|| payload.dyn_into::<js_sys::Array>().ok())
+                    .flatten();
+                let tag = tag.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    refresh(&tag, &stream, rows).await;
+                });
             });
-        });
         let _ = Reflect::set(consumer, &method.into(), handler.as_ref().unchecked_ref());
         handler.forget();
     }
@@ -263,28 +272,38 @@ fn install_frame_handlers(consumer: &Element, tag: &str) {
     on_error.forget();
 }
 
-/// Re-read after a frame on `stream` and apply whatever is current.
-async fn refresh(tag: &str, stream: &str) {
+/// Apply a frame on `stream`: its `rows` where it carries them, or else what
+/// a fresh read of that stream says.
+async fn refresh(tag: &str, stream: &str, rows: Option<js_sys::Array>) {
     let Some(watch) = WATCHED.with(|watched| watched.borrow().get(tag).map(Rc::clone)) else {
         return;
     };
     let consumer = watch.borrow().consumer.clone();
 
     if stream == "name" {
-        let entity = named_entity(&consumer, tag).await;
+        let entity = match rows {
+            Some(rows) => first_field(&rows, "entity"),
+            None => named_entity(&consumer, tag).await,
+        };
         let unchanged = watch.borrow().entity == entity;
         if unchanged {
             return;
         }
-        watch.borrow_mut().entity = entity.clone();
-        // Drop the old streams before opening the new ones: the tag now
-        // means something else, and frames from the old entity would
-        // otherwise keep re-registering it.
-        watch.borrow_mut().dictionaries.clear();
-        watch.borrow_mut().applied = None;
+        {
+            let mut watch = watch.borrow_mut();
+            watch.entity = entity.clone();
+            // Drop the old streams before opening the new ones: the tag
+            // now means something else, and frames from the old entity
+            // would otherwise keep re-registering it.
+            watch.dictionaries.clear();
+            watch.definition = ElementDefinition::default();
+            watch.reported.clear();
+            watch.applied = None;
+        }
         let Some(entity) = entity else {
             return;
         };
+        // Each stream's first frame brings what its dictionary holds.
         for (field, domain) in ELEMENT_DICTIONARIES {
             let Some(body) = dictionary_query(&entity, field, domain) else {
                 continue;
@@ -295,32 +314,69 @@ async fn refresh(tag: &str, stream: &str) {
                     web_sys::console::warn_1(
                         &format!("<{tag}>: {field} subscription failed: {}", error.message).into(),
                     );
+                    // A stream that will say nothing reads as declaring
+                    // none, so the rest still define the element.
+                    Box::pin(refresh(tag, field, Some(js_sys::Array::new()))).await;
                 }
             }
         }
-        // Same reason as the name hop: read now rather than waiting for
-        // the subscriptions to volunteer. One re-read covers every
-        // dictionary, since the module is rendered from all of them.
-        Box::pin(refresh(tag, "method")).await;
         return;
     }
 
     let Some(entity) = watch.borrow().entity.clone() else {
         return;
     };
-    // Any stream re-reads every dictionary: the module is rendered
-    // from all of them together, and `applied` below is what keeps the
-    // extra reads from costing a re-registration.
-    let definition = definition_of(&consumer, &entity).await;
-    if definition.methods.is_empty() {
+    let Some(domain) = ELEMENT_DICTIONARIES
+        .iter()
+        .find(|(field, _)| *field == stream)
+        .map(|(_, domain)| *domain)
+    else {
         return;
-    }
-    let source = element_module(tag, &definition);
-    let already = watch.borrow().applied.as_deref() == Some(source.as_str());
-    if already {
-        return;
-    }
-    watch.borrow_mut().applied = Some(source.clone());
+    };
+    let rows = match rows {
+        Some(rows) => rows,
+        None => {
+            let Some(body) = dictionary_query(&entity, stream, domain) else {
+                return;
+            };
+            match consumer::query(&consumer, &body)
+                .await
+                .map(JsCast::dyn_into)
+            {
+                Ok(Ok(rows)) => rows,
+                _ => return,
+            }
+        }
+    };
+    let entries = dictionary_of(&rows, stream);
+    let source = {
+        let mut watch = watch.borrow_mut();
+        let definition = &mut watch.definition;
+        match stream {
+            "method" => definition.methods = entries,
+            "attribute" => definition.attributes = entries,
+            "getter" => definition.getters = entries,
+            "setter" => definition.setters = entries,
+            // Unreachable while the list and this match agree; a new
+            // dictionary added to one and not the other reads as
+            // "declares none" rather than as a panic in a browser.
+            _ => {}
+        }
+        watch.reported.insert(stream.to_owned());
+        if watch.reported.len() < ELEMENT_DICTIONARIES.len() {
+            return;
+        }
+        let definition = &watch.definition;
+        if definition.methods.is_empty() {
+            return;
+        }
+        let source = element_module(tag, definition);
+        if watch.applied.as_deref() == Some(source.as_str()) {
+            return;
+        }
+        watch.applied = Some(source.clone());
+        source
+    };
     if let Some(document) = consumer.owner_document() {
         // Keyed by tag, not by content hash: a definition reverted to
         // one already seen must still take effect.
@@ -356,50 +412,13 @@ fn dictionary_query(entity: &str, field: &str, domain: &str) -> Option<JsValue> 
     serde_wasm_bindgen::to_value(&query).ok()
 }
 
-/// Hop two: every dictionary the entity carries, each folded to
-/// `(key, value)` in key order.
-///
-/// A dictionary an element declares none of reads empty, which is the
-/// common case for all but `method` and is not an error.
-async fn definition_of(consumer: &Element, entity: &str) -> ElementDefinition {
-    let mut out = ElementDefinition::default();
-    for (field, domain) in ELEMENT_DICTIONARIES {
-        let Some(body) = dictionary_query(entity, field, domain) else {
-            continue;
-        };
-        let entries = dictionary_of(consumer, &body, field).await;
-        match *field {
-            "method" => out.methods = entries,
-            "attribute" => out.attributes = entries,
-            "getter" => out.getters = entries,
-            "setter" => out.setters = entries,
-            // Unreachable while the list and this match agree; a new
-            // dictionary added to one and not the other reads as
-            // "declares none" rather than as a panic in a browser.
-            _ => {}
-        }
-    }
-    out
-}
-
-/// Run `body` and fold `field` — a keyed dictionary — out of the
-/// response.
+/// Fold `field`, a keyed dictionary, out of a dictionary query's `rows`.
 ///
 /// A dictionary query answers one flat row per ENTRY, each carrying a
 /// one-entry `{key: value}` map under the field, so reading the first
 /// row would see one entry and call it the whole map. Merge them.
-async fn dictionary_of(
-    consumer: &Element,
-    body: &JsValue,
-    field: &str,
-) -> BTreeMap<String, String> {
+fn dictionary_of(rows: &js_sys::Array, field: &str) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
-    let Ok(rows) = consumer::query(consumer, body).await else {
-        return out;
-    };
-    let Ok(rows) = rows.dyn_into::<js_sys::Array>() else {
-        return out;
-    };
     for row in rows.iter() {
         let Ok(fields) = Reflect::get(&row, &"fields".into()) else {
             continue;
@@ -579,7 +598,9 @@ mod tests {
                 return;
             }
             // A subscription handle with a no-op cancel is all the
-            // consumer contract requires; frames are pushed by `notify`.
+            // consumer contract requires. Its first frame is a snapshot of
+            // the query, as the host opens every subscription with; later
+            // frames are pushed by `notify`.
             let subscription = js_sys::Object::new();
             let _ = Reflect::set(
                 &subscription,
@@ -588,6 +609,20 @@ mod tests {
             );
             let _ = Reflect::set(&detail, &"subscription".into(), &subscription);
             event.prevent_default();
+            let consumer = event.target();
+            let opts = js_sys::Object::new();
+            if let Ok(tag) = Reflect::get(&detail, &"tag".into()) {
+                let _ = Reflect::set(&opts, &"tag".into(), &tag);
+            }
+            let rows = answer(&body);
+            wasm_bindgen_futures::spawn_local(async move {
+                let Some(consumer) = consumer else { return };
+                if let Ok(reset) = Reflect::get(&consumer, &"reset".into())
+                    && let Ok(reset) = reset.dyn_into::<js_sys::Function>()
+                {
+                    let _ = reset.call2(&consumer, &rows, &opts);
+                }
+            });
         });
         let _ = document().add_event_listener_with_callback(
             tonk_host::events::SUBSCRIBE,
@@ -1055,6 +1090,38 @@ mod tests {
             runs(),
             1.0,
             "an unchanged definition must not re-run the hook",
+        );
+    }
+
+    /// An element whose dictionaries arrive on streams of their own is
+    /// defined once, with all of them: a definition from the methods alone,
+    /// replaced as its defaults arrive, would run its hooks twice.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_defines_an_element_once_with_every_dictionary() {
+        define_with_defaults(
+            "probe-once",
+            "did:key:zOnce",
+            &[(
+                "connected",
+                "(self) => { globalThis.__onceRuns = (globalThis.__onceRuns || 0) + 1; \
+                 self.dataset.tone = self.getAttribute('tone'); }",
+            )],
+            &[("tone", "warm")],
+        );
+        let host = render("probe-once").await;
+        let runs = || {
+            Reflect::get(&js_sys::global(), &"__onceRuns".into())
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+        };
+        settle_until(|| runs() >= 1.0).await;
+        settle_briefly().await;
+        assert_eq!(runs(), 1.0, "it is defined once");
+        assert_eq!(
+            host.get_attribute("data-tone").as_deref(),
+            Some("warm"),
+            "with its defaults from the start",
         );
     }
 

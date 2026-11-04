@@ -18,10 +18,8 @@
 use ::axum::Json;
 use ::axum::extract::{Request, State};
 use ::axum::http::HeaderMap;
-use axum_wasm_macros::wasm_compat;
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
+use tonk_macros::handler;
 
 use super::{AppState, ClientId};
 use crate::TonkWorkerError;
@@ -198,7 +196,7 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
 /// it is GC-able (the SW can reconcile against live clients) and needs no minted
 /// uuid. Idempotent — re-calling on navigation supersedes the cardinality-one
 /// fields in place.
-#[wasm_compat]
+#[handler]
 pub async fn register_site(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -242,7 +240,7 @@ pub struct SiteRequest {
 /// against that branch's route table. Unlike [`register_site`], the branch comes
 /// from the request URL (like `/query` and `/transact`), not from parsing the
 /// document path — so the SW does no document-path routing here.
-#[wasm_compat]
+#[handler]
 pub async fn register_site_on_repo(
     State(state): State<AppState>,
     ::axum::extract::Path(path): ::axum::extract::Path<crate::router::transact::TransactPath>,
@@ -262,7 +260,7 @@ pub async fn register_site_on_repo(
     // route that addresses a space by key.
     match super::adopt::ensure_space_mounted(&tonk, &path.repo).await {
         Ok(true) => {
-            super::adopt::schedule_seed_upgrade(&tonk, state.clone(), &path.repo).await;
+            super::adopt::schedule_seed_upgrade(&tonk, &path.repo).await;
         }
         Ok(false) => {}
         Err(error) => {
@@ -289,7 +287,7 @@ pub async fn register_site_on_repo(
 /// [`register_site_on_repo`] for the profile's own repository, which that
 /// route hands a request naming it: the site is stamped as the profile's,
 /// under the profile's name.
-#[wasm_compat]
+#[handler]
 async fn register_site_on_profile(
     State(state): State<AppState>,
     ::axum::extract::Path(path): ::axum::extract::Path<
@@ -450,14 +448,11 @@ async fn stamp_site_on(tonk: &crate::worker::TonkState, client: ClientId, stamp:
         );
         return;
     };
-    let matched = match match_route(tonk, &state, rest).await {
-        Some(Matched::View(matched)) => matched,
-        // A path answered with content is not a page to show in place: the
-        // worker answers a request for it, and there is no model to mount.
-        Some(Matched::Http(_)) => {
-            tonk_common::log!("[stamp] {site} SKIPPED: rest={rest:?} answers with content");
-            return;
-        }
+    // Only the routes a page shows: a route answered with content at the
+    // same path, such as the page a space's `/` answers a load with, is what
+    // the request got, not what the page shows.
+    let matched = match match_view(tonk, &state, rest).await {
+        Some(matched) => matched,
         None => {
             tonk_common::log!("[stamp] {site} SKIPPED: no route match for rest={rest:?}");
             return;
@@ -558,36 +553,11 @@ async fn stamp_site_on(tonk: &crate::worker::TonkState, client: ClientId, stamp:
     }
 }
 
-/// Build a raw claim stamping a captured route param as a `xyz.tonk.site/{name}`
-/// fact on the site entity, in the value type the route model's field expects so
-/// the field's typed query resolves it. Returns `None` only if the attribute name
-/// is malformed.
-///
-/// The value type is keyed by param name to match the route models in the
-/// standard library: `entity` is an `as: entity` field (stored [`Value::Entity`]);
-/// `model` and `view` are `as: text` fields (stored [`Value::String`]). This is
-/// the interim before descriptor-driven typing — once `match_route` resolves each
-/// route model's field descriptors (and threads the `as:` types through
-/// `tonk_router::Route::with_types`), the value type comes from the field itself
-/// and this name table goes away. An unknown param name defaults to string.
-/// Percent-decode a captured route param using the browser's own
-/// `decodeURIComponent`, so URL-encoded links round-trip to the same value the
-/// raw form would (`did%3Akey%3Az…` → `did:key:z…`). On a malformed escape the
-/// raw value is returned unchanged.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn percent_decode(value: &str) -> String {
-    js_sys::decode_uri_component(value)
-        .ok()
-        .and_then(|decoded| decoded.as_string())
-        .unwrap_or_else(|| value.to_owned())
-}
-
 /// Percent-decode a captured route param — the native sibling of the
 /// `decodeURIComponent` arm above, with the same contract: any malformed
 /// escape (truncated, non-hex, or invalid UTF-8 once decoded) returns the
 /// raw value unchanged, exactly as the browser arm does when
 /// `decodeURIComponent` throws.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -751,6 +721,12 @@ pub(super) struct MatchedRoute {
     params: tonk_router::Params,
 }
 
+/// A matched `route/asset`: the asset it answers with.
+pub(super) struct MatchedAsset {
+    /// The asset whose bytes answer the request.
+    pub(super) asset: dialog_artifacts::Entity,
+}
+
 /// A matched `route/http`: the entry and the body it answers with.
 pub(super) struct MatchedHttp {
     /// The route-table entry's entity, which its headers are read from.
@@ -765,6 +741,8 @@ pub(super) enum Matched {
     View(MatchedRoute),
     /// A `route/http`: a request is answered with its content.
     Http(MatchedHttp),
+    /// A `route/asset`: a request is answered with an asset's bytes.
+    Asset(MatchedAsset),
 }
 
 /// Order routes for insertion into the router: the space's own routes first,
@@ -792,7 +770,8 @@ fn route_order(routes: &mut [tonk_schema::Route], pinned: &std::collections::Has
 
 /// Match `rest` (the Level 1 remaining path) against the branch's durable
 /// route tables: `tonk:route`, whose match a page shows, and
-/// `tonk:route/http`, whose match the worker answers with.
+/// `tonk:route/http` and `tonk:route/asset`, whose match the worker answers
+/// with.
 ///
 /// Builds a fresh [`tonk_router::Router`] per call from the queried routes:
 /// each route's `path` pattern compiles via [`Route::parse_pattern`], paired
@@ -809,15 +788,40 @@ pub(super) async fn match_route(
     state: &dialog_reactor::BranchSession,
     rest: &str,
 ) -> Option<Matched> {
+    recognize(tonk, state, rest, true).await
+}
+
+/// Match `rest` against the routes a page shows alone, as [`match_route`]
+/// matches it against every route.
+pub(super) async fn match_view(
+    tonk: &crate::worker::TonkState,
+    state: &dialog_reactor::BranchSession,
+    rest: &str,
+) -> Option<MatchedRoute> {
+    match recognize(tonk, state, rest, false).await? {
+        Matched::View(matched) => Some(matched),
+        Matched::Http(_) | Matched::Asset(_) => None,
+    }
+}
+
+/// Match `rest` against the routes a page shows, and, where `answered`, the
+/// routes the worker answers with.
+async fn recognize(
+    tonk: &crate::worker::TonkState,
+    state: &dialog_reactor::BranchSession,
+    rest: &str,
+    answered: bool,
+) -> Option<Matched> {
     use dialog_query::{Output as _, Query, Term};
     use tonk_router::Route as RoutePattern;
-    use tonk_schema::{HttpRoute, Route};
+    use tonk_schema::{AssetRoute, HttpRoute, Route};
 
     /// What a pattern in the router stands for.
     #[derive(Clone)]
     enum Target {
         View(dialog_artifacts::Entity, dialog_artifacts::Entity),
         Http(dialog_artifacts::Entity, String),
+        Asset(dialog_artifacts::Entity),
     }
 
     let mut routes: Vec<Route> = state
@@ -841,23 +845,46 @@ pub(super) async fn match_route(
         .collect();
     route_order(&mut routes, &pinned);
 
-    let mut answered: Vec<HttpRoute> = state
-        .handle()
-        .query()
-        .select(Query::<HttpRoute> {
-            this: Term::var("this"),
-            path: Term::var("path"),
-            body: Term::var("body"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .unwrap_or_default();
-    answered.sort_by_key(|route| route.this.to_string());
+    let mut contents: Vec<(String, String, Target)> = Vec::new();
+    if answered {
+        let http: Vec<HttpRoute> = state
+            .handle()
+            .query()
+            .select(Query::<HttpRoute> {
+                this: Term::var("this"),
+                path: Term::var("path"),
+                body: Term::var("body"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap_or_default();
+        let assets: Vec<AssetRoute> = state
+            .handle()
+            .query()
+            .select(Query::<AssetRoute> {
+                this: Term::var("this"),
+                path: Term::var("path"),
+                asset: Term::var("asset"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap_or_default();
+        contents.extend(http.into_iter().map(|route| {
+            let key = route.this.to_string();
+            (key, route.path.0, Target::Http(route.this, route.body.0))
+        }));
+        contents.extend(assets.into_iter().map(|route| {
+            let key = route.this.to_string();
+            (key, route.path.0, Target::Asset(route.asset.0))
+        }));
+        contents.sort_by(|a, b| a.0.cmp(&b.0));
+    }
 
-    let patterns = answered
+    let patterns = contents
         .into_iter()
-        .map(|route| (route.path.0, Target::Http(route.this, route.body.0)))
+        .map(|(_, path, target)| (path, target))
         .chain(
             routes
                 .into_iter()
@@ -884,6 +911,7 @@ pub(super) async fn match_route(
             params: matched.params,
         }),
         Target::Http(route, body) => Matched::Http(MatchedHttp { route, body }),
+        Target::Asset(asset) => Matched::Asset(MatchedAsset { asset }),
     })
 }
 
@@ -898,115 +926,7 @@ pub(super) async fn matched_route(
     match match_route(tonk, state, rest).await? {
         Matched::View(matched) => Some(matched.route),
         Matched::Http(matched) => Some(matched.route),
-    }
-}
-
-/// End-to-end: the route table a branch actually holds, resolved through
-/// `match_route`. Complements `route_order_tests`, which pins the ordering
-/// alone — these prove the router wiring agrees with it.
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod match_route_tests {
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    wasm_bindgen_test_configure!(run_in_service_worker);
-
-    /// Install core plus `library` the way creation does, author `authored`
-    /// on top if given, and resolve `path` through the real router to the
-    /// model it mounts.
-    async fn resolve(library: &str, authored: Option<&str>, path: &str) -> Option<String> {
-        const LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
-
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "route-e2e").await;
-        let tonk = state.read().await;
-
-        crate::router::repository::install_fresh_seed(
-            &tonk,
-            &key,
-            "main",
-            &format!("{LIBRARY}\n{library}"),
-            &[],
-        )
-        .await
-        .expect("the library installs");
-
-        if let Some(authored) = authored {
-            crate::router::evaluate::evaluate_body(&tonk, &key, "main", authored.to_owned(), true)
-                .await
-                .expect("the space's own route commits");
-        }
-
-        let session = tonk
-            .reactor
-            .repository(&key)
-            .branch("main")
-            .acquire(&tonk.operator)
-            .await
-            .expect("main acquires");
-        match super::match_route(&tonk, &session, path).await? {
-            super::Matched::View(matched) => Some(matched.concept.to_string()),
-            super::Matched::Http(matched) => Some(matched.body),
-        }
-    }
-
-    /// A route a library ships as a command resolves: the rule wrote it.
-    #[dialog_common::test]
-    async fn it_resolves_a_route_the_library_ships() {
-        let shipped = "seed/route!:\n  path: \"/probe\"\n  concept: probe:library\n";
-
-        assert_eq!(
-            resolve(shipped, None, "/probe").await.as_deref(),
-            Some("probe:library")
-        );
-    }
-
-    /// A path a route answers with content is matched with the paths pages
-    /// show, most specific first: a literal content path wins over the
-    /// catch-all that would otherwise read it as a model's name.
-    #[dialog_common::test]
-    async fn it_prefers_a_content_route_over_a_broader_view_route() {
-        let routes = "route/http!:\n  path: /lib/tonk.js\n  body: export {};\n\nroute!:\n  path: \"/{*anything}\"\n  concept: probe:catch-all\n";
-
-        assert_eq!(
-            resolve("", Some(routes), "/lib/tonk.js").await.as_deref(),
-            Some("export {};"),
-            "the content route is the more specific match"
-        );
-        assert_eq!(
-            resolve("", Some(routes), "/lib/other.js").await.as_deref(),
-            Some("probe:catch-all"),
-            "any other path is still the view route's"
-        );
-    }
-
-    /// The same holds the other way round: a literal view path wins over a
-    /// content route's pattern.
-    #[dialog_common::test]
-    async fn it_prefers_a_view_route_over_a_broader_content_route() {
-        let routes = "route/http!:\n  path: \"/docs/{*page}\"\n  body: \"fallback\"\n\nroute!:\n  path: /docs/index\n  concept: probe:index\n";
-
-        assert_eq!(
-            resolve("", Some(routes), "/docs/index").await.as_deref(),
-            Some("probe:index")
-        );
-        assert_eq!(
-            resolve("", Some(routes), "/docs/guide").await.as_deref(),
-            Some("fallback")
-        );
-    }
-
-    /// A route a library pinned before it shipped routes as commands loses
-    /// to the space's own route for the same path, though its entity sorts
-    /// first: resolved through the real router, not just the sort.
-    #[dialog_common::test]
-    async fn it_prefers_a_space_route_over_one_a_library_pinned() {
-        let routes = "route!:\n  this: id:tonk:route/space\n  path: \"/probe\"\n  concept: probe:pinned\n\nroute!:\n  this: id:zzz/space-probe\n  path: \"/probe\"\n  concept: probe:space\n";
-
-        assert_eq!(
-            resolve("", Some(routes), "/probe").await.as_deref(),
-            Some("probe:space"),
-            "the space's own route must win the tie against the pinned one"
-        );
+        Matched::Asset(_) => None,
     }
 }
 
@@ -1146,284 +1066,5 @@ mod route_order_tests {
         super::route_order(&mut routes, &pinned);
 
         assert_eq!(ordered(&routes), vec!["id:aaa/first", "id:zzz/second"]);
-    }
-}
-
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod tests {
-    use ::axum::body::Body;
-    use ::axum::http::{Request, StatusCode};
-    use tower::ServiceExt as _;
-
-    use crate::router::tests::test_state;
-    use crate::router::{ClientId, api_router_with_state};
-
-    #[cfg(target_arch = "wasm32")]
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_test_configure!(run_in_browser);
-
-    /// The `xyz.tonk.site/{field}` value stamped for `client`, read back
-    /// through `endpoint`'s query route.
-    async fn stamped_field(
-        app: &::axum::Router,
-        client: &str,
-        field: &str,
-        endpoint: &str,
-    ) -> Option<String> {
-        // `concept` is an entity-typed site field; the rest read as text.
-        let as_type = if field == "concept" { "Entity" } else { "Text" };
-        let query = format!(
-            r#"{{"predicate":{{"with":{{"{field}":{{"the":"xyz.tonk.site/{field}","as":"{as_type}","cardinality":"one"}}}}}},"terms":{{"this":"site:{client}","{field}":{{"?":{{"name":"{field}"}}}}}}}}"#
-        );
-        let mut request = Request::builder()
-            .method("POST")
-            .uri(endpoint.to_owned())
-            .header("content-type", "application/json")
-            .body(Body::from(query))
-            .unwrap();
-        request.extensions_mut().insert(ClientId(client.to_owned()));
-        let response = app.clone().oneshot(request).await.unwrap();
-        let body = ::axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let rows: serde_json::Value = serde_json::from_slice(&body).ok()?;
-        rows.as_array()?
-            .first()?
-            .get("fields")?
-            .get(field)?
-            .as_str()
-            .map(str::to_owned)
-    }
-
-    /// The site's stamped `repo` — the location token a view interpolates.
-    async fn stamped_repo(app: &::axum::Router, client: &str, endpoint: &str) -> Option<String> {
-        stamped_field(app, client, "repo", endpoint).await
-    }
-
-    /// The profile library, embedded at compile time — seeded so the profile
-    /// branch has a `route!` table for `/` to match against. Without it the
-    /// stamp is skipped entirely and nothing is written.
-    const PROFILE_LIBRARY: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
-
-    /// The standard library, embedded at compile time — the space-branch
-    /// counterpart of [`PROFILE_LIBRARY`], seeded so `/` matches a route.
-    const CORE_LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
-
-    /// The notebook library, embedded at compile time.
-    const NOTEBOOK_LIBRARY: &str = include_str!("../../../tonk-core/assets/library/notebook.yaml");
-
-    #[dialog_common::test]
-    async fn it_stamps_a_resolvable_repo_token_on_the_profile_branch() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        {
-            let tonk = state.read().await;
-            crate::router::evaluate::evaluate_profile_body(
-                &tonk,
-                "main",
-                PROFILE_LIBRARY.to_owned(),
-                true,
-            )
-            .await
-            .expect("the profile library seeds");
-        }
-
-        let mut request = Request::builder()
-            .method("POST")
-            .uri("/api/repository/profile:tonk/branch/main/site")
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"path":"/"}"#))
-            .unwrap();
-        request
-            .extensions_mut()
-            .insert(ClientId("probe".to_owned()));
-        let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let repo = stamped_repo(
-            &app,
-            "probe",
-            "/api/repository/profile:tonk/branch/main/query",
-        )
-        .await
-        .expect("the profile site stamps a repo field");
-        assert!(
-            repo.starts_with("profile:"),
-            "stamped repo {repo:?} must be a `profile:<name>` location token, not a bare name: \
-             a `with=\"{{branch}}@{{repo}}\"` template built from it otherwise addresses a named \
-             repository that does not exist"
-        );
-    }
-
-    /// A site stamped on a NAMED space records the bare repository key — the
-    /// same location token it always did. The profile prefix must not leak
-    /// into the space path, or every space view's `with="{branch}@{repo}"`
-    /// would address the profile endpoint instead of its own repository.
-    #[dialog_common::test]
-    async fn it_stamps_a_bare_repo_token_on_a_named_space() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        // A branchless `{}` create: the worker seeds nothing, so this test
-        // drives the seed itself and the repo exists to seed onto.
-        let created = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("PUT")
-                    .uri("/api/repository/space")
-                    .header("content-type", "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(created.status(), StatusCode::CREATED);
-        let body = ::axum::body::to_bytes(created.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let info: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let key = info["name"]
-            .as_str()
-            .expect("the create returns a key")
-            .to_owned();
-        {
-            let tonk = state.read().await;
-            crate::router::evaluate::evaluate_body(
-                &tonk,
-                &key,
-                "main",
-                CORE_LIBRARY.to_owned(),
-                true,
-            )
-            .await
-            .expect("the core library seeds");
-        }
-
-        let mut request = Request::builder()
-            .method("POST")
-            .uri(format!("/api/repository/{key}/branch/main/site"))
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"path":"/"}"#))
-            .unwrap();
-        request
-            .extensions_mut()
-            .insert(ClientId("space-probe".to_owned()));
-        let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let repo = stamped_repo(
-            &app,
-            "space-probe",
-            &format!("/api/repository/{key}/branch/main/query"),
-        )
-        .await
-        .expect("the space site stamps a repo field");
-        assert_eq!(
-            repo, key,
-            "a named space stamps its bare repository key, unprefixed"
-        );
-    }
-
-    /// A notebook installed on a PROFILE resolves its route and hands its view
-    /// a location that addresses the profile endpoint.
-    ///
-    /// This is the whole point: `notebook.yaml` is written once, and its route
-    /// view mounts `<tonk-display with="{branch}@{repo}">`. The guest does not
-    /// know or care whether it is in a profile or a named space — it only
-    /// interpolates the site's fields. So the `repo` the site stamps has to be
-    /// a location token that reaches the branch the notebook actually lives on.
-    #[dialog_common::test]
-    async fn it_resolves_a_notebook_route_installed_on_a_profile() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        {
-            let tonk = state.read().await;
-            // The profile library first (it declares the shared `view` /
-            // `route` concepts), then the notebook on top — the install a
-            // author performs to get a notebook onto their profile.
-            for library in [PROFILE_LIBRARY, NOTEBOOK_LIBRARY] {
-                crate::router::evaluate::evaluate_profile_body(
-                    &tonk,
-                    "main",
-                    library.to_owned(),
-                    true,
-                )
-                .await
-                .expect("the library installs on the profile");
-            }
-        }
-
-        let mut request = Request::builder()
-            .method("POST")
-            .uri("/api/repository/profile:tonk/branch/main/site")
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"path":"/notebook"}"#))
-            .unwrap();
-        request.extensions_mut().insert(ClientId("nb".to_owned()));
-        let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        // The notebook index route matched, so the notebook's own model is
-        // what the shell mounts rather than the profile's `/{*rest}`
-        // fallback. Compared against the NOT-FOUND model rather than a
-        // literal: the index concept is anchor-named, so its entity derives
-        // from its body and no URI is stable to assert.
-        let concept = stamped_field(
-            &app,
-            "nb",
-            "concept",
-            "/api/repository/profile:tonk/branch/main/query",
-        )
-        .await
-        .expect("the notebook route stamps a concept");
-        // What `/` resolves to is the profile's Hub; `/notebook` must NOT be
-        // that, and must not be the not-found fallback either.
-        let home = {
-            let mut request = Request::builder()
-                .method("POST")
-                .uri("/api/repository/profile:tonk/branch/main/site")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"path":"/"}"#))
-                .unwrap();
-            request
-                .extensions_mut()
-                .insert(ClientId("nb-home".to_owned()));
-            let response = app.clone().oneshot(request).await.unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            stamped_field(
-                &app,
-                "nb-home",
-                "concept",
-                "/api/repository/profile:tonk/branch/main/query",
-            )
-            .await
-            .expect("the home route stamps a concept")
-        };
-        assert_eq!(home, "tonk:hub", "the profile's `/` is the Hub");
-        assert_ne!(
-            concept, home,
-            "/notebook on a profile must match the notebook index route, not the Hub"
-        );
-        assert_ne!(
-            concept, "tonk:not-found",
-            "/notebook on a profile must not fall through to not-found"
-        );
-
-        // And the location its view builds reaches the profile endpoint.
-        let repo = stamped_repo(&app, "nb", "/api/repository/profile:tonk/branch/main/query")
-            .await
-            .expect("the notebook route stamps a repo");
-        let branch = stamped_field(
-            &app,
-            "nb",
-            "branch",
-            "/api/repository/profile:tonk/branch/main/query",
-        )
-        .await
-        .expect("the notebook route stamps a branch");
-        let with = format!("{branch}@{repo}");
-        assert!(
-            with.starts_with("main@profile:") && with.len() > "main@profile:".len(),
-            "the notebook view's `with` ({with:?}) must address the profile endpoint \
-             with a named profile, not a repository"
-        );
     }
 }

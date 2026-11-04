@@ -84,6 +84,8 @@ pub mod registry;
 #[cfg(target_arch = "wasm32")]
 mod render;
 #[cfg(target_arch = "wasm32")]
+mod shown;
+#[cfg(target_arch = "wasm32")]
 mod upload;
 // `state::State` and its `as_str` mapping are target-independent
 // — DOM-touching helpers in this module are individually gated

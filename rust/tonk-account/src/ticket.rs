@@ -198,6 +198,24 @@ where
         .to_bytes()
         .map_err(|error| ClaimError::Sign(error.to_string()))?;
 
+    let (status, bytes) = deliver(remote, body).await?;
+    match status {
+        200..300 => Ok(Some(bytes.to_vec())),
+        404 => Ok(None),
+        _ => Err(match serde_json::from_slice::<AuthorizeError>(&bytes) {
+            Ok(refusal) => ClaimError::Refused(refusal),
+            Err(_) => ClaimError::Transport(format!(
+                "the service answered {status}: {}",
+                String::from_utf8_lossy(&bytes)
+            )),
+        }),
+    }
+}
+
+/// Post the claim `body` to `remote`, and answer its status and body: over
+/// the network, or, on a kernel, through its embedder, which delivers it.
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+async fn deliver(remote: &url::Url, body: Vec<u8>) -> Result<(u16, Vec<u8>), ClaimError> {
     let response = reqwest::Client::new()
         .post(remote.clone())
         .header("content-type", "application/cbor")
@@ -210,17 +228,20 @@ where
         .bytes()
         .await
         .map_err(|error| ClaimError::Transport(error.to_string()))?;
-    match status {
-        200..300 => Ok(Some(bytes.to_vec())),
-        404 => Ok(None),
-        _ => Err(match serde_json::from_slice::<AuthorizeError>(&bytes) {
-            Ok(refusal) => ClaimError::Refused(refusal),
-            Err(_) => ClaimError::Transport(format!(
-                "the service answered {status}: {}",
-                String::from_utf8_lossy(&bytes)
-            )),
-        }),
-    }
+    Ok((status, bytes.to_vec()))
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+async fn deliver(remote: &url::Url, body: Vec<u8>) -> Result<(u16, Vec<u8>), ClaimError> {
+    let delivered = tonk_kernel_world::application::fetch(
+        "POST",
+        remote.as_str(),
+        Some("application/cbor"),
+        Some(&body),
+    )
+    .await
+    .map_err(|error| ClaimError::Transport(format!("{error:?}")))?;
+    Ok((delivered.status, delivered.body))
 }
 
 /// What a claim asks for: the holder whose ticket, kept by which space.

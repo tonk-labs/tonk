@@ -183,8 +183,15 @@ impl Default for CommandProviders {
 /// `cfg` sits on that leaf (`delete_space_storage_for`,
 /// `worker_origin`, the `navigate` client messaging), never on a
 /// registration.
+///
+/// A space's own worker, built without the feature `persona`, has no
+/// profile to run commands on: its profile vocabulary is empty.
 pub fn command_providers() -> CommandProviders {
-    CommandProviders::new(profile_commands(), space_commands())
+    #[cfg(feature = "persona")]
+    let profile = profile_commands();
+    #[cfg(not(feature = "persona"))]
+    let profile = CommandRegistry::new();
+    CommandProviders::new(profile, space_commands())
 }
 
 /// The profile branch's vocabulary: everything.
@@ -209,6 +216,7 @@ pub fn command_providers() -> CommandProviders {
 /// [`CreateSpaceRequest`]: super::repository::CreateSpaceRequest
 /// [`InviteRequest`]: super::repository::InviteRequest
 /// [`EnableSyncRequest`]: super::repository::EnableSyncRequest
+#[cfg(feature = "persona")]
 fn profile_commands() -> CommandRegistry<CommandEnv> {
     CommandRegistry::new()
         .command::<super::repository::CreateSpaceRequest>()
@@ -225,21 +233,15 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<super::ceremony::AuthorizeDeviceRequest>()
         // Signing in through another deployment is new, so neither half
         // has a legacy shape to migrate.
-        // Adding an account to this profile, stage by stage.
-        .command::<tonk_schema::command::OpenRegistration>()
-        .command::<tonk_schema::command::StartRegistration>()
-        .command::<tonk_schema::command::CreateAccount>()
-        .command::<tonk_schema::command::LogIn>()
-        .command::<tonk_schema::command::OpenSignInVia>()
+        // Signing in, which the host runs.
+        .command::<tonk_schema::command::SignIn>()
         .command::<tonk_schema::command::ActivateAccount>()
-        .command::<tonk_schema::command::DismissRegistration>()
         .command::<tonk_schema::command::SignInVia>()
         .command::<tonk_schema::command::FinishSignInVia>()
         .migrated::<tonk_schema::command::AddPasskey, tonk_schema::command::legacy::AddPasskey>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RemoveSpace, tonk_schema::command::legacy::RemoveSpace>()
         .migrated::<tonk_schema::command::Join, tonk_schema::command::legacy::Join>()
-        .migrated::<tonk_schema::command::CheckEmail, tonk_schema::command::legacy::CheckEmail>()
         .migrated::<tonk_schema::command::PauseSync, tonk_schema::command::legacy::PauseSync>()
         .migrated::<tonk_schema::command::ProfileRename, tonk_schema::command::legacy::ProfileRename>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
@@ -298,6 +300,12 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // after minting an invite to the space. It records for the origin
         // and names no other space.
         .command::<tonk_schema::command::RecordInvite>()
+        // What the person's profile hands a space's own worker to write
+        // after publishing the space.
+        .command::<tonk_schema::command::RecordPublication>()
+        // What the person's profile hands a space's own worker to make the
+        // space private again: the records and revocations are the space's.
+        .command::<tonk_schema::command::UnpublishSpace>()
         // What the person's profile hands a space's own worker when a
         // signed-in account takes over the one its roster entry is under.
         .command::<tonk_schema::command::MoveMembership>()
@@ -437,13 +445,6 @@ pub(crate) mod tests {
     /// Tags passed to `Ping`'s provider, in invocation order. The `run`
     /// tests `drain` it; serialized within the single-threaded test run.
     static PING_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-    /// Take and clear the recorded tags. Only the wasm-gated `run` tests
-    /// read it; the provider writes it on every target.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    fn drain_ping_log() -> Vec<String> {
-        std::mem::take(&mut *PING_LOG.lock().unwrap())
-    }
 
     #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
     #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -591,134 +592,6 @@ pub(crate) mod tests {
 
     // The `run` and `dispatch` tests build a real `CommandEnv` from an
     // `AppState`, which needs the service-worker scope (`test_state`).
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    mod run {
-        use super::*;
-        use crate::reactor::{CommandRegistry, EntityFacts};
-        use crate::router::AppState;
-        use crate::router::tests::test_state;
-        use std::sync::Arc;
-        use tokio::sync::RwLock;
-
-        async fn env() -> (AppState, CommandEnv) {
-            let state: AppState = Arc::new(RwLock::new(test_state().await));
-            let env = CommandEnv::new(state.clone(), CommandOrigin::default());
-            (state, env)
-        }
-
-        fn one_match<'a>(
-            registry: &'a CommandRegistry<CommandEnv>,
-            changes: &Changes,
-        ) -> (
-            &'a dyn crate::reactor::CommandHandler<CommandEnv>,
-            EntityFacts,
-        ) {
-            let mut fired = registry.match_transients(changes);
-            assert_eq!(fired.len(), 1, "expected exactly one matched command");
-            fired.pop().unwrap()
-        }
-
-        #[dialog_common::test]
-        async fn it_runs_the_provider_with_the_decoded_command() {
-            let _ = drain_ping_log();
-            let (_state, env) = env().await;
-            let registry = CommandRegistry::new().command::<Ping>();
-            let changes = ping_transient("did:key:zPing", "hello");
-
-            let (handler, facts) = one_match(&registry, &changes);
-            handler.run(&facts, &env).await;
-
-            assert_eq!(
-                drain_ping_log(),
-                vec!["hello".to_string()],
-                "the provider should run once with the decoded tag"
-            );
-        }
-
-        #[dialog_common::test]
-        async fn it_runs_the_provider_for_a_non_decoding_entity_as_a_noop() {
-            // `TypedCommand::run`'s own decode guard: handed an entity's
-            // facts that don't decode as `Ping`, `run` is a no-op (the
-            // provider is never called). We get a handler from a real
-            // match, then run it against unrelated facts directly.
-            let _ = drain_ping_log();
-            let (_state, env) = env().await;
-            let registry = CommandRegistry::new().command::<Ping>();
-            let matched = registry.match_transients(&ping_transient("did:key:zP", "t"));
-            let handler = matched[0].0;
-
-            let unrelated: EntityFacts = {
-                let mut changes = Changes::new();
-                the!("xyz.tonk.unrelated/noise")
-                    .of("did:key:zNoise".parse::<Entity>().unwrap())
-                    .is("x".to_string())
-                    .assert(&mut changes);
-                // One entity → its facts.
-                match changes.into_instructions().into_iter().next().unwrap() {
-                    dialog_artifacts::Instruction::Assert(a, _)
-                    | dialog_artifacts::Instruction::Retract(a) => vec![a],
-                }
-            };
-            handler.run(&unrelated, &env).await;
-
-            assert!(
-                drain_ping_log().is_empty(),
-                "a non-decoding entity must not run the provider"
-            );
-        }
-
-        #[dialog_common::test]
-        async fn it_dispatches_every_matched_command_in_a_batch() {
-            let _ = drain_ping_log();
-            let (state, _env) = env().await;
-            // Install the registry on the state so `dispatch` sees it.
-            {
-                let mut tonk = state.write().await;
-                tonk.commands = CommandProviders::new(
-                    CommandRegistry::new().command::<Ping>(),
-                    CommandRegistry::new(),
-                );
-            }
-
-            // Two distinct Ping entities in one batch → two invocations.
-            let mut changes = ping_transient("did:key:zA", "alpha");
-            the!("xyz.tonk.command/ping-tag")
-                .of("did:key:zB".parse::<Entity>().unwrap())
-                .is("beta".to_string())
-                .assert(&mut changes);
-
-            dispatch(&state, CommandOrigin::default(), changes).await;
-
-            let mut tags = drain_ping_log();
-            tags.sort();
-            assert_eq!(
-                tags,
-                vec!["alpha".to_string(), "beta".to_string()],
-                "dispatch runs each matched command's provider"
-            );
-        }
-
-        #[dialog_common::test]
-        async fn it_dispatches_nothing_when_no_command_matches() {
-            let _ = drain_ping_log();
-            let (state, _env) = env().await;
-            {
-                let mut tonk = state.write().await;
-                tonk.commands = CommandProviders::new(
-                    CommandRegistry::new().command::<Ping>(),
-                    CommandRegistry::new(),
-                );
-            }
-            let mut changes = Changes::new();
-            the!("xyz.tonk.unrelated/noise")
-                .of("did:key:zNoise".parse::<Entity>().unwrap())
-                .is("x".to_string())
-                .assert(&mut changes);
-
-            dispatch(&state, CommandOrigin::default(), changes).await;
-            assert!(drain_ping_log().is_empty());
-        }
-    }
 
     /// Native end-to-end dispatch over REAL commands — the test the
     /// whole target-agnostic registry exists for. Its failure mode is
@@ -726,7 +599,6 @@ pub(crate) mod tests {
     /// an empty registry compiled green while no command ran anywhere
     /// but the browser, so nothing short of dispatching a real command
     /// against real state proves the conversion means anything.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub(crate) mod native {
         use super::*;
         use crate::router::AppState;

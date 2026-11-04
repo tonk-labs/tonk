@@ -2,14 +2,12 @@
 
 use ::axum::extract::Path;
 use ::axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use base58::FromBase58;
 use dialog_repository::RepositoryExt as _;
 use dialog_storage::Blake3Hash;
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_macros::handler;
 
 use super::super::AppState;
 use crate::TonkWorkerError;
@@ -66,7 +64,7 @@ fn decode_hash(hash_str: &str) -> Result<Blake3Hash, String> {
 }
 
 /// Fetches a block from the local archive by its blake3 hash.
-#[wasm_compat]
+#[handler]
 pub async fn inspect_archive_block(
     State(state): State<AppState>,
     Path(params): Path<ArchiveBlockPath>,
@@ -169,7 +167,7 @@ pub async fn inspect_archive_block(
 ///
 /// Uses `RemoteRepository::archive().index().get(hash)` to read directly
 /// from the remote site.
-#[wasm_compat]
+#[handler]
 pub async fn inspect_remote_archive_block(
     State(state): State<AppState>,
     Path(params): Path<RemoteArchiveBlockPath>,

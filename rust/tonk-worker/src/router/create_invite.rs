@@ -20,17 +20,15 @@ use ::axum::{
     body::Bytes,
     extract::{Path, State},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_capability::Subject;
 use dialog_credentials::{Ed25519Signer, key::KeyExport};
 use dialog_effects::Use;
 use dialog_repository::{SiteAddress, Upstream};
 use dialog_ucan::UcanDelegation;
 use dialog_varsig::Principal;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_invite::{Invite, InviteAudience, Ticket, home_address_meta, shortcut::ShortcutRequest};
+use tonk_macros::handler;
 use tonk_schema::{Invitation, InvitationExecution};
 use url::Url;
 
@@ -85,7 +83,7 @@ pub(crate) async fn generate_ephemeral() -> Result<(Ed25519Signer, [u8; 32]), To
 }
 
 /// Mint an invite URL for `repo`.
-#[wasm_compat]
+#[handler]
 pub async fn create_invite(
     State(state): State<AppState>,
     Path(repo_name): Path<String>,
@@ -104,22 +102,6 @@ pub async fn create_invite(
     };
 
     mint_invite(state, repo_name, origin, request, None).await
-}
-
-/// Mint an agent handoff for the current browser account, never the space owner.
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn create_agent_handoff(
-    state: AppState,
-    repo_name: String,
-    origin: RequestOrigin,
-) -> Result<(CreateInviteResponse, super::identity::LocalRoot), TonkWorkerError> {
-    let account = super::identity::local_root(&*state.read().await).await?;
-    let request = CreateInviteRequest {
-        recipient_root: Some(account.root_did.clone()),
-        ..Default::default()
-    };
-    let Json(response) = mint_invite(state, repo_name, origin, request, Some(&account)).await?;
-    Ok((response, account))
 }
 
 async fn mint_invite(
@@ -176,25 +158,6 @@ async fn mint_invite(
             )));
         }
     };
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if expected.is_some()
-        && super::repository::remote_is_own_service(&tonk, remote.access_url.as_str()).await
-        && !super::customer::space_provider_recorded(&tonk, &repository.did()).await
-    {
-        match super::repository::provision_space_consumer(&tonk, &repository.did()).await {
-            Ok(()) => {}
-            Err(error @ TonkWorkerError::Upstream { .. })
-                if !super::customer::is_retryable(&error) =>
-            {
-                return Err(error);
-            }
-            // Match ordinary sharing: a member may lack the owner's local
-            // provisioning credential. Only a terminal service refusal is
-            // authoritative; missing local billing state is not a denial.
-            Err(error) => log!("agent handoff provisioning skipped: {error}"),
-        }
-    }
 
     // The leaf is signed with the space's upstream in its `home.address`
     // meta and — when one has hydrated here — its display name in
@@ -458,9 +421,7 @@ async fn recorded(
                 "the space's own worker did not record the invitation in time".into(),
             ));
         }
-        crate::r#async::sleep(web_time::Duration::from_millis(100))
-            .await
-            .map_err(|_| TonkWorkerError::Internal("the wait was interrupted".into()))?;
+        crate::r#async::sleep(web_time::Duration::from_millis(100)).await;
     }
 }
 
@@ -615,6 +576,7 @@ pub(super) async fn retain_invite_chains(
 /// twice this — still far inside the share control's own 15s backstop
 /// (`tonk_fab::logic::SHARE_TIMEOUT_MS`), which is what has to stay true
 /// for the long-URL fallback to reach the clipboard.
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) const SHORTCUT_TIMEOUT_MS: u32 = tonk_invite::shortcut::TIMEOUT_MS;
 
 pub(super) async fn shorten(url: &str) -> Result<String, TonkWorkerError> {
@@ -628,91 +590,20 @@ pub(super) async fn shorten(url: &str) -> Result<String, TonkWorkerError> {
     Ok(short)
 }
 
-/// `AbortSignal.timeout(SHORTCUT_TIMEOUT_MS)`, or `None` on a runtime
-/// without it.
-///
-/// `web-sys` generates this static as a NON-catching binding, so calling
-/// it where `AbortSignal.timeout` is absent throws straight through the
-/// wasm frame instead of returning an error — killing the mint that the
-/// timeout exists to protect, which is precisely the failure the whole
-/// best-effort shortcut is written to avoid. Feature-detect instead: no
-/// signal means an untimed request, exactly what it was before the
-/// timeout existed, and the share control's own backstop still ends the
-/// wait. Never a thrown mint.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn shortcut_timeout_signal() -> Option<web_sys::AbortSignal> {
-    use wasm_bindgen::JsValue;
-
-    let constructor =
-        js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("AbortSignal")).ok()?;
-    let timeout = js_sys::Reflect::get(&constructor, &JsValue::from_str("timeout")).ok()?;
-    timeout
-        .is_function()
-        .then(|| web_sys::AbortSignal::timeout_with_u32(SHORTCUT_TIMEOUT_MS))
-}
-
-/// Probe the stored shortcut: `HEAD {origin}/@/{hash}` must redirect
-/// back to the stored target. HEAD, not GET — the landing URL is the
-/// whole answer, so there is no reason to download the app shell behind
-/// it (the same choice `<tonk-invite-link>` documents). The browser
-/// fetch follows the redirect; `redirected` plus the landing URL is the
-/// proof.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn probe_shortcut(request: &ShortcutRequest, hash: &str) -> Result<(), TonkWorkerError> {
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen_futures::JsFuture;
-    use web_sys::{Request, RequestInit, Response};
-
-    let probe = request
-        .probe_url(hash)
-        .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe URL: {e}")))?;
-    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
-        .dyn_into()
-        .map_err(|_| TonkWorkerError::Internal("not in a service-worker scope".to_owned()))?;
-    // A link lives on the host serving the space, which a worker on a site's
-    // own origin is not. The redirect lands on that host's app, a page that
-    // answers no other origin, so following it from here fails however well
-    // the shortcut works. Such a worker asks only whether the shortcut
-    // redirects, which is all another origin is shown of it.
-    let elsewhere = url::Url::parse(&probe)
-        .is_ok_and(|probe| probe.origin().ascii_serialization() != global.location().origin());
-    let init = RequestInit::new();
-    init.set_method("HEAD");
-    init.set_signal(shortcut_timeout_signal().as_ref());
-    if elsewhere {
-        init.set_redirect(web_sys::RequestRedirect::Manual);
-    }
-    let probe_request = Request::new_with_str_and_init(&probe, &init)
-        .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe request: {e:?}")))?;
-    let response: Response = JsFuture::from(global.fetch_with_request(&probe_request))
-        .await
-        .and_then(|v| v.dyn_into())
-        .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe HEAD: {e:?}")))?;
-    if elsewhere {
-        return if response.type_() == web_sys::ResponseType::Opaqueredirect {
-            Ok(())
-        } else {
-            Err(TonkWorkerError::Internal(format!(
-                "the shortcut host answered the probe without redirecting (HTTP {})",
-                response.status()
-            )))
-        };
-    }
-    if !response.redirected() {
-        return Err(TonkWorkerError::Internal(format!(
-            "the shortcut host answered the probe without redirecting (HTTP {})",
-            response.status()
-        )));
-    }
-    request
-        .verify_resolved(&response.url())
-        .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe: {e}")))
-}
-
 /// Probe the stored shortcut without following the redirect: a
 /// conforming service answers 3xx with a `Location` that resolves back
 /// to the stored target. HEAD — the landing URL is the whole answer.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+/// A kernel on WASI has no HTTP client: the capability that would carry
+/// this through the host is not designed yet (`plan/kernel-capabilities.md`,
+/// `services`).
+#[cfg(target_arch = "wasm32")]
+async fn probe_shortcut(_request: &ShortcutRequest, _hash: &str) -> Result<(), TonkWorkerError> {
+    Err(TonkWorkerError::Internal(
+        "this host gives the kernel no way to probe a shortcut".to_owned(),
+    ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 async fn probe_shortcut(request: &ShortcutRequest, hash: &str) -> Result<(), TonkWorkerError> {
     let probe = request
         .probe_url(hash)
@@ -748,45 +639,17 @@ async fn probe_shortcut(request: &ShortcutRequest, hash: &str) -> Result<(), Ton
 }
 
 /// PUT a shortcut target, returning the hash the service responds with.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn put_shortcut(endpoint: &str, target: String) -> Result<String, TonkWorkerError> {
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen_futures::JsFuture;
-    use web_sys::{Request, RequestInit, Response};
-
-    let init = RequestInit::new();
-    init.set_method("PUT");
-    init.set_body(&target.into());
-    init.set_signal(shortcut_timeout_signal().as_ref());
-    let request = Request::new_with_str_and_init(endpoint, &init)
-        .map_err(|e| TonkWorkerError::Internal(format!("shortcut request: {e:?}")))?;
-
-    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
-        .dyn_into()
-        .map_err(|_| TonkWorkerError::Internal("not in a service-worker scope".to_owned()))?;
-    let response: Response = JsFuture::from(global.fetch_with_request(&request))
-        .await
-        .and_then(|v| v.dyn_into())
-        .map_err(|e| TonkWorkerError::Internal(format!("shortcut PUT: {e:?}")))?;
-    if !response.ok() {
-        return Err(TonkWorkerError::Internal(format!(
-            "shortcut PUT returned HTTP {}",
-            response.status()
-        )));
-    }
-    let text = JsFuture::from(
-        response
-            .text()
-            .map_err(|e| TonkWorkerError::Internal(format!("shortcut response: {e:?}")))?,
-    )
-    .await
-    .map_err(|e| TonkWorkerError::Internal(format!("shortcut response: {e:?}")))?;
-    text.as_string()
-        .ok_or_else(|| TonkWorkerError::Internal("shortcut response is not a string".to_owned()))
+/// A kernel on WASI has no HTTP client: the capability that would carry
+/// this through the host is not designed yet (`plan/kernel-capabilities.md`,
+/// `services`).
+#[cfg(target_arch = "wasm32")]
+async fn put_shortcut(endpoint: &str, _target: String) -> Result<String, TonkWorkerError> {
+    Err(TonkWorkerError::Internal(format!(
+        "this host gives the kernel no way to reach {endpoint}"
+    )))
 }
 
-/// PUT a shortcut target, returning the hash the service responds with.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 async fn put_shortcut(endpoint: &str, target: String) -> Result<String, TonkWorkerError> {
     let response = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(SHORTCUT_TIMEOUT_MS.into()))
@@ -1040,290 +903,5 @@ mod refusal_copy_tests {
             RemoteRefusal::UnshareableRemote.detail(),
             "This space's sync server can't be shared."
         );
-    }
-}
-
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod tests {
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    wasm_bindgen_test_configure!(run_in_service_worker);
-
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use dialog_repository::RepositoryExt as _;
-    use tower::ServiceExt;
-
-    use tonk_invite::Invite;
-    use tonk_schema::Invitation;
-    use tonk_schema::prelude::DidExt as _;
-
-    use crate::axum::RequestOrigin;
-    use crate::router::tests::{attach_remote, content_invitations, put_repo, test_state};
-    use crate::router::{CreateInviteResponse, api_router_with_state};
-
-    #[dialog_common::test]
-    async fn agent_handoff_rejects_a_changed_account_generation_before_minting() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "handoff-generation").await;
-        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
-        let mut previous = crate::router::identity::local_root(&*state.read().await)
-            .await
-            .unwrap();
-        // Same root, different captured attachment: root equality alone is
-        // insufficient to let an earlier operation publish a handoff.
-        previous.bytes.push(0);
-        let result = super::mint_invite(
-            state.clone(),
-            key.clone(),
-            RequestOrigin::parse("https://local.example/").unwrap(),
-            super::CreateInviteRequest {
-                recipient_root: Some(previous.root_did.clone()),
-                ..Default::default()
-            },
-            Some(&previous),
-        )
-        .await;
-        assert!(matches!(result, Err(crate::TonkWorkerError::Conflict(_))));
-        assert!(content_invitations(&state, &key).await.is_empty());
-        crate::router::account::detach_test_account(&*state.read().await)
-            .await
-            .unwrap();
-        let result = super::create_agent_handoff(
-            state.clone(),
-            key.clone(),
-            RequestOrigin::parse("https://local.example/").unwrap(),
-        )
-        .await;
-        assert!(
-            result.is_err(),
-            "signed-out browser must not mint a handoff"
-        );
-        assert!(content_invitations(&state, &key).await.is_empty());
-    }
-
-    /// Minting an invite records an `Invitation` on the repo's content
-    /// branch whose entity matches what a claimer derives from the
-    /// URL, and whose inviter is the minting profile.
-    #[dialog_common::test]
-    async fn it_records_the_invitation_on_mint() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-
-        // Create the repo; address it by the minted routing key. The
-        // route now refuses a local-only repo, so give it a remote first.
-        let key = put_repo(&app, "test-mint-invitation").await;
-        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
-
-        // Mint an open invite.
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{key}/invite"))
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .extension(
-                        RequestOrigin::parse("https://local.example/invite").expect("valid origin"),
-                    )
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let minted: CreateInviteResponse = serde_json::from_slice(&bytes).unwrap();
-        assert!(minted.url().query_pairs().any(|(name, value)| {
-            name == tonk_analytics::launch::CHANNEL_PARAMETER && value == "reshare"
-        }));
-        assert!(minted.url().query_pairs().any(|(name, value)| {
-            name == tonk_analytics::launch::SPACE_PARAMETER
-                && value == tonk_analytics::anonymize(&key)
-        }));
-
-        // The claimer-side derivation from the URL matches the record.
-        let parsed = Invite::parse_url(minted.url().as_str()).await.unwrap();
-        let expected = Invitation::from_chain(&parsed.chain).unwrap();
-
-        // The minted leaf names the space's upstream in its signed meta,
-        // so the endpoint survives without the `remote=` parameter.
-        let embedded = tonk_invite::home_address(&parsed.chain).unwrap();
-        assert_eq!(
-            embedded.map(String::from),
-            Some("https://sync.example.test/ucan/".to_owned())
-        );
-
-        let invitations = content_invitations(&state, &key).await;
-        assert_eq!(invitations.len(), 1, "exactly the minted invitation");
-        assert_eq!(invitations[0].this, expected.this);
-
-        let root_entity = {
-            let guard = state.read().await;
-            crate::router::identity::root_did(&guard)
-                .await
-                .expect("test profile has a root")
-                .this()
-        };
-        assert_eq!(invitations[0].inviter.0, root_entity);
-    }
-
-    /// A space created without a remote refuses, and says which case it was.
-    #[dialog_common::test]
-    async fn it_refuses_a_repository_with_no_upstream() {
-        use crate::router::create_invite::{RemoteRefusal, RemoteRequirement, resolve_remote_url};
-
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "test-no-upstream").await;
-
-        let tonk = state.read().await;
-        let repository = tonk
-            .profile
-            .space(&key)
-            .load()
-            .perform(&tonk.operator)
-            .await
-            .expect("repository loads");
-
-        let requirement = resolve_remote_url(&tonk, &repository)
-            .await
-            .expect("probe succeeds");
-
-        assert!(matches!(
-            requirement,
-            RemoteRequirement::Refused(RemoteRefusal::NotSynced)
-        ));
-    }
-
-    #[dialog_common::test]
-    async fn it_names_the_refusal_classes() {
-        use crate::router::create_invite::RemoteRefusal;
-
-        assert_eq!(RemoteRefusal::NotSynced.code(), "not-synced");
-        assert_eq!(
-            RemoteRefusal::UnshareableRemote.code(),
-            "unshareable-remote"
-        );
-        assert_eq!(
-            RemoteRefusal::NotSynced.detail(),
-            "This space only exists on this device."
-        );
-        assert_eq!(
-            RemoteRefusal::UnshareableRemote.detail(),
-            "This space's sync server can't be shared."
-        );
-    }
-
-    /// The HTTP mint route refuses a local-only repository rather than
-    /// answering with an invite that can never sync.
-    #[dialog_common::test]
-    async fn it_rejects_a_mint_for_a_local_only_repository() {
-        let (app, _state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "test-http-local-only").await;
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/repository/{key}/invite"))
-                    .extension(
-                        RequestOrigin::parse("https://local.example/invite").expect("valid origin"),
-                    )
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-    }
-
-    /// The HTTP route is a second boundary behind the FABB account check: a
-    /// stale client must not be able to mint from an unattached profile.
-    #[dialog_common::test]
-    async fn it_rejects_a_mint_without_an_account() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "test-http-account-required").await;
-        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
-        {
-            let tonk = state.read().await;
-            crate::router::account::detach_test_account(&tonk)
-                .await
-                .expect("the test account detaches");
-        }
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/repository/{key}/invite"))
-                    .extension(
-                        RequestOrigin::parse("https://local.example/invite").expect("valid origin"),
-                    )
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert!(
-            content_invitations(&state, &key).await.is_empty(),
-            "a provider-free profile records no invitation"
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_uses_the_request_origin_and_rejects_unknown_fields() {
-        let (app, _state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "test-request-origin").await;
-        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/repository/{key}/invite"))
-                    .header("content-type", "application/json")
-                    .extension(
-                        RequestOrigin::parse(
-                            "https://staging.example.test/source?ignored=yes#ignored",
-                        )
-                        .expect("valid origin"),
-                    )
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let minted: CreateInviteResponse = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            minted.url().origin().ascii_serialization(),
-            "https://staging.example.test"
-        );
-        assert_eq!(minted.url().path(), "/join");
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/repository/{key}/invite"))
-                    .header("content-type", "application/json")
-                    .extension(
-                        RequestOrigin::parse("https://local.example/invite").expect("valid origin"),
-                    )
-                    .body(Body::from(r#"{"baseURL":"https://wrong.example/join"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

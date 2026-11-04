@@ -7,14 +7,12 @@
 //! account summary still proxies the account service.
 
 use axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use serde::Deserialize;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_account::delegations::account_scope;
 use tonk_common::log;
+use tonk_macros::handler;
 use tonk_worker_api::{
     AccountDevice, AccountSummary, PasskeyMetadata, RevokeDeviceAcknowledgement,
     RevokeDeviceRequest,
@@ -61,7 +59,7 @@ async fn local_devices(
 /// One row per device: a device described more than once (a historical
 /// grant minted alongside a fresh one) keeps its earliest link time,
 /// since the extra grants are the same authorization re-minted.
-#[wasm_compat]
+#[handler]
 pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<AccountDevice>>, TonkWorkerError> {
@@ -124,7 +122,7 @@ pub struct RegisterDeviceRequest {
 /// grant.
 ///
 /// [`DeviceLink`]: tonk_schema::DeviceLink
-#[wasm_compat]
+#[handler]
 pub async fn register(
     State(state): State<AppState>,
     Json(request): Json<RegisterDeviceRequest>,
@@ -585,7 +583,7 @@ pub(super) async fn publish_revocation(
 /// first, because a device that has just revoked itself can no longer
 /// push anything — the published revocation is what makes its pushes
 /// start failing.
-#[wasm_compat]
+#[handler]
 pub async fn revoke(
     State(state): State<AppState>,
     Json(request): Json<RevokeDeviceRequest>,
@@ -637,180 +635,4 @@ pub async fn revoke(
         target_cid,
         published: true,
     }))
-}
-
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod tests {
-    use std::sync::Arc;
-
-    use axum::Json;
-    use axum::extract::State;
-    use tokio::sync::RwLock;
-    use tonk_worker_api::RevokeDeviceRequest;
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-
-    use super::*;
-    use crate::TonkWorkerError;
-    use crate::router::tests::test_state_without_account;
-
-    wasm_bindgen_test_configure!(run_in_service_worker);
-
-    /// A profile that holds a root grant lists itself even before any
-    /// account service knows it: the list is local facts and it
-    /// describes this device's own link on the way through, so it never
-    /// depends on a sweep having run.
-    #[dialog_common::test]
-    async fn it_lists_this_device_for_a_profile_with_a_root() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
-        let own = { state.read().await.profile.did().to_string() };
-        let devices = list(State(state)).await.unwrap();
-        assert_eq!(devices.0.len(), 1);
-        assert_eq!(devices.0[0].did, own);
-    }
-
-    #[dialog_common::test]
-    async fn it_refuses_a_summary_for_an_unlinked_profile() {
-        // `account_summary` outlived its route: account deletion and the
-        // link path still read it, and an unlinked profile must refuse
-        // rather than answer with empty facts that read as an account
-        // with nothing in it.
-        let state = test_state_without_account().await;
-        assert!(matches!(
-            account_summary(&state).await,
-            Err(TonkWorkerError::NotFound(_))
-        ));
-    }
-
-    #[dialog_common::test]
-    fn it_prefers_the_account_space_passkey_fact_over_the_provider_row() {
-        let space = PasskeyMetadata {
-            created_at: 1_754_380_800,
-            created_on: "Chrome on macOS".to_string(),
-        };
-        let provider = PasskeyMetadata {
-            created_at: 1_600_000_000,
-            created_on: "Safari on iOS".to_string(),
-        };
-
-        let merged = merge_summary(
-            Some("person@example.com".to_string()),
-            Some(space.clone()),
-            Some(provider.clone()),
-        );
-        assert_eq!(merged.passkey, Some(space.clone()));
-
-        let fallback = merge_summary(
-            Some("person@example.com".to_string()),
-            None,
-            Some(provider.clone()),
-        );
-        assert_eq!(
-            fallback.passkey,
-            Some(provider),
-            "an account created before the space fact existed still has the provider row"
-        );
-
-        let neither = merge_summary(Some("person@example.com".to_string()), None, None);
-        assert_eq!(neither.passkey, None);
-
-        // What an unreachable provider leaves: the portable fact, no address.
-        let offline = merge_summary(None, Some(space), None);
-        assert_eq!(offline.email, None);
-        assert_eq!(offline.passkey.unwrap().created_on, "Chrome on macOS");
-    }
-
-    #[dialog_common::test]
-    async fn it_self_revokes_without_a_passkey_artifact() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
-        let request = {
-            let tonk = state.read().await;
-            crate::router::account::tests_matching_request(&tonk).await
-        };
-        {
-            let tonk = state.read().await;
-            crate::router::account::persist_link(&tonk, &request)
-                .await
-                .unwrap();
-        }
-        let tonk = state.read().await;
-        let link = crate::router::account::account_link(&tonk).await.unwrap();
-        let (artifact, target_cid) = self_revocation(&tonk, &link).await.unwrap();
-        let artifact = hex::decode(artifact).unwrap();
-        let verified = tonk_identity::revocation::verify(&artifact).await.unwrap();
-        assert_eq!(verified.target_cid, link.proof_cids()[0].to_string());
-        assert_eq!(target_cid, link.proof_cids()[0].to_string());
-    }
-
-    /// Registering describes the device in the account space, and the
-    /// list serves it back from those facts — the whole loop without an
-    /// account service anywhere.
-    #[dialog_common::test]
-    async fn it_registers_a_device_as_account_space_facts() {
-        use dialog_varsig::Principal as _;
-
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
-        let account = dialog_credentials::Ed25519Signer::generate().await.unwrap();
-        let device = dialog_credentials::Ed25519Signer::generate().await.unwrap();
-        let chain = tonk_account::delegations::mint_account_union(
-            &dialog_credentials::Signer::from(account),
-            &device.did(),
-        )
-        .await
-        .unwrap();
-        let delegation_hex = hex::encode(chain.to_bytes().unwrap());
-
-        let answer = register(
-            State(state.clone()),
-            Json(RegisterDeviceRequest {
-                did: device.did().to_string(),
-                name: "e2e terminal".into(),
-                delegation_hex,
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            answer.0["attachmentId"],
-            chain.proof_cids()[0].to_string(),
-            "the delegation CID stands in for the attachment id"
-        );
-
-        let devices = list(State(state)).await.unwrap();
-        let registered = devices
-            .0
-            .iter()
-            .find(|row| row.did == device.did().to_string())
-            .expect("the registered device is listed");
-        assert_eq!(registered.name, "e2e terminal");
-    }
-
-    /// Revoking another device mints from the target's grant retained in
-    /// the account space, so a device the space knows nothing about is
-    /// refused with what was missing, not with a demand for an artifact.
-    #[dialog_common::test]
-    async fn it_refuses_to_revoke_a_device_without_a_retained_grant() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
-        let request = {
-            let tonk = state.read().await;
-            crate::router::account::tests_matching_request(&tonk).await
-        };
-        {
-            let tonk = state.read().await;
-            crate::router::account::persist_link(&tonk, &request)
-                .await
-                .unwrap();
-        }
-        let other = dialog_credentials::Ed25519Signer::generate().await.unwrap();
-        let other_did = {
-            use dialog_varsig::Principal as _;
-            other.did().to_string()
-        };
-        assert!(
-            matches!(
-                revoke(State(state), Json(RevokeDeviceRequest { did: other_did })).await,
-                Err(TonkWorkerError::NotFound(_))
-            ),
-            "an unknown device has no retained grant to rebuild the revocation path from"
-        );
-    }
 }

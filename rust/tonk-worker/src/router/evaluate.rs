@@ -22,19 +22,16 @@ use ::axum::{
     extract::{Path, State},
     http::HeaderMap,
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::Changes;
 use dialog_repository::{RepositoryExt as _, Revision};
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_evaluator::evaluate::{EvaluateError, SyntaxEvaluateExt};
+use tonk_macros::handler;
 use tonk_notation::{Parsed, Syntax, parse};
 
 use super::AppState;
 use crate::TonkWorkerError;
-use crate::broadcast::{Notification, broadcast};
 
 // Re-export the response and match types so router consumers
 // (router.rs, browser clients via wasm-bindgen) name them
@@ -136,13 +133,12 @@ fn deserialize_bool<'de, D: serde::Deserializer<'de>>(de: D) -> Result<bool, D::
 /// Body: an asserted-notation document — any mix of queries and
 /// mutations. Returns query matches and a commit summary in one
 /// response.
-#[wasm_compat]
+#[handler]
 pub async fn evaluate(
     State(state): State<AppState>,
     Path(path): Path<EvaluatePath>,
     axum::extract::Query(query): axum::extract::Query<EvaluateQuery>,
     client: Option<Extension<super::ClientId>>,
-    lifetime: Option<Extension<crate::worker::FetchLifetime>>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
@@ -155,7 +151,6 @@ pub async fn evaluate(
             Path(path),
             axum::extract::Query(query),
             client,
-            lifetime,
             _headers,
             body,
         )
@@ -196,21 +191,6 @@ pub async fn evaluate(
                 .reactor
                 .run_scheduled_polls(&tonk_state.operator)
                 .await;
-
-            broadcast(
-                &format!("/api/repository/{}/branch/{}", path.repo, path.branch),
-                &Notification {
-                    branch: path.branch.clone(),
-                    revision: revision.clone(),
-                },
-            );
-            broadcast(
-                crate::broadcast::LOCAL_COMMIT_CHANNEL,
-                &Notification {
-                    branch: path.branch.clone(),
-                    revision: revision.clone(),
-                },
-            );
         }
         (response, transients)
     };
@@ -236,7 +216,7 @@ pub async fn evaluate(
             branch: path.branch,
             client: client.map(|Extension(id)| id),
         };
-        super::transact::spawn_dispatch(state, origin, transients, lifetime).await;
+        super::transact::spawn_dispatch(state, origin, transients).await;
     }
     Ok(response)
 }
@@ -252,12 +232,11 @@ pub struct ConditionalEvaluateRequest {
     pub expected_revision: Option<Revision>,
 }
 
-#[wasm_compat]
+#[handler]
 pub async fn evaluate_conditional(
     state: State<AppState>,
     path: Path<EvaluatePath>,
     client: Option<Extension<super::ClientId>>,
-    lifetime: Option<Extension<crate::worker::FetchLifetime>>,
     headers: HeaderMap,
     Json(request): Json<ConditionalEvaluateRequest>,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
@@ -269,7 +248,6 @@ pub async fn evaluate_conditional(
             expected_revision: Some(request.expected_revision),
         }),
         client,
-        lifetime,
         headers,
         Bytes::from(request.document),
     )
@@ -289,13 +267,12 @@ fn revision_conflict() -> TonkWorkerError {
 /// the route surface is parallel to the repository routes rather
 /// than nested under one. Same body / query-string / response
 /// contract.
-#[wasm_compat]
+#[handler]
 pub async fn evaluate_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileEvaluatePath>,
     axum::extract::Query(query): axum::extract::Query<EvaluateQuery>,
     client: Option<Extension<super::ClientId>>,
-    lifetime: Option<Extension<crate::worker::FetchLifetime>>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
@@ -335,14 +312,6 @@ pub async fn evaluate_profile(
                 .reactor
                 .run_scheduled_polls(&tonk_state.operator)
                 .await;
-
-            broadcast(
-                crate::broadcast::LOCAL_COMMIT_CHANNEL,
-                &Notification {
-                    branch: path.branch.clone(),
-                    revision: revision.clone(),
-                },
-            );
         }
         (response, transients)
     };
@@ -355,7 +324,7 @@ pub async fn evaluate_profile(
             branch: path.branch,
             client: client.map(|Extension(id)| id),
         };
-        super::transact::spawn_dispatch(state, origin, transients, lifetime).await;
+        super::transact::spawn_dispatch(state, origin, transients).await;
     }
     Ok(response)
 }
@@ -366,10 +335,7 @@ pub async fn evaluate_profile(
 /// Called once the library has STAGED, so the version it receives is
 /// authoritative rather than predicted; the facts it returns commit as
 /// the next link of the same batch.
-#[cfg_attr(
-    not(all(target_arch = "wasm32", target_os = "unknown")),
-    allow(dead_code)
-)]
+#[allow(dead_code)]
 pub type SeedRecord<'a> = &'a (
         dyn Fn(&dialog_artifacts::history::Version) -> Vec<dialog_artifacts::Instruction>
             + Send
@@ -386,10 +352,7 @@ pub type SeedRecord<'a> = &'a (
 /// commits as the next link, and the single `publish` moves the head to
 /// the chain tip — so either both land or neither does, and no reader
 /// ever observes a library without the record describing it.
-#[cfg_attr(
-    not(all(target_arch = "wasm32", target_os = "unknown")),
-    allow(dead_code)
-)]
+#[allow(dead_code)]
 pub(super) async fn stage_and_publish(
     tonk_state: &crate::worker::TonkState,
     txn: dialog_repository::Transaction<&dialog_repository::Branch>,
@@ -474,13 +437,13 @@ enum EvaluationMode {
     LibrarySeedWithRace,
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(super) type RetractionPlanner<'a> = &'a dyn Fn() -> futures_util::future::LocalBoxFuture<
     'a,
     Result<Vec<crate::router::claim::RawClaim>, TonkWorkerError>,
 >;
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) type RetractionPlanner<'a> = &'a (
         dyn Fn() -> futures_util::future::BoxFuture<
     'a,
@@ -572,10 +535,7 @@ pub(super) async fn seed_syntax_on_branch<'a>(
 /// same batch, and one publish makes both visible at once. Nothing
 /// predicts a version, and no reader ever sees a library without its
 /// record.
-#[cfg_attr(
-    not(all(target_arch = "wasm32", target_os = "unknown")),
-    allow(dead_code)
-)]
+#[allow(dead_code)]
 async fn evaluate_on_branch_with<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: crate::reactor::BranchReference<'a>,
@@ -995,10 +955,6 @@ async fn evaluate_on_branch_with<'a>(
     // Tee timing onto a BroadcastChannel so a page (or DevTools listener) can
     // read seed numbers without the SW console — the seed runs background in the
     // SW, so its logs never reach the page console.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if let Ok(channel) = web_sys::BroadcastChannel::new("tonk-timing") {
-        let _ = channel.post_message(&wasm_bindgen::JsValue::from_str(&timing));
-    }
 
     Ok((
         Json(EvaluateResponse {
@@ -1019,7 +975,7 @@ async fn evaluate_on_branch_with<'a>(
 /// Gated to match its callers: seed installs stage their own commits
 /// (see the repository module's `stage_reinstall`), leaving this reachable
 /// only from tests and the service worker.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(test)]
 pub async fn evaluate_body(
     tonk_state: &crate::worker::TonkState,
     repo: &str,
@@ -1188,34 +1144,6 @@ pub(super) async fn evaluate_profile_with_retraction_plan<'a>(
     .map(|(Json(response), _)| response)
 }
 
-/// Like [`evaluate_body`], but against the **profile** repository's
-/// branch rather than a named repo. Used to seed the standard library
-/// onto the profile meta branch at profile creation, so a
-/// `<tonk-display>` reading the profile (e.g. the Hub) can resolve the
-/// library's concepts and views there. SW-only — its sole caller
-/// (`seed_profile_library`) is gated to the service-worker scope.
-/// Gated to match its callers: the profile-seeding path now goes through
-/// [`evaluate_profile_body_recording`] so the seed record can name the
-/// commit that installed it, leaving this reachable only from the
-/// service-worker tests.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub async fn evaluate_profile_body(
-    tonk_state: &crate::worker::TonkState,
-    branch: &str,
-    body: String,
-    transact: bool,
-) -> Result<EvaluateResponse, TonkWorkerError> {
-    let tonk_branch = tonk_state.reactor.profile_repository().branch(branch);
-    let query = EvaluateQuery {
-        transact,
-        ..Default::default()
-    };
-    let bytes = Bytes::from(body.into_bytes());
-    evaluate_on_branch(tonk_state, tonk_branch, bytes, query)
-        .await
-        .map(|(Json(r), _)| r)
-}
-
 /// Project [`Parsed`] onto a successful syntax or a 400 error
 /// carrying the first diagnostic's structure (code + range +
 /// message) so the editor can route it to a positioned
@@ -1281,10 +1209,6 @@ fn map_evaluate_error(error: EvaluateError) -> TonkWorkerError {
 /// Runs natively and in the service-worker harness.
 #[cfg(test)]
 mod tests {
-    #[cfg(target_arch = "wasm32")]
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_test_configure!(run_in_service_worker);
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};

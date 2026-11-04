@@ -53,3 +53,5 @@ pub mod task;
 pub use element::register;
 #[cfg(target_arch = "wasm32")]
 pub use site::register as register_site;
+#[cfg(target_arch = "wasm32")]
+pub use space_origin::{account, signed_in};

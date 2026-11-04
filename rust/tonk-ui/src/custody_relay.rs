@@ -266,20 +266,8 @@ fn command_method(intent: &tonk_worker_api::CustodyIntent) -> &'static str {
     }
 }
 
-/// Which of the panel's ceremonies `intent` is, when the panel that adds an
-/// account asked for it: that panel waits on the worker to say how it went.
-fn registration_kind(intent: &tonk_worker_api::CustodyIntent) -> Option<&'static str> {
-    match intent {
-        tonk_worker_api::CustodyIntent::CreateAccount(_) => {
-            Some(tonk_schema::registration::kind::CREATE)
-        }
-        tonk_worker_api::CustodyIntent::Login(_) => Some(tonk_schema::registration::kind::LOG_IN),
-        _ => None,
-    }
-}
-
 /// The browser's name for a refused ceremony.
-fn refusal_name(refusal: tonk_identity::passkey::CeremonyRefusal) -> &'static str {
+pub(crate) fn refusal_name(refusal: tonk_identity::passkey::CeremonyRefusal) -> &'static str {
     use tonk_identity::passkey::CeremonyRefusal;
     match refusal {
         CeremonyRefusal::NotAllowed => "NotAllowedError",
@@ -290,30 +278,10 @@ fn refusal_name(refusal: tonk_identity::passkey::CeremonyRefusal) -> &'static st
     }
 }
 
-/// The browser's name for a refusal the worker has not heard of, or `None`
-/// for one it has: what the worker itself answered a hand-off with carries
-/// the service's `code`, and the worker recorded where that left the panel.
-/// `None` for `error` is the person putting the card away.
-fn refusal_to_report(error: Option<&CeremonyError>) -> Option<&'static str> {
-    match error {
-        None => Some("NotAllowedError"),
-        Some(error) if error.denial.is_some() => None,
-        Some(error) => error.refusal.map(refusal_name),
-    }
-}
-
-/// Tell the worker that holds the account that the browser refused a
-/// ceremony the panel that adds an account asked for. A refusal from the
-/// service comes back through the custody hand-off, which the worker
-/// already sees; this is for one that never got that far: `error` is the
-/// browser's, or `None` when the person put the card away.
-fn report_refusal(intent: &tonk_worker_api::CustodyIntent, error: Option<&CeremonyError>) {
-    let Some(kind) = registration_kind(intent) else {
-        return;
-    };
-    let Some(name) = refusal_to_report(error) else {
-        return;
-    };
+/// Tell the worker that holds the account that the person did not finish
+/// the sign-in ceremony `kind`: the browser refused it, as it names the
+/// refusal, `name`, or the person put the panel away.
+pub(crate) fn tell_refused(kind: &str, name: &str) {
     let message = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&message, &"type".into(), &"ceremony-refused".into());
     let _ = js_sys::Reflect::set(&message, &"kind".into(), &kind.into());
@@ -390,7 +358,6 @@ fn assert_on_the_click(intent: tonk_worker_api::CustodyIntent, credential_id: Op
             set_card_message(&said);
             return;
         }
-        report_refusal(&intent, Some(&error));
         if !BUSY.with(|busy| busy.replace(true)) {
             let anchored = matches!(&intent, tonk_worker_api::CustodyIntent::AuthorizeDevice(_));
             if mount_card(anchored).is_some() {
@@ -429,13 +396,7 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
     };
     set_card_message("Confirm this account action with your passkey.");
     tonk_common::log!("custody: consent card raised for {}", intent_label(&intent));
-    {
-        let intent = intent.clone();
-        on_click(&host, "#tonk-custody-dismiss", move || {
-            report_refusal(&intent, None);
-            remove_card();
-        });
-    }
+    on_click(&host, "#tonk-custody-dismiss", remove_card);
 
     let method = command_method(&intent);
     let action = command_action(&intent);
@@ -443,22 +404,17 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
         set_card_text("Waiting for passkey…");
         tonk_common::log!("custody: continue clicked for {}", intent_label(&intent));
         match begin_with(method, intent.clone(), credential_id.clone()) {
-            Ok(mediation) => {
-                let intent = intent.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Err(error) = mediation.finish().await {
-                        report(&error.message);
-                        report_refusal(&intent, Some(&error));
-                        set_card_text(&user_error::ceremony(action, &error));
-                        remove_card_after(4000);
-                    } else {
-                        remove_card();
-                    }
-                })
-            }
+            Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {
+                if let Err(error) = mediation.finish().await {
+                    report(&error.message);
+                    set_card_text(&user_error::ceremony(action, &error));
+                    remove_card_after(4000);
+                } else {
+                    remove_card();
+                }
+            }),
             Err(error) => {
                 report(&error.message);
-                report_refusal(&intent, Some(&error));
                 set_card_text(&user_error::ceremony(action, &error));
                 remove_card_after(4000);
             }
@@ -803,33 +759,6 @@ mod tests {
             denial,
             refusal,
         }
-    }
-
-    /// The worker answers a hand-off for an account awaiting its emailed
-    /// link with a refusal of its own, and has recorded the wait: telling
-    /// it the passkey was refused would replace the wait with a failure.
-    #[wasm_bindgen_test]
-    fn it_reports_only_refusals_the_worker_has_not_heard_of() {
-        use tonk_identity::custody::CustodyDenial;
-        use tonk_identity::passkey::CeremonyRefusal;
-
-        let awaiting = failed(
-            Some(CustodyDenial::AwaitingActivation),
-            Some(CeremonyRefusal::Other),
-        );
-        assert_eq!(refusal_to_report(Some(&awaiting)), None);
-
-        let unsupported = failed(None, Some(CeremonyRefusal::NotSupported));
-        assert_eq!(
-            refusal_to_report(Some(&unsupported)),
-            Some("NotSupportedError")
-        );
-        assert_eq!(refusal_to_report(Some(&failed(None, None))), None);
-        assert_eq!(
-            refusal_to_report(None),
-            Some("NotAllowedError"),
-            "a card put away is a refusal"
-        );
     }
 
     #[wasm_bindgen_test]

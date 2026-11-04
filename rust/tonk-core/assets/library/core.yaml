@@ -1027,6 +1027,21 @@ concept!: &tonk/repository
       the: xyz.tonk.repo/description
       as: text
 
+# The kernel a space runs. A space created on a kernel starts with one
+# commit on `main`: the kernel's wasm as an asset, and this pin to it. The
+# space then holds what it needs to start wherever it syncs, and a new kernel
+# is a new asset and a moved pin, in one commit.
+concept!: &tonk/space-kernel
+  this: tonk:space/kernel
+  description: The kernel a space runs, pinned on the space's own main.
+  with:
+    kernel:
+      description: >
+        The asset of the kernel's wasm, `asset:<hash>`, where the hash is
+        the BLAKE3 digest the kernel's content identifier names.
+      the: xyz.tonk.space/kernel
+      as: entity
+
 # Agent working context carried by the repository itself. The instance is keyed
 # by the same stable repository subject DID as `tonk/repository`, so it syncs
 # with the space rather than belonging to one filesystem checkout or replica.
@@ -1769,6 +1784,23 @@ concept!: &route/http
       the: "xyz.tonk.route.http.header"
       pick: :all
       as: {[symbol]: text}
+
+# A route answered with an asset the space keeps: a request for a matching
+# path gets the asset's bytes, under its media type. This is how a space
+# keeps the renderer it was created with, such as the element runtime's
+# wasm, at the paths its page loads them from.
+concept!: &route/asset
+  this: tonk:route/asset
+  description: A route answered with an asset, a path pattern and the asset to give.
+  with:
+    path:
+      description: The path pattern, in the syntax a `route` uses.
+      the: xyz.tonk.route.asset/path
+      as: text
+    asset:
+      description: The asset whose bytes answer the request, a blob of this space.
+      the: xyz.tonk.route.asset/asset
+      as: entity
 
 # The routes this library ships are `seed/route` commands, not routes. The
 # rule writes a route for each one whose path no route claims yet, and

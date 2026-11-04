@@ -11,76 +11,22 @@
 use std::collections::HashMap;
 
 use ::axum::{Json, extract::Path, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_capability::access::{AuthorizeError, Recourse};
 use dialog_effects::Rejection;
-use dialog_repository::{PublishError, PullError, Revision};
+use dialog_repository::{PublishError, PullError};
 use serde::Deserialize;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_macros::handler;
 use tonk_schema::{SyncState, classify};
 use tonk_worker_api::SyncDisposition;
 pub use tonk_worker_api::{SyncResponse, SyncStatusResponse};
 
 use super::{AppState, BranchConfiguration};
 use crate::TonkWorkerError;
-use crate::broadcast::{Notification, broadcast};
-
-/// Announce on the branch's broadcast channel that its head may have
-/// moved, so subscribed UIs refresh their revision and sync-state
-/// badges without a full refetch. The channel mirrors the endpoint
-/// path ("channel name == endpoint path"). A `None` revision (branch
-/// with no commits) is skipped — there's nothing to announce.
-///
-/// Posted after a *successful* pull/push/sync. A push leaves the
-/// local head where it was, so its announcement carries the unchanged
-/// revision; listeners still re-read the read-only sync status, which
-/// is what actually flips (e.g. `ahead` → `synced`).
-fn announce_head(repo: &str, branch: &str, revision: Option<Revision>) {
-    if let Some(revision) = revision {
-        broadcast(
-            &format!("/api/repository/{repo}/branch/{branch}"),
-            &Notification {
-                branch: branch.to_string(),
-                revision,
-            },
-        );
-    }
-}
-
-/// Publish the live sync `status` to the SPACE branch's OVERLAY, keyed on
-/// the fixed `state:here` entity (`Replica::SYNC_STATE_HERE`).
-///
-/// The status is a transient observation (idle / pending / offline / local),
-/// so it goes to the overlay — never persisted, never replicated — and folds
-/// into the chip's `tonk:sync` subscription. A well-known singleton entity
-/// (like `tonk:join/status`); one space is in scope per page, so the chip
-/// needs no replica entity.
-///
-/// It lives on the SPACE branch (the one the page is showing), not the
-/// profile meta branch: a sealed-guest chip can only reach the branch the
-/// `<tonk-portal>` is mounted under (the bridge annotates the outer
-/// `<tonk-repository name={space}>` context), so the overlay must be where
-/// the chip already queries. Overlay-only: no commit.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn publish_sync_status(
-    tonk: &crate::worker::TonkState,
-    repo: &str,
-    branch: &str,
-    state: SyncState,
-) {
-    publish_sync_status_attr(
-        tonk,
-        repo,
-        branch,
-        tonk_schema::Replica::sync_status_attr(state),
-    )
-    .await;
-}
 
 /// Stamp a specific `tonk/sync` `status` value into the `state:here` overlay
 /// (e.g. `offline` on a fetch failure, where there is no `SyncState` to map).
+#[cfg(feature = "persona")]
 pub async fn publish_sync_status_attr(
     tonk: &crate::worker::TonkState,
     repo: &str,
@@ -120,6 +66,7 @@ pub async fn publish_sync_status_attr(
 /// just-paused replica without waiting for a status sweep (which a paused
 /// replica skips). Called by the pause-sync command handler after it commits
 /// the durable preference.
+#[cfg(feature = "persona")]
 pub async fn publish_paused_status(tonk: &crate::worker::TonkState, repo: &str, branch: &str) {
     publish_sync_status_attr(tonk, repo, branch, tonk_schema::Replica::paused_status()).await;
 }
@@ -204,6 +151,7 @@ pub async fn publish_session_account(
 /// both consult before pulling/pushing. Keyed on the replica entity (derived
 /// from `(profile, subject)`) rather than the `state:here` singleton, so the
 /// preference is this device's own.
+#[cfg(feature = "persona")]
 pub async fn is_sync_enabled(tonk: &crate::worker::TonkState, repo: &str, branch: &str) -> bool {
     use dialog_query::{Output as _, Query, Term};
     use tonk_schema::{Replica, ReplicaSyncEnabled};
@@ -243,92 +191,6 @@ pub async fn is_sync_enabled(tonk: &crate::worker::TonkState, repo: &str, branch
     // Paused only when a fact explicitly says `enabled = false`; absent →
     // enabled.
     !enabled.iter().any(|fact| !fact.enabled.0)
-}
-
-/// Re-classify `repo`/`branch` against a fresh upstream fetch and publish the
-/// settled `tonk/sync` status to the chip's overlay (`synced` / `syncing…` via
-/// `ahead`/`behind`/`diverged` / `offline`). This is the settle step a sync run
-/// owes the chip: the `sync` op flips to `pending` at the start but must
-/// publish the resolved state when it finishes, or the chip stays `syncing…`
-/// forever (the regression after the in-page status controller was removed).
-///
-/// Honors the pause preference (a replica paused mid-sync keeps `paused`) and
-/// treats an unreachable remote as `offline` rather than clobbering with a
-/// stale reading. A branch with no upstream publishes `offline` (nothing to
-/// sync against). Best-effort: a failure to acquire/fetch is logged, not
-/// surfaced — the caller's sync result already carried the real outcome.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn publish_settled_status(
-    tonk: &crate::worker::TonkState,
-    repo: &str,
-    branch: &str,
-    observed: Option<Option<Revision>>,
-) {
-    let account = super::account_state::is_account_key(tonk, repo).await;
-    // A user space paused mid-sync keeps `paused`. Account-system replicas
-    // ignore user pause preferences and always remain in the sync population.
-    if !account && !is_sync_enabled(tonk, repo, branch).await {
-        publish_paused_status(tonk, repo, branch).await;
-        return;
-    }
-
-    let session = match tonk
-        .reactor
-        .repository(repo)
-        .branch(branch)
-        .acquire(&tonk.operator)
-        .await
-    {
-        Ok(session) => session,
-        Err(e) => {
-            log!("publish_settled_status: failed to acquire {repo}/{branch}: {e}");
-            return;
-        }
-    };
-    let handle = session.handle();
-    let local = handle.revision();
-
-    if tonk_account::peer::upstream(handle).is_none() {
-        publish_sync_status(tonk, repo, branch, SyncState::NoUpstream).await;
-        return;
-    }
-
-    // The caller usually knows where upstream stands: a push that
-    // landed says so in its answer, and re-reading the cell to colour a
-    // chip is a round trip that learns nothing. Only a caller with
-    // nothing to hand fetches.
-    let remote = match observed {
-        Some(remote) => remote,
-        None => match handle.fetch().perform(&tonk.operator).await {
-            Ok(fetched) => fetched
-                .into_iter()
-                .next()
-                .and_then(|fetched| fetched.revision),
-            Err(e) => {
-                log!("publish_settled_status: fetch {repo}/{branch} failed: {e}");
-                // An unserved subject is not offline: the service answered,
-                // and said no. Settle on `local` — the same status the
-                // failure path stamps — or the chip would flap between the
-                // two on every sweep.
-                let status = match classified_service_failure(&e) {
-                    Some(TonkWorkerError::Upstream {
-                        code: Some(code), ..
-                    }) if code == "NOT_PROVISIONED" => tonk_schema::Replica::local_status(),
-                    _ => tonk_schema::Replica::offline_status(),
-                };
-                publish_sync_status_attr(tonk, repo, branch, status).await;
-                return;
-            }
-        },
-    };
-
-    let state = SyncState::from(classify(local.as_ref(), remote.as_ref()));
-    // Re-check pause: it could have landed during the (awaiting) fetch.
-    if is_sync_enabled(tonk, repo, branch).await {
-        publish_sync_status(tonk, repo, branch, state).await;
-    } else {
-        publish_paused_status(tonk, repo, branch).await;
-    }
 }
 
 /// How many times a `/sync` pull refreshes-and-retries when a concurrent
@@ -502,60 +364,6 @@ fn sync_failure(error: &crate::reactor::ReactorError) -> TonkWorkerError {
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn publish_failure_status(
-    tonk: &crate::worker::TonkState,
-    repo: &str,
-    branch: &str,
-    error: &TonkWorkerError,
-) {
-    let status = match error {
-        TonkWorkerError::Upstream {
-            code: Some(code), ..
-        } if code == "CREDENTIAL_REVOKED" => tonk_schema::Replica::revoked_status(),
-        TonkWorkerError::Upstream {
-            code: Some(code), ..
-        } if code == "SYNC_CONFLICT" => tonk_schema::Replica::conflict_status(),
-        TonkWorkerError::Upstream {
-            code: Some(code), ..
-        } if code == "NOT_PROVISIONED" => {
-            // The service stopped serving this subject, and waiting will
-            // not bring it back: drop the account-db provider record so
-            // the directory reads the space as local-only again, and
-            // stamp `local` — the status that drives the connect
-            // affordance whose enable-sync is the re-provisioning path.
-            forget_space_provider(tonk, repo, branch).await;
-            tonk_schema::Replica::local_status()
-        }
-        _ => tonk_schema::Replica::unavailable_status(),
-    };
-    publish_sync_status_attr(tonk, repo, branch, status).await;
-}
-
-/// Retract the account-db [`SpaceProvider`](tonk_schema::SpaceProvider)
-/// record for the subject `repo`/`branch` belongs to — the "update the
-/// record" half of observing a deprovisioned space. Best-effort: a
-/// record that outlives its provisioning only costs the next share one
-/// refused mint.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn forget_space_provider(tonk: &crate::worker::TonkState, repo: &str, branch: &str) {
-    let session = match tonk
-        .reactor
-        .repository(repo)
-        .branch(branch)
-        .acquire(&tonk.operator)
-        .await
-    {
-        Ok(session) => session,
-        Err(e) => {
-            log!("forget_space_provider: failed to acquire {repo}/{branch}: {e}");
-            return;
-        }
-    };
-    let subject = session.handle().of().clone();
-    super::customer::retract_space_provider(tonk, &subject).await;
-}
-
 /// Branch names in `branches` that have an upstream, sorted for a
 /// stable sweep order. Branches without an upstream have nowhere to
 /// sync to, so they're skipped. Shared with the in-page sweep so the
@@ -569,38 +377,6 @@ pub fn branches_to_sync(branches: &HashMap<String, BranchConfiguration>) -> Vec<
         .collect();
     names.sort();
     names
-}
-
-/// Stamp `sync:offline` at `state:here` on every open repository's upstream
-/// branches, WITHOUT touching the network. The per-fetch drain calls this
-/// instead of sweeping while the browser reports offline, so the chip/disc
-/// reflect the disconnect — skipping silently left them frozen on the last
-/// online status. Overlay-only and idempotent: a re-stamp of the same value
-/// changes nothing, so subscribers see exactly one `offline` frame.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub async fn mark_offline(state: &AppState) {
-    let open: Vec<String> = {
-        let tonk = state.read().await;
-        tonk.reactor.spaces()
-    };
-    for repo in open {
-        let info = match super::repository::get_repository(State(state.clone()), Path(repo.clone()))
-            .await
-        {
-            Ok(Json(info)) => info,
-            Err(_) => continue,
-        };
-        let tonk = state.read().await;
-        for branch in branches_to_sync(&info.branch) {
-            publish_sync_status_attr(
-                &tonk,
-                &repo,
-                &branch,
-                tonk_schema::Replica::offline_status(),
-            )
-            .await;
-        }
-    }
 }
 
 /// Sweep every upstream branch of `repo`, reusing the per-branch
@@ -638,26 +414,6 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
     // sweep (no pull, no push) until resumed. This is the gate localStorage
     // couldn't provide — the SW can read this branch fact. Keyed on the
     // content branch, where the chip writes the preference.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        let tonk = state.read().await;
-        // The account repository returned above, so everything reaching here is
-        // a user space with a pause preference a chip can have written.
-        if !is_sync_enabled(&tonk, repo, "main").await {
-            log!("background sync of '{repo}' skipped: paused");
-            // Re-stamp `sync:paused` on the way out. The status lives in the
-            // SW's in-memory overlay and is lost on reload / worker restart;
-            // the durable `enabled=false` preference survives, but without
-            // this the chip's `state:here` subscription comes back empty
-            // (the sweep is the only thing that stamps status, and a paused
-            // replica took the early return before ever stamping) — so a
-            // paused space rendered as un-paused after every reload. The chip
-            // reads `state:here` on the content branch (`main`);
-            // `publish_paused_status` asserts the overlay and drains the poll.
-            publish_paused_status(&tonk, repo, "main").await;
-            return Ok(());
-        }
-    }
 
     let info = match super::repository::get_repository(State(state.clone()), Path(repo.to_string()))
         .await
@@ -705,7 +461,7 @@ pub struct SyncPath {
 }
 
 /// Pull changes from the upstream remote.
-#[wasm_compat]
+#[handler]
 pub async fn pull(
     State(state): State<AppState>,
     Path(params): Path<SyncPath>,
@@ -829,7 +585,6 @@ pub async fn pull(
                         .await;
                 }
             }
-            announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
                 success: true,
                 disposition: SyncDisposition::Completed,
@@ -841,8 +596,6 @@ pub async fn pull(
         Err(e) => {
             log!("Pull failed: {}@{}: {e:?}", params.branch, params.repo);
             let error = sync_failure(&e);
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
             Err(error)
         }
     }
@@ -865,7 +618,7 @@ async fn migrate_adopted_head(tonk_state: &crate::worker::TonkState, repo: &str,
 }
 
 /// Push local changes to the upstream remote.
-#[wasm_compat]
+#[handler]
 pub async fn push(
     State(state): State<AppState>,
     Path(params): Path<SyncPath>,
@@ -901,7 +654,6 @@ pub async fn push(
         Ok(_) => {
             log!("Push succeeded: {}@{}", params.branch, params.repo);
             let after = session.handle().revision();
-            announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
                 success: true,
                 disposition: SyncDisposition::Completed,
@@ -913,8 +665,6 @@ pub async fn push(
         Err(e) => {
             log!("Push failed: {}@{}: {e:?}", params.branch, params.repo);
             let error = sync_failure(&e);
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
             Err(error)
         }
     }
@@ -928,7 +678,7 @@ pub async fn push(
 /// no upstream returns [`SyncState::NoUpstream`] rather than an
 /// error, so the indicator has something to render for every
 /// branch.
-#[wasm_compat]
+#[handler]
 pub async fn sync_status(
     State(state): State<AppState>,
     Path(params): Path<SyncPath>,
@@ -948,29 +698,10 @@ pub async fn sync_status(
     // hook for the topbar identity chip: re-stamp the `state:self` overlay here,
     // before any sync-state branch returns, so a freshly opened space (even a
     // paused or upstream-less one) always carries the member's identity.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    publish_self_identity(&tonk_state, &params.repo, &params.branch).await;
 
     // A paused replica reports `paused` and skips the upstream fetch — so a
     // status sweep can't clobber the chip's `paused` with a fresh `synced`/
     // `ahead` reading, and we don't hit the network while paused.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if !is_sync_enabled(&tonk_state, &params.repo, &params.branch).await {
-        let local = tonk_state
-            .reactor
-            .repository(&params.repo)
-            .branch(&params.branch)
-            .acquire(&tonk_state.operator)
-            .await
-            .ok()
-            .and_then(|session| session.handle().revision());
-        publish_paused_status(&tonk_state, &params.repo, &params.branch).await;
-        return Ok(Json(SyncStatusResponse {
-            state: SyncState::NoUpstream,
-            local,
-            remote: None,
-        }));
-    }
 
     let session = tonk_state
         .reactor
@@ -984,14 +715,6 @@ pub async fn sync_status(
     let local = handle.revision();
 
     if tonk_account::peer::upstream(handle).is_none() {
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        publish_sync_status(
-            &tonk_state,
-            &params.repo,
-            &params.branch,
-            SyncState::NoUpstream,
-        )
-        .await;
         return Ok(Json(SyncStatusResponse {
             state: SyncState::NoUpstream,
             local,
@@ -1010,8 +733,6 @@ pub async fn sync_status(
                 code: Some("SYNC_UNAVAILABLE".to_string()),
                 message: "synchronization is temporarily unavailable".to_string(),
             });
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
             return Err(error);
         }
     };
@@ -1026,12 +747,6 @@ pub async fn sync_status(
     // landed in between. Now that transactions interleave with sync, publishing
     // a settled `idle`/`local` here would clobber the `paused` the pause command
     // just set. If it became paused mid-fetch, keep `paused`.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if is_sync_enabled(&tonk_state, &params.repo, &params.branch).await {
-        publish_sync_status(&tonk_state, &params.repo, &params.branch, sync_state).await;
-    } else {
-        publish_paused_status(&tonk_state, &params.repo, &params.branch).await;
-    }
     Ok(Json(SyncStatusResponse {
         state: sync_state,
         local,
@@ -1040,7 +755,7 @@ pub async fn sync_status(
 }
 
 /// Full sync: pull then push.
-#[wasm_compat]
+#[handler]
 pub async fn sync(
     State(state): State<AppState>,
     Path(params): Path<SyncPath>,
@@ -1059,53 +774,12 @@ pub async fn sync(
     // again. Stamp `offline` so the chip reflects the disconnect and report
     // success (nothing to reconcile until connectivity returns; any traffic or
     // the page's `online` event restarts real syncing).
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if crate::worker::offline() {
-        // Read lock — the overlay stamp goes through the reactor (its own
-        // locks); a write lock here would block concurrent reads, same as
-        // `mark_offline`, which stamps the identical status under `read()`.
-        let tonk_state = state.read().await;
-        publish_sync_status_attr(
-            &tonk_state,
-            &params.repo,
-            &params.branch,
-            tonk_schema::Replica::offline_status(),
-        )
-        .await;
-        log!("sync of {}/{} skipped: offline", params.repo, params.branch);
-        return Ok(Json(SyncResponse {
-            success: true,
-            disposition: SyncDisposition::Offline,
-            before: None,
-            after: None,
-            error: None,
-        }));
-    }
 
     // Honor the durable pause preference at the single chokepoint every sync
     // path flows through (the in-page interval coordinator, the background
     // sweep, a manual sync all call `/sync`). A paused replica neither pulls
     // nor pushes; we re-stamp `paused` so a status check that raced doesn't
     // leave a stale `pending` on the chip, and report success (nothing to do).
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        let tonk_state = state.read().await;
-        if !super::account_state::is_account_key(&tonk_state, &params.repo).await
-            && !is_sync_enabled(&tonk_state, &params.repo, &params.branch).await
-        {
-            drop(tonk_state);
-            let tonk_state = state.write().await;
-            publish_paused_status(&tonk_state, &params.repo, &params.branch).await;
-            log!("sync of {}/{} skipped: paused", params.repo, params.branch);
-            return Ok(Json(SyncResponse {
-                success: true,
-                disposition: SyncDisposition::Paused,
-                before: None,
-                after: None,
-                error: None,
-            }));
-        }
-    }
 
     // Flip the chip to `pending` for the duration. This runs in its OWN brief
     // write-lock scope that drops before the long pull/push lock below, so the
@@ -1113,17 +787,6 @@ pub async fn sync(
     // begins (a mid-sync publish wouldn't — the chip's re-poll needs the read
     // lock the long write lock holds). The settled status is published by the
     // status check the controller runs after `/sync` returns.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        let tonk_state = state.write().await;
-        publish_sync_status_attr(
-            &tonk_state,
-            &params.repo,
-            &params.branch,
-            tonk_schema::Replica::pending_status(),
-        )
-        .await;
-    }
 
     // Everything above this point is local — an offline or paused branch
     // returns without touching the network — so renewal waits until a
@@ -1214,8 +877,6 @@ pub async fn sync(
         }
     }
     if let Some(error) = pull_error {
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
         return Err(error);
     }
     let after_pull = after_pull.flatten();
@@ -1251,7 +912,6 @@ pub async fn sync(
         Ok(pushed) => {
             log!("Push succeeded: {}@{}", params.branch, params.repo);
             let after = session.handle().revision();
-            announce_head(&params.repo, &params.branch, after.clone());
             // Settle the chip: classify against the upstream and publish the
             // resolved status (e.g. `synced`), or it stays stuck on `pending`/
             // `syncing…` — the `sync` op only flipped it to `pending` at the
@@ -1261,11 +921,8 @@ pub async fn sync(
             // what the push already learned rather than from another read of
             // the same cell. `Ok(None)` means there was nothing to push, which
             // leaves upstream where the pull above saw it.
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            publish_settled_status(&tonk_state, &params.repo, &params.branch, Some(pushed)).await;
             // Off the worker there is no chip to settle, so the revision
             // the push answered with has no reader.
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             let _ = pushed;
             Ok(Json(SyncResponse {
                 success: true,
@@ -1281,27 +938,26 @@ pub async fn sync(
             // `pending`; classify so the chip reflects reality. A push that
             // did not land says nothing about where upstream stands, so this
             // is the one caller that has to ask.
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            publish_settled_status(&tonk_state, &params.repo, &params.branch, None).await;
             let _ = (before, after_pull);
             let error = sync_failure(&e);
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
             Err(error)
         }
     }
 }
 
-/// A millisecond wall-clock stamp for sync-queue activity priority.
-/// `Date.now()` in the SW event context; native has no clock dependency
-/// (the stamp only orders sweeps, it never gates correctness), so 0 —
-/// which also keeps native tests deterministic.
+/// A millisecond wall-clock stamp for sync-queue activity priority: the
+/// worker's clock in a browser and on WASI. Native has no clock dependency
+/// (the stamp only orders sweeps, it never gates correctness), so 0, which
+/// also keeps native tests deterministic.
 pub(crate) fn now_millis() -> f64 {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(target_arch = "wasm32")]
     {
-        js_sys::Date::now()
+        web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs_f64() * 1000.0)
+            .unwrap_or_default()
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         0.0
     }
@@ -1401,6 +1057,7 @@ impl SyncQueue {
     /// survive the reactor's [`evict`](crate::Reactor::evict) and, on the
     /// next [`drain_sync`], get folded into the union that `sync_repository`
     /// reconciles — re-acquiring (resurrecting) the just-removed repo.
+    #[cfg(feature = "persona")]
     pub(crate) fn forget(&self, repo: &str) {
         if let Ok(mut dirty) = self.dirty.lock() {
             dirty.remove(repo);
@@ -1451,7 +1108,7 @@ pub async fn drain_sync(state: &AppState) {
 
     // Dirty repos first (push priority), then repos owed a retry, then every
     // other open repo (pull).
-    let now = current_millis();
+    let now = now_millis();
     let pending = {
         let tonk = state.read().await;
         tonk.sync_queue.drain_pending()
@@ -1506,7 +1163,9 @@ pub async fn drain_sync(state: &AppState) {
     // reactor entry — represents in the pull population above. Sweep it
     // explicitly each drain, unless a dirty mark already routed it
     // through `sync_repository` — sweeping twice per heartbeat is the
-    // exact duplication the dedicated path exists to avoid.
+    // exact duplication the dedicated path exists to avoid. A space's own
+    // worker holds no account to sweep.
+    #[cfg(feature = "persona")]
     let account_already_swept = {
         let tonk = state.read().await;
         let mut swept = false;
@@ -1518,6 +1177,7 @@ pub async fn drain_sync(state: &AppState) {
         }
         swept
     };
+    #[cfg(feature = "persona")]
     if !account_already_swept {
         let tonk = state.read().await;
         let (status, swept) = super::account_state::ensure_account_state_swept(&tonk).await;
@@ -1606,35 +1266,15 @@ where
 /// land a local commit, which bypasses the quiet interval. Always `200`
 /// either way: the poke is fire-and-forget and the response says nothing
 /// about whether a drain ran.
-#[wasm_compat]
+#[handler]
 pub async fn drain() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true }))
-}
-
-/// A millisecond wall-clock stamp for activity priority. `Date.now()` in the SW
-/// event context (not the reactor's deterministic paths). Native builds (tests)
-/// have no clock dependency here, so they return 0 — priority ordering is moot
-/// off-wasm.
-fn current_millis() -> f64 {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        js_sys::Date::now()
-    }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    {
-        0.0
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::router::UpstreamConfiguration;
-
-    #[cfg(target_arch = "wasm32")]
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_test_configure!(run_in_browser);
 
     fn with_upstream() -> BranchConfiguration {
         BranchConfiguration {
@@ -1803,187 +1443,4 @@ mod tests {
     }
 
     // `forget` is service-worker scoped (wasm-gated), so this one is too.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[dialog_common::test]
-    fn it_forgets_a_removed_repo_from_both_sets() {
-        let queue = SyncQueue::default();
-        queue.mark_dirty("gone", 1_000.0);
-        queue.requeue("gone", 1_000.0);
-        queue.forget("gone");
-        assert_eq!(queue.dirty_count(), 0);
-        assert!(
-            queue.drain_pending().is_empty(),
-            "a removed space must not be resurrected by a leftover stamp",
-        );
-    }
-}
-
-/// Overlay tests — wasm-only (needs IndexedDB / branch IO via the service-worker
-/// host).
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod overlay_tests {
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    wasm_bindgen_test_configure!(run_in_service_worker);
-
-    use dialog_query::{Output as _, Query, Term};
-    use tonk_schema::{petname, prelude::DidExt as _};
-
-    use crate::router::{api_router_with_state, tests::put_repo, tests::test_state};
-
-    #[dialog_common::test]
-    async fn it_stamps_the_self_identity_overlay_on_load() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "chip-space").await;
-        let tonk = state.read().await;
-        super::publish_self_identity(&tonk, &key, "main").await;
-
-        let session = tonk
-            .reactor
-            .repository(&key)
-            .branch("main")
-            .acquire(&tonk.operator)
-            .await
-            .unwrap();
-
-        let entity: dialog_artifacts::Entity =
-            tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
-        let rows: Vec<tonk_schema::ProfileIdentity> = session
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::ProfileIdentity> {
-                this: Term::from(entity),
-                did: Term::var("did"),
-                name: Term::var("name"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .unwrap();
-
-        assert_eq!(rows.len(), 1, "expected one state:self row");
-        assert_eq!(
-            rows[0].name.0,
-            petname(&tonk.profile.did()),
-            "name must be the petname when no override is set",
-        );
-        assert_eq!(
-            rows[0].did.0,
-            tonk.profile.did().this(),
-            "did must match the profile DID for the sigil",
-        );
-    }
-}
-
-/// Session renewal tests exercise the worker's state replacement boundary.
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod renewal_tests {
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    wasm_bindgen_test_configure!(run_in_service_worker);
-
-    use super::{ensure_session_authority, renew_session_with};
-    use crate::router::tests::test_state;
-    use crate::router::{AppState, api_router_with_state};
-
-    async fn operator_did(state: &AppState) -> String {
-        state.read().await.operator.did().to_string()
-    }
-
-    async fn revision(state: &AppState) -> Option<dialog_repository::Revision> {
-        let tonk = state.read().await;
-        dialog_repository::Repository::from(tonk.profile.credential().clone())
-            .branch(dialog_repository::ACCESS_BRANCH)
-            .open()
-            .perform(&tonk.operator)
-            .await
-            .unwrap()
-            .revision()
-    }
-
-    #[dialog_common::test]
-    async fn it_replaces_a_due_session_once_without_committing() {
-        let (_app, state, _lsp) = api_router_with_state(test_state().await);
-        let before = operator_did(&state).await;
-        let head = revision(&state).await;
-        state.write().await.session_expires_at = crate::session::now();
-        ensure_session_authority(&state).await.unwrap();
-        let renewed = operator_did(&state).await;
-        assert_ne!(before, renewed);
-        assert_eq!(revision(&state).await, head);
-        {
-            let tonk = state.read().await;
-            let proof = tonk
-                .profile
-                .access()
-                .prove(
-                    dialog_capability::Subject::from(tonk.profile.did())
-                        .attenuate(dialog_effects::Use),
-                )
-                .audience(&tonk.operator)
-                .perform(&tonk.operator)
-                .await
-                .unwrap();
-            assert_eq!(proof.duration.expiration, Some(tonk.session_expires_at));
-            assert_eq!(
-                proof.proofs.last().unwrap().0.audience(),
-                &tonk.operator.did()
-            );
-        }
-        ensure_session_authority(&state).await.unwrap();
-        assert_eq!(operator_did(&state).await, renewed);
-    }
-
-    #[dialog_common::test]
-    async fn it_keeps_the_current_session_when_construction_fails() {
-        let (_app, state, _lsp) = api_router_with_state(test_state().await);
-        let before = operator_did(&state).await;
-        let head = revision(&state).await;
-        let due = crate::session::now();
-        state.write().await.session_expires_at = due;
-        let result = renew_session_with(&state, |_, _| async {
-            Err(crate::TonkWorkerError::Internal(
-                "injected session construction failure".into(),
-            ))
-        })
-        .await;
-        assert!(result.is_err());
-        assert_eq!(operator_did(&state).await, before);
-        assert_eq!(state.read().await.session_expires_at, due);
-        assert_eq!(revision(&state).await, head);
-    }
-
-    #[dialog_common::test]
-    async fn it_installs_only_one_concurrent_candidate() {
-        let (_app, state, _lsp) = api_router_with_state(test_state().await);
-        let head = revision(&state).await;
-        state.write().await.session_expires_at = crate::session::now();
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-        let (installed_tx, installed_rx) = tokio::sync::oneshot::channel();
-        let winner = async {
-            renew_session_with(&state, |profile, _storage| async move {
-                ready_rx.await.unwrap();
-                crate::session::rotate(&profile, crate::router::repository::PROFILE_BRANCH).await
-            })
-            .await
-            .unwrap();
-            let installed = operator_did(&state).await;
-            installed_tx.send(installed.clone()).unwrap();
-            installed
-        };
-        let loser = renew_session_with(&state, |profile, _storage| async move {
-            let candidate =
-                crate::session::rotate(&profile, crate::router::repository::PROFILE_BRANCH)
-                    .await
-                    .unwrap();
-            ready_tx.send(()).unwrap();
-            let installed = installed_rx.await.unwrap();
-            assert_ne!(candidate.operator.did().to_string(), installed);
-            Ok(candidate)
-        });
-        let (installed, result) = futures_util::join!(winner, loser);
-        result.unwrap();
-        assert_eq!(operator_did(&state).await, installed);
-        assert_eq!(revision(&state).await, head);
-        ensure_session_authority(&state).await.unwrap();
-        assert_eq!(operator_did(&state).await, installed);
-    }
 }

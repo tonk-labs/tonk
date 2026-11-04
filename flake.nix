@@ -208,6 +208,8 @@
           rustToolchain
           wasm-bindgen-cli
           wbg-pool
+          # What a Tonk kernel imports and exports, as a component.
+          pkgs.wasm-tools
         ];
 
         devShellEnvVars =
@@ -352,17 +354,16 @@
               # link's `#seed` onto it. Left to follow the redirect itself, trunk
               # would resolve that Location against the access service, which has
               # no `/join` route, and serve its 405.
-              # A space may pin a release older than the one being built, and
-              # trunk builds its dist from nothing each time. Keep the last few
-              # releases beside the sources, for the publisher to serve again.
-              export TONK_RELEASE_STORE="''${TONK_RELEASE_STORE:-$PWD/rust/tonk-ui/.releases}"
+              # A site keeps the kernel it pins, and trunk builds its dist
+              # from nothing each time. Keep the kernels built here beside the
+              # sources, for the dist to serve again.
+              export TONK_KERNEL_STORE="''${TONK_KERNEL_STORE:-$PWD/rust/tonk-ui/.kernels}"
               TRUNK_CONFIG_GENERATED="./rust/tonk-ui/.Trunk.dev.toml"
               cp ./rust/tonk-ui/Trunk.toml "$TRUNK_CONFIG_GENERATED"
               # Enable scoped agent invitations in local development. Select
               # features per binary: the guest pipeline has no such feature.
               TRUNK_HTML_GENERATED="$PWD/rust/tonk-ui/.index.dev.html"
               sed -e 's/data-bin="ui"/data-bin="ui" data-cargo-features="connection-invites"/' \
-                  -e 's/data-bin="worker"/data-bin="worker" data-cargo-features="connection-invites"/' \
                   ./rust/tonk-ui/index.html > "$TRUNK_HTML_GENERATED"
               if [ -n "$SHORTCUT_ORIGIN" ]; then
                 # printf, not a heredoc: a heredoc's body has to sit at column
@@ -554,7 +555,7 @@
           # access service's HTTP-level tests are `#![cfg]`'d on.
           tests-native-debug = buildTestArchive {
             name = "native-debug";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-components --exclude tonk-kernel-host --features integration-tests";
           };
 
           # Built with `release-test`: release optimizations without LTO,
@@ -562,20 +563,20 @@
           tests-native-release = buildTestArchive {
             name = "native-release";
             profile = "release-test";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests --cargo-profile release-test";
-            depsExtraArgs = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-components --exclude tonk-kernel-host --features integration-tests --cargo-profile release-test";
+            depsExtraArgs = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-components --exclude tonk-kernel-host --features integration-tests";
           };
 
           tests-web-debug = buildTestArchive {
             name = "web-debug";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli --exclude tonk-perf";
+            args = "--workspace --exclude tonk-cli --exclude tonk-perf --exclude tonk-components --exclude tonk-kernel-host --exclude tonk-worker --exclude tonk-kernel";
           };
 
           tests-web-release = buildTestArchive {
             name = "web-release";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli --exclude tonk-perf --release";
+            args = "--workspace --exclude tonk-cli --exclude tonk-perf --exclude tonk-components --exclude tonk-kernel-host --exclude tonk-worker --exclude tonk-kernel --release";
           };
 
           # The real-browser suite `test:e2e` runs. Its `integration-tests`
@@ -619,7 +620,6 @@
                 preBuild = old.preBuild + ''
                   sed -i \
                     -e 's/data-bin="ui"/data-bin="ui" data-cargo-features="connection-invites"/' \
-                    -e 's/data-bin="worker"/data-bin="worker" data-cargo-features="connection-invites"/' \
                     index.html
                 '';
               });

@@ -1,0 +1,52 @@
+package sapling:kernel@0.1.0;
+
+/// The layers that a worker reads and writes. It follows the effects of
+/// Dialog DB: the archive, the memory, and the blobs. Dialog DB names a group
+/// of cells a memory space; the world calls it a namespace, so that the word
+/// "space" keeps one meaning. See PDD007, "Storage".
+interface storage {
+  use types.{did, hash, ucan, version, edition, byte-range, encoding, blob-read, error};
+
+  /// One open layer. Each call is checked against the scope of the handle.
+  resource layer {
+    subject: func() -> did;
+
+    /// The archive: blocks, by hash.
+    get: async func(catalog: string, key: hash) -> result<option<list<u8>>, error>;
+    /// Many blocks of `catalog`, by hash, in one call: for each key, in
+    /// order, its block, or none. A call takes at most 256 keys. The answer
+    /// ends before the first block that would make it longer than 64 MiB,
+    /// so it can hold fewer entries than the keys, but at least one for a
+    /// call with a key: the guest kernel asks again for the rest.
+    get-many: async func(catalog: string, keys: list<hash>)
+      -> result<list<option<list<u8>>>, error>;
+    put: async func(catalog: string, key: hash, bytes: list<u8>) -> result<_, error>;
+
+    /// The memory: cells, with compare and set.
+    resolve: async func(namespace: string, cell: string) -> result<option<edition>, error>;
+    publish: async func(namespace: string, cell: string, content: list<u8>,
+                        when: option<version>) -> result<version, error>;
+    retract: async func(namespace: string, cell: string, when: version) -> result<_, error>;
+    %list: async func(namespace: string) -> result<list<string>, error>;
+    /// A stream of each new edition of one cell of this layer.
+    watch: async func(namespace: string, cell: string) -> result<stream<edition>, error>;
+
+    /// The blobs: large values, by hash, read and written as streams.
+    /// `size` answers only for a blob that the store holds whole. A `read`
+    /// with no size reads only what the store holds. A `read` with the size
+    /// of the blob, which the guest kernel takes from the fact of the asset,
+    /// also fetches the parts of the range that the store does not hold,
+    /// from the peers of the subject. With `proof`, the answer holds the
+    /// proof of the range, and the daemon answers once it holds the first
+    /// and the last group of the range. See PDD013, "The Daemon Fetches".
+    size: async func(key: hash) -> result<option<u64>, error>;
+    read: async func(key: hash, range: byte-range, size: option<u64>,
+                     encoding: encoding, proof: bool)
+      -> result<blob-read, error>;
+    write: async func(bytes: stream<u8>) -> result<hash, error>;
+  }
+
+  /// Open a layer outside the stack of this worker, with a chain whose last
+  /// audience is the session key of this worker.
+  open: async func(subject: did, chain: ucan) -> result<layer, error>;
+}

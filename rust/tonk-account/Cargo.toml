@@ -37,6 +37,11 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 url = { workspace = true }
 
+# On WASI, the peer reaches the network through its embedder.
+[target.'cfg(all(target_arch = "wasm32", not(target_os = "unknown")))'.dependencies]
+dialog-network = { workspace = true }
+tonk-kernel-world = { workspace = true }
+
 [dev-dependencies]
 anyhow = { workspace = true }
 dialog-remote-ucan = { workspace = true }

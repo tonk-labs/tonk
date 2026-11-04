@@ -42,6 +42,7 @@ fn is_metadata(attribute: &str) -> bool {
         .any(|prefix| attribute.starts_with(prefix))
 }
 
+#[cfg(feature = "persona")]
 pub(super) async fn prepare(tonk: &TonkState, source: &str) -> Result<Copy, RepositoryError> {
     // Loading an existing repository must succeed; do not manufacture an empty
     // source for a typo, an unmounted space, or an inaccessible subject.
@@ -134,6 +135,7 @@ pub(super) async fn collect(
     })
 }
 
+#[cfg(feature = "persona")]
 pub(super) async fn create(
     state: &AppState,
     name: &str,

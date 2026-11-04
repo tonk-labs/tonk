@@ -9,7 +9,6 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::RepositoryExt as _;
 use dialog_ucan::{Parameters, Scope, UcanDelegation};
@@ -18,10 +17,9 @@ use dialog_ucan_core::command::Command;
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_varsig::Did;
 use ipld_core::cid::Cid;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_account::customer::RevokeReceipt;
 use tonk_common::log;
+use tonk_macros::handler;
 use tonk_schema::{Invitation, InvitationExecution};
 use tonk_worker_api::{InvitationKind, InvitationSummary};
 
@@ -187,7 +185,7 @@ async fn resolve_target(
 }
 
 /// Revoke only an invitation path recorded in the named repository.
-#[wasm_compat]
+#[handler]
 pub async fn revoke(
     State(state): State<AppState>,
     Path((repo, target_cid)): Path<(String, String)>,
@@ -409,7 +407,7 @@ async fn revoke_through_profile(
 /// ([`revoke_through_profile`]), in the person's profile, which holds the
 /// authority. The path has to be for `subject`, the space whose worker
 /// asked, and end at the grant it names.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
 pub(crate) async fn revoke_for_space(
     tonk: &TonkState,
     subject: &Did,
@@ -482,7 +480,7 @@ where
 /// The person's account's `/` chain over `subject`, as the profile has it
 /// on record: what a space's own worker asks for when the space's retained
 /// chains prove none ([`account_authority`]). Base58.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
 pub(crate) async fn authority_for_space(
     tonk: &TonkState,
     subject: &Did,
@@ -578,7 +576,7 @@ pub(super) async fn retract_leaf(
 /// way [`revoke`] resolves the target it is handed. Deriving both from one
 /// walk is what keeps a listed CID revocable, rather than being a stale
 /// mint-time snapshot the live facts no longer agree with.
-#[wasm_compat]
+#[handler]
 pub async fn list(
     State(state): State<AppState>,
     Path(repo): Path<String>,
@@ -660,129 +658,4 @@ pub async fn list(
         .collect::<Vec<_>>();
     rows.sort_by(|left, right| left.target_cid.cmp(&right.target_cid));
     Ok(Json(rows))
-}
-
-/// What a space's own worker does where it has none of the person's
-/// authority: ask the person's profile, up the port its script holds.
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod site_tests {
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    wasm_bindgen_test_configure!(run_in_service_worker);
-
-    use dialog_credentials::{Ed25519Signer, Signer};
-    use dialog_repository::RepositoryExt as _;
-    use dialog_ucan_core::subject::Subject as UcanSubject;
-    use dialog_ucan_core::{DelegationBuilder, DelegationChain};
-    use dialog_varsig::{Did, Principal as _};
-    use js_sys::{Array, Function, Reflect};
-    use tonk_account::customer::RevokeReceipt;
-    use wasm_bindgen::JsValue;
-
-    use super::{account_authority, encode_chain, leaf_cid, revoke_through_profile};
-    use crate::helpers::state::test_state_for_site;
-    use crate::router::account::act_for;
-    use crate::router::join::mount_replica;
-    use crate::worker::TonkState;
-
-    /// A space's own worker holding a space it was told is `account`'s, the
-    /// space's content branch, and the `/` chain from the space to that
-    /// account, which nothing has retained in the space.
-    async fn held_space() -> (TonkState, Did, dialog_repository::Branch, DelegationChain) {
-        let worker = test_state_for_site().await;
-        let space = Ed25519Signer::generate().await.unwrap();
-        let subject = space.did();
-        let account = Ed25519Signer::generate().await.unwrap().did();
-        let repository = mount_replica(&worker, &subject, None, None).await.unwrap();
-        let branch = repository
-            .branch("main")
-            .open()
-            .perform(&worker.operator)
-            .await
-            .unwrap();
-        act_for(&worker, &account).await.unwrap();
-        let grant = DelegationBuilder::new()
-            .issuer(Signer::from(space))
-            .audience(&account)
-            .subject(UcanSubject::Specific(subject.clone()))
-            .command(vec![])
-            .try_build()
-            .await
-            .unwrap();
-        (worker, subject, branch, DelegationChain::new(grant))
-    }
-
-    /// Stand in for the person's profile: answer what this worker asks up
-    /// its port with `answer` (a JSON object), keeping what was asked.
-    fn answer_as_the_profile(answer: &str) {
-        let hook = Function::new_with_args(
-            "request",
-            &format!(
-                r#"
-                (globalThis.tonkAskedProfile ??= []).push(JSON.stringify(request));
-                return Promise.resolve({answer});
-                "#
-            ),
-        );
-        Reflect::set(&js_sys::global(), &"tonkAskProfile".into(), &hook).unwrap();
-        Reflect::set(&js_sys::global(), &"tonkAskedProfile".into(), &Array::new()).unwrap();
-    }
-
-    /// What the profile was asked, and the stand-in taken away.
-    fn asked_of_the_profile() -> Vec<serde_json::Value> {
-        let asked = Reflect::get(&js_sys::global(), &"tonkAskedProfile".into()).unwrap();
-        Reflect::set(
-            &js_sys::global(),
-            &"tonkAskProfile".into(),
-            &JsValue::UNDEFINED,
-        )
-        .unwrap();
-        Array::from(&asked)
-            .iter()
-            .filter_map(|entry| entry.as_string())
-            .map(|entry| serde_json::from_str(&entry).unwrap())
-            .collect()
-    }
-
-    #[dialog_common::test]
-    async fn it_asks_the_profile_for_the_authority_the_spaces_chains_do_not_prove() {
-        let (worker, subject, branch, prefix) = held_space().await;
-        let encoded = encode_chain(&prefix).unwrap();
-        answer_as_the_profile(&serde_json::json!({ "authority": encoded }).to_string());
-
-        let authority = account_authority(&worker, &branch, &subject).await;
-        let asked = asked_of_the_profile();
-
-        assert_eq!(
-            encode_chain(&authority.expect("the profile's record stands in")).unwrap(),
-            encoded
-        );
-        assert_eq!(asked, [serde_json::json!({ "authority": true })]);
-    }
-
-    #[dialog_common::test]
-    async fn it_has_the_profile_sign_the_revocation_of_a_grant_it_found() {
-        let (worker, subject, branch, path) = held_space().await;
-        let target = leaf_cid(&path).unwrap();
-        let receipt = RevokeReceipt {
-            revoked: target,
-            subject: subject.clone(),
-            recorded: true,
-        };
-        answer_as_the_profile(&serde_json::json!({ "receipt": receipt }).to_string());
-
-        let revoked = revoke_through_profile(&worker, &branch, &subject, &path, &target).await;
-        let asked = asked_of_the_profile();
-
-        assert_eq!(revoked.expect("the profile signs"), receipt);
-        assert_eq!(
-            asked,
-            [serde_json::json!({
-                "revoke": {
-                    "path": encode_chain(&path).unwrap(),
-                    "target": target.to_string(),
-                }
-            })],
-            "it sends the path and the grant, and no authority it could not prove"
-        );
-    }
 }

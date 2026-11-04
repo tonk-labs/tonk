@@ -125,11 +125,6 @@ pub fn now() -> u64 {
 mod tests {
     use super::*;
 
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    wasm_bindgen_test_configure!(run_in_service_worker);
-
     use dialog_credentials::Ed25519Signer;
     use dialog_effects::storage::Directory;
     use dialog_ucan::UcanDelegation;

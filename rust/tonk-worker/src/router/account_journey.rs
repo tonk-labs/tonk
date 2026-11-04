@@ -9,20 +9,22 @@
 //! already tells it of a created or joined space with; the page validates
 //! and captures it. Nothing here names an account, an address or a space.
 
+#[cfg(test)]
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::sync::{Mutex, PoisonError};
 
 use tonk_analytics::account::{
     AccountAction, AccountEvent, AccountOutcome, AccountState, FailureKind, Journey, Stage,
     Surface, Trigger,
 };
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+use tonk_analytics::product::attempt_id;
+#[cfg(any(target_arch = "wasm32", test))]
 use tonk_identity::custody::CustodyDenial;
+#[cfg(any(target_arch = "wasm32", test))]
 use tonk_schema::registration::kind;
 
 use super::ClientId;
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-use super::registration::Stage as Panel;
 
 /// One attempt at an account action, from what began it to the one outcome
 /// it ends in, and the page that is told how it goes.
@@ -90,10 +92,18 @@ fn classify(action: AccountAction) -> (Journey, Stage, Surface, AccountState) {
     }
 }
 
-thread_local! {
-    /// The failures attempts nobody asked for last ended in, by action. One
-    /// that fails the same way again is not told; a success clears them.
-    static REPEATED: RefCell<HashSet<(AccountAction, FailureKind)>> = RefCell::new(HashSet::new());
+/// The failures attempts nobody asked for last ended in, by action. One
+/// that fails the same way again is not told; a success clears them. A
+/// static, as an attempt's state is (see `registration`).
+static REPEATED: Mutex<Option<HashSet<(AccountAction, FailureKind)>>> = Mutex::new(None);
+
+fn repeated<R>(touch: impl FnOnce(&mut HashSet<(AccountAction, FailureKind)>) -> R) -> R {
+    touch(
+        REPEATED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(HashSet::new),
+    )
 }
 
 impl Attempt {
@@ -103,7 +113,7 @@ impl Attempt {
         action: AccountAction,
         trigger: Trigger,
     ) -> Self {
-        let id = hex::encode(rand::random::<[u8; 16]>());
+        let id = attempt_id();
         let (journey, stage, surface, state) = classify(action);
         let began =
             AccountEvent::started(journey, action, stage, surface, trigger, state, id.clone());
@@ -117,12 +127,6 @@ impl Attempt {
         };
         attempt.say(began);
         attempt
-    }
-
-    /// The page this attempt is told to.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) fn client(&self) -> Option<&ClientId> {
-        self.client.as_ref()
     }
 
     fn say(&mut self, event: AccountEvent) {
@@ -152,7 +156,7 @@ impl Attempt {
     pub(crate) fn end(mut self, stage: Stage, outcome: AccountOutcome) {
         if self.trigger == Trigger::Automatic {
             let action = self.action;
-            let repeated = REPEATED.with_borrow_mut(|repeated| match outcome.failure_kind() {
+            let repeated = repeated(|repeated| match outcome.failure_kind() {
                 Some(kind) => !repeated.insert((action, kind)),
                 None => {
                     repeated.retain(|(failed, _)| *failed != action);
@@ -186,6 +190,7 @@ impl Attempt {
 }
 
 /// The action a passkey ceremony of `kind` is an attempt at.
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn action_of(kind: &str) -> AccountAction {
     match kind {
         kind::CREATE => AccountAction::CreateAccount,
@@ -194,6 +199,7 @@ pub(crate) fn action_of(kind: &str) -> AccountAction {
 }
 
 /// The stage at which a ceremony of `kind` waits on the passkey.
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn passkey_stage(kind: &str) -> Stage {
     match kind {
         kind::CREATE => Stage::PasskeyCreate,
@@ -201,42 +207,47 @@ pub(crate) fn passkey_stage(kind: &str) -> Stage {
     }
 }
 
-/// How a passkey hand-off ended, from where it left the panel: put away,
-/// waiting for the emailed link, or at a failure the service's `code` may
-/// explain. A hand-off that failed is told at the passkey assertion,
-/// whichever ceremony it was.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-pub(crate) fn handed_off(panel: Option<&Panel>, code: Option<&str>) -> (Stage, AccountOutcome) {
-    match panel {
-        None => (Stage::Complete, AccountOutcome::success()),
-        Some(Panel::Failed { .. }) => {
-            let outcome = match code.and_then(|code| CustodyDenial::from_code(code, "")) {
-                Some(CustodyDenial::Suspended(_)) => {
-                    AccountOutcome::blocked(FailureKind::Suspended)
-                }
-                Some(CustodyDenial::NotProvisioned(_)) => {
-                    AccountOutcome::blocked(FailureKind::NotProvisioned)
-                }
-                Some(CustodyDenial::Other(_)) => {
-                    AccountOutcome::terminal_failure(FailureKind::AccessDenied)
-                }
-                _ => AccountOutcome::retryable(FailureKind::Unknown),
-            };
-            (Stage::PasskeyAssert, outcome)
-        }
-        Some(_) => (
-            Stage::ActivationWait,
-            AccountOutcome::blocked(FailureKind::AwaitingActivation),
-        ),
+/// How a passkey hand-off ended: the persona merged into an account,
+/// served (`Ok(true)`) or waiting for its emailed link (`Ok(false)`), or the
+/// custody service refused it with `code`. A hand-off that failed is told
+/// at the passkey assertion, whichever ceremony it was.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn handed_off(outcome: Result<bool, Option<&str>>) -> (Stage, AccountOutcome) {
+    let awaiting = (
+        Stage::ActivationWait,
+        AccountOutcome::blocked(FailureKind::AwaitingActivation),
+    );
+    match outcome {
+        Ok(true) => (Stage::Complete, AccountOutcome::success()),
+        Ok(false) => awaiting,
+        Err(code) => match code.and_then(|code| CustodyDenial::from_code(code, "")) {
+            Some(CustodyDenial::AwaitingActivation) => awaiting,
+            Some(CustodyDenial::Suspended(_)) => (
+                Stage::PasskeyAssert,
+                AccountOutcome::blocked(FailureKind::Suspended),
+            ),
+            Some(CustodyDenial::NotProvisioned(_)) => (
+                Stage::PasskeyAssert,
+                AccountOutcome::blocked(FailureKind::NotProvisioned),
+            ),
+            Some(CustodyDenial::Other(_)) => (
+                Stage::PasskeyAssert,
+                AccountOutcome::terminal_failure(FailureKind::AccessDenied),
+            ),
+            None => (
+                Stage::PasskeyAssert,
+                AccountOutcome::retryable(FailureKind::Unknown),
+            ),
+        },
     }
 }
 
 /// How a passkey ceremony the page refused ended: `name` is the browser's
 /// name for the refusal.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn refused(name: &str) -> (Stage, AccountOutcome) {
     let outcome = match name {
-        "NotAllowedError" => AccountOutcome::cancelled(),
+        "NotAllowedError" | "AbortError" => AccountOutcome::cancelled(),
         "InvalidStateError" => AccountOutcome::terminal_failure(FailureKind::CredentialExists),
         "NotSupportedError" => AccountOutcome::terminal_failure(FailureKind::PasskeyUnsupported),
         "SecurityError" => AccountOutcome::terminal_failure(FailureKind::SecurityContext),
@@ -256,7 +267,7 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn listen() {
     HEARD.set(Some(Vec::new()));
-    REPEATED.with_borrow_mut(HashSet::clear);
+    repeated(HashSet::clear);
 }
 
 /// What was told since [`listen`], as the properties a page would capture.
@@ -321,7 +332,7 @@ mod tests {
         let mut attempt = Attempt::begin(None, AccountAction::CreateAccount, Trigger::User);
         attempt.reached(Stage::EmailLookup);
         attempt.reached(Stage::PasskeyCreate);
-        let (stage, outcome) = handed_off(Some(&Panel::Confirming { kind: kind::CREATE }), None);
+        let (stage, outcome) = handed_off(Ok(false));
         attempt.end(stage, outcome);
 
         let told = heard();
@@ -342,7 +353,7 @@ mod tests {
         let mut attempt = Attempt::begin(None, AccountAction::CreateAccount, Trigger::User);
         attempt.reached(Stage::EmailLookup);
         attempt.reached(passkey_stage(kind::CREATE));
-        let (stage, outcome) = handed_off(Some(&Panel::Confirming { kind: kind::CREATE }), None);
+        let (stage, outcome) = handed_off(Ok(false));
         attempt.end(stage, outcome);
 
         assert_eq!(
@@ -485,17 +496,20 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_reads_how_a_hand_off_ended_off_where_it_left_the_panel() {
+    fn it_reads_how_a_hand_off_ended() {
         assert_eq!(
-            handed_off(None, None),
+            handed_off(Ok(true)),
             (Stage::Complete, AccountOutcome::success())
         );
-        let failed = Panel::Failed {
-            kind: kind::CREATE,
-            message: "no".into(),
-        };
         assert_eq!(
-            handed_off(Some(&failed), None),
+            handed_off(Err(Some("awaiting-activation"))),
+            (
+                Stage::ActivationWait,
+                AccountOutcome::blocked(FailureKind::AwaitingActivation)
+            )
+        );
+        assert_eq!(
+            handed_off(Err(None)),
             (
                 Stage::PasskeyAssert,
                 AccountOutcome::retryable(FailureKind::Unknown)
@@ -503,11 +517,11 @@ mod tests {
             "a failed creation is told at the assertion too, as it was"
         );
         assert_eq!(
-            handed_off(Some(&failed), Some("suspended")).1,
+            handed_off(Err(Some("suspended"))).1,
             AccountOutcome::blocked(FailureKind::Suspended)
         );
         assert_eq!(
-            handed_off(Some(&failed), Some("denied")).1,
+            handed_off(Err(Some("denied"))).1,
             AccountOutcome::terminal_failure(FailureKind::AccessDenied)
         );
     }

@@ -76,7 +76,7 @@ background account operations use the persisted provider URL.
 
 ## Binaries
 
-The crate produces two Wasm bin targets, both referenced from `index.html` by a
+The crate produces one Wasm bin target, referenced from `index.html` by a
 `data-bin` Trunk `rel="rust"` link:
 
 - **`ui`** ([`src/bin/ui.rs`](./src/bin/ui.rs), `data-type="main"`): the page
@@ -86,10 +86,6 @@ The crate produces two Wasm bin targets, both referenced from `index.html` by a
   then mounts the `TonkShell` Leptos component into the document body. Under debug
   builds (`trunk serve`) it also injects the dev-only `hot-swap.js` reload client;
   release builds never load it.
-- **`worker`** ([`src/bin/worker.rs`](./src/bin/worker.rs), `data-type="worker"`,
-  `data-bindgen-target="web"`): the service-worker module. It exposes an
-  `activate()` entry that constructs `tonk_worker::TonkServiceWorker`. The static
-  [`assets/service_worker.js`](./assets) imports and drives this Wasm.
 
 ## How the SPA and service worker compose
 
@@ -115,7 +111,7 @@ The load lifecycle has four cases:
 
 The page build is stamped over every published resource except the guest
 runtime, the lazily fetched editor bundles, and library data. Two builds with
-the same page build therefore differ only in worker and guest code. The host
+the same page build therefore differ only in what the sites and guests run. The host
 side of the host/guest bridge is compiled into the top page, so an unchanged
 page build also means an unchanged bridge.
 - An offline warm load keeps its existing controller and cached shell. A failed

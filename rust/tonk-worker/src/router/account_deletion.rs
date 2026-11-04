@@ -6,14 +6,12 @@
 
 use std::collections::BTreeSet;
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 use axum::extract::Extension;
 use axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_macros::handler;
 use tonk_schema::SpaceProvider;
 use tonk_schema::domain::space::Provider;
 use tonk_schema::prelude::DidExt as _;
@@ -82,7 +80,7 @@ async fn load_plan(state: &TonkState) -> Result<AccountDeletionPlan, TonkWorkerE
 }
 
 /// GET `/api/account/deletion/plan` returns the exact destructive scope.
-#[wasm_compat]
+#[handler]
 pub async fn plan(
     State(state): State<AppState>,
 ) -> Result<Json<AccountDeletionPlan>, TonkWorkerError> {
@@ -138,73 +136,28 @@ impl dialog_capability::Provider<tonk_schema::command::DeleteAccount>
     }
 }
 
-/// Purge the account the passkey holds.
-///
-/// One invocation: the root the custody cell opens signs
-/// `/void/customer/purge`, the access service denies every consumer the
-/// account provides in a single write and takes the data and rows from
-/// there, and this device removes its replicas, retires the profile,
-/// and moves onto a fresh one. Presenting the purge again after it
-/// succeeded is still a purge of a customer that is gone, which the
-/// service answers the same way.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn purge(
+/// Present `invocation`, a `/void/customer/purge` of the account `root`, to
+/// the access service, and clear this device of the account: its replicas,
+/// its customer record and its link.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn purged(
     state: &AppState,
     source: Option<&super::ClientId>,
-    custodian: &tonk_identity::custodian::Custodian,
+    root: &str,
+    invocation: &[u8],
 ) -> Result<(), String> {
-    use tonk_schema::{ceremony, ceremony_state};
-
-    let outcome = purge_inner(state, source, custodian).await;
-    let tonk = state.read().await;
-    match &outcome {
-        Ok(()) => {
-            super::ceremony::report(&tonk, ceremony::DELETE_ACCOUNT, ceremony_state::DONE, "/")
-                .await
-        }
-        Err(error) => {
-            super::ceremony::report(
-                &tonk,
-                ceremony::DELETE_ACCOUNT,
-                ceremony_state::FAILED,
-                error,
-            )
-            .await
-        }
-    }
-    outcome
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn purge_inner(
-    state: &AppState,
-    source: Option<&super::ClientId>,
-    custodian: &tonk_identity::custodian::Custodian,
-) -> Result<(), String> {
-    use dialog_varsig::Principal as _;
-    use tonk_schema::{ceremony, ceremony_state};
-
     let current = {
         let tonk = state.read().await;
-        super::ceremony::report(&tonk, ceremony::DELETE_ACCOUNT, ceremony_state::WORKING, "").await;
         load_plan(&tonk).await.map_err(|error| error.to_string())?
     };
-    let account = super::custody::held_account(custodian).await?;
-    let root = account
-        .signer()
-        .await
-        .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
-    if root.did().to_string() != current.root_did {
+    if current.root_did != root {
         return Err("this passkey belongs to a different account".into());
     }
-    let invocation = tonk_identity::request::build_purge_invocation(root)
-        .await
-        .map_err(|error| format!("the purge did not sign: {error:#}"))?;
     let ucan = super::customer::ucan_endpoint(
         &super::customer::service_origin().map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
-    super::http::post_cbor(&ucan, &invocation)
+    super::http::post_cbor(&ucan, invocation)
         .await
         .map_err(|error| format!("the service did not purge the account: {error}"))?;
 

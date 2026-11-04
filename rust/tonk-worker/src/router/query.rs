@@ -16,13 +16,11 @@ use ::axum::body::{Body, Bytes};
 use ::axum::extract::{Path, Query as UrlQuery, Request, State};
 use ::axum::http::{HeaderMap, StatusCode, header};
 use ::axum::response::{IntoResponse, Response};
-use axum_wasm_macros::wasm_compat;
 use http_body_util::BodyExt as _;
 use serde::Deserialize;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tonk_macros::handler;
 
 use crate::reactor::{Conclusion, Query, ReactorError};
 use crate::router::update_pending;
@@ -57,7 +55,7 @@ pub struct QueryParams {
 
 /// Handler. Reads body, decides one-shot vs subscription based on
 /// `Accept`, dispatches to the reactor.
-#[wasm_compat]
+#[handler]
 pub async fn query(
     State(state): State<AppState>,
     Path(path): Path<QueryPath>,
@@ -77,7 +75,7 @@ pub async fn query(
     // directory-driven adoption. A no-op for mounted repos.
     match super::adopt::ensure_space_mounted(&tonk, &path.repo).await {
         Ok(true) => {
-            super::adopt::schedule_seed_upgrade(&tonk, state.clone(), &path.repo).await;
+            super::adopt::schedule_seed_upgrade(&tonk, &path.repo).await;
         }
         Ok(false) => {}
         Err(error) => {
@@ -96,7 +94,7 @@ pub async fn query(
 /// no space to mount. Lets a `<tonk-display>` read the profile's meta
 /// branch (e.g. the Hub's list of spaces) the same way it reads any
 /// repository branch.
-#[wasm_compat]
+#[handler]
 async fn query_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileQueryPath>,
@@ -208,10 +206,7 @@ fn spawn_detached<F>(future: F)
 where
     F: std::future::Future<Output = ()> + dialog_common::ConditionalSend + 'static,
 {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    wasm_bindgen_futures::spawn_local(future);
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    drop(tokio::spawn(future));
+    crate::r#async::detach(future);
 }
 
 /// The stream a page gets when the branch it subscribes to is about to be
@@ -505,11 +500,6 @@ fn is_absence(err: &ReactorError) -> bool {
 mod tests {
     use super::*;
 
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    wasm_bindgen_test_configure!(run_in_service_worker);
-
     /// A repository or branch this device has not replicated is an
     /// ABSENCE, not a failure. Classifying it as one is what lets the
     /// query paths answer with the empty set and park the subscription
@@ -568,7 +558,6 @@ mod tests {
     /// Native only: it needs a whole worker state, which the native test
     /// fixture builds. The upgrade itself is target-agnostic dialog code,
     /// covered on wasm by dialog-repository's `transaction::migration` tests.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[dialog_common::test]
     async fn the_first_read_of_a_branch_re_installs_rules_stored_the_earlier_way() {
         use dialog_artifacts::{ArtifactSelector, Entity, Pick, Value};

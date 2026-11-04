@@ -10,6 +10,8 @@ use dialog_common::ConditionalSync;
 use dialog_credentials::{Credential, SignerCredential};
 use dialog_effects::credential::{self as credential_fx, CredentialError, prelude::*};
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt as _};
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+use dialog_network::Network;
 use dialog_peer::{Allowance, OpenCredential, Peer, PeerError, PeerSpace, SpaceVaultExt as _};
 use dialog_repository::{
     ACCESS_BRANCH, AddAddressError, Branch, ConnectError, ConnectedBranch, ConnectedReplica,
@@ -21,6 +23,8 @@ use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Principal as _;
 use std::fmt::Display;
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+use tonk_kernel_world::replica::KernelRelay;
 
 /// The name the key of the system tonk runs as is kept under, in the
 /// credential store of the profile directory. The system owns the storage
@@ -231,16 +235,64 @@ where
     CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
 {
     let credential = open_credential(&location, credentials, &storage, create).await?;
+    assemble_peer(credential, location, base, storage, system, branch).await
+}
+
+/// Open the peer a site's own worker is, as [`open_delegate`] does, acting
+/// with `credential`, which its host hands it, not one kept in a credential
+/// store.
+pub async fn open_delegate_as<S>(
+    credential: SignerCredential,
+    location: Location,
+    base: Directory,
+    storage: Storage<S>,
+    system: &SignerCredential,
+) -> Result<Peer<S>, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+{
+    assemble_peer(credential, location, base, storage, system, ACCESS_BRANCH).await
+}
+
+/// [`open_delegate_as`], its records kept in the home's `branch`, as
+/// [`open_peer_on`] keeps them: the peer acting on another account branch.
+pub async fn open_delegate_as_on<S>(
+    credential: SignerCredential,
+    location: Location,
+    base: Directory,
+    storage: Storage<S>,
+    system: &SignerCredential,
+    branch: &str,
+) -> Result<Peer<S>, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+{
+    assemble_peer(credential, location, base, storage, system, branch).await
+}
+
+/// The peer acting with `credential`, its home found from `location`.
+async fn assemble_peer<S>(
+    credential: SignerCredential,
+    location: Location,
+    base: Directory,
+    storage: Storage<S>,
+    system: &SignerCredential,
+    branch: &str,
+) -> Result<Peer<S>, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+{
     record_location(&credential.did(), &location);
     let home = home(&location, &base, &credential.did(), &storage).await?;
-    Peer::new(credential.clone())
+    let peer = Peer::new(credential.clone())
         .at(home)
         .base(base)
         .space(Repository::from(credential.did()).branch(branch))
-        .with(storage)
-        .grant(Allowance::storage(system))
-        .build()
-        .await
+        .with(storage);
+    // A kernel on WASI reaches the network through its embedder.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    let peer = peer.with(Network::default().with_ucan(KernelRelay::site()));
+    peer.grant(Allowance::storage(system)).build().await
 }
 
 /// Where the home space of the profile `profile` is: among the spaces it
@@ -625,7 +677,9 @@ pub fn upstream(branch: &Branch) -> Option<Upstream> {
 /// tonk signed in, not the one made up at onboarding. The custodian is
 /// forgotten after: the account it guarded is gone. A peer already acting
 /// for that account is left alone, and so is one whose custodian is gone,
-/// which was handed over to another account before.
+/// which was handed over to another account before, and one that records
+/// no account of its own, as a kernel's, whose persona is its session's:
+/// the grant is all it keeps.
 pub async fn hand_over<S>(peer: &Peer<S>, grant: &DelegationChain) -> Result<(), CredentialError>
 where
     S: PeerSpace,
@@ -634,7 +688,12 @@ where
         + Provider<credential_fx::Retract<Credential>>,
 {
     let account = grant.issuer().clone();
-    if peer.authority().await? == account {
+    let acting = match peer.authority().await {
+        Ok(acting) => Some(acting),
+        Err(CredentialError::NotFound(_)) => None,
+        Err(error) => return Err(error),
+    };
+    if acting.as_ref() == Some(&account) {
         return Ok(());
     }
     peer.access()
@@ -646,6 +705,9 @@ where
         .refresh(peer)
         .await
         .map_err(|error| CredentialError::Storage(error.to_string()))?;
+    if acting.is_none() {
+        return Ok(());
+    }
     let custodian_name = custodian_name(peer.state().name());
     let Some(custodian) = open_kept_key::<S>(&peer.did(), &custodian_name, false).await? else {
         return Ok(());
