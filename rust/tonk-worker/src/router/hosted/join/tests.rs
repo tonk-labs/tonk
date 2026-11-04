@@ -196,8 +196,50 @@ fn the_join_tool_is_the_models_and_the_accept_tool_the_cards() {
     let accept = tools.iter().find(|tool| tool["name"] == ACCEPT).unwrap();
     assert_eq!(accept["_meta"]["ui"]["visibility"], json!(["app"]));
     assert_eq!(accept["_meta"]["openai/visibility"], "private");
-    let card = read_resource(CARD_URI).unwrap();
+    let card = read_resource(CARD_URI, "https://tonk.example").unwrap();
     let text = card["contents"][0]["text"].as_str().unwrap();
     assert!(text.contains(ACCEPT), "the card calls the accept tool");
-    assert!(read_resource("ui://tonk/other").is_none());
+    assert!(read_resource("ui://tonk/other", "https://tonk.example").is_none());
+}
+
+#[dialog_common::test]
+fn it_wears_the_in_agent_stylesheet_and_loads_only_fonts() {
+    let card = read_resource(CARD_URI, "https://tonk.example/").unwrap();
+    let content = &card["contents"][0];
+    let text = content["text"].as_str().unwrap();
+    assert!(!text.contains(super::super::in_agent::MARK));
+    assert!(
+        text.contains("--tonk-text:"),
+        "the shared tokens are inlined"
+    );
+    assert!(text.contains("https://tonk.example/in-agent/fonts/"));
+    assert_eq!(content["_meta"]["ui"]["csp"]["connectDomains"], json!([]));
+    assert_eq!(
+        content["_meta"]["ui"]["csp"]["resourceDomains"],
+        json!(["https://tonk.example"])
+    );
+    assert_eq!(
+        content["_meta"]["openai/widgetCSP"]["resource_domains"],
+        json!(["https://tonk.example"])
+    );
+}
+
+#[dialog_common::test]
+fn it_names_each_disc_and_draws_no_spinner() {
+    let text = CARD;
+    for state in ["saving", "broken"] {
+        assert!(
+            !text.contains(&format!("data-state=\"{state}\"")),
+            "a disc is drawn {state}"
+        );
+    }
+    assert!(!text.contains("@keyframes"), "the card animates a spinner");
+    for disc in text.split("class=\"tonk-disc\"").skip(1) {
+        let tag = disc.split_once('>').unwrap().0;
+        assert!(
+            tag.contains("role=\"img\""),
+            "a disc is not an image: {tag}"
+        );
+        assert!(tag.contains("aria-label="), "a disc is not named: {tag}");
+    }
 }
