@@ -195,7 +195,7 @@ pub async fn revoke(
     let target: Cid = target_cid
         .parse()
         .map_err(|error| TonkWorkerError::Router(format!("invalid target CID: {error}")))?;
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     let session = tonk
         .reactor
         .repository(&repo)
@@ -423,7 +423,8 @@ pub async fn list(
     State(state): State<AppState>,
     Path(repo): Path<String>,
 ) -> Result<Json<Vec<InvitationSummary>>, TonkWorkerError> {
-    let tonk = state.read().await;
+    // A clone, not a guard: a first-use mount can pull over the network.
+    let tonk = state.read().await.clone();
     super::adopt::mount_on_first_use(&tonk, &state, &repo).await;
     let session = tonk
         .reactor

@@ -648,7 +648,8 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
         // would reconcile the same branch a second time every heartbeat, and
         // stamp status on a replica that has no chip to read it.
         let sweep = async {
-            let tonk = state.read().await;
+            // A copy, not a guard: the sweep pulls and pushes.
+            let tonk = state.read().await.clone();
             if switching_profiles(&tonk) {
                 return None;
             }
@@ -837,14 +838,17 @@ async fn pull_now(
         params.branch
     );
 
-    // Before the lock, because renewal takes one of its own — and before
+    // Before the copy below, because renewal replaces the operator, and before
     // the presign below, because a worker that has just restarted holds
     // guest chains addressed to an operator that no longer exists.
     ensure_session_authority(&state).await?;
 
-    // Sync mutates branch state through the reactor, not TonkState itself.
-    // An exclusive application lock would block local approval behind remote IO.
-    let tonk_state = state.read().await;
+    // A copy of the state, not a guard over it: what follows waits on the
+    // remote, and a guard held across that would queue any writer behind
+    // it, and every request after the writer.
+    let tonk_state = state.read().await.clone();
+    let gate = tonk_state.sync_queue.gate(&params.repo);
+    let _passage = gate.read().await;
 
     let session = tonk_state
         .reactor
@@ -980,9 +984,12 @@ async fn push_now(
 
     ensure_session_authority(&state).await?;
 
-    // Sync mutates branch state through the reactor, not TonkState itself.
-    // An exclusive application lock would block local approval behind remote IO.
-    let tonk_state = state.read().await;
+    // A copy of the state, not a guard over it: what follows waits on the
+    // remote, and a guard held across that would queue any writer behind
+    // it, and every request after the writer.
+    let tonk_state = state.read().await.clone();
+    let gate = tonk_state.sync_queue.gate(&params.repo);
+    let _passage = gate.read().await;
 
     let session = tonk_state
         .reactor
@@ -1124,7 +1131,8 @@ pub async fn sync_status(
     // Read-only: status acquires a branch and does a remote fetch but never
     // mutates `TonkState`. A read lock lets concurrent queries proceed instead
     // of blocking on the (network-bound) status request.
-    let tonk_state = state.read().await;
+    // A copy, not a guard: the fetch below waits on the remote.
+    let tonk_state = state.read().await.clone();
 
     // A status check fires whenever a space is opened, so this is the load-time
     // hook for the topbar identity chip: re-stamp the `state:self` overlay here,
@@ -1315,23 +1323,27 @@ async fn sync_now(
     // Everything above this point is local — an offline or paused branch
     // returns without touching the network — so renewal waits until a
     // remote operation is actually going to happen. It has to happen
-    // before the read lock below, which is held across both directions.
+    // before the state is copied below, so the copy carries the renewed operator.
     ensure_session_authority(&state).await?;
 
-    // A READ lock, not a write lock. Pull/push reach the reactor and operator
-    // by shared reference (the reactor owns its own interior locks for the
-    // branch cache), so they don't need exclusive `TonkState`. Holding only a
-    // read lock lets status checks and the pause command interleave during the
-    // network-bound sync — the whole reason sync used to feel unresponsive and
-    // pause couldn't land mid-sync was the write lock serializing everything.
+    // A copy of the state, not a guard over it. Pull and push reach the
+    // reactor and operator by shared reference, so they need no guard at
+    // all, and one held across the round trips below queued any writer
+    // behind the remote, and every request after the writer: one slow sync
+    // froze the worker. A profile switch replaces the state this copy was
+    // taken from; `unless_swapped` stops the sync then. A session renewal
+    // replaces the operator; the one copied here stays valid until it
+    // expires. Removing this space waits at its gate instead.
     //
-    // Dropping to a read lock means a local commit can now race the pull on the
-    // same branch. That's safe since `tonk-2026-06-21`: `pull` publishes its
-    // merged head CAS'd against the version it merged from, so a racing commit
-    // makes the pull fail with a version mismatch instead of silently dropping
-    // the commit. We recover here by refreshing the branch head and retrying —
+    // A local commit can race the pull on the same branch. That's safe
+    // since `tonk-2026-06-21`: `pull` publishes its merged head CAS'd
+    // against the version it merged from, so a racing commit makes the
+    // pull fail with a version mismatch instead of silently dropping the
+    // commit. We recover here by refreshing the branch head and retrying;
     // the retry reuses the blocks the failed attempt already fetched.
-    let tonk_state = state.read().await;
+    let tonk_state = state.read().await.clone();
+    let gate = tonk_state.sync_queue.gate(&params.repo);
+    let _passage = gate.read().await;
 
     let session = tonk_state
         .reactor
@@ -1630,9 +1642,33 @@ pub struct SyncQueue {
     /// Repo name → held while it syncs, by its loop and by a drain alike,
     /// so one repo never syncs twice at once.
     syncing: std::sync::Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    /// Repo → a gate every pull, push and sync of it passes through
+    /// (shared), and that removing it closes (exclusive). A sync holds no
+    /// guard over the state across its round trips, so this is what keeps
+    /// one from writing into a space while the space is being deleted.
+    gates: std::sync::Mutex<HashMap<String, std::sync::Arc<tokio::sync::RwLock<()>>>>,
 }
 
 impl SyncQueue {
+    /// The gate of `repo`: shared by its syncs, closed by its removal.
+    pub(crate) fn gate(&self, repo: &str) -> std::sync::Arc<tokio::sync::RwLock<()>> {
+        let key = super::adopt::space_subject(repo)
+            .map(|did| did.to_string())
+            .unwrap_or_else(|| repo.to_owned());
+        self.gates
+            .lock()
+            .map(|mut gates| gates.entry(key).or_default().clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether `repo` is waiting to sync.
+    #[cfg(test)]
+    pub fn is_dirty(&self, repo: &str) -> bool {
+        self.dirty
+            .lock()
+            .is_ok_and(|dirty| dirty.contains_key(repo))
+    }
+
     /// Record that `repo` has un-pushed local commits. `now` is a caller-
     /// supplied monotonic-ish timestamp (the SW stamps `Date.now()` at the
     /// event boundary — the reactor's deterministic paths can't read a clock).
@@ -1982,7 +2018,10 @@ pub async fn drain_sync(state: &AppState) {
     };
     if !account_already_swept && !account_watched {
         let sweep = async {
-            let tonk = state.read().await;
+            // A clone, not a guard: the sweep pulls and pushes the account
+            // over the network, and a swap is already handled by
+            // `unless_swapped`.
+            let tonk = state.read().await.clone();
             if switching_profiles(&tonk) {
                 return None;
             }

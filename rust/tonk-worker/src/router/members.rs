@@ -354,7 +354,7 @@ impl dialog_capability::Provider<tonk_schema::command::ExpelMember> for crate::r
             return;
         };
         let repo = self.origin().repo.clone();
-        let tonk = self.state().read().await;
+        let tonk = self.state().read().await.clone();
         match expel_member(&tonk, &repo, &member).await {
             Ok(receipt) => log!(
                 "member/expel: {member} removed from {repo} (revoked {})",

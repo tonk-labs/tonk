@@ -128,7 +128,7 @@ pub async fn register(
     Json(request): Json<RegisterDeviceRequest>,
 ) -> Result<Json<serde_json::Value>, TonkWorkerError> {
     let mut timing = super::link_timing::LinkTiming::new("registration", "state-lock");
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     let attachment_id = record_device(&tonk, request, &mut timing).await?;
     timing.next("push-account");
     publish_devices(&tonk).await?;
@@ -157,7 +157,7 @@ pub(crate) async fn register_then_publish(
     let state = state.clone();
     crate::detach(async move {
         let mut timing = super::link_timing::LinkTiming::new("registration-publish", "state-lock");
-        let tonk = state.read().await;
+        let tonk = state.read().await.clone();
         timing.next("push-account");
         if let Err(error) = publish_devices(&tonk).await {
             log!("the registered device was not published: {error}");
@@ -712,7 +712,7 @@ pub async fn revoke(
     State(state): State<AppState>,
     Json(request): Json<RevokeDeviceRequest>,
 ) -> Result<Json<RevokeDeviceAcknowledgement>, TonkWorkerError> {
-    let state = state.read().await;
+    let state = state.read().await.clone();
     let own = request.did == state.profile.did().to_string();
     let target_did = request.did.clone();
     let link = super::account::account_link(&state).await.ok_or_else(|| {

@@ -493,7 +493,7 @@ pub async fn join(
     // A read guard, as the page's join command takes: the join is network
     // bound (a pull, validation and roster reads against the remote), and
     // a write guard held across it stalls every other request.
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     let outcome = join_invite_as(&tonk, &body.url, body.agent).await?;
     log!(
         "POST /api/profile/join -> subject {} (key {})",
@@ -2068,7 +2068,8 @@ fn is_space_address(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|parsed| parsed.path().starts_with("/space/"))
 }
 
-/// Whether a URL is a space's address with no ticket beside it: a visit,
+/// Whether a URL is a space's address (its root or any route of it) with
+/// no ticket beside it: a visit,
 /// which opens the space if it is readable and otherwise leaves the page
 /// to say it is private.
 fn is_bare_space_address(url: &str) -> bool {
@@ -2079,6 +2080,39 @@ fn is_bare_space_address(url: &str) -> bool {
 /// page a join from it runs on is already that space's page.
 fn opens_in_place(url: &str) -> bool {
     matches!(Ticket::parse_url(url), Ok(Some(_))) || is_bare_space_address(url)
+}
+
+/// Where the page goes once a join from `page` succeeds into the space
+/// whose root is `space`.
+#[derive(Debug, PartialEq, Eq)]
+enum AfterJoin {
+    /// The page is already the space's: it stays on the route it shows.
+    Stay,
+    /// The page is the space's, but its address carries a ticket's seed:
+    /// the same route without it takes its place in the history.
+    ReplaceRoute(String),
+    /// The join ran elsewhere (`/join`, another host's link): go to the
+    /// space.
+    Navigate(String),
+}
+
+/// A space's own address (bare, a ticket link, or any route under
+/// either) is already the page the join ran on, whether the join
+/// installed the space (its views, mounted while it was absent, were
+/// handed it by `adopt_waiting_views`) or found it here. Either way the
+/// page keeps the route it was opened at: sending it to the space's root
+/// would drop a page someone linked to, such as `/space/{did}/notebook/…`.
+fn after_join(page: &str, space: &str) -> AfterJoin {
+    if !opens_in_place(page) {
+        return AfterJoin::Navigate(space.to_owned());
+    }
+    if !matches!(Ticket::parse_url(page), Ok(Some(_))) {
+        return AfterJoin::Stay;
+    }
+    match url::Url::parse(page) {
+        Ok(parsed) => AfterJoin::ReplaceRoute(parsed.path().to_owned()),
+        Err(_) => AfterJoin::ReplaceRoute(space.to_owned()),
+    }
 }
 
 /// Drop this join's own overlay facts, and only those (scoped clear).
@@ -2122,7 +2156,7 @@ async fn run_join(env: &crate::router::CommandEnv, page: &str, link: String) {
     use tonk_schema::command::{JoinFailure as JoinFailureFact, JoinStatus};
     use tonk_schema::domain::join::{Kind, Reason, Status};
 
-    let tonk = env.state().read().await;
+    let tonk = env.state().read().await.clone();
 
     // Acquire the profile meta branch — the `/join` view reads
     // `tonk:join/status` from here; overlay writes + their poll target it.
@@ -2195,18 +2229,14 @@ async fn run_join(env: &crate::router::CommandEnv, page: &str, link: String) {
                     },
                 );
             }
-            // A space's own address (bare, or a ticket link) is already
-            // the page the join ran on, and its views, mounted while the
-            // space was absent, were handed the space when the join
-            // installed it (`adopt_waiting_views`): the page stays where it
-            // is. A ticket link's address carries its seed, so it gives
-            // way to the space's own in the history, without a load.
-            if opens_in_place(page) && !outcome.renewed {
-                if matches!(Ticket::parse_url(page), Ok(Some(_))) {
-                    crate::router::navigate::notify_replace_route(env.client(), &href);
+            match after_join(page, &href) {
+                AfterJoin::Stay => {}
+                AfterJoin::ReplaceRoute(route) => {
+                    crate::router::navigate::notify_replace_route(env.client(), &route);
                 }
-            } else {
-                crate::router::navigate::notify_navigate(env.client(), &href);
+                AfterJoin::Navigate(href) => {
+                    crate::router::navigate::notify_navigate(env.client(), &href);
+                }
             }
             log!(
                 "join: succeeded (subject {}, key {})",
@@ -2389,8 +2419,15 @@ mod invite_presence_tests {
         assert!(!is_bare_space_address(&format!(
             "https://tonk.space/space/{space}#{seed}"
         )));
-        assert!(!is_bare_space_address(&format!(
+        // A link into one of the space's pages is a visit to the space
+        // too: the page an absent space renders mounts the join on every
+        // route of it, and one that is not opened stays on its wall.
+        assert!(is_bare_space_address(&format!(
             "https://tonk.space/space/{space}/inspector"
+        )));
+        assert!(is_bare_space_address(&format!(
+            "https://tonk.space/space/{}/notebook/notebook%3A5d314db6-4bea-4c04-bd8a-0ef2be8a0b5d",
+            space.replace(':', "%3A")
         )));
     }
 
@@ -2410,13 +2447,48 @@ mod invite_presence_tests {
             format!("https://tonk.space/space/{encoded}"),
             format!("https://tonk.space/space/{space}#{seed}"),
             format!("https://tonk.space/space/{encoded}#{seed}"),
+            format!("https://tonk.space/space/{space}/inspector"),
+            format!("https://tonk.space/space/{encoded}/notebook/notebook%3Ax"),
         ] {
             assert!(opens_in_place(&address), "{address}");
         }
         assert!(!opens_in_place("https://tonk.space/join?access=abc"));
-        assert!(!opens_in_place(&format!(
-            "https://tonk.space/space/{space}/inspector"
-        )));
+    }
+
+    /// A join that succeeds on a page of the space keeps that page,
+    /// whether it installed the space or found it already here: opening
+    /// `/space/{did}/seeded` on the device that created the space must
+    /// not land on the space's root. A ticket link only drops its seed.
+    #[test]
+    fn it_keeps_the_route_a_join_ran_on() {
+        use super::{AfterJoin, after_join};
+        let space = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let encoded = space.replace(':', "%3A");
+        let seed = bs58::encode([6u8; 32]).into_string();
+        let root = format!("/space/{space}");
+
+        for page in [
+            format!("https://tonk.space/space/{space}"),
+            format!("https://tonk.space/space/{space}/seeded"),
+            format!("https://tonk.space/space/{encoded}/notebook/notebook%3Ax"),
+        ] {
+            assert_eq!(after_join(&page, &root), AfterJoin::Stay, "{page}");
+        }
+        assert_eq!(
+            after_join(&format!("https://tonk.space/space/{space}#{seed}"), &root),
+            AfterJoin::ReplaceRoute(format!("/space/{space}"))
+        );
+        assert_eq!(
+            after_join(
+                &format!("https://tonk.space/space/{encoded}/notebook/notebook%3Ax#{seed}"),
+                &root
+            ),
+            AfterJoin::ReplaceRoute(format!("/space/{encoded}/notebook/notebook%3Ax"))
+        );
+        assert_eq!(
+            after_join("https://tonk.space/join?access=abc", &root),
+            AfterJoin::Navigate(root.clone())
+        );
     }
 }
 

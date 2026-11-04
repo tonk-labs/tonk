@@ -251,7 +251,8 @@ impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
             log!("ReplicateSpace '{key}': refused from another space's branch");
             return;
         }
-        let tonk = self.state().read().await;
+        // A clone, not a guard: mounting pulls the space over the network.
+        let tonk = self.state().read().await.clone();
         match ensure_space_mounted(&tonk, &key).await {
             Ok(true) => {
                 schedule_seed_upgrade(&tonk, self.state().clone(), &key).await;
@@ -329,7 +330,9 @@ pub(crate) async fn schedule_seed_upgrade(
     }
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_futures::spawn_local(async move {
-        let tonk = state.read().await;
+        // A clone, not a guard: the upgrade fetches the seed source over
+        // HTTP before it can tell there is nothing to do.
+        let tonk = state.read().await.clone();
         match super::repository::upgrade_seed(&tonk, &key).await {
             Ok(true) => log!("seed upgrade: '{key}' caught up with the shipped bundle"),
             Ok(false) => {}
@@ -348,7 +351,7 @@ pub(crate) async fn schedule_seed_upgrade(
 }
 
 /// Parse either the canonical full repository key or the legacy bare suffix.
-fn space_subject(key: &str) -> Option<dialog_varsig::Did> {
+pub(crate) fn space_subject(key: &str) -> Option<dialog_varsig::Did> {
     if key.starts_with("did:key:") {
         key.parse().ok()
     } else {
@@ -1836,4 +1839,103 @@ async fn directory_configuration_strict(
         );
     }
     Ok(Some(configuration))
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod native_tests {
+    use crate::router::repository::{
+        BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
+    };
+
+    /// Mounting a space on first use can pull it over the network, so a
+    /// route that mounts holds no guard over the state across it. Each route
+    /// is held where the mount does that work; a writer could take the guard
+    /// meanwhile, and the route answers once the mount goes on.
+    #[test]
+    fn routes_hold_no_guard_while_a_space_mounts() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(routes_during_a_held_mount());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn routes_during_a_held_mount() {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt as _;
+
+        let (app, state, _lsp) = crate::router::api_router_with_state(
+            crate::router::repository::profile_library_tests::test_state().await,
+        );
+        let key = crate::router::approval_stall_diagnosis::put_repo(&app, "mounting").await;
+        let configuration = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(dialog_repository::SiteAddress::from(
+                    dialog_remote_ucan::UcanAddress::new("https://sync.example.test/ucan/"),
+                )),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        {
+            let tonk = state.read().await;
+            crate::router::repository::record_space_mount(
+                &tonk,
+                &key.parse().unwrap(),
+                &configuration,
+                None,
+            )
+            .await;
+        }
+        let routes = [
+            ("GET", format!("/api/repository/{key}")),
+            ("POST", format!("/api/repository/{key}/branch/main/query")),
+            (
+                "POST",
+                format!("/api/repository/{key}/branch/main/transact"),
+            ),
+            (
+                "POST",
+                format!("/api/repository/{key}/branch/main/evaluate"),
+            ),
+        ];
+        for (method, uri) in routes {
+            let entered = {
+                let tonk = state.read().await;
+                let entry = tonk.admission.entry(&key);
+                entry.forget();
+                let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+                let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+                *entry.gate.lock() = Some((entered_tx, release_rx));
+                (entered_rx, release_tx)
+            };
+            let (entered, release) = entered;
+            let request = Request::builder()
+                .uri(&uri)
+                .method(method)
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap();
+            let mut answering = Box::pin(app.clone().oneshot(request));
+            tokio::select! {
+                reached = entered => reached.unwrap(),
+                _ = &mut answering => panic!("{method} {uri} answered without mounting the space"),
+            }
+            assert!(
+                state.try_write().is_ok(),
+                "{method} {uri} holds a guard over the state while the space mounts"
+            );
+            release.send(()).unwrap();
+            answering.await.unwrap();
+        }
+    }
 }
