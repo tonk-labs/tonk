@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 use tonk_common::log;
-use tonk_evaluator::undo::{UndoOutcome, stage_undo};
+use tonk_evaluator::undo::{UndoOutcome, Was, stage_undo};
 
 use crate::{TonkState, TonkWorkerError};
 
@@ -29,6 +29,20 @@ pub struct UndoReport {
     /// the change), the record alone when `refused`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub committed: Option<String>,
+    /// What an undone change took back, one entry per entity, for the
+    /// receipt that says what now stands.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reverted: Vec<Reverted>,
+}
+
+/// One entity an undo took back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reverted {
+    /// Its name, title, label or text, where it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// What the undone change did to it: `added`, `removed` or `changed`.
+    pub was: String,
 }
 
 /// How many times an undo is staged again after a sync raced its publish.
@@ -97,17 +111,30 @@ pub(crate) async fn undo_change(
         tonk.sync_queue.mark_dirty(repo, super::sync::now_millis());
     }
     Ok(match outcome {
-        UndoOutcome::Undone { .. } => UndoReport {
+        UndoOutcome::Undone { reverted, .. } => UndoReport {
             revision: revision.to_owned(),
             status: tonk_schema::Undo::UNDONE.to_owned(),
             reason: None,
             committed,
+            reverted: reverted
+                .into_iter()
+                .map(|reverted| Reverted {
+                    name: reverted.name,
+                    was: match reverted.was {
+                        Was::Added => "added",
+                        Was::Removed => "removed",
+                        Was::Changed => "changed",
+                    }
+                    .to_owned(),
+                })
+                .collect(),
         },
         UndoOutcome::Refused(refusal) => UndoReport {
             revision: revision.to_owned(),
             status: tonk_schema::Undo::REFUSED.to_owned(),
             reason: Some(refusal.to_string()),
             committed,
+            reverted: Vec::new(),
         },
     })
 }

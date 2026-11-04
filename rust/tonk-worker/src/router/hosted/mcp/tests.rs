@@ -723,6 +723,45 @@ async fn a_write_carries_its_change_for_the_card_and_a_read_does_not() {
 }
 
 #[dialog_common::test]
+fn the_undone_strip_says_what_now_stands() {
+    use crate::router::undo::Reverted;
+    let one = |name: Option<&str>, was: &str| Reverted {
+        name: name.map(str::to_owned),
+        was: was.to_owned(),
+    };
+    let space = "Family trip";
+    assert_eq!(
+        undo::stands(&[one(Some("Hiking boots"), "added")], space),
+        "undone · Hiking boots is no longer in Family trip"
+    );
+    assert_eq!(
+        undo::stands(&[one(Some("Towels"), "removed")], space),
+        "undone · Towels is back in Family trip"
+    );
+    assert_eq!(
+        undo::stands(&[one(Some("Seeblick Hotel"), "changed")], space),
+        "undone · Seeblick Hotel is back as it was"
+    );
+    assert_eq!(
+        undo::stands(&[one(None, "added"), one(Some("Sun hat"), "added")], space),
+        "undone · 2 items are no longer in Family trip"
+    );
+    assert_eq!(
+        undo::stands(&[one(None, "removed"), one(None, "changed")], space),
+        "undone · 2 items are back as they were"
+    );
+    // No name to give: the space as it was.
+    assert_eq!(
+        undo::stands(&[one(None, "added")], space),
+        "undone · Family trip is as it was before"
+    );
+    assert_eq!(
+        undo::stands(&[], space),
+        "undone · Family trip is as it was before"
+    );
+}
+
+#[dialog_common::test]
 async fn undo_on_a_read_grant_is_refused_before_any_writer() {
     let agent = Ed25519Signer::generate().await.unwrap();
     let space = Ed25519Signer::generate().await.unwrap();
@@ -1594,7 +1633,10 @@ concept!: &mcp-note
         let card = &undone["structuredContent"]["card"];
         assert_eq!(card["kind"], "strip", "{undone}");
         assert!(
-            card["say"].as_str().unwrap().starts_with("undone"),
+            card["say"]
+                .as_str()
+                .unwrap()
+                .starts_with("undone · undo me is no longer in "),
             "{card}"
         );
         assert!(card.get("undo").is_none(), "{card}");
