@@ -79,12 +79,14 @@ pub fn tools() -> Vec<Value> {
         json!({
             "name": OPEN,
             "title": "Open a Tonk space",
-            "description": "Show a route of a space inline in the chat, live, as the space's own \
-                page renders it. Use a path within the space, such as / or /notebook/<entity>; \
-                entity route parameters must be actual entity URIs returned by tonk_query, never \
-                titles or names. The person can change the space from the view wherever this \
-                connection may write it; a space it may only read is shown read-only. Showing \
-                a route does not verify that it rendered.",
+            "description": "Show one view of a space in the chat, live, as the space renders \
+                it: pass a route from tonk_outline as view, or a path within the space such as \
+                /notebook/<entity> (entity route parameters must be actual entity URIs returned \
+                by tonk_query, never titles or names). The whole space (path / with no view) is \
+                not shown in the chat; the person gets a card that opens it in Tonk. The \
+                person can change the space from the view wherever this connection may write \
+                it; a space it may only read is shown read-only. The result's text says what \
+                the view shows. Showing a route does not verify that it rendered.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -102,6 +104,16 @@ pub fn tools() -> Vec<Value> {
                         "description": "One view of the space to show on its own, instead of \
                             the page at path: a route from tonk_outline (entity@model, \
                             entity@model!view, or a model for every instance).",
+                    },
+                    "size": {
+                        "type": "string",
+                        "enum": SIZES,
+                        "default": "card",
+                        "description": "How big the view is in the chat: strip (one line \
+                            with a link, when there is nothing to look at), card (a short \
+                            summary, 4 to 5 rows and at most 2 actions), carousel (3 to 8 \
+                            like items side by side, 1 action each) or full (the whole \
+                            view, full screen).",
                     },
                 },
                 "required": ["space"],
@@ -360,7 +372,8 @@ pub async fn call<W: Writers>(
         access.address.as_deref(),
         &format!("{}/ucan/", origin.trim_end_matches('/')),
     );
-    if !view_reaches(&remote, origin) {
+    let reachable = view_reaches(&remote, origin);
+    if !reachable && name != OPEN {
         let at = url::Url::parse(&remote)
             .map(|url| url.origin().ascii_serialization())
             .unwrap_or(remote.clone());
@@ -371,50 +384,24 @@ pub async fn call<W: Writers>(
         )));
     }
     if name == OPEN {
-        let path = arguments["path"].as_str().unwrap_or("/");
-        if !path.starts_with('/')
-            || path.starts_with("//")
-            || path.chars().any(|c| c == '\\' || c.is_control())
-        {
-            return Some(error("Provide a path within the space, such as /."));
-        }
-        let view = match arguments["view"].as_str().map(str::trim) {
-            None | Some("") => Value::Null,
-            Some(route) if route.len() > 2048 => {
-                return Some(error("Provide a view route from tonk_outline, up to 2 KB."));
-            }
-            Some(route) => match tonk_render::RenderRoute::parse(route) {
-                // The home mounts on each peer's own replica; the path
-                // shows it, as the outline's empty home route means.
-                Ok(route) if super::super::view_tree::is_home(&route) => Value::Null,
-                Ok(route) => json!({
-                    "model": route.model,
-                    "entity": route.entity,
-                    "facet": route.view,
-                }),
-                Err(problem) => {
-                    return Some(error(&format!(
-                        "`{route}` is not a view route ({problem}). Use a route from tonk_outline."
-                    )));
-                }
-            },
-        };
-        let text = if view.is_null() {
-            "Showing the space inline. Rendering is not verified by this response."
-        } else {
-            "Showing that view inline. Rendering is not verified by this response."
-        };
-        return Some(json!({
-            "content": [{ "type": "text", "text": text }],
-            "structuredContent": {
-                "subject": space.to_string(),
-                "path": path,
-                "view": view,
-                "edit": edit,
-                "remote": remote,
-            },
-            "isError": false,
-        }));
+        return Some(
+            open(
+                arguments,
+                &access,
+                writers,
+                verified,
+                bearer,
+                mcp_session,
+                &space,
+                Shown {
+                    edit,
+                    remote: &remote,
+                    reachable,
+                    origin,
+                },
+            )
+            .await,
+        );
     }
     let audience = match arguments["audience"].as_str().map(str::parse::<Did>) {
         Some(Ok(audience)) => audience,
@@ -473,6 +460,274 @@ pub async fn call<W: Writers>(
         })),
         Err(message) => Some(error(&message)),
     }
+}
+
+/// How [`OPEN`] shows a route: what the connection may do there, where
+/// the space syncs, and whether a view from `origin` reaches it.
+struct Shown<'a> {
+    edit: bool,
+    remote: &'a str,
+    reachable: bool,
+    origin: &'a str,
+}
+
+/// The sizes a shown view may take inline, or full screen.
+const SIZES: [&str; 4] = ["strip", "card", "carousel", "full"];
+
+/// [`OPEN`]: what the relay shows of `space`, and the text version of it
+/// the model reads.
+///
+/// One view, or a page by path, shows live (`"show": "live"`) at the
+/// size asked for. The whole space (`/` with no view) is never shown in
+/// the chat: it is a hand-off into Tonk (`"handoff"`). A strip, or a
+/// space a view cannot reach from here, is one line with a link
+/// (`"strip"`). Every answer carries the link into Tonk, so a host that
+/// shows no card still offers it.
+#[allow(clippy::too_many_arguments)]
+async fn open<W: Writers>(
+    arguments: &Value,
+    access: &SpaceAccess,
+    writers: &W,
+    verified: &Verified,
+    bearer: &str,
+    mcp_session: &str,
+    space: &Did,
+    shown: Shown<'_>,
+) -> Value {
+    let path = arguments["path"].as_str().unwrap_or("/");
+    if !path.starts_with('/')
+        || path.starts_with("//")
+        || path.chars().any(|c| c == '\\' || c.is_control())
+    {
+        return error("Provide a path within the space, such as /.");
+    }
+    let size = match arguments["size"].as_str() {
+        None => "card",
+        Some(size) if SIZES.contains(&size) => size,
+        Some(other) => {
+            return error(&format!(
+                "`{other}` is not a size. Use strip, card, carousel or full."
+            ));
+        }
+    };
+    let route = arguments["view"].as_str().map(str::trim).unwrap_or("");
+    let view = if route.is_empty() {
+        Value::Null
+    } else if route.len() > 2048 {
+        return error("Provide a view route from tonk_outline, up to 2 KB.");
+    } else {
+        match tonk_render::RenderRoute::parse(route) {
+            // The home mounts on each peer's own replica; the path
+            // shows it, as the outline's empty home route means.
+            Ok(route) if super::super::view_tree::is_home(&route) => Value::Null,
+            Ok(route) => json!({
+                "model": route.model,
+                "entity": route.entity,
+                "facet": route.view,
+            }),
+            Err(problem) => {
+                return error(&format!(
+                    "`{route}` is not a view route ({problem}). Use a route from tonk_outline."
+                ));
+            }
+        }
+    };
+    let path = if view.is_null() && !route.is_empty() {
+        "/"
+    } else {
+        path
+    };
+    let whole = view.is_null() && path == "/";
+    // Where the space opens in Tonk: on the deployment it syncs with.
+    let home = url::Url::parse(shown.remote)
+        .map(|url| url.origin().ascii_serialization())
+        .unwrap_or_else(|_| shown.origin.trim_end_matches('/').to_owned());
+    // A view opens where the browser routes it, `/entity@model!view`; a
+    // page by its path.
+    let link = if !view.is_null() {
+        format!("{home}/space/{space}/{}", route_path(route))
+    } else if path == "/" {
+        format!("{home}/space/{space}")
+    } else {
+        format!("{home}/space/{space}{path}")
+    };
+    // What Tonk's line names, and the text version: the view's outline.
+    // A view whose outline cannot be read is still shown; the line then
+    // names the space alone.
+    let outline = if view.is_null() || !shown.reachable || size == "strip" {
+        None
+    } else {
+        read_outline(route, access, writers, verified, bearer, mcp_session, space)
+            .await
+            .ok()
+    };
+    let node = outline.as_ref().map(|outline| &outline["outline"]);
+    let view_name = node
+        .and_then(|node| node["name"].as_str())
+        .map(str::to_owned);
+    let show = if whole {
+        "handoff"
+    } else if !shown.reachable || size == "strip" {
+        "strip"
+    } else {
+        "live"
+    };
+    let space_name = access.name.as_deref().unwrap_or("the space");
+    let place = match &view_name {
+        Some(name) => format!("{space_name} › {name}"),
+        None if view.is_null() && path != "/" => format!("{space_name} {path}"),
+        None if view.is_null() => space_name.to_owned(),
+        None => format!("a view of {space_name}"),
+    };
+    let role = role(access);
+    let mut text = match show {
+        "handoff" => format!(
+            "The whole of {space_name} is not shown in the chat: the person sees a card that \
+             opens it in Tonk ({role}). To show part of it here, pass a view route from \
+             tonk_outline."
+        ),
+        "strip" if !shown.reachable => format!(
+            "{place} is hosted at {home}, and a view from {} cannot reach it, so the person \
+             sees a link that opens it in their browser instead.",
+            shown.origin.trim_end_matches('/')
+        ),
+        "strip" => format!("The person sees a link to {place} that opens it in their browser."),
+        _ => format!(
+            "Showing {place} {}, live ({role}): the person can look and {}. Rendering is \
+             not verified by this response.",
+            if size == "full" {
+                "full screen".to_owned()
+            } else {
+                format!("inline, as a {size}")
+            },
+            if shown.edit {
+                "change it there"
+            } else {
+                "not change it"
+            },
+        ),
+    };
+    if let Some(node) = node {
+        let mut lines = String::new();
+        describe(node, 0, &mut lines);
+        if !lines.is_empty() {
+            text.push_str("\nIt shows:\n");
+            text.push_str(&lines);
+        }
+    }
+    text.push_str(&format!("\nOpen in Tonk: {link}"));
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "structuredContent": {
+            "subject": space.to_string(),
+            "path": path,
+            "view": view,
+            "edit": shown.edit,
+            "remote": shown.remote,
+            "name": access.name,
+            "viewName": view_name,
+            "role": role,
+            "show": show,
+            "size": size,
+            "link": link,
+        },
+        "isError": false,
+    })
+}
+
+/// `route` as a path segment run: what would end the path or break it is
+/// escaped, and the route's own `/` and `@` stay as the browser routes them.
+fn route_path(route: &str) -> String {
+    route
+        .chars()
+        .map(|c| match c {
+            '%' => "%25".to_owned(),
+            '?' => "%3F".to_owned(),
+            '#' => "%23".to_owned(),
+            c if c.is_whitespace() || c.is_control() => {
+                let mut bytes = [0; 4];
+                c.encode_utf8(&mut bytes)
+                    .bytes()
+                    .map(|byte| format!("%{byte:02X}"))
+                    .collect()
+            }
+            c => c.to_string(),
+        })
+        .collect()
+}
+
+/// Most characters of the text version of a view.
+const DESCRIBE_LIMIT: usize = 4000;
+
+/// Most records of one view the text version lists.
+const DESCRIBE_ITEMS: usize = 20;
+
+/// The text version of an outline `node`: one line for the view and each
+/// view it nests, with how many records it shows, and one line for each
+/// record it lists. Cut at [`DESCRIBE_LIMIT`]; the rest is in
+/// `tonk_outline`.
+fn describe(node: &Value, depth: usize, out: &mut String) {
+    if out.len() >= DESCRIBE_LIMIT {
+        return;
+    }
+    let indent = "  ".repeat(depth);
+    let name = node["name"]
+        .as_str()
+        .or_else(|| node["model"].as_str())
+        .unwrap_or("a view");
+    let records = node["records"].as_u64().unwrap_or(0);
+    let mut line = format!(
+        "{indent}- {name}: {records} record{}",
+        if records == 1 { "" } else { "s" }
+    );
+    if let Some(problem) = node["error"].as_str() {
+        line.push_str(&format!(" (did not render: {problem})"));
+    }
+    push(out, &line);
+    let items = node["items"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    for item in items.iter().take(DESCRIBE_ITEMS) {
+        let fields = item["fields"]
+            .as_object()
+            .map(|fields| {
+                fields
+                    .iter()
+                    .map(|(field, value)| match value {
+                        Value::String(text) => format!("{field}: {text}"),
+                        other => format!("{field}: {other}"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        let entity = item["entity"].as_str().unwrap_or("");
+        push(
+            out,
+            &format!(
+                "{indent}  - {}",
+                if fields.is_empty() { entity } else { &fields }
+            ),
+        );
+    }
+    if items.len() > DESCRIBE_ITEMS {
+        push(
+            out,
+            &format!("{indent}  - and {} more", items.len() - DESCRIBE_ITEMS),
+        );
+    }
+    for child in node["children"].as_array().into_iter().flatten() {
+        describe(child, depth + 1, out);
+    }
+}
+
+fn push(out: &mut String, line: &str) {
+    if out.len() + line.len() + 1 > DESCRIBE_LIMIT {
+        if !out.ends_with("…\n") {
+            out.push_str("…\n");
+        }
+        return;
+    }
+    out.push_str(line);
+    out.push('\n');
 }
 
 fn get(uri: &str) -> Request<Body> {
@@ -584,9 +839,18 @@ fn command_of(chain: &DelegationChain) -> Vec<String> {
         .collect()
 }
 
-/// [`OUTLINE`]: the view tree of `space`, as its writer reads it. A
-/// granted space's request carries its grants and address, as a query's
-/// does, so its writer mounts and pulls it the same way.
+/// The role Tonk's line names for a connection with `access`: `write`
+/// wherever it may write, else `read`. Admin is not modelled for a
+/// connection yet; it will be a third answer here.
+fn role(access: &SpaceAccess) -> &'static str {
+    if access.agent || access.write {
+        "write"
+    } else {
+        "read"
+    }
+}
+
+/// [`OUTLINE`]: the view tree of `space`, as its writer reads it.
 async fn outline<W: Writers>(
     arguments: &Value,
     access: &SpaceAccess,
@@ -596,7 +860,31 @@ async fn outline<W: Writers>(
     mcp_session: &str,
     space: &Did,
 ) -> Value {
-    let route = arguments["route"].as_str().unwrap_or("").trim();
+    let route = arguments["route"].as_str().unwrap_or("");
+    match read_outline(route, access, writers, verified, bearer, mcp_session, space).await {
+        Ok(outline) => json!({
+            "content": [{ "type": "text", "text": outline.to_string() }],
+            "structuredContent": outline,
+            "isError": false,
+        }),
+        Err(message) => error(&message),
+    }
+}
+
+/// The view tree of `space` from `route` (the home when empty), as its
+/// writer reads it. A granted space's request carries its grants and
+/// address, as a query's does, so its writer mounts and pulls it the same
+/// way.
+async fn read_outline<W: Writers>(
+    route: &str,
+    access: &SpaceAccess,
+    writers: &W,
+    verified: &Verified,
+    bearer: &str,
+    mcp_session: &str,
+    space: &Did,
+) -> Result<Value, String> {
+    let route = route.trim();
     let mut query = url::form_urlencoded::Serializer::new(String::new());
     if !route.is_empty() {
         query.append_pair("route", route);
@@ -615,7 +903,7 @@ async fn outline<W: Writers>(
         }
     }
     let Ok(request) = request.body(Body::empty()) else {
-        return error("The space's directory entry is malformed.");
+        return Err("The space's directory entry is malformed.".into());
     };
     let response = writers
         .call(verified, bearer, mcp_session, space, request)
@@ -632,18 +920,10 @@ async fn outline<W: Writers>(
             .ok()
             .and_then(|body| body["error"].as_str().map(str::to_owned))
             .unwrap_or_else(|| String::from_utf8_lossy(&body).into_owned());
-        return error(&format!("Could not outline the space ({status}): {reason}"));
+        return Err(format!("Could not outline the space ({status}): {reason}"));
     }
-    match serde_json::from_slice::<Value>(&body) {
-        Ok(outline) => json!({
-            "content": [{ "type": "text", "text": outline.to_string() }],
-            "structuredContent": outline,
-            "isError": false,
-        }),
-        Err(problem) => error(&format!(
-            "The space answered an unreadable outline: {problem}"
-        )),
-    }
+    serde_json::from_slice::<Value>(&body)
+        .map_err(|problem| format!("The space answered an unreadable outline: {problem}"))
 }
 
 fn error(message: &str) -> Value {

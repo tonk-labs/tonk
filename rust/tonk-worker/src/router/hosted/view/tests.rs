@@ -63,7 +63,14 @@ impl Writers for AgentWriter {
         space: &Did,
         request: Request<Body>,
     ) -> Response<Body> {
-        assert_eq!(space, verified.agent(), "only the agent writer is asked");
+        // Opening a view also asks the space's writer for its outline, to
+        // name it; this writer has none.
+        if space != verified.agent() {
+            assert_eq!(request.uri().path(), "/api/outline");
+            let mut missing = Response::new(Body::from(r#"{"error":"no outline here"}"#));
+            *missing.status_mut() = axum::http::StatusCode::NOT_FOUND;
+            return missing;
+        }
         let reach = |verb| {
             self.grants
                 .iter()
@@ -79,6 +86,7 @@ impl Writers for AgentWriter {
                             read: reach("get"),
                             write: reach("put"),
                             address: self.address.clone(),
+                            name: Some("Family trip".into()),
                             ..SpaceAccess::default()
                         },
                     );
@@ -354,8 +362,14 @@ impl Writers for Outlining {
             .lock()
             .unwrap()
             .push((request.uri().query().unwrap_or_default().to_owned(), grants));
+        let name = if request.uri().query().unwrap_or_default().is_empty() {
+            Value::Null
+        } else {
+            json!("Packing list")
+        };
         Response::new(Body::from(
-            json!({ "space": space.to_string(), "outline": { "model": "tonk/space" } }).to_string(),
+            json!({ "space": space.to_string(), "outline": { "model": "tonk/space", "name": name } })
+                .to_string(),
         ))
     }
 }
@@ -409,6 +423,240 @@ async fn an_outline_asks_the_spaces_writer_from_the_route_given() {
     assert_eq!(elsewhere["isError"], true, "a space it does not reach");
 }
 
+#[dialog_common::test]
+async fn it_names_the_space_the_view_and_the_role_for_the_line() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    for (verbs, role) in [(&["get", "put"][..], "write"), (&["get"][..], "read")] {
+        let (verified, writer) = verified(&agent, &space, verbs).await;
+        let writers = Outlining {
+            agent: writer,
+            asked: Default::default(),
+        };
+        let shown = call(
+            OPEN,
+            &json!({ "space": space.did().to_string(), "view": "tonk:trip@tonk/list" }),
+            &verified,
+            &writers,
+            "",
+            "session",
+            ORIGIN,
+            &TicketKey::derive("secret"),
+        )
+        .await
+        .unwrap();
+        let line = &shown["structuredContent"];
+        assert_eq!(line["name"], "Family trip", "{shown}");
+        assert_eq!(line["viewName"], "Packing list", "{shown}");
+        assert_eq!(line["role"], role, "{verbs:?}");
+        let asked = writers.asked.lock().unwrap().clone();
+        assert_eq!(
+            asked,
+            vec![(
+                "route=tonk%3Atrip%40tonk%2Flist".to_owned(),
+                asked[0].1.clone()
+            )]
+        );
+    }
+}
+
+#[dialog_common::test]
+async fn it_shows_a_view_whose_outline_cannot_be_read_named_by_its_space() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let (verified, writer) = verified(&agent, &space, &["get"]).await;
+    let shown = call(
+        OPEN,
+        &json!({ "space": space.did().to_string(), "view": "tonk:trip@tonk/list" }),
+        &verified,
+        &writer,
+        "",
+        "session",
+        ORIGIN,
+        &TicketKey::derive("secret"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(shown["isError"], false, "{shown}");
+    assert_eq!(shown["structuredContent"]["viewName"], Value::Null);
+    assert_eq!(shown["structuredContent"]["name"], "Family trip");
+}
+
+#[dialog_common::test]
+async fn the_agent_space_is_shown_with_write() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let (verified, writer) = verified(&agent, &agent, &[]).await;
+    let shown = call(
+        OPEN,
+        &json!({ "space": agent.did().to_string(), "path": "/" }),
+        &verified,
+        &writer,
+        "",
+        "session",
+        ORIGIN,
+        &TicketKey::derive("secret"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(shown["structuredContent"]["role"], "write", "{shown}");
+}
+
+async fn shown(writers: &impl Writers, verified: &Verified, arguments: Value) -> Value {
+    call(
+        OPEN,
+        &arguments,
+        verified,
+        writers,
+        "",
+        "session",
+        ORIGIN,
+        &TicketKey::derive("secret"),
+    )
+    .await
+    .unwrap()
+}
+
+#[dialog_common::test]
+async fn it_hands_the_whole_space_off_to_tonk_and_shows_only_views_inline() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let subject = space.did().to_string();
+    let (verified, writer) = verified(&agent, &space, &["get"]).await;
+    let whole = shown(&writer, &verified, json!({ "space": subject })).await;
+    assert_eq!(whole["isError"], false, "{whole}");
+    assert_eq!(whole["structuredContent"]["show"], "handoff");
+    assert_eq!(
+        whole["structuredContent"]["link"],
+        format!("https://tonk.example/space/{subject}")
+    );
+    let said = whole["content"][0]["text"].as_str().unwrap();
+    assert!(said.contains("not shown in the chat"), "{said}");
+    assert!(said.contains(&format!(
+        "Open in Tonk: https://tonk.example/space/{subject}"
+    )));
+    let page = shown(
+        &writer,
+        &verified,
+        json!({ "space": subject, "path": "/notes" }),
+    )
+    .await;
+    assert_eq!(page["structuredContent"]["show"], "live");
+    assert_eq!(
+        page["structuredContent"]["size"], "card",
+        "a card unless asked"
+    );
+    let view = shown(
+        &writer,
+        &verified,
+        json!({ "space": subject, "view": "tonk:trip@tonk/list" }),
+    )
+    .await;
+    assert_eq!(view["structuredContent"]["show"], "live");
+}
+
+#[dialog_common::test]
+async fn it_takes_a_size_and_refuses_one_it_does_not_know() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let subject = space.did().to_string();
+    let (verified, writer) = verified(&agent, &space, &["get"]).await;
+    for size in ["card", "carousel", "full"] {
+        let view = shown(
+            &writer,
+            &verified,
+            json!({ "space": subject, "path": "/notes", "size": size }),
+        )
+        .await;
+        assert_eq!(view["structuredContent"]["show"], "live", "{size}");
+        assert_eq!(view["structuredContent"]["size"], size);
+    }
+    let strip = shown(
+        &writer,
+        &verified,
+        json!({ "space": subject, "path": "/notes", "size": "strip" }),
+    )
+    .await;
+    assert_eq!(strip["structuredContent"]["show"], "strip");
+    assert!(
+        strip["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("opens it in their browser")
+    );
+    let refused = shown(
+        &writer,
+        &verified,
+        json!({ "space": subject, "path": "/notes", "size": "huge" }),
+    )
+    .await;
+    assert_eq!(refused["isError"], true, "{refused}");
+    let schema = &tools()[0]["inputSchema"]["properties"]["size"];
+    assert_eq!(schema["enum"], json!(["strip", "card", "carousel", "full"]));
+}
+
+/// A space's writer whose outline of one list shows two records.
+struct Listing(AgentWriter);
+
+impl Writers for Listing {
+    async fn call(
+        &self,
+        verified: &Verified,
+        bearer: &str,
+        mcp_session: &str,
+        space: &Did,
+        request: Request<Body>,
+    ) -> Response<Body> {
+        if space == verified.agent() {
+            return self
+                .0
+                .call(verified, bearer, mcp_session, space, request)
+                .await;
+        }
+        let items: Vec<Value> = (0..25)
+            .map(|n| json!({ "route": format!("tonk:item{n}@tonk/item"), "entity": format!("tonk:item{n}"), "fields": { "name": format!("Item {n}"), "done": n == 0 } }))
+            .collect();
+        Response::new(Body::from(
+            json!({
+                "space": space.to_string(),
+                "outline": {
+                    "model": "tonk/list",
+                    "name": "Packing list",
+                    "records": 25,
+                    "items": items,
+                    "children": [{ "model": "tonk/note", "name": "Notes", "records": 1, "error": "no view" }],
+                },
+            })
+            .to_string(),
+        ))
+    }
+}
+
+#[dialog_common::test]
+async fn it_says_in_text_what_the_view_shows() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let (verified, writer) = verified(&agent, &space, &["get", "put"]).await;
+    let view = shown(
+        &Listing(writer),
+        &verified,
+        json!({ "space": space.did().to_string(), "view": "tonk:trip@tonk/list", "size": "carousel" }),
+    )
+    .await;
+    let said = view["content"][0]["text"].as_str().unwrap();
+    assert!(
+        said.starts_with("Showing Family trip › Packing list inline, as a carousel, live (write)"),
+        "{said}"
+    );
+    assert!(said.contains("- Packing list: 25 records\n"), "{said}");
+    assert!(said.contains("  - name: Item 0, done: true\n"), "{said}");
+    assert!(said.contains("  - and 5 more\n"), "{said}");
+    assert!(
+        said.contains("  - Notes: 1 record (did not render: no view)"),
+        "{said}"
+    );
+    assert!(said.contains("Rendering is not verified"), "{said}");
+}
+
 /// A view syncs from the host's sandbox, under the policy the relay
 /// resource names, so a space hosted outside it is refused up front
 /// rather than shown as a view whose first request the host blocks.
@@ -422,7 +670,7 @@ async fn a_space_hosted_where_the_view_cannot_reach_is_not_shown() {
     async fn open(verified: &Verified, writer: &AgentWriter, subject: &str) -> Value {
         call(
             OPEN,
-            &json!({ "space": subject, "path": "/" }),
+            &json!({ "space": subject, "path": "/notes" }),
             verified,
             writer,
             "",
@@ -451,9 +699,15 @@ async fn a_space_hosted_where_the_view_cannot_reach_is_not_shown() {
     }
 
     writer.address = Some("https://elsewhere.example/ucan/".into());
-    let refused = open(&verified, &writer, &subject).await;
-    assert_eq!(refused["isError"], true, "{refused}");
-    let said = refused["content"][0]["text"].as_str().unwrap();
+    // Shown as a link into Tonk where it lives, not as a live view.
+    let linked = open(&verified, &writer, &subject).await;
+    assert_eq!(linked["isError"], false, "{linked}");
+    assert_eq!(linked["structuredContent"]["show"], "strip");
+    assert_eq!(
+        linked["structuredContent"]["link"],
+        format!("https://elsewhere.example/space/{subject}/notes")
+    );
+    let said = linked["content"][0]["text"].as_str().unwrap();
     assert!(said.contains("https://elsewhere.example"), "{said}");
     let pair = (verified, writer);
     let refused = access(&pair, &space.did(), &view.did()).await;
@@ -978,4 +1232,40 @@ concept!: &view-note
         view.close().await;
         fixture.service.stop().await.unwrap();
     }
+}
+
+#[dialog_common::test]
+fn the_hosted_guide_tells_the_agent_how_views_are_shown() {
+    let guide = include_str!("../mcp/guide-hosted.md");
+    for size in SIZES {
+        assert!(
+            guide.contains(&format!("`{size}`")),
+            "the guide never names {size}"
+        );
+    }
+    assert!(
+        guide.contains("not shown in the chat"),
+        "the whole-space rule"
+    );
+    assert!(guide.contains("Your text carries the answer"));
+}
+
+#[dialog_common::test]
+async fn it_links_a_view_where_the_browser_routes_it() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let subject = space.did().to_string();
+    let (verified, writer) = verified(&agent, &space, &["get"]).await;
+    let strip = shown(
+        &writer,
+        &verified,
+        json!({ "space": subject, "view": "tonk:trip#1@tonk/list!card", "size": "strip" }),
+    )
+    .await;
+    assert_eq!(strip["structuredContent"]["show"], "strip");
+    assert_eq!(
+        strip["structuredContent"]["link"],
+        format!("https://tonk.example/space/{subject}/tonk:trip%231@tonk/list!card"),
+        "the chosen view, not the space home"
+    );
 }
