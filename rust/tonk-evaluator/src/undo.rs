@@ -15,11 +15,12 @@
 //! The undo is refused, as a whole, when any revision after it recorded a
 //! claim on an entity and attribute it touched, or when what it wrote no
 //! longer stands as it left it. A later revision that was itself undone,
-//! and the undo that undid it, do not count: they cancel out. Undoing only the untouched facts would
-//! leave a state nobody chose: half of an edit, a restored title beside a
-//! description someone wrote for the new one. A refusal changes nothing,
-//! says which fact moved, and is resolved by undoing the later change
-//! first.
+//! and the undo that undid it, do not count: they cancel out.
+//!
+//! Undoing only the untouched facts would leave a state nobody chose: half
+//! of an edit, a restored title beside a description someone wrote for the
+//! new one. A refusal changes nothing, says which fact moved, and is
+//! resolved by undoing the later change first.
 //!
 //! "After" is the branch log walked from its head down to the revision:
 //! every revision met first is a descendant or a concurrent one, and
