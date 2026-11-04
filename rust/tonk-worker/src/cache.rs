@@ -79,6 +79,37 @@ fn generation_cache() -> String {
     format!("{GENERATION_PREFIX}{}", build_id())
 }
 
+/// Read a `/library/` file through the service worker's verified download
+/// path (`self.tonkBundledAsset`): this worker's downloads first, checked
+/// against the asset manifest stamped into the shim, then the network. A
+/// worker restarted before its generation is adopted already holds what the
+/// first boot downloaded, so its next boot need not wait on the network.
+///
+/// `None` when there is no such path: a development build (no stamped
+/// manifest), a Web Worker beside an inline view, or a response that is not
+/// a success (the shim's missing-asset 503). The caller then asks the
+/// network as before.
+pub(crate) async fn downloaded_library_bytes(path: &str) -> Option<Vec<u8>> {
+    if build_id() == "dev" || !path.starts_with("/library/") {
+        return None;
+    }
+    let bundled = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("tonkBundledAsset"))
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    let promise: js_sys::Promise = bundled
+        .call1(&JsValue::UNDEFINED, &JsValue::from_str(path))
+        .ok()?
+        .dyn_into()
+        .ok()?;
+    let response: Response = JsFuture::from(promise).await.ok()?.dyn_into().ok()?;
+    if !response.ok() {
+        return None;
+    }
+    let buffer = JsFuture::from(response.array_buffer().ok()?).await.ok()?;
+    Some(js_sys::Uint8Array::new(&buffer).to_vec())
+}
+
 /// Read bytes from this worker's immutable asset generation.
 ///
 /// `None` is returned for development and for a generation that is not

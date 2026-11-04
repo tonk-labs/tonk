@@ -353,11 +353,7 @@ function validateAssetManifest(manifest) {
 }
 
 async function loadVerifiedAssetManifest() {
-    const { bytes } = await fetchVerified(
-        ASSET_MANIFEST_URL,
-        ASSET_MANIFEST_HASH,
-        "asset manifest",
-    );
+    const bytes = await retainedAssetManifestBytes() ?? await fetchAssetManifestBytes();
     let manifest;
     try {
         manifest = JSON.parse(new TextDecoder().decode(bytes));
@@ -367,6 +363,43 @@ async function loadVerifiedAssetManifest() {
     const entries = validateAssetManifest(manifest);
     assetManifestMap = new Map(entries);
     return entries;
+}
+
+// A worker that restarts before the offline copy is adopted still has the
+// manifest it verified, keyed by the hash stamped into this source, so the
+// pages it already downloaded do not wait on the network. A development
+// build stamps no hash and so always asks the network.
+async function retainedAssetManifestBytes() {
+    if (ASSET_MANIFEST_HASH === "dev") return null;
+    const response = await verifiedGenerationResponse(
+        [DOWNLOAD_CACHE], ASSET_MANIFEST_URL, ASSET_MANIFEST_HASH,
+    );
+    return response ? new Uint8Array(await response.arrayBuffer()) : null;
+}
+
+async function fetchAssetManifestBytes() {
+    const { bytes, response } = await fetchVerified(
+        ASSET_MANIFEST_URL,
+        ASSET_MANIFEST_HASH,
+        "asset manifest",
+    );
+    unretainedManifest = response;
+    return bytes;
+}
+
+// Install verifies everything before it touches CacheStorage, so only the
+// foreground path below retains the manifest, beside the assets it serves.
+let unretainedManifest = null;
+async function retainAssetManifest() {
+    const response = unretainedManifest;
+    unretainedManifest = null;
+    if (!response || ASSET_MANIFEST_HASH === "dev") return;
+    try {
+        const cache = await caches.open(DOWNLOAD_CACHE);
+        await cache.put(ASSET_MANIFEST_URL, response);
+    } catch (error) {
+        log("Unable to retain the verified asset manifest:", error);
+    }
 }
 
 // The worker source pins both identities for its entire lifetime. Failed
@@ -425,6 +458,7 @@ async function sharedVerifiedAsset(path, hash, cacheNames = [], onChunk = null) 
 /// an offline network, or a corrupt response therefore fails closed.
 async function fetchVerifiedRetainedAsset(path) {
     await fetchVerifiedAssetManifest();
+    await retainAssetManifest();
     const expectedHash = assetManifestMap.get(path);
     if (!expectedHash) {
         throw new Error(`asset manifest has no retained path: ${path}`);
@@ -1352,6 +1386,8 @@ function missingGenerationAssetResponse(path) {
     );
 }
 
+const NAVIGATION_NETWORK_MS = 15_000;
+
 async function serveNavigation() {
     const cached = await caches.match("/", { cacheName: SHELL_CACHE });
 
@@ -1361,11 +1397,26 @@ async function serveNavigation() {
         // deployment and do not prune assets an old page may still reference.
         return cached;
     }
+    // Bound only the wait, not the download: on a slow network it keeps
+    // going and lands in the download cache, so the next attempt is fast.
+    // A network that never answers must end in the recovery page, never
+    // in a boot screen that waits forever.
+    let timer;
     try {
-        return await fetchVerifiedRetainedAsset("/");
+        return await Promise.race([
+            fetchVerifiedRetainedAsset("/"),
+            new Promise((_, reject) => {
+                timer = setTimeout(
+                    () => reject(new Error("the network did not answer")),
+                    NAVIGATION_NETWORK_MS,
+                );
+            }),
+        ]);
     } catch (error) {
         log("Retained root recovery failed:", error);
         return missingGenerationAssetResponse("/");
+    } finally {
+        clearTimeout(timer);
     }
 }
 

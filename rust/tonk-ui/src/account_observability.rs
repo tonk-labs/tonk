@@ -283,6 +283,11 @@ fn classification(action: AccountAction) -> (Journey, AnalyticsAction, Stage) {
             Event::AuthorizeAgent,
             Stage::WorkerHandoff,
         ),
+        Ui::RevokeAgent => (
+            Journey::AccountManagement,
+            Event::RevokeAgent,
+            Stage::WorkerHandoff,
+        ),
         Ui::SwitchProfile => (
             Journey::AccountManagement,
             Event::SwitchProfile,
@@ -506,6 +511,7 @@ mod tests {
             AccountAction::LoadProfiles,
             AccountAction::LinkCli,
             AccountAction::AuthorizeAgent,
+            AccountAction::RevokeAgent,
             AccountAction::SwitchProfile,
             AccountAction::SignOut,
             AccountAction::LoadDeletionPlan,

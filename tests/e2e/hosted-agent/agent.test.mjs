@@ -247,8 +247,11 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
 
     // A link the person shares in the chat, joined as the card joins it:
     // `tonk_join_space` only reads the link, and `tonk_join_accept` (the
-    // card's app-only tool) joins with the access the person chose.
-    await step('the agent joins a shared space from a link, read only', async () => {
+    // card's app-only tool) joins with the access the person chose. The
+    // person does not join and is not asked for a passkey. Revoking it in
+    // "your agents" asks for the passkey, and the agent's key revokes the
+    // link's grants at the access service.
+    await step('the agent joins a shared space from a link, read only, then is revoked', async () => {
       const name = `e2e join ${run}`;
       await boot(person.page, origin);
       await createSpace(person.page, { origin, name });
@@ -297,6 +300,59 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       assert.equal(refused.isError, true, `${name} was joined read only but took a write`);
       const again = (await call(client, 'tonk_join_space', { link })).structuredContent;
       assert.equal(again.joined, 'read');
+
+      // Revoked from "your agents" in the person's browser, which pulls
+      // the agent space to see the link's grants, then answers the
+      // passkey with the virtual one.
+      const removal = await person.page.evaluate(
+        async ({ space, deadline }) => {
+          const agents = async () => (await fetch('/api/agents')).json();
+          let agent;
+          while (!agent && Date.now() < deadline) {
+            agent = (await agents()).find((each) =>
+              each.spaces?.some((held) => held.subject === space && held.viaLink),
+            );
+            if (!agent) await new Promise((resolve) => setTimeout(resolve, 2000));
+          }
+          if (!agent) throw new Error('the link grant never listed under your agents');
+          const response = await fetch(`/api/agents/${encodeURIComponent(agent.key)}/revoke`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ space }),
+          });
+          if (!response.ok)
+            throw new Error(`revoke answered ${response.status}: ${await response.text()}`);
+          const answer = await response.json();
+          while (Date.now() < deadline) {
+            const held = (await agents())
+              .find((each) => each.key === agent.key)
+              ?.spaces?.find((each) => each.subject === space);
+            if (!held) return { pending: answer.pending, removed: true };
+            if (held.removal?.state === 'failed') return { pending: answer.pending, failed: held.removal.reason };
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          }
+          return { pending: answer.pending, removed: false };
+        },
+        { space: subject, deadline: Date.now() + 180_000 },
+      );
+      assert.equal(removal.pending, true, 'a link grant asks for the passkey');
+      assert.deepEqual(removal, { pending: true, removed: true }, JSON.stringify(removal));
+      // Not necessarily on the next call: an open session reuses the
+      // access service's read permits for a few minutes (dialog's permit
+      // cache), and the hosted agent drops the space from its own list
+      // once the retraction syncs. Refusal of cached grants by the access
+      // service itself is checked natively in
+      // `the_account_withdraws_a_link_grant_as_its_agent`.
+      let denied;
+      const deadline = Date.now() + 60_000;
+      do {
+        denied = await client.callTool({
+          name: 'tonk_query',
+          arguments: { space: subject, document: 'concept:\n' },
+        });
+        if (!denied.isError) await new Promise((resolve) => setTimeout(resolve, 3000));
+      } while (!denied.isError && Date.now() < deadline);
+      assert.equal(denied.isError, true, `${name} still read after the revocation`);
     });
 
     // A view, as a host shows `tonk_open_space`: first as a host that
