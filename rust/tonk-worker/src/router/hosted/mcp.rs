@@ -791,6 +791,22 @@ impl<W: Writers> McpEndpoint<'_, W> {
             writer_failed(call, status, &value);
             let reason = reason(&value);
             let command = value["code"] == "COMMAND_NOT_CONFIRMABLE";
+            // A change that would change nothing is not asked: it is said.
+            if confirm && value["code"] == "NOTHING_TO_PROPOSE" {
+                let card = super::propose::nothing(context);
+                return json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "Nothing was proposed or written: this document would change \
+                             nothing in {} ({reason}).",
+                            context.place.label()
+                        ),
+                    }],
+                    "structuredContent": { "card": card.to_value() },
+                    "isError": false,
+                });
+            }
             let mut answer = tool_result(without_revisions(value), true);
             // The model reads the worker's reason; the card says it in
             // words for the person, and never shows the reason itself.
@@ -1076,6 +1092,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
             },
             agent,
             home,
+            origin: self.origin.to_owned(),
         };
         if home {
             return Ok(Reached {
@@ -1088,10 +1105,8 @@ impl<W: Writers> McpEndpoint<'_, W> {
             // The model reads the refusal; the card says it for the person.
             let card = match held {
                 Some(held) if held.read => super::propose::read_only(&context),
-                Some(held) => {
-                    super::propose::no_access(&context.place, &context.agent, held.lapsed > 0)
-                }
-                None => super::propose::no_access(&context.place, &context.agent, false),
+                Some(held) => super::propose::no_access(&context, held.lapsed > 0),
+                None => super::propose::no_access(&context, false),
             };
             return Err(json!({
                 "content": [{ "type": "text", "text": refusal }],

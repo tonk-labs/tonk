@@ -724,6 +724,45 @@ async fn a_write_carries_its_change_for_the_card_and_a_read_does_not() {
 }
 
 #[dialog_common::test]
+fn the_undone_strip_says_what_now_stands() {
+    use crate::router::undo::Reverted;
+    let one = |name: Option<&str>, was: &str| Reverted {
+        name: name.map(str::to_owned),
+        was: was.to_owned(),
+    };
+    let space = "Family trip";
+    assert_eq!(
+        undo::stands(&[one(Some("Hiking boots"), "added")], space),
+        "undone · Hiking boots is no longer in Family trip"
+    );
+    assert_eq!(
+        undo::stands(&[one(Some("Towels"), "removed")], space),
+        "undone · Towels is back in Family trip"
+    );
+    assert_eq!(
+        undo::stands(&[one(Some("Seeblick Hotel"), "changed")], space),
+        "undone · Seeblick Hotel is back as it was"
+    );
+    assert_eq!(
+        undo::stands(&[one(None, "added"), one(Some("Sun hat"), "added")], space),
+        "undone · 2 items are no longer in Family trip"
+    );
+    assert_eq!(
+        undo::stands(&[one(None, "removed"), one(None, "changed")], space),
+        "undone · 2 items are back as they were"
+    );
+    // No name to give: the space as it was.
+    assert_eq!(
+        undo::stands(&[one(None, "added")], space),
+        "undone · Family trip is as it was before"
+    );
+    assert_eq!(
+        undo::stands(&[], space),
+        "undone · Family trip is as it was before"
+    );
+}
+
+#[dialog_common::test]
 async fn undo_on_a_read_grant_is_refused_before_any_writer() {
     let agent = Ed25519Signer::generate().await.unwrap();
     let space = Ed25519Signer::generate().await.unwrap();
@@ -1604,7 +1643,10 @@ concept!: &mcp-note
         let card = &undone["structuredContent"]["card"];
         assert_eq!(card["kind"], "strip", "{undone}");
         assert!(
-            card["say"].as_str().unwrap().starts_with("undone"),
+            card["say"]
+                .as_str()
+                .unwrap()
+                .starts_with("undone · undo me is no longer in "),
             "{card}"
         );
         assert!(card.get("undo").is_none(), "{card}");
@@ -1927,12 +1969,12 @@ concept!: &mcp-note
         assert_eq!(late["isError"], true, "{late}");
         assert!(!holds("declined").await, "a dismissed proposal wrote");
 
-        // The space moves after the preview: the confirmed change is not
-        // written over what the person never saw.
+        // The space moves elsewhere after the preview: the change still does
+        // what the person saw, so it is applied at the new head.
         let proposed = client
             .result(
                 "tonk_evaluate",
-                json!({ "space": space, "document": note("stale"), "confirm": true }),
+                json!({ "space": space, "document": note("kept"), "confirm": true }),
             )
             .await;
         let arguments = proposed["structuredContent"]["card"]["answers"][0]["arguments"].clone();
@@ -1943,10 +1985,42 @@ concept!: &mcp-note
             )
             .await;
         assert!(!error, "{moved}");
+        let kept = client.result("tonk_proposal_apply", arguments).await;
+        assert_eq!(kept["isError"], false, "{kept}");
+        assert!(
+            holds("kept").await,
+            "a change unaffected by the move was refused"
+        );
+
+        // Someone changes the same item after the preview: the confirmed
+        // change is not written over what the person never saw.
+        let proposed = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": note("stale"), "confirm": true }),
+            )
+            .await;
+        let arguments = proposed["structuredContent"]["card"]["answers"][0]["arguments"].clone();
+        let theirs = format!("mcp-note!:\n  this: urn:mcp:{run}:stale\n  title: \"theirs\"\n");
+        let (moved, error) = client
+            .call(
+                "tonk_evaluate",
+                json!({ "space": space, "document": theirs }),
+            )
+            .await;
+        assert!(!error, "{moved}");
         let stale = client.result("tonk_proposal_apply", arguments).await;
         assert_eq!(stale["isError"], true, "{stale}");
         let tell = &stale["structuredContent"]["card"];
         assert_eq!(tell["label"], "note stale changed", "{stale}");
+        assert_eq!(
+            tell["ledger"][0],
+            json!({ "term": "theirs", "value": "theirs" })
+        );
+        assert_eq!(
+            tell["ledger"][1],
+            json!({ "term": "yours", "value": "note stale" })
+        );
         assert!(!holds("stale").await, "a stale proposal wrote");
         // The same change, held again at the new head: use mine writes it.
         let answers = tell["answers"].as_array().unwrap();
@@ -1969,12 +2043,29 @@ concept!: &mcp-note
                 }),
             )
             .await;
-        assert_eq!(read["isError"], true, "{read}");
+        assert_eq!(read["isError"], false, "{read}");
+        assert_eq!(read["structuredContent"]["card"]["kind"], "strip", "{read}");
         assert!(
             read["content"][0]["text"]
                 .as_str()
                 .unwrap()
-                .contains("writes nothing")
+                .contains("would change nothing")
+        );
+        // Nor has one that writes what is there already.
+        let same = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": note("asked"), "confirm": true }),
+            )
+            .await;
+        assert_eq!(same["isError"], false, "{same}");
+        let strip = &same["structuredContent"]["card"];
+        assert_eq!(strip["kind"], "strip", "{same}");
+        assert!(
+            strip["say"]
+                .as_str()
+                .unwrap()
+                .starts_with("nothing changed in")
         );
 
         let open: Vec<Arc<SpaceWriter>> =

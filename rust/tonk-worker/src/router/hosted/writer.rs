@@ -516,7 +516,12 @@ impl SpaceWriter {
                 }
             };
             let now = dialog_ucan_core::time::Timestamp::now().to_unix();
-            let (id, expires) = self.proposals.hold(document, serde_json::Value::Null, now);
+            let (id, expires) = self.proposals.hold(
+                document,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                now,
+            );
             return json_answer(super::library::held(&id, expires, &command, &catalog));
         }
         let request = Request::builder()
@@ -539,7 +544,9 @@ impl SpaceWriter {
                 );
             }
         };
-        if evaluation["commits"]["claims"].as_u64().unwrap_or(0) == 0 {
+        if evaluation["commits"]["claims"].as_u64().unwrap_or(0) == 0
+            || super::propose::changed(&evaluation).is_empty()
+        {
             return failure(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "NOTHING_TO_PROPOSE",
@@ -564,32 +571,46 @@ impl SpaceWriter {
         }
         let revision = evaluation["revision_before"].clone();
         let now = dialog_ucan_core::time::Timestamp::now().to_unix();
-        let (id, expires) = self.proposals.hold(document, revision, now);
+        let seen = super::propose::seen(&evaluation);
+        let (id, expires) = self.proposals.hold(document, revision, seen, now);
         json_answer(super::propose::held(&id, expires, evaluation))
     }
 
     /// Write the change held as `id`, once, as [`Self::write`] does, and
     /// only onto the revision it was previewed at: the person confirmed
     /// what the preview showed, so a space that has moved since is
-    /// refused (`412`) and nothing is written. The `412` carries the same
-    /// change held afresh at the new head (`proposal`, `evaluation`),
-    /// when it still previews, for the person to choose. The id is spent before the
+    /// previewed again: unchanged for what the person saw, it is applied
+    /// at the new head; otherwise it is refused (`412`) and nothing is
+    /// written. The `412` carries the same change held afresh at the new
+    /// head (`proposal`, `evaluation`), when it still previews, for the
+    /// person to choose. The id is spent before the
     /// write runs, so a second answer finds nothing whatever the first
     /// one's outcome.
     pub async fn apply(&self, id: &str) -> Response<Body> {
+        self.apply_held(id, true).await
+    }
+
+    /// [`Self::apply`]; with `again`, a space that moved is previewed
+    /// afresh, and when the fresh preview shows exactly what the person
+    /// saw, the change is applied at the new head once more. Only a
+    /// change that would now do something else is answered `412`.
+    async fn apply_held(&self, id: &str, again: bool) -> Response<Body> {
         let now = dialog_ucan_core::time::Timestamp::now().to_unix();
-        let Ok((document, revision)) = self.proposals.take(id, now) else {
+        let Ok(taken) = self.proposals.take(id, now) else {
             return proposal_gone();
         };
         // A held library command runs now; installing is idempotent, so
         // a space that moved since the ask is no reason to refuse it.
-        if let Some(command) = super::library::command_of(&document) {
+        if let Some(command) = super::library::command_of(&taken.document) {
             return match self.library(&command).await {
                 Ok(answer) => json_answer(answer),
                 Err(error) => failure(StatusCode::BAD_GATEWAY, "LIBRARY_FAILED", &error),
             };
         }
-        let body = serde_json::json!({ "document": document, "expected_revision": revision });
+        let body = serde_json::json!({
+            "document": taken.document,
+            "expected_revision": taken.revision,
+        });
         let request = Request::builder()
             .method(Method::POST)
             .uri("/evaluate/conditional")
@@ -600,17 +621,30 @@ impl SpaceWriter {
         if response.status() != StatusCode::PRECONDITION_FAILED {
             return response;
         }
-        // The space moved: hold the same change afresh at its new head, so
-        // the person can choose it over what changed, having been told.
-        let again = self.propose(document).await;
+        // The space moved: hold the same change afresh at its new head.
+        let held = self.propose(taken.document).await;
+        let held = if held.status().is_success() {
+            match held.into_body().collect().await {
+                Ok(body) => serde_json::from_slice::<serde_json::Value>(&body.to_bytes()).ok(),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        if let Some(held) = &held
+            && again
+            && super::propose::seen(&held["evaluation"]) == taken.seen
+            && let Some(id) = held["proposal"]["id"].as_str()
+        {
+            // What moved is elsewhere in the space: the change does what
+            // the person confirmed.
+            return Box::pin(self.apply_held(id, false)).await;
+        }
         let mut moved = serde_json::json!({
             "error": "the space changed after the preview; nothing was written",
             "code": "CHANGED_SINCE",
         });
-        if again.status().is_success()
-            && let Ok(body) = again.into_body().collect().await
-            && let Ok(held) = serde_json::from_slice::<serde_json::Value>(&body.to_bytes())
-        {
+        if let Some(held) = held {
             moved["proposal"] = held["proposal"].clone();
             moved["evaluation"] = held["evaluation"].clone();
         }
@@ -624,7 +658,7 @@ impl SpaceWriter {
         let now = dialog_ucan_core::time::Timestamp::now().to_unix();
         match self.proposals.take(id, now) {
             // A declined library command says which, for its receipt.
-            Ok((document, _)) => match super::library::command_of(&document) {
+            Ok(taken) => match super::library::command_of(&taken.document) {
                 Some(command) => json_answer(serde_json::json!({
                     "dismissed": true,
                     "library": { "action": command.action.word(), "component": command.component },
