@@ -45,9 +45,13 @@
       span.textContent = text;
       return span;
     };
-    const what = fields.case === 'case:failed'
+    // The command by what it answers to, then what it is doing or why it
+    // failed.
+    const command = fields.name || 'a command';
+    const detail = fields.case === 'case:failed'
       ? fields.outputStatus || 'it failed'
-      : fields.stateStatus || (fields.concept || '').replace(/^tonk:/, '') || id;
+      : fields.stateStatus;
+    const what = detail ? `${command}: ${detail}` : command;
     const at = new Date(fields.finished || fields.started || 0);
     row.append(
       part('case', words[fields.case] || name),

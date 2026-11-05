@@ -21,8 +21,12 @@ async (self) => {
     ]);
     const said = async (entity) => (entity
       ? read('status', 'xyz.tonk.state/status', 'Text', entity) : undefined);
+    // What the command answers to in the palette (its `action:` names), so a
+    // row says "install" rather than the concept's content-derived id.
+    const name = concept
+      ? await read('name', 'tonk.dialog.intent.action/name', 'Text', concept) : undefined;
     Object.assign(fields, {
-      concept, state, output, finished,
+      concept, name, state, output, finished,
       stateStatus: await said(state),
       outputStatus: await said(output),
     });
