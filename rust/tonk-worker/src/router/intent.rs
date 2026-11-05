@@ -1061,6 +1061,118 @@ async fn it_installs_a_component_from_the_palette() {
     panic!("the notebook component was never installed: {sources}");
 }
 
+/// `<code-editor>` finds a language by any of its words, whichever
+/// component put the record there: one the editor ships (`dialog`), and
+/// one installed on its own (`py`). Installing the editor alone leaves
+/// other languages unanswered, and the editor offers the rest to the
+/// palette. The query is `code-editor/request.js`'s, as the element sends
+/// it over `tonk-query`.
+#[dialog_common::test]
+async fn it_answers_code_editor_language_requests_from_installed_components() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/languages",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+
+    // The element's request, field for field.
+    let request = include_str!("../../../tonk-core/assets/library/code-editor/request.js");
+    for needle in [
+        "'xyz.tonk.code-editor.language/word', as: 'Text', cardinality: 'many'",
+        "'xyz.tonk.code-editor.language/source', as: 'Text', cardinality: 'one'",
+    ] {
+        assert!(request.contains(needle), "request.js still asks {needle}");
+    }
+    let ask = |word: &str| {
+        json!({
+            "predicate": { "with": {
+                "word": { "the": "xyz.tonk.code-editor.language/word", "as": "Text", "cardinality": "many" },
+                "source": { "the": "xyz.tonk.code-editor.language/source", "as": "Text", "cardinality": "one" }
+            } },
+            "terms": {
+                "this": { "?": { "name": "this" } },
+                "word": word,
+                "source": { "?": { "name": "source" } }
+            }
+        })
+        .to_string()
+    };
+    let packs = |rows: &Value| -> Vec<(String, String)> {
+        rows.as_array()
+            .unwrap_or_else(|| panic!("rows: {rows}"))
+            .iter()
+            .map(|row| {
+                (
+                    row["this"]
+                        .as_str()
+                        .or_else(|| row["fields"]["this"].as_str())
+                        .unwrap_or_else(|| panic!("a row names its record: {row}"))
+                        .to_owned(),
+                    row["fields"]["source"]
+                        .as_str()
+                        .unwrap_or_else(|| panic!("a row carries its pack: {row}"))
+                        .to_owned(),
+                )
+            })
+            .collect()
+    };
+
+    {
+        let tonk = state.read().await;
+        super::repository::install_component(&tonk, &key, "main", "/library/code-editor.yaml")
+            .await
+            .expect("the editor installs");
+    }
+    let query = format!("{space}/query");
+    let dialog = send(&app, "POST", &query, "application/json", ask("dialog")).await;
+    let dialog = packs(&dialog);
+    assert_eq!(dialog.len(), 1, "{dialog:?}");
+    assert_eq!(dialog[0].0, "tonk:code-editor/language/dialog-yaml");
+    assert!(
+        dialog[0].1.starts_with("(shared) => {"),
+        "a pack is a function of the shared modules"
+    );
+    let python = send(&app, "POST", &query, "application/json", ask("py")).await;
+    assert_eq!(
+        packs(&python),
+        vec![],
+        "python is not installed with the editor"
+    );
+
+    {
+        let tonk = state.read().await;
+        super::repository::install_component(&tonk, &key, "main", "/library/language/python.yaml")
+            .await
+            .expect("a language installs");
+    }
+    let python = send(&app, "POST", &query, "application/json", ask("py")).await;
+    let python = packs(&python);
+    assert_eq!(python.len(), 1, "{python:?}");
+    assert_eq!(python[0].0, "tonk:code-editor/language/python");
+    let pack = include_str!("../../../tonk-core/assets/library/language/python.js");
+    assert!(
+        python[0].1.trim_end() == pack.trim_end(),
+        "the record carries the pack the component includes: {} bytes, {} on disk, from {:?}",
+        python[0].1.len(),
+        pack.len(),
+        &python[0].1[..python[0].1.len().min(120)],
+    );
+}
+
 /// "inst" means only install, so the palette lists the components it can
 /// install rather than waiting at "install (component)": each listed, none
 /// run as it stands, and the one picked before, as the profile remembers

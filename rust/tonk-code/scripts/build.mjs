@@ -6,6 +6,9 @@
 //   assets/tonk-code.js             — main bundle, registers the element
 //   assets/tonk-code-lang-<id>.js   — one chunk per language pack,
 //                                     loaded on demand via dynamic import
+//   ../tonk-core/assets/library/... — the library's <code-editor>: its
+//                                     core and language components (see
+//                                     the end of this file)
 //
 // The main bundle is fully self-contained for the element's core
 // behavior (state, view, history, default keymap) — it doesn't
@@ -212,12 +215,239 @@ const options = {
   plugins: [artifactFingerprintPlugin],
 };
 
+// ---------------------------------------------------------------------------
+// The library's <code-editor> (rust/tonk-core/assets/library/code-editor.yaml).
+//
+// Branch data has no URL to import a chunk from, so everything here is
+// written as text the library includes:
+//
+//   library/code-editor/core.js     — the editor core (src-js/library.ts),
+//                                     as the `core` method: an IIFE wrapped
+//                                     into a function returning its exports.
+//   library/code-editor/language/<id>.js
+//                                   — the packs that ship with the editor
+//                                     (yaml, dialog-yaml).
+//   library/language/<id>.yaml      — one installable component per
+//   library/language/<id>.js          catalog language: its record, and
+//                                     the pack the record includes.
+//
+// A pack is the text of `(shared) => LanguageSupport`. Its imports of the
+// modules the core shares resolve to `shared`, so a pack uses the core's
+// CodeMirror rather than a copy of its own (see src-js/library.ts); every
+// other module it needs is bundled into it. Packs share nothing with each
+// other, so a component is one self-contained file: installing html does
+// not depend on javascript being installed.
+// ---------------------------------------------------------------------------
+
+const library = resolve(root, "../tonk-core/assets/library");
+mkdirSync(resolve(library, "code-editor/language"), { recursive: true });
+mkdirSync(resolve(library, "language"), { recursive: true });
+
+/** The packages the core exports in `shared` (src-js/library.ts). */
+const SHARED = [
+  "@codemirror/state",
+  "@codemirror/view",
+  "@codemirror/language",
+  "@codemirror/commands",
+  "@codemirror/autocomplete",
+  "@codemirror/lint",
+  "@lezer/common",
+  "@lezer/highlight",
+  "@lezer/lr",
+];
+
+/** Resolve an import of a shared package to the core's copy. */
+const sharedModules = {
+  name: "tonk-code-shared-modules",
+  setup(build) {
+    build.onResolve({ filter: /^@(codemirror|lezer)\// }, (args) =>
+      SHARED.includes(args.path) ? { path: args.path, namespace: "shared" } : undefined,
+    );
+    build.onLoad({ filter: /.*/, namespace: "shared" }, (args) => ({
+      contents: `module.exports = __shared(${JSON.stringify(args.path)});`,
+      loader: "js",
+    }));
+  },
+};
+
+/** @type {import('esbuild').BuildOptions} */
+const core = {
+  entryPoints: [resolve(root, "src-js/library.ts")],
+  outfile: resolve(library, "code-editor/core.js"),
+  bundle: true,
+  format: "iife",
+  globalName: "core",
+  target: ["es2022"],
+  minify: true,
+  banner: { js: "() => {" },
+  footer: { js: "return core;\n}" },
+  logLevel: "info",
+};
+
+/** The build of one pack, `entry`, into `outfile`. */
+const pack = (entry, outfile) => ({
+  entryPoints: [entry],
+  outfile,
+  bundle: true,
+  format: "iife",
+  globalName: "pack",
+  target: ["es2022"],
+  minify: true,
+  banner: {
+    js:
+      "(shared) => {\n" +
+      "const __shared = (name) => { const module = shared[name];" +
+      " if (!module) throw new Error(`the core shares no ${name}`); return module; };",
+  },
+  footer: { js: "return pack.default;\n}" },
+  plugins: [sharedModules],
+  logLevel: "warning",
+});
+
+/** Every word a fence may name `chunkId` by, lower-cased: its id first,
+ *  then each catalog name, alias and extension that resolves to it. */
+const wordsFor = (chunkId) => [
+  chunkId,
+  ...Object.keys(aliasMap)
+    .filter((word) => aliasMap[word] === chunkId && word !== chunkId)
+    .sort(),
+];
+
+/** The catalog's display name for `chunkId`. */
+const nameOf = (chunkId) =>
+  catalog.find((desc) => chunkIdOf(desc.name) === chunkId)?.name ?? chunkId;
+
+// The packs that ship with the editor. `dialog` is what an author fences a
+// tonk query cell with; the pack is `dialog-yaml`.
+const builtin = [
+  { id: "yaml", name: "YAML", entry: "src-js/lang/yaml.ts", words: wordsFor("yaml") },
+  {
+    id: "dialog-yaml",
+    name: "Dialog YAML",
+    entry: "src-js/lang/dialog-yaml.ts",
+    words: ["dialog-yaml", "dialog"],
+  },
+];
+
+// Every catalog language but those the editor ships.
+const installable = [...catalogChunks]
+  .filter(([chunkId]) => !builtin.some(({ id }) => id === chunkId))
+  .map(([chunkId, entry]) => ({ id: chunkId, name: nameOf(chunkId), entry, words: wordsFor(chunkId) }));
+
+/** The language concept, the same text wherever it is declared: in
+ *  code-editor.yaml and in every language component, so a language
+ *  installs into a space without the editor and the editor without any
+ *  language. Identical declarations are one concept. */
+const CONCEPT = `concept!: &code-editor/language
+  description: |
+    A language <code-editor> highlights. A block names it by any of its
+    words; \`source\` is its pack, the text of \`(shared) => LanguageSupport\`
+    evaluated against the editor's own CodeMirror modules.
+  with:
+    name:
+      description: The language's name, for people.
+      the: xyz.tonk.code-editor.language/name
+      as: text
+    word:
+      description: A word a block names the language by, lower-cased.
+      the: xyz.tonk.code-editor.language/word
+      as: text
+      pick: :all
+    source:
+      description: The pack, as JavaScript source.
+      the: xyz.tonk.code-editor.language/source
+      as: text
+
+# One more word for a language, on its own: words accumulate, one
+# assertion each.
+concept!: &code-editor/language/word
+  description: A word a block names a <code-editor> language by.
+  with:
+    word:
+      description: A word a block names the language by, lower-cased.
+      the: xyz.tonk.code-editor.language/word
+      as: text
+      pick: :all
+`;
+
+/** One language's record, its pack included from `include`: the record
+ *  with its first word, then one assertion per other word. */
+const record = ({ id, name, words }, include) =>
+  `code-editor/language!:
+  this: tonk:code-editor/language/${id}
+  name: ${JSON.stringify(name)}
+  word: ${JSON.stringify(words[0])}
+  source: !include/text ${include}
+` +
+  words
+    .slice(1)
+    .map(
+      (word) => `
+code-editor/language/word!:
+  this: tonk:code-editor/language/${id}
+  word: ${JSON.stringify(word)}
+`,
+    )
+    .join("");
+
+/** Rewrite the text between `# BEGIN GENERATED: <name>` and its END in
+ *  `file`, leaving the rest as it was written. */
+function regenerate(file, name, body) {
+  const text = readFileSync(file, "utf8");
+  const begin = `# BEGIN GENERATED: ${name}\n`;
+  const end = `# END GENERATED: ${name}\n`;
+  const from = text.indexOf(begin);
+  const to = text.indexOf(end);
+  if (from === -1 || to < from) throw new Error(`${file} has no generated ${name} region`);
+  writeFileSync(file, text.slice(0, from + begin.length) + body + text.slice(to));
+}
+
+async function buildLibrary() {
+  await build(core);
+  for (const language of builtin) {
+    await build(pack(resolve(root, language.entry), resolve(library, `code-editor/language/${language.id}.js`)));
+  }
+  for (const language of installable) {
+    await build(pack(language.entry, resolve(library, `language/${language.id}.js`)));
+    writeFileSync(
+      resolve(library, `language/${language.id}.yaml`),
+      `# GENERATED by rust/tonk-code/scripts/build.mjs — do not edit.\n` +
+        `#\n` +
+        `# ${language.name} for <code-editor>, installed from the palette as\n` +
+        `# \`language/${language.id}\`.\n\n` +
+        CONCEPT +
+        "\n" +
+        // Paths are relative to the library directory, where every
+        // library document is parsed.
+        record(language, `./language/${language.id}.js`),
+    );
+  }
+  // The editor's own languages and the palette's list of the others.
+  regenerate(
+    resolve(library, "code-editor.yaml"),
+    "languages",
+    CONCEPT +
+      "\n" +
+      builtin.map((language) => record(language, `./code-editor/language/${language.id}.js`)).join("\n") +
+      "\n" +
+      installable
+        .map(
+          ({ id }) => `library/component!:\n  this: tonk:library/language/${id}\n  name: "language/${id}"\n`,
+        )
+        .join("\n"),
+  );
+  console.log(`[tonk-code] library: core, ${builtin.length} built-in and ${installable.length} installable languages`);
+}
+
 const watch = process.argv.includes("--watch");
 
 if (watch) {
-  const ctx = await context(options);
-  await ctx.watch();
+  // The library's packs are left to a full build: only the core follows
+  // the source while watching.
+  const contexts = [await context(options), await context(core)];
+  await Promise.all(contexts.map((ctx) => ctx.watch()));
   console.log("[tonk-code] watching…");
 } else {
   await build(options);
+  await buildLibrary();
 }
