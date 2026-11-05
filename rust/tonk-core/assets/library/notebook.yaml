@@ -799,6 +799,18 @@ rule!:
         subject: ?this
         title: ?title
 
+# The same commit says the retitle is done, naming the notebook it renamed,
+# so whoever ran it (the command palette) is told it took rather than that
+# nothing handled it.
+rule!:
+  description: A retitle completes, producing the notebook it renamed.
+  assert!: command/completion
+  when:
+    - assert: notebook/retitle
+      where:
+        this: ?this
+        subject: ?output
+
 rule!:
   description: Persist a block edit onto its block.
   assert!: notebook/block

@@ -2677,6 +2677,109 @@ name!:
     /// without it, the rule would fail validate (no transient
     /// trigger) and the body wouldn't classify head emissions
     /// correctly.
+    /// A transient's facts held in the session overlay never fire the rules
+    /// that watch it: only a transient the commit dispatches does.
+    ///
+    /// The worker keeps every invocation it tracks in the overlay with the
+    /// command's own fields, so a command's status view can render it. If
+    /// an overlay copy fired its rule again, the next run of a rule-handled
+    /// command (a notebook retitle) would replay every earlier one still
+    /// in the overlay.
+    #[dialog_common::test]
+    async fn a_transient_in_the_session_overlay_fires_no_rule() -> anyhow::Result<()> {
+        let (operator, profile) = test_session_with_peer().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        let doc = r#"concept!: &ping
+  transient:
+  with:
+    tag:
+      the: io.gozala.ping/tag
+      as: text
+      cardinality: :one
+      description: "tag"
+
+concept!: &pong
+  with:
+    tag:
+      the: io.gozala.pong/tag
+      as: text
+      cardinality: :one
+      description: "tag"
+
+rule!:
+  assert!: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#;
+        let syntax = parse(doc).syntax.expect("syntax");
+        syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await?;
+        let old: dialog_artifacts::Entity = "id:old".parse()?;
+        let new: dialog_artifacts::Entity = "id:new".parse()?;
+        branch
+            .overlay()
+            .assert(
+                the!("io.gozala.ping/tag")
+                    .of(old.clone())
+                    .is("old".to_string()),
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut transients = Changes::new();
+        the!("io.gozala.ping/tag")
+            .of(new.clone())
+            .is("new".to_string())
+            .assert(&mut transients);
+        branch
+            .transaction()
+            .dispatch(transients)
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await?;
+        let pongs: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("io.gozala.pong/tag"))
+                    .of(Term::<dialog_artifacts::Entity>::var("of"))
+                    .is(Term::<String>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        let fired: Vec<String> = pongs.iter().map(|claim| claim.of.to_string()).collect();
+        let pings: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("io.gozala.ping/tag"))
+                    .of(Term::<dialog_artifacts::Entity>::var("of"))
+                    .is(Term::<String>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        let held: Vec<String> = pings.iter().map(|claim| claim.of.to_string()).collect();
+        assert_eq!(
+            held,
+            vec!["id:old".to_owned()],
+            "the overlay copy is visible to reads, so the rule could have seen it"
+        );
+        assert_eq!(
+            fired,
+            vec!["id:new".to_owned()],
+            "only the dispatched transient fired the rule"
+        );
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_declares_transient_concept_via_notation() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;

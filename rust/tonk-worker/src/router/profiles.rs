@@ -21,6 +21,7 @@ use dialog_varsig::Did;
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_handler_macros::wasm_compat;
+use tonk_schema::invocation::{Done, Failure, Outcome};
 use tonk_schema::prelude::DidExt as _;
 use tonk_worker_api::{ActivateProfileRequest, ProfileRosterEntry, ProfilesResponse};
 
@@ -318,10 +319,12 @@ async fn activate_named(
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::AddProfile> for crate::router::CommandEnv {
-    async fn execute(&self, _command: tonk_schema::command::AddProfile) {
+    async fn execute(&self, _command: tonk_schema::command::AddProfile) -> Outcome {
         if let Err(error) = add_profile(self.state(), self.client()).await {
             log!("AddProfile failed: {error}");
-            return;
+            return Err(Failure::new(format!(
+                "Could not start a new account: {error}"
+            )));
         }
         // The ceremony is NOT raised from here. It is a top-page passkey
         // dialog whose handler lives behind the portal bridge, reachable
@@ -350,6 +353,10 @@ impl dialog_capability::Provider<tonk_schema::command::AddProfile> for crate::ro
             "",
         )
         .await;
+        // The rotation is done; the ceremony the page raises next reports
+        // through its own status, not this outcome. The new branch is not
+        // an entity, so there is nothing to show.
+        Done::nothing()
     }
 }
 
@@ -367,18 +374,22 @@ impl dialog_capability::Provider<tonk_schema::command::AddProfile> for crate::ro
 impl dialog_capability::Provider<tonk_schema::command::SwitchProfile>
     for crate::router::CommandEnv
 {
-    async fn execute(&self, command: tonk_schema::command::SwitchProfile) {
+    async fn execute(&self, command: tonk_schema::command::SwitchProfile) -> Outcome {
         let handle = command.handle.0;
         if handle.is_empty() {
             log!("SwitchProfile: empty handle, skipping");
-            return;
+            return Err(Failure::new("No account was named to switch to."));
         }
         // No source client: the switch was asked for from inside a guest,
         // so every window reloads, including the one that asked. The HTTP
         // route passes its caller so that tab keeps its response instead.
         if let Err(error) = activate_named(self.state(), handle.clone(), None).await {
             log!("SwitchProfile to '{handle}' failed: {error}");
+            return Err(Failure::new(format!(
+                "Could not switch to '{handle}': {error}"
+            )));
         }
+        Done::nothing()
     }
 }
 
@@ -673,15 +684,17 @@ async fn promote(
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::SignOut> for crate::router::CommandEnv {
-    async fn execute(&self, _command: tonk_schema::command::SignOut) {
+    async fn execute(&self, _command: tonk_schema::command::SignOut) -> Outcome {
         match sign_out(self.state(), self.client()).await {
             Ok(status) => log!("SignOut: {status:?}"),
             Err(error) => {
                 log!("SignOut failed: {error}");
-                return;
+                return Err(Failure::new(format!("Could not sign out: {error}")));
             }
         }
+        // The reload is the page's; whether it happens is not reported.
         super::navigate::notify_profile_changed_to(self.client());
+        Done::nothing()
     }
 }
 
@@ -1461,5 +1474,52 @@ mod tests {
         let selected = routing.await.unwrap();
         assert_eq!(selected.active_branch, second);
         assert_eq!(selected.disposition, AccountProfileDisposition::Existing);
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod outcome_tests {
+    use crate::router::command::tests::native::test_state;
+    use crate::router::{CommandEnv, CommandOrigin};
+
+    use tonk_schema::domain::command::current::switch_profile::{Handle, Time};
+
+    /// Run `SwitchProfile` naming `handle` against `state`.
+    async fn switch(
+        state: &crate::router::AppState,
+        handle: &str,
+    ) -> tonk_schema::invocation::Outcome {
+        let env = CommandEnv::new(state.clone(), CommandOrigin::default());
+        let command = tonk_schema::command::SwitchProfile {
+            this: "command:switch-profile-test".parse().unwrap(),
+            time: Time(1.0),
+            handle: Handle(handle.to_owned()),
+        };
+        dialog_capability::Provider::<tonk_schema::command::SwitchProfile>::execute(&env, command)
+            .await
+    }
+
+    /// A switch that names no account fails, saying so.
+    #[dialog_common::test]
+    async fn a_switch_naming_nothing_fails() {
+        let outcome = switch(&test_state().await, "").await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("No account was named")),
+            "{outcome:?}"
+        );
+    }
+
+    /// A switch to a branch the profile does not have fails, and leaves
+    /// the active branch where it was.
+    #[dialog_common::test]
+    async fn a_switch_to_an_unknown_branch_fails_and_moves_nothing() {
+        let state = test_state().await;
+        let before = state.read().await.active_branch.clone();
+        let outcome = switch(&state, "no-such-branch").await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("no-such-branch")),
+            "{outcome:?}"
+        );
+        assert_eq!(state.read().await.active_branch, before);
     }
 }

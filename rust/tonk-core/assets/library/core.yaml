@@ -2793,7 +2793,7 @@ view!:
 
 # The library's components a space can install, each beside the others
 # and beside the space's seed: issue, meta, notebook, prose, table,
-# version-control (every library file but `core.yaml`, which every space
+# tasks, version-control (every library file but `core.yaml`, which every space
 # runs, and `profile.yaml`, the profile's). An install is recorded like the seed's and brought up to
 # date the same way when the space mounts; installing one already there
 # updates it, or does nothing when it is current.
@@ -2830,6 +2830,10 @@ library/component!:
 library/component!:
   this: tonk:library/table
   name: "table"
+
+library/component!:
+  this: tonk:library/tasks
+  name: "tasks"
 
 library/component!:
   this: tonk:library/version-control
@@ -2877,3 +2881,101 @@ rule!:
 # `tonk/rename-repository` has no verb here: the profile's own rename
 # (`rename space`, the FABB's) says the same thing, and the palette reads
 # both branches, so a verb here would offer every rename twice.
+
+# invocation-schema:begin
+#
+# Invocations: what became of a command someone ran. Declared identically
+# in `core.yaml` and `profile.yaml`, because a command is committed on a
+# space branch or on the profile and its invocation lives on the branch it
+# was committed on. `rust/tonk-schema/src/invocation.rs` follows this.
+#
+# A command is a transient: its commit sweeps it. An invoker that wants to
+# know how it went (the command palette) stamps the command with
+# `xyz.tonk.command/invoked-at` and `xyz.tonk.command/concept`. The worker
+# then keeps an invocation on the command's own entity, in that branch's
+# session overlay: the command's fields as they were given, where it got
+# to, what it is doing, and what it produced. Overlay only, so nothing here
+# is committed or replicated, and the worker retracts an invocation once it
+# expires.
+
+concept!: &invocation
+  this: tonk:invocation
+  description: |
+    A command someone ran and asked to follow, on the command's own entity,
+    in the session overlay of the branch it ran on.
+  with:
+    case:
+      description: |
+        Where it got to: `case:active` while a provider runs it, then
+        `case:done`, `case:failed`, `case:aborted` (the worker running it
+        went away) or `case:unhandled` (nothing took it).
+      the: xyz.tonk.invocation/case
+      as: entity
+    started:
+      description: When the worker took it, in milliseconds since the epoch.
+      the: xyz.tonk.invocation/started
+      as: float:64
+  maybe:
+    invoked:
+      description: When the invoker ran it, in milliseconds since the epoch, by its own clock.
+      the: xyz.tonk.command/invoked-at
+      as: float:64
+    concept:
+      description: The concept of the command that was run, whose `status` view renders it.
+      the: xyz.tonk.command/concept
+      as: entity
+    state:
+      description: What it is doing, as its provider last said. An entity with a `status`.
+      the: xyz.tonk.invocation/state
+      as: entity
+    output:
+      description: |
+        What it produced: the entity a successful command made or acted on,
+        or, for a failed one, an error entity whose `status` says why.
+      the: xyz.tonk.invocation/output
+      as: entity
+    finished:
+      description: When it finished, in milliseconds since the epoch.
+      the: xyz.tonk.invocation/finished
+      as: float:64
+    expires:
+      description: When the worker retracts it, in milliseconds since the epoch.
+      the: xyz.tonk.invocation/expires
+      as: float:64
+
+concept!: &state
+  this: tonk:state
+  description: |
+    Something an invocation can be in or end with, and the words for it: a
+    provider's progress (`status:minting`) or a failed command's error.
+    Every invocation's `state`, and every error it ends with, has one.
+  with:
+    status:
+      description: What it is, in words a person can be shown.
+      the: xyz.tonk.state/status
+      as: text
+
+view!:
+  this: tonk:state
+  show:
+    label: |
+      {status}
+
+# How a rule says it handled a command at commit time: it concludes this on
+# the command entity, naming what it produced. A command no provider takes
+# and no rule concludes this for is `case:unhandled`. Transient, like every
+# command: read off the commit, never stored.
+command!: &command/completion
+  description: A rule handled the command this is asserted on, producing `output`.
+  with:
+    output:
+      description: What the command produced or acted on.
+      the: xyz.tonk.command.completion/output
+      as: entity
+
+# A command's `status` view, when it declares one, renders its invocation:
+# the command's own fields are on the invocation, so the view reads them as
+# it would the command's (`view!: this: <command>` with `show: status:`).
+# Whoever lists invocations draws the generic line (case, state, output).
+
+# invocation-schema:end

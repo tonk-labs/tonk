@@ -41,6 +41,7 @@ const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.y
 const META_LIBRARY: &str = include_str!("../../tonk-core/assets/library/meta.yaml");
 const VERSION_CONTROL_LIBRARY: &str =
     include_str!("../../tonk-core/assets/library/version-control.yaml");
+const TASKS_LIBRARY: &str = include_str!("../../tonk-core/assets/library/tasks.yaml");
 
 /// Lower a library document the same way the seed does, asserting it
 /// parses, analyzes with no running system, and lowers to claims. Like
@@ -1405,6 +1406,12 @@ async fn it_lowers_the_prose_library() {
 #[dialog_common::test]
 async fn it_lowers_the_issue_library() {
     assert_component_library_lowers("issue library (issue.yaml)", "issue.yaml", ISSUE_LIBRARY)
+        .await;
+}
+
+#[dialog_common::test]
+async fn it_lowers_the_tasks_library() {
+    assert_component_library_lowers("tasks library (tasks.yaml)", "tasks.yaml", TASKS_LIBRARY)
         .await;
 }
 

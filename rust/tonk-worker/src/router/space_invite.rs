@@ -23,6 +23,7 @@ use dialog_ucan_core::time::Timestamp;
 use dialog_varsig::Did;
 use tonk_common::log;
 use tonk_invite::connection::{AgentAccess, DEFAULT_GRANT_TTL_SECONDS};
+use tonk_schema::invocation::{Done, Failure, Outcome};
 use tonk_schema::prelude::DidExt as _;
 use url::Url;
 
@@ -259,22 +260,26 @@ fn account_in_document(body: &[u8]) -> Option<Did> {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::InviteAgent> for crate::router::CommandEnv {
-    async fn execute(&self, command: tonk_schema::command::InviteAgent) {
+    async fn execute(&self, command: tonk_schema::command::InviteAgent) -> Outcome {
         let (Ok(agent), Ok(space)) = (
             command.agent.0.to_string().parse::<Did>(),
             command.space.0.to_string().parse::<Did>(),
         ) else {
             log!("space/invite-agent: the command names no agent or no space; skipping");
-            return;
+            return Err(Failure::new("the invitation names no agent or no space"));
         };
         let key = space.repo_key().to_owned();
         if !self.may_target_space(&key) {
             log!("space/invite-agent: refused to target '{key}' from another space");
-            return;
+            return Err(Failure::new(
+                "a space can only invite to itself, not to another space",
+            ));
         }
         if let Err(error) = invite_agent(self.state(), &agent, &key).await {
             log!("space/invite-agent '{key}' failed: {error}");
+            return Err(Failure::new(format!("couldn't invite the agent: {error}")));
         }
+        Done::with(space.this())
     }
 }
 
@@ -286,19 +291,25 @@ impl dialog_capability::Provider<tonk_schema::command::InviteAgent> for crate::r
 impl dialog_capability::Provider<tonk_schema::command::InviteByEmail>
     for crate::router::CommandEnv
 {
-    async fn execute(&self, command: tonk_schema::command::InviteByEmail) {
+    async fn execute(&self, command: tonk_schema::command::InviteByEmail) -> Outcome {
         let Ok(space) = command.space.0.to_string().parse::<Did>() else {
             log!("space/invite-email: the command names no space; skipping");
-            return;
+            return Err(Failure::new("the invitation names no space"));
         };
         let key = space.repo_key().to_owned();
         if !self.may_target_space(&key) {
             log!("space/invite-email: refused to target '{key}' from another space");
-            return;
+            return Err(Failure::new(
+                "a space can only invite to itself, not to another space",
+            ));
         }
         if let Err(error) = invite_by_email(self.state(), command.email.0.trim(), &key).await {
             log!("space/invite-email '{key}' failed: {error}");
+            return Err(Failure::new(format!(
+                "couldn't send the invitation: {error}"
+            )));
         }
+        Done::with(space.this())
     }
 }
 

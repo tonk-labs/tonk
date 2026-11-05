@@ -1945,7 +1945,10 @@ const JOIN_STATUS_URI: &str = "tonk:join/status";
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::CommandEnv {
-    async fn execute(&self, command: tonk_schema::command::Join) {
+    async fn execute(
+        &self,
+        command: tonk_schema::command::Join,
+    ) -> tonk_schema::invocation::Outcome {
         // A short link (`/@/{hash}#seed`) resolves to the long form
         // first. The deep-link flow never needed this — the BROWSER
         // follows the 301 (with fragment inheritance) before the /join
@@ -1988,9 +1991,10 @@ impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::
             if !is_space_address(&link) && !is_paste_page(&link) {
                 crate::router::navigate::notify_navigate(self.client(), "/");
             }
-            return;
+            // A visit with no link to redeem is not a failed join.
+            return tonk_schema::invocation::Done::nothing();
         }
-        run_join(self, &page, link).await;
+        run_join(self, &page, link).await
     }
 }
 
@@ -2182,10 +2186,15 @@ fn retains_overlay_entity(
 /// The two differ only when the page carries another host's link
 /// (`/join/{link}`): the link is what joins, and the page is where the
 /// recipient is, which decides whether success navigates.
-async fn run_join(env: &crate::router::CommandEnv, page: &str, link: String) {
+async fn run_join(
+    env: &crate::router::CommandEnv,
+    page: &str,
+    link: String,
+) -> tonk_schema::invocation::Outcome {
     use std::sync::Arc;
     use tonk_schema::command::{JoinFailure as JoinFailureFact, JoinStatus};
     use tonk_schema::domain::join::{Kind, Reason, Status};
+    use tonk_schema::invocation::{Done, Failure};
 
     let tonk = env.state().read().await.clone();
 
@@ -2201,7 +2210,7 @@ async fn run_join(env: &crate::router::CommandEnv, page: &str, link: String) {
         Ok(session) => session,
         Err(e) => {
             log!("join: failed to acquire profile meta branch: {e}");
-            return;
+            return Err(Failure::new("Tonk could not join this space."));
         }
     };
 
@@ -2209,7 +2218,7 @@ async fn run_join(env: &crate::router::CommandEnv, page: &str, link: String) {
         Ok(entity) => entity,
         Err(e) => {
             log!("join: bad status URI: {e}");
-            return;
+            return Err(Failure::new("Tonk could not join this space."));
         }
     };
 
@@ -2274,6 +2283,8 @@ async fn run_join(env: &crate::router::CommandEnv, page: &str, link: String) {
                 outcome.subject,
                 outcome.key
             );
+            // The navigation is the page's; whether it lands is not reported.
+            Done::with(outcome.subject.this())
         }
         // A visit to a space's address carried no link that could have
         // expired, so it shows no failure: the page it is on already
@@ -2283,6 +2294,9 @@ async fn run_join(env: &crate::router::CommandEnv, page: &str, link: String) {
             tonk.reactor.schedule_poll(Arc::clone(&session.state));
             tonk.reactor.run_scheduled_polls(&tonk.operator).await;
             log!("join: the space did not open ({})", failure.kind().as_str());
+            // The page shows nothing, but the space did not open, so the
+            // invocation says so with the same fixed copy.
+            Err(Failure::new(failure.kind().message()))
         }
         Err(failure) => {
             // Failure: mark failed + record the fixed copy and its kind,
@@ -2305,6 +2319,8 @@ async fn run_join(env: &crate::router::CommandEnv, page: &str, link: String) {
             tonk.reactor.schedule_poll(Arc::clone(&session.state));
             tonk.reactor.run_scheduled_polls(&tonk.operator).await;
             log!("join: failed ({}): {failure:?}", kind.as_str());
+            // The fixed copy, never the link or the upstream body.
+            Err(Failure::new(kind.message()))
         }
     }
 }
@@ -4440,5 +4456,46 @@ mod renewal_tests {
             .into_inner();
         crate::router::account_state::tests::discard(tonk, &account_key);
         drop(service);
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod outcome_tests {
+    use crate::router::command::tests::native::test_state;
+    use crate::router::{CommandEnv, CommandOrigin};
+
+    /// A link whose invite cannot be read fails the join with the fixed
+    /// copy for a malformed link, and never the link itself.
+    #[dialog_common::test]
+    async fn a_join_with_an_unreadable_invite_fails_with_the_fixed_copy() {
+        let state = test_state().await;
+        let env = CommandEnv::new(state.clone(), CommandOrigin::default());
+        let url = "https://tonk.test/join?access=not-a-delegation#secret-seed";
+        let command = tonk_schema::command::Join {
+            this: "command:join-test".parse().unwrap(),
+            url: tonk_schema::domain::command::current::join::Url(url.to_owned()),
+        };
+        let outcome =
+            dialog_capability::Provider::<tonk_schema::command::Join>::execute(&env, command).await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0 == tonk_worker_api::JoinFailureKind::Malformed.message()),
+            "{outcome:?}"
+        );
+    }
+
+    /// A bare `/join` visit redeems nothing, which is not a failure.
+    #[dialog_common::test]
+    async fn a_bare_join_visit_is_done() {
+        let state = test_state().await;
+        let env = CommandEnv::new(state.clone(), CommandOrigin::default());
+        let command = tonk_schema::command::Join {
+            this: "command:join-test".parse().unwrap(),
+            url: tonk_schema::domain::command::current::join::Url(
+                "https://tonk.test/join".to_owned(),
+            ),
+        };
+        let outcome =
+            dialog_capability::Provider::<tonk_schema::command::Join>::execute(&env, command).await;
+        assert_eq!(outcome, tonk_schema::invocation::Done::nothing());
     }
 }

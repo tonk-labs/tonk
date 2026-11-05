@@ -75,7 +75,14 @@ button,a{ min-height:48px; font:600 17px/1.1 'IBM Plex Sans Condensed','Arial Na
 :host([commanding]) .space{ display:none!important; }
 :host([commanding]) .command{ display:block; }
 :host([commanding]) .run,:host([commanding]) .panel{ display:none!important; }
-:host([latent]:not([commanding])) .w:not(.menu-open){ display:none; }
+:host([latent]:not([commanding]):not([data-command-status])) .w:not(.menu-open){ display:none; }
+/* The last command run from the command line, while it says something
+   (`data-command-status`, set by the palette as it follows the run). Out of
+   command mode only: in it, the line is the command line. A folded or latent
+   bar opens out to hold it, as it does for an agent notice. */
+.command-status{ display:none; min-width:0; }
+:host([data-command-status]:not([commanding])) .command-status{ display:block; }
+:host([data-command-status]:not([commanding])) .w.collapsed{ width:min(var(--fabb-space-width),var(--_room,calc(100vw - 32px)),calc(100vw - 32px)); }
 :host([commanding]) .w.collapsed{ width:min(var(--fabb-space-width),var(--_room,calc(100vw - 32px)),calc(100vw - 32px));
   grid-template-columns:minmax(0,1fr); border-radius:25px; overflow:auto; }
 .run[hidden],.action[hidden],.panel[hidden],.more,.mw{ display:none!important; }
@@ -242,6 +249,7 @@ pub const BAR_HTML: &str = r#"<div class="w">
       <slot name="command"></slot>
     </div>
     <div class="agent-feedback"><div class="agent-feedback-clip"><p class="agent-feedback-message"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m20 6-11 11-5-5"/></svg><span class="agent-notice" role="status" aria-live="polite"></span></p></div></div>
+    <div class="command-status"><slot name="command-status"></slot></div>
     <div class="command"><slot name="command-list"></slot></div>
     <nav class="run" id="fabb-actions" aria-label="space actions" hidden>
       <button class="action login" data-action="account" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3h6v18h-6M3 12h12m-5-5 5 5-5 5"/></svg><span>add an account</span></button>
@@ -635,7 +643,26 @@ mod tests {
         assert!(BAR_CSS.contains(":host([commanding]) .w.collapsed{"));
         assert!(
             BAR_CSS
-                .contains(":host([latent]:not([commanding])) .w:not(.menu-open){ display:none; }")
+                .contains(":host([latent]:not([commanding]):not([data-command-status])) .w:not(.menu-open){ display:none; }")
+        );
+    }
+
+    #[test]
+    fn it_seats_the_command_status_between_the_header_and_the_suggestions() {
+        let header = BAR_HTML.find(r#"<slot name="command">"#).unwrap();
+        let status = BAR_HTML.find(r#"<slot name="command-status">"#).unwrap();
+        let list = BAR_HTML.find(r#"<slot name="command-list">"#).unwrap();
+        assert!(header < status && status < list);
+        assert!(BAR_CSS.contains(".command-status{ display:none; min-width:0; }"));
+        assert!(
+            BAR_CSS.contains(
+                ":host([data-command-status]:not([commanding])) .command-status{ display:block; }"
+            ),
+            "the status shows only out of command mode, where the line is the command line"
+        );
+        assert!(
+            BAR_CSS.contains(":host([data-command-status]:not([commanding])) .w.collapsed{"),
+            "a folded bar opens out to hold it"
         );
     }
 

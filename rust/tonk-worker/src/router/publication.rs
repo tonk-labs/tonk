@@ -21,6 +21,7 @@ use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use tonk_common::log;
 use tonk_invite::{Ticket, home_address_meta};
+use tonk_schema::invocation::{Done, Failure, Outcome};
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{Invitation, InvitationExecution};
 
@@ -397,20 +398,24 @@ async fn publications(
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::PublishSpace> for crate::router::CommandEnv {
-    async fn execute(&self, command: tonk_schema::command::PublishSpace) {
+    async fn execute(&self, command: tonk_schema::command::PublishSpace) -> Outcome {
         let Ok(space) = command.space.0.to_string().parse::<Did>() else {
             log!("space/publish: the command names no space; skipping");
-            return;
+            return Err(Failure::new("The command names no space to publish."));
         };
         let key = space.repo_key().to_owned();
         if !self.may_target_space(&key) {
             log!("space/publish: refused to target '{key}' from another space");
-            return;
+            return Err(Failure::new("A space cannot publish another space."));
         }
         let tonk = self.state().read().await.clone();
         if let Err(error) = publish(&tonk, &key).await {
             log!("space/publish '{key}' failed: {error}");
+            return Err(Failure::new(format!(
+                "Could not publish the space: {error}"
+            )));
         }
+        Done::with(space.this())
     }
 }
 
@@ -422,20 +427,24 @@ impl dialog_capability::Provider<tonk_schema::command::PublishSpace> for crate::
 impl dialog_capability::Provider<tonk_schema::command::UnpublishSpace>
     for crate::router::CommandEnv
 {
-    async fn execute(&self, command: tonk_schema::command::UnpublishSpace) {
+    async fn execute(&self, command: tonk_schema::command::UnpublishSpace) -> Outcome {
         let Ok(space) = command.space.0.to_string().parse::<Did>() else {
             log!("space/unpublish: the command names no space; skipping");
-            return;
+            return Err(Failure::new("The command names no space to unpublish."));
         };
         let key = space.repo_key().to_owned();
         if !self.may_target_space(&key) {
             log!("space/unpublish: refused to target '{key}' from another space");
-            return;
+            return Err(Failure::new("A space cannot unpublish another space."));
         }
         let tonk = self.state().read().await.clone();
         if let Err(error) = unpublish(&tonk, &key).await {
             log!("space/unpublish '{key}' failed: {error}");
+            return Err(Failure::new(format!(
+                "Could not unpublish the space: {error}"
+            )));
         }
+        Done::with(space.this())
     }
 }
 
@@ -646,7 +655,8 @@ mod tests {
                 path: tonk_schema::domain::command::load::Path("/".to_string()),
             },
         )
-        .await;
+        .await
+        .expect("the load waits for the space rather than failing");
 
         // Open the space as the page's join command does: the join, then
         // the drain of the polls it scheduled. Nothing else touches it.
@@ -1363,5 +1373,41 @@ mod tests {
             .into_inner();
         crate::router::account_state::tests::discard(tonk, &account_key);
         drop(service);
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod outcome_tests {
+    use crate::router::command::tests::native::test_state;
+    use crate::router::{CommandEnv, CommandOrigin};
+    use tonk_schema::domain::command::publish;
+
+    const SPACE: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+
+    /// A space's own branch cannot publish another space: the command is
+    /// refused at the containment check, with a failure saying so, before
+    /// anything is minted or recorded.
+    #[dialog_common::test]
+    async fn publishing_another_space_from_a_space_fails() {
+        let state = test_state().await;
+        let origin = CommandOrigin {
+            repo: "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".to_owned(),
+            branch: "main".to_owned(),
+            client: None,
+        };
+        let env = CommandEnv::new(state.clone(), origin);
+        let command = tonk_schema::command::PublishSpace {
+            this: "command:publish-test".parse().unwrap(),
+            space: publish::Space(SPACE.parse().unwrap()),
+            time: publish::Time(1.0),
+        };
+        let outcome = dialog_capability::Provider::<tonk_schema::command::PublishSpace>::execute(
+            &env, command,
+        )
+        .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("cannot publish another space")),
+            "{outcome:?}"
+        );
     }
 }

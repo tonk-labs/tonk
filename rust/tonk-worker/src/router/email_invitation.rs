@@ -8,7 +8,17 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use tonk_schema::command::{ClaimEmailInvitation, EmailInvitationStatus, SendEmailInvitation};
 use tonk_schema::domain::email_invitation_status::{Message, State};
+use tonk_schema::invocation::{Done, Failure, Outcome};
+use tonk_schema::prelude::DidExt as _;
 use url::Url;
+
+/// The refusal for a command fired anywhere but the profile, which is the
+/// only place an account's mail may be sent from.
+fn not_from_profile() -> Outcome {
+    Err(Failure::new(
+        "email invitations are sent from the profile, not from a space",
+    ))
+}
 
 fn unavailable() -> TonkWorkerError {
     TonkWorkerError::Conflict("Delivery could not be confirmed. Retry the same invitation.".into())
@@ -182,14 +192,20 @@ async fn send(env: &CommandEnv, command: &SendEmailInvitation) -> Result<(), Ton
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Provider<SendEmailInvitation> for CommandEnv {
-    async fn execute(&self, command: SendEmailInvitation) {
+    async fn execute(&self, command: SendEmailInvitation) -> Outcome {
         if !self.from_profile() {
-            return;
+            return not_from_profile();
         }
         publish(self, &command.this, "pending", "Sending invitation…").await;
         match send(self, &command).await {
-            Ok(()) => publish(self, &command.this, "sent", "Invitation sent. They can create an account, confirm their email, and join this space.").await,
-            Err(error) => publish(self, &command.this, "failed", &error.to_string()).await,
+            Ok(()) => {
+                publish(self, &command.this, "sent", "Invitation sent. They can create an account, confirm their email, and join this space.").await;
+                Done::with(command.space.0.clone())
+            }
+            Err(error) => {
+                publish(self, &command.this, "failed", &error.to_string()).await;
+                Err(Failure::new(error))
+            }
         }
     }
 }
@@ -197,9 +213,9 @@ impl Provider<SendEmailInvitation> for CommandEnv {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Provider<ClaimEmailInvitation> for CommandEnv {
-    async fn execute(&self, command: ClaimEmailInvitation) {
+    async fn execute(&self, command: ClaimEmailInvitation) -> Outcome {
         if !self.from_profile() {
-            return;
+            return not_from_profile();
         }
         publish(self, &command.this, "pending", "Checking your invitation…").await;
         let result = async {
@@ -238,8 +254,85 @@ impl Provider<ClaimEmailInvitation> for CommandEnv {
             Ok(outcome) => {
                 publish(self, &command.this, "joined", "Space joined.").await;
                 super::navigate::notify_navigate(self.client(), &format!("/space/{}", outcome.key));
+                Done::with(outcome.subject.this())
             }
-            Err(error) => publish(self, &command.this, "failed", &error.to_string()).await,
+            Err(error) => {
+                publish(self, &command.this, "failed", &error.to_string()).await;
+                Err(Failure::new(error))
+            }
         }
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod tests {
+    use super::*;
+
+    fn command(id: &str) -> SendEmailInvitation {
+        SendEmailInvitation {
+            this: "id:send-email-invitation".parse().unwrap(),
+            id: tonk_schema::domain::send_email_invitation::Id(id.into()),
+            email: tonk_schema::domain::send_email_invitation::Email("friend@example.com".into()),
+            space: tonk_schema::domain::send_email_invitation::Space(
+                "did:key:zSpace".parse().unwrap(),
+            ),
+            account: tonk_schema::domain::send_email_invitation::Account(
+                "did:key:zAccount".parse().unwrap(),
+            ),
+        }
+    }
+
+    /// An invitation id the service could never have issued fails the
+    /// send before any account is asked to sign it.
+    #[dialog_common::test]
+    async fn it_fails_an_invitation_with_an_unusable_id() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let env = CommandEnv::new(state, crate::router::CommandOrigin::default());
+        let outcome = Provider::<SendEmailInvitation>::execute(&env, command("")).await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("Delivery could not be confirmed")),
+            "{outcome:?}"
+        );
+    }
+
+    /// Mail goes out from the profile only. The same command fired in a
+    /// space is refused, and publishes no invitation status.
+    #[dialog_common::test]
+    async fn it_refuses_an_invitation_fired_in_a_space() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let branch = state.read().await.active_branch.clone();
+        let env = CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: "did:key:zSomeSpace".into(),
+                branch: branch.clone(),
+                client: None,
+            },
+        );
+        let outcome = Provider::<SendEmailInvitation>::execute(&env, command("")).await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("from the profile")),
+            "{outcome:?}"
+        );
+
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(&branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let published = session
+            .handle()
+            .overlay()
+            .export()
+            .iter()
+            .any(|(_, attribute, _)| {
+                attribute
+                    .to_string()
+                    .starts_with("xyz.tonk.email-invitation-status/")
+            });
+        assert!(!published, "a refused invitation must publish no status");
     }
 }

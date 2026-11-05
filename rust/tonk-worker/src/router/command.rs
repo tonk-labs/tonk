@@ -15,7 +15,7 @@
 //!
 //! [`TonkState`]: crate::worker::TonkState
 
-use dialog_artifacts::Changes;
+use dialog_artifacts::{Changes, Entity};
 use tonk_common::log;
 
 use super::AppState;
@@ -37,6 +37,7 @@ use crate::reactor::CommandRegistry;
 pub struct CommandEnv {
     state: AppState,
     origin: CommandOrigin,
+    task: super::invocation::Task,
 }
 
 /// The repository + branch a command was triggered in. Captured at the
@@ -63,7 +64,25 @@ impl CommandEnv {
     /// Build the env over a clone of the shared state, scoped to the
     /// `origin` the triggering commit happened in.
     pub fn new(state: AppState, origin: CommandOrigin) -> Self {
-        Self { state, origin }
+        Self {
+            state,
+            origin,
+            task: Default::default(),
+        }
+    }
+
+    /// The same env, reporting through `task`: what [`dispatch`] hands a
+    /// command whose invoker asked to track it.
+    pub fn with_task(mut self, task: super::invocation::Task) -> Self {
+        self.task = task;
+        self
+    }
+
+    /// How a provider reports how its command is going, for the person
+    /// who ran it. Does nothing for a command nobody tracks, so a provider
+    /// can always report. See [`super::invocation`].
+    pub fn task(&self) -> &super::invocation::Task {
+        &self.task
     }
 
     /// Borrow the underlying state — `Provider` impls re-lock through
@@ -300,17 +319,31 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
 
 /// Run every command the just-committed `transients` triggered.
 ///
+/// [`dispatch_committed`] for a commit whose rules concluded nothing, or
+/// whose conclusions the caller does not have.
+pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Changes) {
+    dispatch_committed(state, origin, transients, Changes::new()).await;
+}
+
+/// Run every command the just-committed `transients` triggered, keeping an
+/// invocation for each one its invoker asked to track.
+///
 /// Called by a mutation path (e.g. `/transact`) after its commit, with
 /// `AppState` in hand. The transients have already been swept from
 /// durable storage by the commit; we matched them from the pre-commit
-/// buffer, so the trigger fired exactly once.
+/// buffer, so the trigger fired exactly once. `concluded` is what the
+/// commit's rules concluded: a rule that handled a command says so with a
+/// `command/completion` there.
 ///
 /// Each command's `Provider::execute` runs *concurrently and
 /// independently* — they don't block one another, and a slow or failing
 /// one doesn't hold up the rest. (Concurrent, not parallel: they share
 /// the single SW task, interleaving at await points.) A command is
 /// self-contained: it does its own IO and commits through the
-/// [`CommandEnv`], so there's no outcome buffer to commit here.
+/// [`CommandEnv`], so there's no outcome buffer to commit here. What each
+/// one returns is its [`Outcome`](tonk_schema::invocation::Outcome): for a
+/// tracked command it closes the invocation (see [`super::invocation`]),
+/// and for any other a failure is logged.
 ///
 /// TODO(stm): commands have no transactional isolation. A command reads
 /// durable state through the env, decides, and commits — but between the
@@ -319,20 +352,43 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
 /// state. The goal is STM-like optimistic concurrency: track the observed
 /// revision/read-set and commit-or-conflict, re-running on conflict. See
 /// the `TODO(stm)` notes on `reactor::command::TypedCommand::run`.
-pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Changes) {
+pub async fn dispatch_committed(
+    state: &AppState,
+    origin: CommandOrigin,
+    transients: Changes,
+    concluded: Changes,
+) {
+    use super::invocation::{self, Reporter, Retention, Task};
+
+    let invoked = invocation::invoked(&transients);
+    let reporter = (!invoked.is_empty()).then(|| Reporter::new(state.clone(), origin.clone()));
+    let started = super::invocation::now();
     // Match commands and build their `'static` run-futures while holding
     // the read lock — each future owns its decoded command and an env
     // clone, so we can drop the lock before awaiting them. That keeps
     // command IO from ever running under a held lock (a command re-locks
     // through its env).
-    let run_futures = {
+    let (tracked, untracked, retention) = {
         let tonk = state.read().await;
+        let retention = if invoked.is_empty() {
+            Retention::default()
+        } else {
+            // Invocations whose own timers never fired (a worker that slept
+            // through them) go before new ones are added.
+            invocation::sweep(&tonk, &origin, started).await;
+            Retention::read(&tonk).await
+        };
         let registry = tonk.commands.select(&origin);
+        let mut tracked: std::collections::BTreeMap<Entity, Vec<crate::reactor::RunFuture>> =
+            invoked
+                .keys()
+                .map(|entity| (entity.clone(), Vec::new()))
+                .collect();
+        let mut untracked = Vec::new();
         if registry.is_empty() {
             // No command providers for this origin — but the triggering
             // transact already committed and scheduled a poll, so still
             // drain below.
-            Vec::new()
         } else {
             let fired = registry.match_transients(&transients);
             // The one place a command that decodes as nothing can be
@@ -365,17 +421,81 @@ pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Chang
                     );
                 }
             }
-            let env = CommandEnv::new(state.clone(), origin);
-            fired
-                .into_iter()
-                .map(|(handler, facts)| handler.run(&facts, &env))
-                .collect::<Vec<_>>()
+            let env = CommandEnv::new(state.clone(), origin.clone());
+            for (handler, facts) in fired {
+                let entity = facts.first().map(|artifact| artifact.of.clone());
+                match (entity, &reporter) {
+                    (Some(entity), Some(reporter)) if tracked.contains_key(&entity) => {
+                        let task = Task::tracked(entity.clone(), reporter.clone());
+                        let run = handler.run(&facts, &env.clone().with_task(task));
+                        tracked.entry(entity).or_default().push(run);
+                    }
+                    _ => untracked.push(handler.run(&facts, &env)),
+                }
+            }
         }
+        (tracked, untracked, retention)
     };
+
+    // Open an invocation for each tracked command a provider took, and
+    // settle the rest now: a rule handled it in the commit, or nothing did.
+    if let Some(reporter) = &reporter {
+        for (entity, runs) in &tracked {
+            let fields = &invoked[entity];
+            if runs.is_empty() {
+                let completed = invocation::completion(&concluded, entity);
+                let case = if completed.is_some() {
+                    tonk_schema::invocation::case::DONE
+                } else {
+                    tonk_schema::invocation::case::UNHANDLED
+                };
+                reporter.report(invocation::settled(
+                    entity, fields, completed, started, &retention,
+                ));
+                reporter.expire_after(retention.of(case));
+            } else {
+                reporter.report(invocation::opened(entity, fields, started));
+            }
+        }
+    }
 
     // Drive every command concurrently. `join_all` interleaves them so
     // independent effects make progress together rather than in sequence.
-    futures_util::future::join_all(run_futures).await;
+    let tracked_runs = tracked
+        .into_iter()
+        .filter(|(_, runs)| !runs.is_empty())
+        .map(|(entity, runs)| {
+            let reporter = reporter.clone();
+            async move {
+                let outcome = combine(futures_util::future::join_all(runs).await);
+                if let Some(reporter) = reporter {
+                    let case = if outcome.is_ok() {
+                        tonk_schema::invocation::case::DONE
+                    } else {
+                        tonk_schema::invocation::case::FAILED
+                    };
+                    let finished = super::invocation::now();
+                    reporter.report(invocation::closed(&entity, &outcome, finished, &retention));
+                    reporter.expire_after(retention.of(case));
+                }
+            }
+        });
+    let untracked_runs = untracked.into_iter().map(|run| async move {
+        if let Err(failure) = run.await {
+            log!("commands: a command failed: {failure}");
+        }
+    });
+    futures_util::future::join(
+        futures_util::future::join_all(tracked_runs),
+        futures_util::future::join_all(untracked_runs),
+    )
+    .await;
+
+    // Everything the commands reported lands before the drain below, so a
+    // caller that awaited the dispatch reads the invocations closed.
+    if let Some(reporter) = &reporter {
+        reporter.flush().await;
+    }
 
     // Drain every poll the request scheduled — the triggering commit plus
     // anything its providers committed or wrote to the overlay — in one
@@ -383,6 +503,19 @@ pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Chang
     // subscription broadcasts; coalesced by branch identity.
     let tonk = state.read().await;
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
+/// What the providers that took one command came to, together: the first
+/// failure, or else success with the first output any of them produced.
+fn combine(outcomes: Vec<tonk_schema::invocation::Outcome>) -> tonk_schema::invocation::Outcome {
+    let mut done = tonk_schema::invocation::Done::default();
+    for outcome in outcomes {
+        let finished = outcome?;
+        if done.output.is_none() {
+            done.output = finished.output;
+        }
+    }
+    Ok(done)
 }
 
 #[cfg(test)]
@@ -411,7 +544,7 @@ pub(crate) mod tests {
 
     impl dialog_capability::Command for Ping {
         type Input = Self;
-        type Output = ();
+        type Output = tonk_schema::invocation::Outcome;
     }
 
     /// Tags passed to `Ping`'s provider, in invocation order. The `run`
@@ -428,8 +561,9 @@ pub(crate) mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
     #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
     impl dialog_capability::Provider<Ping> for CommandEnv {
-        async fn execute(&self, command: Ping) {
+        async fn execute(&self, command: Ping) -> tonk_schema::invocation::Outcome {
             PING_LOG.lock().unwrap().push(command.tag.0);
+            tonk_schema::invocation::Done::nothing()
         }
     }
 
@@ -719,6 +853,12 @@ pub(crate) mod tests {
         /// access service (nothing here needs an account). The registry
         /// installed is the REAL one, not a test double.
         pub(crate) async fn test_state() -> AppState {
+            test_state_with(crate::router::command_providers()).await
+        }
+
+        /// [`test_state`] running `commands` instead of the real
+        /// vocabularies, for a test that needs a provider of its own.
+        pub(crate) async fn test_state_with(commands: CommandProviders) -> AppState {
             let name = format!("command-dispatch-test-{}", rand::random::<u64>());
             // Isolate the directory-level system key as well as the profile.
             let directory = dialog_effects::storage::Directory::At(
@@ -747,7 +887,7 @@ pub(crate) mod tests {
                     view_bindings: Default::default(),
                     bridges: Default::default(),
                     sync_queue: Default::default(),
-                    commands: crate::router::command_providers(),
+                    commands,
                     clients: Default::default(),
                     seed_upgrades: Default::default(),
                     account_keys: Default::default(),
@@ -1053,6 +1193,396 @@ pub(crate) mod tests {
                     "an unusable seed ({seed}) must not create a space"
                 );
             }
+        }
+
+        /// A test command whose provider reports a progress state, then
+        /// succeeds producing `id:produced` or, for the tag `fail`, fails.
+        #[derive(dialog_query::Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.command")]
+        pub struct ReportTag(pub String);
+
+        #[derive(dialog_query::Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        pub struct Report {
+            pub this: Entity,
+            pub tag: ReportTag,
+        }
+
+        impl dialog_capability::Command for Report {
+            type Input = Self;
+            type Output = tonk_schema::invocation::Outcome;
+        }
+
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+        #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+        impl dialog_capability::Provider<Report> for CommandEnv {
+            async fn execute(&self, command: Report) -> tonk_schema::invocation::Outcome {
+                self.task()
+                    .status("status:reporting".parse().unwrap(), "Reporting");
+                if command.tag.0 == "fail" {
+                    return Err("the report was refused".into());
+                }
+                tonk_schema::invocation::Done::with("id:produced".parse().unwrap())
+            }
+        }
+
+        async fn reporting_state() -> AppState {
+            test_state_with(CommandProviders::new(
+                profile_commands().command::<Report>(),
+                space_commands(),
+            ))
+            .await
+        }
+
+        /// A `Report` transient on `of`, stamped as the palette stamps
+        /// what it runs when `invoked` is set.
+        fn report(of: &str, tag: &str, invoked: bool) -> Changes {
+            let mut changes = Changes::new();
+            the!("xyz.tonk.command/report-tag")
+                .of(of.parse::<Entity>().unwrap())
+                .is(tag.to_string())
+                .assert(&mut changes);
+            if invoked {
+                stamp(&mut changes, of);
+            }
+            changes
+        }
+
+        fn stamp(changes: &mut Changes, of: &str) {
+            use tonk_schema::invocation::command::{Concept, InvokedAt};
+            let of: Entity = of.parse().unwrap();
+            InvokedAt::of(of.clone()).is(InvokedAt(1.0)).assert(changes);
+            Concept::of(of)
+                .is(Concept("tonk:test/report".parse().unwrap()))
+                .assert(changes);
+        }
+
+        /// The profile branch's session overlay.
+        async fn overlay(state: &AppState) -> Changes {
+            let tonk = state.read().await;
+            tonk.reactor
+                .profile_repository()
+                .branch(&tonk.active_branch)
+                .acquire(&tonk.operator)
+                .await
+                .unwrap()
+                .handle()
+                .overlay()
+                .export()
+        }
+
+        /// What the overlay holds for `of`'s `the`.
+        fn held(overlay: &Changes, of: &str, the: impl ToString) -> Vec<dialog_artifacts::Value> {
+            let of: Entity = of.parse().unwrap();
+            let the = the.to_string();
+            overlay
+                .iter()
+                .filter(|(entity, relation, change)| {
+                    **entity == of
+                        && relation.to_string() == the
+                        && matches!(change, dialog_artifacts::Change::Assert(..))
+                })
+                .map(|(_, _, change)| change.value().clone())
+                .collect()
+        }
+
+        fn entity_value(uri: &str) -> dialog_artifacts::Value {
+            dialog_artifacts::Value::Entity(uri.parse().unwrap())
+        }
+
+        fn float(held: &[dialog_artifacts::Value]) -> f64 {
+            match held {
+                [dialog_artifacts::Value::Float(value)] => *value,
+                other => panic!("expected one float, got {other:?}"),
+            }
+        }
+
+        #[dialog_common::test]
+        async fn it_keeps_an_invocation_for_a_tracked_command_that_succeeds() {
+            use tonk_schema::invocation::{
+                Case, Expires, Finished, Output, Started, State, Status, case,
+            };
+            let state = reporting_state().await;
+            dispatch(
+                &state,
+                CommandOrigin::default(),
+                report("id:run", "ok", true),
+            )
+            .await;
+
+            let overlay = overlay(&state).await;
+            assert_eq!(
+                held(&overlay, "id:run", Case::the()),
+                vec![entity_value(case::DONE)]
+            );
+            assert_eq!(
+                held(&overlay, "id:run", Output::the()),
+                vec![entity_value("id:produced")],
+                "the output is what the provider produced"
+            );
+            assert_eq!(
+                held(&overlay, "id:run", "xyz.tonk.command/report-tag"),
+                vec![dialog_artifacts::Value::String("ok".into())],
+                "the invocation carries the command's own fields"
+            );
+            assert_eq!(
+                held(&overlay, "id:run", State::the()),
+                vec![entity_value("status:reporting")],
+                "what the provider reported is the invocation's state"
+            );
+            assert_eq!(
+                held(&overlay, "status:reporting", Status::the()),
+                vec![dialog_artifacts::Value::String("Reporting".into())],
+                "and the state says what it is"
+            );
+            let started = float(&held(&overlay, "id:run", Started::the()));
+            let finished = float(&held(&overlay, "id:run", Finished::the()));
+            let expires = float(&held(&overlay, "id:run", Expires::the()));
+            assert!(started <= finished, "{started} <= {finished}");
+            assert_eq!(
+                expires,
+                finished + tonk_schema::invocation::retention::DONE_SECONDS * 1000.0,
+                "a success is kept for the default retention"
+            );
+        }
+
+        #[dialog_common::test]
+        async fn it_records_why_a_tracked_command_failed() {
+            use tonk_schema::invocation::{Case, Expires, Finished, Output, Status, case};
+            let state = reporting_state().await;
+            dispatch(
+                &state,
+                CommandOrigin::default(),
+                report("id:refused", "fail", true),
+            )
+            .await;
+
+            let overlay = overlay(&state).await;
+            assert_eq!(
+                held(&overlay, "id:refused", Case::the()),
+                vec![entity_value(case::FAILED)]
+            );
+            let error = crate::router::invocation::error_entity(&"id:refused".parse().unwrap());
+            assert_eq!(
+                held(&overlay, "id:refused", Output::the()),
+                vec![dialog_artifacts::Value::Entity(error.clone())],
+                "a failure's output is its error"
+            );
+            assert_eq!(
+                held(&overlay, &error.to_string(), Status::the()),
+                vec![dialog_artifacts::Value::String(
+                    "the report was refused".into()
+                )],
+                "and the error says why"
+            );
+            let finished = float(&held(&overlay, "id:refused", Finished::the()));
+            assert_eq!(
+                float(&held(&overlay, "id:refused", Expires::the())),
+                finished + tonk_schema::invocation::retention::FAILED_SECONDS * 1000.0,
+                "a failure is kept for longer"
+            );
+        }
+
+        #[dialog_common::test]
+        async fn it_keeps_no_invocation_for_a_command_nobody_tracks() {
+            use tonk_schema::invocation::{Case, Started, State};
+            let state = reporting_state().await;
+            dispatch(
+                &state,
+                CommandOrigin::default(),
+                report("id:quiet", "ok", false),
+            )
+            .await;
+
+            let overlay = overlay(&state).await;
+            assert!(held(&overlay, "id:quiet", Case::the()).is_empty());
+            assert!(held(&overlay, "id:quiet", Started::the()).is_empty());
+            assert!(
+                held(&overlay, "id:quiet", State::the()).is_empty(),
+                "a provider reporting on an untracked command writes nothing"
+            );
+            assert!(
+                held(&overlay, "id:quiet", "xyz.tonk.command/report-tag").is_empty(),
+                "nor is the command copied"
+            );
+        }
+
+        #[dialog_common::test]
+        async fn it_records_a_tracked_command_nothing_took_as_unhandled() {
+            use tonk_schema::invocation::{Case, case};
+            let state = reporting_state().await;
+            let mut changes = Changes::new();
+            the!("xyz.tonk.command.nobody/handles")
+                .of("id:orphan".parse::<Entity>().unwrap())
+                .is("x".to_string())
+                .assert(&mut changes);
+            stamp(&mut changes, "id:orphan");
+            dispatch(&state, CommandOrigin::default(), changes).await;
+
+            assert_eq!(
+                held(&overlay(&state).await, "id:orphan", Case::the()),
+                vec![entity_value(case::UNHANDLED)]
+            );
+        }
+
+        #[dialog_common::test]
+        async fn it_records_a_command_a_rule_completed_as_done() {
+            use tonk_schema::invocation::{Case, Output, case, completion};
+            let state = reporting_state().await;
+            let mut changes = Changes::new();
+            the!("xyz.tonk.notebook.retitle/title")
+                .of("id:retitle".parse::<Entity>().unwrap())
+                .is("Plans".to_string())
+                .assert(&mut changes);
+            stamp(&mut changes, "id:retitle");
+            let mut concluded = Changes::new();
+            completion::Output::of("id:retitle".parse::<Entity>().unwrap())
+                .is(completion::Output("id:notebook".parse().unwrap()))
+                .assert(&mut concluded);
+            dispatch_committed(&state, CommandOrigin::default(), changes, concluded).await;
+
+            let overlay = overlay(&state).await;
+            assert_eq!(
+                held(&overlay, "id:retitle", Case::the()),
+                vec![entity_value(case::DONE)]
+            );
+            assert_eq!(
+                held(&overlay, "id:retitle", Output::the()),
+                vec![entity_value("id:notebook")],
+                "the output is what the rule concluded"
+            );
+        }
+
+        #[dialog_common::test]
+        async fn a_tracked_dispatch_sweeps_what_has_expired() {
+            use tonk_schema::invocation::{Case, Done};
+            let state = reporting_state().await;
+            {
+                let tonk = state.read().await;
+                let stale = crate::router::invocation::closed(
+                    &"id:stale".parse().unwrap(),
+                    &Done::nothing(),
+                    0.0,
+                    &crate::router::invocation::Retention::default(),
+                );
+                tonk.reactor
+                    .profile_repository()
+                    .branch(&tonk.active_branch)
+                    .overlay()
+                    .assert(stale)
+                    .write()
+                    .perform(&tonk.operator)
+                    .await
+                    .unwrap();
+            }
+            assert!(!held(&overlay(&state).await, "id:stale", Case::the()).is_empty());
+
+            dispatch(
+                &state,
+                CommandOrigin::default(),
+                report("id:next", "ok", true),
+            )
+            .await;
+
+            let overlay = overlay(&state).await;
+            assert!(
+                held(&overlay, "id:stale", Case::the()).is_empty(),
+                "an invocation that expired long ago is swept"
+            );
+            assert!(!held(&overlay, "id:next", Case::the()).is_empty());
+        }
+
+        /// A real provider: creating a space from the hub, tracked, ends
+        /// done with the new space as its output, and says what it was
+        /// doing on the way.
+        #[dialog_common::test]
+        async fn a_tracked_space_create_ends_done_with_the_new_space() {
+            use tonk_schema::invocation::{Case, Output, State, case};
+            let state = test_state().await;
+            let mut changes = create_space_transient("Tracked");
+            stamp(&mut changes, "cmd:create");
+            dispatch(&state, CommandOrigin::default(), changes).await;
+
+            let spaces = space_subjects(&state).await;
+            assert_eq!(spaces.len(), 1);
+            let overlay = overlay(&state).await;
+            assert_eq!(
+                held(&overlay, "cmd:create", Case::the()),
+                vec![entity_value(case::DONE)]
+            );
+            assert_eq!(
+                held(&overlay, "cmd:create", Output::the()),
+                vec![dialog_artifacts::Value::Entity(
+                    spaces[0].to_string().parse().unwrap()
+                )]
+            );
+            assert_eq!(
+                held(&overlay, "cmd:create", State::the()),
+                vec![entity_value("status:creating-space")]
+            );
+        }
+
+        /// A tracked command run on a space branch whose provider commits
+        /// to that branch (installing a component) keeps its invocation,
+        /// fields and all, in the space's overlay.
+        #[dialog_common::test]
+        async fn a_tracked_install_keeps_its_fields_on_the_space() {
+            use tonk_schema::invocation::{Case, case};
+            let state = test_state().await;
+            dispatch(
+                &state,
+                CommandOrigin::default(),
+                create_space_transient("Installs"),
+            )
+            .await;
+            let space = space_subjects(&state).await[0].clone();
+            let key = space.repo_key().to_owned();
+            let origin = CommandOrigin {
+                repo: key.clone(),
+                branch: "main".to_string(),
+                client: None,
+            };
+            let mut changes = Changes::new();
+            the!("xyz.tonk.command.install-component/component")
+                .of("urn:uuid:install".parse::<Entity>().unwrap())
+                .is("tonk:library/tasks".parse::<Entity>().unwrap())
+                .assert(&mut changes);
+            the!("xyz.tonk.command.install-component/time")
+                .of("urn:uuid:install".parse::<Entity>().unwrap())
+                .is(1.0f64)
+                .assert(&mut changes);
+            stamp(&mut changes, "urn:uuid:install");
+            dispatch(&state, origin, changes).await;
+
+            let overlay = {
+                let tonk = state.read().await;
+                tonk.reactor
+                    .repository(&key)
+                    .branch("main")
+                    .acquire(&tonk.operator)
+                    .await
+                    .unwrap()
+                    .handle()
+                    .overlay()
+                    .export()
+            };
+            assert_eq!(
+                held(&overlay, "urn:uuid:install", Case::the()),
+                vec![entity_value(case::DONE)],
+                "{overlay:?}"
+            );
+            assert_eq!(
+                held(
+                    &overlay,
+                    "urn:uuid:install",
+                    "xyz.tonk.command.install-component/component"
+                ),
+                vec![entity_value("tonk:library/tasks")],
+                "the install keeps the command's fields"
+            );
+            assert_eq!(
+                held(&overlay, "urn:uuid:install", "xyz.tonk.command/concept"),
+                vec![entity_value("tonk:test/report")]
+            );
         }
     }
 }

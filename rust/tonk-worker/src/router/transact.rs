@@ -99,7 +99,11 @@ pub async fn transact(
     // per-branch transactor lock (taken inside `transact_on_branch`); sync
     // coordinates via the head CAS. So a tab's commit never blocks behind an
     // in-flight sync (the bug that made pause-mid-sync feel dead).
-    let (response, transients) = {
+    let Transacted {
+        response,
+        transients,
+        concluded,
+    } = {
         let tonk_state = state.read().await;
         let tonk_branch = tonk_state
             .reactor
@@ -146,7 +150,14 @@ pub async fn transact(
     // Awaiting the dispatch here serialized the iframe boot behind the command;
     // detaching it returns the commit (~40ms) immediately and lets the command
     // finish in the background under the fetch event's `waitUntil` lifetime.
-    spawn_dispatch(state, origin, transients.unwrap_or_default(), lifetime).await;
+    spawn_dispatch(
+        state,
+        origin,
+        transients.unwrap_or_default(),
+        concluded,
+        lifetime,
+    )
+    .await;
     Ok(response)
 }
 
@@ -171,7 +182,11 @@ async fn transact_profile(
             ));
         }
     }
-    let (response, transients) = {
+    let Transacted {
+        response,
+        transients,
+        concluded,
+    } = {
         let tonk_state = state.read().await;
         let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
         transact_on_branch(&tonk_state, tonk_branch, body).await?
@@ -192,7 +207,14 @@ async fn transact_profile(
     // Detached like the repository-scoped `transact` above: the commit returns
     // now, the command providers + poll drain run in the background and broadcast
     // their writes to subscribers when they land.
-    spawn_dispatch(state, origin, transients.unwrap_or_default(), lifetime).await;
+    spawn_dispatch(
+        state,
+        origin,
+        transients.unwrap_or_default(),
+        concluded,
+        lifetime,
+    )
+    .await;
     Ok(response)
 }
 
@@ -222,13 +244,14 @@ pub(super) async fn spawn_dispatch(
     state: AppState,
     origin: super::CommandOrigin,
     transients: dialog_artifacts::Changes,
+    concluded: dialog_artifacts::Changes,
     lifetime: Option<Extension<crate::worker::FetchLifetime>>,
 ) {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     match lifetime {
         Some(Extension(lifetime)) => {
             let promise = wasm_bindgen_futures::future_to_promise(async move {
-                super::dispatch(&state, origin, transients).await;
+                super::dispatch_committed(&state, origin, transients, concluded).await;
                 Ok(wasm_bindgen::JsValue::UNDEFINED)
             });
             if let Err(error) = lifetime.extend(&promise) {
@@ -236,13 +259,13 @@ pub(super) async fn spawn_dispatch(
             }
         }
         None => wasm_bindgen_futures::spawn_local(async move {
-            super::dispatch(&state, origin, transients).await;
+            super::dispatch_committed(&state, origin, transients, concluded).await;
         }),
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
         let _ = lifetime;
-        super::dispatch(&state, origin, transients).await;
+        super::dispatch_committed(&state, origin, transients, concluded).await;
     }
 }
 
@@ -250,7 +273,7 @@ async fn transact_on_branch<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: BranchReference<'a>,
     body: Bytes,
-) -> Result<(Json<TransactResponse>, Option<dialog_artifacts::Changes>), TonkWorkerError> {
+) -> Result<Transacted, TonkWorkerError> {
     let request: TransactRequest = serde_json::from_slice(&body)
         .map_err(|e| TonkWorkerError::Router(format!("invalid TransactRequest body: {e}")))?;
 
@@ -281,14 +304,15 @@ async fn transact_on_branch<'a>(
             // drop the command, which is the same silent loss with a
             // friendlier status code.
             let transients = transient_changes(request.claims)?;
-            return Ok((
-                Json(TransactResponse {
+            return Ok(Transacted {
+                response: Json(TransactResponse {
                     revision_before: None,
                     revision_after: None,
                     commits: CommitSummary::default(),
                 }),
-                (!transients.is_empty()).then_some(transients),
-            ));
+                transients: (!transients.is_empty()).then_some(transients),
+                concluded: dialog_artifacts::Changes::new(),
+            });
         }
         Err(error) => return Err(reactor_to_error(error)),
     };
@@ -299,14 +323,15 @@ async fn transact_on_branch<'a>(
     // No claims: short-circuit to a no-op response so callers
     // can submit empty batches without paying for a commit.
     if request.claims.is_empty() {
-        return Ok((
-            Json(TransactResponse {
+        return Ok(Transacted {
+            response: Json(TransactResponse {
                 revision_before: revision_before.clone(),
                 revision_after: revision_before,
                 commits: CommitSummary::default(),
             }),
-            None,
-        ));
+            transients: None,
+            concluded: dialog_artifacts::Changes::new(),
+        });
     }
 
     let mut builder = tonk_branch.transaction();
@@ -331,23 +356,34 @@ async fn transact_on_branch<'a>(
     // the reactor's `commit().perform()` (so no commit path — route or direct
     // handler — can sidestep it). Taking it here too would deadlock: the
     // mutex is not re-entrant.
-    let revision_after = builder
+    let committed = builder
         .commit()
-        .perform(&tonk_state.operator)
+        .conclude(&tonk_state.operator)
         .await
         .map_err(reactor_to_error)?;
 
-    Ok((
-        Json(TransactResponse {
+    Ok(Transacted {
+        response: Json(TransactResponse {
             revision_before,
-            revision_after: Some(revision_after),
+            revision_after: Some(committed.revision),
             commits: CommitSummary {
                 claims: claim_count,
                 entities: Default::default(),
             },
         }),
-        to_dispatch,
-    ))
+        transients: to_dispatch,
+        concluded: committed.concluded,
+    })
+}
+
+/// What [`transact_on_branch`] committed: the response for the caller, the
+/// transients it dispatched (`None` when there were none), and the
+/// transients its rules concluded, which tell the command dispatcher which
+/// commands a rule handled.
+struct Transacted {
+    response: Json<TransactResponse>,
+    transients: Option<dialog_artifacts::Changes>,
+    concluded: dialog_artifacts::Changes,
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]

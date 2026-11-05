@@ -24,6 +24,7 @@ use dialog_varsig::Did;
 use ipld_core::cid::Cid;
 use tonk_account::customer::RevokeReceipt;
 use tonk_common::log;
+use tonk_schema::invocation::{Done, Failure, Outcome};
 use tonk_schema::{InvitedVia, MemberName, MemberRole, Membership};
 
 use super::revoke_invite::{leaf_cid, prove_path, publish_revocation, retract_leaf};
@@ -300,13 +301,13 @@ pub(crate) async fn admit_member(
 /// verifies the hop is issued by this profile's account authority, admits
 /// exactly the named member, covers exactly this space, and is
 /// unattenuated — a same-shaped fact from anywhere else cannot forge
-/// that signature. Unparseable fields skip with a log.
+/// that signature. Unparseable fields fail the command.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::PromoteMember>
     for crate::router::CommandEnv
 {
-    async fn execute(&self, command: tonk_schema::command::PromoteMember) {
+    async fn execute(&self, command: tonk_schema::command::PromoteMember) -> Outcome {
         use tonk_schema::prelude::DidExt as _;
         let decoded = (|| {
             let space: Did = command.space.0.to_string().parse().ok()?;
@@ -317,12 +318,22 @@ impl dialog_capability::Provider<tonk_schema::command::PromoteMember>
         })();
         let Some((repo, member, hop)) = decoded else {
             log!("member/promote: no/unparseable member, space, or chain; skipping");
-            return;
+            return Err(Failure::new(
+                "The promotion's member, space or grant could not be read.",
+            ));
         };
         let tonk = self.state().read().await;
         match admit_member(&tonk, &repo, &member, hop).await {
-            Ok(target) => log!("member/promote: {member} is an admin of {repo} ({target})"),
-            Err(error) => log!("member/promote for {member} on {repo} failed: {error}"),
+            Ok(target) => {
+                log!("member/promote: {member} is an admin of {repo} ({target})");
+                Done::with(member.this())
+            }
+            Err(error) => {
+                log!("member/promote for {member} on {repo} failed: {error}");
+                Err(Failure::new(format!(
+                    "Could not make {member} an admin: {error}"
+                )))
+            }
         }
     }
 }
@@ -335,19 +346,26 @@ impl dialog_capability::Provider<tonk_schema::command::PromoteMember>
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::ExpelMember> for crate::router::CommandEnv {
-    async fn execute(&self, command: tonk_schema::command::ExpelMember) {
+    async fn execute(&self, command: tonk_schema::command::ExpelMember) -> Outcome {
+        use tonk_schema::prelude::DidExt as _;
         let Ok(member) = command.member.0.to_string().parse::<Did>() else {
             log!("member/expel: no/unparseable member, skipping");
-            return;
+            return Err(Failure::new("The member to remove could not be read."));
         };
         let repo = self.origin().repo.clone();
         let tonk = self.state().read().await.clone();
         match expel_member(&tonk, &repo, &member).await {
-            Ok(receipt) => log!(
-                "member/expel: {member} removed from {repo} (revoked {})",
-                receipt.revoked
-            ),
-            Err(error) => log!("member/expel for {member} on {repo} failed: {error}"),
+            Ok(receipt) => {
+                log!(
+                    "member/expel: {member} removed from {repo} (revoked {})",
+                    receipt.revoked
+                );
+                Done::with(member.this())
+            }
+            Err(error) => {
+                log!("member/expel for {member} on {repo} failed: {error}");
+                Err(Failure::new(format!("Could not remove {member}: {error}")))
+            }
         }
     }
 }
@@ -646,6 +664,61 @@ mod tests {
         assert!(
             promote.iter().all(|attribute| !expel.contains(attribute)),
             "promote {promote:?} and expel {expel:?} share no trigger attribute"
+        );
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod outcome_tests {
+    use crate::router::command::tests::native::test_state;
+    use crate::router::{CommandEnv, CommandOrigin};
+    use tonk_schema::domain::command::{current::expel_member, promote};
+
+    const MEMBER: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+
+    /// A promotion whose grant is not a delegation fails, saying so.
+    #[dialog_common::test]
+    async fn a_promotion_with_an_unreadable_grant_fails() {
+        let state = test_state().await;
+        let env = CommandEnv::new(state.clone(), CommandOrigin::default());
+        let command = tonk_schema::command::PromoteMember {
+            this: "command:promote-test".parse().unwrap(),
+            member: promote::Member(MEMBER.parse().unwrap()),
+            space: promote::Space(MEMBER.parse().unwrap()),
+            chain: promote::Chain("not a delegation".to_owned()),
+        };
+        let outcome = dialog_capability::Provider::<tonk_schema::command::PromoteMember>::execute(
+            &env, command,
+        )
+        .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("could not be read")),
+            "{outcome:?}"
+        );
+    }
+
+    /// Removing a member from a space this device does not hold fails,
+    /// saying so, rather than vanishing.
+    #[dialog_common::test]
+    async fn an_expulsion_from_a_missing_space_fails() {
+        let state = test_state().await;
+        let origin = CommandOrigin {
+            repo: "no-such-space".to_owned(),
+            branch: "main".to_owned(),
+            client: None,
+        };
+        let env = CommandEnv::new(state.clone(), origin);
+        let command = tonk_schema::command::ExpelMember {
+            this: "command:expel-test".parse().unwrap(),
+            member: expel_member::Member(MEMBER.parse().unwrap()),
+        };
+        let outcome = dialog_capability::Provider::<tonk_schema::command::ExpelMember>::execute(
+            &env, command,
+        )
+        .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("Could not remove")),
+            "{outcome:?}"
         );
     }
 }
