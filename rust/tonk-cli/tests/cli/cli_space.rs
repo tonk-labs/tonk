@@ -76,6 +76,99 @@ fn stdout_of(output: &Output) -> String {
 const DEAD_REMOTE: &str = "http://127.0.0.1:9/ucan/";
 const OTHER_DEAD_REMOTE: &str = "http://127.0.0.1:9/other/";
 
+/// DATA-13: exercise historical checkout through separate CLI processes.
+#[test]
+fn history_checkout_persists_selection_and_keeps_main_intact() {
+    let state = tempfile::tempdir().expect("tempdir");
+    let invoke = |args: &[&str]| {
+        let output = run(state.path(), args, &[]);
+        assert!(output.status.success(), "{args:?}: {}", stderr_of(&output));
+        stdout_of(&output)
+    };
+    let site = state.path().join("history-site");
+    invoke(&["space", "new", "history", "--site", site.to_str().unwrap()]);
+    let document = format!(
+        "{}\n{}\ntask!: &laundry\n  title: \"Pick up the laundry\"\n  done: false\n",
+        crate::common::ATTRIBUTE_DECL,
+        crate::common::CONCEPT_DECL
+    );
+    invoke(&["--space", "history", "eval", "--no-sync", "-c", &document]);
+    let log: serde_json::Value = serde_json::from_str(&invoke(&[
+        "--space", "history", "log", "--json", "--limit", "1",
+    ]))
+    .unwrap();
+    let revision = log["rows"][0]["version"].as_str().unwrap();
+    invoke(&[
+        "--space",
+        "history",
+        "eval",
+        "--no-sync",
+        "-c",
+        "task!:\n  this: laundry\n  title: \"Changed on main\"\n",
+    ]);
+    let preview: serde_json::Value = serde_json::from_str(&invoke(&[
+        "--space",
+        "history",
+        "restore",
+        "--revision",
+        revision,
+        "--dry-run",
+        "--json",
+    ]))
+    .unwrap();
+    assert_eq!(preview["switched"], false);
+    assert!(invoke(&["--space", "history", "query", "task"]).contains("Changed on main"));
+
+    let restored: serde_json::Value = serde_json::from_str(&invoke(&[
+        "--space",
+        "history",
+        "restore",
+        "--revision",
+        revision,
+        "--json",
+    ]))
+    .unwrap();
+    assert_eq!(restored["switched"], true);
+    assert_eq!(restored["previousBranch"], "main");
+    let branch = restored["branch"].as_str().unwrap();
+    assert!(invoke(&["--space", "history", "branch"]).contains(&format!("* {branch}")));
+    let status = invoke(&["--space", "history", "status"]);
+    assert!(status.contains(branch), "{status}");
+    assert!(status.contains("no-upstream"), "{status}");
+    assert!(invoke(&["--space", "history", "query", "task"]).contains("Pick up the laundry"));
+
+    invoke(&[
+        "--space",
+        "history",
+        "eval",
+        "-c",
+        "task!:\n  this: laundry\n  title: \"Changed on restored branch\"\n",
+    ]);
+    let exported = invoke(&["--space", "history", "export"]);
+    assert!(
+        exported.contains("Changed on restored branch"),
+        "{exported}"
+    );
+    invoke(&["--space", "history", "switch", "main"]);
+    let original = invoke(&["--space", "history", "query", "task"]);
+    assert!(original.contains("Changed on main"), "{original}");
+    assert!(
+        !original.contains("Changed on restored branch"),
+        "{original}"
+    );
+    let rejected = run(
+        state.path(),
+        &["--space", "history", "switch", "missing"],
+        &[],
+    );
+    assert!(!rejected.status.success());
+    assert!(invoke(&["--space", "history", "branch"]).contains("* main"));
+    invoke(&["--space", "history", "switch", branch]);
+    assert!(
+        invoke(&["--space", "history", "query", "task"]).contains("Changed on restored branch")
+    );
+}
+
 mod when_one_account_is_signed_in {
     use super::*;
 

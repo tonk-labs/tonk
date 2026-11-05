@@ -1,6 +1,8 @@
 # Sync
 
-Each space has a local `main` branch. A configured upstream identifies the
+Each space starts on a local `main` branch. Commands follow the active branch;
+`tonk branch` lists local branches and `tonk switch NAME` selects one.
+A configured upstream identifies the
 remote branch that `tonk pull` fetches and merges and `tonk push` advances.
 `tonk remote` lists remotes; `tonk remote add` registers one and
 `tonk remote set-upstream` selects the upstream.
@@ -11,9 +13,17 @@ push is refused; the command then pulls, merging both sides' facts, and pushes
 again, a few times before giving up. `--no-sync` disables that wrapper for one command.
 `--dry-run` never contacts the upstream because it cannot commit.
 
-`tonk status` fetches and reports whether local main is synced, ahead, behind,
+`tonk status` fetches and reports whether the active branch is synced, ahead, behind,
 diverged, or has no upstream. Its JSON form keeps `sync.fetched`, so callers can
 distinguish an unreachable upstream from a current comparison.
+
+`tonk log` lists revisions; add a concept and optional entity to inspect their
+changes, or `--revision VERSION` to inspect one revision. `tonk restore
+--revision VERSION` creates and selects a new local branch at a snapshot this
+device retained. Use `--dry-run` to preview it. The original branch keeps its
+later history; `tonk switch main` returns to it. Restored branches have no
+upstream, so restoration does not roll back other devices or the shared remote.
+An older log entry without a retained snapshot cannot be restored.
 
 To access a browser space, copy its scoped invitation from Tonk and run
 `tonk join <invite-link>`. This works for people and agents.

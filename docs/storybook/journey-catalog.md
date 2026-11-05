@@ -133,6 +133,7 @@ the most important gaps, not the only variants required.
 | `DATA-10` | Add/list/read a content-addressed blob. | Inferred/explicit type; dry-run; missing/corrupt file/blob; stdout pipe. | Ten blob integration tests. | Large stream/disk full, signal, content changed mid-read, broken pipe. |
 | `DATA-11` | Export or import CSV. | stdout/file; branch; empty/malformed/duplicate rows; write flags. | Transfer integration tests. | Atomic output/import, partial row failure/retry, escaping/large file, concurrent branch. |
 | `DATA-12` | Define a custom element and have the browser resolve it on use. | List/empty; inline/file method source; attribute defaults; re-authoring one method or one default; notation; write flags. | Seventeen authoring integration tests against a real branch, thirty-six browser tests of the runtime, four full-stack wasm tests through the real host. | Malformed method source, a tag another module already defined, a definition swapped while instances are live in several open tabs. |
+| `DATA-13` | Inspect history and check out a saved revision on a new local branch. | Revision/concept/entity filters; JSON; dry-run; saved/missing snapshot; current revision; branch list/switch; restart. | Log and restore integration tests; process journey `history_checkout_persists_selection_and_keeps_main_intact` covers dry-run, persistent selection, query/write/export/status, preserved main and rejected switch. | Termination between branch creation and selection; disk-full retention; concurrent switch after planning. |
 
 ## CLI setup and maintenance
 

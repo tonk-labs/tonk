@@ -738,6 +738,14 @@
       "variants": "List/empty; inline/file method source; attribute defaults; re-authoring one method or one default; notation; write flags."
     },
     {
+      "evidence": "Log and restore integration tests; process journey history_checkout_persists_selection_and_keeps_main_intact covers dry-run, persistent selection, query/write/export/status, preserved main and rejected switch.",
+      "gaps": "Termination between branch creation and selection; disk-full retention; concurrent switch after planning.",
+      "group": "Authoring, data, rendering, and transfer",
+      "id": "DATA-13",
+      "title": "Inspect history and check out a saved revision on a new local branch.",
+      "variants": "Revision/concept/entity filters; JSON; dry-run; saved/missing snapshot; current revision; branch list/switch; restart."
+    },
+    {
       "evidence": "Parser/unit and process coverage.",
       "gaps": "Snapshot of every help route, width/color/broken pipe, hidden-command discoverability.",
       "group": "CLI setup and maintenance",
@@ -1413,7 +1421,8 @@
         "DATA-06",
         "DATA-08",
         "DATA-09",
-        "DATA-12"
+        "DATA-12",
+        "DATA-13"
       ],
       "name": "Concepts, views, and data verbs",
       "source_paths": [
@@ -1423,11 +1432,14 @@
         "rust/tonk-cli/src/data_ops.rs",
         "rust/tonk-cli/src/elements.rs",
         "rust/tonk-cli/src/render.rs",
+        "rust/tonk-cli/src/log.rs",
+        "rust/tonk-cli/src/restore.rs",
+        "rust/tonk-cli/src/branches.rs",
         "rust/tonk-display/src/registry.rs",
         "rust/tonk-render/src/page/orchestrate.rs"
       ],
       "status": "captured",
-      "summary": "Schema-derived commands expose stable view anchors and entities, then render every matching presentation in browser-equivalent order and frame mode.",
+      "summary": "Schema-derived commands expose stable view anchors and entities, then render every matching presentation in browser-equivalent order and frame mode. History inspection and local historical checkout share this CLI surface; the existing capture predates those commands.",
       "surface": "cli"
     },
     {
@@ -2374,6 +2386,14 @@
       "result": "—"
     },
     {
+      "claim": "Historical checkout preserves the original branch and subsequent commands follow the selection (Inventory).",
+      "device": "cli + restart",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "DATA-13",
+      "priority": "P1",
+      "result": "Automated coverage: history_checkout_persists_selection_and_keeps_main_intact and restore integration tests. Process termination during create/switch and storage faults remain unverified."
+    },
+    {
       "claim": "Carry/account migrations are idempotent and crash-recoverable (Inventory).",
       "device": "restart",
       "file": "verification/cli-spaces-ui.md",
@@ -2497,7 +2517,7 @@
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 15,
+    "other": 16,
     "pass": 3,
     "unrun": 107
   },

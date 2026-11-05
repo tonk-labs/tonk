@@ -262,7 +262,7 @@ pub async fn record_of(
     }))
 }
 
-/// Set the local `main` branch's upstream to `<remote>/main`,
+/// Set the active local branch's upstream to `<remote>/main`,
 /// writing the corresponding `TrackingBranch` and remote-side
 /// `Branch` concepts on the meta branch.
 pub async fn set_upstream(
@@ -276,7 +276,7 @@ pub async fn set_upstream(
         .ok_or_else(|| RemoteError::UnknownRemote(remote_name.to_owned()))?;
 
     // Dialog side: connect to the remote, open its `main` branch,
-    // wire the local `main` to track it.
+    // wire the active local branch to track it.
     let remote_handle = connect(
         site,
         &SiteAddress::from(UcanAddress::new(&remote_record.endpoint)),

@@ -71,8 +71,8 @@ define
 
 collaborate (see also: tonk help sync)
    invite     Create an invite URL granting access to this space
-   pull       Pull main from its upstream
-   push       Push main to its upstream
+   pull       Pull the active branch from its upstream
+   push       Push the active branch to its upstream
    remote     List or manage remotes
 
 'tonk help -a' lists every command; 'tonk help -g' lists the guides
@@ -432,11 +432,11 @@ enum Command {
         via: Option<String>,
     },
 
-    /// Push local main to its upstream
+    /// Push the active local branch to its upstream
     #[command(after_help = "Examples:\n  tonk push")]
     Push,
 
-    /// Pull local main from its upstream
+    /// Pull the active local branch from its upstream
     #[command(after_help = "Examples:\n  tonk pull")]
     Pull,
 
