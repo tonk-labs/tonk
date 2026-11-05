@@ -381,39 +381,52 @@ impl dialog_capability::Provider<SignInVia> for super::CommandEnv {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<FinishSignInVia> for super::CommandEnv {
     async fn execute(&self, command: FinishSignInVia) -> tonk_schema::invocation::Outcome {
-        use tonk_schema::invocation::{Done, Failure};
+        let url = self.reveal(&command.url).await?;
+        finish_sign_in(self, &url).await
+    }
+}
 
-        let tonk = self.state().read().await;
-        super::ceremony::report(&tonk, ceremony::SIGN_IN_VIA, ceremony_state::WORKING, "").await;
-        drop(tonk);
-        let result = finish(self.state(), self.client(), &command.url.0).await;
-        let tonk = self.state().read().await;
-        match result {
-            Ok(()) => {
-                super::ceremony::report(&tonk, ceremony::SIGN_IN_VIA, ceremony_state::DONE, "")
-                    .await;
-                // A load, not a route change: signing back in can switch
-                // the page onto the branch the account kept, and the page
-                // that asked is left out of the reload every other tab gets
-                // (see `profiles::promote`), so a route change would leave
-                // it bound to the branch it started on and refused. The
-                // callback, with the grant in its fragment, leaves the
-                // history too.
-                super::navigate::notify_replace(self.client(), "/");
-                Done::nothing()
-            }
-            Err(error) => {
-                super::ceremony::report(
-                    &tonk,
-                    ceremony::SIGN_IN_VIA,
-                    ceremony_state::FAILED,
-                    &error,
-                )
+/// The plaintext shape older pages send: the same work, with the url as
+/// given. See [`tonk_schema::command::legacy::FinishSignInVia`].
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::legacy::FinishSignInVia>
+    for super::CommandEnv
+{
+    async fn execute(
+        &self,
+        command: tonk_schema::command::legacy::FinishSignInVia,
+    ) -> tonk_schema::invocation::Outcome {
+        finish_sign_in(self, &command.url.0).await
+    }
+}
+
+async fn finish_sign_in(env: &super::CommandEnv, url: &str) -> tonk_schema::invocation::Outcome {
+    use tonk_schema::invocation::{Done, Failure};
+    let tonk = env.state().read().await;
+    super::ceremony::report(&tonk, ceremony::SIGN_IN_VIA, ceremony_state::WORKING, "").await;
+    drop(tonk);
+    let result = finish(env.state(), env.client(), url).await;
+    let tonk = env.state().read().await;
+    match result {
+        Ok(()) => {
+            super::ceremony::report(&tonk, ceremony::SIGN_IN_VIA, ceremony_state::DONE, "").await;
+            // A load, not a route change: signing back in can switch
+            // the page onto the branch the account kept, and the page
+            // that asked is left out of the reload every other tab gets
+            // (see `profiles::promote`), so a route change would leave
+            // it bound to the branch it started on and refused. The
+            // callback, with the grant in its fragment, leaves the
+            // history too.
+            super::navigate::notify_replace(env.client(), "/");
+            Done::nothing()
+        }
+        Err(error) => {
+            super::ceremony::report(&tonk, ceremony::SIGN_IN_VIA, ceremony_state::FAILED, &error)
                 .await;
-                // `finish` names what went wrong and never quotes the
-                // answer address, whose fragment carries the grant.
-                Err(Failure::new(error))
-            }
+            // `finish` names what went wrong and never quotes the
+            // answer address, whose fragment carries the grant.
+            Err(Failure::new(error))
         }
     }
 }
@@ -462,13 +475,17 @@ mod tests {
     async fn it_fails_to_finish_on_an_answer_that_is_not_an_address() {
         let state = crate::router::command::tests::native::test_state().await;
         let env = crate::router::CommandEnv::new(state.clone(), Default::default());
-        let command = FinishSignInVia {
+        let command = tonk_schema::command::legacy::FinishSignInVia {
             this: "id:finish-sign-in-via".parse().unwrap(),
             url: tonk_schema::domain::command::current::finish_sign_in_via::Url(
                 "not an address".into(),
             ),
         };
-        let outcome = dialog_capability::Provider::<FinishSignInVia>::execute(&env, command).await;
+        let outcome =
+            dialog_capability::Provider::<tonk_schema::command::legacy::FinishSignInVia>::execute(
+                &env, command,
+            )
+            .await;
         assert!(
             matches!(&outcome, Err(failure) if failure.0.contains("not a URL")),
             "{outcome:?}"

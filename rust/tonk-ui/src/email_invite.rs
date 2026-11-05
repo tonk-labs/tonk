@@ -519,7 +519,9 @@ async fn claim(host: &HtmlElement, id: &str) -> Result<(), String> {
     let field = |the: &str, kind: &str| json!({"the":the,"as":kind,"cardinality":"one"});
     crate::api::transact_profile(json!({"claims":[{"op":"assert","application":{
         "predicate":{"kind":"transient","concept":{"with":{
-            "id":field("xyz.tonk.claim-email-invitation/id","Text"),
+            // `as: secret`: typed as bytes, sent as the id's text, and
+            // sealed to the worker by `transact_profile` on its way out.
+            "id":field("xyz.tonk.command.claim-email-invitation/sealed-id","Bytes"),
             "account":field("xyz.tonk.claim-email-invitation/account","Entity")
         }}},"parameters":{"this":request,"id":id,"account":root_did}
     }}]}))

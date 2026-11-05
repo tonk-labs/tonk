@@ -195,6 +195,15 @@ pub async fn run_documents(
         text.push_str(&build_home_recipe(std::slice::from_ref(model)));
     }
 
+    // A command field declared `as: secret` is sealed to this site's
+    // own operator key, the key the worker running on this profile opens
+    // with: the CLI seals as the host does, and never writes the secret
+    // in plain text.
+    let recipient = tonk_schema::secret::derive_key(site.operator.inner().credential().signer())
+        .await
+        .map(|key| key.recipient())
+        .ok();
+
     let session = site
         .branch()
         .await
@@ -223,6 +232,7 @@ pub async fn run_documents(
         let blobs = expand_includes(&label, &mut syntax).await?;
         let mut evaluated = syntax
             .evaluate(txn)
+            .seal_to(recipient)
             .perform(&site.operator)
             .await
             .map_err(|e| named(map_evaluate_error(e)))?;
@@ -409,5 +419,6 @@ fn map_evaluate_error(error: EvaluateError) -> EvalError {
         EvaluateError::Analyze(analyze_error) => EvalError::Analyze(analyze_error.to_string()),
         EvaluateError::Plan(message) => EvalError::Commit(format!("plan failed: {message}")),
         EvaluateError::Query(message) => EvalError::Commit(message),
+        EvaluateError::Secret(message) => EvalError::Analyze(message),
     }
 }

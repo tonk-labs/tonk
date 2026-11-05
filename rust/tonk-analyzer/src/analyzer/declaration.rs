@@ -53,6 +53,10 @@ pub(crate) struct AttributeBody {
     /// kept out of the descriptor so it never changes the attribute's
     /// identity. Emitted as its own fact by [`role_application`].
     pub role: Option<String>,
+    /// Whether the attribute was declared `as: secret`: stored as sealed
+    /// bytes, recorded by [`sealed_application`]. Like `role`, kept out
+    /// of the descriptor, whose type is `bytes:`.
+    pub sealed: bool,
 }
 
 /// The roles an attribute can play when the palette fills a command:
@@ -94,6 +98,7 @@ pub(crate) fn parse_attribute_fields(
     // then names a domain rather than one attribute.
     let mut keyed: Option<&'static str> = None;
     let mut role: Option<String> = None;
+    let mut sealed = false;
     for field in fields {
         // `this:` and `..:` are reserved meta-keys handled by the
         // outer assertion-binding flow; they don't contribute to
@@ -181,6 +186,25 @@ pub(crate) fn parse_attribute_fields(
                     }
                     _ => field,
                 };
+                // `as: secret` is a value sealed to the worker that
+                // runs the command: stored as bytes, and recorded as
+                // sealed so invokers know to seal it.
+                if is_secret_type(value_field, scope) {
+                    if keyed.is_some() {
+                        return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                            reason: "a secret is one sealed value, not a keyed \
+                                     collection"
+                                .into(),
+                        }
+                        .into());
+                    }
+                    sealed = true;
+                    shape.insert(
+                        "as".into(),
+                        serde_json::Value::String(tonk_notation::ValueType::Bytes.uri().into()),
+                    );
+                    continue;
+                }
                 let kind = attribute_type(value_field, scope)?;
                 shape.insert("as".into(), serde_json::Value::String(kind));
             }
@@ -337,6 +361,7 @@ pub(crate) fn parse_attribute_fields(
         descriptor,
         entity,
         role,
+        sealed,
     })
 }
 
@@ -1059,6 +1084,46 @@ pub(crate) fn role_application(entity: &Entity, role: &str) -> Application {
             terms,
             predicate: role_schema(),
         },
+        join: Vec::new(),
+        this: ThisIntent::Uri(entity.clone()),
+        name: None,
+    }
+}
+
+/// The type anchor an attribute spells a sealed secret by: `as: secret`.
+pub(crate) const SECRET_TYPE: &str = "secret";
+
+/// Whether `field` (an `as:` value) names the secret type: the bare
+/// anchor `secret`, unless the document shadows it, or the text
+/// `"secret"`.
+fn is_secret_type(field: &tonk_notation::Field, scope: &Scope) -> bool {
+    match &field.value {
+        FieldValue::Symbol(name) => {
+            name == SECRET_TYPE && !scope.shadowed_builtins.lock().contains(name)
+        }
+        _ => stringify_simple_value(field).is_ok_and(|text| text == SECRET_TYPE),
+    }
+}
+
+/// Build the `Application` recording an attribute as sealed: one
+/// `tonk.dialog.attribute/sealed` fact, `true`, on the attribute entity.
+/// What an invoker reads to know which fields to seal.
+pub(crate) fn sealed_application(entity: &Entity) -> Application {
+    let mut terms = Parameters::new();
+    terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
+    terms.insert("sealed".into(), Term::Constant(Value::Boolean(true)));
+    let predicate: ConceptDescriptor = serde_json::from_value(serde_json::json!({
+        "with": {
+            "sealed": {
+                "the": tonk_schema::secret::SEALED_MARKER,
+                "as": "Boolean",
+                "cardinality": "one",
+            },
+        }
+    }))
+    .expect("sealed schema is well-formed");
+    Application::Concept {
+        query: ConceptQuery { terms, predicate },
         join: Vec::new(),
         this: ThisIntent::Uri(entity.clone()),
         name: None,

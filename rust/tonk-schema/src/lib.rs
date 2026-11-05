@@ -105,6 +105,9 @@ pub use transplant::*;
 
 pub mod command;
 
+/// Sealed command fields: attributes declared `as: secret`.
+pub mod secret;
+
 mod branch;
 pub mod directory;
 pub use branch::*;

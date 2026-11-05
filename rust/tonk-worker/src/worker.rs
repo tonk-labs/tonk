@@ -1877,6 +1877,9 @@ pub(crate) async fn boot_state_with_profile_library(
         crate::TonkWorkerError::Internal(format!("failed to bootstrap profile meta: {e}"))
     })?;
     crate::router::identity::follow_signed_in_account(&state).await?;
+    // Where invokers find the key to seal a command's secret fields to:
+    // this state's operator's, replacing a previous profile's.
+    crate::router::secret::publish(&state).await;
     Ok(state)
 }
 
@@ -2091,6 +2094,9 @@ impl TonkServiceWorker {
                 .import_overlays(overlays, &state.operator)
                 .await;
             log!("Restored {restored} session overlay(s) from the previous worker");
+            // The predecessor's recipient came back with its overlay; this
+            // worker's own replaces it, should the operator have changed.
+            crate::router::secret::publish(&state).await;
         }
 
         // 5. Wrap state in the router. `api_router_with_state`

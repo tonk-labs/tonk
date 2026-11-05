@@ -1454,6 +1454,9 @@ concept!: &fab/dock
 # or retract + durable replica on success). Lives here, not in core.yaml:
 # the join happens on the PROFILE meta branch (it records a replica), so
 # the command + view must resolve there.
+# The url is `as: secret`: the page dispatches it in plain text, and the
+# host seals it to the worker before it is sent, so the seed never sits in
+# the overlay an invocation keeps.
 # How the page element's mount fills it: the complete href, fragment and
 # all, off the mount event's `detail`.
 event!: &on/join
@@ -1466,9 +1469,9 @@ command!: &tonk/join
   description: Redeem an invite URL and join its space.
   with:
     url:
-      description: The complete invite URL, including any fragment.
-      the: xyz.tonk.command.join/url
-      as: text
+      description: "The complete invite URL, including any fragment, sealed to the worker: the fragment carries the invite's seed."
+      the: xyz.tonk.command.join/sealed-url
+      as: secret
 
 # The in-flight join, overlay-only, at the fixed `tonk:join/status` entity.
 # Just `status` (`tonk:pending` while claiming, `tonk:failed` on error) so it
@@ -1930,9 +1933,9 @@ command!: &account/finish-sign-in-via
   description: Install the grant another deployment approved for this browser.
   with:
     url:
-      description: The address the answer came back on, fragment included.
-      the: xyz.tonk.command.finish-sign-in-via/url
-      as: text
+      description: "The address the answer came back on, fragment included, sealed to the worker: the grant rides the fragment."
+      the: xyz.tonk.command.finish-sign-in-via/sealed-url
+      as: secret
 
 # The switcher list. Renders every profile but the active one: the active
 # account is already named in the bar above, and offering to switch to
@@ -1974,6 +1977,61 @@ concept!: &ceremony/status
     detail:
       description: What refused or failed it, empty otherwise.
       the: xyz.tonk.ceremony/detail
+      as: text
+
+# Send an email invitation to a space, from the account the profile is
+# signed in as. The delivery id is what the recipient claims the
+# invitation with, so it is `as: secret`: sealed to the worker before the
+# command is sent. Outcomes land on the overlay as
+# `xyz.tonk.email-invitation-status/*` at the command's own entity.
+command!: &email-invitation/send
+  this: tonk:send-email-invitation
+  description: Email an invitation to a space.
+  with:
+    id:
+      description: "The delivery id, sealed to the worker: the recipient claims the invitation with it."
+      the: xyz.tonk.command.send-email-invitation/sealed-id
+      as: secret
+    email:
+      description: The address to invite.
+      the: xyz.tonk.send-email-invitation/email
+      as: text
+    space:
+      description: The space the invitation is to.
+      the: xyz.tonk.send-email-invitation/space
+      as: entity
+    account:
+      description: The account sending it, which must be the one signed in.
+      the: xyz.tonk.send-email-invitation/account
+      as: entity
+
+# Claim an email invitation with the delivery id from its link, into the
+# account signed in. The id is `as: secret`, as when it was sent.
+command!: &email-invitation/claim
+  this: tonk:claim-email-invitation
+  description: Claim an email invitation and join its space.
+  with:
+    id:
+      description: "The delivery id from the invitation email, sealed to the worker."
+      the: xyz.tonk.command.claim-email-invitation/sealed-id
+      as: secret
+    account:
+      description: The account claiming it, which must be the one the email was sent to.
+      the: xyz.tonk.claim-email-invitation/account
+      as: entity
+
+# The key a command's secret fields are sealed to, as the worker publishes
+# it on the overlay of the profile's meta branch. Derived from the worker's
+# operator, so it survives worker restarts and changes with a profile or
+# account switch. An invoker (the host relaying a page's transact, the CLI)
+# seals every field declared `as: secret` to it before sending the command.
+concept!: &command-secret/recipient
+  this: tonk:command-secret
+  description: The key the worker opens sealed command fields with.
+  with:
+    recipient:
+      description: The X25519 public key, as a did:key (did:key:z6LS...).
+      the: xyz.tonk.command-secret/recipient
       as: text
 
 # ============================================================

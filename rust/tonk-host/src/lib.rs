@@ -115,6 +115,8 @@ mod registry;
 // The per-space synthetic origin a sealed guest believes it lives at.
 // Pure string logic (no wasm), so it compiles + tests on native too.
 pub mod space_origin;
+// Sealing a command's secret fields before a claim leaves the page.
+pub mod secret;
 #[cfg(target_arch = "wasm32")]
 pub mod sse;
 #[cfg(target_arch = "wasm32")]

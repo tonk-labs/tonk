@@ -778,8 +778,16 @@ async fn evaluate_on_branch_with<'a>(
             txn = txn.assert(claim.clone());
         }
         let t_eval = web_time::Instant::now();
+        // A command field declared `as: secret` is sealed to this
+        // worker's own key before it is written: an agent evaluating a
+        // join sends the url in plain text, and its invocation must not
+        // hold it.
+        let recipient = crate::router::secret::key(tonk_state)
+            .await
+            .map(|key| key.recipient());
         let evaluated = syntax
             .evaluate(txn)
+            .seal_to(recipient)
             .perform(&tonk_state.operator)
             .await
             .map_err(map_evaluate_error)?;
@@ -1304,6 +1312,7 @@ fn map_evaluate_error(error: EvaluateError) -> TonkWorkerError {
         EvaluateError::Plan(message) => {
             TonkWorkerError::Internal(format!("plan failed: {message}"))
         }
+        EvaluateError::Secret(message) => TonkWorkerError::Router(message),
     }
 }
 

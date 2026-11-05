@@ -33,6 +33,7 @@ pub mod passkey;
 pub mod request;
 pub mod revocation;
 pub mod sealed;
+pub mod secret;
 pub mod session;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod webcrypto_kek;

@@ -1861,53 +1861,76 @@ impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::
         &self,
         command: tonk_schema::command::Join,
     ) -> tonk_schema::invocation::Outcome {
-        // A short link (`/@/{hash}#seed`) resolves to the long form
-        // first. The deep-link flow never needed this — the BROWSER
-        // follows the 301 (with fragment inheritance) before the /join
-        // view mounts — but a PASTED short link reaches the worker
-        // verbatim, and without resolution it carries no `access=` and
-        // would silently read as a bare visit. Mirrors the CLI's claim.
-        //
-        // A link from another host arrives carried, as `/join/{link}`
-        // (see `tonk_invite::join_address`): it is the link that joins,
-        // while the page it runs on is still this host's `/join`.
-        let page = command.url.0;
-        let carried = tonk_invite::join_address::carried(&page);
-        let mut link = carried.clone().unwrap_or_else(|| page.clone());
-        if tonk_invite::shortcut::is_shortcut(&link) {
-            match resolve_shortcut(&link).await {
-                Ok(resolved) => link = resolved,
-                Err(error) => log!("join: short link did not resolve: {error}"),
-            }
-        }
-        // The page decides where a join lands; without a carried link it is
-        // the link itself, resolved.
-        let page = if carried.is_some() {
-            page
-        } else {
-            link.clone()
-        };
-        // A bare /join is the page a link is pasted into, and a space's own
-        // page says the space is private: both stay where they are, without
-        // requesting custody. A space's page mounts the join where this
-        // device holds no replica of it: a ticket link opens where it
-        // points, and the bare address opens the space for whoever can read
-        // it. Anything under `/join/` is an attempt whatever it holds, so
-        // one that is no link fails with its reason rather than passing for
-        // an empty visit.
-        let attempt = carried.is_some()
-            || carries_link_path(&page)
-            || carries_invite(&link)
-            || is_bare_space_address(&link);
-        if !attempt {
-            if !is_space_address(&link) && !is_paste_page(&link) {
-                crate::router::navigate::notify_navigate(self.client(), "/");
-            }
-            // A visit with no link to redeem is not a failed join.
-            return tonk_schema::invocation::Done::nothing();
-        }
-        run_join(self, &page, link).await
+        let page = self.reveal(&command.url).await?;
+        join_page(self, page).await
     }
+}
+
+/// The plaintext shapes older pages send: the same join, with the url as
+/// given. See [`tonk_schema::command::legacy::JoinUrl`].
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::legacy::JoinUrl>
+    for crate::router::CommandEnv
+{
+    async fn execute(
+        &self,
+        command: tonk_schema::command::legacy::JoinUrl,
+    ) -> tonk_schema::invocation::Outcome {
+        join_page(self, command.url.0).await
+    }
+}
+
+/// Join from the page address the `/join` view mounted on.
+async fn join_page(
+    env: &crate::router::CommandEnv,
+    page: String,
+) -> tonk_schema::invocation::Outcome {
+    // A short link (`/@/{hash}#seed`) resolves to the long form
+    // first. The deep-link flow never needed this — the BROWSER
+    // follows the 301 (with fragment inheritance) before the /join
+    // view mounts — but a PASTED short link reaches the worker
+    // verbatim, and without resolution it carries no `access=` and
+    // would silently read as a bare visit. Mirrors the CLI's claim.
+    //
+    // A link from another host arrives carried, as `/join/{link}`
+    // (see `tonk_invite::join_address`): it is the link that joins,
+    // while the page it runs on is still this host's `/join`.
+    let carried = tonk_invite::join_address::carried(&page);
+    let mut link = carried.clone().unwrap_or_else(|| page.clone());
+    if tonk_invite::shortcut::is_shortcut(&link) {
+        match resolve_shortcut(&link).await {
+            Ok(resolved) => link = resolved,
+            Err(error) => log!("join: short link did not resolve: {error}"),
+        }
+    }
+    // The page decides where a join lands; without a carried link it is
+    // the link itself, resolved.
+    let page = if carried.is_some() {
+        page
+    } else {
+        link.clone()
+    };
+    // A bare /join is the page a link is pasted into, and a space's own
+    // page says the space is private: both stay where they are, without
+    // requesting custody. A space's page mounts the join where this
+    // device holds no replica of it: a ticket link opens where it
+    // points, and the bare address opens the space for whoever can read
+    // it. Anything under `/join/` is an attempt whatever it holds, so
+    // one that is no link fails with its reason rather than passing for
+    // an empty visit.
+    let attempt = carried.is_some()
+        || carries_link_path(&page)
+        || carries_invite(&link)
+        || is_bare_space_address(&link);
+    if !attempt {
+        if !is_space_address(&link) && !is_paste_page(&link) {
+            crate::router::navigate::notify_navigate(env.client(), "/");
+        }
+        // A visit with no link to redeem is not a failed join.
+        return tonk_schema::invocation::Done::nothing();
+    }
+    run_join(env, &page, link).await
 }
 
 /// Resolve a short invite link to the long form it redirects to,
@@ -4301,6 +4324,9 @@ mod renewal_tests {
 
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod outcome_tests {
+    //! What a join does with the url it was given. These run the
+    //! plaintext shape; how a sealed url reaches the same work is pinned
+    //! in `router::command::tests::native`.
     use crate::router::command::tests::native::test_state;
     use crate::router::{CommandEnv, CommandOrigin};
 
@@ -4311,12 +4337,15 @@ mod outcome_tests {
         let state = test_state().await;
         let env = CommandEnv::new(state.clone(), CommandOrigin::default());
         let url = "https://tonk.test/join?access=not-a-delegation#secret-seed";
-        let command = tonk_schema::command::Join {
+        let command = tonk_schema::command::legacy::JoinUrl {
             this: "command:join-test".parse().unwrap(),
             url: tonk_schema::domain::command::current::join::Url(url.to_owned()),
         };
         let outcome =
-            dialog_capability::Provider::<tonk_schema::command::Join>::execute(&env, command).await;
+            dialog_capability::Provider::<tonk_schema::command::legacy::JoinUrl>::execute(
+                &env, command,
+            )
+            .await;
         assert!(
             matches!(&outcome, Err(failure) if failure.0 == tonk_worker_api::JoinFailureKind::Malformed.message()),
             "{outcome:?}"
@@ -4328,14 +4357,17 @@ mod outcome_tests {
     async fn a_bare_join_visit_is_done() {
         let state = test_state().await;
         let env = CommandEnv::new(state.clone(), CommandOrigin::default());
-        let command = tonk_schema::command::Join {
+        let command = tonk_schema::command::legacy::JoinUrl {
             this: "command:join-test".parse().unwrap(),
             url: tonk_schema::domain::command::current::join::Url(
                 "https://tonk.test/join".to_owned(),
             ),
         };
         let outcome =
-            dialog_capability::Provider::<tonk_schema::command::Join>::execute(&env, command).await;
+            dialog_capability::Provider::<tonk_schema::command::legacy::JoinUrl>::execute(
+                &env, command,
+            )
+            .await;
         assert_eq!(outcome, tonk_schema::invocation::Done::nothing());
     }
 }

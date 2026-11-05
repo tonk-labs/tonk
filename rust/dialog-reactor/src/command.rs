@@ -279,6 +279,15 @@ pub trait CommandHandler<Env>: ConditionalSync {
     /// [`Failure`] when the facts don't decode.
     /// Boxed so the trait stays dyn-safe for `Box<dyn CommandHandler<Env>>`.
     fn run(&self, facts: &EntityFacts, env: &Env) -> RunFuture;
+
+    /// The attributes of the shape the command has **now**: what a
+    /// record of an invocation may copy from its facts. For a migrated
+    /// command it leaves out the legacy shape's attributes, which
+    /// [`Self::trigger_attributes`] includes. Defaults to the trigger
+    /// attributes, which a single-shape command's are.
+    fn fields(&self) -> &[String] {
+        self.trigger_attributes()
+    }
 }
 
 /// The `of` (entity) shared by a transient entity's facts. Every
@@ -371,6 +380,7 @@ where
 /// exists, and retiring it touches only the registration.
 pub struct MigratedCommand<Current, Legacy, Env> {
     command: Migrated<Current, Legacy>,
+    current: Vec<String>,
     _env: std::marker::PhantomData<fn() -> Env>,
 }
 
@@ -387,6 +397,7 @@ where
     pub fn new() -> Self {
         Self {
             command: Migrated::new(),
+            current: Current::trigger_attributes(),
             _env: std::marker::PhantomData,
         }
     }
@@ -415,6 +426,10 @@ where
 
     fn matches(&self, facts: &EntityFacts) -> bool {
         self.command.matches(facts)
+    }
+
+    fn fields(&self) -> &[String] {
+        &self.current
     }
 
     fn run(&self, facts: &EntityFacts, env: &Env) -> RunFuture {

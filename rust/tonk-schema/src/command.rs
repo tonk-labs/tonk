@@ -666,24 +666,16 @@ impl Command for SignInVia {
 /// request this profile made, installs the grant as this profile's
 /// account root, attaches the account where the grant says it syncs, and
 /// reports through [`crate::CeremonyStatus`].
-#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
+///
+/// The url carries the grant in its fragment, so it arrives sealed to the
+/// worker (`as: secret`) and only the provider reveals it.
+/// [`legacy::FinishSignInVia`] is the plaintext shape older pages send.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FinishSignInVia {
     /// The command entity (a fresh id per return).
     pub this: Entity,
-    /// The callback address, fragment included.
-    pub url: crate::domain::command::current::finish_sign_in_via::Url,
-}
-
-/// Redacted like [`Join`]'s: the url carries the grant in its fragment,
-/// so it must never reach a log.
-impl std::fmt::Debug for FinishSignInVia {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("FinishSignInVia")
-            .field("this", &self.this)
-            .field("url", &"[redacted]")
-            .finish()
-    }
+    /// The callback address, fragment included, sealed.
+    pub url: crate::domain::command::current::finish_sign_in_via::SealedUrl,
 }
 
 impl Command for FinishSignInVia {
@@ -1084,31 +1076,17 @@ pub struct ShareBlocked {
 /// invite's seed rides). The handler claims the invite and drives
 /// `tonk:join/status` (pending → failed, or retract + durable replica on
 /// success).
-#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
+///
+/// The url arrives sealed to the worker (`as: secret`): the seed in its
+/// fragment never sits in the overlay or a log in plain text. The
+/// plaintext shapes older pages send are [`legacy::JoinUrl`] and
+/// [`legacy::Join`].
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Join {
     /// The command entity (a fresh id per invocation).
     pub this: Entity,
-    /// The complete invite URL, fragment included.
-    pub url: crate::domain::command::current::join::Url,
-}
-
-impl From<legacy::Join> for Join {
-    fn from(legacy: legacy::Join) -> Self {
-        Self {
-            url: crate::domain::command::current::join::Url(legacy.url.0),
-            this: legacy.this,
-        }
-    }
-}
-
-impl std::fmt::Debug for Join {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("Join")
-            .field("this", &self.this)
-            .field("url", &"[redacted]")
-            .finish()
-    }
+    /// The complete invite URL, fragment included, sealed.
+    pub url: crate::domain::command::current::join::SealedUrl,
 }
 
 /// `Join` is a [`dialog_capability::Command`]; its handler lives in
@@ -1239,12 +1217,16 @@ pub struct AgentHandoffState {
 }
 
 /// SendEmailInvitation through the profile command channel.
-#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
+///
+/// The delivery id is what the recipient claims the invitation with, so
+/// it arrives sealed to the worker. [`legacy::SendEmailInvitation`] is
+/// the plaintext shape.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SendEmailInvitation {
     /// Request entity; outcomes reuse this entity.
     pub this: Entity,
-    /// id for this operation.
-    pub id: crate::domain::send_email_invitation::Id,
+    /// The delivery id, sealed.
+    pub id: crate::domain::command::current::send_email_invitation::SealedId,
     /// email for this operation.
     pub email: crate::domain::send_email_invitation::Email,
     /// space for this operation.
@@ -1258,12 +1240,15 @@ impl Command for SendEmailInvitation {
 }
 
 /// ClaimEmailInvitation through the profile command channel.
-#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
+///
+/// The delivery id arrives sealed to the worker.
+/// [`legacy::ClaimEmailInvitation`] is the plaintext shape.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ClaimEmailInvitation {
     /// Request entity; outcomes reuse this entity.
     pub this: Entity,
-    /// id for this operation.
-    pub id: crate::domain::claim_email_invitation::Id,
+    /// The delivery id, sealed.
+    pub id: crate::domain::command::current::claim_email_invitation::SealedId,
     /// account for this operation.
     pub account: crate::domain::claim_email_invitation::Account,
 }
@@ -1281,18 +1266,6 @@ pub struct EmailInvitationStatus {
     pub state: crate::domain::email_invitation_status::State,
     /// message for this operation.
     pub message: crate::domain::email_invitation_status::Message,
-}
-
-impl std::fmt::Debug for SendEmailInvitation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("SendEmailInvitation { .. }")
-    }
-}
-
-impl std::fmt::Debug for ClaimEmailInvitation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ClaimEmailInvitation { .. }")
-    }
 }
 
 impl std::fmt::Debug for EmailInvitationStatus {

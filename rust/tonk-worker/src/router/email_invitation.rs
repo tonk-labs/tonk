@@ -6,7 +6,9 @@ use dialog_ucan_core::{InvocationBuilder, InvocationChain, promise::Promised, ti
 use dialog_varsig::Did;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use tonk_schema::command::{ClaimEmailInvitation, EmailInvitationStatus, SendEmailInvitation};
+use tonk_schema::command::{
+    ClaimEmailInvitation, EmailInvitationStatus, SendEmailInvitation, legacy,
+};
 use tonk_schema::domain::email_invitation_status::{Message, State};
 use tonk_schema::invocation::{Done, Failure, Outcome};
 use tonk_schema::prelude::DidExt as _;
@@ -129,21 +131,27 @@ async fn publish(env: &CommandEnv, this: &dialog_artifacts::Entity, state: &str,
         .await;
 }
 
-async fn send(env: &CommandEnv, command: &SendEmailInvitation) -> Result<(), TonkWorkerError> {
-    let id = &command.id.0;
+/// What sending an invitation needs, whichever shape asked for it.
+struct Sending {
+    this: dialog_artifacts::Entity,
+    id: String,
+    email: String,
+    space: dialog_artifacts::Entity,
+    account: dialog_artifacts::Entity,
+}
+
+async fn send(env: &CommandEnv, command: &Sending) -> Result<(), TonkWorkerError> {
+    let id = &command.id;
     if !tonk_invite::delivery::valid_id(id) {
         return Err(unavailable());
     }
-    let root = account(env, &command.account.0.to_string()).await?;
+    let root = account(env, &command.account.to_string()).await?;
     let tonk = env.state().read().await;
     let origin = origin(&tonk).await?;
     let mut args = BTreeMap::from([
         ("invitation".into(), Promised::String(id.clone())),
-        ("email".into(), Promised::String(command.email.0.clone())),
-        (
-            "space".into(),
-            Promised::String(command.space.0.to_string()),
-        ),
+        ("email".into(), Promised::String(command.email.clone())),
+        ("space".into(), Promised::String(command.space.to_string())),
     ]);
     let prepared = call(&tonk, &root, &origin, "prepare", args.clone()).await?;
     drop(tonk);
@@ -165,7 +173,7 @@ async fn send(env: &CommandEnv, command: &SendEmailInvitation) -> Result<(), Ton
             crate::axum::RequestOrigin::parse(origin.as_str()).map_err(|_| unavailable())?;
         let axum::Json(minted) = super::create_invite::mint_invite(
             env.state().clone(),
-            command.space.0.to_string(),
+            command.space.to_string(),
             request_origin,
             request,
             Some(&root),
@@ -193,19 +201,53 @@ async fn send(env: &CommandEnv, command: &SendEmailInvitation) -> Result<(), Ton
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Provider<SendEmailInvitation> for CommandEnv {
     async fn execute(&self, command: SendEmailInvitation) -> Outcome {
-        if !self.from_profile() {
-            return not_from_profile();
+        let id = self.reveal(&command.id).await?;
+        send_invitation(
+            self,
+            Sending {
+                this: command.this,
+                id,
+                email: command.email.0,
+                space: command.space.0,
+                account: command.account.0,
+            },
+        )
+        .await
+    }
+}
+
+/// The plaintext shape: the same send, with the id as given.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl Provider<legacy::SendEmailInvitation> for CommandEnv {
+    async fn execute(&self, command: legacy::SendEmailInvitation) -> Outcome {
+        send_invitation(
+            self,
+            Sending {
+                this: command.this,
+                id: command.id.0,
+                email: command.email.0,
+                space: command.space.0,
+                account: command.account.0,
+            },
+        )
+        .await
+    }
+}
+
+async fn send_invitation(env: &CommandEnv, command: Sending) -> Outcome {
+    if !env.from_profile() {
+        return not_from_profile();
+    }
+    publish(env, &command.this, "pending", "Sending invitation…").await;
+    match send(env, &command).await {
+        Ok(()) => {
+            publish(env, &command.this, "sent", "Invitation sent. They can create an account, confirm their email, and join this space.").await;
+            Done::with(command.space.clone())
         }
-        publish(self, &command.this, "pending", "Sending invitation…").await;
-        match send(self, &command).await {
-            Ok(()) => {
-                publish(self, &command.this, "sent", "Invitation sent. They can create an account, confirm their email, and join this space.").await;
-                Done::with(command.space.0.clone())
-            }
-            Err(error) => {
-                publish(self, &command.this, "failed", &error.to_string()).await;
-                Err(Failure::new(error))
-            }
+        Err(error) => {
+            publish(env, &command.this, "failed", &error.to_string()).await;
+            Err(Failure::new(error))
         }
     }
 }
@@ -214,52 +256,71 @@ impl Provider<SendEmailInvitation> for CommandEnv {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Provider<ClaimEmailInvitation> for CommandEnv {
     async fn execute(&self, command: ClaimEmailInvitation) -> Outcome {
-        if !self.from_profile() {
-            return not_from_profile();
+        let id = self.reveal(&command.id).await?;
+        claim_invitation(self, &command.this, &id, &command.account.0).await
+    }
+}
+
+/// The plaintext shape: the same claim, with the id as given.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl Provider<legacy::ClaimEmailInvitation> for CommandEnv {
+    async fn execute(&self, command: legacy::ClaimEmailInvitation) -> Outcome {
+        claim_invitation(self, &command.this, &command.id.0, &command.account.0).await
+    }
+}
+
+async fn claim_invitation(
+    env: &CommandEnv,
+    this: &dialog_artifacts::Entity,
+    id: &str,
+    account_did: &dialog_artifacts::Entity,
+) -> Outcome {
+    if !env.from_profile() {
+        return not_from_profile();
+    }
+    publish(env, this, "pending", "Checking your invitation…").await;
+    let result = async {
+        if !tonk_invite::delivery::valid_id(id) {
+            return Err(unavailable());
         }
-        publish(self, &command.this, "pending", "Checking your invitation…").await;
-        let result = async {
-            if !tonk_invite::delivery::valid_id(&command.id.0) {
-                return Err(unavailable());
-            }
-            let root = account(self, &command.account.0.to_string()).await?;
-            let tonk = self.state().read().await;
-            let origin = origin(&tonk).await?;
-            let answer = call(
-                &tonk,
-                &root,
-                &origin,
-                "claim",
-                BTreeMap::from([("invitation".into(), Promised::String(command.id.0.clone()))]),
-            )
-            .await?;
-            let envelope: tonk_invite::delivery::DeliveryEnvelope =
-                serde_json::from_value(answer).map_err(|_| unavailable())?;
-            let invite = envelope
-                .into_invite(&root.root_did, &command.id.0)
-                .await
-                .map_err(|_| unavailable())?;
-            let url = invite
-                .to_url(origin.join("join").map_err(|_| unavailable())?.as_str())
-                .map_err(|_| unavailable())?;
-            // Keep the account read lock through import. A profile switch cannot
-            // install a completion into a different account between these steps.
-            let outcome = super::join::join_invite(&tonk, &url)
-                .await
-                .map_err(TonkWorkerError::from)?;
-            Ok::<_, TonkWorkerError>(outcome)
+        let root = account(env, &account_did.to_string()).await?;
+        let tonk = env.state().read().await;
+        let origin = origin(&tonk).await?;
+        let answer = call(
+            &tonk,
+            &root,
+            &origin,
+            "claim",
+            BTreeMap::from([("invitation".into(), Promised::String(id.to_owned()))]),
+        )
+        .await?;
+        let envelope: tonk_invite::delivery::DeliveryEnvelope =
+            serde_json::from_value(answer).map_err(|_| unavailable())?;
+        let invite = envelope
+            .into_invite(&root.root_did, id)
+            .await
+            .map_err(|_| unavailable())?;
+        let url = invite
+            .to_url(origin.join("join").map_err(|_| unavailable())?.as_str())
+            .map_err(|_| unavailable())?;
+        // Keep the account read lock through import. A profile switch cannot
+        // install a completion into a different account between these steps.
+        let outcome = super::join::join_invite(&tonk, &url)
+            .await
+            .map_err(TonkWorkerError::from)?;
+        Ok::<_, TonkWorkerError>(outcome)
+    }
+    .await;
+    match result {
+        Ok(outcome) => {
+            publish(env, this, "joined", "Space joined.").await;
+            super::navigate::notify_navigate(env.client(), &format!("/space/{}", outcome.key));
+            Done::with(outcome.subject.this())
         }
-        .await;
-        match result {
-            Ok(outcome) => {
-                publish(self, &command.this, "joined", "Space joined.").await;
-                super::navigate::notify_navigate(self.client(), &format!("/space/{}", outcome.key));
-                Done::with(outcome.subject.this())
-            }
-            Err(error) => {
-                publish(self, &command.this, "failed", &error.to_string()).await;
-                Err(Failure::new(error))
-            }
+        Err(error) => {
+            publish(env, this, "failed", &error.to_string()).await;
+            Err(Failure::new(error))
         }
     }
 }
@@ -268,8 +329,10 @@ impl Provider<ClaimEmailInvitation> for CommandEnv {
 mod tests {
     use super::*;
 
-    fn command(id: &str) -> SendEmailInvitation {
-        SendEmailInvitation {
+    // The plaintext shape: these pin what the send does with an id, not
+    // how the id arrived (`router::command::tests::native` pins sealing).
+    fn command(id: &str) -> legacy::SendEmailInvitation {
+        legacy::SendEmailInvitation {
             this: "id:send-email-invitation".parse().unwrap(),
             id: tonk_schema::domain::send_email_invitation::Id(id.into()),
             email: tonk_schema::domain::send_email_invitation::Email("friend@example.com".into()),
@@ -288,7 +351,7 @@ mod tests {
     async fn it_fails_an_invitation_with_an_unusable_id() {
         let state = crate::router::command::tests::native::test_state().await;
         let env = CommandEnv::new(state, crate::router::CommandOrigin::default());
-        let outcome = Provider::<SendEmailInvitation>::execute(&env, command("")).await;
+        let outcome = Provider::<legacy::SendEmailInvitation>::execute(&env, command("")).await;
         assert!(
             matches!(&outcome, Err(failure) if failure.0.contains("Delivery could not be confirmed")),
             "{outcome:?}"
@@ -309,7 +372,7 @@ mod tests {
                 client: None,
             },
         );
-        let outcome = Provider::<SendEmailInvitation>::execute(&env, command("")).await;
+        let outcome = Provider::<legacy::SendEmailInvitation>::execute(&env, command("")).await;
         assert!(
             matches!(&outcome, Err(failure) if failure.0.contains("from the profile")),
             "{outcome:?}"

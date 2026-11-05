@@ -132,6 +132,14 @@ pub async fn transact_profile(claim: serde_json::Value) -> Result<(), TonkUiErro
     // added account the profile is on another branch, and a ceremony's
     // commands answer on the branch they were asked on.
     let branch = profile_branch();
+    // A field declared `as: secret` leaves the page sealed to the worker,
+    // as a view's claim does through the host.
+    #[cfg(target_arch = "wasm32")]
+    let claim = tonk_host::secret::seal_claim(
+        claim,
+        &format!("/api/repository/profile:tonk/branch/{branch}/query"),
+    )
+    .await;
     let response = reqwest::Client::new()
         .post(format!(
             "{}/api/repository/profile:tonk/branch/{branch}/transact",

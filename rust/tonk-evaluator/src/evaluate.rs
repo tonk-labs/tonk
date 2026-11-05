@@ -147,6 +147,10 @@ pub enum EvaluateError {
     /// failed (a referenced `?var` isn't bound).
     #[error("{0}")]
     Plan(String),
+    /// A secret could not be sealed: plain text bound to an attribute
+    /// declared `as: secret` with no key to seal it to.
+    #[error("{0}")]
+    Secret(String),
 }
 
 // ---------------------------------------------------------------- //
@@ -318,8 +322,61 @@ pub trait SyntaxEvaluateExt {
 
 impl SyntaxEvaluateExt for Syntax {
     fn evaluate<'a>(&self, txn: Transaction<&'a Branch>) -> Evaluate<'_, 'a> {
-        Evaluate { syntax: self, txn }
+        Evaluate {
+            syntax: self,
+            txn,
+            recipient: None,
+        }
     }
+}
+
+/// Seal every text constant a concept assertion among `statements` binds
+/// to an attribute that holds a sealed secret
+/// ([`tonk_schema::secret::SEALED`]), replacing it with the sealed bytes.
+///
+/// The analyzer leaves such text as text rather than refusing it as not
+/// bytes, so this is the one place it is sealed on the evaluation path
+/// (`tonk eval`, the worker's `/evaluate`). Text bound through a variable
+/// or a domain head is left alone; the worker refuses it when the
+/// command is dispatched.
+pub fn seal_secrets(
+    statements: &mut [Statement],
+    recipient: Option<&tonk_schema::secret::RecipientKey>,
+) -> Result<(), EvaluateError> {
+    for statement in statements.iter_mut() {
+        let Statement::Assert(Application::Concept { query, .. }) = statement else {
+            continue;
+        };
+        let sealed: Vec<(String, String)> = query
+            .predicate
+            .with()
+            .iter()
+            .filter_map(|(field, attribute)| {
+                let relation = attribute.the().to_string();
+                tonk_schema::secret::is_sealed(&relation).then(|| (field.to_string(), relation))
+            })
+            .collect();
+        for (field, relation) in sealed {
+            let Some(Term::Constant(Value::String(text))) = query.terms.get(&field) else {
+                continue;
+            };
+            let recipient = recipient.ok_or_else(|| {
+                EvaluateError::Secret(format!(
+                    "field {field:?}: {}",
+                    tonk_schema::secret::SecretError::NotSealed
+                ))
+            })?;
+            let sealed = recipient
+                .seal_secret(text.as_bytes(), &relation)
+                .map_err(|error| {
+                    EvaluateError::Secret(format!("field {field:?} was not sealed: {error}"))
+                })?;
+            query
+                .terms
+                .insert(field, Term::Constant(Value::Bytes(sealed)));
+        }
+    }
+    Ok(())
 }
 
 /// Chain handle for an evaluation. Holds the syntax and the
@@ -327,9 +384,19 @@ impl SyntaxEvaluateExt for Syntax {
 pub struct Evaluate<'s, 'a> {
     syntax: &'s Syntax,
     txn: Transaction<&'a Branch>,
+    recipient: Option<tonk_schema::secret::RecipientKey>,
 }
 
 impl<'s, 'a> Evaluate<'s, 'a> {
+    /// Seal text bound to an attribute declared `as: secret` to
+    /// `recipient`: the key of the worker that runs the command, which
+    /// is the evaluating operator's own. Without one, a document binding
+    /// such text is refused rather than written in plain text.
+    pub fn seal_to(mut self, recipient: Option<tonk_schema::secret::RecipientKey>) -> Self {
+        self.recipient = recipient;
+        self
+    }
+
     /// Analyze the syntax, run pre-mutation queries, plan every
     /// mutation `Statement` per match frame, apply the resulting
     /// claims, and run effect induction. The transaction is
@@ -346,7 +413,11 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         self,
         env: &Env,
     ) -> Result<Evaluated<'a>, EvaluateError> {
-        let Evaluate { syntax, mut txn } = self;
+        let Evaluate {
+            syntax,
+            mut txn,
+            recipient,
+        } = self;
 
         // Run `compile` under the hood. Resolution reads through
         // the txn overlay; pre-mutation overlay is empty so this
@@ -396,11 +467,12 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         }
 
         // ---- Plan + apply mutations to the caller's transaction ----
-        let statements: Vec<Statement> = document
+        let mut statements: Vec<Statement> = document
             .statements()
             .into_iter()
             .map(|p| p.statement)
             .collect();
+        seal_secrets(&mut statements, recipient.as_ref())?;
         // Concept entities whose facts are transient — an `Assert`
         // against one of these is dispatched as a command (visible to
         // reads and commit-time induction, never committed).
@@ -2139,6 +2211,43 @@ concept!: &note
     /// gives the narrowest type that holds the number. `+41` reads back
     /// as the natural 41 (the `+` says nothing), `-7` as an integer,
     /// `41.5` as a float.
+    /// Text bound to a sealed secret with no key to seal it to is
+    /// refused, naming why, rather than written in plain text.
+    #[dialog_common::test]
+    async fn it_refuses_a_secret_it_has_no_key_to_seal_to() -> anyhow::Result<()> {
+        let (operator, profile) = test_session_with_peer().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let doc = r#"
+concept!: &held/url
+  description: "holds a sealed url"
+  with:
+    url:
+      description: "the url, sealed"
+      the: xyz.tonk.command.join/sealed-url
+      as: secret
+
+held/url!:
+  this: id:held
+  url: "https://tonk.test/join#secret-seed"
+"#;
+        let syntax = parse(doc).syntax.expect("syntax");
+        let refused = syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .err()
+            .expect("an unsealed secret is refused");
+        assert!(
+            matches!(&refused, EvaluateError::Secret(message)
+                if message.contains(&tonk_schema::secret::SecretError::NotSealed.to_string())),
+            "{refused:?}"
+        );
+        assert!(!refused.to_string().contains("secret-seed"));
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_keeps_raw_domains_open_ended() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;

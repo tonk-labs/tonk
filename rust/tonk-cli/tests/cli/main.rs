@@ -41,6 +41,7 @@ mod render;
 #[cfg(feature = "integration-tests")]
 mod revoked_device;
 mod schema_read;
+mod secret;
 mod site;
 mod space;
 mod space_access;

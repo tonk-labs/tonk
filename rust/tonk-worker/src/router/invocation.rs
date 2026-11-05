@@ -146,6 +146,69 @@ pub fn invoked(transients: &Changes) -> BTreeMap<Entity, Changes> {
         .collect()
 }
 
+/// The command's facts an invocation may hold when a provider took it:
+/// the invoker's stamps and the attributes of the shape the command has
+/// now (`current`, from the handlers that took it), never a plaintext
+/// secret an earlier shape carried.
+///
+/// An invocation copies a command's fields so the command's own `status`
+/// view can render it, and every view on the branch reads the overlay it
+/// lives in. A secret field of the current shape is sealed, so copying it
+/// leaks nothing; a legacy shape that still decodes may carry the same
+/// secret in plain text, and that is what this leaves out.
+pub fn copyable(fields: &Changes, current: &BTreeSet<String>) -> Changes {
+    let stamps = [
+        command::InvokedAt::the().to_string(),
+        command::Concept::the().to_string(),
+    ];
+    keep(fields, |relation| {
+        (stamps.contains(&relation.to_owned()) || current.contains(relation))
+            && !tonk_schema::secret::PLAINTEXT_LEGACY.contains(&relation)
+    })
+}
+
+/// The command's facts an invocation may hold when no provider took it,
+/// or the command was refused: everything but a secret, sealed or not.
+/// A refused command's sealed field is exactly what did not verify, so
+/// it may be plain text.
+pub fn copyable_unrun(fields: &Changes) -> Changes {
+    keep(fields, |relation| {
+        !tonk_schema::secret::PLAINTEXT_LEGACY.contains(&relation)
+            && !tonk_schema::secret::is_sealed(relation)
+    })
+}
+
+fn keep(fields: &Changes, keep: impl Fn(&str) -> bool) -> Changes {
+    let mut kept = fields.clone();
+    let dropped: BTreeSet<(dialog_artifacts::Relation, Entity)> = fields
+        .iter()
+        .filter(|(_, the, _)| !keep(&the.to_string()))
+        .map(|(of, the, _)| (the.clone(), of.clone()))
+        .collect();
+    for (the, of) in dropped {
+        kept.take_cell(&the, &of);
+    }
+    kept
+}
+
+/// The facts recording a command refused before any provider ran: its
+/// secret did not open. It never ran, so it starts and ends at `now`,
+/// failed with why.
+pub fn refused(
+    entity: &Entity,
+    fields: &Changes,
+    failure: &tonk_schema::invocation::Failure,
+    now: f64,
+    retention: &Retention,
+) -> Changes {
+    let mut changes = copyable_unrun(fields);
+    Started::of(entity.clone())
+        .is(Started(now))
+        .assert(&mut changes);
+    changes.merge(closed(entity, &Err(failure.clone()), now, retention));
+    changes
+}
+
 /// What a rule concluded about `entity` in the commit that dispatched it:
 /// the output of the `command/completion` it asserted, if it asserted one.
 /// `Some(None)` is a completion naming no output.

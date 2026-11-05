@@ -269,6 +269,30 @@ pub(super) async fn spawn_dispatch(
     }
 }
 
+/// Refuse a request that binds plain text to an attribute declared
+/// `as: secret`, before anything commits: the invoker forgot to seal it
+/// (see [`tonk_schema::secret`]). Named for what went wrong, where the
+/// type check further on would only say text is not bytes.
+fn refuse_unsealed(request: &TransactRequest) -> Result<(), TonkWorkerError> {
+    for claim in &request.claims {
+        let application = claim.application();
+        for (field, attribute) in application.predicate.concept().with().iter() {
+            if !tonk_schema::secret::is_sealed(&attribute.the().to_string()) {
+                continue;
+            }
+            if let Some(value) = application.parameters.get(&field.to_string())
+                && !matches!(value, dialog_artifacts::Value::Bytes(_))
+            {
+                return Err(TonkWorkerError::Router(format!(
+                    "field {field:?}: {}",
+                    tonk_schema::secret::SecretError::NotSealed
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn transact_on_branch<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: BranchReference<'a>,
@@ -276,6 +300,7 @@ async fn transact_on_branch<'a>(
 ) -> Result<Transacted, TonkWorkerError> {
     let request: TransactRequest = serde_json::from_slice(&body)
         .map_err(|e| TonkWorkerError::Router(format!("invalid TransactRequest body: {e}")))?;
+    refuse_unsealed(&request)?;
 
     // A transact carrying ONLY transients writes nothing durable — the
     // canonical case is `tonk:load`, the site stamp, which lands in the

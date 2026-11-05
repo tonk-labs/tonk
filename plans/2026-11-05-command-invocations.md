@@ -87,9 +87,9 @@ one renders it through its command's `status` view.
   profile commands from the palette) are not listed at `/console/tasks`.
   The palette's line shows them. Listing them needs a hub page or a read
   grant from a space to the profile.
-- **Secrets enter the overlay.** A command field carrying a secret (a join
-  URL's fragment) is copied in plain text. Agreed as a trade-off for now;
-  the follow-up is a sealed `secret` value type.
+- **Secrets entered the overlay.** A command field carrying a secret (a join
+  URL's fragment) was copied in plain text. Closed by sealing them
+  (`plans/2026-11-05-sealed-command-secrets.md`).
 - **`/evaluate` does not surface rule conclusions**, so a rule-handled
   command evaluated through it reads as unhandled. Only the palette
   tracks commands today, and it uses `/transact`.

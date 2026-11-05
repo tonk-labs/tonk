@@ -1434,10 +1434,40 @@ pub mod command {
             use dialog_query::Attribute;
 
             /// The page address the answer came back on, fragment
-            /// included: the grant rides the fragment.
+            /// included, in plain text: the shape before secrets were
+            /// sealed. See [`SealedUrl`].
             #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
             #[domain("xyz.tonk.command.finish-sign-in-via")]
             pub struct Url(pub String);
+
+            /// The page address the answer came back on, fragment
+            /// included, sealed to the worker: the grant rides the
+            /// fragment. Declared `as: secret`.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.finish-sign-in-via")]
+            pub struct SealedUrl(pub crate::secret::Sealed<String>);
+        }
+
+        /// `tonk:send-email-invitation` — the delivery id, sealed.
+        pub mod send_email_invitation {
+            use dialog_query::Attribute;
+
+            /// The delivery id, sealed to the worker: the recipient
+            /// claims the invitation with it.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.send-email-invitation")]
+            pub struct SealedId(pub crate::secret::Sealed<String>);
+        }
+
+        /// `tonk:claim-email-invitation` — the delivery id, sealed.
+        pub mod claim_email_invitation {
+            use dialog_query::Attribute;
+
+            /// The delivery id from the invitation email, sealed to the
+            /// worker.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.claim-email-invitation")]
+            pub struct SealedId(pub crate::secret::Sealed<String>);
         }
 
         /// `tonk/switch-profile` — make another profile on this browser
@@ -1513,10 +1543,19 @@ pub mod command {
         pub mod join {
             use dialog_query::Attribute;
 
-            /// The complete invite URL, fragment included.
+            /// The complete invite URL, fragment included, in plain
+            /// text: the shape before secrets were sealed. Pages seeded
+            /// before still send it; see [`SealedUrl`].
             #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
             #[domain("xyz.tonk.command.join")]
             pub struct Url(pub String);
+
+            /// The complete invite URL, fragment included, sealed to the
+            /// worker: the fragment carries the invite's seed. Declared
+            /// `as: secret`.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.join")]
+            pub struct SealedUrl(pub crate::secret::Sealed<String>);
         }
 
         /// `account/check-email` — is this address already registered?
@@ -2422,6 +2461,17 @@ pub mod agent_handoff {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.agent-handoff")]
     pub struct Account(pub Entity);
+}
+
+/// The key sealed command fields are sealed to.
+pub mod command_secret {
+    use dialog_query::Attribute;
+
+    /// The worker's X25519 public key for sealed command fields, as a
+    /// `did:key:z6LS…`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.command-secret")]
+    pub struct Recipient(pub String);
 }
 
 /// Email invitation command and outcome vocabulary.

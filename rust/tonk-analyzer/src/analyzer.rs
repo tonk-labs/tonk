@@ -1812,6 +1812,98 @@ command!: &notebook/retitle
         );
     }
 
+    /// The entity an assertion records as sealed, if it is the
+    /// `tonk.dialog.attribute/sealed` fact.
+    fn asserted_sealed(statement: &Statement) -> Option<Entity> {
+        let Statement::Assert(Application::Concept { query, this, .. }) = statement else {
+            return None;
+        };
+        let ThisIntent::Uri(entity) = this else {
+            return None;
+        };
+        match query.terms.get("sealed") {
+            Some(Term::Constant(Value::Boolean(true))) => Some(entity.clone()),
+            _ => None,
+        }
+    }
+
+    /// A command field declared `as: secret` is stored as bytes, and its
+    /// attribute is recorded as sealed so invokers know to seal it.
+    #[dialog_common::test]
+    async fn it_records_a_secret_field_as_sealed_bytes() {
+        let syntax = must_parse(
+            r#"
+command!: &tonk/join
+  description: "Join a space"
+  with:
+    url:
+      description: "The invite URL, sealed"
+      the:         xyz.tonk.command.join/sealed-url
+      as:          secret
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let statements = &analysis.mutate.statements;
+        // The attribute, its sealed record, then the command.
+        assert_eq!(statements.len(), 3, "{statements:?}");
+        let Statement::Assert(Application::Concept {
+            this: ThisIntent::Uri(attribute),
+            ..
+        }) = &statements[0]
+        else {
+            panic!("expected the attribute first");
+        };
+        assert_eq!(asserted_sealed(&statements[1]), Some(attribute.clone()));
+
+        // A secret is bytes: the same attribute declared `as: bytes` is
+        // the same entity, and records nothing sealed.
+        let bytes = flat(
+            analyze_empty(&must_parse(
+                r#"
+attribute!: &join/url
+  description: "The invite URL, sealed"
+  the:         xyz.tonk.command.join/sealed-url
+  as:          bytes
+"#,
+            ))
+            .await
+            .unwrap(),
+        );
+        let Statement::Assert(Application::Concept {
+            this: ThisIntent::Uri(plain),
+            ..
+        }) = &bytes.mutate.statements[0]
+        else {
+            panic!("expected the attribute");
+        };
+        assert_eq!(plain, attribute);
+        assert!(
+            bytes
+                .mutate
+                .statements
+                .iter()
+                .all(|s| asserted_sealed(s).is_none())
+        );
+    }
+
+    /// A keyed collection of secrets is refused: a secret is one value.
+    #[dialog_common::test]
+    async fn it_refuses_a_keyed_collection_of_secrets() {
+        let syntax = must_parse(
+            r#"
+attribute!: &join/urls
+  description: "Several urls"
+  the:         "xyz.tonk.command.join"
+  as:          {[position]: secret}
+"#,
+        );
+        let error = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            error.to_string().contains("a secret is one sealed value"),
+            "{error}"
+        );
+    }
+
     /// `role:` on an `attribute!` head is asserted the same way.
     #[dialog_common::test]
     async fn it_asserts_an_attribute_heads_role() {

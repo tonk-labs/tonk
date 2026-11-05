@@ -5145,9 +5145,11 @@ dependencies = [
 name = "tonk-host"
 version = "0.6.16-rc.1"
 dependencies = [
+ "bs58",
  "bytes",
  "custom-elements",
  "dialog-common",
+ "dialog-varsig",
  "futures",
  "ipld-core",
  "js-sys",
@@ -5157,6 +5159,7 @@ dependencies = [
  "serde_ipld_dagjson",
  "serde_json",
  "tonk-common",
+ "tonk-identity",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

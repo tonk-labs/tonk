@@ -39,6 +39,7 @@ use super::assertion::{body_digest, derive_head_intent};
 use super::declaration::{
     DeclaredApplication, action_application, attribute_application, build_concept_retractions,
     concept_application, parse_attribute_body, parse_concept_body, role_application,
+    sealed_application,
 };
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::rule::{collect_rule_concepts, is_rule_retract_body, parse_rule_this_entity};
@@ -798,6 +799,7 @@ impl Graph {
                                 .role
                                 .iter()
                                 .map(|role| role_application(&entity, role))
+                                .chain(plan.sealed.then(|| sealed_application(&entity)))
                                 .collect(),
                             retractions: Vec::new(),
                         },
@@ -871,12 +873,14 @@ impl Graph {
                                 .role
                                 .as_deref()
                                 .map(|role| role_application(&attr.entity, role));
+                            let sealed = attr.sealed.then(|| sealed_application(&attr.entity));
                             std::iter::once(attribute_application(
                                 &attr.descriptor,
                                 &attr.entity,
                                 None,
                             ))
                             .chain(role)
+                            .chain(sealed)
                         })
                         .chain(
                             plan.action

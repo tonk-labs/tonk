@@ -8821,6 +8821,165 @@ mod space_creation_feedback_tests {
         );
     }
 
+    /// A page that sends a secret in plain text where the command declares
+    /// it `as: secret` is refused at `/transact`, named for what went
+    /// wrong, and nothing commits: no invocation of it exists to read.
+    #[dialog_common::test]
+    async fn a_plaintext_secret_is_refused_at_transact() {
+        use tower::ServiceExt as _;
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(super::profile_library_tests::test_state().await);
+        let branch = state.read().await.active_branch.clone();
+        let run = "urn:uuid:plaintext-join";
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post(format!(
+                    "/api/repository/profile:tonk/branch/{branch}/transact"
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "claims": [{ "op": "assert", "application": {
+                            "predicate": { "kind": "transient", "concept": { "with": {
+                                "url": { "the": "xyz.tonk.command.join/sealed-url", "as": "Bytes" },
+                                "invoked-at": { "the": "xyz.tonk.command/invoked-at", "as": "Float" },
+                                "invoked-concept": { "the": "xyz.tonk.command/concept", "as": "Entity" }
+                            } } },
+                            "parameters": {
+                                "this": run,
+                                "url": "https://tonk.test/join#secret-seed",
+                                "invoked-at": 1_700_000_000_000.0,
+                                "invoked-concept": "tonk:join"
+                            }
+                        } }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(status.is_client_error(), "{status}: {body}");
+        assert!(
+            body.contains(&tonk_schema::secret::SecretError::NotSealed.to_string()),
+            "{body}"
+        );
+        assert!(
+            !body.contains("secret-seed"),
+            "the refusal never quotes it: {body}"
+        );
+        let rows = post(
+            &app,
+            &format!("/api/repository/profile:tonk/branch/{branch}/query"),
+            serde_json::json!({
+                "predicate": { "with": {
+                    "case": { "the": "xyz.tonk.invocation/case", "as": "Entity", "cardinality": "one" }
+                } },
+                "terms": { "this": run, "case": { "?": { "name": "case" } } }
+            }),
+        )
+        .await;
+        assert_eq!(rows, serde_json::json!([]), "nothing committed or ran");
+    }
+
+    /// The path a page's join takes: the host reads the recipient off the
+    /// meta branch, seals the url to it, and sends the sealed bytes as an
+    /// array of bytes in `/transact`. The join runs on what it revealed,
+    /// and the invocation the page reads holds no url.
+    #[dialog_common::test]
+    async fn a_join_sealed_the_way_the_host_seals_it_runs() {
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(super::profile_library_tests::test_state().await);
+        crate::router::secret::publish(&*state.read().await).await;
+        let branch = state.read().await.active_branch.clone();
+        let rows = post(
+            &app,
+            "/api/repository/profile:tonk/branch/meta/query",
+            serde_json::json!({
+                "predicate": { "with": {
+                    "recipient": { "the": "xyz.tonk.command-secret/recipient", "as": "Text", "cardinality": "one" }
+                } },
+                "terms": { "this": "tonk:command-secret", "recipient": { "?": { "name": "recipient" } } }
+            }),
+        )
+        .await;
+        let did: dialog_varsig::Did = rows[0]["fields"]["recipient"]
+            .as_str()
+            .expect("a published recipient")
+            .parse()
+            .unwrap();
+        let recipient = tonk_identity::sealed::RecipientKey::try_from(&did).unwrap();
+        let url = "https://tonk.test/join?access=not-a-delegation#secret-seed";
+        let sealed = recipient
+            .seal_secret(url.as_bytes(), "xyz.tonk.command.join/sealed-url")
+            .unwrap();
+        let run = "urn:uuid:sealed-join";
+        post(
+            &app,
+            &format!("/api/repository/profile:tonk/branch/{branch}/transact"),
+            serde_json::json!({
+                "claims": [{ "op": "assert", "application": {
+                    "predicate": { "kind": "transient", "concept": { "with": {
+                        "url": { "the": "xyz.tonk.command.join/sealed-url", "as": "Bytes" },
+                        "invoked-at": { "the": "xyz.tonk.command/invoked-at", "as": "Float" },
+                        "invoked-concept": { "the": "xyz.tonk.command/concept", "as": "Entity" }
+                    } } },
+                    "parameters": {
+                        "this": run,
+                        "url": sealed,
+                        "invoked-at": 1_700_000_000_000.0,
+                        "invoked-concept": "tonk:join"
+                    }
+                } }]
+            }),
+        )
+        .await;
+        let error = crate::router::invocation::error_entity(&run.parse().unwrap());
+        let said = post(
+            &app,
+            &format!("/api/repository/profile:tonk/branch/{branch}/query"),
+            serde_json::json!({
+                "predicate": { "with": {
+                    "status": { "the": "xyz.tonk.state/status", "as": "Text", "cardinality": "one" }
+                } },
+                "terms": { "this": error.to_string(), "status": { "?": { "name": "status" } } }
+            }),
+        )
+        .await;
+        assert_eq!(
+            said[0]["fields"]["status"],
+            tonk_worker_api::JoinFailureKind::Malformed.message(),
+            "the join ran on the revealed url and failed on the invite: {said}"
+        );
+        let tonk = state.read().await;
+        for branch in [branch.as_str(), super::META_BRANCH] {
+            let overlay = tonk
+                .reactor
+                .profile_repository()
+                .branch(branch)
+                .acquire(&tonk.operator)
+                .await
+                .unwrap()
+                .handle()
+                .overlay()
+                .export();
+            let leaked = overlay.iter().any(|(_, _, change)| match change.value() {
+                dialog_artifacts::Value::String(text) => text.contains("secret-seed"),
+                dialog_artifacts::Value::Bytes(bytes) => {
+                    bytes.windows(11).any(|window| window == b"secret-seed")
+                }
+                _ => false,
+            });
+            assert!(!leaked, "the {branch} overlay holds no seed");
+        }
+    }
+
     #[dialog_common::test]
     async fn space_removal_reports_success_and_failure_for_the_submitted_request() {
         let (app, state, _lsp) =

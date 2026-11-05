@@ -243,15 +243,23 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::DeleteAccount>()
         .command::<tonk_schema::command::SendEmailInvitation>()
         .command::<tonk_schema::command::ClaimEmailInvitation>()
+        // The plaintext shapes of the commands whose secret is now sealed.
+        // Each runs the same work as its sealed sibling; an invocation
+        // copies none of its secret (`secret::PLAINTEXT_LEGACY`). Retire
+        // once no page sends them.
+        .command::<tonk_schema::command::legacy::SendEmailInvitation>()
+        .command::<tonk_schema::command::legacy::ClaimEmailInvitation>()
+        .command::<tonk_schema::command::legacy::FinishSignInVia>()
+        .migrated::<tonk_schema::command::legacy::JoinUrl, tonk_schema::command::legacy::Join>()
         .command::<super::ceremony::AuthorizeDeviceRequest>()
-        // Signing in through another deployment is new, so neither half
-        // has a legacy shape to migrate.
+        // Finishing a sign-in has a plaintext shape (registered above)
+        // from before its url was sealed; starting one carries no secret.
         .command::<tonk_schema::command::SignInVia>()
         .command::<tonk_schema::command::FinishSignInVia>()
         .migrated::<tonk_schema::command::AddPasskey, tonk_schema::command::legacy::AddPasskey>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RemoveSpace, tonk_schema::command::legacy::RemoveSpace>()
-        .migrated::<tonk_schema::command::Join, tonk_schema::command::legacy::Join>()
+        .command::<tonk_schema::command::Join>()
         .migrated::<tonk_schema::command::CheckEmail, tonk_schema::command::legacy::CheckEmail>()
         .migrated::<tonk_schema::command::RegisterAccount, tonk_schema::command::legacy::RegisterAccount>()
         .migrated::<tonk_schema::command::PauseSync, tonk_schema::command::legacy::PauseSync>()
@@ -366,8 +374,12 @@ pub async fn dispatch_committed(
     // clone, so we can drop the lock before awaiting them. That keeps
     // command IO from ever running under a held lock (a command re-locks
     // through its env).
-    let (tracked, untracked, retention) = {
+    let (tracked, untracked, retention, taken, refused) = {
         let tonk = state.read().await;
+        // A command whose sealed field does not open never runs: plain
+        // text where a secret belongs, a blob for an earlier session, or
+        // one altered or moved from another field.
+        let refused = unopened(&tonk, &transients).await;
         let retention = if invoked.is_empty() {
             Retention::default()
         } else {
@@ -383,6 +395,13 @@ pub async fn dispatch_committed(
                 .map(|entity| (entity.clone(), Vec::new()))
                 .collect();
         let mut untracked = Vec::new();
+        // The current-shape attributes of the handlers that took each
+        // tracked command: what its invocation may copy.
+        let mut taken: std::collections::BTreeMap<Entity, std::collections::BTreeSet<String>> =
+            Default::default();
+        for entity in refused.keys() {
+            tracked.remove(entity);
+        }
         if registry.is_empty() {
             // No command providers for this origin — but the triggering
             // transact already committed and scheduled a poll, so still
@@ -422,18 +441,41 @@ pub async fn dispatch_committed(
             let env = CommandEnv::new(state.clone(), origin.clone());
             for (handler, facts) in fired {
                 let entity = facts.first().map(|artifact| artifact.of.clone());
+                if entity
+                    .as_ref()
+                    .is_some_and(|entity| refused.contains_key(entity))
+                {
+                    continue;
+                }
                 match (entity, &reporter) {
                     (Some(entity), Some(reporter)) if tracked.contains_key(&entity) => {
                         let task = Task::tracked(entity.clone(), reporter.clone());
                         let run = handler.run(&facts, &env.clone().with_task(task));
+                        taken
+                            .entry(entity.clone())
+                            .or_default()
+                            .extend(handler.fields().iter().cloned());
                         tracked.entry(entity).or_default().push(run);
                     }
                     _ => untracked.push(handler.run(&facts, &env)),
                 }
             }
         }
-        (tracked, untracked, retention)
+        (tracked, untracked, retention, taken, refused)
     };
+
+    // A refused command reports why, where its invoker follows it, and is
+    // logged either way.
+    for (entity, error) in &refused {
+        let failure = super::secret::refusal(error);
+        log!("commands: refused {entity}: {failure}");
+        if let (Some(reporter), Some(fields)) = (&reporter, invoked.get(entity)) {
+            reporter.report(invocation::refused(
+                entity, fields, &failure, started, &retention,
+            ));
+            reporter.expire_after(retention.of(tonk_schema::invocation::case::FAILED));
+        }
+    }
 
     // Open an invocation for each tracked command a provider took, and
     // settle the rest now: a rule handled it in the commit, or nothing did.
@@ -441,6 +483,7 @@ pub async fn dispatch_committed(
         for (entity, runs) in &tracked {
             let fields = &invoked[entity];
             if runs.is_empty() {
+                let fields = &invocation::copyable_unrun(fields);
                 let completed = invocation::completion(&concluded, entity);
                 let case = if completed.is_some() {
                     tonk_schema::invocation::case::DONE
@@ -452,7 +495,9 @@ pub async fn dispatch_committed(
                 ));
                 reporter.expire_after(retention.of(case));
             } else {
-                reporter.report(invocation::opened(entity, fields, started));
+                let current = taken.get(entity).cloned().unwrap_or_default();
+                let fields = invocation::copyable(fields, &current);
+                reporter.report(invocation::opened(entity, &fields, started));
             }
         }
     }
@@ -501,6 +546,43 @@ pub async fn dispatch_committed(
     // subscription broadcasts; coalesced by branch identity.
     let tonk = state.read().await;
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
+/// The commands among `transients` whose sealed fields do not open with
+/// this worker's key, each with why. Derives the key only when some
+/// transient carries a sealed attribute at all.
+async fn unopened(
+    tonk: &crate::worker::TonkState,
+    transients: &Changes,
+) -> std::collections::BTreeMap<Entity, tonk_schema::secret::SecretError> {
+    let mut sealed: std::collections::BTreeMap<Entity, Vec<(String, dialog_artifacts::Value)>> =
+        Default::default();
+    for (of, the, change) in transients.iter() {
+        let relation = the.to_string();
+        if tonk_schema::secret::is_sealed(&relation) {
+            sealed
+                .entry(of.clone())
+                .or_default()
+                .push((relation, change.value().clone()));
+        }
+    }
+    if sealed.is_empty() {
+        return Default::default();
+    }
+    let key = super::secret::key(tonk).await;
+    sealed
+        .into_iter()
+        .filter_map(|(entity, facts)| {
+            tonk_schema::secret::verify(
+                key.as_ref(),
+                facts
+                    .iter()
+                    .map(|(relation, value)| (relation.clone(), value)),
+            )
+            .err()
+            .map(|error| (entity, error))
+        })
+        .collect()
 }
 
 /// What the providers that took one command came to, together: the first

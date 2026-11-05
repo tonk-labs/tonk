@@ -336,8 +336,8 @@ pub struct Join {
     pub url: crate::domain::command::join::Href,
 }
 
-/// Redacted like the current shape's: the url carries the membership
-/// seed in its fragment, so it must never reach a log.
+/// Redacted: the url carries the membership seed in its fragment, so
+/// it must never reach a log.
 impl std::fmt::Debug for Join {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -345,6 +345,122 @@ impl std::fmt::Debug for Join {
             .field("this", &self.this)
             .field("url", &"[redacted]")
             .finish()
+    }
+}
+
+/// Request to redeem an invite URL, with the URL in plain text: the
+/// shape `tonk/join` had before its url was sealed, which pages seeded
+/// before still send. [`Join`] converts into it.
+///
+/// Runs through its own provider rather than converting into
+/// [`super::Join`]: a plaintext url cannot become a sealed one. An
+/// invocation copies none of its url into the overlay
+/// ([`crate::secret::PLAINTEXT_LEGACY`]).
+#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct JoinUrl {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The complete invite URL, fragment included.
+    pub url: crate::domain::command::current::join::Url,
+}
+
+impl From<Join> for JoinUrl {
+    fn from(legacy: Join) -> Self {
+        Self {
+            url: crate::domain::command::current::join::Url(legacy.url.0),
+            this: legacy.this,
+        }
+    }
+}
+
+impl dialog_capability::Command for JoinUrl {
+    type Input = Self;
+    type Output = crate::invocation::Outcome;
+}
+
+/// Redacted: the url carries the membership seed in its fragment.
+impl std::fmt::Debug for JoinUrl {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("legacy::JoinUrl")
+            .field("this", &self.this)
+            .field("url", &"[redacted]")
+            .finish()
+    }
+}
+
+/// `tonk:finish-sign-in-via` with the callback address in plain text:
+/// the shape before its url was sealed. Runs through its own provider,
+/// as [`JoinUrl`] does.
+#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FinishSignInVia {
+    /// The command entity (a fresh id per return).
+    pub this: Entity,
+    /// The callback address, fragment included.
+    pub url: crate::domain::command::current::finish_sign_in_via::Url,
+}
+
+impl dialog_capability::Command for FinishSignInVia {
+    type Input = Self;
+    type Output = crate::invocation::Outcome;
+}
+
+/// Redacted: the url carries the grant in its fragment.
+impl std::fmt::Debug for FinishSignInVia {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("legacy::FinishSignInVia")
+            .field("this", &self.this)
+            .field("url", &"[redacted]")
+            .finish()
+    }
+}
+
+/// `tonk:send-email-invitation` with the delivery id in plain text.
+#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SendEmailInvitation {
+    /// Request entity; outcomes reuse this entity.
+    pub this: Entity,
+    /// The delivery id.
+    pub id: crate::domain::send_email_invitation::Id,
+    /// The recipient's address.
+    pub email: crate::domain::send_email_invitation::Email,
+    /// The space shared.
+    pub space: crate::domain::send_email_invitation::Space,
+    /// The sending account.
+    pub account: crate::domain::send_email_invitation::Account,
+}
+
+impl dialog_capability::Command for SendEmailInvitation {
+    type Input = Self;
+    type Output = crate::invocation::Outcome;
+}
+
+impl std::fmt::Debug for SendEmailInvitation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("legacy::SendEmailInvitation { .. }")
+    }
+}
+
+/// `tonk:claim-email-invitation` with the delivery id in plain text.
+#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ClaimEmailInvitation {
+    /// Request entity; outcomes reuse this entity.
+    pub this: Entity,
+    /// The delivery id.
+    pub id: crate::domain::claim_email_invitation::Id,
+    /// The claiming account.
+    pub account: crate::domain::claim_email_invitation::Account,
+}
+
+impl dialog_capability::Command for ClaimEmailInvitation {
+    type Input = Self;
+    type Output = crate::invocation::Outcome;
+}
+
+impl std::fmt::Debug for ClaimEmailInvitation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("legacy::ClaimEmailInvitation { .. }")
     }
 }
 

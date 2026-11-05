@@ -296,14 +296,25 @@ pub(crate) fn build_assertion_application(
                         assert_terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
                     }
                     Some((value, value_range)) => {
-                        // Explicit non-blank field — asserts.
+                        // Explicit non-blank field — asserts. Text bound
+                        // to a sealed secret stays text: the evaluator
+                        // seals it to the worker before it is written
+                        // (`tonk_evaluator::evaluate::seal_secrets`), or
+                        // refuses the document when it has no key to
+                        // seal to.
+                        let secret_text = tonk_schema::secret::is_sealed(&attr.the().to_string())
+                            && matches!(value, FieldValue::Literal(Scalar::String(_)));
                         let term = field_value_to_term(
                             field_name,
                             value,
                             value_range,
                             scope,
                             analysis,
-                            attr.content_type(),
+                            if secret_text {
+                                None
+                            } else {
+                                attr.content_type()
+                            },
                         )?;
                         assert_terms.insert(field_name.into(), term);
                         any_assert = true;

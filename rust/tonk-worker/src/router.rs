@@ -210,6 +210,8 @@ pub use command::{
     CommandEnv, CommandOrigin, CommandProviders, command_providers, dispatch, dispatch_committed,
 };
 pub mod invocation;
+// Sealed command fields: the key, its published recipient, `reveal`.
+pub mod secret;
 
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod intent;

@@ -181,9 +181,13 @@ fn a_legacy_expel_member_still_decodes() {
     assert_eq!(decoded.member.0.to_string(), "did:key:zMember");
 }
 
+/// The two plaintext join shapes still decode, into the plaintext
+/// current one: a sealed url cannot be made from either, so they run
+/// through their own provider rather than converting into
+/// [`command::Join`].
 #[dialog_common::test]
 fn a_legacy_join_still_decodes() {
-    let command: Migrated<command::Join, command::legacy::Join> = Migrated::new();
+    let command: Migrated<command::legacy::JoinUrl, command::legacy::Join> = Migrated::new();
     let decoded = command
         .decode(&facts(vec![(
             "dom.event.detail/href",

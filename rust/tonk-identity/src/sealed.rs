@@ -86,25 +86,36 @@ impl EncryptionKey {
         sealed: &Sealed,
         subject: &Did,
     ) -> Result<Zeroizing<[u8; 32]>, SealedError> {
-        let recipient = self.recipient();
-        let shared = Zeroizing::new(self.0.diffie_hellman(&sealed.ephemeral).to_bytes());
-        let cipher = cipher(&shared, &sealed.ephemeral, &recipient.0);
-        let plaintext = cipher
-            .decrypt(
-                &Nonce::from(sealed.nonce),
-                Payload {
-                    msg: &sealed.ciphertext,
-                    aad: &sealed.associated_data(&recipient, subject),
-                },
-            )
-            .map_err(|_| SealedError::Sealed)?;
-        let mut plaintext = Zeroizing::new(plaintext);
+        let mut plaintext = self.open_bound(sealed, subject.as_str().as_bytes())?;
         let bytes: [u8; 32] = plaintext
             .as_slice()
             .try_into()
             .map_err(|_| SealedError::Sealed)?;
         plaintext.as_mut_slice().fill(0);
         Ok(Zeroizing::new(bytes))
+    }
+
+    /// Open a blob of any length sealed to this key under `binding`, the
+    /// bytes bound as associated data beside the header and the
+    /// recipient. A seed's binding is its subject DID.
+    pub(crate) fn open_bound(
+        &self,
+        sealed: &Sealed,
+        binding: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, SealedError> {
+        let recipient = self.recipient();
+        let shared = Zeroizing::new(self.0.diffie_hellman(&sealed.ephemeral).to_bytes());
+        let cipher = cipher(&shared, &sealed.ephemeral, &recipient.0);
+        cipher
+            .decrypt(
+                &Nonce::from(sealed.nonce),
+                Payload {
+                    msg: &sealed.ciphertext,
+                    aad: &sealed.associated_data(&recipient, binding),
+                },
+            )
+            .map(Zeroizing::new)
+            .map_err(|_| SealedError::Sealed)
     }
 }
 
@@ -141,6 +152,15 @@ impl RecipientKey {
     /// secret: a fresh ephemeral X25519 key is agreed against the
     /// recipient and discarded.
     fn seal(&self, seed: &Zeroizing<[u8; 32]>, subject: &Did) -> Result<Sealed> {
+        self.seal_bound(seed.as_ref(), subject.as_str().as_bytes())
+    }
+
+    /// Seal `plaintext` of any length to this recipient under `binding`,
+    /// the bytes bound as associated data beside the header and the
+    /// recipient: a blob sealed under one binding refuses to open under
+    /// another. Needs no secret: a fresh ephemeral X25519 key is agreed
+    /// against the recipient and discarded.
+    pub(crate) fn seal_bound(&self, plaintext: &[u8], binding: &[u8]) -> Result<Sealed> {
         let mut ephemeral_bytes = Zeroizing::new([0u8; 32]);
         getrandom::fill(ephemeral_bytes.as_mut())
             .map_err(|error| anyhow::anyhow!("no entropy for an ephemeral key: {error}"))?;
@@ -160,12 +180,22 @@ impl RecipientKey {
             .encrypt(
                 &Nonce::from(nonce),
                 Payload {
-                    msg: seed.as_ref(),
-                    aad: &sealed.associated_data(self, subject),
+                    msg: plaintext,
+                    aad: &sealed.associated_data(self, binding),
                 },
             )
-            .map_err(|_| anyhow::anyhow!("failed to seal the seed"))?;
+            .map_err(|_| anyhow::anyhow!("failed to seal"))?;
         Ok(sealed)
+    }
+
+    /// The raw 32 bytes of the key.
+    pub(crate) fn as_bytes(&self) -> &[u8; KEY_LEN] {
+        self.0.as_bytes()
+    }
+
+    /// Adopt 32 raw bytes as a recipient.
+    pub(crate) fn from_bytes(bytes: [u8; KEY_LEN]) -> Self {
+        Self(PublicKey::from(bytes))
     }
 }
 
@@ -308,13 +338,12 @@ impl Sealed {
         header
     }
 
-    fn associated_data(&self, recipient: &RecipientKey, subject: &Did) -> Vec<u8> {
+    fn associated_data(&self, recipient: &RecipientKey, binding: &[u8]) -> Vec<u8> {
         let recipient = recipient.did();
-        let mut aad =
-            Vec::with_capacity(HEADER_LEN + recipient.as_str().len() + subject.as_str().len());
+        let mut aad = Vec::with_capacity(HEADER_LEN + recipient.as_str().len() + binding.len());
         aad.extend_from_slice(&self.header());
         aad.extend_from_slice(recipient.as_str().as_bytes());
-        aad.extend_from_slice(subject.as_str().as_bytes());
+        aad.extend_from_slice(binding);
         aad
     }
 

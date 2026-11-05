@@ -324,7 +324,17 @@ pub(super) fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
         // Bytes / Record both deserialize from JSON arrays of u8.
         // Accept a JS `Uint8Array` or any array-like whose entries
         // are numbers in 0..=255.
-        "bytes:" | "record:" | "Bytes" | "bytes" | "Record" | "record" => js_to_bytes_array(value),
+        //
+        // Text into a bytes field is passed through as text: a field
+        // declared `as: secret` is stored as bytes, and the page fills it
+        // with the plain value (an invite url off the location). The
+        // host seals it to the worker before the claim leaves the page
+        // (`tonk_host::secret`); text it does not seal, the worker
+        // refuses rather than reading it as bytes.
+        "bytes:" | "Bytes" | "bytes" => {
+            js_to_bytes_array(value).or_else(|| value.as_string().map(Value::String))
+        }
+        "record:" | "Record" | "record" => js_to_bytes_array(value),
         // Symbol is dialog's `Attribute` value — domain/name. On the
         // wire it deserializes as a JSON string, but server-side it
         // collides with Entity (Entity::try_from runs first on string

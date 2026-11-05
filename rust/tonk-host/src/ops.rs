@@ -521,21 +521,39 @@ fn handle_claim(ev: &CustomEvent) {
             return;
         }
     };
-    let body_str = match js_to_canonical_dag_json(&request_val) {
-        Ok(s) => s,
+    let request: serde_json::Value = match serde_wasm_bindgen::from_value(request_val) {
+        Ok(request) => request,
         Err(e) => {
-            install_rejected_promise(&detail, e);
+            install_rejected_promise(
+                &detail,
+                ErrorDetail::new(ErrorKind::Parse, format!("detail.request: {e}")),
+            );
             return;
         }
     };
+    let query = query_url(space.as_deref(), branch.as_deref(), profile);
 
     let promise = future_to_promise(async move {
+        // A field declared `as: secret` leaves the page sealed to the
+        // worker, never as the text the page put in it.
+        let request = crate::secret::seal_claim(request, &query).await;
+        let body_str = canonical_dag_json(&request).map_err(|e| error_to_js(&e))?;
         match http::post_json(&url, &body_str).await {
             Ok(json_text) => parse_json_response(&json_text),
             Err(e) => Err(error_to_js(&e)),
         }
     });
     let _ = Reflect::set(&detail, &JsValue::from_str("result"), &promise);
+}
+
+/// [`js_to_canonical_dag_json`] for a request already read into JSON.
+fn canonical_dag_json(value: &serde_json::Value) -> Result<String, ErrorDetail> {
+    let value: Ipld = serde_json::from_value(value.clone())
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("detail.request: {e}")))?;
+    let bytes = serde_ipld_dagjson::to_vec(&value)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("dag-json: {e}")))?;
+    String::from_utf8(bytes)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("dag-json utf8: {e}")))
 }
 
 /// `tonk-subscribe` handler.
