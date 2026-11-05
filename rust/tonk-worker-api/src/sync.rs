@@ -7,9 +7,15 @@
 //! `SyncState` and even classify without linking the engine.
 //! `tonk-schema` re-exports them for the native CLI and the worker.
 
-use dialog_artifacts::Revision;
-use dialog_artifacts::history::Context;
+use dialog_artifacts::history::{Context, context_in};
+use dialog_artifacts::{DialogArtifactsError, Revision};
+use dialog_capability::Provider;
+use dialog_common::{ConditionalSync, Holds};
+use dialog_effects::archive::Load as ArchiveLoad;
+use dialog_effects::blob::Load as BlobLoad;
+use dialog_repository::{Branch, Index};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// How a branch's local head relates to its upstream head.
 ///
@@ -133,6 +139,71 @@ pub fn classify(
             }
         }
     }
+}
+
+/// [`classify`] over `local` and `remote` with their contexts resolved
+/// through `branch` ([`head_context`]). Two heads over one tree, or a
+/// side with no head, need no context and read nothing.
+pub async fn compare_heads<Env>(
+    branch: &Branch,
+    local: Option<&Revision>,
+    remote: Option<&Revision>,
+    env: &Env,
+) -> Result<Comparison, DialogArtifactsError>
+where
+    Env: Provider<ArchiveLoad> + Provider<BlobLoad> + Holds + ConditionalSync,
+{
+    let (Some(ours), Some(theirs)) = (local, remote) else {
+        return Ok(classify(local, None, remote, None));
+    };
+    if ours.tree == theirs.tree {
+        return Ok(Comparison::Synced);
+    }
+    let local_context = head_context(branch, ours, env).await?;
+    let remote_context = head_context(branch, theirs, env).await?;
+    Ok(classify(
+        local,
+        Some(&local_context),
+        remote,
+        Some(&remote_context),
+    ))
+}
+
+/// The full causal context of `head`, resolved as dialog's pull resolves
+/// it: from the branch's memo when it holds it, else from the head when it
+/// carries its context inline (a head minted before the context region),
+/// else from the context region of the head's tree, read through `env`,
+/// which hydrates a tree the upstream holds. A head minted before the
+/// region with nothing inline is walked by ancestry, which has to be
+/// local. Whatever is resolved is remembered under the head's version.
+///
+/// A head itself carries no context since dialog 0.4.0-rc.4
+/// (dialog-db/dialog-db#625), so this is how a local head is ordered
+/// against the one its upstream reports.
+pub async fn head_context<Env>(
+    branch: &Branch,
+    head: &Revision,
+    env: &Env,
+) -> Result<Arc<Context>, DialogArtifactsError>
+where
+    Env: Provider<ArchiveLoad> + Provider<BlobLoad> + Holds + ConditionalSync,
+{
+    let contexts = branch.contexts();
+    let version = head.version();
+    if let Some(context) = contexts.cached(&version).await {
+        return Ok(context);
+    }
+    let context = match head.inline_context() {
+        Some(context) => Arc::new(context.clone()),
+        None if head.region => {
+            let tree = Index::at(branch.archive().index(), (*head.tree.hash()).into());
+            let region = context_in(&tree, &env).await?;
+            Arc::new(head.context_from_region(region)?)
+        }
+        None => contexts.context_of(&version, &branch.history(env)).await?,
+    };
+    contexts.insert(version, context.clone());
+    Ok(context)
 }
 
 /// Why a successful sync operation returned.

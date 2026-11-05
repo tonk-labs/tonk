@@ -5831,6 +5831,8 @@ dependencies = [
  "dialog-artifacts",
  "dialog-capability",
  "dialog-common",
+ "dialog-effects",
+ "dialog-repository",
  "dialog-varsig",
  "indexmap",
  "ipld-core",

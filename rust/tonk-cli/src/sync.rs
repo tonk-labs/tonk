@@ -8,17 +8,13 @@
 //! no SSE clients), so this skips the reactor wrapper the
 //! worker uses.
 
-use dialog_artifacts::history::{Context, context_in};
-use dialog_capability::{AuthorizeError, Provider};
-use dialog_common::{ConditionalSync, Holds};
-use dialog_effects::archive::Load as ArchiveLoad;
-use dialog_effects::blob::Load as BlobLoad;
+use dialog_capability::AuthorizeError;
 use dialog_repository::{
-    Branch, FetchError, Index, PullError, PushError, Revision, TreeReference, Upstream,
+    Branch, FetchError, PullError, PushError, Revision, TreeReference, Upstream,
 };
-use std::sync::Arc;
 use thiserror::Error;
-use tonk_schema::{SyncState, classify};
+use tonk_schema::SyncState;
+use tonk_worker_api::compare_heads;
 
 use crate::ExitCode;
 use crate::site::TonkSite;
@@ -342,80 +338,13 @@ pub async fn status_with_hash(site: &TonkSite) -> Result<SyncStatus, SyncError> 
         .into_iter()
         .next()
         .and_then(|fetched| fetched.revision);
-    // The two trees are compared first, so contexts are read only for
-    // heads that differ.
-    let same_tree = match (&local, &remote) {
-        (Some(local), Some(remote)) => local.tree == remote.tree,
-        _ => true,
-    };
-    let (local_context, remote_context) = if same_tree {
-        (None, None)
-    } else {
-        let local_context = match &local {
-            Some(head) => Some(head_context(branch, head, &site.operator).await?),
-            None => None,
-        };
-        let remote_context = match &remote {
-            Some(head) => Some(head_context(branch, head, &site.operator).await?),
-            None => None,
-        };
-        (local_context, remote_context)
-    };
+    let comparison = compare_heads(branch, local.as_ref(), remote.as_ref(), &site.operator)
+        .await
+        .map_err(|e| SyncError::Io(format!("resolve the heads' contexts: {e}")))?;
     Ok(SyncStatus {
-        state: classify(
-            local.as_ref(),
-            local_context.as_deref(),
-            remote.as_ref(),
-            remote_context.as_deref(),
-        )
-        .into(),
+        state: comparison.into(),
         hash,
     })
-}
-
-/// The full causal context of `head`, resolved as dialog's pull resolves
-/// it: from the branch's memo when it holds it, else from the head when
-/// it carries its context inline (a head minted before the context
-/// region), else from the context region of the head's tree, read through
-/// `env`, which hydrates a tree the upstream holds. A head minted before
-/// the region with nothing inline is walked by ancestry, which has to be
-/// local. Whatever is resolved is remembered under the head's version.
-///
-/// A head itself carries no context since dialog 0.4.0-rc.4, so this is
-/// how the local head is ordered against the one the upstream reports.
-async fn head_context<Env>(
-    branch: &Branch,
-    head: &Revision,
-    env: &Env,
-) -> Result<Arc<Context>, SyncError>
-where
-    Env: Provider<ArchiveLoad> + Provider<BlobLoad> + Holds + ConditionalSync,
-{
-    let contexts = branch.contexts();
-    let version = head.version();
-    if let Some(context) = contexts.cached(&version).await {
-        return Ok(context);
-    }
-    let resolve = |what: &str, error: String| SyncError::Io(format!("{what}: {error}"));
-    let context =
-        match head.inline_context() {
-            Some(context) => Arc::new(context.clone()),
-            None if head.region => {
-                let tree = Index::at(branch.archive().index(), (*head.tree.hash()).into());
-                let region = context_in(&tree, &env)
-                    .await
-                    .map_err(|e| resolve("read the head's context region", e.to_string()))?;
-                Arc::new(head.context_from_region(region).map_err(|e| {
-                    resolve("bring the context region up to the head", e.to_string())
-                })?)
-            }
-            None => contexts
-                .context_of(&version, &branch.history(env))
-                .await
-                .map_err(|e| resolve("walk the head's ancestry", e.to_string()))?,
-        };
-    contexts.insert(version, context.clone());
-    Ok(context)
 }
 
 /// What to tell someone whose sync the access service refused.

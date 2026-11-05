@@ -64,6 +64,7 @@ pub use repository::{
 use serde_json::{Value, json};
 pub use sync::{
     Comparison, SyncDisposition, SyncResponse, SyncState, SyncStatusResponse, classify,
+    compare_heads, head_context,
 };
 
 /// The `space/create` claim, in the shape the seeded descriptor decodes.
