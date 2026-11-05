@@ -104,3 +104,19 @@ test("a value arriving into an empty document replaces its placeholder", () => {
   assert.equal(serializeMarkdown(after.doc), "loaded");
   assert.equal(after.doc.childCount, 1, "no empty paragraph left over");
 });
+
+test("a paragraph holding only the space the author just typed survives the stored value", () => {
+  const opened = enterAfter("first\n\nsecond", 0);
+  const state = opened.apply(opened.tr.insertText(" "));
+  const tr = patchMarkdown(state, "first\n\nsecond");
+  const after = tr ? state.apply(tr) : state;
+  assert.equal(after.doc.childCount, 3, "the paragraph is still there");
+  assert.equal(after.doc.child(1).textContent, " ");
+  assert.equal(after.selection.$head.index(0), 1, "the caret is still in it");
+});
+
+test("a paragraph of only an image is not taken for a blank one", () => {
+  const state = EditorState.create({ doc: parseMarkdown("first\n\n![alt](x.png)") });
+  const after = state.apply(patchMarkdown(state, "first")!);
+  assert.equal(serializeMarkdown(after.doc), "first");
+});
