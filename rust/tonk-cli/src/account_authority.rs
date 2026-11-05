@@ -123,7 +123,7 @@ impl AccountBoundOperator {
                 detail: error.to_string(),
             })?
             .ok_or_else(|| AuthorizeError::Malformed {
-                detail: "log in with `tonk account login` before accessing a remote".to_string(),
+                detail: "this remote needs a Tonk account linked to this CLI, which the CLI cannot do itself any more; to work on an existing space here, import a tool invitation for it with `tonk join <URL>`".to_string(),
             })
     }
 
@@ -384,6 +384,8 @@ forward!(dialog_effects::peer::RemoveAddress);
 forward!(dialog_effects::peer::RemoveName);
 forward!(dialog_did_web::Discover);
 forward!(dialog_repository::Hydrate);
+forward!(dialog_effects::archive::Load);
+forward!(dialog_effects::blob::Load);
 forward!(dialog_artifacts::Preload);
 forward!(dialog_artifacts::Speculation);
 forward!(dialog_effects::space::Load);

@@ -44,16 +44,20 @@ extension RuntimeModel {
             subject: field('xyz.tonk.space/subject', 'Entity'),
             name: {...field('xyz.tonk.space/name', 'Text'), optional: true},
             icon: {...field('xyz.tonk.space/icon', 'Text'), optional: true},
-            color: {...field('xyz.tonk.space/color', 'Text'), optional: true}
+            color: {...field('xyz.tonk.space/color', 'Text'), optional: true},
+            provider: {...field('xyz.tonk.space/provider', 'Entity'), optional: true},
+            founded: {...field('xyz.tonk.space/founded-at', 'UnsignedInteger'), optional: true}
           }},
           terms: {this: variable('this'), subject: variable('subject'), name: variable('name'),
-                  icon: variable('icon'), color: variable('color')}
+                  icon: variable('icon'), color: variable('color'),
+                  provider: variable('provider'), founded: variable('founded')}
         };
         const rows = await api(path, query);
         \(RuntimeCatalogObservation.script)
         if (!Array.isArray(rows)) throw new Error('Invalid space catalog response.');
         return {branch, root: identity.rootDid || '', status: account.status, spaces: rows.map(row => ({subject: row.fields.subject, name: row.fields.name || null,
-          icon: row.fields.icon || null, color: row.fields.color || null}))};
+          icon: row.fields.icon || null, color: row.fields.color || null,
+          provider: row.fields.provider || null, founded: row.fields.founded != null}))};
         """, arguments: ["catalogGeneration": catalogObservation.generation])
       try Task.checkCancellation()
       guard let rows = result["spaces"] else {

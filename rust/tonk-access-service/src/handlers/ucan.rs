@@ -38,15 +38,11 @@ struct PresignFailure {
 impl PresignFailure {
     fn authorization(refusal: Refusal) -> Self {
         let status = refusal.status();
+        let failure_kind = crate::observability::AccessFailureKind::of_authorization(&refusal);
         Self {
             refusal,
             operation: crate::observability::AccessOperation::Authorization,
-            failure_kind: match status {
-                401 | 403 => crate::observability::AccessFailureKind::AccessDenied,
-                503 => crate::observability::AccessFailureKind::Unavailable,
-                500..=599 => crate::observability::AccessFailureKind::Internal,
-                _ => crate::observability::AccessFailureKind::Invalid,
-            },
+            failure_kind,
             retryable: status >= 500,
             site: crate::observability::AccessSite::Ucan,
         }
@@ -230,6 +226,12 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
     #[cfg(target_arch = "wasm32")]
     if crate::revoke::is_revocation(&body_bytes) {
         return crate::handlers::revoke::handle(&body_bytes, &env)
+            .await
+            .map(with_cors_headers);
+    }
+    #[cfg(target_arch = "wasm32")]
+    if crate::invitation::is_invitation(&body_bytes) {
+        return crate::handlers::invitation::handle(&body_bytes, &req, &env)
             .await
             .map(with_cors_headers);
     }

@@ -48,17 +48,20 @@ where
             .find(|candidate| recorded.contains(*candidate))
             .and_then(|did| did.parse::<Did>().ok());
 
-        Ok(principal.map(|principal| RevocationMatch {
-            // The index records the fact, not the document that carried it,
-            // so the revocation's own address is not recoverable from it.
-            // Naming the revoked delegation keeps the field honest: it is
-            // what we can point at.
+        let Some(principal) = principal else {
+            return Ok(None);
+        };
+        // The signed revocation goes back with the refusal: it is what lets
+        // the holder retract the revoked certificate and prove through a
+        // newer grant, rather than present the revoked chain forever.
+        let proof = self.0.document(&target, principal.as_ref()).await?;
+        Ok(Some(RevocationMatch {
+            // The index is keyed by the revoked delegation, not by the
+            // revocation's own address. Naming the revoked delegation keeps
+            // the field honest: it is what we can point at.
             revocation: selector.delegation,
             principal,
-            // Without the document a holder has no evidence to retract the
-            // certificate on, so it stops at the refusal instead of proving
-            // again through another grant.
-            proof: None,
+            proof,
         }))
     }
 }
@@ -84,7 +87,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_reports_a_revocation_by_a_candidate() {
         let index = MemoryRevocationIndex::default();
-        index.record(TARGET, ALICE).await.unwrap();
+        index.record(TARGET, ALICE, b"").await.unwrap();
 
         let checker = IndexedRevocations(index);
         let by = [did(ALICE)];
@@ -95,6 +98,31 @@ mod tests {
             .expect("alice revoked it and alice is a candidate");
 
         assert_eq!(found.principal, did(ALICE), "the revoker must be named");
+        assert_eq!(
+            found.proof, None,
+            "a fact recorded bare carries no document"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_hands_back_the_revocation_it_recorded() {
+        // The holder retracts a revoked certificate only on a document it
+        // can verify, so the refusal has to carry the one that was recorded.
+        let index = MemoryRevocationIndex::default();
+        index
+            .record(TARGET, ALICE, b"signed revocation")
+            .await
+            .unwrap();
+
+        let checker = IndexedRevocations(index);
+        let by = [did(ALICE)];
+        let found = checker
+            .query(RevocationSelector::new(cid(), &by))
+            .await
+            .unwrap()
+            .expect("alice revoked it");
+
+        assert_eq!(found.proof.as_deref(), Some(&b"signed revocation"[..]));
     }
 
     #[dialog_common::test]
@@ -104,7 +132,7 @@ mod tests {
         // it, but Bob issued nothing into the chain being checked, so this
         // is not a revocation OF that chain.
         let index = MemoryRevocationIndex::default();
-        index.record(TARGET, BOB).await.unwrap();
+        index.record(TARGET, BOB, b"").await.unwrap();
 
         let checker = IndexedRevocations(index);
         let by = [did(ALICE)];
@@ -136,7 +164,7 @@ mod tests {
         // A chain rooted in its own subject presents no issuers to match
         // against, so there is no question to ask.
         let index = MemoryRevocationIndex::default();
-        index.record(TARGET, ALICE).await.unwrap();
+        index.record(TARGET, ALICE, b"").await.unwrap();
 
         let checker = IndexedRevocations(index);
         assert!(

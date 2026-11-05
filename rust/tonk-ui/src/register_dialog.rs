@@ -3183,7 +3183,11 @@ fn finish_account_navigation(host: &Element) {
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 fn account_completion_destination(saved: Option<&str>) -> &str {
     saved
-        .filter(|value| value.starts_with("/space/") || is_link_destination(value))
+        .filter(|value| {
+            value.starts_with("/space/")
+                || is_link_destination(value)
+                || crate::email_invite::destination(value)
+        })
         .unwrap_or("/")
 }
 
@@ -3195,9 +3199,13 @@ fn is_link_destination(value: &str) -> bool {
     value.starts_with('/')
         && !value.starts_with("//")
         && url.origin().ascii_serialization() == "https://tonk.local"
-        && url.path() == "/settings/link"
         && url.fragment().is_none()
-        && {
+        && (url.path() == "/settings/agent" && {
+            // An app's OAuth request: back to its approval page, which
+            // asks for consent; the request itself stays with the server.
+            url.query_pairs()
+                .any(|(key, value)| key == "request" && !value.is_empty())
+        } || url.path() == "/settings/link" && {
             let parameter = |name: &str| {
                 url.query_pairs()
                     .find(|(key, _)| key == name)
@@ -3210,7 +3218,7 @@ fn is_link_destination(value: &str) -> bool {
             let device = parameter("audience").is_some_and(|value| !value.is_empty())
                 && parameter("callback").is_some_and(|value| !value.is_empty());
             local_space || device
-        }
+        })
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -3222,7 +3230,8 @@ fn current_link_path() -> Option<String> {
         location.search().ok()?,
         location.hash().ok()?
     );
-    is_link_destination(&candidate).then_some(candidate)
+    (is_link_destination(&candidate) || crate::email_invite::destination(&candidate))
+        .then_some(candidate)
 }
 
 /// Return to the surface the ceremony replaced.
@@ -3631,6 +3640,7 @@ mod tests {
         for link in [
             "/settings/link?audience=did%3Akey%3Atest&callback=http%3A%2F%2F127.0.0.1%3A54321%2Fcallback%3Fstate%3Dbound-state",
             "/settings/link?audience=did%3Akey%3Atest&callback=https%3A%2F%2Fexample.test%2Foauth%2Fcontinue&name=ChatGPT",
+            "/settings/agent?request=_IjSzPDoFPa4AHlJoTPi3iGmzhy6iic-wBSPryeAfDs",
         ] {
             assert_eq!(super::account_completion_destination(Some(link)), link);
         }
@@ -3648,6 +3658,9 @@ mod tests {
             Some("/settings/link#tonk-terminal-v1=x"),
             Some("/settings/link?intent=local-space-link"),
             Some("/settings/link?request=bound-request"),
+            Some("/settings/agent"),
+            Some("/settings/agent?request="),
+            Some("/settings/agent?request=handle#fragment"),
         ] {
             assert_eq!(super::account_completion_destination(destination), "/");
         }

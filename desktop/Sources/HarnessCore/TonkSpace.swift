@@ -6,6 +6,10 @@ public struct TonkSpace: Identifiable, Codable, Equatable, Sendable {
   /// The account's chosen sidebar symbol and tint, synced on the account directory.
   public let icon: String?
   public let color: String?
+  /// The account hosting the space on Tonk services, when one does.
+  public var provider: String? = nil
+  /// Whether this account created the space, rather than joining it.
+  public var founded: Bool? = nil
   public var id: String { subject }
   public var title: String {
     let title = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

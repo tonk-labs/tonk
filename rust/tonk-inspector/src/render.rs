@@ -15,11 +15,11 @@ use serde_json::Value;
 use crate::response::{EvaluateResponse, QueryMatchBlock, QueryResult, Revision};
 
 /// Block label of a `concept:` query — its results render as `concept!:`.
-const CONCEPT_LABEL: &str = "concept";
+pub(crate) const CONCEPT_LABEL: &str = "concept";
 /// Block label of a `command:` query — `command!:` (transient concept).
-const COMMAND_LABEL: &str = "command";
+pub(crate) const COMMAND_LABEL: &str = "command";
 /// Block label of a `rule:` query — `rule!:`.
-const RULE_LABEL: &str = "rule";
+pub(crate) const RULE_LABEL: &str = "rule";
 
 /// Escape text for safe interpolation into HTML element content / attributes.
 fn esc(s: &str) -> String {
@@ -664,7 +664,7 @@ fn rule_normalize_terms(value: &mut Value) {
 
 /// Extract a concept result's descriptor as an object map (parsed from the
 /// stringified `source` field, with `as` discriminants normalized).
-fn concept_descriptor(
+pub(crate) fn concept_descriptor(
     result: &QueryResult,
     show_transient: bool,
 ) -> Option<serde_json::Map<String, Value>> {
@@ -689,7 +689,7 @@ fn concept_descriptor(
 }
 
 /// Expand a `rule:` result's `definition` field into the `rule!:` field layout.
-fn rule_definition(result: &QueryResult) -> Option<serde_json::Map<String, Value>> {
+pub(crate) fn rule_definition(result: &QueryResult) -> Option<serde_json::Map<String, Value>> {
     let value = result.fields.get("definition")?.clone();
     let outer = match value {
         Value::Object(map) => map,

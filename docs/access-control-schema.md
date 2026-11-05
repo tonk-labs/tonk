@@ -61,6 +61,37 @@ erDiagram
         INTEGER measured_at
         INTEGER deleted_at "when deletion began; the row goes when it finishes"
     }
+
+    email_invitation {
+        TEXT id PK "not a DID: 32 random bytes, hex"
+        TEXT sender "DID (did:key) of the sending account"
+        TEXT email "normalized address the invitation is for"
+        TEXT space "DID (did:key) of the space shared"
+        INTEGER created_at
+        INTEGER expires_at "latest claim time"
+        TEXT original "the signed grant, base58; null until published"
+        TEXT recipient "DID (did:key) of the claiming account; set with completed"
+        TEXT completed "the completed chain, base58; set with recipient"
+        INTEGER sent_at "transport acknowledgement; null until sent"
+        INTEGER cancelled "0 or 1"
+        INTEGER attempts "transport attempts, at most three"
+        INTEGER next_attempt_at "delivery lease and cooldown"
+    }
+
+    oauth_authorization {
+        TEXT request PK "not a DID: hex SHA-256 of the handle the approval page carries"
+        TEXT browser "hex SHA-256 of the cookie binding the request to one browser"
+        TEXT client_id "OAuth client: a metadata document URL or a signed registration, not a DID"
+        TEXT client_name "shown on the approval page"
+        TEXT registration "enum: metadata-document | dynamic"
+        TEXT redirect_uri "the callback the code goes to, verbatim"
+        TEXT state "the client's, returned with the code"
+        TEXT resource "this origin's /mcp"
+        TEXT challenge "PKCE S256 code_challenge"
+        INTEGER expires_at "the approval page's deadline, then the code's"
+        TEXT code UK "hex SHA-256 of the code; null until approved"
+        TEXT token "the finished token, sealed under the code; set with code"
+    }
 ```
 
 `account` is drawn above but is **not a table**. `customer.did` is the
@@ -69,6 +100,34 @@ fusion is deliberate for now and has a consequence worth knowing: an
 account has exactly one subscription, forever, with no history of a
 lapsed one. Splitting them is the change to make when an account needs
 a second subscription or a cancelled one has to be kept.
+
+`email_invitation` and `oauth_authorization` stand apart: neither is
+read by the gate, and neither references another table. An invitation
+names its sender and recipient by DID, and is completed only while a
+customer with the invited address is `Active`, which the completing
+statement checks rather than a foreign key.
+
+## OAuth authorizations
+
+`oauth_authorization` holds one OAuth authorization for `/mcp`, from
+`/authorize` until `/token` collects it (`src/oauth.rs`). A row is
+written pending, with `code` and `token` null, and the approval page has
+ten minutes. When it posts the finished token, the row gains both and
+`expires_at` moves to a minute later; `/token` then deletes it in the
+same statement that matches the code, the client, the callback, the
+resource and the PKCE challenge, so a code redeems at most once. A
+refusal deletes the pending row. Lapsed rows are removed whenever a new
+authorization begins.
+
+Every secret is held as a hash, and the token is sealed under a key
+derived from the code. That is the point of the shape: D1 keeps history
+(Time Travel), and the token is a session credential with no expiry, so
+a row read without the code must open nothing. The code itself only
+ever travels in the redirect to the client and back.
+
+Registered clients have no table. A dynamically registered `client_id`
+carries its own metadata, signed by the service; see
+`src/oauth/client.rs`.
 
 ## What decides service
 

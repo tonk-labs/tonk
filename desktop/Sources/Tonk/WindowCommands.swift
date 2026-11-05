@@ -49,7 +49,15 @@ struct WindowCommands: Commands {
   @FocusedValue(\.newLink) private var newLink
   @FocusedValue(\.newChat) private var newChat
 
+  @ObservedObject private var updater = AppUpdater.shared
+
   var body: some Commands {
+    CommandGroup(after: .appInfo) {
+      if updater.isAvailable {
+        Button("Check for Updates…") { updater.checkForUpdates() }
+          .disabled(!updater.canCheckForUpdates)
+      }
+    }
     CommandGroup(replacing: .appSettings) {
       Button("Settings…") { modelSettings?() }
         .keyboardShortcut(",").disabled(modelSettings == nil)

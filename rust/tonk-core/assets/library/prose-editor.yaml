@@ -1,0 +1,202 @@
+# ===========================================================================
+# prose-editor — a markdown document, edited live in <prose-editor> and
+# persisted.
+# ===========================================================================
+# <prose-editor> is defined below as branch data (`element!:`), so the
+# component carries its own editor: installing it into a space needs
+# nothing from the host.
+#
+# The editor fires a debounced `change` event on every idle edit; a command
+# reads the new content off the event and a rule writes it back onto the
+# document entity. Reading the versioned `content` envelope (markdown + HLC)
+# rather than the bare value lets the element recognize its own round-tripped
+# edit by version and drop it, so the store echo never disturbs the caret.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Attributes
+# ---------------------------------------------------------------------------
+
+attribute!: &prose/content
+  description: |
+    The document's content as the <prose-editor> `content` envelope: a
+    versioned wrapper (Tonk-Prose-Version header + HLC ETag) around the
+    markdown body. Stored verbatim and fed back into the editor's `content`
+    attribute, so the element drops its own echo by the version.
+  the: io.gozala.prose/content
+  as: text
+
+# ---------------------------------------------------------------------------
+# Concept
+# ---------------------------------------------------------------------------
+
+concept!: &prose
+  this: tonk:prose
+  description: A prose document edited with <prose-editor>.
+  with:
+    content:
+      description: The document content (the versioned `content` envelope).
+      the: io.gozala.prose/content
+      as: text
+
+# ---------------------------------------------------------------------------
+# Command — one per idle edit.
+# The <prose-editor> `change` event carries the versioned envelope on
+# `event.detail.content`; `subject` carries the document's identity off the
+# element's `data-subject` so the rule knows which document to write.
+# ---------------------------------------------------------------------------
+
+# How `<prose-editor>`'s change event fills the command. The element's
+# own payload key is `content`; the subject needs no `data-*` attribute
+# because `{this}` is the entity the view is rendering.
+event!: &on/prose-change
+  type: "change"
+  where:
+    subject: "{this}"
+    content: ".detail.content"
+
+command!: &prose/edit
+  description: Edit a prose document.
+  with:
+    subject:
+      description: The document being edited.
+      the: xyz.tonk.prose.edit/subject
+      as: entity
+    content:
+      description: The new content envelope.
+      the: xyz.tonk.prose.edit/content
+      as: text
+
+# ---------------------------------------------------------------------------
+# Rule — persist the edit onto the document named by the command's subject.
+# Binding `subject` to `?this` writes the (cardinality-one) content in place
+# on that document entity, so each edit overwrites rather than accumulating.
+# ---------------------------------------------------------------------------
+
+rule!:
+  description: Persist a prose edit onto its document.
+  assert!: prose
+  when:
+    - assert: prose/edit
+      where:
+        subject: ?this
+        content: ?content
+
+# ---------------------------------------------------------------------------
+# Element — the editor, as branch data rather than a host bundle.
+#
+# <tonk-prose> ported to an `element!`: the methods in `prose-editor/` are its
+# custom-element class (text channel, versioned envelope, debounced
+# `change`, deferred teardown, switcher events), and `core` is its
+# ProseMirror editor core, built by `rust/tonk-prose/scripts/build.mjs`
+# into an expression that returns `createEditor`. So the component
+# carries the same editor as the host and installs into a space with
+# nothing from it. Rebuild `core.js` after changing
+# `rust/tonk-prose/src-js/editor`: `npm run build` there.
+#
+# Not `tonk-prose`: the host owns that name (and the runtime leaves
+# `tonk-` tags to the host), so a page can have both. The interface is
+# the same, and so is the stored envelope.
+# ---------------------------------------------------------------------------
+
+element!: &prose-editor
+  description: A ProseMirror markdown editor whose text content is the document; `change` carries the edit as a versioned envelope.
+  method:
+    connected: !include/text ./prose-editor/connected.js
+    disconnected: !include/text ./prose-editor/disconnected.js
+    attribute-changed: !include/text ./prose-editor/attribute-changed.js
+    mount: !include/text ./prose-editor/mount.js
+    adopt: !include/text ./prose-editor/adopt.js
+    schedule: !include/text ./prose-editor/schedule.js
+    flush: !include/text ./prose-editor/flush.js
+    emit: !include/text ./prose-editor/emit.js
+    decode: !include/text ./prose-editor/decode.js
+    encode: !include/text ./prose-editor/encode.js
+    tick: !include/text ./prose-editor/tick.js
+    observe: !include/text ./prose-editor/observe.js
+    stylesheet: !include/text ./prose-editor/stylesheet.js
+    core: !include/text ./prose-editor/core.js
+  getter:
+    # The document as bare markdown.
+    value: |
+      (self) => {
+        const state = self.__prose;
+        if (state?.editor) return state.editor.getMarkdown();
+        if (state?.buffered != null) return state.buffered;
+        const light = self.textContent ?? '';
+        const raw = light !== '' ? light : (self.getAttribute('content') ?? self.getAttribute('value'));
+        return raw === null ? '' : self.decode(raw).value;
+      }
+    # The document as the versioned envelope, for a lossless round trip.
+    content: |
+      (self) => self.encode(self.__prose?.known ?? 0n, self.value)
+    # The last version issued or adopted, as a decimal string.
+    version: |
+      (self) => String(self.__prose?.known ?? 0n)
+    # The live ProseMirror handle, once mounted.
+    editor: |
+      (self) => self.__prose?.editor ?? null
+    # Documents the heading switcher offers, set by the host.
+    candidates: |
+      (self) => self.__candidates ?? []
+  setter:
+    # Before the editor mounts, a write goes to the text it mounts from.
+    value: |
+      (self, next) => { if (self.__prose) self.adopt(String(next ?? '')); else self.textContent = String(next ?? ''); }
+    content: |
+      (self, next) => { if (self.__prose) self.adopt(String(next ?? '')); else self.textContent = String(next ?? ''); }
+    candidates: |
+      (self, next) => { self.__candidates = next; }
+
+# ---------------------------------------------------------------------------
+# View — render the document as an editor. The content is bound as the
+# element's TEXT (between the tags), the way a <textarea> carries its value:
+# the store's `content` envelope is written via set_text_content, which is
+# newline- and markup-safe (an attribute value can be normalized in transit,
+# corrupting the multi-line envelope). `on:prose-change=prose/edit` fires the
+# command on each idle edit; identity comes from the declaration's `{this}`,
+# so the editor needs no `data-subject` to stash and read back.
+# ---------------------------------------------------------------------------
+
+view!:
+  this: prose
+  show:
+    ui: |
+      <prose-editor
+        on:prose-change=prose/edit
+        placeholder="Write something…"
+        auto-focus
+        style="display: block; min-height: 12rem;"
+      >{content}</prose-editor>
+
+# ---------------------------------------------------------------------------
+# A directory view so `tonk render prose` (list of documents) resolves. One
+# <tonk-display> per instance — the single-display directory pattern.
+# ---------------------------------------------------------------------------
+
+view!:
+  this: prose
+  show:
+    directory: |
+      <div class="prose-directory">
+        <tonk-display entity={this} model={dom.host/model}></tonk-display>
+      </div>
+
+# ---------------------------------------------------------------------------
+# Seed one document so the model resolves on first render. The seed stores a
+# BARE markdown body (no envelope): the editor accepts a bare value as an
+# always-adopt initial document, then stamps versions on subsequent edits.
+# Re-assert this id to reset the document.
+# ---------------------------------------------------------------------------
+
+prose!:
+  this: id:prose/doc
+  content: |
+    # Hello
+
+    Start editing. Try **bold**, *italic*, ~~strike~~ and `code`.
+
+    > a quote
+
+    - [ ] a todo
+    - [x] a done item

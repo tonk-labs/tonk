@@ -251,7 +251,8 @@ impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
             log!("ReplicateSpace '{key}': refused from another space's branch");
             return;
         }
-        let tonk = self.state().read().await;
+        // A clone, not a guard: mounting pulls the space over the network.
+        let tonk = self.state().read().await.clone();
         match ensure_space_mounted(&tonk, &key).await {
             Ok(true) => {
                 schedule_seed_upgrade(&tonk, self.state().clone(), &key).await;
@@ -262,6 +263,24 @@ impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
             Ok(false) => log!("ReplicateSpace '{key}': nothing to mount"),
             Err(error) => log!("ReplicateSpace '{key}': {error}"),
         }
+    }
+}
+
+/// Mount `key`'s space on first use, then catch its seed up. Every route
+/// that addresses a space by key calls this before it touches a branch,
+/// because a fresh or just-updated worker has nothing mounted: a route
+/// that skipped it failed for a space that a concurrent `query` mounted a
+/// moment later. A failed or absent mount is only logged; the caller
+/// proceeds and fails with its ordinary not-found.
+pub(crate) async fn mount_on_first_use(
+    tonk: &TonkState,
+    state: &crate::router::AppState,
+    key: &str,
+) {
+    match ensure_space_mounted(tonk, key).await {
+        Ok(true) => schedule_seed_upgrade(tonk, state.clone(), key).await,
+        Ok(false) => {}
+        Err(error) => log!("on-demand mount of '{key}' failed: {error}"),
     }
 }
 
@@ -311,7 +330,9 @@ pub(crate) async fn schedule_seed_upgrade(
     }
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_futures::spawn_local(async move {
-        let tonk = state.read().await;
+        // A clone, not a guard: the upgrade fetches the seed source over
+        // HTTP before it can tell there is nothing to do.
+        let tonk = state.read().await.clone();
         match super::repository::upgrade_seed(&tonk, &key).await {
             Ok(true) => log!("seed upgrade: '{key}' caught up with the shipped bundle"),
             Ok(false) => {}
@@ -330,7 +351,7 @@ pub(crate) async fn schedule_seed_upgrade(
 }
 
 /// Parse either the canonical full repository key or the legacy bare suffix.
-fn space_subject(key: &str) -> Option<dialog_varsig::Did> {
+pub(crate) fn space_subject(key: &str) -> Option<dialog_varsig::Did> {
     if key.starts_with("did:key:") {
         key.parse().ok()
     } else {
@@ -1416,7 +1437,7 @@ mod tests {
             "the space must start unmounted for the pin to mean anything"
         );
 
-        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let state: crate::router::AppState = std::sync::Arc::new(crate::StateLock::new(tonk));
         let response = crate::router::transact::transact(
             axum::extract::State(state.clone()),
             axum::extract::Path(crate::router::transact::TransactPath {
@@ -1440,6 +1461,92 @@ mod tests {
                 .await
                 .unwrap(),
             "the transact route mounts the directory space before touching its branch"
+        );
+    }
+
+    /// Record a space that exists only as account-directory facts, as if
+    /// another device created it, and return it in the shared app state.
+    async fn unmounted_directory_space() -> (crate::router::AppState, dialog_varsig::Did) {
+        use dialog_credentials::ed25519::Ed25519Signer;
+        use dialog_repository::SiteAddress;
+        use dialog_varsig::Principal as _;
+
+        let tonk = crate::router::tests::test_state().await;
+        let subject: dialog_varsig::Did = Ed25519Signer::generate().await.unwrap().did();
+        let address = SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
+            "https://sync.example.test/ucan/",
+        ));
+        let configuration = super::super::repository::RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                super::super::repository::RemoteConfiguration::new(address)
+                    .subject(subject.clone())
+                    .revocation_url("https://relay.example.test/revocations/".parse().unwrap()),
+            )
+            .branch(
+                "main",
+                super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
+            );
+        super::super::repository::record_space_mount(
+            &tonk,
+            &subject,
+            &configuration,
+            Some("Foreign Space"),
+        )
+        .await;
+        assert!(
+            !super::super::join::find_replica_for_subject(&tonk, &subject)
+                .await
+                .unwrap(),
+            "the space must start unmounted for the pin to mean anything"
+        );
+        (std::sync::Arc::new(crate::StateLock::new(tonk)), subject)
+    }
+
+    /// After a worker update nothing is mounted, and the desktop app reads
+    /// a space's views through `evaluate` in parallel with its `query`
+    /// reads. `evaluate` did not mount, so it failed whenever it ran before
+    /// a `query` mounted the space.
+    #[dialog_common::test]
+    async fn it_mounts_a_directory_space_on_a_first_evaluate() {
+        let (state, subject) = unmounted_directory_space().await;
+        let response = crate::router::evaluate::evaluate(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(crate::router::evaluate::EvaluatePath {
+                repo: subject.to_string(),
+                branch: "main".to_owned(),
+            }),
+            axum::extract::Query(crate::router::evaluate::EvaluateQuery {
+                transact: false,
+                ..Default::default()
+            }),
+            None,
+            None,
+            axum::http::HeaderMap::new(),
+            axum::body::Bytes::from_static(b"concept:\n"),
+        )
+        .await;
+        assert!(
+            response.is_ok(),
+            "an evaluate addressed to a directory space mounts it and answers: {:?}",
+            response.err()
+        );
+    }
+
+    /// The desktop app lists a space's links on the same refresh, so the
+    /// invites route must mount the space too.
+    #[dialog_common::test]
+    async fn it_mounts_a_directory_space_on_a_first_invite_listing() {
+        let (state, subject) = unmounted_directory_space().await;
+        let response = crate::router::revoke_invite::list(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(subject.to_string()),
+        )
+        .await;
+        assert!(
+            response.is_ok(),
+            "an invite listing addressed to a directory space mounts it and answers: {:?}",
+            response.err()
         );
     }
 
@@ -1732,4 +1839,103 @@ async fn directory_configuration_strict(
         );
     }
     Ok(Some(configuration))
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod native_tests {
+    use crate::router::repository::{
+        BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
+    };
+
+    /// Mounting a space on first use can pull it over the network, so a
+    /// route that mounts holds no guard over the state across it. Each route
+    /// is held where the mount does that work; a writer could take the guard
+    /// meanwhile, and the route answers once the mount goes on.
+    #[test]
+    fn routes_hold_no_guard_while_a_space_mounts() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(routes_during_a_held_mount());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn routes_during_a_held_mount() {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt as _;
+
+        let (app, state, _lsp) = crate::router::api_router_with_state(
+            crate::router::repository::profile_library_tests::test_state().await,
+        );
+        let key = crate::router::approval_stall_diagnosis::put_repo(&app, "mounting").await;
+        let configuration = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(dialog_repository::SiteAddress::from(
+                    dialog_remote_ucan::UcanAddress::new("https://sync.example.test/ucan/"),
+                )),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        {
+            let tonk = state.read().await;
+            crate::router::repository::record_space_mount(
+                &tonk,
+                &key.parse().unwrap(),
+                &configuration,
+                None,
+            )
+            .await;
+        }
+        let routes = [
+            ("GET", format!("/api/repository/{key}")),
+            ("POST", format!("/api/repository/{key}/branch/main/query")),
+            (
+                "POST",
+                format!("/api/repository/{key}/branch/main/transact"),
+            ),
+            (
+                "POST",
+                format!("/api/repository/{key}/branch/main/evaluate"),
+            ),
+        ];
+        for (method, uri) in routes {
+            let entered = {
+                let tonk = state.read().await;
+                let entry = tonk.admission.entry(&key);
+                entry.forget();
+                let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+                let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+                *entry.gate.lock() = Some((entered_tx, release_rx));
+                (entered_rx, release_tx)
+            };
+            let (entered, release) = entered;
+            let request = Request::builder()
+                .uri(&uri)
+                .method(method)
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap();
+            let mut answering = Box::pin(app.clone().oneshot(request));
+            tokio::select! {
+                reached = entered => reached.unwrap(),
+                _ = &mut answering => panic!("{method} {uri} answered without mounting the space"),
+            }
+            assert!(
+                state.try_write().is_ok(),
+                "{method} {uri} holds a guard over the state while the space mounts"
+            );
+            release.send(()).unwrap();
+            answering.await.unwrap();
+        }
+    }
 }

@@ -4,7 +4,8 @@ import HarnessCore
 @MainActor
 extension RuntimeModel {
   var showsSpacePicker: Bool {
-    accountConnected || showingCachedCatalog || RuntimeLocation.deployment == .local
+    (accountConnected || showingCachedCatalog) && confirmingEmail == nil
+      || RuntimeLocation.deployment == .local
   }
 
   func prepareCatalogCache(directory: URL) {

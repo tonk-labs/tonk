@@ -138,6 +138,83 @@ pub(crate) async fn open_profile_at(
     Ok((storage, profile))
 }
 
+/// Open the system credential store of `directory`.
+///
+/// Persistent backends find the same keys however often a directory is
+/// opened. In-memory storage (`volatile-storage` on wasm, for a hosted
+/// peer in a Workers isolate) keeps nothing between opens, so the store a
+/// directory first opened is kept here and handed out again until
+/// [`forget_system`] drops it.
+pub(crate) async fn open_system(
+    directory: Directory,
+) -> Result<
+    (
+        dialog_storage::provider::storage::CredentialStore<DefaultSpace>,
+        dialog_credentials::SignerCredential,
+    ),
+    dialog_peer::PeerError,
+> {
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        feature = "volatile-storage"
+    ))]
+    {
+        let key = format!("{directory:?}");
+        if let Some(opened) = VOLATILE_SYSTEMS.with(|systems| systems.borrow().get(&key).cloned()) {
+            return Ok(opened);
+        }
+        let opened = tonk_account::peer::open_system::<DefaultSpace>(directory).await?;
+        VOLATILE_SYSTEMS.with(|systems| systems.borrow_mut().insert(key, opened.clone()));
+        Ok(opened)
+    }
+    #[cfg(not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        feature = "volatile-storage"
+    )))]
+    {
+        tonk_account::peer::open_system::<DefaultSpace>(directory).await
+    }
+}
+
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    feature = "volatile-storage"
+))]
+type VolatileSystem = (
+    dialog_storage::provider::storage::CredentialStore<DefaultSpace>,
+    dialog_credentials::SignerCredential,
+);
+
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    feature = "volatile-storage"
+))]
+thread_local! {
+    static VOLATILE_SYSTEMS: std::cell::RefCell<std::collections::HashMap<String, VolatileSystem>> =
+        Default::default();
+}
+
+/// Drop the system credential store [`open_system`] kept for `directory`.
+/// A no-op unless storage is volatile.
+pub(crate) fn forget_system(directory: &Directory) {
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        feature = "volatile-storage"
+    ))]
+    VOLATILE_SYSTEMS.with(|systems| systems.borrow_mut().remove(&format!("{directory:?}")));
+    #[cfg(not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        feature = "volatile-storage"
+    )))]
+    let _ = directory;
+}
+
 /// Where the pointer lives: a profile name and the directory it is
 /// opened in. The worker uses [`Registry::device`]; tests point at a
 /// scratch directory under their own name so they neither collide with
@@ -164,10 +241,16 @@ impl Registry {
     /// The registry of the profile `profile` in `directory`, with caches
     /// of its own.
     pub(crate) fn new(profile: String, directory: Directory) -> Self {
+        Self::holding(profile, directory, HeldCaches::new())
+    }
+
+    /// The registry of the profile `profile` in `directory`, whose peers
+    /// hold `caches`: a hosted peer passes caches with a budget it chose.
+    pub(crate) fn holding(profile: String, directory: Directory, caches: HeldCaches) -> Self {
         Self {
             profile,
             directory,
-            caches: HeldCaches::new(),
+            caches,
         }
     }
 
@@ -197,12 +280,10 @@ impl Registry {
     /// The storage every profile in this registry's directory is
     /// mounted in, owned by the system tonk runs as there.
     pub(crate) async fn storage(&self) -> Result<Storage<DefaultSpace>, TonkWorkerError> {
-        let (_, system) = tonk_account::peer::open_system::<DefaultSpace>(self.directory.clone())
-            .await
-            .map_err(|error| {
-                TonkWorkerError::Internal(format!("failed to open the system key: {error}"))
-            })?;
-        Ok(Storage::<DefaultSpace>::default().owned_by(system.did()))
+        let (_, system) = open_system(self.directory.clone()).await.map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to open the system key: {error}"))
+        })?;
+        Ok(Storage::<DefaultSpace>::new().owned_by(system.did()))
     }
 
     /// Open the profile `name` in this registry's directory over
@@ -213,8 +294,7 @@ impl Registry {
         name: &str,
         create: bool,
     ) -> Result<DefaultProfile, dialog_peer::PeerError> {
-        let (credentials, system) =
-            tonk_account::peer::open_system::<DefaultSpace>(self.directory.clone()).await?;
+        let (credentials, system) = open_system(self.directory.clone()).await?;
         // Space names resolve against the directory the worker has always
         // kept its spaces in.
         let location = Location::new(self.directory.clone(), name);
@@ -249,12 +329,9 @@ impl Registry {
         name: &str,
         branch: &str,
     ) -> Result<DefaultProfile, TonkWorkerError> {
-        let (credentials, system) =
-            tonk_account::peer::open_system::<DefaultSpace>(self.directory.clone())
-                .await
-                .map_err(|error| {
-                    TonkWorkerError::Internal(format!("failed to open the system key: {error}"))
-                })?;
+        let (credentials, system) = open_system(self.directory.clone()).await.map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to open the system key: {error}"))
+        })?;
         tonk_account::peer::open_peer_holding(
             Location::new(self.directory.clone(), name),
             self.space_location("").directory,
@@ -405,6 +482,20 @@ impl Registry {
         let mut attempt = 0;
         loop {
             let registry = self.open_self(storage).await?;
+            // A pointer that already names `name` is left alone. The
+            // registry's branch is the profile's `main`, which may follow
+            // an account and hold its history only by reference, and a
+            // commit can cascade into a node held that way. Sign-out
+            // re-promotes the same profile after withdrawing the grant
+            // that would fetch it, so an unneeded save there can fail.
+            let recorded = self
+                .read(&registry)
+                .await
+                .ok()
+                .map(|recorded| recorded.unwrap_or_else(|| self.profile.clone()));
+            if recorded.as_deref() == Some(name) {
+                return Ok(());
+            }
             match registry
                 .secrets()
                 .site(ACTIVE_PROFILE_SITE)
@@ -862,6 +953,51 @@ mod tests {
             active.did(),
             second.did(),
             "the pointer must name the newest key, not the first rotation"
+        );
+    }
+
+    /// Recording the profile the pointer already names writes nothing.
+    ///
+    /// The registry's branch is the profile's `main`, which follows the
+    /// account once one is adopted, and holds the account's history and
+    /// coverage regions by reference. Sign-out withdraws the grant that
+    /// would fetch them and then re-promotes the same profile; a save then
+    /// commits into that tree, and fails whenever the commit cascades into
+    /// a node still held remotely.
+    #[dialog_common::test]
+    async fn it_writes_nothing_when_the_pointer_already_names_the_profile() {
+        let registry = scratch();
+        let storage = registry.storage().await.unwrap();
+        let head = async || {
+            registry
+                .open_self(&storage)
+                .await
+                .unwrap()
+                .state()
+                .revision()
+        };
+
+        let initial = head().await;
+        registry
+            .set_active(&storage, &registry.profile)
+            .await
+            .unwrap();
+        assert_eq!(
+            head().await,
+            initial,
+            "an unrecorded pointer already names the initial profile"
+        );
+
+        let (name, _) = registry.create_profile(&storage).await.unwrap();
+        registry.set_active(&storage, &name).await.unwrap();
+        let recorded = head().await;
+        assert_ne!(recorded, initial, "a new name is recorded");
+
+        registry.set_active(&storage, &name).await.unwrap();
+        assert_eq!(
+            head().await,
+            recorded,
+            "the same name is not recorded again"
         );
     }
 

@@ -1,0 +1,140 @@
+const imgIconLink = "https://www.figma.com/api/mcp/asset/af1f82d7-7f09-411f-abfd-d902f522d27d.svg";
+const imgIconChevronDown = "https://www.figma.com/api/mcp/asset/bf87c5f6-7f0b-48b7-acfc-b30b0a9a0580.svg";
+const imgStateSynced = "https://www.figma.com/api/mcp/asset/607cc3e6-979a-437f-8818-bb85079cb50c.svg";
+const imgTrafficLights = "https://www.figma.com/api/mcp/asset/dbacef4b-2a28-4868-8217-44efbaab4eaf.svg";
+const imgIconPanelLeft = "https://www.figma.com/api/mcp/asset/9cf91493-ed42-4da1-9425-f24c94418f62.svg";
+const imgIconChevronRight = "https://www.figma.com/api/mcp/asset/f6e9f339-f8f3-46d9-904f-b3d23594ac8b.svg";
+const imgIconSquarePen = "https://www.figma.com/api/mcp/asset/b77a6df5-5804-47f2-bb72-53af284609b2.svg";
+const imgIconMore = "https://www.figma.com/api/mcp/asset/7daa6959-c8dc-46e4-9d09-bce7194626eb.svg";
+const imgSpinner = "https://www.figma.com/api/mcp/asset/b5f88f49-01e9-4c29-a4e7-db5018b3fb32.svg";
+
+type SplitButtonProps = {
+  className?: string;
+  label?: string;
+  state?: "Default";
+};
+
+function SplitButton({ className, label = "Copy link", state = "Default" }: SplitButtonProps) {
+  return (
+    <div className={className || "bg-[var(--dt-accent,#3478f6)] content-stretch flex h-[28px] items-center overflow-clip relative rounded-[14px]"} data-node-id="53:5">
+      <div className="content-stretch flex gap-[6px] h-full items-center overflow-clip pl-[11px] pr-[10px] relative shrink-0" data-node-id="53:6" data-name="Copy">
+        <div className="relative shrink-0 size-[14px]" data-node-id="53:7" data-name="icon/link">
+          <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconLink} />
+        </div>
+        <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-on-accent,white)] tracking-[-0.08px] whitespace-nowrap" data-node-id="53:10" style={{ fontVariationSettings: '"wdth" 100' }}>
+          {label}
+        </p>
+      </div>
+      <div className="content-stretch flex h-full items-center justify-center overflow-clip relative shrink-0 w-[26px]" data-node-id="53:12" data-name="Menu">
+        <div className="relative shrink-0 size-[12px]" data-node-id="53:13" data-name="icon/chevron-down">
+          <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconChevronDown} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type SyncCircleProps = {
+  className?: string;
+  state?: "Synced";
+};
+
+function SyncCircle({ className, state = "Synced" }: SyncCircleProps) {
+  return (
+    <div className={className || "relative size-[10px]"} data-node-id="60:961">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgStateSynced} />
+    </div>
+  );
+}
+
+function TrafficLights({ className }: { className?: string }) {
+  return (
+    <div className={className || "h-[12px] relative w-[52px]"} data-node-id="4:57" data-name="Traffic lights">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgTrafficLights} />
+    </div>
+  );
+}
+
+export default function Component10ViewLoading() {
+  return (
+    <div className="bg-[var(--dt-ground,white)] content-stretch flex flex-col items-start overflow-clip relative rounded-[20px] shadow-[0px_8px_20px_0px_rgba(0,0,0,0.12),0px_30px_70px_0px_rgba(0,0,0,0.28),0px_0px_0px_0.5px_rgba(0,0,0,0.28)] size-full" data-node-id="79:1704" data-name="10 · View loading">
+      <div className="content-stretch flex gap-[8px] h-[52px] items-center overflow-clip pl-[16px] pr-[12px] relative shrink-0 w-full" data-node-id="79:1705" data-name="Title bar">
+        <TrafficLights className="h-[12px] relative shrink-0 w-[52px]" />
+        <div className="h-px relative shrink-0 w-[6px]" data-node-id="79:1710" data-name="Gap" />
+        <div className="bg-[var(--dt-ground,white)] content-stretch drop-shadow-[0px_1px_1.5px_rgba(0,0,0,0.06),0px_0px_0px_rgba(0,0,0,0.1)] flex items-center justify-center relative rounded-[999px] shrink-0 size-[28px]" data-node-id="79:1711" data-name="Chat panel">
+          <div className="relative shrink-0 size-[15px]" data-node-id="I79:1711;79:1571" data-name="icon/panel-left">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconPanelLeft} />
+          </div>
+        </div>
+        <div className="h-px relative shrink-0 w-[2px]" data-node-id="79:1717" data-name="Gap" />
+        <SyncCircle className="relative shrink-0 size-[12px]" />
+        <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[20px] relative shrink-0 text-[15px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.2px] whitespace-nowrap" data-node-id="79:1720" style={{ fontVariationSettings: '"wdth" 100' }}>
+          tonk-team
+        </p>
+        <div className="relative shrink-0 size-[14px]" data-node-id="79:1721" data-name="icon/chevron-right">
+          <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconChevronRight} />
+        </div>
+        <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[20px] relative shrink-0 text-[15px] text-[color:var(--dt-text-3,#969696)] tracking-[-0.2px] whitespace-nowrap" data-node-id="79:1723" style={{ fontVariationSettings: '"wdth" 100' }}>
+          Board
+        </p>
+        <div className="flex-[1_0_0] h-px min-w-px relative" data-node-id="79:1724" data-name="Spacer" />
+        <div className="bg-[var(--dt-ground,white)] content-stretch drop-shadow-[0px_1px_1.5px_rgba(0,0,0,0.06),0px_0px_0px_rgba(0,0,0,0.1)] flex items-center justify-center relative rounded-[999px] shrink-0 size-[28px]" data-node-id="79:1725" data-name="New chat">
+          <div className="relative shrink-0 size-[15px]" data-node-id="I79:1725;79:1571" data-name="icon/panel-left">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconSquarePen} />
+          </div>
+        </div>
+        <div className="bg-[var(--dt-line,#e4e6e5)] h-[18px] relative shrink-0 w-px" data-node-id="79:1738" data-name="Separator" />
+        <SplitButton className="bg-[var(--dt-accent,#3478f6)] content-stretch flex h-[28px] items-center overflow-clip relative rounded-[14px] shrink-0" />
+        <div className="bg-[var(--dt-ground,white)] content-stretch drop-shadow-[0px_1px_1.5px_rgba(0,0,0,0.06),0px_0px_0px_rgba(0,0,0,0.1)] flex items-center justify-center relative rounded-[999px] shrink-0 size-[28px]" data-node-id="79:1749" data-name="More">
+          <div className="relative shrink-0 size-[15px]" data-node-id="I79:1749;79:1571" data-name="icon/panel-left">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconMore} />
+          </div>
+        </div>
+      </div>
+      <div className="content-stretch flex flex-[1_0_0] items-start min-h-px overflow-clip relative w-full" data-node-id="79:1756" data-name="Body">
+        <div className="bg-[#e0e0e0] content-stretch flex flex-[1_0_0] flex-col gap-[10px] h-full items-center justify-center min-w-px overflow-clip relative" data-node-id="79:1757" data-name="View · loading">
+          <div className="relative shrink-0 size-[22px]" data-node-id="79:1758" data-name="Spinner">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgSpinner} />
+          </div>
+          <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[16px] relative shrink-0 text-[#474747] text-[12px] whitespace-nowrap" data-node-id="79:1761" style={{ fontVariationSettings: '"wdth" 100' }}>
+            Opening Board…
+          </p>
+          <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] relative shrink-0 text-[#6e6e73] text-[12px] whitespace-nowrap" data-node-id="79:1762" style={{ fontVariationSettings: '"wdth" 100' }}>
+            Getting the latest from tonk-team
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+SUPER CRITICAL: The generated React+Tailwind code MUST be converted to match the target project's technology stack and styling system.
+1. Analyze the target codebase to identify: technology stack, styling approach, component patterns, and design tokens
+2. Convert React syntax to the target framework/library
+3. Transform all Tailwind classes to the target styling system while preserving exact visual design
+4. Follow the project's existing patterns and conventions
+DO NOT install any Tailwind as a dependency unless the user instructs you to do so.
+
+
+Node ids have been added to the code as data attributes, e.g. `data-node-id="1:2"`.
+
+These styles are contained in the design: Title: Font(family: "SF Pro", style: Semibold, size: 15, weight: 590, lineHeight: 20, letterSpacing: -0.20000000298023224), Body/Medium: Font(family: "SF Pro", style: Medium, size: 13, weight: 510, lineHeight: 18, letterSpacing: -0.07999999821186066), Small/Medium: Font(family: "SF Pro", style: Medium, size: 12, weight: 510, lineHeight: 16, letterSpacing: 0), Small: Font(family: "SF Pro", style: Regular, size: 12, weight: 400, lineHeight: 16, letterSpacing: 0), Window: Effect(type: DROP_SHADOW, color: #00000047, offset: (0, 0), radius: 0, spread: 0.5); Effect(type: DROP_SHADOW, color: #00000047, offset: (0, 30), radius: 70, spread: 0); Effect(type: DROP_SHADOW, color: #0000001F, offset: (0, 8), radius: 20, spread: 0).
+
+Component descriptions: The following components have usage descriptions or documentation links defined in Figma. These descriptions provide important context about the intended usage, best practices, and any constraints for each component. Follow these guidelines when implementing or using these components.
+
+## Toolbar button
+**Node ID:** 79:1570
+
+Round toolbar button, 28px, as in the build (sidebar/chat toggle, New chat, History, More). Icon is an instance swap; re-tint it text/primary after swapping.
+
+## Sync circle
+**Node ID:** 60:971
+
+A space's sync state, the FABB's circle. It sits in front of the space name on the space page. Synced = filled, Paused = half-filled, Offline = ring, Alert = blinks on an ink wash (2.4s). Hover or click opens the sync status; hold 0.5s pauses or resumes (offline ignores the hold).
+
+## Split button
+**Node ID:** 53:34
+
+The space page’s share control. The main half copies the default link (anyone with it can read and write; it never expires) and confirms with Copied for 1.5s. The arrow opens the same shape downward (Expanded): Invite and Publish, each opening a dialog with its settings. The open shape is one flat colour: no pressed or hover shading.
+
+The generated code contains image and SVG URL constants, e.g. const image = 'https://www.figma.com/api/mcp/asset/550e8400-e29b-41d4-a716-446655440000.png'. These URLs are temporary download sources and expire after 7 days. Download each asset into the project with curl -L, then replace its URL in the generated code with a reference to the downloaded asset. Never use the temporary URLs as runtime image sources.

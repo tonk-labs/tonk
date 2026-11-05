@@ -580,6 +580,12 @@ mod when_recording_roster_facts {
         let parsed = Invite::parse_url(&invite_outcome.url).await?;
         let expected =
             Invitation::from_chain(&parsed.chain).expect("invite chains have a specific subject");
+        let inviter_did = tonk_cli::site::member_did(&inviter.site).await?;
+        assert_eq!(
+            tonk_invite::inviter(&parsed.chain)?,
+            Some(inviter_did.clone())
+        );
+        assert_eq!(expected.inviter.0, inviter_did.this());
 
         // Inviter side: invitation recorded at mint.
         let inviter_meta = inviter
@@ -1386,9 +1392,15 @@ mod when_a_device_has_no_account {
             panic!("a device with no account cannot create a space");
         };
         let rendered = format!("{error:#}");
+        // No CLI command links an account, and `tonk join` installs scoped
+        // credentials rather than one, so the refusal must say the CLI cannot
+        // fix it and offer joining only for an existing space.
         assert!(
-            rendered.contains("tonk account login"),
-            "the refusal must name the command that fixes it: {rendered}"
+            rendered.contains("cannot link an account")
+                && rendered.contains("existing space")
+                && rendered.contains("tonk join <URL>")
+                && !rendered.contains("tonk account login"),
+            "the refusal must be honest about what fixes it: {rendered}"
         );
         Ok(())
     }

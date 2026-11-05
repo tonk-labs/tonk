@@ -63,7 +63,10 @@ extension HarnessModel {
     else { return }
     let previous = saved.activeSessionID
     newConversation()
-    if saved.activeSessionID != previous { showingChat = true }
+    if saved.activeSessionID != previous {
+      showingChat = true
+      Telemetry.shared.record(.workspace, .startChat, surface: .workspace)
+    }
   }
 
   func openSpaceChat(_ space: TonkSpace, connectInBackground: Bool = false) async -> Bool {

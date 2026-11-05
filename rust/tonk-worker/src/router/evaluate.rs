@@ -175,7 +175,10 @@ pub async fn evaluate(
         // (its own per-branch locks) and never mutates `TonkState`, so shared access
         // suffices — same as `query`/`transact`/`sync`. The committing path serializes
         // on the branch transactor itself (see `evaluate_on_branch`).
-        let tonk_state = state.read().await;
+        // A clone rather than the guard itself: mounting a space on first use
+        // can pull it over the network, and no guard is held across that.
+        let tonk_state = state.read().await.clone();
+        super::adopt::mount_on_first_use(&tonk_state, &state, &path.repo).await;
         let tonk_branch = tonk_state
             .reactor
             .repository(&path.repo)
@@ -768,12 +771,20 @@ async fn evaluate_on_branch_with<'a>(
         let eval_ms = t_eval.elapsed().as_millis();
         // Post-evaluation matches: the txn's overlay already reflects every
         // mutation and induce-pass derivation, so this is the same answer a
-        // post-commit branch query would give.
+        // post-commit branch query would give. A document the dry-run arm
+        // below answers commits nothing, and answers its matches before
+        // for after, so they are not computed a second time.
         let t_matches = web_time::Instant::now();
-        let matches_after = evaluated
-            .matches_after(&tonk_state.operator)
-            .await
-            .map_err(map_evaluate_error)?;
+        let answered_as_read = mode == EvaluationMode::Interactive
+            && !(query.transact && evaluated.analysis.analysis.has_statements());
+        let matches_after = if answered_as_read {
+            Vec::new()
+        } else {
+            evaluated
+                .matches_after(&tonk_state.operator)
+                .await
+                .map_err(map_evaluate_error)?
+        };
         let matches_ms = t_matches.elapsed().as_millis();
         Ok::<_, TonkWorkerError>((
             evaluated,

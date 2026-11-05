@@ -118,12 +118,6 @@
     navigate:function(href){
       ready.then(function(){port.postMessage({v:1,type:"navigate",href:href});});
     },
-    // Reload the HOST page after a whole-profile state swap. Unlike navigate,
-    // this is meaningful when the route itself has not changed: every portal
-    // and subscription owned by the previous profile must be rebuilt.
-    reload:function(){
-      ready.then(function(){port.postMessage({v:1,type:"reload"});});
-    },
     // Retitle the HOST page's tab: the opaque guest can't touch
     // parent.document.title. `<tab-title>` posts its text here and the
     // parent performs the real assignment. Fire-and-forget (no response).
@@ -410,18 +404,31 @@
   // chrome, but focus is usually inside a sealed frame like this one, whose
   // keys never reach the parent document. Forward it; the portal re-dispatches
   // it from its own element, so it bubbles through the parent as if pressed
-  // there. Only a chord nothing here handled (an editor binding Ctrl+K keeps
-  // it), and only a trusted one: the re-dispatched event is untrusted, so a
+  // there. Only a trusted chord: the re-dispatched event is untrusted, so a
   // chord climbs at most one frame per press.
-  document.addEventListener("keydown",function(event){
-    if(!event.isTrusted||event.defaultPrevented) return;
-    if(!(event.metaKey||event.ctrlKey)) return;
+  //
+  // Only a chord nothing here handled: an app that binds Ctrl+K itself (an
+  // editor, a launcher) keeps it by calling preventDefault or stopping it.
+  // That has to be decided after the app's own listeners ran, and this
+  // script runs before the app's, so the capture phase only arms a check that
+  // goes last: a window listener added during dispatch is the final one the
+  // event meets on its way back up.
+  var isChord=function(event){
+    if(!(event.metaKey||event.ctrlKey)) return false;
     var key=(event.key||"").toLowerCase();
-    if(!(key==="k"||(event.shiftKey&&key==="p"))) return;
-    event.preventDefault();
-    ready.then(function(){port.postMessage({v:1,type:"key",key:event.key,
-      ctrlKey:event.ctrlKey,metaKey:event.metaKey,shiftKey:event.shiftKey,altKey:event.altKey});});
-  });
+    return key==="k"||(event.shiftKey&&key==="p");
+  };
+  window.addEventListener("keydown",function(event){
+    if(!event.isTrusted||event.defaultPrevented||!isChord(event)) return;
+    window.addEventListener("keydown",function(late){
+      // A listener that stopped the chord never lets this run for it; the
+      // next key that comes by just retires it.
+      if(late!==event||late.defaultPrevented) return;
+      late.preventDefault();
+      ready.then(function(){port.postMessage({v:1,type:"key",key:late.key,
+        ctrlKey:late.ctrlKey,metaKey:late.metaKey,shiftKey:late.shiftKey,altKey:late.altKey});});
+    },{once:true});
+  },true);
 
   // What the page has selected, reported on the tab's site as it settles
   // (`site/select`), so rules and the command palette can use it: "rename"

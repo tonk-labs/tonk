@@ -23,6 +23,22 @@ final class RuntimeInspectionTests: XCTestCase {
     }
   }
 
+  func testDesktopShellFlagIsAvailableBeforePageScriptsOnEveryPage() async throws {
+    let runtime = RuntimeModel()
+    for webView in [runtime.webView, runtime.makePage().webView] {
+      webView.navigationDelegate = nil
+      webView.loadHTMLString(
+        "<script>window.shellAtBoot = window.__tonkShell;</script>", baseURL: nil)
+      for _ in 0..<100 {
+        if !webView.isLoading { break }
+        try await Task.sleep(for: .milliseconds(20))
+      }
+      let shell = try await webView.callAsyncJavaScript(
+        "return window.shellAtBoot;", arguments: [:], in: nil, contentWorld: .page)
+      XCTAssertEqual(shell as? String, "desktop")
+    }
+  }
+
   func testInspectionRequiresCatalogMembershipAndMatchingOpenPreview() async throws {
     let space = try XCTUnwrap(
       TonkSpace.decodeCatalog(

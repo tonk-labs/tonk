@@ -4,6 +4,22 @@ import Foundation
 public enum RuntimeLocation {
   public static let preferenceKey = "tonkRemote"
 
+  /// The build channel stamped into Info.plist; it decides the default remote.
+  public enum Channel: String, Sendable {
+    case stable, nightly
+
+    public static let current =
+      (Bundle.main.object(forInfoDictionaryKey: "TonkChannel") as? String)
+      .flatMap(Channel.init(rawValue:)) ?? .stable
+
+    public var defaultRemote: Deployment {
+      switch self {
+      case .stable: .production
+      case .nightly: .custom(URL(string: "https://tonk.foundation")!)
+      }
+    }
+  }
+
   public enum Deployment: Equatable, Sendable {
     case production, local
     case custom(URL)
@@ -75,15 +91,20 @@ public enum RuntimeLocation {
     return .custom(url)
   }
 
-  public static func resolve(arguments: [String], defaults: UserDefaults) -> Deployment {
+  public static func resolve(
+    arguments: [String], defaults: UserDefaults, channel: Channel = .current
+  ) -> Deployment {
     if arguments.contains("--local-runtime") { return .local }
-    return (try? remote(defaults.string(forKey: preferenceKey) ?? "tonk.network")) ?? .production
+    guard let saved = defaults.string(forKey: preferenceKey) else { return channel.defaultRemote }
+    return (try? remote(saved)) ?? channel.defaultRemote
   }
 
   // Freeze the selection until relaunch so runtime, CLI, and persisted chats use one remote.
   public static let deployment = resolve(
     arguments: ProcessInfo.processInfo.arguments, defaults: .standard)
   public static var home: URL { deployment.home }
+  /// Whether this launch uses the remote its channel ships for, rather than an override.
+  public static var isChannelHome: Bool { deployment == Channel.current.defaultRemote }
   public static func isEmbedded(_ url: URL, deployment: Deployment = deployment) -> Bool {
     url.scheme == deployment.home.scheme && url.host == deployment.host
       && (url.port ?? (url.scheme == "https" ? 443 : 80))

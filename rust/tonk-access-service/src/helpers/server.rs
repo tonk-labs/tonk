@@ -61,6 +61,9 @@ pub struct AccessServer {
     pub service_did: String,
     /// The hex seed the service identity and the permit key derive from.
     pub service_seed: String,
+    /// The revocation index `/ucan/revoke` writes and the authorizer
+    /// reads.
+    revocations: Arc<crate::revocation::index::MemoryRevocationIndex>,
     shutdown_tx: tokio::sync::oneshot::Sender<()>,
     server_handle: tokio::task::JoinHandle<()>,
 }
@@ -90,8 +93,8 @@ struct RegistrationState {
     /// Signs the permits `/ucan/` answers with and verifies them at
     /// `/object/`, derived from `service_seed` as the worker derives it.
     permit_key: PermitKey,
-    /// Where those permits are redeemed: this server's own address.
-    /// Not `origin`, which is the page origin a dev proxy fronts, and
+    /// Where those permits are redeemed: this server's own address, or
+    /// the address its clients reach it at when that differs. Not `origin`, which is the page origin a dev proxy fronts, and
     /// which does not forward `/object/`.
     endpoint: String,
     /// The backing S3 store `/object/` performs against, with the
@@ -156,6 +159,35 @@ impl AccessServer {
         deployment: Option<tonk_worker_api::DeploymentConfig>,
         public_origin: Option<String>,
         state_dir: Option<&std::path::Path>,
+    ) -> anyhow::Result<Self> {
+        Self::start_behind(
+            s3_server,
+            bucket,
+            access_key,
+            secret_key,
+            deployment,
+            public_origin,
+            state_dir,
+            None,
+        )
+        .await
+    }
+
+    /// [`start`](Self::start) a service its clients reach at
+    /// `public_endpoint` rather than at its own address, such as through
+    /// a shaped link (`tonk_perf::link`): the object permits it issues
+    /// name that address, so a client's block reads and writes cross the
+    /// same path as its redeems.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_behind(
+        s3_server: LocalS3,
+        bucket: &str,
+        access_key: &str,
+        secret_key: &str,
+        deployment: Option<tonk_worker_api::DeploymentConfig>,
+        public_origin: Option<String>,
+        state_dir: Option<&std::path::Path>,
+        public_endpoint: Option<String>,
     ) -> anyhow::Result<Self> {
         // Create S3 credentials for the authorizer
         let address = Address::builder(&s3_server.endpoint)
@@ -233,10 +265,12 @@ impl AccessServer {
             // dev proxy is not this server's own address.
             origin: public_origin.unwrap_or_else(|| endpoint.clone()),
             purger,
-            revocations,
+            revocations: revocations.clone(),
             authorizer: authorizer.clone(),
             permit_key,
-            endpoint: endpoint.clone(),
+            endpoint: public_endpoint
+                .map(|public| public.trim_end_matches('/').to_string())
+                .unwrap_or_else(|| endpoint.clone()),
             objects,
             live,
         });
@@ -282,6 +316,7 @@ impl AccessServer {
             emails,
             service_did,
             service_seed,
+            revocations,
             shutdown_tx,
             server_handle,
         })
@@ -307,6 +342,102 @@ fn request_host(req: &Request<Incoming>) -> String {
                 .map(ToString::to_string)
         })
         .unwrap_or_default()
+}
+
+/// Fetches client metadata documents over the network, as the worker
+/// does, redirects unfollowed.
+struct FetchedDocuments;
+
+#[async_trait]
+impl crate::oauth::client::Documents for FetchedDocuments {
+    async fn fetch(&self, url: &url::Url) -> Result<Vec<u8>, String> {
+        use crate::oauth::client::MAX_DOCUMENT;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let response = client
+            .get(url.as_str())
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(format!("answered {}", response.status()));
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length as usize > MAX_DOCUMENT)
+        {
+            return Err(format!("the document is over {MAX_DOCUMENT} bytes"));
+        }
+        Ok(response.bytes().await.map_err(|e| e.to_string())?.to_vec())
+    }
+}
+
+/// The OAuth authorization server, as the worker serves it, under the
+/// configured public origin: the one clients are told about.
+async fn serve_oauth(
+    req: Request<Incoming>,
+    endpoint: crate::oauth::Endpoint,
+    registration: &RegistrationState,
+) -> Response<http_body_util::Full<bytes::Bytes>> {
+    use crate::oauth::{AuthorizationServer, MAX_BODY, Request as OAuthRequest};
+    use http_body_util::{BodyExt, Full};
+
+    let header = |name: hyper::header::HeaderName| {
+        req.headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    let content_type = header(CONTENT_TYPE);
+    let origin = header(hyper::header::ORIGIN);
+    let cookie = header(hyper::header::COOKIE);
+    let method = req.method().as_str().to_owned();
+    let query = req.uri().query().map(str::to_owned);
+    if header(hyper::header::CONTENT_LENGTH)
+        .and_then(|length| length.parse::<u64>().ok())
+        .is_some_and(|length| length > MAX_BODY as u64)
+    {
+        return too_large_response(MAX_BODY as u64);
+    }
+    let body = match http_body_util::Limited::new(req.into_body(), MAX_BODY)
+        .collect()
+        .await
+    {
+        Ok(collected) => collected.to_bytes(),
+        Err(_) => return too_large_response(MAX_BODY as u64),
+    };
+    let key = crate::oauth::client::ClientKey::derive(&registration.service_seed)
+        .expect("the service seed was validated at start");
+    let answer = AuthorizationServer {
+        store: &registration.store,
+        documents: &FetchedDocuments,
+        key: &key,
+        origin: registration.origin.trim_end_matches('/'),
+        now: unix_now(),
+    }
+    .handle(
+        &endpoint,
+        &OAuthRequest {
+            method: &method,
+            query: query.as_deref(),
+            content_type: content_type.as_deref(),
+            origin: origin.as_deref(),
+            cookie: cookie.as_deref(),
+            body: &body,
+        },
+    )
+    .await;
+    let mut response = Response::builder().status(answer.status);
+    for (name, value) in answer.headers {
+        response = response.header(name, value);
+    }
+    response
+        .body(Full::new(bytes::Bytes::from(answer.body)))
+        .expect("an OAuth answer is a valid response")
 }
 
 /// The largest `/ucan/` body the harness accepts, matching the worker's default.
@@ -444,6 +575,8 @@ async fn serve_claim(
 /// - GET /.well-known/did.json → The service's own DID document
 /// - GET /customer/{domain}/{local}/did.json → The DID document for an
 ///   email address
+/// - `/.well-known/oauth-*`, `/register`, `/authorize`, `/token` → The
+///   OAuth authorization server
 /// - OPTIONS → CORS preflight
 async fn handle_request(
     req: Request<Incoming>,
@@ -474,6 +607,10 @@ async fn handle_request(
     // A space's socket, at the endpoint itself, as the worker keeps it.
     if req.method() == Method::GET && req.uri().path() == "/ucan/" && live::is_upgrade(&req) {
         return Ok(live::upgrade(req, registration));
+    }
+
+    if let Some(endpoint) = crate::oauth::Endpoint::of(req.uri().path()) {
+        return Ok(serve_oauth(req, endpoint, &registration).await);
     }
 
     if req.method() == Method::GET && req.uri().path() == "/.well-known/tonk" {
@@ -869,20 +1006,23 @@ async fn handle_request(
     // Revocation writes to the index rather than reading it, so it is
     // answered before the presign path, mirroring the worker.
     if crate::revoke::is_revocation(&body_bytes) {
-        let response = match crate::revoke::revoke(
+        let response = match crate::revoke::record(
             &registration.store,
             &registration.revocations,
             &body_bytes,
         )
         .await
         {
-            Ok(receipt) => Response::builder()
-                .status(StatusCode::OK)
-                .header(CONTENT_TYPE, "application/json")
-                .body(Full::new(Bytes::from(
-                    serde_json::to_vec(&receipt).expect("revoke receipt serializes"),
-                )))
-                .unwrap(),
+            Ok(crate::revoke::Revoked { receipt, space }) => {
+                registration.live.revoked(&space);
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Full::new(Bytes::from(
+                        serde_json::to_vec(&receipt).expect("revoke receipt serializes"),
+                    )))
+                    .unwrap()
+            }
             Err(error) => Response::builder()
                 .status(error.status())
                 .header(CONTENT_TYPE, "application/json")
@@ -893,6 +1033,35 @@ async fn handle_request(
                 .unwrap(),
         };
         return Ok(cors_response(response));
+    }
+    if crate::invitation::is_invitation(&body_bytes) {
+        let revocations =
+            crate::revocation::checker::IndexedRevocations(registration.revocations.clone());
+        let invitation = crate::invitation::InvitationService {
+            store: &registration.store,
+            email: registration.emails.as_ref(),
+            service: &registration.service,
+            service_seed: &registration.service_seed,
+            origin: &registration.origin,
+            now: unix_now(),
+            revocations: &revocations,
+        };
+        let (status, value) = match invitation.handle(&body_bytes).await {
+            Ok(value) => (200, value),
+            Err(error) => (
+                error.status(),
+                serde_json::json!({"error":error.to_string()}),
+            ),
+        };
+        return Ok(cors_response(
+            Response::builder()
+                .status(status)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&value).expect("invitation JSON"),
+                )))
+                .unwrap(),
+        ));
     }
     if registration_command(&body_bytes).is_some() {
         let env = Registration {
@@ -1692,6 +1861,13 @@ pub struct AccessServiceSettings {
     /// every synced block — and the delegations retained in account
     /// repositories with them.
     pub state_dir: Option<std::path::PathBuf>,
+    /// Record revocations without their signed documents, as the service
+    /// did before it kept them, so refusals carry no evidence.
+    pub drop_revocation_documents: bool,
+    /// The address clients reach this service at, when it is not the
+    /// service's own: object permits name it. A harness that puts a
+    /// shaped link in front of the service sets it to the link's.
+    pub public_endpoint: Option<String>,
 }
 
 impl Default for AccessServiceSettings {
@@ -1703,6 +1879,8 @@ impl Default for AccessServiceSettings {
             deployment: None,
             public_origin: None,
             state_dir: None,
+            drop_revocation_documents: false,
+            public_endpoint: None,
         }
     }
 }
@@ -1947,7 +2125,7 @@ pub async fn access_service(
     }
 
     // Start the UCAN access service
-    let access_server = AccessServer::start(
+    let access_server = AccessServer::start_behind(
         s3_server,
         bucket,
         &settings.access_key_id,
@@ -1955,8 +2133,12 @@ pub async fn access_service(
         settings.deployment,
         settings.public_origin,
         settings.state_dir.as_deref(),
+        settings.public_endpoint,
     )
     .await?;
+    if settings.drop_revocation_documents {
+        access_server.revocations.forget_documents();
+    }
 
     let address = AccessServiceAddress {
         access_service_url: access_server.endpoint.clone(),

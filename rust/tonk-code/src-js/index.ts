@@ -85,30 +85,9 @@
 // Theming runs through `--tonk-code-*` CSS custom properties so
 // the element stays decoupled from any consumer's design system.
 
-import { EditorState, Compartment, type Extension } from "@codemirror/state";
-import {
-  EditorView,
-  keymap,
-  lineNumbers,
-  highlightActiveLine,
-  highlightActiveLineGutter,
-  placeholder as placeholderExt,
-} from "@codemirror/view";
-import {
-  defaultKeymap,
-  history,
-  historyKeymap,
-  indentWithTab,
-} from "@codemirror/commands";
-import { acceptCompletion, completionKeymap } from "@codemirror/autocomplete";
-import {
-  bracketMatching,
-  indentOnInput,
-  syntaxHighlighting,
-  HighlightStyle,
-} from "@codemirror/language";
+import type { Extension } from "@codemirror/state";
+import type { EditorView } from "@codemirror/view";
 import { forEachDiagnostic, setDiagnosticsEffect } from "@codemirror/lint";
-import { tags as t } from "@lezer/highlight";
 import type { LSPClient } from "@codemirror/lsp-client";
 // Side-effect import: registers the `<tonk-diagnostics-provider>`
 // custom element alongside `<tonk-code>` so a single `<script>`
@@ -120,6 +99,9 @@ import { pushDiagnosticsAnnotation } from "./diagnostics-provider";
 // chunk id. Statically bundled — small string table, no fetch — so
 // resolving a `language` attribute to a chunk needs no round-trip.
 import { LANGUAGE_CHUNKS } from "./lang/chunks.generated";
+// The editor itself (state, view, theme, compartments), shared with the
+// library's `<code-editor>`.
+import { createEditor, SHADOW_STYLESHEET, type Editor } from "./editor";
 
 /** Detail object dispatched on the `change` event. */
 export type ChangeDetail = {
@@ -337,239 +319,6 @@ async function loadLanguage(language: string): Promise<Extension> {
   return pending;
 }
 
-/** Theme applied inside the editor's own DOM.
- *
- *  Every visual choice is routed through a `--tonk-code-*` CSS
- *  variable. The element ships GitHub-flavored defaults for those
- *  variables (see the per-shadow stylesheet in the constructor) that
- *  adapt to `prefers-color-scheme`. Consumers wire the element into
- *  their own design system by overriding the variables on the host:
- *
- *      tonk-code {
- *        --tonk-code-bg: var(--wa-color-surface-default);
- *        --tonk-code-key: var(--wa-color-brand-on-quiet);
- *      }
- *
- *  The element does not reach into any consumer's tokens itself. */
-const baseTheme = EditorView.theme({
-  "&": {
-    fontFamily: "var(--tonk-code-font)",
-    fontSize: "var(--tonk-code-font-size)",
-    lineHeight: "1.5",
-    backgroundColor: "transparent",
-    color: "var(--tonk-code-fg)",
-    height: "100%",
-  },
-  ".cm-scroller": {
-    fontFamily: "inherit",
-  },
-  ".cm-content": {
-    caretColor: "var(--tonk-code-cursor)",
-    padding: "0.5rem 0",
-  },
-  ".cm-gutters": {
-    backgroundColor: "var(--tonk-code-gutter-bg)",
-    color: "var(--tonk-code-fg-muted)",
-    borderRight: "1px solid var(--tonk-code-border)",
-    paddingRight: "0.25rem",
-    userSelect: "none",
-  },
-  ".cm-activeLine": {
-    backgroundColor: "var(--tonk-code-active-line)",
-  },
-  ".cm-activeLineGutter": {
-    backgroundColor: "transparent",
-    color: "var(--tonk-code-fg)",
-  },
-  ".cm-cursor, .cm-dropCursor": {
-    borderLeft: "2px solid var(--tonk-code-cursor)",
-  },
-  ".cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-content ::selection":
-    {
-      backgroundColor: "var(--tonk-code-selection)",
-    },
-  ".cm-placeholder": {
-    color: "var(--tonk-code-fg-muted)",
-    fontStyle: "italic",
-    // Preserve newlines so multi-line ghost text (e.g. a small
-    // example showing the document shape) renders as multiple
-    // visual lines. CodeMirror's placeholder extension just sets
-    // the string as `textContent` of one `<span>` — without this
-    // the browser collapses every newline to a single space.
-    whiteSpace: "pre-wrap",
-  },
-  ".cm-matchingBracket, .cm-nonmatchingBracket": {
-    backgroundColor: "var(--tonk-code-bracket-match-bg)",
-    outline: "1px solid var(--tonk-code-bracket-match-border)",
-  },
-  "&.cm-focused": { outline: "none" },
-
-  // Lint / diagnostic tooltips. CodeMirror's base lint theme bakes
-  // a light surface (`#f5f5f5`) into the tooltip, which renders
-  // the message unreadable on dark host colors. Re-route every
-  // tooltip surface through `--tonk-code-*` so it tracks the
-  // editor's theme.
-  ".cm-tooltip": {
-    backgroundColor: "var(--tonk-code-tooltip-bg)",
-    color: "var(--tonk-code-tooltip-fg)",
-    border: "1px solid var(--tonk-code-tooltip-border)",
-    borderRadius: "var(--tonk-code-radius)",
-    boxShadow: "0 2px 8px rgba(0, 0, 0, 0.18)",
-  },
-  ".cm-tooltip-section": {
-    borderBottomColor: "var(--tonk-code-tooltip-border)",
-  },
-  ".cm-tooltip-lint": {
-    padding: "0",
-    margin: "0",
-  },
-  ".cm-diagnostic": {
-    padding: "0.35rem 0.6rem",
-    color: "var(--tonk-code-tooltip-fg)",
-    // Severity is conveyed by the left border color; override
-    // each variant to use the matching syntax-role token. The
-    // editor's wavy underline already shows severity in the
-    // gutter so the bar can be subtle.
-    borderLeft: "3px solid transparent",
-  },
-  ".cm-diagnostic-error": {
-    borderLeftColor: "var(--tonk-code-error)",
-  },
-  ".cm-diagnostic-warning": {
-    borderLeftColor: "var(--tonk-code-number)",
-  },
-  ".cm-diagnostic-info": {
-    borderLeftColor: "var(--tonk-code-key)",
-  },
-  ".cm-diagnostic-hint": {
-    borderLeftColor: "var(--tonk-code-comment)",
-  },
-  ".cm-diagnosticText": {
-    color: "var(--tonk-code-tooltip-fg)",
-  },
-  // Wavy underlines for inline lint markers. CM's default
-  // background-image SVG uses `stroke="currentColor"`, but
-  // `currentColor` doesn't propagate into a `data:` SVG (it
-  // resolves to the SVG document root, not the consumer
-  // element). Replacing the painter with `text-decoration:
-  // underline wavy <color>` lets the browser pick the actual
-  // CSS color directly. The `text-decoration-skip-ink: none`
-  // keeps the wave visible under descenders. Backgrounds get
-  // cleared so they don't double up with the underline.
-  ".cm-lintRange-error": {
-    backgroundImage: "none",
-    textDecoration: "underline wavy var(--tonk-code-error)",
-    textDecorationSkipInk: "none",
-  },
-  ".cm-lintRange-warning": {
-    backgroundImage: "none",
-    textDecoration: "underline wavy var(--tonk-code-number)",
-    textDecorationSkipInk: "none",
-  },
-  ".cm-lintRange-info": {
-    backgroundImage: "none",
-    textDecoration: "underline wavy var(--tonk-code-key)",
-    textDecorationSkipInk: "none",
-  },
-  ".cm-lintRange-hint": {
-    backgroundImage: "none",
-    textDecoration: "underline dotted var(--tonk-code-comment)",
-    textDecorationSkipInk: "none",
-  },
-});
-
-/** Syntax highlight palette. Each tag bundle maps to one
- *  `--tonk-code-{role}` variable; the defaults follow GitHub's
- *  light/dark code palette and adapt to `prefers-color-scheme`. */
-const highlightStyle = HighlightStyle.define([
-  {
-    tag: [t.atom, t.propertyName, t.tagName, t.keyword],
-    color: "var(--tonk-code-key)",
-    fontWeight: "600",
-  },
-  {
-    tag: [t.string, t.special(t.string)],
-    color: "var(--tonk-code-string)",
-  },
-  {
-    tag: [t.number, t.bool, t.null],
-    color: "var(--tonk-code-number)",
-  },
-  {
-    tag: [t.comment, t.lineComment, t.blockComment, t.meta],
-    color: "var(--tonk-code-comment)",
-    fontStyle: "italic",
-  },
-  {
-    tag: [t.operator, t.punctuation, t.separator],
-    color: "var(--tonk-code-punctuation)",
-  },
-  {
-    tag: [t.invalid],
-    color: "var(--tonk-code-error)",
-    textDecoration: "underline wavy",
-  },
-]);
-
-/** Stable extensions present in every editor regardless of
- *  language. Anything *toggleable* (language pack, read-only,
- *  placeholder, gutter, active-line) lives in a `Compartment`
- *  instead — see the per-instance setup in `connectedCallback`. */
-function baseExtensions(): Extension[] {
-  return [
-    history(),
-    bracketMatching(),
-    indentOnInput(),
-    syntaxHighlighting(highlightStyle, { fallback: true }),
-    // Tab accepts the active autocompletion popup (LSP-driven via
-    // `@codemirror/lsp-client`). `acceptCompletion` returns false
-    // when no completion is open, so the binding falls through to
-    // `indentWithTab` and Tab still indents.
-    //
-    // `completionKeymap` is what makes the popup navigable at all:
-    // ArrowUp/Down and Ctrl-n/p move the selection, Enter accepts,
-    // Escape closes. Without it those keys fall through to
-    // `defaultKeymap` and move the CURSOR instead — the popup stays
-    // open showing a selection you cannot change, and Enter splits the
-    // line under it. Every one of its bindings no-ops when no
-    // completion is open, so ordinary editing is untouched.
-    //
-    // BEFORE `defaultKeymap`, since keymaps run in order and whichever
-    // claims the key first wins.
-    keymap.of([
-      { key: "Tab", run: acceptCompletion },
-      ...completionKeymap,
-      ...defaultKeymap,
-      ...historyKeymap,
-      indentWithTab,
-    ]),
-    baseTheme,
-  ];
-}
-
-/** Line-number gutter. */
-function gutterExtensions(): Extension[] {
-  return [lineNumbers()];
-}
-
-/** Active-line highlight (both the line and its gutter row). The
- *  two are paired so the row decoration is consistent across the
- *  text and the gutter when both are enabled. */
-function activeLineExtensions(): Extension[] {
-  return [highlightActiveLine(), highlightActiveLineGutter()];
-}
-
-/** Build the read-only stack. `EditorState.readOnly` alone leaves
- *  the caret visible and the user can still navigate with arrow
- *  keys; pairing it with `EditorView.editable.of(false)` strips
- *  the contenteditable affordance entirely so sealed cells render
- *  as plain text (no caret, no insertion point on click). Text
- *  selection still works for copy. */
-function readOnlyExtensions(readOnly: boolean): Extension[] {
-  if (!readOnly) return [];
-  return [EditorState.readOnly.of(true), EditorView.editable.of(false)];
-}
-
 class TonkCodeElement extends HTMLElement {
   static get observedAttributes(): readonly string[] {
     return OBSERVED;
@@ -596,7 +345,11 @@ class TonkCodeElement extends HTMLElement {
   /** Created lazily in `connectedCallback` so disconnected hosts
    *  (e.g. constructed but not yet inserted) don't pay for a full
    *  view boot. */
-  #view: EditorView | null = null;
+  #editor: Editor | null = null;
+
+  get #view(): EditorView | null {
+    return this.#editor?.view ?? null;
+  }
 
   constructor() {
     super();
@@ -610,26 +363,14 @@ class TonkCodeElement extends HTMLElement {
     this.#shadow.append(shadowStyle);
   }
 
-  /** Compartments let us swap a single extension (language pack,
-   *  read-only flag, placeholder, gutter, active-line, lsp
-   *  plugin) at runtime without rebuilding the entire state. One
-   *  per swappable concern. */
-  readonly #language = new Compartment();
-  readonly #readOnly = new Compartment();
-  readonly #placeholder = new Compartment();
-  readonly #gutter = new Compartment();
-  readonly #activeLine = new Compartment();
-  readonly #lsp = new Compartment();
-
   /** Active LSP client supplied by an ancestor
    *  `<tonk-diagnostics-provider>` via `connect()`. The element
    *  itself never builds or owns a client — diagnostics, hover,
    *  completion etc. require a provider in scope. */
   #lspClient: LSPClient | null = null;
-
-  /** Suppress the `change` event during programmatic `.value`
-   *  writes so consumers don't see their own writes echoed back. */
-  #suppressChange = false;
+  /** The `source` and language the attached client's plugin opened, so a
+   *  repeat `connect` for the same attachment is a no-op. */
+  #lspAttachment: string | null = null;
 
   /** Fire the `run` CustomEvent. Called from the
    *  Shift+Enter / Mod+Enter keymap. Returns nothing — the
@@ -734,116 +475,66 @@ class TonkCodeElement extends HTMLElement {
     this.#teardownScheduled = false;
     if (this.#view) return;
 
-    const initialDoc = this.getAttribute("value") ?? "";
+    // The keystroke `run` fires on is consumed inside the core, with
+    // `preventDefault` as well: when `<tonk-code>` sits inside a
+    // `<form>`, some browsers can still bubble the key up to the form's
+    // implicit submit before CodeMirror's own handler runs.
+    this.#editor = createEditor(this.#shadow, {
+      doc: this.getAttribute("value") ?? "",
+      readOnly: this.hasAttribute("readonly"),
+      placeholder: this.getAttribute("placeholder") ?? "",
+      lineNumbers: this.hasAttribute("line-numbers"),
+      activeLine: this.hasAttribute("active-line"),
+      onRun: () => this.#dispatchRun(),
+      onChange: (update) => {
+        this.dispatchEvent(
+          new CustomEvent<ChangeDetail>("change", {
+            detail: {
+              value: update.state.doc.toString(),
+              doc: update.state.doc,
+            },
+            bubbles: true,
+            composed: true,
+          }),
+        );
+      },
+      onUpdate: (update) => {
+        // Fire `diagnostics` only when a fresh server frame
+        // lands — a transaction carrying `setDiagnosticsEffect`
+        // from `@codemirror/lsp-client`'s `publishDiagnostics`
+        // handler. The client drops mismatched-version frames
+        // per LSP spec, so every fresh frame provably reflects
+        // a buffer version the server actually analyzed. The
+        // user's intervening keystrokes haven't been seen by
+        // the server yet (they're in `client.unsyncedChanges`,
+        // waiting for the next `autoSync` flush) — the next
+        // server roundtrip will produce a new frame, and we'll
+        // fire `diagnostics` again then.
+        //
+        // Doc-edit updates (no diagnostic effect, just CodeMirror
+        // remapping diagnostic ranges through the change) carry
+        // the *previous* verdict on the *new* buffer — that's
+        // staleness, so we don't fire on them.
+        //
+        // `<tonk-diagnostics-provider>`'s `tonk-push-diagnostics`
+        // path *also* dispatches `setDiagnosticsEffect` (via
+        // `@codemirror/lint`'s `setDiagnostics`) — those are our
+        // own writes, not server frames. The provider tags those
+        // transactions with `pushDiagnosticsAnnotation`; skip
+        // them, otherwise the clear-on-success a consumer issues
+        // after auto-evaluating would be misread as a fresh
+        // frame and loop the auto-evaluate.
+        const freshFrame = update.transactions.some(
+          (tr) =>
+            tr.annotation(pushDiagnosticsAnnotation) === undefined &&
+            tr.effects.some((e) => e.is(setDiagnosticsEffect)),
+        );
+        if (freshFrame) {
+          this.#dispatchDiagnostics();
+        }
+      },
+    });
     const isReadOnly = this.hasAttribute("readonly");
-    const placeholderText = this.getAttribute("placeholder") ?? "";
-    const showLineNumbers = this.hasAttribute("line-numbers");
-    const showActiveLine = this.hasAttribute("active-line");
-
-    // Submit keymap: Shift+Enter and Mod+Enter both fire the
-    // `run` CustomEvent and consume the key (returning `true`
-    // tells CodeMirror's keymap dispatcher to stop) so the
-    // editor doesn't *also* insert a newline.
-    //
-    // Belt-and-braces `preventDefault` on the `keydown` itself:
-    // when `<tonk-code>` sits inside a `<form>`, some browsers
-    // can still bubble the key event up to the form's implicit
-    // submit handler before CodeMirror's own preventDefault
-    // runs — manifesting as a page-top scroll on Shift+Enter.
-    // Catching keydown at the host's bubble phase (after CM's
-    // capture-phase handler) lets us swallow it before the
-    // form's submit logic kicks in.
-    const submitKeymap = keymap.of([
-      {
-        key: "Shift-Enter",
-        run: () => {
-          this.#dispatchRun();
-          return true;
-        },
-        preventDefault: true,
-        stopPropagation: true,
-      },
-      {
-        key: "Mod-Enter",
-        run: () => {
-          this.#dispatchRun();
-          return true;
-        },
-        preventDefault: true,
-        stopPropagation: true,
-      },
-    ]);
-
-    const state = EditorState.create({
-      doc: initialDoc,
-      extensions: [
-        // Submit keymap first so it wins against `defaultKeymap`'s
-        // Enter binding (which `splitLine`s).
-        submitKeymap,
-        ...baseExtensions(),
-        this.#language.of([]),
-        this.#readOnly.of(readOnlyExtensions(isReadOnly)),
-        this.#placeholder.of(
-          placeholderText ? placeholderExt(placeholderText) : []
-        ),
-        this.#gutter.of(showLineNumbers ? gutterExtensions() : []),
-        this.#activeLine.of(showActiveLine ? activeLineExtensions() : []),
-        this.#lsp.of([]),
-        EditorView.updateListener.of((update) => {
-          if (update.docChanged && !this.#suppressChange) {
-            this.dispatchEvent(
-              new CustomEvent<ChangeDetail>("change", {
-                detail: {
-                  value: update.state.doc.toString(),
-                  doc: update.state.doc,
-                },
-                bubbles: true,
-                composed: true,
-              }),
-            );
-          }
-          // Fire `diagnostics` only when a fresh server frame
-          // lands — a transaction carrying `setDiagnosticsEffect`
-          // from `@codemirror/lsp-client`'s `publishDiagnostics`
-          // handler. The client drops mismatched-version frames
-          // per LSP spec, so every fresh frame provably reflects
-          // a buffer version the server actually analyzed. The
-          // user's intervening keystrokes haven't been seen by
-          // the server yet (they're in `client.unsyncedChanges`,
-          // waiting for the next `autoSync` flush) — the next
-          // server roundtrip will produce a new frame, and we'll
-          // fire `diagnostics` again then.
-          //
-          // Doc-edit updates (no diagnostic effect, just CodeMirror
-          // remapping diagnostic ranges through the change) carry
-          // the *previous* verdict on the *new* buffer — that's
-          // staleness, so we don't fire on them.
-          //
-          // `<tonk-diagnostics-provider>`'s `tonk-push-diagnostics`
-          // path *also* dispatches `setDiagnosticsEffect` (via
-          // `@codemirror/lint`'s `setDiagnostics`) — those are our
-          // own writes, not server frames. The provider tags those
-          // transactions with `pushDiagnosticsAnnotation`; skip
-          // them, otherwise the clear-on-success a consumer issues
-          // after auto-evaluating would be misread as a fresh
-          // frame and loop the auto-evaluate.
-          const freshFrame = update.transactions.some(
-            (tr) =>
-              tr.annotation(pushDiagnosticsAnnotation) === undefined &&
-              tr.effects.some((e) => e.is(setDiagnosticsEffect)),
-          );
-          if (freshFrame) {
-            this.#dispatchDiagnostics();
-          }
-        }),
-      ],
-    });
-
-    this.#view = new EditorView({
-      state,
-      root: this.#shadow,
-      parent: this.#shadow,
-    });
 
     // Bridge host focus → contenteditable focus. With
     // `delegatesFocus: true`, focusing the host normally
@@ -859,7 +550,7 @@ class TonkCodeElement extends HTMLElement {
     // plugin reconfigure later in the same `connectedCallback`
     // run) — the next time anything re-focuses the host, we end
     // up in the right place.
-    const view = this.#view;
+    const view = this.#editor.view;
     this.addEventListener("focus", () => view.focus());
 
     // Apply language pack after construction so the failure path
@@ -889,7 +580,7 @@ class TonkCodeElement extends HTMLElement {
 
     this.dispatchEvent(
       new CustomEvent<ReadyDetail>("ready", {
-        detail: { view: this.#view },
+        detail: { view: this.#editor.view },
         bubbles: true,
         composed: true,
       })
@@ -906,7 +597,7 @@ class TonkCodeElement extends HTMLElement {
     // our focus call lands, so the contenteditable focus
     // doesn't get clobbered by a sibling's reconfigure.
     if (!isReadOnly && this.hasAttribute("auto-focus")) {
-      const view = this.#view;
+      const view = this.#editor.view;
       setTimeout(() => view.focus(), 0);
     }
   }
@@ -926,8 +617,8 @@ class TonkCodeElement extends HTMLElement {
       // flips back to `true` if Leptos re-inserted us.
       if (this.isConnected) return;
       this.#announceDisconnect();
-      this.#view?.destroy();
-      this.#view = null;
+      this.#editor?.destroy();
+      this.#editor = null;
     }, 0);
   }
 
@@ -936,7 +627,8 @@ class TonkCodeElement extends HTMLElement {
     _old: string | null,
     next: string | null
   ): void {
-    if (!this.#view) return;
+    const editor = this.#editor;
+    if (!editor) return;
     switch (name) {
       case "value":
         // Reflect attribute -> property only when they diverge,
@@ -958,33 +650,19 @@ class TonkCodeElement extends HTMLElement {
         }
         break;
       case "readonly":
-        this.#view.dispatch({
-          effects: this.#readOnly.reconfigure(readOnlyExtensions(next !== null)),
-        });
+        editor.setReadOnly(next !== null);
         break;
       case "placeholder":
-        this.#view.dispatch({
-          effects: this.#placeholder.reconfigure(
-            next ? placeholderExt(next) : []
-          ),
-        });
+        editor.setPlaceholder(next ?? "");
         break;
       case "line-numbers":
         // Boolean attribute: presence (`next !== null`) toggles the
         // gutter on. Default is off so the element looks like a
         // form-field by default; full-page editors opt in.
-        this.#view.dispatch({
-          effects: this.#gutter.reconfigure(
-            next !== null ? gutterExtensions() : []
-          ),
-        });
+        editor.setLineNumbers(next !== null);
         break;
       case "active-line":
-        this.#view.dispatch({
-          effects: this.#activeLine.reconfigure(
-            next !== null ? activeLineExtensions() : []
-          ),
-        });
+        editor.setActiveLine(next !== null);
         break;
       case "source":
         // The document's identity changed — tear down the
@@ -1055,15 +733,25 @@ class TonkCodeElement extends HTMLElement {
    *  reconfigures the extension. Calling with a different client
    *  swaps the attachment.  */
   connect(client: LSPClient): void {
-    if (!this.#view) return;
+    const editor = this.#editor;
+    if (!editor) return;
     const source = this.getAttribute("source");
     if (!source) return;
+    const attachment = `${source}\n${this.#lspLanguageId()}`;
+    // A second announcement of the same attachment (the `source`
+    // attribute landing, then an explicit re-announce) must not build a
+    // second plugin: the new one opens the file before the old one has
+    // closed it, the workspace refuses two views on one file, and the
+    // crashed plugin takes diagnostics (and everything that waits on
+    // them) down with it.
+    if (client === this.#lspClient && attachment === this.#lspAttachment) return;
+    if (this.#lspClient) {
+      // Close the old file first, for the same reason.
+      editor.setLsp([]);
+    }
     this.#lspClient = client;
-    this.#view.dispatch({
-      effects: this.#lsp.reconfigure(
-        client.plugin(source, this.#lspLanguageId()),
-      ),
-    });
+    this.#lspAttachment = attachment;
+    editor.setLsp(client.plugin(source, this.#lspLanguageId()));
   }
 
   /** Detach the LSP integration. The provider calls this in
@@ -1072,11 +760,8 @@ class TonkCodeElement extends HTMLElement {
    *  destroy the client — that's the provider's lifecycle. */
   disconnect(): void {
     this.#lspClient = null;
-    if (this.#view) {
-      this.#view.dispatch({
-        effects: this.#lsp.reconfigure([]),
-      });
-    }
+    this.#lspAttachment = null;
+    this.#editor?.setLsp([]);
   }
 
   /** Current document text. */
@@ -1093,27 +778,14 @@ class TonkCodeElement extends HTMLElement {
       }
       return;
     }
-    if (next === this.#view.state.doc.toString()) return;
-    this.#suppressChange = true;
-    try {
-      this.#view.dispatch({
-        changes: {
-          from: 0,
-          to: this.#view.state.doc.length,
-          insert: next,
-        },
-      });
-    } finally {
-      this.#suppressChange = false;
-    }
+    // Patches only the span that differs, so the caret stays put.
+    this.#editor!.setValue(next);
   }
 
   async #applyLanguage(language: string | null): Promise<void> {
     this.#pendingLanguage = language;
     if (!language) {
-      this.#view?.dispatch({
-        effects: this.#language.reconfigure([]),
-      });
+      this.#editor?.setLanguage([]);
       return;
     }
     try {
@@ -1122,9 +794,7 @@ class TonkCodeElement extends HTMLElement {
       // we were loading; the second `applyLanguage` call will
       // install the right pack.
       if (this.#pendingLanguage !== language) return;
-      this.#view?.dispatch({
-        effects: this.#language.reconfigure(extension),
-      });
+      this.#editor?.setLanguage(extension);
     } catch (err) {
       // Surface but don't throw — a missing language chunk shouldn't
       // crash the host. Editor stays without highlighting.
@@ -1135,136 +805,6 @@ class TonkCodeElement extends HTMLElement {
     }
   }
 }
-
-/** The complete per-shadow stylesheet.
- *
- *  Defines two layers of variables on `:host`:
- *
- *  1. **GitHub-flavored color defaults** — one block for light, one
- *     overriding block under `@media (prefers-color-scheme: dark)`.
- *     The values are GitHub's official primer-css palette
- *     (`--color-prettylights-syntax-*`) condensed to the seven roles
- *     the highlight style needs.
- *
- *  2. **Host appearance defaults** — frame, radius, font, sizing.
- *     Also expressed as variables so consumers can override the
- *     whole field's look without touching the highlight palette.
- *
- *  Consumers theme the element by setting any of these variables on
- *  the host:
- *
- *      tonk-code {
- *        --tonk-code-bg: var(--wa-color-surface-default);
- *        --tonk-code-key: var(--wa-color-brand-on-quiet);
- *      }
- *
- *  The element imports nothing from the consumer's design system;
- *  the variables are the contract. */
-const SHADOW_STYLESHEET = `
-  :host {
-    /* Host frame + sizing */
-    --tonk-code-font: ui-monospace, SFMono-Regular, Menlo, Consolas,
-                      "Liberation Mono", monospace;
-    --tonk-code-font-size: 0.875rem;
-    --tonk-code-radius: 6px;
-    /* 'auto' lets the host size to the editor's content. The
-       editor's own min-height comes from CodeMirror's line layout
-       (one line plus content padding). Consumers that want a
-       fixed-size field can set min-height on the host directly. */
-    --tonk-code-min-height: auto;
-
-    /* Surfaces & text — GitHub light defaults */
-    --tonk-code-bg: #ffffff;
-    --tonk-code-fg: #1f2328;
-    --tonk-code-fg-muted: #59636e;
-    --tonk-code-border: #d1d9e0;
-    --tonk-code-active-line: #f6f8fa;
-    --tonk-code-gutter-bg: #f6f8fa;
-    --tonk-code-cursor: #0969da;
-    --tonk-code-selection: #0969da33;
-    --tonk-code-bracket-match-bg: #0969da26;
-    --tonk-code-bracket-match-border: #0969da66;
-    --tonk-code-focus-ring: #0969da66;
-
-    /* Lint / hover tooltip surfaces. Default to a slightly
-       raised neutral so the tooltip reads as a separate UI
-       layer from the editor body. */
-    --tonk-code-tooltip-bg: #ffffff;
-    --tonk-code-tooltip-fg: #1f2328;
-    --tonk-code-tooltip-border: #d1d9e0;
-
-    /* Syntax — GitHub light primer values */
-    --tonk-code-key: #cf222e;            /* keyword red */
-    --tonk-code-string: #0a3069;         /* string blue */
-    --tonk-code-number: #0550ae;         /* constant blue */
-    --tonk-code-comment: #59636e;        /* comment grey */
-    --tonk-code-punctuation: #1f2328;    /* foreground */
-    --tonk-code-error: #cf222e;          /* error red */
-
-    /* Dialect decorations (used by dialog-yaml and similar
-       dialect packs). Defaults reuse adjacent slot colors so the
-       dialect tokens always read in-palette without the consumer
-       setting them explicitly. */
-    --tonk-code-variable: var(--tonk-code-fg-muted);
-    --tonk-code-entity: var(--tonk-code-fg-muted);
-    --tonk-code-name: var(--tonk-code-key);
-    --tonk-code-name-sigil: var(--tonk-code-fg-muted);
-    --tonk-code-effect: var(--tonk-code-error);
-    --tonk-code-keyword: var(--tonk-code-key);
-
-    display: block;
-    position: relative;
-    box-sizing: border-box;
-    min-height: var(--tonk-code-min-height);
-    background: var(--tonk-code-bg);
-    color: var(--tonk-code-fg);
-    border: 1px solid var(--tonk-code-border);
-    border-radius: var(--tonk-code-radius);
-    overflow: hidden;
-    transition: border-color 120ms ease, box-shadow 120ms ease;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    :host {
-      /* GitHub dark defaults */
-      --tonk-code-bg: #0d1117;
-      --tonk-code-fg: #f0f6fc;
-      --tonk-code-fg-muted: #9198a1;
-      --tonk-code-border: #3d444d;
-      --tonk-code-active-line: #151b23;
-      --tonk-code-gutter-bg: #0d1117;
-      --tonk-code-cursor: #1f6feb;
-      --tonk-code-selection: #1f6feb59;
-      --tonk-code-bracket-match-bg: #1f6feb33;
-      --tonk-code-bracket-match-border: #1f6feb99;
-      --tonk-code-focus-ring: #1f6feb99;
-
-      --tonk-code-tooltip-bg: #151b23;
-      --tonk-code-tooltip-fg: #f0f6fc;
-      --tonk-code-tooltip-border: #3d444d;
-
-      --tonk-code-key: #ff7b72;          /* GitHub dark keyword */
-      --tonk-code-string: #a5d6ff;       /* string light-blue */
-      --tonk-code-number: #79c0ff;       /* constant blue */
-      --tonk-code-comment: #9198a1;
-      --tonk-code-punctuation: #f0f6fc;
-      --tonk-code-error: #ff7b72;
-    }
-  }
-
-  :host([hidden]) { display: none; }
-
-  /* No focus ring on the host. A cell takes focus whenever the caret
-     enters it, and a blue border plus a 2px halo reads as a form field
-     being validated rather than as a cursor. The editor already carries
-     its own caret, and the notebook's block highlight says which block
-     you are in; a third signal on top of those is noise. */
-  :host(:focus-within) {
-    border-color: var(--tonk-code-border);
-  }
-
-  .cm-editor { height: 100%; }
-`;
 
 if (!customElements.get("tonk-code")) {
   customElements.define("tonk-code", TonkCodeElement);

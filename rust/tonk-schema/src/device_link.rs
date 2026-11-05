@@ -8,11 +8,13 @@
 use dialog_artifacts::{ArtifactSelector, Entity, Preload, Speculation, Value};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
+use dialog_effects::blob::Load as BlobLoad;
 use dialog_effects::memory::Resolve;
 use dialog_query::{Concept, EvaluationError, Output as _, Query, Term};
-use dialog_repository::{Branch, DELEGATION_AUDIENCE, Hydrate, RemoteSite};
+use dialog_repository::{Branch, DELEGATION_AUDIENCE, RemoteSite};
 use futures_util::StreamExt as _;
 
 use crate::domain::device::{CreatedAt, Reason, Title};
@@ -91,7 +93,8 @@ where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<BlobLoad>
         + Provider<Preload>
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
@@ -126,7 +129,11 @@ where
 /// `dialog.ucan/audience` is written onto the delegation's own entity
 /// when the chain is retained, so this reads the device's identity from
 /// the same record that carries its label — no second source to drift.
-async fn delegation_audience<Env>(account: &Branch, entity: &Entity, env: &Env) -> Option<String>
+pub(crate) async fn delegation_audience<Env>(
+    account: &Branch,
+    entity: &Entity,
+    env: &Env,
+) -> Option<String>
 where
     Env: dialog_common::Holds
         + Provider<Get>
@@ -134,7 +141,8 @@ where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<BlobLoad>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync

@@ -107,7 +107,7 @@ final class AnimatedSidebarTests: XCTestCase {
     controller.view.layoutSubtreeIfNeeded()
     XCTAssertEqual(settled, [true])
     XCTAssertFalse(controller.splitViewItems[0].isCollapsed)
-    XCTAssertGreaterThanOrEqual(controller.sidebarHost.view.frame.width, 340)
+    XCTAssertGreaterThanOrEqual(controller.sidebarHost.view.frame.width, 300)
     XCTAssertGreaterThanOrEqual(controller.detailHost.view.frame.width, 380)
     controller.setSidebarVisible(false, animated: true)
     controller.setSidebarVisible(true, animated: true)

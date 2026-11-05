@@ -40,6 +40,7 @@ tonk-invite = { workspace = true }
 tonk-worker-api = { workspace = true }
 
 # Cryptography
+aes-gcm = { workspace = true }
 blake3 = { workspace = true }
 bs58 = { workspace = true }
 ed25519-dalek = { workspace = true }
@@ -107,6 +108,12 @@ tonk-account = { workspace = true }
 # through wasm-bindgen, whose expansion names it.
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# A shaped link to put in front of the service, for the test that its
+# permits name the address clients reach it at.
+tonk-perf = { path = "../tonk-perf", default-features = false }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rusqlite = { workspace = true, optional = true }

@@ -30,9 +30,9 @@ use dialog_artifacts::{
     ATTRIBUTE_KEY_TAG, Artifact, BLOB_KEY_TAG, COVERAGE_KEY_TAG, Datum, DialogArtifactsError,
     ENTITY_KEY_TAG, Entity, HISTORY_KEY_TAG, Key, VALUE_KEY_TAG, Value,
 };
+use dialog_effects::archive::Load;
 use dialog_query::Term;
-use dialog_repository::{Branch, ConnectedReplica, LocalIndex, NetworkedIndex, Upstream};
-use dialog_search_tree::LoadBlock;
+use dialog_repository::Branch;
 use dialog_storage::Blake3Hash;
 use ipld_core::ipld::Ipld;
 use thiserror::Error;
@@ -165,37 +165,25 @@ fn root_hash(branch: &Branch) -> Option<Blake3Hash> {
     (hash != [0u8; 32]).then_some(hash)
 }
 
-/// Read one node's raw bytes, falling back to the remote when the block is
-/// not cached locally — so expanding a not-yet-fetched node transparently
-/// pulls it (and caches it) the same way a normal lazy expansion does.
+/// Read one node's raw bytes. A block the replica lacks hydrates through
+/// the env from where the branch's repository's blocks live (the remotes
+/// its open branches track), so expanding a not-yet-fetched node pulls it
+/// (and caches it) the same way a normal lazy expansion does.
 async fn read_node<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
     hash: Blake3Hash,
 ) -> Result<Vec<u8>, FormulaError> {
-    let index = NetworkedIndex::new(env, branch.archive().index(), remote(branch));
-    LoadBlock::new(hash.into())
-        .perform(&index)
+    Load::new(branch.archive().index(), hash)
+        .perform(env)
         .await
         .map_err(|e| FormulaError::Read(e.to_string()))?
         .map(|block| block.as_ref().to_vec())
         .ok_or_else(|| FormulaError::Read(format!("node {} not found", to_base58(&hash))))
 }
 
-/// The branch's upstream at a peer, if it tracks one, so a networked read
-/// can fall back to it. Mirrors dialog-repository's `Select::perform`.
-fn remote(branch: &Branch) -> Option<ConnectedReplica> {
-    branch
-        .upstreams()
-        .iter()
-        .find_map(|upstream| match upstream {
-            Upstream::Remote { remote, .. } => Some(remote.clone()),
-            _ => None,
-        })
-}
-
-/// Read a node's bytes from the *local* archive only (no remote fallback),
-/// returning `None` when the block is not cached. This is what the dot's
+/// Read a node's bytes from the *local* archive only (a load made local
+/// never hydrates), returning `None` when the block is not cached. This is what the dot's
 /// locality reflects (a local hit is cached, a miss would have to be fetched)
 /// and lets `tree/child` list a not-cached child from the parent's link
 /// without pulling it — the pull happens only when that child is expanded.
@@ -204,9 +192,9 @@ async fn read_local<Env: SelectProvider>(
     env: &Env,
     hash: Blake3Hash,
 ) -> Result<Option<Vec<u8>>, FormulaError> {
-    let index = LocalIndex::new(env, branch.archive().index());
-    Ok(LoadBlock::new(hash.into())
-        .perform(&index)
+    Ok(Load::new(branch.archive().index(), hash)
+        .locally()
+        .perform(env)
         .await
         .map_err(|e| FormulaError::Read(e.to_string()))?
         .map(|block| block.as_ref().to_vec()))

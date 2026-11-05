@@ -157,7 +157,13 @@ pub(crate) async fn follow_signed_in_account(state: &TonkState) -> Result<(), To
         return Ok(());
     }
     let root = local_root(state).await?;
-    reconcile_root_delegation(state, &root.delegation).await?;
+    // A repair, not a precondition. Its commit can need a tree node only
+    // the account remote holds, and a refused fetch failed the whole boot:
+    // the worker then served nothing, sign-out included. The next boot
+    // tries again.
+    if let Err(error) = reconcile_root_delegation(state, &root.delegation).await {
+        tonk_common::log!("boot kept its device grants as they were: {error}");
+    }
     if state.profile.authority().await.ok().as_ref() == Some(&root.root_did) {
         return Ok(());
     }
@@ -456,7 +462,6 @@ mod tests {
     use dialog_credentials::Ed25519Signer;
     use dialog_varsig::Principal;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
 
     use crate::router::tests::{test_state, test_state_without_account, test_state_without_root};
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -483,14 +488,14 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_reports_a_missing_local_root() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let Json(result) = get(State(state)).await.unwrap();
         assert!(matches!(result, RootStatus::Missing { .. }));
     }
 
     #[dialog_common::test]
     async fn it_persists_and_reloads_a_local_root() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let device = state.read().await.profile.did();
         let (request, grant) = request_for(1, &device).await;
 
@@ -502,7 +507,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_preserves_passkey_creation_metadata_with_the_local_root() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let device = state.read().await.profile.did();
         let (request, _) = request_for(1, &device).await;
         let mut request = serde_json::to_value(request).unwrap();
@@ -527,7 +532,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_keeps_the_encryption_key_with_the_local_root() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let device = state.read().await.profile.did();
         let recipient = recipient_did(1);
         let (mut request, _) = request_for(1, &device).await;
@@ -556,7 +561,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_an_encryption_key_that_is_not_x25519() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let device = state.read().await.profile.did();
         let (mut request, grant) = request_for(1, &device).await;
         request.encryption_key = Some(grant.issuer().to_string());
@@ -568,7 +573,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_a_grant_for_another_device() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let other = Ed25519Signer::import(&[9u8; 32]).await.unwrap().did();
         let (request, _) = request_for(1, &other).await;
 
@@ -580,7 +585,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_replacing_a_ready_root_with_another_root() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let device = state.read().await.profile.did();
         let (second, _) = request_for(2, &device).await;
 
@@ -595,7 +600,7 @@ mod tests {
     /// following nothing.
     #[dialog_common::test]
     async fn it_rejects_a_different_root_while_the_branch_follows_an_account() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let previous_root = {
             let state = state.read().await;
             local_root(&state).await.unwrap().root_did
@@ -622,7 +627,7 @@ mod tests {
     /// account's root is taken.
     #[dialog_common::test]
     async fn it_accepts_a_different_root_after_signing_out() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let device = state.read().await.profile.did();
         let (replacement, grant) = request_for(2, &device).await;
 
@@ -643,7 +648,7 @@ mod tests {
     /// wedging the profile.
     #[dialog_common::test]
     async fn it_replaces_a_dangling_root_when_no_attachment_was_ever_made() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_account().await));
         let device = state.read().await.profile.did();
         let (replacement, _) = request_for(2, &device).await;
         let replacement_credential = replacement.credential_id.clone();
@@ -662,7 +667,7 @@ mod tests {
     /// tightening the different-root path must not break re-sign-in.
     #[dialog_common::test]
     async fn it_accepts_the_same_root_again_after_signing_out() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let (device, profile_name) = {
             let state = state.read().await;
             (state.profile.did(), state.profile_name.clone())
@@ -731,7 +736,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_accepts_an_idempotent_repeat_of_the_same_record() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let device = state.read().await.profile.did();
         let (request, _) = request_for(1, &device).await;
 

@@ -32,44 +32,46 @@
           -++    .+%=*::+.*-    ##*@+--#@@@+.....=:.==. *-*+%  +%+-
 ```
 
-Tonk is a data substrate: a software environment as easy to change as it is to use. Where stacks are rigid and vertically integrated, substrates are malleable and horizontally connected. You modify software in the context of its use, not through a separate process. In a substrate, software truly becomes yours.
+Tonk is a system for co-computing over live data in a programmable environment. It allows for the provisioning and syncing of **space** which is a data store that people and programs read and write through links with object capabilities attached. Each client that opens the
+link keeps a local copy of the space and syncs its changes with the other copies. A space contains its data, the schemas that describe the data, views (web pages that show and edit the data), rules, and a signed history of all changes.
 
-Substrates are essential when LLMs make code generation abundant and personal software becomes practical. We won't get there by speeding up the same engineering-heavy processes of traditional software practice. We need a new surface; one interoperable and owned by the person running it. Tonk is that surface.
+## System Components
 
-## Dialog DB: The Foundation
+[ARCHITECTURE.md](ARCHITECTURE.md) describes six different system components,
+its technical basis, and the crates that implement it.
 
-At the core of Tonk is [Dialog DB](https://github.com/dialog-db/dialog-db), an embeddable, local-first database. Dialog stores everything as claims — semantic triples of (entity, attribute, value). Claims are never deleted, only superseded or retracted. This append-only, content-addressed design makes it straightforward to sync data across devices and collaborators without conflicts.
+## Typical uses
 
-The primary interface is claims themselves — assert data, query it, retract it. On top of that, you can optionally define:
+- State machines for programmable agentic automations, views can be used for human operators to interact
+- These state machines can become templates and then quickly run with pluggable credentials, for on-demand, situated automations.
+- Cost-efficient, agent-first internal team tools.
+- Low-friction distribution of software that serves small groups of people.
+- Multi-agent coordination control and messaging plane
+- Edge-device or remote applications that must work offline and sync later.
 
-- **Concepts** to group related claims into queryable structures. Define a `Person` with a name, location, and photo. Then create a `ClubMember` concept that reuses name and photo but leaves out location — multiple views over the same data.
-- **Rules** to derive new concepts from existing claims. "A `FamilyMember` is any `Person` whose last name matches another and who shares the same home location."
-
-Add new rules, concepts, or extend existing ones as your needs evolve. No migrations required.
-
-Check out the [Dialog DB repository](https://github.com/dialog-db/dialog-db) to learn more about how it works under the hood.
+For background, see
+[Defining the common primitive](https://tonk.xyz/updates/defining-the-common-primitive).
 
 ## Download Tonk Desktop
 
-For macOS 15+ on Apple Silicon. Unzip the download and move **Tonk.app** to
-**Applications**.
+For macOS 15+ on Apple Silicon. Unzip the download and move **Tonk Nightly.app**
+to **Applications**.
 
 | Channel | Download | Published from |
 | --- | --- | --- |
-| Stable | [Download for Mac](https://github.com/tonk-labs/tonk/releases/latest/download/Tonk-macos-arm64.zip) | Final `vX.Y.Z` tags |
-| Staging / RC | [Download for Mac](https://github.com/tonk-labs/tonk/releases/download/tonk-staging/Tonk-macos-arm64.zip) | Prerelease `vX.Y.Z-rc.N` tags |
-| Dev / main | [Download for Mac](https://github.com/tonk-labs/tonk/releases/download/tonk-desktop-dev/Tonk-macos-arm64.zip) | Latest successfully published `main` build |
+| Nightly | [Download for Mac](https://github.com/tonk-labs/tonk/releases/download/tonk-desktop-dev/Tonk-macos-arm64.zip) | Latest successfully published `main` build |
 
-All channels are Developer ID signed and notarized. Each release includes
-`Tonk-macos-arm64.sha256` and `Tonk-desktop-manifest.json` with the exact version
-and source commit. Links become available after the first successful release
-for each channel. Downloads are manual; all channels use the same app identity
-and local data, so installing another channel replaces the installed app.
-These are build channels; all currently use the production Tonk service.
+Nightly is its own app, **Tonk Nightly** (`xyz.tonk.nightly`), and uses
+`tonk.foundation` by default. The stable app, **Tonk** (`xyz.tonk`), uses
+`tonk.network`; it is not published until Desktop ships to production. The two
+have separate identities and local data, so they can be installed side by side.
+Builds are Developer ID signed and notarized, and include
+`Tonk-macos-arm64.sha256` and `Tonk-desktop-manifest.json` with the exact
+version, channel and source commit. Downloads are manual.
 
 ## The `tonk` CLI
 
-`tonk` is a local-first command-line companion for reading and writing Tonk data without a browser. It operates on a *space* — a named Dialog repository in a central registry. `tonk space use <name>` binds the current directory to a space without copying data there; `--space` and `TONK_SPACE` override that binding for one invocation or process. The CLI speaks the same asserted-notation as the rest of the substrate: you assert claims, query them, and define concepts and rules with `tonk eval`, plus read-only introspection (`tonk schema`, `tonk concept ls`, `tonk view ls`) and a built-in notation reference (`tonk guide`).
+`tonk` is a local-first command-line companion for reading and writing Tonk data without a browser. It operates on a *space* — a named Dialog repository in a central registry. `tonk space use <name>` binds the current directory to a space without copying data there; `--space` and `TONK_SPACE` override that binding for one invocation or process. The CLI speaks the same asserted-notation as the rest of Tonk: you assert claims, query them, and define concepts and rules with `tonk eval`, plus read-only introspection (`tonk show`, `tonk concept`, `tonk view`) and built-in guides (`tonk help -g`, e.g. `tonk help notation`).
 
 ### Install
 
@@ -133,43 +135,48 @@ curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh
 ```sh
 tonk space new garden      # register a space and select it
 tonk eval -c 'person:'     # run a notation document (inline, file, or piped)
-tonk schema                # every named attribute + concept on the branch
-tonk guide                 # built-in asserted-notation reference
+tonk show                  # the schema: concepts and their fields
+tonk help notation         # built-in asserted-notation reference
 ```
+
+## Agents
+
+An agent can use Tonk through the `tonk` CLI (start with `tonk help agent`
+and `tonk help tutorial`) or through an MCP connection. For the data model and
+the code layout, read [ARCHITECTURE.md](ARCHITECTURE.md). The MCP contracts are
+in [`mcp/AGENT-LINKS.md`](mcp/AGENT-LINKS.md), and the Claude Code plugin is
+in [`plugins/tonk`](plugins/tonk).
 
 # What's in This Repo
 
-This is a Rust workspace where we are implementing our early experimentations on the Tonk substrate.
+This repository contains the Tonk Rust workspace (sync and storage, the web
+app, the CLI and the agent connections) and the macOS desktop app.
 
 > ⚠️ This repo is heavily in flux, and not meant to be friendly for public access or contributions. If you would like to try it, the [`tonk` CLI](#the-tonk-cli) is the easiest entry point.
 
-### Rust Crates
+The crates and their roles are listed in
+[ARCHITECTURE.md](ARCHITECTURE.md#crate-map).
 
-| Crate                   | Purpose                                                                                             |
-| ----------------------- | --------------------------------------------------------------------------------------------------- |
-| **tonk-space**          | Core space primitives: operators, delegation, ownership, storage                                    |
-| **tonk-common**         | Cross-platform utilities (logging, etc.)                                                            |
-| **tonk-blobs**          | Content-addressed blob storage (filesystem + IndexedDB)                                             |
-| **tonk-access-service** | Cloudflare Worker that authorizes S3/R2 access via UCAN                                             |
-| **tonk-ui**             | Leptos-based web frontend                                                                           |
-| **tonk-worker**         | Browser service worker (WASM) for offline web support                                               |
-| **tonk-core**           | Core library (in progress)                                                                          |
+## Developer setup
 
-# Adjacent Projects
+The toolchain comes from the Nix flake. Run commands inside its shell:
 
-Tonk is pluralist by design and built to work alongside other protocols building on open technology. We think that is the best way to accomplish our mission. Here are some projects that are adjacent to us and think you should check out.
+```sh
+nix develop . -c dev:web          # web app with a local access service
+nix develop . -c test:native:debug
+nix develop . -c test:web:debug   # browser (wasm) tests, see docs/wasm-testing.md
+nix develop . -c lint
+nix develop . -c dev:desktop      # build and open Tonk Desktop
+```
 
-- [Ink and Switch](https://www.inkandswitch.com/)
-- [Automerge](https://automerge.org/)
-- [Common Tools](https://common.tools/)
-- [Iroh](https://www.iroh.computer/)
-
-If you are a friend or adjacent project and would like to be listed here, please reach out!
+`nix develop` with no command opens the shell and lists every command.
+Without Nix, see [`docs/wasm-tests-without-nix.md`](docs/wasm-tests-without-nix.md).
 
 # Resources
 
 - [Website](https://tonk.xyz)
-- [Roadmap](https://tonk.xyz/roadmap)
+- [Updates](https://tonk.xyz/updates)
+- [For agents: llms.txt](https://tonk.xyz/llms.txt)
 - [Discord](https://discord.com/invite/hBPQ9xPWF7)
 
 ## License

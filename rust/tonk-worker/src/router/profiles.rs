@@ -45,7 +45,7 @@ pub(crate) enum AccountProfileDisposition {
 /// Profile changes queue behind this guard until all local account writes have
 /// completed.
 pub(crate) struct AccountProfileGuard {
-    tonk: tokio::sync::OwnedRwLockReadGuard<TonkState>,
+    tonk: crate::state_lock::OwnedReadGuard<TonkState>,
     disposition: AccountProfileDisposition,
     signed_out: Option<String>,
 }
@@ -454,23 +454,39 @@ async fn add_profile(
 /// Sign out: withdraw this device's grant, forget the provider, and move
 /// to a branch that follows nothing.
 ///
-/// The grant goes first, while the operator still holds it and can push
-/// the retraction. The account branch itself is kept, spaces and all:
+/// The grant is withdrawn around the provider being cleared (see
+/// [`Withdrawal`](super::account_devices::Withdrawal)), and before the
+/// branch is left. The account branch itself is kept, spaces and all:
 /// signing back in returns to it.
 pub(crate) async fn sign_out(
     state: &AppState,
     source: Option<&super::ClientId>,
 ) -> Result<tonk_worker_api::AccountStatus, TonkWorkerError> {
+    let mut timing = super::link_timing::LinkTiming::new("sign-out", "transition-lock");
     let transition = {
         let tonk = state.read().await;
         Arc::clone(&tonk.profile_transition)
     };
     let _transition = transition.lock().await;
 
+    timing.next("state-lock");
     let (status, storage, name, profile, registry, profile_library) = {
-        let tonk = state.read().await;
-        super::account_devices::withdraw_own_authority(&tonk).await;
-        let status = super::account::disconnect(&tonk).await?;
+        let tonk = state.read().await.clone();
+        // Clearing the provider writes into the account branch, so it
+        // lands between the two halves of the withdrawal, while the
+        // chain still proves this device may read what it writes into.
+        timing.next("begin-withdrawal");
+        let withdrawal = super::account_devices::begin_withdrawal(&tonk).await;
+        timing.next("disconnect");
+        let disconnected = super::account::disconnect(&tonk).await;
+        timing.next("finish-withdrawal");
+        super::account_devices::finish_withdrawal(&tonk, withdrawal).await;
+        disconnected?;
+        // Read once the withdrawal has forgotten the root, so the status
+        // reports the grant gone.
+        timing.next("status");
+        let status = super::account::status(&tonk).await?;
+        timing.next("leave-account");
         super::profile::leave_account(&tonk).await;
         (
             status,
@@ -481,6 +497,7 @@ pub(crate) async fn sign_out(
             tonk.profile_library.clone(),
         )
     };
+    timing.next("boot-state");
     let new_state = crate::worker::boot_state_with_profile_library(
         storage,
         name,
@@ -489,6 +506,7 @@ pub(crate) async fn sign_out(
         profile_library,
     )
     .await?;
+    timing.next("promote");
     promote(state, new_state, source).await?;
     Ok(status)
 }
@@ -584,19 +602,21 @@ async fn promote(
     // that identity across the replacement instead of installing a fresh
     // false latch. A swap that finishes after retirement began also closes
     // its never-exposed reactor before publishing it.
-    let (retiring, profile_transition, context_generation, clients) = {
+    let (retiring, profile_transition, context_generation, clients, profile_swaps) = {
         let current = state.read().await;
         (
             Arc::clone(&current.retiring),
             Arc::clone(&current.profile_transition),
             Arc::clone(&current.context_generation),
             Arc::clone(&current.clients),
+            current.profile_swaps.clone(),
         )
     };
-    new_state.retiring = retiring;
-    new_state.profile_transition = profile_transition;
-    new_state.context_generation = context_generation;
-    new_state.clients = clients;
+    new_state.shared_mut().retiring = retiring;
+    new_state.shared_mut().profile_transition = profile_transition;
+    new_state.shared_mut().context_generation = context_generation;
+    new_state.shared_mut().clients = clients;
+    new_state.shared_mut().profile_swaps = profile_swaps.clone();
     if new_state.is_retiring() {
         new_state.reactor.shutdown();
     }
@@ -617,6 +637,10 @@ async fn promote(
     // here through the in-memory swap there are no fallible operations.
     registry.set_active(&new_state.storage, &name).await?;
     {
+        // The swap waits for every guard over the state. Syncs hold theirs
+        // across remote round trips, so they are told to give way first.
+        let _timing = super::link_timing::LinkTiming::new("promote", "state-write-lock");
+        profile_swaps.begin();
         let mut active = state.write().await;
         *active = new_state;
         active.context_generation.fetch_add(1, Ordering::AcqRel);
@@ -632,7 +656,7 @@ async fn promote(
     {
         let state = state.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let tonk = state.read().await;
+            let tonk = state.read().await.clone();
             super::account_state::ensure_account_state(&tonk).await;
         });
     }
@@ -668,7 +692,6 @@ mod tests {
     use dialog_credentials::Ed25519Signer;
     use dialog_varsig::Principal as _;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
     use crate::router::account::TEST_ACCOUNT_REMOTE;
@@ -733,7 +756,7 @@ mod tests {
     /// handler would pass a test that called the inner function.
     #[dialog_common::test]
     async fn it_starts_an_empty_branch_for_the_add_command() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let before = active(&state).await;
 
         let env =
@@ -767,7 +790,7 @@ mod tests {
     /// registration is covered along with the handler.
     #[dialog_common::test]
     async fn it_leaves_the_account_for_the_sign_out_command() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let before = active(&state).await;
         assert!(
             active_account(&*state.read().await).await.is_some(),
@@ -880,7 +903,7 @@ mod tests {
         use dialog_query::{Output as _, Query, Term};
         use tonk_schema::ProfileRow;
 
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let Json(response) = list(State(state.clone())).await.unwrap();
 
         let tonk = state.read().await;
@@ -974,7 +997,7 @@ mod tests {
         use dialog_query::{Output as _, Query, Term};
         use tonk_schema::ProfileRow;
 
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
 
         let count = || async {
             let tonk = state.read().await;
@@ -1015,7 +1038,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_lists_the_active_branch_with_its_account_state() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
 
         let Json(response) = list(State(state.clone())).await.unwrap();
 
@@ -1049,7 +1072,7 @@ mod tests {
     /// record, no provider.
     #[dialog_common::test]
     async fn it_signs_out_onto_an_empty_branch_and_keeps_the_account_branch() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let account_branch = active(&state).await;
         let root = own_root(&state).await;
 
@@ -1084,7 +1107,7 @@ mod tests {
     /// than minting another.
     #[dialog_common::test]
     async fn it_reuses_an_empty_branch_when_signing_out() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let account_branch = active(&state).await;
         let Json(added) = add(State(state.clone()), None).await.unwrap();
         let empty = added.active;
@@ -1107,7 +1130,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_refuses_to_activate_a_branch_meta_does_not_name() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
 
         let error = activate(
             State(state),
@@ -1130,7 +1153,7 @@ mod tests {
     /// keeps its key, and the branch being left stays in the roster.
     #[dialog_common::test]
     async fn it_starts_an_empty_branch_for_add_account() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let (original, original_did) = {
             let tonk = state.read().await;
             (tonk.active_branch.clone(), tonk.profile.did())
@@ -1166,7 +1189,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_reuses_an_empty_branch_instead_of_starting_another() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let before = active(&state).await;
 
         let Json(response) = add(State(state.clone()), None).await.unwrap();
@@ -1203,7 +1226,7 @@ mod tests {
     /// refused switch leaves both the state and the record where they were.
     #[dialog_common::test]
     async fn it_records_the_active_branch_only_after_the_target_boots() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let before = active(&state).await;
 
         let _ = activate(
@@ -1238,7 +1261,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_keeps_a_rootless_local_workspace_for_its_first_account() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let before = active(&state).await;
         let root = fresh_root().await;
 
@@ -1252,7 +1275,7 @@ mod tests {
     /// spaces and all, rather than attaching a second one.
     #[dialog_common::test]
     async fn it_routes_a_signed_out_login_back_to_the_matching_branch() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let account_branch = active(&state).await;
         let root = own_root(&state).await;
         sign_out(&state, None).await.unwrap();
@@ -1266,7 +1289,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_keeps_the_current_branch_for_the_same_account_root() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let before = active(&state).await;
         let root = own_root(&state).await;
 
@@ -1280,7 +1303,7 @@ mod tests {
     /// activating it, which is what lets the switcher name every branch.
     #[dialog_common::test]
     async fn it_names_the_account_a_branch_follows_without_activating_it() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let account_branch = active(&state).await;
         let root = own_root(&state).await;
         let _ = add(State(state.clone()), None).await.unwrap();
@@ -1295,7 +1318,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_returns_to_the_branch_following_the_discovered_root() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let first = active(&state).await;
         let Json(added) = add(State(state.clone()), None).await.unwrap();
         let second = added.active;
@@ -1313,7 +1336,7 @@ mod tests {
     /// is left (its grant withdrawn) and an empty branch takes the login.
     #[dialog_common::test]
     async fn it_leaves_the_account_branch_for_an_unknown_root() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let (before, device) = {
             let tonk = state.read().await;
             (tonk.active_branch.clone(), tonk.profile.did())
@@ -1376,7 +1399,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_holds_the_selected_branch_stable_for_account_writes() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let first = active(&state).await;
         let root = own_root(&state).await;
         let second = add_profile(&state, None).await.unwrap().active;
@@ -1404,7 +1427,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_serializes_add_activate_and_automatic_account_routing() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let first = active(&state).await;
         let transition = state.read().await.profile_transition.clone();
 

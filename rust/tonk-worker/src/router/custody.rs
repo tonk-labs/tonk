@@ -94,14 +94,16 @@ pub(crate) async fn receive(
         return;
     };
 
-    // Only device approval opts into progress. Keep other custody ceremonies
-    // on their established protocol and lifetime.
+    // Only device and agent approval opt into progress. Keep other custody
+    // ceremonies on their established protocol and lifetime.
     let request = js_sys::Reflect::get(&data, &"request".into()).unwrap_or(JsValue::UNDEFINED);
-    let approval = js_sys::Reflect::get(&request, &"kind".into())
-        .ok()
-        .and_then(|value| value.as_string())
-        .as_deref()
-        == Some("authorize-device");
+    let approval = matches!(
+        js_sys::Reflect::get(&request, &"kind".into())
+            .ok()
+            .and_then(|value| value.as_string())
+            .as_deref(),
+        Some("authorize-device" | "authorize-agent" | "revoke-agent")
+    );
     let progress_requested = js_sys::Reflect::get(&data, &"progress".into())
         .ok()
         .and_then(|value| value.as_bool())
@@ -192,18 +194,51 @@ async fn complete_authorization<T>(
         return outcome;
     }
     let error = "The connection took too long to finish. Start a new connection and try again.";
-    if let Ok(tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization)) =
-        serde_wasm_bindgen::from_value(request.clone())
+    let intent = serde_wasm_bindgen::from_value::<tonk_worker_api::CustodyIntent>(request.clone());
+    if let Ok(
+        intent @ (tonk_worker_api::CustodyIntent::AuthorizeDevice(_)
+        | tonk_worker_api::CustodyIntent::AuthorizeAgent(_)
+        | tonk_worker_api::CustodyIntent::RevokeAgent(_)),
+    ) = intent
     {
         let report = async {
             let tonk = state.read().await;
-            super::ceremony::report_authorization(
-                &tonk,
-                &authorization,
-                tonk_schema::ceremony_state::FAILED,
-                error,
-            )
-            .await;
+            match &intent {
+                tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization) => {
+                    super::ceremony::report_authorization(
+                        &tonk,
+                        authorization,
+                        tonk_schema::ceremony_state::FAILED,
+                        error,
+                    )
+                    .await
+                }
+                tonk_worker_api::CustodyIntent::RevokeAgent(request) => {
+                    super::agents::withdraw::note(
+                        &request.agent,
+                        &request.space,
+                        Some(super::agents::withdraw::Removal::Failed {
+                            reason: "The removal took too long to finish. The access stays listed; try again.".into(),
+                        }),
+                    );
+                    super::ceremony::report(
+                        &tonk,
+                        tonk_schema::ceremony::REVOKE_AGENT,
+                        tonk_schema::ceremony_state::FAILED,
+                        error,
+                    )
+                    .await
+                }
+                _ => {
+                    super::ceremony::report(
+                        &tonk,
+                        tonk_schema::ceremony::AUTHORIZE_AGENT,
+                        tonk_schema::ceremony_state::FAILED,
+                        error,
+                    )
+                    .await
+                }
+            }
             Ok(())
         };
         // A stalled state lock or overlay write must not strand the terminal
@@ -240,7 +275,7 @@ mod deadline_tests {
     async fn approval_deadline_publishes_failure_for_only_the_timed_out_request() {
         use dialog_query::{Output as _, Query};
         use tonk_schema::{CeremonyStatus, ceremony_state};
-        let state = std::sync::Arc::new(tokio::sync::RwLock::new(
+        let state = std::sync::Arc::new(crate::StateLock::new(
             crate::router::tests::test_state_without_account().await,
         ));
         let request = tonk_worker_api::DeviceAuthorization {
@@ -313,7 +348,7 @@ mod deadline_tests {
 
     #[dialog_common::test]
     async fn approval_deadline_bounds_failure_reporting_when_the_state_is_locked() {
-        let state = std::sync::Arc::new(tokio::sync::RwLock::new(
+        let state = std::sync::Arc::new(crate::StateLock::new(
             crate::router::tests::test_state_without_account().await,
         ));
         let request =
@@ -452,6 +487,13 @@ async fn perform(
             let target =
                 super::ceremony::authorize_device(&state, &custodian, authorization).await?;
             navigate_reply(&target)
+        }
+        tonk_worker_api::CustodyIntent::AuthorizeAgent(authorization) => {
+            let target = super::agent_session::authorize(&state, &custodian, authorization).await?;
+            navigate_reply(&target)
+        }
+        tonk_worker_api::CustodyIntent::RevokeAgent(request) => {
+            super::agents::withdraw::authorize(&state, &custodian, request).await
         }
     }
 }
@@ -1297,7 +1339,6 @@ mod tests {
     use super::*;
     use crate::router::tests::test_state;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
@@ -1480,7 +1521,7 @@ mod tests {
     async fn it_records_the_envelope_as_a_fact_when_it_mints_one() {
         use dialog_query::{Output as _, Query, Term};
 
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let custodian = tonk_identity::custodian::Custodian::Passkey(
             tonk_identity::webcrypto_kek::Custodian::adopt(vec![3], &[13u8; 32], &[23u8; 32])
                 .await

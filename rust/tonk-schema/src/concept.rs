@@ -24,8 +24,10 @@ use std::collections::{BTreeSet, HashSet};
 use dialog_artifacts::{Entity, Preload, Relation as ArtifactsRelation, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
+use dialog_effects::blob::Load as BlobLoad;
 use dialog_effects::memory::Resolve;
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::concept::query::ConceptQuery;
@@ -33,7 +35,7 @@ use dialog_query::{
     Application, Claim, EvaluationError, Match, Output as _, Parameters, Query, Restriction, Scope,
     Selection, Term, the, try_stream,
 };
-use dialog_repository::{Hydrate, RemoteSite};
+use dialog_repository::RemoteSite;
 use thiserror::Error;
 
 pub use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor, Type};
@@ -160,7 +162,8 @@ pub trait QueryEnv:
     + Provider<Put>
     + Provider<Resolve>
     + Provider<Identify>
-    + Provider<Hydrate>
+    + Provider<ArchiveLoad>
+    + Provider<BlobLoad>
     + Provider<Preload>
     + Provider<Speculation>
     + Provider<Fork<RemoteSite, Get>>
@@ -177,7 +180,8 @@ impl<T> QueryEnv for T where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<BlobLoad>
         + Provider<Preload>
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>

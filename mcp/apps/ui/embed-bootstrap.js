@@ -8,9 +8,30 @@ addEventListener('message', (e) => {
     style.textContent = 'tonk-fab{display:none!important}';
     document.head.append(style);
   }
+  // A view mounts one display of the space on its own; otherwise the site
+  // mounts the route the path matched.
+  const view = e.data.view;
   const display = document.createElement('tonk-display');
-  display.setAttribute('entity', e.data.site);
-  display.setAttribute('model', e.data.model);
+  if (view) {
+    display.setAttribute('model', view.model);
+    if (view.entity) display.setAttribute('entity', view.entity);
+    if (view.facet) display.setAttribute('view', view.facet);
+  } else {
+    display.setAttribute('entity', e.data.site);
+    display.setAttribute('model', e.data.model);
+  }
   display.setAttribute('with', 'main@' + e.data.subject);
   document.body.replaceChildren(display);
+  // The host sizes the view to its content, which only this document
+  // can measure; the relay passes the height up.
+  const style = document.createElement('style');
+  style.textContent = 'html,body{height:auto!important;min-height:0!important}';
+  document.head.append(style);
+  let reported = 0;
+  new ResizeObserver(() => {
+    const height = Math.ceil(document.documentElement.getBoundingClientRect().height);
+    if (height === reported) return;
+    reported = height;
+    parent.postMessage({ type: 'tonk-view-size', height }, '*');
+  }).observe(document.documentElement);
 });

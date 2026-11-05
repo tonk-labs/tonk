@@ -12,7 +12,8 @@
 //! hibernates. A socket here is a task that lives as long as its
 //! connection, so its session lives in the task.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -61,6 +62,8 @@ type LiveAccess = Access<
 pub(super) struct Live {
     access: LiveAccess,
     changes: broadcast::Sender<Changed>,
+    /// When a grant over each space was last revoked, in Unix seconds.
+    revoked: Mutex<HashMap<String, u64>>,
 }
 
 /// A cell of a space, as it holds after a write.
@@ -89,6 +92,37 @@ impl Live {
             .with_revocations(IndexedRevocations(revocations))
             .with_presented(Arc::new(RecentInvocations::default())),
             changes,
+            revoked: Mutex::default(),
+        }
+    }
+
+    /// Note that a grant over `space` was revoked just now, so that its
+    /// watches are each checked again before they are next told anything.
+    pub(super) fn revoked(&self, space: &Did) {
+        let at = self.access.now();
+        self.revoked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(space.to_string(), at);
+    }
+
+    /// How long a watch on `space` may have stood unchecked when a change
+    /// is delivered to it at `at`: none for a recheck interval after one
+    /// of the space's grants was revoked, so a watch the revocation ended
+    /// is told nothing more, and [`RECHECK`] otherwise. By the time the
+    /// interval has passed, every watch checked before the revocation is
+    /// due again anyway.
+    fn unchecked_for(&self, space: &str, at: u64) -> Duration {
+        let revoked = self
+            .revoked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(space)
+            .copied();
+        if revoked.is_some_and(|revoked| revoked.saturating_add(RECHECK.as_secs()) > at) {
+            Duration::ZERO
+        } else {
+            RECHECK
         }
     }
 
@@ -241,6 +275,7 @@ where
             },
             change = changes.recv() => match change {
                 Ok(change) if change.subject.to_string() == subject => {
+                    let at = live.access.now();
                     let delivered = session
                         .deliver(
                             &live.access,
@@ -250,8 +285,8 @@ where
                                 cell: &change.cell,
                                 state: &change.state,
                             },
-                            RECHECK,
-                            live.access.now(),
+                            live.unchecked_for(&subject, at),
+                            at,
                         )
                         .await;
                     for reply in delivered {

@@ -145,6 +145,7 @@ run_claude() {
   ( cd "$EPISODE_DIR" && \
     env "${KEY_ENV[@]}" ${HOME_ENV[@]:+"${HOME_ENV[@]}"} \
     PATH="$EPISODE_PATH" \
+    DO_NOT_TRACK=1 \
     TONK_NO_UPDATE_CHECK=1 \
     TONK_SPACES_STATE="$EPISODE_SPACES_STATE" \
     TONK_SPACE="$EPISODE_SPACE" \
@@ -177,6 +178,7 @@ run_codex() {
   ( cd "$EPISODE_DIR" && \
     env "${KEY_ENV[@]}" ${HOME_ENV[@]:+"${HOME_ENV[@]}"} \
     PATH="$EPISODE_PATH" \
+    DO_NOT_TRACK=1 \
     TONK_NO_UPDATE_CHECK=1 \
     TONK_SPACES_STATE="$EPISODE_SPACES_STATE" \
     TONK_SPACE="$EPISODE_SPACE" \

@@ -618,13 +618,21 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
 /// the generic per-branch sync returns before it reaches the account
 /// key — so a sweep that skips this leaves local facts unpublished.
 pub(crate) async fn push_account_main(tonk: &TonkState) -> Result<(), String> {
+    try_push_account_main(tonk)
+        .await
+        .map_err(|error| format!("account push failed: {error}"))
+}
+
+/// [`push_account_main`], answering the push's own refusal so a caller
+/// can tell one that is out of date from any other.
+async fn try_push_account_main(tonk: &TonkState) -> Result<(), PushRefused> {
     let session = tonk
         .reactor
         .profile_repository()
         .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
-        .map_err(|error| format!("account branch unavailable: {error}"))?;
+        .map_err(|error| PushRefused::Other(format!("account branch unavailable: {error}")))?;
     let pushed = session.handle().push().perform(&tonk.operator).await;
     // Whether this push was served is the registration state, said by
     // the only party that knows. Nothing polls for it: an unactivated
@@ -641,8 +649,111 @@ pub(crate) async fn push_account_main(tonk: &TonkState) -> Result<(), String> {
         .and_then(|error| super::sync::authorization_reason(error))
         .cloned();
     observe_registration(tonk, declined).await;
-    pushed.map_err(|error| format!("account push failed: {error}"))?;
+    pushed.map_err(|error| {
+        if super::sync::is_push_out_of_date(&error) {
+            PushRefused::OutOfDate(error.to_string())
+        } else {
+            PushRefused::Other(error.to_string())
+        }
+    })?;
     Ok(())
+}
+
+/// Why profile main was not pushed.
+#[derive(Debug)]
+enum PushRefused {
+    /// Upstream holds a head this branch has not merged.
+    OutOfDate(String),
+    Other(String),
+}
+
+impl std::fmt::Display for PushRefused {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OutOfDate(error) | Self::Other(error) => formatter.write_str(error),
+        }
+    }
+}
+
+/// Push profile main to the account remote, pulling first only when
+/// upstream has moved past it.
+///
+/// What a device leaving the account publishes on its way out. When no
+/// other device pushed since its last sweep, the push lands as it is.
+/// Otherwise it is refused as out of date, and the device merges what
+/// the others pushed and pushes again. The pull materializes the
+/// operational regions only, as the sweep's does.
+///
+/// The push goes first because the pull is the expensive half: it walks
+/// the whole operational tree of the adopted head, and every node this
+/// device lacks costs a round trip to the account service and another to
+/// storage, one after another. On an account in use for weeks that was
+/// nearly a minute of every sign-out, spent to merge nothing.
+///
+/// The profile's own secrets commit to this branch through the profile's
+/// handle rather than the reactor's, so the reactor's handle is refreshed
+/// first: a push or pull from a stale head cannot publish.
+pub(crate) async fn pull_and_push_account_main(tonk: &TonkState) -> Result<Published, String> {
+    let mut timing = super::link_timing::LinkTiming::new("account-pull-and-push", "refresh");
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| format!("account branch unavailable: {error}"))?;
+    session
+        .handle()
+        .refresh(&tonk.operator)
+        .await
+        .map_err(|error| format!("account branch head unreadable: {error}"))?;
+    // What the push will diff: everything between the sync point recorded
+    // for each upstream and the head ships, so an old sync point names a
+    // backlog of commits no sweep pushed. More than one upstream means
+    // blocks held by reference are probed one by one.
+    {
+        let handle = session.handle();
+        let bases: Vec<_> = handle
+            .pushes()
+            .iter()
+            .map(|upstream| upstream.tree().cloned())
+            .collect();
+        log!(
+            "account push: head={:?} sync points={bases:?}",
+            handle.revision().map(|revision| revision.tree)
+        );
+    }
+    timing.next("push");
+    match try_push_account_main(tonk).await {
+        Ok(()) => return Ok(Published::Pushed),
+        Err(PushRefused::OutOfDate(error)) => {
+            log!("account push is out of date, pulling first: {error}");
+        }
+        Err(PushRefused::Other(error)) => return Err(format!("account push failed: {error}")),
+    }
+    timing.next("pull");
+    session
+        .handle()
+        .pull()
+        .download()
+        .operational()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| format!("account pull failed: {error}"))?;
+    timing.next("migrate");
+    migrate_adopted_profile_head(tonk).await;
+    timing.next("push-after-pull");
+    push_account_main(tonk).await?;
+    Ok(Published::PulledAndPushed)
+}
+
+/// How [`pull_and_push_account_main`] published profile main.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Published {
+    /// Upstream had not moved, so the push landed as it was.
+    Pushed,
+    /// Upstream had moved, so its head was merged before pushing.
+    PulledAndPushed,
 }
 
 /// Preserve both retryable failures when library repair and account push fail
@@ -766,7 +877,8 @@ pub(crate) async fn push_after_answer(app: crate::router::AppState) {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         wasm_bindgen_futures::spawn_local(async move {
-            let tonk = app.read().await;
+            // A clone, not a guard: the push is a round trip.
+            let tonk = app.read().await.clone();
             if let Err(error) = push_account_main(&tonk).await {
                 log!("push behind the login's answer did not land: {error}");
             }
@@ -774,7 +886,7 @@ pub(crate) async fn push_after_answer(app: crate::router::AppState) {
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
-        let tonk = app.read().await;
+        let tonk = app.read().await.clone();
         if let Err(error) = push_account_main(&tonk).await {
             log!("push behind the login's answer did not land: {error}");
         }
@@ -2094,6 +2206,24 @@ pub(crate) mod tests {
         linked_account_state(passkey, true).await
     }
 
+    /// [`ready_account_state`] against an access service started with
+    /// `settings`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn ready_account_state_with(
+        passkey: Option<tonk_worker_api::PasskeyMetadata>,
+        settings: tonk_access_service::helpers::AccessServiceSettings,
+    ) -> (
+        TonkState,
+        dialog_common::helpers::Service<
+            tonk_access_service::helpers::AccessServiceAddress,
+            tonk_access_service::helpers::AccessServer,
+        >,
+        Ed25519Signer,
+        String,
+    ) {
+        linked_account_state_with(passkey, true, settings).await
+    }
+
     /// A linked account against a real access service. `activated`
     /// decides how far the customer got: `true` is the state every
     /// steady-state test wants — the emailed link opened, the trusted
@@ -2113,12 +2243,27 @@ pub(crate) mod tests {
         Ed25519Signer,
         String,
     ) {
+        linked_account_state_with(passkey, activated, Default::default()).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn linked_account_state_with(
+        passkey: Option<tonk_worker_api::PasskeyMetadata>,
+        activated: bool,
+        settings: tonk_access_service::helpers::AccessServiceSettings,
+    ) -> (
+        TonkState,
+        dialog_common::helpers::Service<
+            tonk_access_service::helpers::AccessServiceAddress,
+            tonk_access_service::helpers::AccessServer,
+        >,
+        Ed25519Signer,
+        String,
+    ) {
         use dialog_varsig::Principal as _;
         use tonk_access_service::helpers::AccessServiceAddress;
 
-        let service = AccessServiceAddress::start(Default::default())
-            .await
-            .unwrap();
+        let service = AccessServiceAddress::start(settings).await.unwrap();
         let root = Ed25519Signer::generate().await.unwrap();
         // Hydration syncs the account space, which the access service
         // serves only once its customer has confirmed the emailed
@@ -2170,7 +2315,7 @@ pub(crate) mod tests {
     /// `root` holds and linked to sync it at `remote`: a local root and
     /// an account link, not yet hydrated.
     #[cfg(not(target_arch = "wasm32"))]
-    async fn device_on(
+    pub(crate) async fn device_on(
         root: &Ed25519Signer,
         remote: &str,
         passkey: Option<tonk_worker_api::PasskeyMetadata>,
@@ -2190,29 +2335,32 @@ pub(crate) mod tests {
             .unwrap();
         let session = crate::session::open(&profile).await.unwrap();
         let reactor = crate::Reactor::new(profile.credential().clone());
-        let state = TonkState {
-            profile,
-            operator: session.operator,
-            storage,
-            session_expires_at: session.expires_at,
-            profile_name: name.clone(),
-            active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
-            reactor,
-            admission: Default::default(),
-            reject_admission_content_reads: Default::default(),
-            retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            view_bindings: Default::default(),
-            bridges: Default::default(),
-            sync_queue: Default::default(),
-            commands: crate::router::command_providers(),
-            clients: Default::default(),
-            seed_upgrades: Default::default(),
-            account_keys: Default::default(),
-            profile_library: Default::default(),
-            registry: crate::device::Registry::new(name.clone(), directory),
-            profile_transition: Default::default(),
-            context_generation: Default::default(),
-        };
+        let state = TonkState::from_parts(
+            session.operator,
+            session.expires_at,
+            crate::router::repository::PROFILE_BRANCH.to_owned(),
+            crate::worker::TonkShared {
+                profile,
+                storage,
+                profile_name: name.clone(),
+                reactor,
+                admission: Default::default(),
+                reject_admission_content_reads: Default::default(),
+                retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                view_bindings: Default::default(),
+                bridges: Default::default(),
+                sync_queue: Default::default(),
+                commands: crate::router::command_providers(),
+                clients: Default::default(),
+                seed_upgrades: Default::default(),
+                account_keys: Default::default(),
+                profile_library: Default::default(),
+                registry: crate::device::Registry::new(name.clone(), directory),
+                profile_transition: Default::default(),
+                context_generation: Default::default(),
+                profile_swaps: Default::default(),
+            },
+        );
         crate::router::repository::bootstrap_profile(&state)
             .await
             .unwrap();
@@ -2318,8 +2466,9 @@ pub(crate) mod tests {
         );
 
         // Onto a fresh branch, the way sign-out and add-account land.
-        super::super::account_devices::withdraw_own_authority(&state).await;
+        let withdrawal = super::super::account_devices::begin_withdrawal(&state).await;
         super::super::account::disconnect(&state).await.unwrap();
+        super::super::account_devices::finish_withdrawal(&state, withdrawal).await;
         super::super::profile::leave_account(&state).await;
         // The way the worker lands there: a fresh state over the same
         // storage, as `promote` builds one.
@@ -2413,6 +2562,107 @@ pub(crate) mod tests {
             adopt_account_access(&state).await,
             "the second account's authority is adopted on {landing}",
         );
+    }
+
+    /// A device leaving the account publishes what it wrote: by pushing at
+    /// once when no other device pushed since its last sweep, and by
+    /// merging what another device pushed first when one did.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_publishes_its_last_writes_whether_or_not_another_device_pushed() {
+        async fn name(state: &TonkState, name: &str) {
+            use tonk_schema::prelude::DidExt as _;
+            state
+                .reactor
+                .profile_repository()
+                .branch(&state.active_branch)
+                .transaction()
+                .assert(tonk_schema::ProfileName::new(
+                    state.profile.did().this(),
+                    name.to_string(),
+                ))
+                .commit()
+                .perform(&state.operator)
+                .await
+                .unwrap();
+        }
+        async fn head(state: &TonkState) -> Option<dialog_repository::Revision> {
+            state
+                .reactor
+                .profile_repository()
+                .branch(&state.active_branch)
+                .acquire(&state.operator)
+                .await
+                .unwrap()
+                .handle()
+                .revision()
+        }
+
+        let (home, _service, root, remote) = ready_account_state(None).await;
+        let (_, swept) = ensure_account_state_swept(&home).await;
+        swept.unwrap();
+        let device = device_on(&root, &remote, None).await;
+        let (_, swept) = ensure_account_state_swept(&device).await;
+        swept.unwrap();
+        // The other device's first sweep pushed; catch up with it.
+        let (_, swept) = ensure_account_state_swept(&home).await;
+        swept.unwrap();
+
+        name(&home, "home, nobody else pushed").await;
+        assert_eq!(
+            pull_and_push_account_main(&home).await.unwrap(),
+            Published::Pushed,
+            "nothing to merge, so nothing is pulled",
+        );
+        let (_, swept) = ensure_account_state_swept(&device).await;
+        swept.unwrap();
+        assert_eq!(
+            head(&device).await,
+            head(&home).await,
+            "the other device adopts what the leaving one pushed",
+        );
+
+        name(&device, "device, pushed first").await;
+        push_account_main(&device).await.unwrap();
+        name(&home, "home, behind the other device").await;
+        assert_eq!(
+            pull_and_push_account_main(&home)
+                .await
+                .expect("an out-of-date push pulls and pushes again"),
+            Published::PulledAndPushed,
+        );
+        let (_, swept) = ensure_account_state_swept(&device).await;
+        swept.unwrap();
+        assert_eq!(
+            head(&device).await,
+            head(&home).await,
+            "the leaving device published a merge of both",
+        );
+    }
+
+    /// A profile switch publishes the account branch itself, so a sweep
+    /// that would push the same blocks alongside it waits until it ends.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_defers_an_account_sweep_while_a_profile_switch_runs() {
+        let (home, _service, _root, _remote) = ready_account_state(None).await;
+        let key = require_ready_account_state(&home).await.unwrap().key;
+        let transition = std::sync::Arc::clone(&home.profile_transition);
+        let state: crate::router::AppState = std::sync::Arc::new(crate::StateLock::new(home));
+
+        let switching = transition.lock().await;
+        let deferred = crate::router::sync_repository(&state, &key).await;
+        assert!(
+            deferred
+                .as_ref()
+                .is_err_and(|error| error.contains("deferred")),
+            "a sweep during a switch is deferred, not run: {deferred:?}",
+        );
+
+        drop(switching);
+        crate::router::sync_repository(&state, &key)
+            .await
+            .expect("the sweep runs once the switch has ended");
     }
 
     /// A remote account may still contain a revoked grant for this device.
@@ -2559,13 +2809,146 @@ pub(crate) mod tests {
     /// "Revision references blob …, which is not present". Every pull
     /// after that failed the same way, so nothing the account changed
     /// elsewhere reached the device again.
+    /// A pull asked to download what it adopts never leaves the profile's
+    /// access branch on a head whose blocks the device lacks, even when it
+    /// stops between the two, as a service worker the browser terminates
+    /// does.
+    ///
+    /// The account rides the profile's `main`, and another device moved
+    /// it. With nothing of its own to merge, this device's pull adopts the
+    /// other device's tree by its root and reads none of it. Had the head
+    /// moved before the download, the branch the proof walk reads would
+    /// name nodes the device never held, every proof that would fetch them
+    /// would need them first, and the profile would not open again.
+    /// tonk.foundation's worker failed that way: "Failed to open profile:
+    /// ... Authorization could not be evaluated: candidate scan failed".
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_downloads_the_account_before_its_head_moves() {
+        pull_the_account_and_stop_when_its_head_moves(true).await;
+    }
+
+    /// Any pull of the profile's own repository downloads what it adopts,
+    /// whoever asks for it: a caller that pulls the account branch as it
+    /// would a space's leaves the profile openable too.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_downloads_the_account_whoever_pulls_it() {
+        pull_the_account_and_stop_when_its_head_moves(false).await;
+    }
+
+    /// The account moves on another device, twice, and this device pulls
+    /// it through its reactor, with or without asking for the download,
+    /// stopping each pull the moment the head moves. The profile must
+    /// open from storage afterwards.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn pull_the_account_and_stop_when_its_head_moves(download: bool) {
+        use dialog_artifacts::{Artifact, Instruction, Value};
+        use std::future::{Future as _, poll_fn};
+        use std::task::Poll;
+
+        let (home, _service, root, remote) = ready_account_state(None).await;
+        assert_eq!(ensure_account_state(&home).await, AccountStateStatus::Ready);
+        let device = device_on(&root, &remote, None).await;
+        for state in [&device, &home, &device] {
+            let (status, swept) = ensure_account_state_swept(state).await;
+            assert_eq!(status, AccountStateStatus::Ready);
+            swept.unwrap();
+        }
+        assert_eq!(
+            device.active_branch,
+            crate::router::repository::PROFILE_BRANCH,
+            "the account rides the profile's main"
+        );
+
+        for round in 0..2u128 {
+            // The other device writes to the account and publishes it.
+            home.reactor
+                .profile_repository()
+                .branch(&home.active_branch)
+                .acquire(&home.operator)
+                .await
+                .unwrap()
+                .handle()
+                .transaction()
+                .integrate(
+                    std::iter::once(Instruction::Assert(
+                        Artifact {
+                            the: "test/round".parse().expect("a valid attribute"),
+                            of: format!("test:round-{round}")
+                                .parse()
+                                .expect("a valid entity"),
+                            is: Value::UnsignedInt(round),
+                            cause: None,
+                        },
+                        dialog_artifacts::Pick::All,
+                    ))
+                    .collect(),
+                )
+                .commit()
+                .publish()
+                .perform(&home.operator)
+                .await
+                .unwrap();
+            let (_, swept) = ensure_account_state_swept(&home).await;
+            swept.unwrap();
+
+            // This device pulls the account with its download, and stops
+            // the moment its head moves.
+            let main = device
+                .reactor
+                .profile_repository()
+                .branch(&device.active_branch)
+                .acquire(&device.operator)
+                .await
+                .unwrap();
+            let before = main.handle().revision();
+            let pull = device
+                .reactor
+                .profile_repository()
+                .branch(&device.active_branch)
+                .pull();
+            let pull = if download {
+                pull.download().operational()
+            } else {
+                pull
+            };
+            let mut pulling = Box::pin(pull.perform(&device.operator));
+            loop {
+                let polled = poll_fn(|context| Poll::Ready(pulling.as_mut().poll(context))).await;
+                if let Poll::Ready(pulled) = polled {
+                    pulled
+                        .unwrap_or_else(|error| panic!("round {round}: the pull failed: {error}"));
+                    break;
+                }
+                if main.handle().revision() != before {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            drop(pulling);
+            assert_ne!(
+                main.handle().revision(),
+                before,
+                "round {round}: the device takes the account's head"
+            );
+        }
+
+        // The device restarts: its profile opens from storage again.
+        let name = device.profile_name.clone();
+        let directory = device.registry.directory.clone();
+        drop(device);
+        if let Err(error) = crate::device::open_profile_at(&name, directory).await {
+            panic!("the profile does not open after a restart: {error}");
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_pulls_the_account_after_signing_out_and_back_in() {
         use dialog_artifacts::{Artifact, Instruction, Value};
         use dialog_varsig::Principal as _;
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         const RENAMED: &str = "Renamed on the other device";
 
@@ -2608,7 +2991,7 @@ pub(crate) mod tests {
         assert_eq!(status, AccountStateStatus::Ready);
         swept.unwrap();
 
-        let device = Arc::new(RwLock::new(device));
+        let device = Arc::new(crate::StateLock::new(device));
         super::super::profiles::sign_out(&device, None)
             .await
             .unwrap();
@@ -2633,6 +3016,62 @@ pub(crate) mod tests {
                 .as_deref(),
             Some(RENAMED),
             "the rename made on the other device arrives",
+        );
+    }
+
+    /// Signing out pushes the retraction of this device's rows, so the
+    /// account's other devices stop listing it.
+    ///
+    /// The push has to run while the device can still prove it may reach
+    /// the account: before the chain it retained is retracted. Retracting
+    /// the chain first refused this push every time, and refused, now and
+    /// then, a write sign-out made after it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_retracts_its_device_rows_from_the_account_on_sign_out() {
+        use std::sync::Arc;
+
+        async fn listed(state: &TonkState) -> Vec<String> {
+            let main = state
+                .reactor
+                .profile_repository()
+                .branch(&state.active_branch)
+                .acquire(&state.operator)
+                .await
+                .unwrap();
+            tonk_schema::device_link::device_links(main.handle(), &state.operator)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|(_, did)| did)
+                .collect()
+        }
+
+        let (home, _service, root, remote) = ready_account_state(None).await;
+        assert_eq!(ensure_account_state(&home).await, AccountStateStatus::Ready);
+        let device = device_on(&root, &remote, None).await;
+        let (status, swept) = ensure_account_state_swept(&device).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.unwrap();
+        let own = device.profile.did().to_string();
+
+        let (_, swept) = ensure_account_state_swept(&home).await;
+        swept.unwrap();
+        assert!(
+            listed(&home).await.contains(&own),
+            "the other device is listed once it links"
+        );
+
+        let device = Arc::new(crate::StateLock::new(device));
+        super::super::profiles::sign_out(&device, None)
+            .await
+            .unwrap();
+
+        let (_, swept) = ensure_account_state_swept(&home).await;
+        swept.unwrap();
+        assert!(
+            !listed(&home).await.contains(&own),
+            "the signed-out device's rows leave the account"
         );
     }
 

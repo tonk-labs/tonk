@@ -3,6 +3,10 @@ import SwiftUI
 
 struct TonkWelcomeView: View {
   @ObservedObject var runtime: RuntimeModel
+  @State private var creatingAccount = false
+  @State private var email = ""
+  @State private var displayName = ""
+
   var body: some View {
     VStack(spacing: 24) {
       Spacer()
@@ -11,18 +15,19 @@ struct TonkWelcomeView: View {
         .scaledToFit()
         .frame(width: 80, height: 80)
         .accessibilityHidden(true)
-      VStack(spacing: 12) {
-        Text("Welcome to Tonk").font(.largeTitle.weight(.semibold))
-        Text("Your spaces, with an agent to help you build.")
-          .font(.title3).foregroundStyle(.secondary)
-      }
+      Text("Welcome to Tonk").font(.largeTitle.weight(.semibold))
       VStack(spacing: 14) {
-        if runtime.signInPending {
+        if let address = runtime.confirmingEmail, !runtime.signInPending {
+          confirmation(address)
+        } else if runtime.signInPending {
           if let progress = runtime.browserSignInProgress {
             BrowserSignInProgressView(progress: progress)
           } else {
             ProgressView(
-              runtime.attachingAccount ? "Connecting your account…" : "Approve your Tonk passkey…")
+              runtime.attachingAccount
+                ? "Connecting your account…"
+                : creatingAccount && !runtime.enrollmentPending
+                  ? "Create your Tonk passkey…" : "Approve your Tonk passkey…")
           }
           if !runtime.nativeSignInPending {
             Button("Cancel") { runtime.cancelSignIn() }.disabled(runtime.attachingAccount)
@@ -31,18 +36,26 @@ struct TonkWelcomeView: View {
           || !runtime.catalogLoaded && runtime.catalogError == nil && runtime.error == nil
         {
           ProgressView("Connecting to Tonk…")
+        } else if creatingAccount {
+          accountForm
         } else {
           HStack(spacing: 12) {
             Button("Sign in to Tonk", systemImage: "person.crop.circle.badge.checkmark") {
               Task { await runtime.signIn() }
-            }.nativeControl(prominent: true).controlSize(.large)
+            }.buttonStyle(.borderedProminent).controlSize(.large)
               .disabled(runtime.loading)
             if runtime.supportsDirectPasskey {
-              Button("Sign in through browser") { Task { await runtime.signInInBrowser() } }
-                .nativeControl().controlSize(.large)
+              Button("Create account") {
+                runtime.accountMessage = nil
+                creatingAccount = true
+              }
+              .controlSize(.large)
             }
           }
-          if !runtime.supportsDirectPasskey {
+          if runtime.supportsDirectPasskey {
+            Button("Sign in through browser") { Task { await runtime.signInInBrowser() } }
+              .buttonStyle(.plain).font(.callout).foregroundStyle(.secondary)
+          } else {
             Text(
               "Use your existing Tonk passkey in your browser.\nYou’ll return here when sign-in is complete."
             )
@@ -53,10 +66,79 @@ struct TonkWelcomeView: View {
           ?? (runtime.signInPending ? nil : runtime.catalogError)
         {
           Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-          if !runtime.signInPending { Button("Try again") { runtime.load() } }
+          if !runtime.signInPending && !creatingAccount && runtime.confirmingEmail == nil {
+            Button("Try again") { runtime.load() }
+          }
         }
       }.frame(maxWidth: 520)
       Spacer()
-    }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
+    }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
+      .overlay(alignment: .topLeading) {
+        if showsAccountForm {
+          Button("Back", systemImage: "chevron.left", action: leaveAccountForm)
+            .buttonStyle(.borderless)
+            .keyboardShortcut(.cancelAction)
+            .padding(16)
+        }
+      }
+      .background(.background)
+  }
+
+  private var showsAccountForm: Bool {
+    creatingAccount && !runtime.signInPending && runtime.confirmingEmail == nil
+  }
+
+  private func leaveAccountForm() {
+    runtime.accountMessage = nil
+    creatingAccount = false
+  }
+
+  private var accountForm: some View {
+    VStack(spacing: 14) {
+      Form {
+        TextField("Email", text: $email, prompt: Text(verbatim: "you@example.com"))
+          .textContentType(.emailAddress)
+        TextField("Display name", text: $displayName, prompt: Text(verbatim: "Jane Appleseed"))
+          .textContentType(.name)
+      }
+      .formStyle(.columns)
+      .frame(maxWidth: 360)
+      .onSubmit(createAccount)
+      Button("Create account", systemImage: "person.crop.circle.badge.plus", action: createAccount)
+        .buttonStyle(.borderedProminent).controlSize(.large)
+        .keyboardShortcut(.defaultAction)
+        .disabled(!canCreateAccount)
+    }
+  }
+
+  private func confirmation(_ address: String) -> some View {
+    VStack(spacing: 14) {
+      Image(systemName: "envelope.badge").font(.system(size: 32)).foregroundStyle(.secondary)
+        .accessibilityHidden(true)
+      if runtime.enrollmentPending {
+        Text("Finish creating your account").font(.title2.weight(.semibold))
+        Text("Your passkey is ready, but Tonk hasn’t sent the confirmation email to \(address) yet.")
+          .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        Button("Try again", systemImage: "arrow.clockwise") {
+          Task { await runtime.resumeEnrollment() }
+        }
+        .buttonStyle(.borderedProminent).controlSize(.large)
+      } else {
+        Text("Confirm your email").font(.title2.weight(.semibold))
+        Text("Open the link we sent to \(address).")
+          .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        ProgressView().controlSize(.small)
+      }
+    }
+  }
+
+  private var canCreateAccount: Bool {
+    RuntimeModel.isPlausibleEmail(email.trimmingCharacters(in: .whitespacesAndNewlines))
+      && !displayName.trimmingCharacters(in: .whitespaces).isEmpty
+  }
+
+  private func createAccount() {
+    guard canCreateAccount else { return }
+    Task { await runtime.signUpWithPasskey(email: email, displayName: displayName) }
   }
 }

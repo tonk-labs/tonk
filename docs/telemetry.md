@@ -32,9 +32,16 @@ arrival events are traffic, not active profiles or accounts. See the
 
 | Event | Properties |
 |---|---|
-| `cli_command_run` | `command`, `subcommand`, `success`, `exit` (success / parse-error / analyze-error / commit-error / io-error), `duration_ms`, `version`, `os`, `arch`, `environment` (constant `"cli"`), ``$lib`` (constant `"tonk-analytics"`); eval adds `source` (inline / file / stdin), `format`, `dry_run`, `quiet` |
+| `cli_command_run` | `command`, `subcommand`, `success`, `exit` (success / parse-error / analyze-error / commit-error / io-error), `duration_ms`, `version`, `os`, `arch`, `environment` (constant `"cli"`), ``$lib`` (constant `"tonk-analytics"`); eval adds `source` (inline / file / stdin), `format`, `dry_run`, `quiet`; `unreported_runs` when earlier runs of the same command were dropped by the hourly budget |
 | `account_event` | The closed account journey schema below. Account commands emit this lifecycle in addition to one `cli_command_run`; never add the two event types together when counting account attempts. |
 | `product_event` | The closed product lifecycle below for every parsed non-account command family. It is paired with, and must not be added to, the `cli_command_run` summary. |
+
+A machine reports at most 30 runs of one command (and subcommand) in each
+UTC hour. Later runs in that hour send nothing at all, so a polling script or
+agent costs at most 30 batches an hour per command instead of one every few
+seconds. The next reported run of that command carries the dropped count in
+`unreported_runs`; count runs as `count() + sum(unreported_runs)`. The
+counts live in `telemetry-budget.json` beside `telemetry.json`.
 
 Every native batch item carries an RFC 3339 UTC occurrence timestamp recorded
 when it is queued. Starts and checkpoints therefore retain their real order
@@ -86,6 +93,24 @@ DID or name in the invite query or event. A visible `/space/{key}` route is
 hashed locally and wins over a query token. Short-link redirects forward only
 public campaign/source tags added to the `@/...` URL; they do not accept
 overrides for the stored invite capability or space token.
+
+### Desktop app
+
+| Event | Properties |
+|---|---|
+| `app_opened` | transport context only |
+| `product_event` | The closed product lifecycle below, for the desktop interactions in the [coverage ledger](analytics-contract.md#coverage-ledger) |
+
+Every desktop event carries `environment=desktop`, `$lib=tonk-desktop`,
+`version`, `os`, and `arch`, plus an RFC 3339 UTC occurrence timestamp recorded
+when queued. The distinct id is the same profile hash the CLI and web use,
+resolved from the signed-in runtime's `/api/identify`; before that, and after
+sign-out, it is `tonk:anonymous`. Events are queued in memory and sent to
+`/batch` at most every ten seconds and once at quit, best effort; failures are
+dropped, never retried. Nothing is sent against a local runtime.
+
+The space views inside the app are the web app: they report web events as
+above, under their own host's `environment`, with `shell=desktop` (below).
 
 ### Account journey schema
 
@@ -143,9 +168,18 @@ The account capture entry point accepts no arbitrary JSON properties.
 
 Every web event additionally carries an `environment` super property
 derived from the hostname: `production` (tonk.network), `staging`
-(staging.tonk.xyz), or `dev` (anything else). The marketing site's
+(staging.tonk.xyz or tonk.spot), or `dev` (anything else). The marketing site's
 own snippet registers `environment = "website"` in its repo, so all
 surfaces share one filterable dimension within the PostHog project.
+
+Every web event also carries a closed `shell` super property: `desktop` when
+the page runs inside the macOS desktop app, `browser` otherwise. The desktop
+app injects `window.__tonkShell = "desktop"` into its web views before page
+scripts run; any other value, or none, reports `browser`. No user agent string
+or raw flag is sent. `shell` leaves `environment` unchanged, so desktop space
+views on tonk.network still report `environment=production`; filter on
+`shell != 'desktop'` (treating a missing value as `browser`, since events before
+this property have none) to count browser use alone.
 
 Autocapture and session recording are disabled. PostHog runs
 cookieless (`persistence: "memory"`); no third-party script is loaded
@@ -176,6 +210,11 @@ pathnames, referrers, arbitrary UTM fields, click IDs, and SDK-generated initial
 URL fields from event and person-property blocks. Reviewed launch attribution
 is registered separately through the closed launch schema.
 
+## Dashboards
+
+Each interface (web, CLI, desktop) has its own PostHog dashboard, with one
+overview comparing them; see [interface dashboards](analytics/interfaces.md).
+
 ## Operational logs
 
 The access Worker writes failed account requests to Cloudflare Workers Logs,
@@ -194,6 +233,8 @@ infrastructure records deliberately have no stable join key to PostHog.
   effective state. The persisted choice lives at ``<platform data dir>/tonk/telemetry.json`` (``TONK_TELEMETRY_STATE`` overrides the directory).
 - Web: run `localStorage.setItem("tonk:telemetry", "off")` in the
   console and reload. (A settings toggle is a planned follow-up.)
+- Desktop: turn off "Share anonymous usage data" in Settings (Advanced),
+  or launch with `DO_NOT_TRACK=1` or `TONK_TELEMETRY=0`.
 - Builds without a `TONK_POSTHOG_KEY` baked in send nothing at all —
   this is the default for local builds, CI, and forks.
 
@@ -204,6 +245,11 @@ design) and optionally `TONK_POSTHOG_HOST` (default
 `https://eu.i.posthog.com`) in the environment of the release build.
 `TONK_POSTHOG_KEY`/`TONK_POSTHOG_HOST` are also read at runtime, and
 `TONK_POSTHOG_ENDPOINT` overrides the host for integration tests.
+
+Signed desktop builds bake the same key into the app's `Info.plist`
+(`TonkPostHogKey`, optionally `TonkPostHogHost`) through `build-app.sh`;
+the Desktop workflows set it, and a script test keeps it equal to the
+flake's. Local `build-app.sh` builds stay key-less.
 
 The nix packages (`tonk-cli`, `tonk-ui`, and therefore
 `tonk-cloudflare-artifacts`) bake the key in from the `posthogKey`

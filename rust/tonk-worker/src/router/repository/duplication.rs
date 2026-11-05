@@ -1,7 +1,7 @@
 //! Copy current content into a new identity, without adopting source history.
 use super::*;
 use dialog_artifacts::{ArtifactSelector, BlobIndexExt as _, Changes, Update};
-use dialog_repository::{Blob, Index, NetworkedIndex, RemoteFallback, Snapshot};
+use dialog_repository::{Blob, Index, Snapshot};
 use futures_util::StreamExt as _;
 
 fn error(error: impl std::fmt::Display) -> RepositoryError {
@@ -103,12 +103,14 @@ pub(super) async fn prepare(tonk: &TonkState, source: &str) -> Result<Copy, Repo
             );
         }
     }
-    let store = NetworkedIndex::new(
-        &tonk.operator,
+    // A snapshot's content is what this replica holds: the walk reads
+    // locally and never hydrates.
+    let stream = Index::at(
         snapshot.archive().index(),
-        RemoteFallback::None,
-    );
-    let stream = Index::from_hash((*snapshot.revision().tree.hash()).into()).list_blobs(store);
+        (*snapshot.revision().tree.hash()).into(),
+    )
+    .locally()
+    .list_blobs(&tonk.operator);
     tokio::pin!(stream);
     while let Some(blob) = stream.next().await {
         let (hash, _) = blob.map_err(error)?;
@@ -176,7 +178,11 @@ pub(super) async fn create(
         .await
         .map_err(error)?;
     write_replica_status(&tonk, &subject, Replica::initialized_status(), None).await?;
-    Ok(key.to_owned())
+    let key = key.to_owned();
+    let created = (*tonk).clone();
+    drop(tonk);
+    provision_created_space(&created, &subject).await;
+    Ok(key)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

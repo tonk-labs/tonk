@@ -1,14 +1,16 @@
-const association = JSON.stringify({
-  webcredentials: { apps: ["8WVKS2F24C.xyz.tonk"] },
-});
+// Each Desktop channel's app may use passkeys on its own remote.
+const associations = {
+  "tonk.network": JSON.stringify({ webcredentials: { apps: ["8WVKS2F24C.xyz.tonk"] } }),
+  "tonk.foundation": JSON.stringify({ webcredentials: { apps: ["8WVKS2F24C.xyz.tonk.nightly"] } }),
+};
 
 // Temporary spike route. Remove after the normal Tonk release serves the asset.
 // No bindings, secrets, authentication requests, or account data are handled here.
 export default {
   async fetch(request) {
     const url = new URL(request.url);
-    if (url.hostname !== "tonk.network" ||
-        url.pathname !== "/.well-known/apple-app-site-association") {
+    const association = associations[url.hostname];
+    if (!association || url.pathname !== "/.well-known/apple-app-site-association") {
       return new Response("Not found", { status: 404 });
     }
     if (request.method !== "GET" && request.method !== "HEAD") {

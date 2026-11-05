@@ -8,6 +8,8 @@ pub mod activate;
 /// Top-document account creation and self-link element.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod ceremony;
+/// Account-bound email invitation and signup continuation.
+pub mod email_invite;
 
 mod account_observability;
 

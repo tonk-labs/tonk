@@ -13,6 +13,10 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   @Published var nativeSignInPending = false
   @Published var attachingAccount = false
   @Published var accountMessage: String?
+  /// The address a new account was created for, until its emailed link is opened.
+  @Published var confirmingEmail: String?
+  /// The account for `confirmingEmail` exists, but the service never enrolled it.
+  @Published var enrollmentPending = false
   @Published var accountConnected = false
   @Published var accountStatusKnown = false
   @Published var spaces: [TonkSpace] = []
@@ -57,6 +61,7 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     // The native picker can cover/detach this view while still querying its worker.
     configuration.preferences.inactiveSchedulingPolicy = .none
     Self.hideFab(in: configuration.userContentController)
+    Self.identifyShell(in: configuration.userContentController)
     websiteDataStore = configuration.websiteDataStore
     webView = WKWebView(frame: .zero, configuration: configuration)
     super.init()
@@ -72,6 +77,15 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     controller.addUserScript(
       WKUserScript(
         source: "window.__tonkHideFab = true;",
+        injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
+  }
+
+  /// Tells the web app's analytics it runs inside the desktop app, so its events
+  /// carry `shell=desktop`. Only this closed value is ever reported.
+  static func identifyShell(in controller: WKUserContentController) {
+    controller.addUserScript(
+      WKUserScript(
+        source: "window.__tonkShell = \"desktop\";",
         injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
   }
 

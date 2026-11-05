@@ -1,5 +1,29 @@
 # Implementation plans
 
+- [Email invitation through account creation](2026-10-21-email-invite-onboarding.md): missing-account Add Contact action, durable delivery, confirmed-recipient claim and signup return.
+
+- [Desktop Add Contact email lookup](2026-10-21-desktop-contact-email-lookup.md): native directory lookup on the desktop redesign, retaining the existing local address book.
+
+## Identity discovery research
+
+[2026-10-20 investigation](2026-10-20-identity-discovery-research.md):
+email-to-root discovery and scoped invitation APIs already exist. Recommended
+order is an email/contact sharing slice, domain binding, then optional AT Protocol
+association. Research complete. The [first native integration spike](2026-10-20-identity-discovery-spike.md)
+connects confirmed email lookup to targeted invitations. The
+[sender-attribution fix](2026-10-20-invitation-sender-attribution.md) binds new
+worker invitations to the minting account; the updated spike verifies Bob as
+inviter while Alice remains founder. Local verification passed (1 integration
+test and 64 focused/library tests). The [CLI follow-up](2026-10-20-cli-invitation-sender-attribution.md)
+adds the same signed sender attribution, with seven CLI checks passing and the
+worker spike rerun successfully. Legacy links retain their attribution. Estimates,
+evidence, trust boundaries and proposed verification gates are in the research note.
+
+[Signup invitation follow-up](2026-10-21-email-invitation-signup-spike.md):
+prove delivery to a subsequently confirmed account while the inviter is offline,
+retaining the original sender separately from the delivery service. Product
+work will extend the existing Address Book in desktop redesign #1134.
+
 ## Release gates
 
 | Plan | Priority | Status | Execution order |

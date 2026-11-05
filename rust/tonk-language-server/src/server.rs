@@ -1427,7 +1427,7 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     impl<Op> EnvProvider for TestEnv<Op>
     where
-        Op: QueryEnv,
+        Op: QueryEnv + dialog_common::ConditionalSend,
     {
         type Opened = TestOpened<Op>;
         async fn open(&self, _repo: &Repo, _branch: &str) -> Option<Self::Opened> {

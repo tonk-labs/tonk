@@ -1,5 +1,10 @@
 # The browser/CLI account handoff
 
+> **Out of date:** the `tonk account` commands (`login`, `logout`, `status`,
+> `sync`, `devices`, `space`) and `tonk link` were removed from the CLI
+> (#982, #1025). Journeys below that use them describe the old flow. For the
+> current CLI, run `tonk help -g`.
+
 ## Connection approval screen (WEB-10)
 
 The shared `/settings/link` approval screen supports Tonk desktop, CLI, and MCP

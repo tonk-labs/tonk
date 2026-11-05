@@ -1398,6 +1398,101 @@ pub(crate) mod tests {
         }
     }
 
+    /// COLLAB-02: the actual emailed locator survives the passkey and activation
+    /// ceremony, then joins through the same command as the native sender.
+    #[dialog_common::test]
+    async fn it_joins_an_emailed_space_after_creating_and_confirming_an_account(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let sender = driver_with_prf(&env).await?;
+        sign_up(&sender, &env, "email-sender@example.com").await?;
+        let key = create_space_awaiting_remote(&sender, "Email invitation", true).await?;
+        sender.enter_default_frame().await?;
+        let pushed = post_json(
+            &sender,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("push invitation space", &pushed);
+        let root = get_json(&sender, "/api/identity/root").await?;
+        let root = successful_body("sending account", &root)["rootDid"].clone();
+        let info = get_json(&sender, &format!("/api/repository/{key}")).await?;
+        let subject = successful_body("shared space", &info)["subject"].clone();
+        let branch = active_branch(&sender).await?;
+        let id = "f2".repeat(32);
+        let request = "request:browser-email-send";
+        let field = |name: &str, kind: &str| serde_json::json!({"the":format!("xyz.tonk.send-email-invitation/{name}"),"as":kind,"cardinality":"one"});
+        let dispatched = post_json(&sender, &format!("/api/repository/profile:tonk/branch/{branch}/transact"), serde_json::json!({"claims":[{"op":"assert","application":{
+            "predicate":{"kind":"transient","concept":{"with":{
+                "id":field("id","Text"),"email":field("email","Text"),"space":field("space","Entity"),"account":field("account","Entity")
+            }}},"parameters":{"this":request,"id":id,"email":"email-recipient@example.com","space":subject,"account":root}
+        }}]})).await?;
+        successful_body("send email invitation", &dispatched);
+        let rows = await_subscription(&sender, &format!("/api/repository/profile:tonk/branch/{branch}/query"), serde_json::json!({
+            "predicate":{"with":{
+                "state":{"the":"xyz.tonk.email-invitation-status/state","as":"Text","cardinality":"one"},
+                "message":{"the":"xyz.tonk.email-invitation-status/message","as":"Text","cardinality":"one"}
+            }},"terms":{"this":request,"state":{"?":{"name":"state"}},"message":{"?":{"name":"message"}}}
+        }), "return (frame.conclusions || frame.asserted || []).some(row => row.fields?.state && row.fields.state !== 'pending');", 60000).await?;
+        let outcomes = rows["conclusions"]
+            .as_array()
+            .or_else(|| rows["asserted"].as_array())
+            .context("email outcome event has no rows")?;
+        anyhow::ensure!(
+            outcomes.iter().any(|row| row["fields"]["state"] == "sent"),
+            "email send outcome: {rows}"
+        );
+        let inbox: Vec<(String, String)> = reqwest::get(env.access_service.join("_test/emails")?)
+            .await?
+            .json()
+            .await?;
+        let locator = inbox
+            .iter()
+            .find(|(to, link)| {
+                to == "email-recipient@example.com" && link.contains("/email-invite#")
+            })
+            .context("invitation email missing")?
+            .1
+            .clone();
+        sender.quit().await?;
+        let recipient = driver_with_prf(&env).await?;
+        goto(&recipient, &locator).await?;
+        wait_for_displayed(&recipient, "#email-invite-account")
+            .await?
+            .click()
+            .await?;
+        run_cluster_ceremony(&recipient, "email-recipient@example.com").await?;
+        activate_in_another_tab(&recipient, &env, "email-recipient@example.com").await?;
+        wait_for_absent(&recipient, "#tonk-register").await?;
+        assert_eq!(recipient.current_url().await?.path(), "/email-invite");
+        assert_eq!(recipient.current_url().await?.fragment(), Some(id.as_str()));
+        // A page reload after signup must retain the locator and find the account.
+        recipient.refresh().await?;
+        wait_for_displayed(&recipient, "#email-invite-join")
+            .await?
+            .click()
+            .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        while !recipient.current_url().await?.path().starts_with("/space/") {
+            if tokio::time::Instant::now() >= deadline {
+                let message = element(&recipient, "#email-invite-status")
+                    .await?
+                    .text()
+                    .await?;
+                return Err(anyhow!("email invitation did not join: {message}"));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let joined = get_json(&recipient, &format!("/api/repository/{key}")).await?;
+        assert_eq!(
+            successful_body("joined emailed space", &joined)["subject"],
+            subject
+        );
+        recipient.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_finishes_signup_in_the_original_tab(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
@@ -2561,14 +2656,51 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A bare `/join` stays put and takes a pasted link from any host. The
+    /// paste joins in place: a link that is not one is refused on the
+    /// page, and one that does not redeem shows the join's failure, with
+    /// the seed never entering the address bar.
     #[dialog_common::test]
-    async fn it_returns_bare_join_visits_home(env: TestEnvironment) -> Result<()> {
+    async fn it_joins_a_link_pasted_on_a_bare_join_visit(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         wait_for_service_worker(&driver).await?;
 
         goto(&driver, env.tonk_web.join("join")?.as_str()).await?;
-        await_url_path(&driver, "/").await?;
-        enter_hub(&driver).await?;
+        // The page renders in the sealed guest frame.
+        enter_guest(&driver).await?;
+        let input = element(&driver, "join-paste input[name=link]").await?;
+
+        input.send_keys("not a link").await?;
+        element(&driver, "join-paste button[type=submit]")
+            .await?
+            .click()
+            .await?;
+        wait_for_text_containing(&driver, "[data-join-paste-error]", "not a link").await?;
+
+        // A ticket link on a host that does not exist: the claim cannot
+        // reach it, so the join fails where it was pasted.
+        let seed = bs58::encode([6u8; 32]).into_string();
+        let link = format!(
+            "https://sync.invalid.test/space/did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#{seed}"
+        );
+        let input = element(&driver, "join-paste input[name=link]").await?;
+        input.clear().await?;
+        input.send_keys(&link).await?;
+        element(&driver, "join-paste button[type=submit]")
+            .await?
+            .click()
+            .await?;
+        element(&driver, ".edge-wall--closed").await?;
+        element(&driver, "join-paste input[name=link]").await?;
+
+        // The address bar is the top page's, outside the guest.
+        driver.enter_default_frame().await?;
+        let here = driver.current_url().await?;
+        assert_eq!(here.path(), "/join", "a paste joins in place");
+        assert!(
+            !here.as_str().contains(&seed),
+            "the pasted seed never enters the address bar: {here}"
+        );
 
         driver.quit().await?;
         Ok(())
@@ -3349,6 +3481,90 @@ pub(crate) mod tests {
         assert_ne!(created[0], &source);
         assert!(after.contains(&source), "the original must remain");
         assert!(driver.current_url().await?.path().contains(created[0]));
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// SPACE-17: a URL naming a branch the space lacks offers to make it.
+    ///
+    /// `/space/{branch}@{did}` opens that branch. One the space does not
+    /// have shows the branch panel (not the "still arriving" panel a branch
+    /// with no library would otherwise fall into), and opening it makes
+    /// nothing. "branch off main" makes it from main: the panel goes and the
+    /// space's own view renders on the new branch.
+    #[dialog_common::test]
+    async fn it_makes_a_branch_a_url_names_from_the_panel(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        let key = create_space(&driver, "Branching").await?;
+        let did = if key.starts_with("did:key:") {
+            key.clone()
+        } else {
+            format!("did:key:{key}")
+        };
+        let name_on = |branch: &'static str| {
+            let driver = driver.clone();
+            let did = did.clone();
+            async move {
+                driver.enter_default_frame().await?;
+                let rows = post_json(
+                    &driver,
+                    &format!("/api/repository/{did}/branch/{branch}/query"),
+                    serde_json::json!({
+                        "predicate": { "with": { "name": {
+                            "the": "xyz.tonk.repo/name", "as": "Text", "cardinality": "one"
+                        } } },
+                        "terms": { "this": did, "name": { "?": { "name": "name" } } }
+                    }),
+                )
+                .await?;
+                Ok::<_, anyhow::Error>(
+                    rows["body"][0]["fields"]["name"]
+                        .as_str()
+                        .map(str::to_owned),
+                )
+            }
+        };
+
+        driver
+            .goto(env.tonk_web.join(&format!("space/draft@{did}"))?.as_str())
+            .await?;
+        enter_guest(&driver).await?;
+        wait_for_displayed(&driver, ".branch-missing").await?;
+        wait_for_text_containing(
+            &driver,
+            ".branch-missing .space-unknown-statement",
+            "no branch draft",
+        )
+        .await?;
+        let arriving = driver
+            .execute(
+                r#"return [...document.querySelectorAll('.space-unknown:not(.branch-missing)')]
+                       .some((panel) => panel.getBoundingClientRect().height > 0);"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            arriving.json().as_bool(),
+            Some(false),
+            "the space is here; only the branch is missing"
+        );
+        assert_eq!(
+            name_on("draft").await?,
+            None,
+            "opening the URL made nothing"
+        );
+
+        enter_guest(&driver).await?;
+        click(&driver, ".branch-missing button[value=\"main\"]").await?;
+        wait_for_absent(&driver, ".branch-missing").await?;
+        wait_for_space_view_displayed(&driver, ".blank-canvas").await?;
+        assert_eq!(
+            name_on("draft").await?.as_deref(),
+            Some("Branching"),
+            "the branch starts from main"
+        );
+
         driver.quit().await?;
         Ok(())
     }
@@ -10143,6 +10359,24 @@ pub(crate) mod tests {
             )
             .await?,
         );
+
+        // Revoking commits on the owner's branch, and the owner pushes
+        // it. The guest's watch, begun before the revocation, may still be
+        // told of that head, but the guest's pull reads a head's root
+        // before adopting it, and the service refuses that read: the
+        // guest's head stays on what it holds, so it can still commit.
+        // Pushed and waited on here rather than left to the owner's
+        // background push, which the guest's write below used to race.
+        successful_body(
+            "owner pushes its revocation",
+            &post_json(
+                &owner,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+        tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Now the same sequence must NOT reach the owner. Asserted on
         // CONTENT, not on a status code: the guest's worker may report a
