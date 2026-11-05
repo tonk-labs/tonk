@@ -1520,5 +1520,64 @@ pub(crate) mod tests {
                 vec![entity_value("status:creating-space")]
             );
         }
+
+        /// A tracked command run on a space branch whose provider commits
+        /// to that branch (installing a component) keeps its invocation,
+        /// fields and all, in the space's overlay.
+        #[dialog_common::test]
+        async fn a_tracked_install_keeps_its_fields_on_the_space() {
+            use tonk_schema::invocation::{Case, case};
+            let state = test_state().await;
+            dispatch(&state, CommandOrigin::default(), create_space_transient("Installs")).await;
+            let space = space_subjects(&state).await[0].clone();
+            let key = space.repo_key().to_owned();
+            let origin = CommandOrigin {
+                repo: key.clone(),
+                branch: "main".to_string(),
+                client: None,
+            };
+            let mut changes = Changes::new();
+            the!("xyz.tonk.command.install-component/component")
+                .of("urn:uuid:install".parse::<Entity>().unwrap())
+                .is("tonk:library/tasks".parse::<Entity>().unwrap())
+                .assert(&mut changes);
+            the!("xyz.tonk.command.install-component/time")
+                .of("urn:uuid:install".parse::<Entity>().unwrap())
+                .is(1.0f64)
+                .assert(&mut changes);
+            stamp(&mut changes, "urn:uuid:install");
+            dispatch(&state, origin, changes).await;
+
+            let overlay = {
+                let tonk = state.read().await;
+                tonk.reactor
+                    .repository(&key)
+                    .branch("main")
+                    .acquire(&tonk.operator)
+                    .await
+                    .unwrap()
+                    .handle()
+                    .overlay()
+                    .export()
+            };
+            assert_eq!(
+                held(&overlay, "urn:uuid:install", Case::the()),
+                vec![entity_value(case::DONE)],
+                "{overlay:?}"
+            );
+            assert_eq!(
+                held(
+                    &overlay,
+                    "urn:uuid:install",
+                    "xyz.tonk.command.install-component/component"
+                ),
+                vec![entity_value("tonk:library/tasks")],
+                "the install keeps the command's fields"
+            );
+            assert_eq!(
+                held(&overlay, "urn:uuid:install", "xyz.tonk.command/concept"),
+                vec![entity_value("tonk:test/report")]
+            );
+        }
     }
 }
