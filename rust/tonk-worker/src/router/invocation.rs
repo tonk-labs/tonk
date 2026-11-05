@@ -45,8 +45,15 @@ pub const FLUSH_WINDOW: web_time::Duration = web_time::Duration::from_millis(100
 
 /// The worker's clock, in milliseconds since the epoch: what every
 /// invocation time is measured on.
+///
+/// A real clock on every target. The sync queue's `now_millis` is `0`
+/// natively to keep its ordering deterministic, which would make every
+/// invocation start, finish and expire at the epoch on a CLI or test host.
 pub fn now() -> f64 {
-    super::sync::now_millis()
+    web_time::SystemTime::now()
+        .duration_since(web_time::SystemTime::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs_f64() * 1000.0)
+        .unwrap_or_default()
 }
 
 /// How long finished invocations are kept, in milliseconds.

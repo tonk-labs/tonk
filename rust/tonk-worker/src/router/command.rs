@@ -360,7 +360,7 @@ pub async fn dispatch_committed(
 
     let invoked = invocation::invoked(&transients);
     let reporter = (!invoked.is_empty()).then(|| Reporter::new(state.clone(), origin.clone()));
-    let started = super::sync::now_millis();
+    let started = super::invocation::now();
     // Match commands and build their `'static` run-futures while holding
     // the read lock — each future owns its decoded command and an env
     // clone, so we can drop the lock before awaiting them. That keeps
@@ -472,7 +472,7 @@ pub async fn dispatch_committed(
                     } else {
                         tonk_schema::invocation::case::FAILED
                     };
-                    let finished = super::sync::now_millis();
+                    let finished = super::invocation::now();
                     reporter.report(invocation::closed(&entity, &outcome, finished, &retention));
                     reporter.expire_after(retention.of(case));
                 }
@@ -1473,31 +1473,6 @@ pub(crate) mod tests {
                     .unwrap();
             }
             assert!(!held(&overlay(&state).await, "id:stale", Case::the()).is_empty());
-            {
-                let o = overlay(&state).await;
-                eprintln!(
-                    "DEBUG expires {:?}",
-                    held(&o, "id:stale", tonk_schema::invocation::Expires::the())
-                );
-                eprintln!(
-                    "DEBUG expired {:?}",
-                    crate::router::invocation::expired(&o, crate::router::invocation::now())
-                );
-                let tonk = state.read().await;
-                eprintln!(
-                    "DEBUG swept {}",
-                    crate::router::invocation::sweep(
-                        &tonk,
-                        &CommandOrigin::default(),
-                        crate::router::invocation::now()
-                    )
-                    .await
-                );
-            }
-            eprintln!(
-                "DEBUG after {:?}",
-                held(&overlay(&state).await, "id:stale", Case::the())
-            );
 
             dispatch(
                 &state,
