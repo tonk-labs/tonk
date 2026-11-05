@@ -628,7 +628,11 @@ concept!: &writer-note
         assert!(status.is_success(), "{status}: {b}");
         let (status, body) =
             json(call(&second, format!("{base}/sync/push"), String::new()).await).await;
-        assert_eq!(status, StatusCode::CONFLICT, "second push: {status}: {body}");
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "second push: {status}: {body}"
+        );
         assert_eq!(
             body["error"]["code"], "SYNC_RIVAL_WRITER",
             "the rival head is named as such: {body}"
