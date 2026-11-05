@@ -226,6 +226,18 @@
       "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-worker/src/router/join.rs"]
     },
     {
+      "id": "WEB-19",
+      "surface": "browser",
+      "area": "Spaces",
+      "name": "Command status in the bar",
+      "summary": "A command run from the command palette reports in the bar where it got to; a refused one says why instead of vanishing.",
+      "artifact": "app/screens/web-19-command-status.png",
+      "capture": "running product",
+      "status": "captured",
+      "journey_ids": ["UI-06"],
+      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-fab/src/markup.rs", "rust/tonk-worker/src/router/invocation.rs", "rust/tonk-worker/src/router/command.rs"]
+    },
+    {
       "id": "CLI-01",
       "surface": "cli",
       "area": "Discovery",
