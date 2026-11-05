@@ -9659,9 +9659,12 @@ mod rename_repository_tests {
             matches!(&outcome, Err(failure) if failure.0.contains("only be removed from the profile")),
             "{outcome:?}"
         );
-        let (space, mirror) = names(&state, &target).await;
+        let (space, mut mirror) = names(&state, &target).await;
         assert_eq!(space, ["Kept"]);
-        assert_eq!(mirror, ["Kept"]);
+        // The profile mirrors every space's name, the asking one's too:
+        // both are still listed, so nothing was removed.
+        mirror.sort();
+        assert_eq!(mirror, ["Asking", "Kept"]);
     }
 
     /// A check for updates naming something that is not a space's DID
