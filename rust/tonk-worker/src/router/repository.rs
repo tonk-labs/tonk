@@ -8815,6 +8815,52 @@ mod space_creation_feedback_tests {
     /// the branch it ran on, through the same `/transact` and `/query` the
     /// page uses, done for a provider that succeeded and failed, with why,
     /// for one that refused.
+    /// An invocation keeps the command's own fields while later commits
+    /// land on its branch. The palette commits on every keystroke
+    /// (`intent/interpret`), so a field that one of those commits swept
+    /// away would leave the invocation unable to say what it was.
+    #[dialog_common::test]
+    async fn an_invocation_keeps_its_fields_across_later_commits() {
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(super::profile_library_tests::test_state().await);
+        let branch = state.read().await.active_branch.clone();
+        let transact = |run: &'static str, name: &'static str| {
+            serde_json::json!({
+                "claims": [{ "op": "assert", "application": {
+                    "predicate": { "kind": "transient", "concept": { "with": {
+                        "name": { "the": "xyz.tonk.command.profile-rename/name", "as": "Text" },
+                        "invoked-at": { "the": "xyz.tonk.command/invoked-at", "as": "Float" },
+                        "invoked-concept": { "the": "xyz.tonk.command/concept", "as": "Entity" }
+                    } } },
+                    "parameters": {
+                        "this": run,
+                        "name": name,
+                        "invoked-at": 1_700_000_000_000.0,
+                        "invoked-concept": "tonk:profile/rename"
+                    }
+                } }]
+            })
+        };
+        let path = format!("/api/repository/profile:tonk/branch/{branch}/transact");
+        post(&app, &path, transact("urn:uuid:first-run", "Ada")).await;
+        post(&app, &path, transact("urn:uuid:second-run", "Grace")).await;
+        let rows = post(
+            &app,
+            &format!("/api/repository/profile:tonk/branch/{branch}/query"),
+            serde_json::json!({
+                "predicate": { "with": {
+                    "name": { "the": "xyz.tonk.command.profile-rename/name", "as": "Text", "cardinality": "one" },
+                    "concept": { "the": "xyz.tonk.command/concept", "as": "Entity", "cardinality": "one" }
+                } },
+                "terms": { "this": "urn:uuid:first-run", "name": { "?": { "name": "name" } },
+                    "concept": { "?": { "name": "concept" } } }
+            }),
+        )
+        .await;
+        assert_eq!(rows[0]["fields"]["name"], "Ada", "{rows}");
+        assert_eq!(rows[0]["fields"]["concept"], "tonk:profile/rename", "{rows}");
+    }
+
     #[dialog_common::test]
     async fn a_command_run_from_the_palette_reports_how_it_went() {
         let (app, state, _lsp) =
