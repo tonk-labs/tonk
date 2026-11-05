@@ -2300,6 +2300,18 @@ account-settings .agent-exp {
 }
 account-settings .agent-exp strong { color: var(--ink); font-weight: 500; }
 account-settings [data-agent-warning], account-settings [data-agent-error] { color: var(--ink); }
+account-settings .agent-debug {
+    min-width: 0; padding: 0 18px 18px; background: var(--wash);
+    font: 400 15px/1.5 var(--cond); color: var(--soft); text-transform: none;
+}
+account-settings .agent-debug summary { padding: 10px 0; cursor: pointer; }
+account-settings .agent-debug summary:hover { color: var(--ink); }
+account-settings .agent-debug :is(summary, pre):focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+account-settings .agent-debug pre {
+    margin: 8px 0 0; padding: 12px; max-height: 16rem; overflow: auto;
+    white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
+    background: var(--card); color: var(--ink); font: 400 12px/1.5 var(--mono);
+}
 account-settings .agent-label {
     box-sizing: border-box; padding: 16px 18px 8px; background: var(--wash);
     font: 600 17px/1.1 var(--cond);
