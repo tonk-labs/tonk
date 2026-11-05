@@ -4,9 +4,8 @@
 
 use dialog_capability::Provider;
 use dialog_common::{Blake3Hash, ConditionalSync};
-use dialog_effects::archive::Get;
-use dialog_repository::{Branch, Hydrate, NetworkedIndex, RemoteFallback, Revision, Upstream};
-use dialog_search_tree::LoadBlock;
+use dialog_effects::archive::Load;
+use dialog_repository::{Branch, Revision};
 
 use super::BranchReference;
 use super::env::{BranchOpenProvider, LoadProvider, PullProvider, SelectProvider};
@@ -195,19 +194,15 @@ impl<'a> Pull<'a> {
 /// branch reads first.
 async fn hold_root<Env>(branch: &Branch, revision: &Revision, env: &Env) -> Result<(), ReactorError>
 where
-    Env: Provider<Get> + Provider<Hydrate> + ConditionalSync,
+    Env: Provider<Load> + ConditionalSync,
 {
-    let fallback = match branch.pulls().iter().next() {
-        Some(Upstream::Remote { remote, .. }) => RemoteFallback::Remote(remote.clone()),
-        Some(Upstream::Unreachable { target, reason, .. }) => RemoteFallback::Unavailable {
-            remote: target.to_string(),
-            reason: reason.clone(),
-        },
-        Some(Upstream::Local { .. }) | None => RemoteFallback::None,
-    };
+    // The load hydrates a miss from the remotes the branch registered as
+    // it opened (its pulls first), and fails naming one it cannot reach.
     let root = Blake3Hash::from(*revision.tree.hash());
-    let index = NetworkedIndex::new(env, branch.archive().index(), fallback);
-    match LoadBlock::new(root.clone()).perform(&index).await {
+    match Load::new(branch.archive().index(), root.clone())
+        .perform(env)
+        .await
+    {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(ReactorError::UnreadableHead {
             branch: branch.name().to_string(),

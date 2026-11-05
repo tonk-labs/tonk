@@ -198,25 +198,26 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-# 0.4.0-rc.3: the pre-release that carries the socket work (dialog-db#564).
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
+# 0.4.0-rc.4: trees read through the env (dialog-db#730, #735) and a
+# difference reads a shared leaf only where its ops touch (dialog-db#736).
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.4", version = "0.4.0-rc.4" }
 
 [profile.dev]
 opt-level = 1
@@ -285,3 +286,4 @@ codegen-units = 16
 
 [profile.ci-release.package."*"]
 opt-level = 1
+
