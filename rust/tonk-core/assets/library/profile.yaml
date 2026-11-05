@@ -3856,6 +3856,11 @@ view!:
            element), so `<tonk-site>` became the repeat node and `<tonk-fab>`
            was dropped from the output entirely. `:has()` reaches the sibling
            display without adding an element. */
+        /* A branch the space lacks carries no library either, so the
+           repository display below lands in its absent-space panel and
+           says the space is still arriving. It is here; the branch is not.
+           The branch panel tells that, so it hides the other one. */
+        body:has(.branch-missing) .space-unknown:not(.branch-missing) { display: none; }
         tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-site,
         tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-fab { display: none; }
       </style>

@@ -522,6 +522,14 @@ window.STORYBOOK_DATA = {
       "variants": "Unvisited/visited; unsupported view; cache miss/expiry; account switch; desktop/narrow."
     },
     {
+      "evidence": "Native worker tests for the missing check, a tab's load through /transact making nothing, starting from main, empty or the remote's branch, and the profile-only command; a whole-browser regression drives the panel and asserts the space view renders on the new branch.",
+      "gaps": "Remote-held branch and unreachable remote in a browser, the FABB on a non-main branch, refusals surfaced in the panel, branch listing and merge.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-17",
+      "title": "Open a branch of a space by URL (/space/{branch}@{did}), and make one the space lacks from the panel that offers \"branch off main\" or \"start empty\".",
+      "variants": "Existing branch; missing branch on a space that is here; space still arriving; remote holding the branch; remote unreachable; invalid name."
+    },
+    {
       "evidence": "Eight space_link tests, including signer recovery and post-invite retry, plus authority/browser happy paths.",
       "gaps": "Crash/retry at every ownership/hosting/listing/upstream stage, partial remote commit, concurrent link.",
       "group": "Spaces: account directory, sync, and collaboration",
@@ -896,7 +904,8 @@ window.STORYBOOK_DATA = {
         "SPACE-09",
         "DATA-02",
         "DATA-09",
-        "UI-04"
+        "UI-04",
+        "SPACE-17"
       ],
       "name": "Space home",
       "source_paths": [

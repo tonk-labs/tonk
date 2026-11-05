@@ -296,6 +296,25 @@ async fn transact_on_branch<'a>(
     let revision_before = session.handle().revision();
     let claim_count = request.claims.len();
 
+    // A branch with no head is one nobody has made yet: a tab opening
+    // `/space/{branch}@{did}` asserts its `tonk:load` here before the
+    // branch exists. Committing would publish an empty first revision and
+    // make the branch, which only `space/create-branch` may do. With only
+    // transients there is nothing durable to write, and no library on the
+    // branch whose rules could derive anything from them, so dispatch them
+    // as the absent-repository path above does.
+    if all_transient && revision_before.is_none() && !request.claims.is_empty() {
+        let transients = transient_changes(request.claims)?;
+        return Ok((
+            Json(TransactResponse {
+                revision_before: None,
+                revision_after: None,
+                commits: CommitSummary::default(),
+            }),
+            (!transients.is_empty()).then_some(transients),
+        ));
+    }
+
     // No claims: short-circuit to a no-op response so callers
     // can submit empty batches without paying for a commit.
     if request.claims.is_empty() {

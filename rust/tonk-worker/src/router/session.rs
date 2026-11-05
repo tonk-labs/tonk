@@ -92,6 +92,14 @@ pub struct WaitingSite {
     anchor: String,
 }
 
+impl WaitingSite {
+    /// Whether this site waits on branch `branch` of `repo`.
+    #[cfg(test)]
+    pub(crate) fn waits_on(&self, repo: &str, branch: &str) -> bool {
+        self.repo == repo && self.branch == branch
+    }
+}
+
 /// Stamp the sites waiting on `repo`, now that the device holds it.
 ///
 /// A stamp that still finds no replica waits again.
@@ -396,6 +404,14 @@ async fn stamp_site_on(
             return;
         }
     };
+    // A branch with no head has not been made yet (a tab at
+    // `/space/{branch}@{did}` before `space/create-branch`): nothing on it
+    // routes. Wait for it, so the command that makes it restamps this site.
+    if !profile && state.handle().revision().is_none() {
+        tonk_common::log!("[stamp] {site} WAITING: branch {branch_name} of {repo} has no head");
+        wait_for_space(tonk, &client, profile, waiting).await;
+        return;
+    }
 
     let Some(replica) = origin_entity(tonk, &state).await else {
         tonk_common::log!(

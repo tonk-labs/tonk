@@ -424,30 +424,48 @@ mod tests {
         );
     }
 
-    /// Opening a branch, as a tab's `tonk:load` does, makes nothing: it stays
-    /// missing until someone asks for it to be made.
+    /// Opening a branch makes nothing: the tab's `<tonk-site>` asserts its
+    /// `tonk:load` through the branch's `/transact`, exactly as here, and
+    /// the branch stays missing until someone asks for it to be made. The
+    /// load still reaches its handler: the site waits for the branch.
     #[dialog_common::test]
     async fn it_makes_no_branch_when_a_tab_opens_one() {
-        let (_app, state, repo) = space("opened-branch").await;
+        let (app, state, repo) = space("opened-branch").await;
+        let load = r#"{"claims":[{"op":"assert","application":{"predicate":{"kind":"transient","concept":{"with":{"path":{"the":"xyz.tonk.site/path","as":"Text","cardinality":"one"}}}},"parameters":{"this":"site:opened-branch","path":"/"}}}]}"#;
 
-        <CommandEnv as dialog_capability::Provider<tonk_schema::command::Load>>::execute(
-            &CommandEnv::new(
-                state.clone(),
-                CommandOrigin {
-                    repo: repo.clone(),
-                    branch: "test".to_owned(),
-                    client: Some(crate::router::ClientId("opened-branch".to_owned())),
-                },
-            ),
-            tonk_schema::command::Load {
-                this: "site:opened-branch".parse().unwrap(),
-                path: tonk_schema::domain::command::load::Path("/".to_owned()),
-            },
-        )
-        .await;
+        for _ in 0..2 {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri(format!("/api/repository/{repo}/branch/test/transact"))
+                .header("content-type", "application/json")
+                .body(Body::from(load))
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(crate::router::ClientId("opened-branch".to_owned()));
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "the load is accepted");
+        }
 
         assert!(missing(&state, &repo, "test").await);
         assert_eq!(head(&state, &repo, "test").await, None);
+        let waiting = state
+            .read()
+            .await
+            .clients
+            .read()
+            .await
+            .get(&crate::router::ClientId("opened-branch".to_owned()))
+            .is_some_and(|client| {
+                client
+                    .waiting
+                    .iter()
+                    .any(|site| site.waits_on(&repo, "test"))
+            });
+        assert!(
+            waiting,
+            "the load reached its handler, and the site waits for the branch"
+        );
     }
 
     #[dialog_common::test]
