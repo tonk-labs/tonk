@@ -1,0 +1,54 @@
+name: 'Try Tonk locally'
+
+on:
+  pull_request:
+    paths:
+      - 'docs/try.md'
+      - '.github/workflows/try-page.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: 'Local example (macOS arm64, Node ${{ matrix.node }})'
+    runs-on: macos-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Run the published command exactly as written
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import re
+          import secrets
+          import subprocess
+          import tempfile
+
+          blocks = re.findall(r'^```sh\n(.*?)^```\s*$', Path('docs/try.md').read_text(), re.M | re.S)
+          if len(blocks) != 1:
+              raise SystemExit('Expected exactly one sh block in docs/try.md')
+          word = 'ci-' + secrets.token_hex(12)
+          with tempfile.TemporaryDirectory(prefix='tonk-try-check-') as directory:
+              result = subprocess.run(
+                  ['sh'], input=blocks[0], text=True, capture_output=True, timeout=120,
+                  env={**os.environ, 'TMPDIR': directory, 'TONK_TRY_WORD': word},
+              )
+              print(result.stdout, end='')
+              print(result.stderr, end='')
+              lines = result.stdout.splitlines()
+              prefix = f'TONK_TRY_PASS {word} '
+              if result.returncode != 0 or not lines or not lines[-1].startswith(prefix):
+                  raise SystemExit('Local example did not finish with its pass line')
+              folder = Path(lines[-1][len(prefix):]).resolve()
+              if folder.parent != Path(directory).resolve() or not folder.is_dir():
+                  raise SystemExit('Pass line did not name the temporary example folder')

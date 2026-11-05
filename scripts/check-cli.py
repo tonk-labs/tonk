@@ -19,6 +19,7 @@ import subprocess
 import tarfile
 import tempfile
 import threading
+import uuid
 
 
 def run(*args, **kwargs):
@@ -115,6 +116,48 @@ def check_npm(binary, root, temp, env, version, target_platform, package_version
         raise RuntimeError("npm launcher help differs from the artifact")
 
 
+def check_data(binary, temp, env):
+    """Read back a local record and view through separate CLI processes.
+
+    Keep this independent of the candidate source and the pinned public page:
+    release callers may test an artifact built from a different checkout.
+    """
+    work = temp / "local-example"
+    work.mkdir()
+    data_env = {**env, "TONK_SPACES_STATE": str(work / "state"), "TONK_SPACE": "try",
+                "TONK_TELEMETRY_STATE": str(work / "state"), "TONK_UPDATE_STATE": str(work / "state"),
+                "DO_NOT_TRACK": "1", "TONK_NO_UPDATE_CHECK": "1"}
+    word = f"smoke-{uuid.uuid4().hex}"
+
+    def tonk(*args):
+        try:
+            return run(str(binary), *args, cwd=work, env=data_env)
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError(f"local example command {args!r} failed:\n{error.stdout}{error.stderr}") from error
+
+    tonk("space", "new", "try")
+    tonk("concept", "add", "task", "--field", "title:text:one", "--field", "done:boolean:one")
+    tonk("assert", "task", "--title", word, "--done", "false")
+    tonk("view", "add", "task", "--kind", "directory", "--template", "<li>{title}</li>")
+    try:
+        rows = json.loads(tonk("query", "task", "--json"))
+    except json.JSONDecodeError as error:
+        raise RuntimeError("local example query did not return JSON") from error
+    if (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
+            or rows[0].get("title") != word or rows[0].get("done") is not False
+            or not rows[0].get("this")):
+        raise RuntimeError(f"local example query did not return the saved task: {rows!r}")
+    rendered = tonk("render", "task")
+    if f">{word}</li>" not in rendered:
+        raise RuntimeError(f"local example view did not render the saved task: {rendered!r}")
+    try:
+        status = json.loads(tonk("status", "--json"))
+    except json.JSONDecodeError as error:
+        raise RuntimeError("local example status did not return JSON") from error
+    if not isinstance(status, dict) or status.get("accessKind") != "local-only":
+        raise RuntimeError(f"local example space is not local-only: {status!r}")
+
+
 def check_tls(binary, temp, env):
     # A local CA makes this deterministic and proves native roots actually load.
     # The deliberately wrong channel stops update before any binary replacement.
@@ -205,9 +248,13 @@ def main():
         if args.expected_version and version != f"tonk {args.expected_version}":
             raise RuntimeError(f"artifact does not report release version {args.expected_version}: {version}")
         run(str(executable), "--help", env=env)
+        # The public example is macOS-only until Linux is explicitly included.
+        if args.platform == "darwin-arm64":
+            check_data(executable, temp, env)
         check_npm(executable, root, temp, env, version, args.platform, version.removeprefix("tonk "))
         check_tls(executable, temp, env)
-        print(f"PASS: {version}: {args.platform} artifact, direct startup, offline npm launcher, trusted/untrusted TLS")
+        data_check = ", local data and view" if args.platform == "darwin-arm64" else ""
+        print(f"PASS: {version}: {args.platform} artifact, direct startup{data_check}, offline npm launcher, trusted/untrusted TLS")
 
 
 if __name__ == "__main__":
