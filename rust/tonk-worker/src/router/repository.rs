@@ -14703,7 +14703,8 @@ mod connection_invite_overlay_tests {
                 space: Some(selected_did.to_string()),
             },
         )
-        .await;
+        .await
+        .expect("the profile may hand off for the space it names");
         assert_eq!(response_count(&state, &selected).await, 1);
         assert_eq!(response_count(&state, &other).await, 0);
 
@@ -14715,7 +14716,7 @@ mod connection_invite_overlay_tests {
                 client: None,
             },
         );
-        dialog_capability::Provider::<AgentHandoffRequest>::execute(
+        let refused = dialog_capability::Provider::<AgentHandoffRequest>::execute(
             &selected_space,
             AgentHandoffRequest {
                 fresh: true,
@@ -14723,6 +14724,10 @@ mod connection_invite_overlay_tests {
             },
         )
         .await;
+        assert!(
+            matches!(&refused, Err(_)),
+            "a space may not hand off for another space: {refused:?}"
+        );
         assert_eq!(response_count(&state, &other).await, 0);
     }
 
