@@ -14,6 +14,9 @@ lsp-types = { workspace = true }
 dialog-varsig = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-artifacts = { workspace = true }
+dialog-common = { workspace = true }
+dialog-effects = { workspace = true }
+dialog-repository = { workspace = true }
 url = { workspace = true, features = ["serde"] }
 tonk-account = { workspace = true }
 

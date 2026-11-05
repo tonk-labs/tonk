@@ -23,7 +23,7 @@ use std::collections::HashMap;
 
 use dialog_artifacts::{Artifact, Changes, Entity, Instruction};
 use dialog_capability::{Command, Provider};
-use dialog_common::ConditionalSync;
+use dialog_common::{ConditionalSend, ConditionalSync};
 use dialog_query::concept::Concept;
 use dialog_query::{Application, ConceptDescriptor, Conclusion, Descriptor, Match, Term};
 
@@ -251,10 +251,10 @@ pub type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 's
 /// cycle). The worker instantiates `Env = CommandEnv` wrapping its
 /// `AppState`.
 ///
-/// `ConditionalSync` (Send + Sync off wasm, nothing on wasm) keeps a
-/// `Box<dyn CommandHandler<Env>>` — and therefore the consumer's
+/// `ConditionalSend + ConditionalSync` (Send + Sync off wasm, nothing on wasm)
+/// keeps a `Box<dyn CommandHandler<Env>>` — and therefore the consumer's
 /// state — `Send + Sync` on native, which axum requires.
-pub trait CommandHandler<Env>: ConditionalSync {
+pub trait CommandHandler<Env>: ConditionalSend + ConditionalSync {
     /// Attribute names whose presence on a transient entity makes this
     /// command a candidate. Drives the reverse index.
     fn trigger_attributes(&self) -> &[String];
@@ -324,8 +324,8 @@ where
 
 impl<C, Env> CommandHandler<Env> for TypedCommand<C, Env>
 where
-    C: Decode + Command<Input = C, Output = ()> + ConditionalSync + 'static,
-    Env: Provider<C> + Clone + ConditionalSync + 'static,
+    C: Decode + Command<Input = C, Output = ()> + ConditionalSend + ConditionalSync + 'static,
+    Env: Provider<C> + Clone + ConditionalSend + ConditionalSync + 'static,
 {
     fn trigger_attributes(&self) -> &[String] {
         &self.attributes
@@ -396,9 +396,13 @@ where
 
 impl<Current, Legacy, Env> CommandHandler<Env> for MigratedCommand<Current, Legacy, Env>
 where
-    Current: Decode + Command<Input = Current, Output = ()> + ConditionalSync + 'static,
+    Current: Decode
+        + Command<Input = Current, Output = ()>
+        + ConditionalSend
+        + ConditionalSync
+        + 'static,
     Legacy: Decode + Into<Current> + ConditionalSync + 'static,
-    Env: Provider<Current> + Clone + ConditionalSync + 'static,
+    Env: Provider<Current> + Clone + ConditionalSend + ConditionalSync + 'static,
 {
     fn trigger_attributes(&self) -> &[String] {
         self.command.trigger_attributes()
@@ -462,8 +466,8 @@ impl<Env> CommandRegistry<Env> {
     /// ```
     pub fn command<C>(mut self) -> Self
     where
-        C: Decode + Command<Input = C, Output = ()> + ConditionalSync + 'static,
-        Env: Provider<C> + Clone + ConditionalSync + 'static,
+        C: Decode + Command<Input = C, Output = ()> + ConditionalSend + ConditionalSync + 'static,
+        Env: Provider<C> + Clone + ConditionalSend + ConditionalSync + 'static,
     {
         self.register(Box::new(TypedCommand::<C, Env>::new()));
         self
@@ -475,9 +479,13 @@ impl<Env> CommandRegistry<Env> {
     /// see [`Migrated`]. Chainable.
     pub fn migrated<Current, Legacy>(mut self) -> Self
     where
-        Current: Decode + Command<Input = Current, Output = ()> + ConditionalSync + 'static,
+        Current: Decode
+            + Command<Input = Current, Output = ()>
+            + ConditionalSend
+            + ConditionalSync
+            + 'static,
         Legacy: Decode + Into<Current> + ConditionalSync + 'static,
-        Env: Provider<Current> + Clone + ConditionalSync + 'static,
+        Env: Provider<Current> + Clone + ConditionalSend + ConditionalSync + 'static,
     {
         self.register(Box::new(MigratedCommand::<Current, Legacy, Env>::new()));
         self

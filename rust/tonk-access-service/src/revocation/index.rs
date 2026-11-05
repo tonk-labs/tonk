@@ -162,7 +162,9 @@ impl<I: RevocationIndex + dialog_common::ConditionalSync> RevocationIndex for &I
 /// give them separate sets.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl<I: RevocationIndex + dialog_common::ConditionalSync> RevocationIndex for std::sync::Arc<I> {
+impl<I: RevocationIndex + dialog_common::ConditionalSend + dialog_common::ConditionalSync>
+    RevocationIndex for std::sync::Arc<I>
+{
     async fn record(
         &self,
         target: &str,

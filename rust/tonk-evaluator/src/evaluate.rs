@@ -57,13 +57,15 @@ use std::collections::BTreeMap;
 use dialog_artifacts::{Changes, Entity, Preload, Speculation, Value};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
+use dialog_effects::blob::Load as BlobLoad;
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_query::attribute::The;
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::{ConceptDescriptor, ConceptQuery, Output as _, Parameters, Term};
-use dialog_repository::{Branch, Hydrate, RemoteSite, Transaction};
+use dialog_repository::{Branch, RemoteSite, Transaction};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tonk_notation::Syntax;
@@ -165,7 +167,8 @@ pub trait EvaluateEnv:
     + Provider<Resolve>
     + Provider<Publish>
     + Provider<Identify>
-    + Provider<Hydrate>
+    + Provider<ArchiveLoad>
+    + Provider<BlobLoad>
     + Provider<Preload>
     + Provider<Speculation>
     + Provider<Fork<RemoteSite, Get>>
@@ -183,7 +186,8 @@ impl<T> EvaluateEnv for T where
         + Provider<Resolve>
         + Provider<Publish>
         + Provider<Identify>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<BlobLoad>
         + Provider<Preload>
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
