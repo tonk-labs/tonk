@@ -8858,7 +8858,10 @@ mod space_creation_feedback_tests {
         )
         .await;
         assert_eq!(rows[0]["fields"]["name"], "Ada", "{rows}");
-        assert_eq!(rows[0]["fields"]["concept"], "tonk:profile/rename", "{rows}");
+        assert_eq!(
+            rows[0]["fields"]["concept"], "tonk:profile/rename",
+            "{rows}"
+        );
     }
 
     #[dialog_common::test]

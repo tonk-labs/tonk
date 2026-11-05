@@ -1528,7 +1528,12 @@ pub(crate) mod tests {
         async fn a_tracked_install_keeps_its_fields_on_the_space() {
             use tonk_schema::invocation::{Case, case};
             let state = test_state().await;
-            dispatch(&state, CommandOrigin::default(), create_space_transient("Installs")).await;
+            dispatch(
+                &state,
+                CommandOrigin::default(),
+                create_space_transient("Installs"),
+            )
+            .await;
             let space = space_subjects(&state).await[0].clone();
             let key = space.repo_key().to_owned();
             let origin = CommandOrigin {
