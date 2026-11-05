@@ -1,5 +1,10 @@
 # Journey catalog
 
+> **Out of date:** the `tonk account` commands (`login`, `logout`, `status`,
+> `sync`, `devices`, `space`) and `tonk link` were removed from the CLI
+> (#982, #1025). Journeys below that use them describe the old flow. For the
+> current CLI, run `tonk help -g`.
+
 ## How to read this catalog
 
 This is the complete map of user goals entered through the current `tonk` CLI

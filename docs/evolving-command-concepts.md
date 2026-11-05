@@ -4,6 +4,10 @@ Status: the mechanism already exists and is unused. Nothing to build; something
 to adopt.
 Date: 2026-07-17
 
+> **Out of date:** spaces are now re-seeded on mount (`upgrade_seed` in
+> `rust/tonk-worker/src/router/repository.rs`), so "never re-seeded" below no
+> longer holds for spaces.
+
 ## The trap
 
 A command concept cannot gain a **required** field.
