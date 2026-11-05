@@ -164,7 +164,9 @@ impl Peer {
         let _ = std::fs::remove_file(&socket);
         let listener = UnixListener::bind(&socket).map_err(unavailable)?;
         let router = peer.lock().await.router();
-        let (origin, loopback) = crate::loopback::start(router).await.map_err(unavailable)?;
+        let (origin, loopback) = crate::loopback::start(&self.root, router)
+            .await
+            .map_err(unavailable)?;
         let origin: Arc<str> = origin.into();
         // A newer build asked us to step aside: release the directory and
         // retire this worker, then keep serving this session by forwarding.
