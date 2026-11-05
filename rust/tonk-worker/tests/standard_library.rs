@@ -400,7 +400,7 @@ const FORM_CONTROL_PREFIX: &str = "dom.event.current-target.elements.";
 /// "open this space" over a repository that loaded.
 #[dialog_common::test]
 fn it_declares_the_repository_concept_the_space_chrome_resolves() {
-    let chrome = "<tonk-display with={id} entity={id} model=tonk:repository view=title>";
+    let chrome = "<tonk-display with=\"{space-branch}@{space-repo}\" entity={space-repo} model=tonk:repository view=title>";
     assert!(
         PROFILE_LIBRARY.contains(chrome),
         "the space chrome decides a space is here by resolving `tonk:repository`"
@@ -467,11 +467,11 @@ fn it_reads_form_controls_at_properties_they_have() {
 #[dialog_common::test]
 fn it_leaves_network_bearing_space_bindings_unquoted() {
     assert!(
-        PROFILE_LIBRARY.contains("space={id}"),
+        PROFILE_LIBRARY.contains("space={space-repo}"),
         "the FAB space binding must be resolved by the renderer"
     );
     assert!(
-        !PROFILE_LIBRARY.contains("space=\"{id}\""),
+        !PROFILE_LIBRARY.contains("space=\"{space-repo}\""),
         "a quoted binding can reach membership fetches unresolved"
     );
 }
@@ -591,7 +591,7 @@ fn display_body<'a>(source: &'a str, opening: &str) -> Option<&'a str> {
 fn it_hides_space_absence_slots_before_display_initialization() {
     let chrome = display_body(
         PROFILE_LIBRARY,
-        "<tonk-display with={id} entity={id} model=tonk:repository view=title>",
+        "<tonk-display with=\"{space-branch}@{space-repo}\" entity={space-repo} model=tonk:repository view=title>",
     )
     .expect("space chrome must contain its repository title display");
     for slot in ["no-model", "no-entity", "no-view"] {
@@ -612,7 +612,7 @@ fn it_hides_space_absence_slots_before_display_initialization() {
 fn it_recovers_from_every_absent_space_directory_state() {
     let directory_probe = display_body(
         PROFILE_LIBRARY,
-        "<tonk-display with=\"{profile-branch}@profile:tonk\" entity={id} model=space view=downloading>",
+        "<tonk-display with=\"{profile-branch}@profile:tonk\" entity={space-repo} model=space view=downloading>",
     )
     .expect("absent-space chrome must consult the profile directory");
 
