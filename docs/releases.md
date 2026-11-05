@@ -63,14 +63,15 @@ missing access blocks the audit. The empty App/custodian/cutover configuration i
 
 ## Keep the local example current
 
-`docs/try.md` is the source for https://tonk.xyz/try. It targets CLI v0.7.0 on
+`docs/try.md` is the source for https://tonk.xyz/try. It targets CLI v0.7.0-rc.1 on
 Apple Silicon macOS. Linux is deferred for this example; a release alone does
 not add it. Analytics and update checks stay disabled.
 
 Before publishing the page or changing its version pin:
 
-- Confirm the exact version is available on npm. Do not substitute `latest` or
-  an RC for the pinned release.
+- Confirm the exact version is available on npm. Keep the explicit version pin;
+  do not substitute the moving `latest` or `next` tags. The current prerelease
+  is limited to the isolated local example, not production tool links.
 - Run **Try Tonk locally** (`try-page.yml`) on the branch containing the page.
   Both Node 18 and Node 24 jobs must pass using the published package. The
   macOS CLI artifact smoke job also checks the candidate's local data and view
@@ -84,6 +85,9 @@ Before publishing the page or changing its version pin:
   pass. Recheck version and platform claims in the README and the site's four
   `llms` files when updating them; the example proves local storage and
   rendering, not sync, sharing or MCP.
+- Merge the loading-page hint and `/agent/` pointer only after `/try` is live.
+  The hint carries URLs and facts, with no install command. It reaches production
+  with the next production deployment, independently of the example's CLI pin.
 
 ## Maintaining the contract
 

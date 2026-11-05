@@ -4,7 +4,8 @@ Create a space, define a task, save a record and render a view in about 10 secon
 No account, link or Tonk service needed.
 
 Requires Apple Silicon macOS and Node 18+ with npm. Linux is deferred for this
-example. The command installs @tonk/cli 0.7.0 from npm into a temporary folder.
+example. The command installs @tonk/cli 0.7.0-rc.1 from npm into a temporary folder.
+This prerelease is for this local check only; do not join a tonk.network space with it.
 Its data stays there, with analytics and update checks disabled. After the npm
 download, everything runs locally. The binary runs with your user permissions.
 
@@ -29,7 +30,7 @@ TONK_TRY_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tonk-try.XXXXXX") || exit 1
 cd "$TONK_TRY_DIR" || exit 1
 echo "Folder: $TONK_TRY_DIR"
 TMPDIR="$TONK_TRY_DIR" npm install --prefix "$TONK_TRY_DIR" --cache "$TONK_TRY_DIR/npm" \
-  --ignore-scripts --no-audit --no-fund '@tonk/cli@0.7.0' || exit 1
+  --ignore-scripts --no-audit --no-fund '@tonk/cli@0.7.0-rc.1' || exit 1
 TONK_TRY_BIN="$TONK_TRY_DIR/node_modules/@tonk/cli-darwin-arm64/bin/tonk"
 [ -x "$TONK_TRY_BIN" ] || exit 1
 tonk() {
