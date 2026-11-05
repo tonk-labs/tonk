@@ -5992,12 +5992,32 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         "/library/table.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/table.yaml").to_owned())
         }
+        "/library/tasks.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/tasks.yaml").to_owned())
+        }
         "/library/version-control.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/version-control.yaml").to_owned())
         }
         other => Err(TonkWorkerError::Internal(format!(
             "no embedded library for '{other}'"
         ))),
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod embedded_library_tests {
+    /// Every component a space can install is embedded for hosts that
+    /// cannot fetch the library, so installing one works on the CLI and in
+    /// native tests as it does in the browser.
+    #[dialog_common::test]
+    fn every_installable_component_is_embedded() {
+        for name in super::super::library::COMPONENTS {
+            let url = format!("/library/{name}.yaml");
+            assert!(
+                super::embedded_standard_library(&url).is_ok(),
+                "{url} is installable but not embedded"
+            );
+        }
     }
 }
 
