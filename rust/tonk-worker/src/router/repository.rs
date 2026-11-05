@@ -14725,7 +14725,7 @@ mod connection_invite_overlay_tests {
         )
         .await;
         assert!(
-            matches!(&refused, Err(_)),
+            matches!(&refused, Err(failure) if failure.0.contains("only connect tools to itself")),
             "a space may not hand off for another space: {refused:?}"
         );
         assert_eq!(response_count(&state, &other).await, 0);
