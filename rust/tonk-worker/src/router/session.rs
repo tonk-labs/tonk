@@ -110,7 +110,8 @@ pub(crate) async fn stamp_waiting_sites(tonk: &crate::worker::TonkState, repo: &
             .collect()
     };
     for (client, waiting) in waiting {
-        stamp_site_on(
+        // A replayed stamp has no invoker to tell; its failures are logged.
+        let _ = stamp_site_on(
             tonk,
             &waiting.site,
             client,
@@ -230,7 +231,8 @@ pub async fn register_site_on_repo(
     // device has not pulled yet is mounted first, as on every other
     // route that addresses a space by key.
     super::adopt::mount_on_first_use(&tonk, &state, &path.repo).await;
-    stamp_site_on(
+    // The route answers with the site either way; a failed stamp is logged.
+    let _ = stamp_site_on(
         &tonk,
         &site,
         client,
@@ -260,7 +262,8 @@ async fn register_site_on_profile(
     let body = read_site_request(request).await?;
     let tonk = state.read().await;
     let repo = tonk.profile_name.clone();
-    stamp_site_on(
+    // The route answers with the site either way; a failed stamp is logged.
+    let _ = stamp_site_on(
         &tonk,
         &site,
         client,
@@ -329,7 +332,8 @@ async fn stamp_site(
     let Some(RouteTarget::Space { space, rest }) = resolve_path(path) else {
         return;
     };
-    stamp_site_on(
+    // This caller reports nothing; a failed stamp is logged.
+    let _ = stamp_site_on(
         tonk,
         site,
         client,
@@ -351,8 +355,10 @@ async fn stamp_site(
 ///
 /// Acquires the branch, derives the replica (the branch's origin), matches the
 /// route, and writes `{path, anchor, repo, branch, replica, route, concept}`
-/// plus the captured route params into the session overlay. Best-effort: an
-/// unacquirable branch, an absent replica, or no matched route skip stamping.
+/// plus the captured route params into the session overlay. An unacquirable
+/// branch or an absent replica keeps the stamp waiting for the space to
+/// arrive, which is not a failure; an unparseable site, no matched route or
+/// a failed overlay write is. Returns the stamped site entity on success.
 #[allow(clippy::too_many_arguments)]
 async fn stamp_site_on(
     tonk: &crate::worker::TonkState,
@@ -364,11 +370,12 @@ async fn stamp_site_on(
     path: &str,
     rest: &str,
     anchor: String,
-) {
+) -> tonk_schema::invocation::Outcome {
     use tonk_schema::Site;
+    use tonk_schema::invocation::{Done, Failure};
 
     let Ok(entity): Result<dialog_artifacts::Entity, _> = site.parse() else {
-        return;
+        return Err(Failure::new("The tab's site is not a valid entity."));
     };
 
     // The profile lives outside the named-repo namespace, so it is acquired
@@ -393,7 +400,9 @@ async fn stamp_site_on(
         Err(e) => {
             tonk_common::log!("register_site: failed to acquire branch for {path}: {e}");
             wait_for_space(tonk, &client, profile, waiting).await;
-            return;
+            // Deferred, not failed: the join that brings the space replays
+            // the stamp, and that replay's outcome is not reported here.
+            return Done::nothing();
         }
     };
 
@@ -402,11 +411,12 @@ async fn stamp_site_on(
             "[stamp] {site} WAITING: no origin_entity (repo={repo} branch={branch_name} rest={rest})"
         );
         wait_for_space(tonk, &client, profile, waiting).await;
-        return;
+        // Deferred, as above: the replay's outcome is not reported here.
+        return Done::nothing();
     };
     let Some(matched) = match_route(tonk, &state, rest).await else {
         tonk_common::log!("[stamp] {site} SKIPPED: no route match for rest={rest:?}");
-        return;
+        return Err(Failure::new(format!("No route matches {rest:?}.")));
     };
 
     // A re-stamp REPLACES this site's overlay facts, not merges into them:
@@ -483,6 +493,9 @@ async fn stamp_site_on(
     }
     if let Err(e) = overlay.write().perform(&tonk.operator).await {
         tonk_common::log!("register_site: overlay write failed for {path}: {e}");
+        Err(Failure::new(format!(
+            "Could not record the page's route: {e}"
+        )))
     } else {
         // Record the site against its client so the stale-client sweep can
         // drop these overlay facts once the client is provably gone. The
@@ -500,6 +513,7 @@ async fn stamp_site_on(
                 .insert(site.to_owned());
         }
         tonk_common::log!("[stamp] {site} WROTE path={path}");
+        Done::with(entity)
     }
 }
 
@@ -614,7 +628,10 @@ fn site_param_claim(
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::Load> for crate::router::CommandEnv {
-    async fn execute(&self, command: tonk_schema::command::Load) {
+    async fn execute(
+        &self,
+        command: tonk_schema::command::Load,
+    ) -> tonk_schema::invocation::Outcome {
         // `this` is the site entity to stamp, `path` the route-relative
         // path to match + record.
         let site = command.this.to_string();
@@ -667,7 +684,7 @@ impl dialog_capability::Provider<tonk_schema::command::Load> for crate::router::
             &path,
             String::new(),
         )
-        .await;
+        .await
     }
 }
 
@@ -1234,5 +1251,72 @@ mod tests {
             "the notebook view's `with` ({with:?}) must address the profile endpoint \
              with a named profile, not a repository"
         );
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod load_outcome_tests {
+    use crate::router::command::tests::native::test_state;
+    use crate::router::{ClientId, CommandEnv, CommandOrigin};
+
+    /// Run `Load` for `site` at `path`, from `origin`.
+    async fn load(
+        state: &crate::router::AppState,
+        origin: CommandOrigin,
+        site: &str,
+        path: &str,
+    ) -> tonk_schema::invocation::Outcome {
+        let env = CommandEnv::new(state.clone(), origin);
+        let command = tonk_schema::command::Load {
+            this: site.parse().unwrap(),
+            path: tonk_schema::domain::command::load::Path(path.to_owned()),
+        };
+        dialog_capability::Provider::<tonk_schema::command::Load>::execute(&env, command).await
+    }
+
+    /// A load on the profile stamps the tab's site and names it.
+    ///
+    /// The failing paths (no route matches, an overlay write fails) are
+    /// not reachable natively: the profile's library routes `/{*rest}`,
+    /// so every path matches, and a space this device does not hold
+    /// defers the stamp, which [`a_load_on_a_missing_space_waits`] pins.
+    #[dialog_common::test]
+    async fn a_load_on_the_profile_names_the_stamped_site() {
+        let state = test_state().await;
+        let origin = CommandOrigin {
+            branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
+            client: Some(ClientId("tab-load".to_owned())),
+            ..CommandOrigin::default()
+        };
+        let outcome = load(&state, origin, "site:tab-load", "/settings").await;
+        assert_eq!(
+            outcome,
+            tonk_schema::invocation::Done::with("site:tab-load".parse().unwrap())
+        );
+        let tonk = state.read().await;
+        let clients = tonk.clients.read().await;
+        assert!(
+            clients
+                .get(&ClientId("tab-load".to_owned()))
+                .is_some_and(|client| client.sites.contains("site:tab-load"))
+        );
+    }
+
+    /// A load on a space this device does not hold yet is deferred, not
+    /// failed: nothing is stamped, and the site waits for the space.
+    #[dialog_common::test]
+    async fn a_load_on_a_missing_space_waits() {
+        let state = test_state().await;
+        let origin = CommandOrigin {
+            repo: "no-such-space".to_owned(),
+            branch: "main".to_owned(),
+            client: Some(ClientId("tab-wait".to_owned())),
+        };
+        let outcome = load(&state, origin, "site:tab-wait", "/").await;
+        assert_eq!(outcome, tonk_schema::invocation::Done::nothing());
+        let tonk = state.read().await;
+        let clients = tonk.clients.read().await;
+        let client = clients.get(&ClientId("tab-wait".to_owned()));
+        assert!(client.is_none_or(|client| client.sites.is_empty()));
     }
 }

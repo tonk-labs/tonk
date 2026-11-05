@@ -244,24 +244,45 @@ async fn pull_content_on_mount(tonk: &TonkState, subject: &dialog_varsig::Did) {
 impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
     for crate::router::CommandEnv
 {
-    async fn execute(&self, command: tonk_schema::command::ReplicateSpace) {
-        let key = command.space.0.to_string();
+    async fn execute(
+        &self,
+        command: tonk_schema::command::ReplicateSpace,
+    ) -> tonk_schema::invocation::Outcome {
+        use tonk_schema::invocation::{Done, Failure};
+        let space = command.space.0;
+        let key = space.to_string();
         // A space may only ask for ITSELF; the profile may ask for any.
         if !self.may_target_space(&key) {
             log!("ReplicateSpace '{key}': refused from another space's branch");
-            return;
+            return Err(Failure::new(
+                "a space can only replicate itself, not another space",
+            ));
         }
         // A clone, not a guard: mounting pulls the space over the network.
         let tonk = self.state().read().await.clone();
         match ensure_space_mounted(&tonk, &key).await {
             Ok(true) => {
+                // On wasm the seed upgrade runs detached and reports
+                // nothing to this outcome.
                 schedule_seed_upgrade(&tonk, self.state().clone(), &key).await;
                 log!("ReplicateSpace '{key}': mounted");
+                Done::with(space)
             }
-            // Not an error: the directory has no mount record for it, so
-            // there is nothing this device could pull.
-            Ok(false) => log!("ReplicateSpace '{key}': nothing to mount"),
-            Err(error) => log!("ReplicateSpace '{key}': {error}"),
+            // Not an error for the lazy mount path, but this command was an
+            // explicit ask to pull the space, and the directory has no
+            // mount record for it, so nothing could be pulled.
+            Ok(false) => {
+                log!("ReplicateSpace '{key}': nothing to mount");
+                Err(Failure::new(
+                    "this account has no record of that space to replicate",
+                ))
+            }
+            Err(error) => {
+                log!("ReplicateSpace '{key}': {error}");
+                Err(Failure::new(format!(
+                    "replicating the space failed: {error}"
+                )))
+            }
         }
     }
 }
@@ -1937,5 +1958,67 @@ mod native_tests {
             release.send(()).unwrap();
             answering.await.unwrap();
         }
+    }
+
+    /// A space's branch cannot ask to replicate a different space: the
+    /// outcome is the containment refusal, and the profile lists no replica
+    /// for the target afterwards.
+    #[dialog_common::test]
+    async fn it_refuses_to_replicate_another_space_from_a_space_branch() {
+        use dialog_query::{Output as _, Query, Term};
+        use tonk_schema::Replica;
+
+        let state = crate::router::command::tests::native::test_state().await;
+        let target = "did:key:z6MkTargetSpaceForReplicateRefusalTest";
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: "did:key:z6MkOtherSpaceForReplicateRefusalTest".into(),
+                branch: crate::router::repository::CONTENT_BRANCH.into(),
+                client: None,
+            },
+        );
+        let command = tonk_schema::command::ReplicateSpace {
+            this: "id:replicate".parse().unwrap(),
+            space: tonk_schema::domain::command::current::replicate_space::Space(
+                target.parse().unwrap(),
+            ),
+        };
+        let outcome = dialog_capability::Provider::<tonk_schema::command::ReplicateSpace>::execute(
+            &env, command,
+        )
+        .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("only replicate itself")),
+            "{outcome:?}"
+        );
+
+        let tonk = state.read().await;
+        let meta = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let replicas: Vec<Replica> = meta
+            .handle()
+            .query()
+            .select(Query::<Replica> {
+                this: Term::var("this"),
+                subject: Term::var("subject"),
+                profile: Term::var("profile"),
+                kind: Term::var("kind"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert!(
+            replicas
+                .iter()
+                .all(|replica| replica.subject.0.to_string() != target),
+            "a refused replicate must not record the target"
+        );
     }
 }

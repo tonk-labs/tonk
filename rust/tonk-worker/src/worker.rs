@@ -2078,7 +2078,14 @@ impl TonkServiceWorker {
         // behind. Restore it before serving anything, so no read or
         // subscription observes this worker without it.
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        if let Some(overlays) = crate::handoff::take().await {
+        if let Some(mut overlays) = crate::handoff::take().await {
+            // What the predecessor was still running will never report back
+            // here: close it as aborted, and drop what has expired.
+            let retention = crate::router::invocation::Retention::read(&state).await;
+            let now = crate::router::invocation::now();
+            for snapshot in &mut overlays {
+                crate::router::invocation::settle_inherited(&mut snapshot.changes, now, &retention);
+            }
             let restored = state
                 .reactor
                 .import_overlays(overlays, &state.operator)

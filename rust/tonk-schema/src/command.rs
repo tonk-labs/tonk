@@ -39,7 +39,7 @@ pub struct DeleteAccount {
 
 impl Command for DeleteAccount {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// `tonk:authorize-device`: delegate the account to a waiting process.
@@ -65,7 +65,7 @@ pub struct AuthorizeDevice {
 
 impl Command for AuthorizeDevice {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// `tonk:add-passkey`: seal the account under a second passkey.
@@ -93,7 +93,7 @@ impl From<legacy::AddPasskey> for AddPasskey {
 
 impl Command for AddPasskey {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Ask whether an address is already registered, so the form can route
@@ -126,7 +126,7 @@ impl From<legacy::CheckEmail> for CheckEmail {
 
 impl Command for CheckEmail {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Create the account for an address, once the lookup said it is free.
@@ -156,7 +156,7 @@ impl From<legacy::RegisterAccount> for RegisterAccount {
 
 impl Command for RegisterAccount {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Request to create a new space (repository) by local name.
@@ -199,7 +199,7 @@ impl From<legacy::CreateSpace> for CreateSpace {
 /// raw facts — the provider then receives both.
 impl Command for CreateSpace {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Load the requesting tab's site for its current path.
@@ -235,7 +235,7 @@ pub struct Load {
 /// `tonk:site` onto the command's `this` from the origin branch.
 impl Command for Load {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Mint a repository invite: a membership keypair, a delegation of the
@@ -275,7 +275,7 @@ impl From<legacy::Invite> for Invite {
 /// authorization + overlay credential).
 impl Command for Invite {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Attach a sync remote to an existing space, and optionally mint an
@@ -315,7 +315,7 @@ impl From<legacy::EnableSync> for EnableSync {
 /// `tonk-worker` (attaches the remote, then mints when asked).
 impl Command for EnableSync {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Rotate onto a fresh profile and open the account ceremony on it.
@@ -336,7 +336,7 @@ pub struct AddProfile {
 /// the profile and notifies the page to open the ceremony.
 impl Command for AddProfile {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Make another profile on this browser the active one.
@@ -413,7 +413,7 @@ pub struct CheckUpdate {
 
 impl Command for CheckUpdate {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Pull a space this account has but this device does not.
@@ -438,7 +438,7 @@ pub struct ReplicateSpace {
 
 impl Command for ReplicateSpace {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Drop a space's invite row once its link has reached the clipboard.
@@ -459,14 +459,14 @@ pub struct ForgetInvite {
 
 impl Command for ForgetInvite {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// `PauseSync` is a [`dialog_capability::Command`]; its handler lives in
 /// `tonk-worker` (flips the replica's durable `auto-sync` preference).
 impl Command for PauseSync {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// `SwitchProfile` is a [`dialog_capability::Command`]; its handler lives
@@ -474,7 +474,7 @@ impl Command for PauseSync {
 /// uses, so both paths share one validation.
 impl Command for SwitchProfile {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Sign this device out of the account on the active branch.
@@ -493,7 +493,7 @@ pub struct SignOut {
 
 impl Command for SignOut {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// The FABB's own acts, as commands. Each asks the tab that ran it to
@@ -515,7 +515,7 @@ macro_rules! bar_command {
 
         impl Command for $name {
             type Input = Self;
-            type Output = ();
+            type Output = crate::invocation::Outcome;
         }
     };
 }
@@ -577,7 +577,7 @@ pub struct Interpret {
 
 impl Command for Interpret {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// `site/select`: what the page in a tab has selected, reported by the
@@ -599,7 +599,7 @@ pub struct SiteSelect {
 
 impl Command for SiteSelect {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Take the page that asked back to the hub.
@@ -617,7 +617,7 @@ pub struct Home {
 
 impl Command for Home {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// `library/install`: add one of the library's components (notebook,
@@ -636,7 +636,7 @@ pub struct InstallComponent {
 
 impl Command for InstallComponent {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// `tonk:sign-in-via`: sign this browser in through another deployment.
@@ -655,7 +655,7 @@ pub struct SignInVia {
 
 impl Command for SignInVia {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// `tonk:finish-sign-in-via`: install the grant the other deployment
@@ -688,7 +688,7 @@ impl std::fmt::Debug for FinishSignInVia {
 
 impl Command for FinishSignInVia {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Rename a space's repository from the FAB.
@@ -724,7 +724,7 @@ impl From<legacy::RenameRepository> for RenameRepository {
 
 impl Command for RenameRepository {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Rename the signed-in member (set their display name).
@@ -753,7 +753,7 @@ impl From<legacy::ProfileRename> for ProfileRename {
 
 impl Command for ProfileRename {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Request to remove a space from this device: retract its replica
@@ -792,7 +792,7 @@ impl From<legacy::RemoveSpace> for RemoveSpace {
 /// profile branch may fire it.
 impl Command for RemoveSpace {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Promote a member of a space to admin.
@@ -822,7 +822,7 @@ pub struct PromoteMember {
 
 impl Command for PromoteMember {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Make a space readable by anyone.
@@ -846,7 +846,7 @@ pub struct PublishSpace {
 
 impl Command for PublishSpace {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Make a published space private again: take its public ticket back so
@@ -864,7 +864,7 @@ pub struct UnpublishSpace {
 
 impl Command for UnpublishSpace {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Register this profile's account as a customer of the access service.
@@ -889,7 +889,7 @@ pub struct EnrollCustomer {
 
 impl Command for EnrollCustomer {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Ask the access service to mail this account's activation link again.
@@ -909,7 +909,7 @@ pub struct ResendActivation {
 
 impl Command for ResendActivation {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Revoke a member's access to a space.
@@ -939,7 +939,7 @@ impl From<legacy::ExpelMember> for ExpelMember {
 
 impl Command for ExpelMember {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// The durable fact a `tonk:invite` handler asserts: the public
@@ -1115,7 +1115,7 @@ impl std::fmt::Debug for Join {
 /// `tonk-worker` (claims the carried invite URL and drives `JoinStatus`).
 impl Command for Join {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// The overlay-only fact tracking an in-flight join, at the fixed
@@ -1222,7 +1222,7 @@ pub struct AgentHandoff {
 
 impl Command for AgentHandoff {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// Session-only agent handoff state, keyed by the repository subject.
@@ -1254,7 +1254,7 @@ pub struct SendEmailInvitation {
 }
 impl Command for SendEmailInvitation {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// ClaimEmailInvitation through the profile command channel.
@@ -1269,7 +1269,7 @@ pub struct ClaimEmailInvitation {
 }
 impl Command for ClaimEmailInvitation {
     type Input = Self;
-    type Output = ();
+    type Output = crate::invocation::Outcome;
 }
 
 /// EmailInvitationStatus through the profile command channel.

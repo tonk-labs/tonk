@@ -170,6 +170,21 @@ impl Commit<'_> {
     where
         Env: LoadProvider + BranchOpenProvider + CommitProvider + SelectProvider,
     {
+        Ok(self.conclude(env).await?.revision)
+    }
+
+    /// [`perform`](Self::perform), also returning the transients the
+    /// commit's rules concluded.
+    ///
+    /// A rule that fires on a transient inside the commit can conclude
+    /// transients of its own (a `command/completion` saying it handled a
+    /// command, say). Those are never stored, so this is the only place
+    /// they can be read: the command dispatcher reads them to tell a
+    /// command a rule handled from one nothing handled.
+    pub async fn conclude<Env>(self, env: &Env) -> Result<Committed, ReactorError>
+    where
+        Env: LoadProvider + BranchOpenProvider + CommitProvider + SelectProvider,
+    {
         let repo = self.branch.repository.name().to_owned();
         let name = self.branch.name.to_owned();
         let origin = self.origin;
@@ -213,7 +228,7 @@ impl Commit<'_> {
             names.join(",")
         };
         let mut attempt = 0;
-        let revision = loop {
+        let committed = loop {
             let branch = cached.handle();
             let before = branch.revision();
             // Durable changes are asserted; transients are dispatched
@@ -225,8 +240,21 @@ impl Commit<'_> {
                 .dispatch(transients.clone());
 
             let t_commit = web_time::Instant::now();
-            match txn.commit().publish().perform(env).await {
-                Ok(revision) => {
+            // Staged, then published, rather than in one step: the staged
+            // batch is what holds the transients the rules concluded.
+            let published = match txn.commit().perform(env).await {
+                Ok(batch) => {
+                    let concluded = batch.induced().clone();
+                    batch
+                        .publish()
+                        .perform(env)
+                        .await
+                        .map(|revision| (revision, concluded))
+                }
+                Err(error) => Err(error),
+            };
+            match published {
+                Ok((revision, concluded)) => {
                     let commit_ms = t_commit.elapsed().as_millis();
                     // Name the commit: the branch, the claim count, and
                     // whether the tree moved. A commit that lands an
@@ -251,7 +279,10 @@ impl Commit<'_> {
                         "reactor commit timing: commit {commit_ms}ms on {name}@{repo}, \
                          {claims} claims ({attributes}), tree {moved}, head {head}, from {origin}"
                     );
-                    break revision;
+                    break Committed {
+                        revision,
+                        concluded,
+                    };
                 }
                 Err(e) if is_head_moved(&e) && attempt < COMMIT_RETRY_LIMIT => {
                     attempt += 1;
@@ -280,8 +311,20 @@ impl Commit<'_> {
             .reactor()
             .schedule_poll(std::sync::Arc::clone(&cached.state));
 
-        Ok(revision)
+        Ok(committed)
     }
+}
+
+/// What a [`Commit`] landed: the published revision, and the transients
+/// its rules concluded on the way (see [`Commit::conclude`]).
+#[derive(Debug, Clone)]
+pub struct Committed {
+    /// The revision the branch head moved to, or the unchanged head when
+    /// the commit was a no-op.
+    pub revision: Revision,
+    /// Every transient a rule head emitted while inducing the commit. The
+    /// transients the commit dispatched are not among them.
+    pub concluded: Changes,
 }
 
 /// How many times a reactor commit refreshes-and-retries when a sync advanced

@@ -26,6 +26,13 @@ use dialog_capability::{Command, Provider};
 use dialog_common::ConditionalSync;
 use dialog_query::concept::Concept;
 use dialog_query::{Application, ConceptDescriptor, Conclusion, Descriptor, Match, Term};
+use tonk_schema::invocation::{Failure, Outcome};
+
+/// Why a handler whose facts did not decode as its command reports a
+/// failure: [`CommandRegistry::match_transients`] only hands a handler
+/// facts it matched, so this is a handler whose `matches` and `decode`
+/// disagree.
+const UNDECODED: &str = "the command's fields did not decode as the command";
 
 /// The asserted facts for a single transient entity — the `(the, of,
 /// is)` triples grouped under one `of`. [`Artifact`] is `Clone`
@@ -233,12 +240,12 @@ where
 /// dispatcher can build it, release the state lock, then await it —
 /// command IO never runs while a lock is held.
 #[cfg(not(target_arch = "wasm32"))]
-pub type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
+pub type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Outcome> + Send + 'static>>;
 /// A `'static` boxed future for one command's execution (the wasm
 /// single-threaded variant — no `Send` bound). See the native variant
 /// above for the rationale.
 #[cfg(target_arch = "wasm32")]
-pub type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'static>>;
+pub type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Outcome> + 'static>>;
 
 /// Dyn-safe entry stored in the [`CommandRegistry`]. One per registered
 /// command *type*. The concrete command `C` is erased behind this
@@ -268,7 +275,8 @@ pub trait CommandHandler<Env>: ConditionalSync {
     /// `env`. The returned future owns the decoded command and the env
     /// clone, so it is `'static` and can run detached past the
     /// triggering commit — the dispatcher releases the state lock
-    /// before awaiting it. A no-op future when the facts don't decode.
+    /// before awaiting it. Resolves to the provider's [`Outcome`], or a
+    /// [`Failure`] when the facts don't decode.
     /// Boxed so the trait stays dyn-safe for `Box<dyn CommandHandler<Env>>`.
     fn run(&self, facts: &EntityFacts, env: &Env) -> RunFuture;
 }
@@ -324,7 +332,7 @@ where
 
 impl<C, Env> CommandHandler<Env> for TypedCommand<C, Env>
 where
-    C: Decode + Command<Input = C, Output = ()> + ConditionalSync + 'static,
+    C: Decode + Command<Input = C, Output = Outcome> + ConditionalSync + 'static,
     Env: Provider<C> + Clone + ConditionalSync + 'static,
 {
     fn trigger_attributes(&self) -> &[String] {
@@ -345,8 +353,9 @@ where
         let decoded = facts_entity(facts).and_then(|this| C::decode(this, facts));
         let env = env.clone();
         Box::pin(async move {
-            if let Some(command) = decoded {
-                env.execute(command).await;
+            match decoded {
+                Some(command) => env.execute(command).await,
+                None => Err(Failure::from(UNDECODED)),
             }
         })
     }
@@ -396,7 +405,7 @@ where
 
 impl<Current, Legacy, Env> CommandHandler<Env> for MigratedCommand<Current, Legacy, Env>
 where
-    Current: Decode + Command<Input = Current, Output = ()> + ConditionalSync + 'static,
+    Current: Decode + Command<Input = Current, Output = Outcome> + ConditionalSync + 'static,
     Legacy: Decode + Into<Current> + ConditionalSync + 'static,
     Env: Provider<Current> + Clone + ConditionalSync + 'static,
 {
@@ -414,8 +423,9 @@ where
         let decoded = self.command.decode(facts);
         let env = env.clone();
         Box::pin(async move {
-            if let Some(command) = decoded {
-                env.execute(command).await;
+            match decoded {
+                Some(command) => env.execute(command).await,
+                None => Err(Failure::from(UNDECODED)),
             }
         })
     }
@@ -462,7 +472,7 @@ impl<Env> CommandRegistry<Env> {
     /// ```
     pub fn command<C>(mut self) -> Self
     where
-        C: Decode + Command<Input = C, Output = ()> + ConditionalSync + 'static,
+        C: Decode + Command<Input = C, Output = Outcome> + ConditionalSync + 'static,
         Env: Provider<C> + Clone + ConditionalSync + 'static,
     {
         self.register(Box::new(TypedCommand::<C, Env>::new()));
@@ -475,7 +485,7 @@ impl<Env> CommandRegistry<Env> {
     /// see [`Migrated`]. Chainable.
     pub fn migrated<Current, Legacy>(mut self) -> Self
     where
-        Current: Decode + Command<Input = Current, Output = ()> + ConditionalSync + 'static,
+        Current: Decode + Command<Input = Current, Output = Outcome> + ConditionalSync + 'static,
         Legacy: Decode + Into<Current> + ConditionalSync + 'static,
         Env: Provider<Current> + Clone + ConditionalSync + 'static,
     {
@@ -988,7 +998,7 @@ mod tests {
             facts.iter().any(|a| a.the.to_string() == self.decode_on)
         }
         fn run(&self, _facts: &EntityFacts, _env: &TestEnv) -> RunFuture {
-            Box::pin(async {})
+            Box::pin(async { tonk_schema::invocation::Done::nothing() })
         }
     }
 
@@ -1234,7 +1244,7 @@ mod tests {
         }
 
         fn run(&self, _facts: &EntityFacts, _env: &()) -> RunFuture {
-            Box::pin(async {})
+            Box::pin(async { tonk_schema::invocation::Done::nothing() })
         }
     }
 }

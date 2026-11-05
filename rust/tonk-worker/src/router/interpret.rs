@@ -19,6 +19,7 @@ use std::collections::BTreeSet;
 
 use dialog_artifacts::{Entity, Value};
 use tonk_common::log;
+use tonk_schema::invocation::{Done, Failure, Outcome};
 
 use crate::router::CommandEnv;
 use crate::router::claim::RawClaim;
@@ -46,7 +47,7 @@ fn intent(expression: &Entity, command: &str) -> Option<Entity> {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::Interpret> for CommandEnv {
-    async fn execute(&self, command: tonk_schema::command::Interpret) {
+    async fn execute(&self, command: tonk_schema::command::Interpret) -> Outcome {
         let expression = command.expression.0;
         let input = command.input.0;
         let site = command.site.0;
@@ -64,7 +65,7 @@ impl dialog_capability::Provider<tonk_schema::command::Interpret> for CommandEnv
             Ok(session) => session,
             Err(error) => {
                 log!("intent/interpret: branch unavailable: {error}");
-                return;
+                return Err(Failure::new(format!("the branch is unavailable: {error}")));
             }
         };
         let site_text = site.to_string();
@@ -79,7 +80,9 @@ impl dialog_capability::Provider<tonk_schema::command::Interpret> for CommandEnv
             Ok(interpretation) => interpretation,
             Err(error) => {
                 log!("intent/interpret: {error}");
-                return;
+                return Err(Failure::new(format!(
+                    "the input could not be interpreted: {error}"
+                )));
             }
         };
 
@@ -153,6 +156,47 @@ impl dialog_capability::Provider<tonk_schema::command::Interpret> for CommandEnv
         }
         if let Err(error) = overlay.write().perform(&tonk.operator).await {
             log!("intent/interpret: overlay write failed: {error}");
+            return Err(Failure::new(format!(
+                "the interpretation could not be recorded: {error}"
+            )));
         }
+        Done::with(expression)
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod tests {
+    use crate::router::command::tests::native::test_state;
+    use crate::router::{CommandEnv, CommandOrigin};
+    use tonk_schema::domain::command::current::intent_interpret::{Expression, Input, Site, Time};
+
+    /// Input typed in a space this worker does not have cannot be
+    /// interpreted, and the outcome says the branch is unavailable instead
+    /// of the palette waiting on intents that never come.
+    #[dialog_common::test]
+    async fn it_fails_to_interpret_in_a_missing_repository() {
+        let state = test_state().await;
+        let env = CommandEnv::new(
+            state,
+            CommandOrigin {
+                repo: "did:key:z6MkMissingRepositoryForInterpretTest".into(),
+                branch: "main".into(),
+                client: None,
+            },
+        );
+        let command = tonk_schema::command::Interpret {
+            this: "id:interpret".parse().unwrap(),
+            expression: Expression("id:expression".parse().unwrap()),
+            input: Input("rename".into()),
+            site: Site("site:test".parse().unwrap()),
+            time: Time(0.0),
+        };
+        let outcome =
+            dialog_capability::Provider::<tonk_schema::command::Interpret>::execute(&env, command)
+                .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("unavailable")),
+            "{outcome:?}"
+        );
     }
 }

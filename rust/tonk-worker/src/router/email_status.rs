@@ -79,13 +79,23 @@ pub(crate) fn state_for_status(status: u16) -> &'static str {
 /// Run `account/check-email`: look the address up at the access service
 /// and publish the answer to the profile overlay. A blank address is a
 /// keystroke race, not a lookup — skipped.
+///
+/// The outcome fails when no answer about the address was had: it is not
+/// one a lookup can be asked about, or the service did not answer. Any
+/// answer from the service, `unregistered` included, is a success whose
+/// output is the [`tonk_schema::EmailStatus`] row it was written to.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::CheckEmail> for crate::router::CommandEnv {
-    async fn execute(&self, command: tonk_schema::command::CheckEmail) {
+    async fn execute(
+        &self,
+        command: tonk_schema::command::CheckEmail,
+    ) -> tonk_schema::invocation::Outcome {
+        use tonk_schema::invocation::{Done, Failure};
+
         let email = command.email.0;
         if email.trim().is_empty() {
-            return;
+            return Done::nothing();
         }
         // Say the lookup is in flight BEFORE making it. The form
         // renders the row and nothing else, so without this the
@@ -102,6 +112,18 @@ impl dialog_capability::Provider<tonk_schema::command::CheckEmail> for crate::ro
         // is right only when both devices are on one deployment.
         if let Some(service) = service {
             remember_service(&service);
+        }
+        match state {
+            state::INVALID => Err(Failure::new(
+                "that is not an email address the service can be asked about",
+            )),
+            state::UNAVAILABLE => Err(Failure::new(
+                "the access service did not answer about this address",
+            )),
+            _ => match tonk_schema::EmailStatus::ENTITY.parse::<dialog_artifacts::Entity>() {
+                Ok(row) => Done::with(row),
+                Err(_) => Done::nothing(),
+            },
         }
     }
 }
@@ -233,16 +255,24 @@ pub(crate) async fn record(tonk: &crate::worker::TonkState, email: &str, answer:
 impl dialog_capability::Provider<tonk_schema::command::RegisterAccount>
     for crate::router::CommandEnv
 {
-    async fn execute(&self, command: tonk_schema::command::RegisterAccount) {
+    async fn execute(
+        &self,
+        command: tonk_schema::command::RegisterAccount,
+    ) -> tonk_schema::invocation::Outcome {
         use tonk_common::log;
+        use tonk_schema::invocation::{Done, Failure};
 
         let email = command.email.0;
         if split_address(&email).is_none() {
-            return;
+            return Err(Failure::new(
+                "that is not an email address an account can be made for",
+            ));
         }
         let Some(client) = self.client() else {
             log!("account/register: no page asked for this, so no ceremony can run");
-            return;
+            return Err(Failure::new(
+                "no page asked for this, so no passkey can be asked for",
+            ));
         };
         // The address rides on the overlay rather than in the
         // request: `WebAuthnRequest` carries a discriminator and
@@ -255,12 +285,125 @@ impl dialog_capability::Provider<tonk_schema::command::RegisterAccount>
         {
             log!("account/register: the page could not be asked: {error}");
             publish(self, &email, state::UNAVAILABLE).await;
+            return Err(Failure::new(format!(
+                "the page could not be asked for a passkey: {error}"
+            )));
         }
+        // The account is made in the page's ceremony, which lands as
+        // `AccountCustomer` facts, not this outcome.
+        Done::nothing()
     }
 }
 
 #[cfg(test)]
 mod tests {
+
+    /// Whether anything about `email` is on the profile overlay.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    async fn status_recorded(state: &crate::router::AppState) -> bool {
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        session
+            .handle()
+            .overlay()
+            .export()
+            .iter()
+            .any(|(_, attribute, _)| attribute.to_string().starts_with("xyz.tonk.email-status/"))
+    }
+
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    fn env(state: &crate::router::AppState, client: Option<&str>) -> crate::router::CommandEnv {
+        crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                client: client.map(|id| crate::router::ClientId(id.into())),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// An address that cannot become a lookup path fails the check. The
+    /// form still gets its `invalid` row; the outcome adds that no answer
+    /// was had.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn it_fails_a_check_of_something_that_is_not_an_address() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let command = tonk_schema::command::CheckEmail {
+            this: "id:check-email".parse().unwrap(),
+            email: tonk_schema::domain::command::current::check_email::Email("nobody".into()),
+        };
+        let outcome = dialog_capability::Provider::<tonk_schema::command::CheckEmail>::execute(
+            &env(&state, None),
+            command,
+        )
+        .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("not an email address")),
+            "{outcome:?}"
+        );
+    }
+
+    /// Registering an address that is not one fails before the page is
+    /// asked for a passkey, and records nothing about it.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn it_fails_to_register_something_that_is_not_an_address() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let command = tonk_schema::command::RegisterAccount {
+            this: "id:register".parse().unwrap(),
+            email: tonk_schema::domain::command::current::register_account::Email("nobody".into()),
+        };
+        let outcome =
+            dialog_capability::Provider::<tonk_schema::command::RegisterAccount>::execute(
+                &env(&state, Some("form")),
+                command,
+            )
+            .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("not an email address")),
+            "{outcome:?}"
+        );
+        assert!(
+            !status_recorded(&state).await,
+            "a refused registration records nothing"
+        );
+    }
+
+    /// With no page to run the ceremony, registration fails instead of
+    /// leaving the form waiting on a passkey prompt that never comes, and
+    /// the form is not told a ceremony is pending.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn it_fails_to_register_when_no_page_asked() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let command = tonk_schema::command::RegisterAccount {
+            this: "id:register".parse().unwrap(),
+            email: tonk_schema::domain::command::current::register_account::Email(
+                "jsmith@example.com".into(),
+            ),
+        };
+        let outcome =
+            dialog_capability::Provider::<tonk_schema::command::RegisterAccount>::execute(
+                &env(&state, None),
+                command,
+            )
+            .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("no page asked")),
+            "{outcome:?}"
+        );
+        assert!(
+            !status_recorded(&state).await,
+            "no ceremony is reported pending"
+        );
+    }
 
     /// Activation is a new answer about the address.
     ///

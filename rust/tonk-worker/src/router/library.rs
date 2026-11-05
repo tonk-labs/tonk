@@ -135,12 +135,13 @@ fn parsed(parsed: tonk_notation::Parsed) -> Result<Syntax, TonkWorkerError> {
 /// seeded with, `core.yaml` (every space) and `profile.yaml` (the profile
 /// branch). Only these: a component names a library file by its name, so
 /// the list is what keeps an install to the library.
-pub(super) const COMPONENTS: [&str; 6] = [
+pub(super) const COMPONENTS: [&str; 7] = [
     "issue",
     "meta",
     "notebook",
     "prose",
     "table",
+    "tasks",
     "version-control",
 ];
 
@@ -170,19 +171,36 @@ pub(super) fn component_url(component: &str) -> Option<String> {
 impl dialog_capability::Provider<tonk_schema::command::InstallComponent>
     for crate::router::CommandEnv
 {
-    async fn execute(&self, command: tonk_schema::command::InstallComponent) {
-        let component = command.component.0.to_string();
+    async fn execute(
+        &self,
+        command: tonk_schema::command::InstallComponent,
+    ) -> tonk_schema::invocation::Outcome {
+        use tonk_schema::invocation::{Done, Failure};
+        let entity = command.component.0;
+        let component = entity.to_string();
         let Some(source) = component_url(&component) else {
             tonk_common::log!("library/install: '{component}' is not a library component");
-            return;
+            return Err(Failure::new(format!(
+                "{component} is not a library component"
+            )));
         };
         let (repo, branch) = (self.origin().repo.clone(), self.origin().branch.clone());
         let tonk = self.state().read().await;
         match super::repository::install_component(&tonk, &repo, &branch, &source).await {
-            Ok(true) => tonk_common::log!("library/install: {source} installed in {repo}"),
-            Ok(false) => tonk_common::log!("library/install: {source} is current in {repo}"),
+            Ok(true) => {
+                tonk_common::log!("library/install: {source} installed in {repo}");
+                Done::with(entity)
+            }
+            // Already current: the space has what was asked for.
+            Ok(false) => {
+                tonk_common::log!("library/install: {source} is current in {repo}");
+                Done::with(entity)
+            }
             Err(error) => {
-                tonk_common::log!("library/install: {source} into {repo} failed: {error}")
+                tonk_common::log!("library/install: {source} into {repo} failed: {error}");
+                Err(Failure::new(format!(
+                    "installing {component} failed: {error}"
+                )))
             }
         }
     }
@@ -222,6 +240,32 @@ mod tests {
                 "{reference} must not load"
             );
         }
+    }
+
+    /// Installing something that is not one of the library's components
+    /// is refused with an outcome naming it, before anything is fetched or
+    /// written.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn it_refuses_to_install_what_is_not_a_library_component() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let env = crate::router::CommandEnv::new(state, crate::router::CommandOrigin::default());
+        let command = tonk_schema::command::InstallComponent {
+            this: "id:install".parse().unwrap(),
+            component: tonk_schema::domain::command::current::install_component::Component(
+                "tonk:library/core".parse().unwrap(),
+            ),
+            time: tonk_schema::domain::command::current::install_component::Time(0.0),
+        };
+        let outcome =
+            dialog_capability::Provider::<tonk_schema::command::InstallComponent>::execute(
+                &env, command,
+            )
+            .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("not a library component")),
+            "{outcome:?}"
+        );
     }
 
     /// Natively the library is the bundled copy: a library body parses

@@ -95,7 +95,11 @@ pub async fn plan(
 impl dialog_capability::Provider<tonk_schema::command::DeleteAccount>
     for crate::router::CommandEnv
 {
-    async fn execute(&self, command: tonk_schema::command::DeleteAccount) {
+    async fn execute(
+        &self,
+        command: tonk_schema::command::DeleteAccount,
+    ) -> tonk_schema::invocation::Outcome {
+        use tonk_schema::invocation::Failure;
         use tonk_schema::{ceremony, ceremony_state};
 
         let email = command.email.0;
@@ -115,7 +119,7 @@ impl dialog_capability::Provider<tonk_schema::command::DeleteAccount>
                         &error.to_string(),
                     )
                     .await;
-                    return;
+                    return Err(Failure::new(error));
                 }
             };
             if email.trim() != plan.email {
@@ -126,15 +130,19 @@ impl dialog_capability::Provider<tonk_schema::command::DeleteAccount>
                     "the reviewed email does not match this account",
                 )
                 .await;
-                return;
+                return Err(Failure::new(
+                    "the reviewed email does not match this account",
+                ));
             }
         }
+        // The purge runs in the custody reply, which reports through
+        // `CeremonyStatus`, not this outcome.
         super::ceremony::ask_for_passkey(
             self,
             ceremony::DELETE_ACCOUNT,
             tonk_worker_api::CustodyIntent::PurgeAccount(Default::default()),
         )
-        .await;
+        .await
     }
 }
 
@@ -243,4 +251,36 @@ async fn purge_inner(
         super::profile::forget_branch(&tonk, &retired).await;
     }
     Ok(())
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod tests {
+    /// Deleting the account of a profile linked to none fails before the
+    /// page is asked for a passkey. The provider writes nothing on success
+    /// beyond its `CeremonyStatus` row, so the outcome is what is pinned.
+    #[dialog_common::test]
+    async fn it_fails_to_delete_an_account_the_profile_is_not_linked_to() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                client: Some(crate::router::ClientId("page".into())),
+                ..Default::default()
+            },
+        );
+        let command = tonk_schema::command::DeleteAccount {
+            this: "id:delete-account".parse().unwrap(),
+            email: tonk_schema::domain::command::delete_account::Email(
+                "someone@example.com".into(),
+            ),
+        };
+        let outcome = dialog_capability::Provider::<tonk_schema::command::DeleteAccount>::execute(
+            &env, command,
+        )
+        .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("not linked to an account")),
+            "{outcome:?}"
+        );
+    }
 }

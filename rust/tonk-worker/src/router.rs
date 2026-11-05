@@ -206,7 +206,10 @@ mod site_select;
 mod diagnostics;
 
 mod command;
-pub use command::{CommandEnv, CommandOrigin, CommandProviders, command_providers, dispatch};
+pub use command::{
+    CommandEnv, CommandOrigin, CommandProviders, command_providers, dispatch, dispatch_committed,
+};
+pub mod invocation;
 
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod intent;

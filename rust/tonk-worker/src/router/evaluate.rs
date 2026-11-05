@@ -244,7 +244,17 @@ pub async fn evaluate(
             branch: path.branch,
             client: client.map(|Extension(id)| id),
         };
-        super::transact::spawn_dispatch(state, origin, transients, lifetime).await;
+        // The evaluate path commits through the evaluator, which does not
+        // surface what its rules concluded, so a rule-handled command
+        // evaluated here reads as unhandled.
+        super::transact::spawn_dispatch(
+            state,
+            origin,
+            transients,
+            dialog_artifacts::Changes::new(),
+            lifetime,
+        )
+        .await;
     }
     Ok(response)
 }
@@ -363,7 +373,17 @@ pub async fn evaluate_profile(
             branch: path.branch,
             client: client.map(|Extension(id)| id),
         };
-        super::transact::spawn_dispatch(state, origin, transients, lifetime).await;
+        // The evaluate path commits through the evaluator, which does not
+        // surface what its rules concluded, so a rule-handled command
+        // evaluated here reads as unhandled.
+        super::transact::spawn_dispatch(
+            state,
+            origin,
+            transients,
+            dialog_artifacts::Changes::new(),
+            lifetime,
+        )
+        .await;
     }
     Ok(response)
 }
