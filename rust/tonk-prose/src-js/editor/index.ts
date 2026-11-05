@@ -20,7 +20,7 @@ import { reveal } from "./reveal";
 import { placeholder, placeholderKey } from "./placeholder";
 import { imagePreview } from "./image-preview";
 import { taskList } from "./task-list";
-import { codeBlocks } from "./code-block";
+import { codeBlocks, embedWhenDefined } from "./code-block";
 import { headingSwitcher } from "./heading-switcher";
 import type { EditorOptions, ProseEditor } from "./api";
 
@@ -63,6 +63,7 @@ export function createEditor(
   injectStylesheet(parent);
 
   let readOnly = options.readOnly;
+  const code = options.code ?? "tonk-code";
 
   const state = EditorState.create({
     doc: parseMarkdown(options.doc),
@@ -80,7 +81,7 @@ export function createEditor(
       ...(options.switcher ? headingSwitcher(options.switcher) : []),
       reveal(),
       buildInputRules(schema),
-      ...codeBlocks(),
+      ...codeBlocks(code),
       buildKeymap(),
       keymap(baseKeymap),
       history(),
@@ -105,6 +106,7 @@ export function createEditor(
       }
     },
   });
+  embedWhenDefined(view, code);
 
   return {
     view,

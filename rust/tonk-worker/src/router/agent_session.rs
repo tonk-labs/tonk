@@ -25,12 +25,11 @@ use axum::{
     extract::{Path, State},
 };
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-use dialog_credentials::{Ed25519Signer, Signer};
+use dialog_credentials::Ed25519Signer;
+use dialog_credentials::Signer;
 use dialog_repository::RepositoryExt as _;
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 use dialog_ucan_core::time::Timestamp;
 use dialog_varsig::Did;
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 use dialog_varsig::Principal as _;
 use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -38,12 +37,12 @@ use tokio::sync::oneshot;
 use tonk_handler_macros::wasm_compat;
 use tonk_invite::connection::AgentAccess;
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-use tonk_invite::connection::{DEFAULT_GRANT_TTL_SECONDS, agent_grant_scopes};
+use tonk_invite::connection::DEFAULT_GRANT_TTL_SECONDS;
+use tonk_invite::connection::agent_grant_scopes;
 use tonk_worker_api::{AgentAuthorization, AgentSpaceChoice};
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 use zeroize::Zeroizing;
 
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 use super::agent_connections::issuer_ancestors;
 use super::{
     AppState,
@@ -832,11 +831,10 @@ pub(super) async fn mark(
         .perform(&tonk.operator)
         .await
         .map_err(failure)?;
-    Ok(())
+    super::agents::mark_on_profile(tonk, std::slice::from_ref(agent)).await
 }
 
 /// One space granted to an agent, as its space records it.
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(super) struct Granted {
     pub(super) subject: Did,
     pub(super) name: String,
@@ -850,7 +848,6 @@ pub(super) struct Granted {
 /// directory entry per space (`xyz.tonk.space/name` and
 /// `xyz.tonk.space/home-address` on the space's entity). What the agent
 /// may do there is read off the chains themselves.
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(super) async fn record_grants(
     tonk: &crate::TonkState,
     key: &str,
@@ -1056,8 +1053,9 @@ pub async fn deny(
 /// The chains delegating `subject` to `agent` at `access`, one per
 /// scope, signed by `issuer`: the account's own proof for the space, cut
 /// where it reaches `issuer`, with a leaf from `issuer` to the agent
-/// space. Signed by the account, a grant runs `space → account → agent`.
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+/// space. Signed by the account, a grant runs `space → account → agent`;
+/// signed by this device, as `space/invite-agent` signs it, it runs
+/// `space → … → device → agent`.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn grant(
     tonk: &crate::TonkState,

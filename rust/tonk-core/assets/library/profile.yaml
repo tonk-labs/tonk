@@ -1331,6 +1331,69 @@ command!: &space/unpublish
     space: unpublish/space
     time: unpublish/time
 
+# Letting someone into a space from the palette: `invite <agent>` or
+# `invite <email>`, said of the space the page shows ("to <space>"
+# anywhere else). Both make the invitee a writer, and neither hands
+# anyone a link.
+#
+# An agent's grant is kept in the agent's own space, where the hosted
+# agent lists the spaces it can reach, so it finds this one the next time
+# it looks. An address is resolved to the account registered under it,
+# the way signing in resolves one, and the grant is left in the space as
+# that account's ticket, the way publishing leaves the public one: any
+# device of that account opening the space's address claims it.
+attribute!: &invite-agent/agent
+  description: The agent to let in, by its agent space's DID.
+  the: xyz.tonk.invite-agent/agent
+  as: entity
+  role: :object
+
+attribute!: &invite-agent/space
+  description: The space to let it into.
+  the: xyz.tonk.invite-agent/space
+  as: entity
+  role: :goal
+
+attribute!: &invite-agent/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.invite-agent/time
+  as: float:64
+  role: :now
+
+command!: &space/invite-agent
+  description: Let one of your agents read and write a space.
+  action: ["invite", "invite agent"]
+  with:
+    agent: invite-agent/agent
+    space: invite-agent/space
+    time: invite-agent/time
+
+attribute!: &invite-email/email
+  description: The address of the account to let in.
+  the: xyz.tonk.invite-email/email
+  as: text
+  role: :object
+
+attribute!: &invite-email/space
+  description: The space to let it into.
+  the: xyz.tonk.invite-email/space
+  as: entity
+  role: :goal
+
+attribute!: &invite-email/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.invite-email/time
+  as: float:64
+  role: :now
+
+command!: &space/invite-email
+  description: Let the account registered under an email address read and write a space.
+  action: ["invite", "invite by email"]
+  with:
+    email: invite-email/email
+    space: invite-email/space
+    time: invite-email/time
+
 attribute!: &home/time
   description: The moment it was asked; makes each dispatch a distinct transient.
   the: xyz.tonk.command.home/time
@@ -3631,17 +3694,113 @@ view!:
     title: |
       <tab-title text="{name} — Tonk"></tab-title>
 
-# The space chrome model. `{id}` (the repository) and `{rest}` (the sub-path) are
-# captured from the path and stamped on the site; the view reads them. `rest` is
-# optional — the bare space route does not capture it, and the nested `<tonk-site>`
-# defaults its absent `path` to `/`.
+# A branch a page asks for that the space does not have yet.
+#
+# `/space/{branch}@{did}` names a branch as well as a space. When the space
+# is here but that branch has no head, the worker stamps `space-branch-state`
+# on the tab's site, and the chrome mounts this concept on the site: its view
+# is the panel that offers to make the branch. Opening the URL makes nothing
+# by itself. The state is a session fact on the profile site, like the rest of
+# the site, so it goes with the tab and clears when the branch is made.
+concept!: &space/missing-branch
+  this: tonk:space/missing-branch
+  description: A branch the tab asks for that its space does not have yet.
+  with:
+    state:
+      description: Why the branch cannot be shown; `missing` when it has no head.
+      the: xyz.tonk.site/space-branch-state
+      as: text
+    space-repo:
+      description: The repository the tab's space segment names.
+      the: xyz.tonk.site/space-repo
+      as: text
+    space-branch:
+      description: The branch the tab's space segment names.
+      the: xyz.tonk.site/space-branch
+      as: text
+
+# Make a branch the space does not have. The handler starts it from the
+# branch of the same name on the space's remote when there is one, so two
+# devices that make `test` share one line rather than forking it; otherwise
+# from `base`: `main` as it is now, or `empty` (the standard library alone).
+# With a remote, the branch tracks the remote branch of its name, so the sync
+# sweep pushes and pulls it like `main`. It does not track local `main`:
+# taking `main`'s later work, or bringing the branch's back, is a merge, a
+# separate act.
+command!: &space/create-branch
+  description: Give a space a branch it does not have yet.
+  with:
+    space:
+      description: The space (its subject DID) to make the branch in.
+      the: xyz.tonk.command.create-branch/space
+      as: entity
+    name:
+      description: The new branch's name.
+      the: xyz.tonk.command.create-branch/name
+      as: text
+    base:
+      description: "What the branch starts from without a remote one: `main` or `empty`."
+      the: xyz.tonk.command.create-branch/base
+      as: text
+    site:
+      description: The tab's site that asked, whose missing-branch state is cleared.
+      the: xyz.tonk.command.create-branch/site
+      as: entity
+
+# The panel's form: the space, the branch and the site ride the form's data
+# attributes, and the button pressed says which base.
+event!: &on/branch-create
+  type: "submit"
+  prevent-default: true
+  where:
+    space: ".currentTarget.dataset.space"
+    name: ".currentTarget.dataset.branch"
+    base: ".submitter.value"
+    site: ".currentTarget.dataset.site"
+
+view!:
+  this: tonk:space/missing-branch
+  show:
+    ui: |
+      <div class="space-unknown branch-missing">
+        <tab-title text="{space-branch} — Tonk"></tab-title>
+        <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+        <form class="space-unknown-wall" data-space={space-repo} data-branch={space-branch}
+          data-site={this} on:branch-create=space/create-branch>
+          <h1 class="space-unknown-statement">there is no branch {space-branch} here yet</h1>
+          <p class="branch-missing-narrator">Make it from main as it is now, or start it empty with only the standard library. If the space's remote already has a branch of this name, that one is used instead.</p>
+          <div class="space-unknown-run">
+            <button type="submit" name="base" value="main" class="space-unknown-home">branch off main<span aria-hidden="true">&#9656;</span></button>
+          </div>
+          <div class="space-unknown-run">
+            <button type="submit" name="base" value="empty" class="space-unknown-home">start empty<span aria-hidden="true">&#9656;</span></button>
+          </div>
+          <a class="space-unknown-back" href="/">go to home</a>
+        </form>
+      </div>
+
+# The space chrome model. `{id}` (the space segment) and `{rest}` (the
+# sub-path) are captured from the path and stamped on the site. `{id}` is the
+# segment as written, `[{branch}@][{label}:]{did}`, so the view reads the
+# repository and branch it names from `space-repo` and `space-branch`, which
+# the worker stamps by the same grammar it routes by. `rest` is optional — the
+# bare space route does not capture it, and the nested `<tonk-site>` defaults
+# its absent `path` to `/`.
 concept!: &space-chrome
   this: tonk:space/chrome
   description: The space chrome — repo portal with the FAB on top.
   with:
     id:
-      description: The space repository id, picked off the site entity.
+      description: The space segment of the path, as written.
       the: xyz.tonk.site/id
+      as: text
+    space-repo:
+      description: The repository the space segment names (its full `did:key`).
+      the: xyz.tonk.site/space-repo
+      as: text
+    space-branch:
+      description: The branch the space segment names; `main` when it names none.
+      the: xyz.tonk.site/space-branch
       as: text
     profile-branch:
       description: >
@@ -3690,14 +3849,15 @@ view!:
         :root.wa-dark .space-unknown-mast img { filter:invert(1); }
         .space-unknown-wall { width:min(576px, 100%); margin:0 auto;
           display:flex; flex-direction:column; gap:7px; }
-        .space-unknown-statement, .space-unknown-narrator { min-height:36px;
+        .space-unknown-statement, .space-unknown-narrator,
+        .branch-missing-narrator { min-height:36px;
           margin:0; background:var(--edge-card);
           box-shadow:0 0 0 1px var(--edge-ring); }
         .space-unknown-statement { padding:10px 14px; display:flex; align-items:flex-end;
           color:var(--edge-ink);
           font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
           font-weight:600; line-height:1.55; text-wrap:balance; }
-        .space-unknown-narrator { padding:10px 14px; color:var(--edge-soft);
+        .space-unknown-narrator, .branch-missing-narrator { padding:10px 14px; color:var(--edge-soft);
           font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
           font-weight:400; line-height:1.55; text-wrap:pretty; }
         .space-unknown-run { display:flex; }
@@ -3759,14 +3919,28 @@ view!:
            element), so `<tonk-site>` became the repeat node and `<tonk-fab>`
            was dropped from the output entirely. `:has()` reaches the sibling
            display without adding an element. */
+        /* A branch the space lacks carries no library either, so the
+           repository display below lands in its absent-space panel and
+           says the space is still arriving. It is here; the branch is not.
+           The branch panel tells that, so it hides the other one. */
+        body:has(.branch-missing) .space-unknown:not(.branch-missing) { display: none; }
         tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-site,
         tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-fab { display: none; }
       </style>
-      <tonk-site data-space-preview with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
-      <tonk-fab with="{profile-branch}@profile:tonk" space={id}>
-        <command-palette slot="command" space={id} profile="{profile-branch}@profile:tonk"></command-palette>
+      <tonk-site data-space-preview with="{space-branch}@{space-repo}" allow="{space-branch}@{space-repo}" path={rest}></tonk-site>
+      <tonk-display with="{profile-branch}@profile:tonk" entity={this} model=tonk:space/missing-branch>
+        <!-- Only a tab on a branch the space lacks carries the state, so
+             every other tab resolves no entity here and shows nothing. -->
+        <span slot="no-entity" hidden></span>
+        <span slot="no-model" hidden></span>
+        <span slot="no-view" hidden></span>
+        <span slot="empty" hidden></span>
+        <span slot="loading" hidden></span>
+      </tonk-display>
+      <tonk-fab with="{profile-branch}@profile:tonk" space={space-repo}>
+        <command-palette slot="command" space={space-repo} branch={space-branch} profile="{profile-branch}@profile:tonk"></command-palette>
       </tonk-fab>
-      <tonk-display with={id} entity={id} model=tonk:repository view=title>
+      <tonk-display with="{space-branch}@{space-repo}" entity={space-repo} model=tonk:repository view=title>
         <!-- `no-model` is now the absent-space panel below, which sets its
              own title; a second `no-model` child would render alongside it
              and fight over `document.title` (update_slot_children shows
@@ -3797,7 +3971,7 @@ view!:
         <!-- Light-DOM slots must be hidden in the template too: before the
              display initializes they otherwise paint as ordinary content. -->
         <div slot="no-model" hidden class="space-unknown">
-          <tonk-display with="{profile-branch}@profile:tonk" entity={id} model=space view=downloading>
+          <tonk-display with="{profile-branch}@profile:tonk" entity={space-repo} model=space view=downloading>
             <!-- The account has this space: it is arriving, not missing.
                  When it lands, the OUTER display's standing subscription
                  delivers a real frame and this whole panel is replaced. -->
@@ -6826,6 +7000,98 @@ rule!:
     - assert: space
       where: { this: ?space }
 
+# A space that syncs: `home-address` is optional on `space`, absent for a
+# local-only space, so a rule binds it through this required field. Only a
+# space that syncs can be shared: an invitee reaches it through its
+# upstream, so "invite" is said only of these.
+concept!: &space/synced
+  this: tonk:space/synced
+  description: A space on this account whose main branch syncs through an upstream.
+  with:
+    home-address:
+      description: The sync endpoint the space is served from.
+      the: xyz.tonk.space/home-address
+      as: text
+
+rule!:
+  description: A space on this account that syncs is one "invite" from the palette can let an agent into.
+  assert: invite-agent/space
+  when:
+    - assert: intent
+      where: { this: ?this, command: space/invite-agent }
+    - assert: space
+      where: { this: ?space }
+    - assert: space/synced
+      where: { this: ?space }
+
+rule!:
+  description: A space on this account that syncs is one "invite" from the palette can let an account into.
+  assert: invite-email/space
+  when:
+    - assert: intent
+      where: { this: ?this, command: space/invite-email }
+    - assert: space
+      where: { this: ?space }
+    - assert: space/synced
+      where: { this: ?space }
+
+# The agent-space mark, as the profile holds it: the same fact the agent
+# space carries on its own content branch (`tonk/agent-space` in
+# core.yaml), written here too on the agent space's directory entity, so
+# what is on the profile can tell an agent from a space. The worker writes
+# it when it makes an agent, and again whenever it lists the account's
+# agents, which brings an agent made before this mark existed in.
+concept!: &agent-space
+  this: tonk:agent-space
+  description: A space on this account that is an agent's identity.
+  with:
+    kind:
+      description: >
+        What kind of space this is — `case:agent` for an agent space.
+      the: xyz.tonk.repo/kind
+      as: entity
+
+# An agent of this account, by its DID, named as its space is: what
+# "invite" can be said of. Derived on query from the mark and the
+# directory row, so nothing is stored and a renamed agent reads by its
+# new name.
+concept!: &agent
+  description: An agent of this account, by its DID.
+  with:
+    name:
+      description: The agent's name, its space's name.
+      the: xyz.tonk.agent/name
+      as: text
+
+rule!:
+  description: A marked space on this account is an agent, named by its space.
+  assert: agent
+  when:
+    - assert: agent-space
+      where: { this: ?this, kind: ?kind }
+    - assert: ==
+      where: { this: ?kind, is: case:agent }
+    - assert: space
+      where: { this: ?this, name: ?named }
+    # The hub's agents tab says the same of an agent with no name.
+    - assert: coalesce
+      where: { source: ?named, fallback: "Unnamed agent", is: ?name }
+
+view!:
+  this: agent
+  show:
+    label: |
+      {name}
+
+rule!:
+  description: An agent of this account is one "invite" from the palette can name.
+  assert: invite-agent/agent
+  when:
+    - assert: intent
+      where: { this: ?this, command: space/invite-agent }
+    - assert: agent
+      where: { this: ?agent }
+
 rule!:
   description: A space on this account is one "rename space" from the palette can name.
   assert: rename-space/space
@@ -7070,13 +7336,16 @@ element!: &command-palette
         const space = self.getAttribute('space') || null;
         const fab = self.closest('tonk-fab');
         if (!window.tonk || !(fab && fab.hasAttribute('commanding'))) return;
-        const branches = [space && `main@${space}`, self.getAttribute('profile')].filter(Boolean);
+        // The branch of the space the page shows: `main` unless the page
+        // is on another one.
+        const on = space && `${self.getAttribute('branch') || 'main'}@${space}`;
+        const branches = [on, self.getAttribute('profile')].filter(Boolean);
         if (!branches.length) return;
         // The site of the page being looked at: the space's, nested in the
         // bar's frame, else this frame's own. Its route and its selection
         // are the context every branch's rules and parser read; the page
         // reports its selection to both branches under it.
-        const page = space && document.querySelector(`tonk-site[data-site][with="main@${space}"]`);
+        const page = space && document.querySelector(`tonk-site[data-site][with="${on}"]`);
         const site = (page && page.getAttribute('data-site')) || (window.tonk.context || {}).site;
         const now = Date.now();
         const max = typed ? 5 : 12;

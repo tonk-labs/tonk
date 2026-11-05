@@ -4993,6 +4993,21 @@ pub(super) async fn install_fresh_seed(
     install_fresh_from(tonk, key, branch, STANDARD_LIBRARY_URL, library, own).await
 }
 
+/// Start `branch` of `key` with the standard library and nothing else: a
+/// branch begun empty rather than from another branch. It carries the
+/// library a new space does, recorded as the same first install, so the
+/// branch upgrades like any space's content branch.
+pub(super) async fn seed_empty_branch(
+    tonk: &TonkState,
+    key: &str,
+    branch: &str,
+) -> Result<(), RepositoryError> {
+    let library = fetch_library_document(STANDARD_LIBRARY_URL)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}")))?;
+    install_fresh_seed(tonk, key, branch, &library, &[]).await
+}
+
 /// [`install_fresh_seed`] for a library fetched from `source`, recorded as
 /// that source's first install: the main seed's, or a component's (see
 /// [`lineage`]).
@@ -5717,6 +5732,9 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
             Ok(include_str!("../../../tonk-core/assets/library/profile.yaml").to_owned())
         }
         // The components a space can install (`library::COMPONENTS`).
+        "/library/code-editor.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/code-editor.yaml").to_owned())
+        }
         "/library/issue.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/issue.yaml").to_owned())
         }
@@ -5726,8 +5744,8 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         "/library/notebook.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/notebook.yaml").to_owned())
         }
-        "/library/prose.yaml" => {
-            Ok(include_str!("../../../tonk-core/assets/library/prose.yaml").to_owned())
+        "/library/prose-editor.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/prose-editor.yaml").to_owned())
         }
         "/library/table.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/table.yaml").to_owned())
@@ -5735,10 +5753,27 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         "/library/version-control.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/version-control.yaml").to_owned())
         }
-        other => Err(TonkWorkerError::Internal(format!(
-            "no embedded library for '{other}'"
-        ))),
+        other => embedded_language(other)
+            .ok_or_else(|| TonkWorkerError::Internal(format!("no embedded library for '{other}'"))),
     }
+}
+
+/// A language (`library::LANGUAGES`): generated, so not listed above;
+/// `tonk-library` bundles every document in a library subdirectory.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn embedded_language(url: &str) -> Option<String> {
+    let path = url
+        .strip_prefix("/library/")
+        .filter(|path| path.starts_with(super::library::LANGUAGES))?;
+    let bytes = tonk_library::Bundled.get(&tonk_library::location(path))?;
+    String::from_utf8(bytes.to_vec()).ok()
+}
+
+/// The wasm tests embed no bundled library: a service worker fetches the
+/// served one.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn embedded_language(_url: &str) -> Option<String> {
+    None
 }
 
 /// Build the notation document asserting the repository's own
@@ -16524,6 +16559,14 @@ mod library_quarantine_tests {
         let tonk = state.read().await;
         for (name, body) in [
             (
+                "code-editor",
+                include_str!("../../../tonk-core/assets/library/code-editor.yaml"),
+            ),
+            (
+                "language/python",
+                include_str!("../../../tonk-core/assets/library/language/python.yaml"),
+            ),
+            (
                 "issue",
                 include_str!("../../../tonk-core/assets/library/issue.yaml"),
             ),
@@ -16536,8 +16579,8 @@ mod library_quarantine_tests {
                 include_str!("../../../tonk-core/assets/library/notebook.yaml"),
             ),
             (
-                "prose",
-                include_str!("../../../tonk-core/assets/library/prose.yaml"),
+                "prose-editor",
+                include_str!("../../../tonk-core/assets/library/prose-editor.yaml"),
             ),
             (
                 "table",
