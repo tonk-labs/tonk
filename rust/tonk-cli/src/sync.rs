@@ -8,10 +8,15 @@
 //! no SSE clients), so this skips the reactor wrapper the
 //! worker uses.
 
-use dialog_capability::AuthorizeError;
+use dialog_artifacts::history::{Context, context_in};
+use dialog_capability::{AuthorizeError, Provider};
+use dialog_common::{ConditionalSync, Holds};
+use dialog_effects::archive::Load as ArchiveLoad;
+use dialog_effects::blob::Load as BlobLoad;
 use dialog_repository::{
-    Branch, FetchError, PullError, PushError, Revision, TreeReference, Upstream,
+    Branch, FetchError, Index, PullError, PushError, Revision, TreeReference, Upstream,
 };
+use std::sync::Arc;
 use thiserror::Error;
 use tonk_schema::{SyncState, classify};
 
@@ -64,6 +69,21 @@ pub enum SyncError {
          sync; run `tonk pull` and try again"
     )]
     NonFastForward,
+    /// A pull or push met a rival head on the upstream: another replica
+    /// writing with this branch's key built on the same head and minted
+    /// the same version over another tree (dialog-db/dialog-db#705).
+    /// Neither side can merge the other without dropping a write, and
+    /// nothing was written. Pulling does not recover it.
+    #[error(
+        "branch '{branch}' has a rival head on the upstream: another replica writing as this \
+         one minted the same version over another tree; one key must not write from two \
+         replicas at once. To recover, pull the upstream into a replica that has not written \
+         and write again there"
+    )]
+    RivalWriter {
+        /// Name of the local branch whose sync was refused.
+        branch: String,
+    },
     /// The access service refused the authority this device presented.
     ///
     /// This is the only place enforcement is real: possession of a replica
@@ -121,7 +141,7 @@ impl crate::Coded for SyncError {
             | SyncError::Io(_)
             | SyncError::Rejected { .. }
             | SyncError::Timeout { .. } => ExitCode::IoError,
-            SyncError::NonFastForward => ExitCode::CommitError,
+            SyncError::NonFastForward | SyncError::RivalWriter { .. } => ExitCode::CommitError,
         }
     }
 }
@@ -318,18 +338,84 @@ pub async fn status_with_hash(site: &TonkSite) -> Result<SyncStatus, SyncError> 
         map_fetch_error,
     )
     .await?;
+    let remote = remote
+        .into_iter()
+        .next()
+        .and_then(|fetched| fetched.revision);
+    // The two trees are compared first, so contexts are read only for
+    // heads that differ.
+    let same_tree = match (&local, &remote) {
+        (Some(local), Some(remote)) => local.tree == remote.tree,
+        _ => true,
+    };
+    let (local_context, remote_context) = if same_tree {
+        (None, None)
+    } else {
+        let local_context = match &local {
+            Some(head) => Some(head_context(branch, head, &site.operator).await?),
+            None => None,
+        };
+        let remote_context = match &remote {
+            Some(head) => Some(head_context(branch, head, &site.operator).await?),
+            None => None,
+        };
+        (local_context, remote_context)
+    };
     Ok(SyncStatus {
         state: classify(
             local.as_ref(),
-            remote
-                .into_iter()
-                .next()
-                .and_then(|fetched| fetched.revision)
-                .as_ref(),
+            local_context.as_deref(),
+            remote.as_ref(),
+            remote_context.as_deref(),
         )
         .into(),
         hash,
     })
+}
+
+/// The full causal context of `head`, resolved as dialog's pull resolves
+/// it: from the branch's memo when it holds it, else from the head when
+/// it carries its context inline (a head minted before the context
+/// region), else from the context region of the head's tree, read through
+/// `env`, which hydrates a tree the upstream holds. A head minted before
+/// the region with nothing inline is walked by ancestry, which has to be
+/// local. Whatever is resolved is remembered under the head's version.
+///
+/// A head itself carries no context since dialog 0.4.0-rc.4, so this is
+/// how the local head is ordered against the one the upstream reports.
+async fn head_context<Env>(
+    branch: &Branch,
+    head: &Revision,
+    env: &Env,
+) -> Result<Arc<Context>, SyncError>
+where
+    Env: Provider<ArchiveLoad> + Provider<BlobLoad> + Holds + ConditionalSync,
+{
+    let contexts = branch.contexts();
+    let version = head.version();
+    if let Some(context) = contexts.cached(&version).await {
+        return Ok(context);
+    }
+    let resolve = |what: &str, error: String| SyncError::Io(format!("{what}: {error}"));
+    let context =
+        match head.inline_context() {
+            Some(context) => Arc::new(context.clone()),
+            None if head.region => {
+                let tree = Index::at(branch.archive().index(), (*head.tree.hash()).into());
+                let region = context_in(&tree, &env)
+                    .await
+                    .map_err(|e| resolve("read the head's context region", e.to_string()))?;
+                Arc::new(head.context_from_region(region).map_err(|e| {
+                    resolve("bring the context region up to the head", e.to_string())
+                })?)
+            }
+            None => contexts
+                .context_of(&version, &branch.history(env))
+                .await
+                .map_err(|e| resolve("walk the head's ancestry", e.to_string()))?,
+        };
+    contexts.insert(version, context.clone());
+    Ok(context)
 }
 
 /// What to tell someone whose sync the access service refused.
@@ -472,6 +558,7 @@ fn map_push_error(error: PushError) -> SyncError {
         | PushError::Publish(dialog_repository::PublishError::VersionMismatch { .. }) => {
             SyncError::NonFastForward
         }
+        PushError::WriterRacedItself { branch, .. } => SyncError::RivalWriter { branch },
         other => classify_failure(&other),
     }
 }
@@ -479,6 +566,7 @@ fn map_push_error(error: PushError) -> SyncError {
 fn map_pull_error(error: PullError) -> SyncError {
     match error {
         PullError::BranchHasNoUpstream { branch } => SyncError::UpstreamNotConfigured { branch },
+        PullError::WriterRacedItself { branch, .. } => SyncError::RivalWriter { branch },
         other => classify_failure(&other),
     }
 }

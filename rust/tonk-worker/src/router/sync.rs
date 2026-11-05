@@ -515,7 +515,30 @@ fn classified_service_failure(
     })
 }
 
+/// Whether `error` is a pull or push refused because the upstream holds a
+/// rival head: another replica writing with this branch's key built on
+/// the same head and minted the same version over another tree
+/// (dialog-db/dialog-db#705). Neither side can merge the other without
+/// dropping a write, and dialog wrote nothing, so no pull-and-retry
+/// recovers it: one key's writers must write one at a time.
+fn is_rival_writer(error: &crate::reactor::ReactorError) -> bool {
+    matches!(
+        error,
+        crate::reactor::ReactorError::Push(dialog_repository::PushError::WriterRacedItself { .. })
+            | crate::reactor::ReactorError::Pull(PullError::WriterRacedItself { .. })
+    )
+}
+
 fn sync_failure(error: &crate::reactor::ReactorError) -> TonkWorkerError {
+    if is_rival_writer(error) {
+        return TonkWorkerError::Upstream {
+            status: 409,
+            code: Some("SYNC_RIVAL_WRITER".to_string()),
+            message: "another replica writing as this one minted the same version over \
+                      another tree; one key must not write from two replicas at once"
+                .to_string(),
+        };
+    }
     if is_head_moved(error) || is_upstream_moved(error) {
         return TonkWorkerError::Upstream {
             status: 409,
