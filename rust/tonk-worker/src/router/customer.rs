@@ -200,9 +200,14 @@ impl dialog_capability::Provider<tonk_schema::command::EnrollCustomer>
 ///
 /// No ceremony and no custody material — the enrollment's rows stand at
 /// the service, and re-enrolling to get a mail re-runs a passkey prompt
-/// the person waiting on their inbox never asked for. Outcome is the
-/// mail itself; failures are logged, and the rate limit means a silent
-/// round is the ordinary answer to an impatient second press.
+/// the person waiting on their inbox never asked for.
+///
+/// The outcome is recorded against the command entity as
+/// `xyz.tonk.resend-activation/{status,detail}` on the profile overlay:
+/// `requested` once the service accepted the invocation, `failed` when
+/// it never got there or refused it. `requested` does not promise a
+/// mail: the service rate limits sends and, so as not to say whether an
+/// account exists, answers a throttled request exactly like a sent one.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::ResendActivation>
@@ -210,52 +215,90 @@ impl dialog_capability::Provider<tonk_schema::command::ResendActivation>
 {
     async fn execute(
         &self,
-        _command: tonk_schema::command::ResendActivation,
+        command: tonk_schema::command::ResendActivation,
     ) -> tonk_schema::invocation::Outcome {
         use tonk_schema::invocation::{Done, Failure};
-        use tonk_schema::prelude::DidExt as _;
 
-        let state = self.state().read().await;
-        let account = match super::identity::root_did(&state).await {
-            Ok(account) => account,
-            Err(error) => {
-                log!("resend-activation: no account root: {error}");
-                return Err(Failure::new(format!("no account is signed in: {error}")));
+        match request_resend(self.state()).await {
+            Ok(()) => {
+                report_resend_activation(
+                    self.state(),
+                    &command.this,
+                    "requested",
+                    "Another activation email was requested.",
+                )
+                .await;
+                Done::nothing()
             }
-        };
-        let device = state.profile.credential().signer().clone();
-        let body = match tonk_identity::request::build_resend_invocation(device, &account).await {
-            Ok(body) => body,
-            Err(error) => {
-                log!("resend-activation: invocation did not build: {error:#}");
-                return Err(Failure::new(format!(
-                    "the resend request did not build: {error:#}"
-                )));
-            }
-        };
-        let origin = match service_origin() {
-            Ok(origin) => origin,
-            Err(error) => {
-                log!("resend-activation: no service origin: {error}");
-                return Err(Failure::new(format!(
-                    "the access service is unknown: {error}"
-                )));
-            }
-        };
-        let endpoint = match ucan_endpoint(&origin) {
-            Ok(endpoint) => endpoint,
             Err(error) => {
                 log!("resend-activation: {error}");
-                return Err(Failure::new(error));
+                report_resend_activation(
+                    self.state(),
+                    &command.this,
+                    "failed",
+                    "Couldn't request another activation email. Try again.",
+                )
+                .await;
+                Err(Failure::new(format!(
+                    "the activation email was not resent: {error}"
+                )))
             }
-        };
-        if let Err(error) = post_cbor(&endpoint, &body).await {
-            log!("resend-activation: the service refused: {error}");
-            return Err(Failure::new(format!(
-                "the activation email was not resent: {error}"
-            )));
         }
-        Done::with(account.this())
+    }
+}
+
+/// Sign and post the `/customer/resend` invocation. The state guard is
+/// released before the network call.
+async fn request_resend(state: &AppState) -> Result<(), String> {
+    let (account, device) = {
+        let state = state.read().await.clone();
+        let account = super::identity::root_did(&state)
+            .await
+            .map_err(|error| format!("no account root: {error}"))?;
+        (account, state.profile.credential().signer().clone())
+    };
+    let body = tonk_identity::request::build_resend_invocation(device, &account)
+        .await
+        .map_err(|error| format!("invocation did not build: {error:#}"))?;
+    let origin = service_origin().map_err(|error| format!("no service origin: {error}"))?;
+    let endpoint = ucan_endpoint(&origin).map_err(|error| error.to_string())?;
+    post_cbor(&endpoint, &body)
+        .await
+        .map_err(|error| format!("the service refused: {error}"))?;
+    Ok(())
+}
+
+/// Per-command feedback for the resend button: local overlay state on
+/// the profile branch, never account data.
+async fn report_resend_activation(
+    state: &AppState,
+    receipt: &dialog_artifacts::Entity,
+    status: &str,
+    detail: &str,
+) {
+    let tonk = state.read().await.clone();
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .overlay()
+        .assert(
+            dialog_query::the!("xyz.tonk.resend-activation/status")
+                .of(receipt.clone())
+                .is(status.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .assert(
+            dialog_query::the!("xyz.tonk.resend-activation/detail")
+                .of(receipt.clone())
+                .is(detail.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .write()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("resend-activation: failed to publish result: {error}");
     }
 }
 
@@ -266,7 +309,8 @@ pub async fn get_state(
     State(state): State<AppState>,
     Extension(origin): Extension<RequestOrigin>,
 ) -> Result<Json<CustomerState>, TonkWorkerError> {
-    let state = state.read().await;
+    // A clone, not a guard: the probe is a round trip to the service.
+    let state = state.read().await.clone();
     let root = super::identity::root_did(&state).await?;
     let record = load_customer(&state).await?;
     let endpoint = origin
@@ -363,7 +407,7 @@ pub async fn provision_custody(
     State(state): State<AppState>,
     Json(request): Json<ProvisionCustodyRequest>,
 ) -> Result<Json<()>, TonkWorkerError> {
-    let state = state.read().await;
+    let state = state.read().await.clone();
     let custody: dialog_varsig::Did = request
         .custody
         .parse()
@@ -421,7 +465,7 @@ pub async fn queue_custody(
     State(state): State<AppState>,
     Json(request): Json<QueueCustodyRequest>,
 ) -> Result<Json<()>, TonkWorkerError> {
-    let state = state.read().await;
+    let state = state.read().await.clone();
     if let Some(consent_hex) = &request.consent_hex {
         // Reject malformed recovery material before it can poison the durable
         // queue. The access service still verifies its authority on replay.
@@ -1607,7 +1651,7 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(&outcome, Err(failure) if failure.0.contains("no account is signed in")),
+            matches!(&outcome, Err(failure) if failure.0.contains("no account root")),
             "{outcome:?}"
         );
     }

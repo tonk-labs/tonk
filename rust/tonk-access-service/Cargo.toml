@@ -109,6 +109,12 @@ tonk-account = { workspace = true }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# A shaped link to put in front of the service, for the test that its
+# permits name the address clients reach it at.
+tonk-perf = { path = "../tonk-perf", default-features = false }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rusqlite = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"], optional = true }

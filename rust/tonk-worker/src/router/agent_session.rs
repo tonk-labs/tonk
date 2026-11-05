@@ -25,12 +25,11 @@ use axum::{
     extract::{Path, State},
 };
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-use dialog_credentials::{Ed25519Signer, Signer};
+use dialog_credentials::Ed25519Signer;
+use dialog_credentials::Signer;
 use dialog_repository::RepositoryExt as _;
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 use dialog_ucan_core::time::Timestamp;
 use dialog_varsig::Did;
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 use dialog_varsig::Principal as _;
 use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -38,12 +37,12 @@ use tokio::sync::oneshot;
 use tonk_handler_macros::wasm_compat;
 use tonk_invite::connection::AgentAccess;
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-use tonk_invite::connection::{DEFAULT_GRANT_TTL_SECONDS, agent_grant_scopes};
+use tonk_invite::connection::DEFAULT_GRANT_TTL_SECONDS;
+use tonk_invite::connection::agent_grant_scopes;
 use tonk_worker_api::{AgentAuthorization, AgentSpaceChoice};
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 use zeroize::Zeroizing;
 
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 use super::agent_connections::issuer_ancestors;
 use super::{
     AppState,
@@ -80,6 +79,45 @@ pub struct AgentSessionRequest {
 fn pending() -> &'static Mutex<HashMap<String, url::Url>> {
     static PENDING: OnceLock<Mutex<HashMap<String, url::Url>>> = OnceLock::new();
     PENDING.get_or_init(Default::default)
+}
+
+/// Elapsed times of named steps since a start, for one log line:
+/// `mounted 3 ms, loaded 12 ms (+9)`.
+struct Laps {
+    started: f64,
+    last: f64,
+    said: String,
+}
+
+impl Laps {
+    fn start() -> Self {
+        let now = tonk_common::diagnostics::now_ms();
+        Self {
+            started: now,
+            last: now,
+            said: String::new(),
+        }
+    }
+
+    /// Record `step` as done now.
+    fn lap(&mut self, step: &str) {
+        let now = tonk_common::diagnostics::now_ms();
+        if !self.said.is_empty() {
+            self.said.push_str(", ");
+        }
+        self.said.push_str(&format!(
+            "{step} {:.0} ms (+{:.0})",
+            now - self.started,
+            now - self.last
+        ));
+        self.last = now;
+    }
+}
+
+impl std::fmt::Display for Laps {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str(&self.said)
+    }
 }
 
 fn access(choice: &AgentSpaceChoice) -> Result<AgentAccess, TonkWorkerError> {
@@ -160,9 +198,13 @@ async fn targets(
     let mut targets = Vec::new();
     for space in spaces {
         let access = access(space)?;
+        // How long each check of this space took, in one log line, to see
+        // which one an approval waits on.
+        let mut clock = Laps::start();
         // A space listed in the account directory but not yet on this
         // browser is mounted now, as opening it would.
         super::adopt::mount_on_first_use(&tonk, state, &space.key).await;
+        clock.lap("mounted");
         let repository = tonk
             .profile
             .space(&space.key)
@@ -170,6 +212,7 @@ async fn targets(
             .perform(&tonk.operator)
             .await
             .map_err(|_| TonkWorkerError::NotFound(format!("no space {}", space.key)))?;
+        clock.lap("loaded");
         let remote = match resolve_remote_url(&tonk, &repository).await? {
             RemoteRequirement::Ready(remote) => remote.access_url,
             RemoteRequirement::Refused(_) => {
@@ -179,6 +222,7 @@ async fn targets(
                 )));
             }
         };
+        clock.lap("remote");
         // An agent reaches other agents only as contacts, never as spaces.
         if super::agents::is_agent(&tonk, &repository.did()).await {
             return Err(TonkWorkerError::Forbidden(format!(
@@ -189,6 +233,8 @@ async fn targets(
         let label = super::repository::repository_display_name(&tonk, &repository, &space.key)
             .await
             .unwrap_or_else(|| space.key.clone());
+        clock.lap("named");
+        tonk_common::log!("approval space {}: {}", space.key, clock);
         targets.push(Target {
             subject: repository.did(),
             access,
@@ -276,8 +322,12 @@ pub async fn create(
     client: Option<Extension<super::ClientId>>,
     Json(request): Json<AgentSessionRequest>,
 ) -> Result<Json<serde_json::Value>, TonkWorkerError> {
+    // Each step's time since the click, in the log, to see what the
+    // passkey prompt is kept waiting on.
+    let mut clock = Laps::start();
     // A lapsed request fails before the passkey is asked for.
     let described = describe_request(&origin, &request.request).await?;
+    clock.lap("request described");
     let text = |key: &str| described.get(key).and_then(|v| v.as_str()).unwrap_or("");
     let provider = provider(text("redirect_uri"), text("client_name"));
     if let Some(agent) = &request.agent {
@@ -291,9 +341,11 @@ pub async fn create(
                 "that agent cannot be connected to this app; make a new one".into(),
             ));
         }
+        clock.lap("agent checked");
     }
     let name = request.agent.is_none().then_some(request.name.as_str());
     targets(&state, name, &request.spaces).await?;
+    clock.lap("targets checked");
     let Some(Extension(client)) = client else {
         return Err(TonkWorkerError::Conflict(
             "no page asked for this, so no passkey can be asked for".into(),
@@ -320,6 +372,7 @@ pub async fn create(
         )
         .await;
     }
+    clock.lap("pending reported");
     // Any passkey of this account will do: the recovered root is checked
     // against the signed-in account before anything is signed.
     super::navigate::request_webauthn_with(
@@ -329,6 +382,8 @@ pub async fn create(
         None,
     )
     .await?;
+    clock.lap("passkey asked");
+    tonk_common::log!("approval ask: {clock}");
     Ok(Json(serde_json::json!({ "pending": true })))
 }
 
@@ -596,7 +651,7 @@ async fn push_new_space(state: &AppState, key: &str) -> Result<(), String> {
     super::sync::ensure_session_authority(state)
         .await
         .map_err(|error| error.to_string())?;
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     tonk.reactor
         .repository(key)
         .branch(super::repository::CONTENT_BRANCH)
@@ -776,11 +831,10 @@ pub(super) async fn mark(
         .perform(&tonk.operator)
         .await
         .map_err(failure)?;
-    Ok(())
+    super::agents::mark_on_profile(tonk, std::slice::from_ref(agent)).await
 }
 
 /// One space granted to an agent, as its space records it.
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(super) struct Granted {
     pub(super) subject: Did,
     pub(super) name: String,
@@ -794,7 +848,6 @@ pub(super) struct Granted {
 /// directory entry per space (`xyz.tonk.space/name` and
 /// `xyz.tonk.space/home-address` on the space's entity). What the agent
 /// may do there is read off the chains themselves.
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(super) async fn record_grants(
     tonk: &crate::TonkState,
     key: &str,
@@ -1000,8 +1053,9 @@ pub async fn deny(
 /// The chains delegating `subject` to `agent` at `access`, one per
 /// scope, signed by `issuer`: the account's own proof for the space, cut
 /// where it reaches `issuer`, with a leaf from `issuer` to the agent
-/// space. Signed by the account, a grant runs `space → account → agent`.
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+/// space. Signed by the account, a grant runs `space → account → agent`;
+/// signed by this device, as `space/invite-agent` signs it, it runs
+/// `space → … → device → agent`.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn grant(
     tonk: &crate::TonkState,

@@ -397,7 +397,7 @@ async fn authorize_inner(
         );
     }
     let withdrawn = {
-        let tonk = state.read().await;
+        let tonk = state.read().await.clone();
         withdraw(&tonk, &root, &request.agent, &space).await?
     };
     let finished = withdrawn.finished();

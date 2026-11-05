@@ -231,9 +231,10 @@ async fn stored_provider_for_store(
 }
 
 /// What to tell a device that has no account when it asks for durable
-/// authority. Names the one command that provisions both the root and the
-/// account it belongs to.
-const ACCOUNT_REQUIRED: &str = "A Tonk account is required; run `tonk account login`";
+/// authority. No CLI command links an account any more, and `tonk join`
+/// installs scoped connection credentials rather than an account, so this
+/// says so plainly and offers joining only as the way into an existing space.
+const ACCOUNT_REQUIRED: &str = "A Tonk account is required; this CLI cannot link an account itself any more, so manage account spaces in Tonk; to work on an existing space here, import a tool invitation for it with `tonk join <URL>`";
 
 /// Refuse unless one explicit profile store holds an account attachment.
 pub(crate) async fn require_account_with_operator_in(
@@ -1023,9 +1024,9 @@ pub async fn devices_in(
     profile: &Peer<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<Vec<DeviceRow>> {
-    let _connection = optional_connection_in(profile, store)
-        .await?
-        .context("no active account; run `tonk account login`")?;
+    let _connection = optional_connection_in(profile, store).await?.context(
+        "no active account; this CLI cannot link an account itself any more, so manage account spaces in Tonk; to work on an existing space here, import a tool invitation for it with `tonk join <URL>`",
+    )?;
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
     freshen_account(profile, &operator, store, "listing local facts").await;
     let branch = account_branch(profile, &operator, store).await?;
@@ -1137,7 +1138,7 @@ async fn account_branch(
     )
     .await
     .map_err(|_| anyhow::anyhow!("the account remote did not answer while mounting"))??
-    .context("the account repository is not mounted; run `tonk account login`")
+    .context("the account repository is not mounted; this CLI cannot link an account itself any more, so manage account spaces in Tonk; to work on an existing space here, import a tool invitation for it with `tonk join <URL>`")
 }
 
 /// Publish a revocation everywhere it could still be honoured — the
@@ -1293,9 +1294,9 @@ pub async fn revoke_in_observed(
     did: &str,
     observer: &mut dyn crate::account_observability::CliAccountObserver,
 ) -> Result<RevokeOutcome> {
-    let connection = optional_connection_in(profile, store)
-        .await?
-        .context("no active account; run `tonk account login`")?;
+    let connection = optional_connection_in(profile, store).await?.context(
+        "no active account; this CLI cannot link an account itself any more, so manage account spaces in Tonk; to work on an existing space here, import a tool invitation for it with `tonk join <URL>`",
+    )?;
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
     let link = connection.link.clone();
 

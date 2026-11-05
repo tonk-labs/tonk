@@ -353,7 +353,7 @@ impl dialog_capability::Provider<tonk_schema::command::ExpelMember> for crate::r
             return Err(Failure::new("The member to remove could not be read."));
         };
         let repo = self.origin().repo.clone();
-        let tonk = self.state().read().await;
+        let tonk = self.state().read().await.clone();
         match expel_member(&tonk, &repo, &member).await {
             Ok(receipt) => {
                 log!(

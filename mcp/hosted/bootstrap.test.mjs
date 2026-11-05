@@ -13,7 +13,7 @@ async function selectText(selectionReporting) {
   const sent = [];
   let timer;
   const port = { postMessage: (message) => sent.push(message) };
-  const window = { fetch() {} };
+  const window = { fetch() {}, addEventListener() {} };
   runInNewContext(source, {
     window,
     document: {

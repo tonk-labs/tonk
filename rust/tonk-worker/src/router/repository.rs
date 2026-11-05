@@ -755,7 +755,7 @@ async fn execute_create_space(
                     "A duplicate cannot also have a seed URL".into(),
                 ))
             } else {
-                let tonk = env.state().read().await;
+                let tonk = env.state().read().await.clone();
                 duplication::prepare(&tonk, source).await
             };
             match result {
@@ -986,6 +986,39 @@ async fn report_profile_rename(
         .await
     {
         log!("ProfileRename: failed to publish result: {error}");
+    }
+}
+
+/// The Hub's rename dialog waits on this receipt to close or show why not.
+async fn report_repository_rename(
+    state: &AppState,
+    receipt: &dialog_artifacts::Entity,
+    status: &str,
+    detail: &str,
+) {
+    let tonk = state.read().await;
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .overlay()
+        .assert(
+            dialog_query::the!("xyz.tonk.repository-rename/status")
+                .of(receipt.clone())
+                .is(status.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .assert(
+            dialog_query::the!("xyz.tonk.repository-rename/detail")
+                .of(receipt.clone())
+                .is(detail.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .write()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("RenameRepository: failed to publish result: {error}");
     }
 }
 
@@ -2188,7 +2221,7 @@ async fn run_invite(
     use tonk_schema::domain::credential::{Link, Seed};
     use tonk_schema::{Invitation, InvitationExecution};
 
-    let tonk = env.state().read().await;
+    let tonk = env.state().read().await.clone();
 
     let repository = tonk
         .profile
@@ -2896,7 +2929,7 @@ impl dialog_capability::Provider<tonk_schema::command::ProfileRename>
             Ok(()) => ("renamed", "Display name saved."),
             Err(error) => {
                 log!("ProfileRename for repo '{}' failed: {}", key, error);
-                ("failed", "Couldn't save your display name. Try again.")
+                ("failed", profile_rename_failure_detail(&error))
             }
         };
         report_profile_rename(self.state(), &command.this, status, detail).await;
@@ -2905,6 +2938,23 @@ impl dialog_capability::Provider<tonk_schema::command::ProfileRename>
         }
         let profile = self.state().read().await.profile.did().this();
         Done::with(profile)
+    }
+}
+
+/// What the name chip tells the user when a [`ProfileRename`] fails.
+///
+/// A linked account whose state is not ready yet (most often an email that
+/// has not been verified) refuses the rename; retrying cannot help, so say
+/// what will. Any other failure keeps the generic retry hint, since its
+/// message is a diagnostic rather than something to show.
+///
+/// [`ProfileRename`]: tonk_schema::command::ProfileRename
+pub(crate) fn profile_rename_failure_detail(error: &TonkWorkerError) -> &'static str {
+    match error {
+        TonkWorkerError::AccountStateUnavailable(_) => {
+            "Please verify your email using the verification link we sent before changing your display name."
+        }
+        _ => "Couldn't save your display name. Try again.",
     }
 }
 
@@ -2918,7 +2968,7 @@ async fn run_profile_rename(
     env: &crate::router::CommandEnv,
     name: &str,
 ) -> Result<(), TonkWorkerError> {
-    let tonk = env.state().read().await;
+    let tonk = env.state().read().await.clone();
     crate::router::account_state::rename_display_name(&tonk, name).await?;
 
     // Prompt an immediate push so peers see the new name without waiting for
@@ -2983,8 +3033,11 @@ impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
     async fn execute(&self, command: tonk_schema::command::RenameRepository) -> Outcome {
         use tonk_schema::prelude::DidExt as _;
 
+        const REFUSED: &str = "This space can't be renamed from here.";
+
         let Ok(did) = command.space.0.to_string().parse::<dialog_varsig::Did>() else {
             log!("RenameRepository: unparseable target space, skipping");
+            report_repository_rename(self.state(), &command.this, "failed", REFUSED).await;
             return Err(Failure::new(
                 "the space to rename is not a space's identity",
             ));
@@ -2997,6 +3050,7 @@ impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
                 self.origin().repo,
                 repo
             );
+            report_repository_rename(self.state(), &command.this, "failed", REFUSED).await;
             return Err(Failure::new(
                 "a space can only rename itself, not another space",
             ));
@@ -3007,6 +3061,8 @@ impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
             let tonk = self.state().read().await;
             if let Err(error) = require_real_space(&tonk, &did).await {
                 log!("RenameRepository '{}' refused: {}", repo, error);
+                drop(tonk);
+                report_repository_rename(self.state(), &command.this, "failed", REFUSED).await;
                 return Err(Failure::new(format!(
                     "this space can't be renamed: {error}"
                 )));
@@ -3019,8 +3075,16 @@ impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
         if rename_outcome(result) == RenameOutcome::Failed {
             let detail = failure_detail.unwrap_or_default();
             log!("RenameRepository for repo '{}' failed: {}", repo, detail);
+            report_repository_rename(
+                self.state(),
+                &command.this,
+                "failed",
+                "Couldn't rename this space. Try again.",
+            )
+            .await;
             return Err(Failure::new(format!("couldn't rename the space: {detail}")));
         }
+        report_repository_rename(self.state(), &command.this, "renamed", "Space renamed.").await;
         Done::with(did.this())
     }
 }
@@ -3156,7 +3220,7 @@ impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::r
         // device's own authority. The passkey belongs to deleting the
         // ACCOUNT, which is a different command.
         {
-            let tonk = self.state().read().await;
+            let tonk = self.state().read().await.clone();
             // The account's home service: a command has no request behind
             // it to carry one, and the space was provided where the
             // account syncs, which for a browser signed in through another
@@ -3899,11 +3963,11 @@ pub(super) async fn enable_sync_inner(
     key: &str,
     remote: &str,
 ) -> Result<(), RepositoryError> {
-    // A read guard, as the other callers of the lock-free core take: the
-    // attach provisions the space with the access service and records the
-    // mount in the account directory, both round trips, and a write guard
-    // held across them stalls every other request.
-    let tonk = state.read().await;
+    // A clone, not a guard: the attach provisions the space with the
+    // access service and records the mount in the account directory, both
+    // round trips, and a guard held across them keeps a queued writer, and
+    // every request behind it, waiting on the service.
+    let tonk = state.read().await.clone();
     enable_sync_for_repository(&tonk, key, remote, true).await
 }
 
@@ -3916,8 +3980,8 @@ pub(super) async fn attach_provisioned_remote(
     key: &str,
     remote: &str,
 ) -> Result<(), RepositoryError> {
-    // A read lock, as in `create_unseeded_space_from_seed`.
-    let tonk = state.read().await;
+    // A clone, not a guard: the attach is a round trip, as above.
+    let tonk = state.read().await.clone();
     let provisioned = super::customer::is_active(&tonk).await;
     enable_sync_for_repository(&tonk, key, remote, !provisioned).await
 }
@@ -8544,7 +8608,7 @@ pub async fn attach_remote(
 
     // A read guard: provisioning is a round trip to the access service,
     // and the remote configuration commits serialize on their branch.
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
 
     let repository = tonk
         .profile
@@ -10057,6 +10121,26 @@ mod rename_outcome_tests {
     fn it_maps_a_successful_rename_to_renamed() {
         assert_eq!(rename_outcome(Ok(())), RenameOutcome::Renamed);
     }
+
+    #[dialog_common::test]
+    fn it_asks_for_verification_when_a_display_name_rename_precedes_activation() {
+        let detail = super::profile_rename_failure_detail(
+            &crate::TonkWorkerError::AccountStateUnavailable("not ready".into()),
+        );
+        assert!(detail.contains("verify your email"), "{detail}");
+        assert!(
+            !detail.contains("not ready"),
+            "the diagnostic must not leak: {detail}"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_keeps_the_generic_retry_hint_for_other_display_name_failures() {
+        let detail = super::profile_rename_failure_detail(&crate::TonkWorkerError::Internal(
+            "failed to persist profile name override: boom".into(),
+        ));
+        assert_eq!(detail, "Couldn't save your display name. Try again.");
+    }
 }
 
 #[cfg(test)]
@@ -10516,8 +10600,11 @@ route!: &foreign-profile-route
         let tonk = test_state().await;
         install_recorded(&tonk, PROFILE_LIBRARY_URL, CURRENT).await;
 
-        let wire = tonk_template::resolve::view_bindings_query("tonk:space")
-            .expect("bindings query builds");
+        // The Hub view binds sign-out declaratively; the
+        // space list's own forms all dispatch through receipt-aware
+        // elements, so it carries no bindings to read.
+        let wire =
+            tonk_template::resolve::view_bindings_query("tonk:hub").expect("bindings query builds");
         let query = wire
             .into_concept_query()
             .expect("bindings query is a concept query");
@@ -10532,7 +10619,7 @@ route!: &foreign-profile-route
         let rendered = serde_json::to_string(&rows).expect("rows serialize");
         assert!(
             !rows.is_empty(),
-            "the space view carries compiled bindings: {rendered}",
+            "the hub view carries compiled bindings: {rendered}",
         );
     }
 

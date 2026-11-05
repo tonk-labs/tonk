@@ -41,7 +41,9 @@ use crate::events;
 use crate::host::HostState;
 use crate::http;
 use crate::registry::{Entry, EntryId};
+use crate::stream::Stream;
 use crate::url::{evaluate_url, query_url, subscribe_url, transact_url};
+use std::rc::Weak;
 
 /// One installed listener — the closure is held so it stays
 /// attached for the page's lifetime.
@@ -613,122 +615,13 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
             query: query_val.clone(),
             tag: tag_js.clone(),
             depth,
-            abort: None,
+            stream: None,
             awaiting_controller: false,
             attempt: 0,
         })
     };
 
-    let attempt = 0;
-    // Spawn the SSE open. When the future completes, install the
-    // abort handle on the registry entry (or drop it if the entry
-    // has been removed in the meantime).
-    let state_for_spawn = state.clone();
-    let consumer_for_spawn = consumer.clone();
-    let tag_for_spawn = tag_js.clone();
-    spawn_local(async move {
-        let body = query_ipld;
-        let consumer_frame = consumer_for_spawn.clone();
-        let tag_frame = tag_for_spawn.clone();
-        let state_frame = state_for_spawn.clone();
-        let consumer_err = consumer_for_spawn.clone();
-        let tag_err = tag_for_spawn.clone();
-        let state_err = state_for_spawn.clone();
-        let state_close = state_for_spawn.clone();
-        let abort = open_sse(
-            &url,
-            &body,
-            move |frame: &str| {
-                if !state_frame.borrow().registry.is_current(entry_id, attempt) {
-                    return;
-                }
-                if handle_control_frame(
-                    &state_frame,
-                    entry_id,
-                    frame,
-                    &consumer_frame,
-                    tag_frame.as_ref(),
-                ) {
-                    return;
-                }
-                if !consumer_frame.is_connected() {
-                    return;
-                }
-                // `JSON.parse`, NOT a serde round-trip: the frame is already
-                // the JSON text of `Vec<Conclusion>`, and consumers read the
-                // result by property access (`conclusion.fields.status`).
-                // `serde_wasm_bindgen` would serialize the `fields` map as a
-                // JS `Map`, whose entries `Reflect::get` cannot see.
-                let frame_js = match js_sys::JSON::parse(frame) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        invoke_method(
-                            &consumer_frame,
-                            "error",
-                            &error_to_js(&ErrorDetail::new(
-                                ErrorKind::Parse,
-                                format!("subscribe frame: {e:?}"),
-                            )),
-                            tag_frame.as_ref(),
-                        );
-                        return;
-                    }
-                };
-                deliver_frame(&consumer_frame, &frame_js, tag_frame.as_ref(), false);
-            },
-            move |err: ErrorDetail| {
-                if !state_err.borrow().registry.is_current(entry_id, attempt) {
-                    return;
-                }
-                if consumer_err.is_connected() {
-                    invoke_method(&consumer_err, "error", &error_to_js(&err), tag_err.as_ref());
-                }
-                // Keep the entry and retry: a transport error usually means
-                // the SW is restarting/updating, and a successful reconnect
-                // heals the consumer with its next `reset`.
-                resubscribe_after_error(&state_err, entry_id, &err);
-            },
-            move || {
-                if !state_close.borrow().registry.is_current(entry_id, attempt) {
-                    return;
-                }
-                // Clean server close (the SW releasing in-flight streams on
-                // update): reconnect silently — the subscription isn't over,
-                // its transport is. A close announced as INTENTIONAL holds
-                // for the controller change instead.
-                let delay = close_delay_ms(&state_close, entry_id);
-                schedule_resubscribe(&state_close, entry_id, delay);
-            },
-        )
-        .await;
-        if !state_for_spawn
-            .borrow()
-            .registry
-            .is_current(entry_id, attempt)
-        {
-            return;
-        }
-        match abort {
-            Ok(handle) => {
-                let mut s = state_for_spawn.borrow_mut();
-                s.registry.install_abort(entry_id, attempt, handle);
-            }
-            Err(err) => {
-                if consumer_for_spawn.is_connected() {
-                    invoke_method(
-                        &consumer_for_spawn,
-                        "error",
-                        &error_to_js(&err),
-                        tag_for_spawn.as_ref(),
-                    );
-                }
-                // The 404 path: a missing repo/branch fails the initial
-                // POST, so the stream never opens and `on_error` above
-                // never runs — this arm is the one that looped.
-                resubscribe_after_error(&state_for_spawn, entry_id, &err);
-            }
-        }
-    });
+    attach(state, entry_id, 0, url, query_ipld, false);
 
     install_subscription_handle(&detail, state.clone(), entry_id);
 }
@@ -860,103 +753,243 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
             .attempt
             .checked_add(1)
             .expect("subscription attempt exhaustion");
-        e.abort.take();
+        e.stream.take();
         e.space = space.clone();
         e.branch = branch.clone();
         e.awaiting_controller = false;
         e.attempt
     };
 
-    // Re-open the SSE. Same shape as `handle_subscribe` but
-    // against the new url, reusing the stored query + tag.
+    // Re-open against the new url, reusing the stored query + tag. The
+    // first frame after this reopen carries `reconnect: true` — see
+    // `invoke_method_marked`.
     let body_ipld: Ipld = match serde_wasm_bindgen::from_value(query.clone()) {
         Ok(v) => v,
         Err(_) => return,
     };
-    let consumer_frame = consumer.clone();
-    let tag_frame = tag.clone();
-    let state_err = state.clone();
-    let state_close = state.clone();
-    let state_frame = state.clone();
-    let consumer_err = consumer.clone();
-    let tag_err = tag.clone();
-    // The first frame after this reopen carries `reconnect: true` — see
-    // `invoke_method_marked`.
-    let first_frame = std::cell::Cell::new(true);
-    let abort_result = open_sse(
-        &url,
-        &body_ipld,
-        move |frame: &str| {
-            if !state_frame.borrow().registry.is_current(entry_id, attempt) {
-                return;
-            }
-            if handle_control_frame(
-                &state_frame,
-                entry_id,
-                frame,
-                &consumer_frame,
-                tag_frame.as_ref(),
-            ) {
-                return;
-            }
-            if !consumer_frame.is_connected() {
-                return;
-            }
-            // `JSON.parse` for plain objects — see the subscribe handler.
-            let frame_js = match js_sys::JSON::parse(frame) {
-                Ok(v) => v,
-                Err(e) => {
-                    invoke_method(
-                        &consumer_frame,
-                        "error",
-                        &error_to_js(&ErrorDetail::new(
-                            ErrorKind::Parse,
-                            format!("refresh frame: {e:?}"),
-                        )),
-                        tag_frame.as_ref(),
-                    );
-                    return;
+    attach(state, entry_id, attempt, url, body_ipld, true);
+}
+
+/// Put `entry_id`'s open `attempt` on the stream for `url` and `body`:
+/// join the live stream that already carries that subscription, or open
+/// one. `reconnect` marks the first frame the entry receives.
+fn attach(
+    state: &Rc<RefCell<HostState>>,
+    entry_id: EntryId,
+    attempt: u64,
+    url: String,
+    body: Ipld,
+    reconnect: bool,
+) {
+    let key = match serde_ipld_dagjson::to_vec(&body) {
+        Ok(bytes) => format!("{url}\n{}", String::from_utf8_lossy(&bytes)),
+        Err(e) => {
+            let error = ErrorDetail::new(ErrorKind::Parse, format!("body dag-json: {e}"));
+            report_error(state, entry_id, attempt, &error);
+            resubscribe_after_error(state, entry_id, &error);
+            return;
+        }
+    };
+    let joined = state.borrow().streams.joinable(&key);
+    let stream = match joined {
+        Some(stream) => {
+            stream.join(entry_id, attempt, reconnect);
+            let state = state.clone();
+            let replaying = stream.clone();
+            // Replay after the dispatch that subscribed returns, as a fresh
+            // open's first frame would: the consumer has not stored its
+            // subscription handle yet.
+            spawn_local(async move {
+                yield_microtask().await;
+                for (frame, reconnect) in replaying.replay(entry_id, attempt) {
+                    if !deliver_to(&state, entry_id, attempt, &frame, reconnect) {
+                        replaying.forget(&[(entry_id, attempt)]);
+                        break;
+                    }
                 }
-            };
-            deliver_frame(
-                &consumer_frame,
-                &frame_js,
-                tag_frame.as_ref(),
-                first_frame.replace(false),
-            );
-        },
-        move |err: ErrorDetail| {
-            if !state_err.borrow().registry.is_current(entry_id, attempt) {
-                return;
-            }
-            if consumer_err.is_connected() {
-                invoke_method(&consumer_err, "error", &error_to_js(&err), tag_err.as_ref());
-            }
-            resubscribe_after_error(&state_err, entry_id, &err);
-        },
-        move || {
-            if !state_close.borrow().registry.is_current(entry_id, attempt) {
-                return;
-            }
-            let delay = close_delay_ms(&state_close, entry_id);
-            schedule_resubscribe(&state_close, entry_id, delay);
-        },
-    )
-    .await;
-    if !state.borrow().registry.is_current(entry_id, attempt) {
-        return;
+            });
+            stream
+        }
+        None => {
+            let stream = Stream::open(entry_id, attempt, reconnect);
+            state.borrow_mut().streams.insert(key.clone(), &stream);
+            spawn_local(open_stream(
+                state.clone(),
+                Rc::downgrade(&stream),
+                key,
+                url,
+                body,
+            ));
+            stream
+        }
+    };
+    let mut s = state.borrow_mut();
+    if let Some(entry) = s.registry.entries_mut().get_mut(&entry_id)
+        && entry.attempt == attempt
+    {
+        entry.stream = Some(stream);
     }
-    match abort_result {
-        Ok(handle) => {
-            let mut s = state.borrow_mut();
-            s.registry.install_abort(entry_id, attempt, handle);
-        }
-        Err(err) => {
-            if consumer.is_connected() {
-                invoke_method(&consumer, "error", &error_to_js(&err), tag.as_ref());
+}
+
+/// Open the upstream for a new shared stream and fan its frames out. The
+/// callbacks hold the stream weakly: once every entry has let go, frames
+/// find nothing and a late open drops its transport at once.
+async fn open_stream(
+    state: Rc<RefCell<HostState>>,
+    stream: Weak<Stream>,
+    key: String,
+    url: String,
+    body: Ipld,
+) {
+    let on_frame = {
+        let state = state.clone();
+        let stream = stream.clone();
+        move |frame: &str| {
+            let Some(stream) = stream.upgrade() else {
+                return;
+            };
+            let mut stale = Vec::new();
+            for delivery in stream.record(frame) {
+                if !deliver_to(
+                    &state,
+                    delivery.entry,
+                    delivery.attempt,
+                    frame,
+                    delivery.reconnect,
+                ) {
+                    stale.push((delivery.entry, delivery.attempt));
+                }
             }
-            resubscribe_after_error(state, entry_id, &err);
+            stream.forget(&stale);
         }
+    };
+    let on_error = {
+        let state = state.clone();
+        let stream = stream.clone();
+        let key = key.clone();
+        move |error: ErrorDetail| end_stream(&state, &stream, &key, Some(&error))
+    };
+    let on_close = {
+        let state = state.clone();
+        let stream = stream.clone();
+        let key = key.clone();
+        move || end_stream(&state, &stream, &key, None)
+    };
+    match open_sse(&url, &body, on_frame, on_error, on_close).await {
+        Ok(source) => {
+            if let Some(live) = stream.upgrade() {
+                live.install(source);
+            }
+        }
+        // The 404 path: a missing repo/branch fails the initial POST, so the
+        // stream never opens and `on_error` never runs — this arm is the one
+        // that looped.
+        Err(error) => end_stream(&state, &stream, &key, Some(&error)),
+    }
+}
+
+/// A shared stream ended. A transport `error` reaches each consumer and
+/// retries on the error timer; a clean server close (the SW releasing
+/// in-flight streams on update) reconnects silently — the subscription
+/// isn't over, its transport is — and a close announced as INTENTIONAL
+/// holds for the controller change instead. Each entry re-resolves its
+/// own route, so entries that still agree share the next stream too.
+fn end_stream(
+    state: &Rc<RefCell<HostState>>,
+    stream: &Weak<Stream>,
+    key: &str,
+    error: Option<&ErrorDetail>,
+) {
+    let Some(stream) = stream.upgrade() else {
+        return;
+    };
+    state.borrow_mut().streams.remove(key, &stream);
+    for subscriber in stream.end() {
+        let (entry_id, attempt) = (subscriber.entry, subscriber.attempt);
+        if !state.borrow().registry.is_current(entry_id, attempt) {
+            continue;
+        }
+        match error {
+            Some(error) => {
+                report_error(state, entry_id, attempt, error);
+                // Keep the entry and retry: a transport error usually means
+                // the SW is restarting/updating, and a successful reconnect
+                // heals the consumer with its next `reset`.
+                resubscribe_after_error(state, entry_id, error);
+            }
+            None => {
+                let delay = close_delay_ms(state, entry_id);
+                schedule_resubscribe(state, entry_id, delay);
+            }
+        }
+    }
+}
+
+/// Hand `entry_id`'s consumer one frame of its open `attempt`. Returns
+/// false when that open is no longer current, so the stream can forget it.
+fn deliver_to(
+    state: &Rc<RefCell<HostState>>,
+    entry_id: EntryId,
+    attempt: u64,
+    frame: &str,
+    reconnect: bool,
+) -> bool {
+    let target = {
+        let s = state.borrow();
+        s.registry
+            .get(entry_id)
+            .filter(|entry| entry.attempt == attempt)
+            .map(|entry| (entry.consumer.clone(), entry.tag.clone()))
+    };
+    let Some((consumer, tag)) = target else {
+        return false;
+    };
+    if handle_control_frame(state, entry_id, frame, &consumer, tag.as_ref()) {
+        return true;
+    }
+    if !consumer.is_connected() {
+        return true;
+    }
+    // `JSON.parse`, NOT a serde round-trip: the frame is already the JSON
+    // text of `Vec<Conclusion>`, and consumers read the result by property
+    // access (`conclusion.fields.status`). `serde_wasm_bindgen` would
+    // serialize the `fields` map as a JS `Map`, whose entries
+    // `Reflect::get` cannot see. Parsed per consumer, so none shares
+    // another's rows.
+    match js_sys::JSON::parse(frame) {
+        Ok(frame_js) => deliver_frame(&consumer, &frame_js, tag.as_ref(), reconnect),
+        Err(e) => invoke_method(
+            &consumer,
+            "error",
+            &error_to_js(&ErrorDetail::new(
+                ErrorKind::Parse,
+                format!("subscribe frame: {e:?}"),
+            )),
+            tag.as_ref(),
+        ),
+    }
+    true
+}
+
+/// Surface `error` on `entry_id`'s consumer, if its open `attempt` is
+/// current and the consumer is still in the document.
+fn report_error(
+    state: &Rc<RefCell<HostState>>,
+    entry_id: EntryId,
+    attempt: u64,
+    error: &ErrorDetail,
+) {
+    let target = {
+        let s = state.borrow();
+        s.registry
+            .get(entry_id)
+            .filter(|entry| entry.attempt == attempt)
+            .map(|entry| (entry.consumer.clone(), entry.tag.clone()))
+    };
+    if let Some((consumer, tag)) = target
+        && consumer.is_connected()
+    {
+        invoke_method(&consumer, "error", &error_to_js(error), tag.as_ref());
     }
 }
 
@@ -1307,9 +1340,7 @@ mod tests {
             .element
             .set_attribute("with", "main@old-space")
             .unwrap();
-        let state = Rc::new(RefCell::new(HostState {
-            registry: crate::registry::Registry::new(),
-        }));
+        let state = Rc::new(RefCell::new(HostState::new()));
         let id = state.borrow_mut().registry.insert(Entry {
             consumer: consumer.element.clone(),
             space: Some("old-space".into()),
@@ -1317,7 +1348,7 @@ mod tests {
             query: Object::new().into(),
             tag: Some("entity".into()),
             depth: 0,
-            abort: None,
+            stream: None,
             awaiting_controller: false,
             attempt: 0,
         });
@@ -1393,9 +1424,7 @@ mod tests {
             .element
             .set_attribute("with", "main@old-space")
             .unwrap();
-        let state = Rc::new(RefCell::new(HostState {
-            registry: crate::registry::Registry::new(),
-        }));
+        let state = Rc::new(RefCell::new(HostState::new()));
         let _listeners = attach_all(consumer.element.as_ref(), state.clone());
         fn subscribe(el: &Element) -> Object {
             let detail = Object::new();
@@ -1640,5 +1669,243 @@ mod tests {
             "the dispatching element, not the shadow host `target` retargets to"
         );
         outer.remove();
+    }
+
+    /// A connected fake consumer with an entry for it in `state`.
+    fn subscribed(state: &Rc<RefCell<HostState>>, tag: &str) -> (FakeConsumer, EntryId) {
+        let consumer = FakeConsumer::new();
+        window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .body()
+            .unwrap()
+            .append_child(&consumer.element)
+            .unwrap();
+        let id = state.borrow_mut().registry.insert(Entry {
+            consumer: consumer.element.clone(),
+            space: Some("space".into()),
+            branch: Some("main".into()),
+            query: Object::new().into(),
+            tag: Some(tag.into()),
+            depth: 0,
+            stream: None,
+            awaiting_controller: false,
+            attempt: 0,
+        });
+        (consumer, id)
+    }
+
+    fn query(name: &str) -> Ipld {
+        Ipld::Map([("name".to_owned(), Ipld::String(name.to_owned()))].into())
+    }
+
+    const URL: &str = "/api/repository/space/branch/main/query";
+
+    /// Two consumers asking the same question ride one upstream, and each
+    /// gets every frame with its own tag.
+    #[dialog_common::test]
+    async fn it_shares_one_upstream_between_identical_subscriptions() {
+        let fetch = PendingFetch::new();
+        let state = Rc::new(RefCell::new(HostState::new()));
+        let (first, first_id) = subscribed(&state, "model");
+        let (second, second_id) = subscribed(&state, "model");
+        attach(&state, first_id, 0, URL.into(), query("note"), false);
+        attach(&state, second_id, 0, URL.into(), query("note"), false);
+        wait_ms(5).await;
+        let opened = fetch.pending();
+        fetch.call("open", 0, &JsValue::UNDEFINED);
+        wait_ms(0).await;
+        fetch.call(
+            "frame",
+            0,
+            &r#"{"kind":"snapshot","conclusions":["a"]}"#.into(),
+        );
+        fetch.call(
+            "frame",
+            0,
+            &r#"{"kind":"delta","asserted":["b"],"retracted":[]}"#.into(),
+        );
+        until(|| first.len() == 2 && second.len() == 2).await;
+        state.borrow_mut().registry.remove(first_id);
+        state.borrow_mut().registry.remove(second_id);
+        first.element.remove();
+        second.element.remove();
+        assert_eq!(
+            opened, 1,
+            "identical subscriptions opened separate upstreams"
+        );
+        for consumer in [&first, &second] {
+            assert_eq!(method_of(&consumer.call(0)), "reset");
+            assert_eq!(method_of(&consumer.call(1)), "update");
+            assert_eq!(
+                field(&opts_of(&consumer.call(0)), "tag")
+                    .as_string()
+                    .as_deref(),
+                Some("model")
+            );
+        }
+    }
+
+    /// A consumer that joins after frames went by is handed the snapshot
+    /// and the deltas since, in order, then live frames.
+    #[dialog_common::test]
+    async fn it_replays_the_frames_a_late_subscriber_missed() {
+        let fetch = PendingFetch::new();
+        let state = Rc::new(RefCell::new(HostState::new()));
+        let (early, early_id) = subscribed(&state, "view");
+        attach(&state, early_id, 0, URL.into(), query("note"), false);
+        until(|| fetch.pending() == 1).await;
+        fetch.call("open", 0, &JsValue::UNDEFINED);
+        wait_ms(0).await;
+        fetch.call(
+            "frame",
+            0,
+            &r#"{"kind":"snapshot","conclusions":["old"]}"#.into(),
+        );
+        fetch.call(
+            "frame",
+            0,
+            &r#"{"kind":"snapshot","conclusions":["a"]}"#.into(),
+        );
+        fetch.call(
+            "frame",
+            0,
+            &r#"{"kind":"delta","asserted":["b"],"retracted":[]}"#.into(),
+        );
+        until(|| early.len() == 3).await;
+        let (late, late_id) = subscribed(&state, "view");
+        attach(&state, late_id, 0, URL.into(), query("note"), false);
+        let before_replay = late.len();
+        until(|| late.len() == 2).await;
+        fetch.call(
+            "frame",
+            0,
+            &r#"{"kind":"delta","asserted":["c"],"retracted":[]}"#.into(),
+        );
+        until(|| late.len() == 3 && early.len() == 4).await;
+        let opened = fetch.pending();
+        state.borrow_mut().registry.remove(early_id);
+        state.borrow_mut().registry.remove(late_id);
+        early.element.remove();
+        late.element.remove();
+        assert_eq!(
+            opened, 1,
+            "a late identical subscription opened its own upstream"
+        );
+        assert_eq!(
+            before_replay, 0,
+            "replay ran inside the subscribing dispatch"
+        );
+        assert_eq!(method_of(&late.call(0)), "reset");
+        assert_eq!(
+            Array::from(&payload_of(&late.call(0)))
+                .get(0)
+                .as_string()
+                .as_deref(),
+            Some("a"),
+            "replay began before the last snapshot"
+        );
+        assert_eq!(method_of(&late.call(1)), "update");
+        assert_eq!(method_of(&late.call(2)), "update");
+    }
+
+    /// The upstream lives while any entry rides it and goes with the last.
+    #[dialog_common::test]
+    async fn it_drops_the_upstream_with_its_last_subscriber() {
+        let fetch = PendingFetch::new();
+        let state = Rc::new(RefCell::new(HostState::new()));
+        let (first, first_id) = subscribed(&state, "name");
+        let (second, second_id) = subscribed(&state, "name");
+        attach(&state, first_id, 0, URL.into(), query("note"), false);
+        attach(&state, second_id, 0, URL.into(), query("note"), false);
+        until(|| fetch.pending() == 1).await;
+        fetch.call("open", 0, &JsValue::UNDEFINED);
+        wait_ms(0).await;
+        state.borrow_mut().registry.remove(first_id);
+        let after_first = state.borrow().streams.live();
+        fetch.call(
+            "frame",
+            0,
+            &r#"{"kind":"snapshot","conclusions":["a"]}"#.into(),
+        );
+        until(|| second.len() == 1).await;
+        state.borrow_mut().registry.remove(second_id);
+        let after_second = state.borrow().streams.live();
+        first.element.remove();
+        second.element.remove();
+        assert_eq!(
+            after_first, 1,
+            "the upstream closed while an entry still rode it"
+        );
+        assert_eq!(first.len(), 0, "a removed entry still received frames");
+        assert_eq!(after_second, 0, "the upstream outlived its last entry");
+    }
+
+    /// Different questions, or the same one at a different route, never
+    /// share.
+    #[dialog_common::test]
+    async fn it_keeps_different_subscriptions_on_separate_upstreams() {
+        let fetch = PendingFetch::new();
+        let state = Rc::new(RefCell::new(HostState::new()));
+        let (a, a_id) = subscribed(&state, "entity");
+        let (b, b_id) = subscribed(&state, "entity");
+        let (c, c_id) = subscribed(&state, "entity");
+        attach(&state, a_id, 0, URL.into(), query("note"), false);
+        attach(&state, b_id, 0, URL.into(), query("task"), false);
+        attach(
+            &state,
+            c_id,
+            0,
+            format!("{URL}?depth=1"),
+            query("note"),
+            false,
+        );
+        wait_ms(5).await;
+        let opened = fetch.pending();
+        for id in [a_id, b_id, c_id] {
+            state.borrow_mut().registry.remove(id);
+        }
+        for consumer in [a, b, c] {
+            consumer.element.remove();
+        }
+        assert_eq!(opened, 3);
+    }
+
+    /// When the shared upstream closes, every entry reconnects, and those
+    /// that still agree share the next upstream too.
+    #[dialog_common::test]
+    async fn it_reconnects_every_subscriber_of_a_closed_upstream() {
+        let fetch = PendingFetch::new();
+        let state = Rc::new(RefCell::new(HostState::new()));
+        let (first, first_id) = subscribed(&state, "model");
+        let (second, second_id) = subscribed(&state, "model");
+        for consumer in [&first, &second] {
+            consumer
+                .element
+                .set_attribute("with", "main@space")
+                .unwrap();
+        }
+        attach(&state, first_id, 0, URL.into(), query("note"), false);
+        attach(&state, second_id, 0, URL.into(), query("note"), false);
+        until(|| fetch.pending() == 1).await;
+        fetch.call("reject", 0, &JsValue::UNDEFINED);
+        until(|| first.len() == 1 && second.len() == 1).await;
+        let errors = [method_of(&first.call(0)), method_of(&second.call(0))];
+        // Both retry on the error timer; refresh them now instead of waiting.
+        refresh_entry(&state, first_id).await;
+        refresh_entry(&state, second_id).await;
+        wait_ms(5).await;
+        let reopened = fetch.pending() - 1;
+        for id in [first_id, second_id] {
+            state.borrow_mut().registry.remove(id);
+        }
+        first.element.remove();
+        second.element.remove();
+        assert_eq!(errors, ["error".to_owned(), "error".to_owned()]);
+        assert_eq!(
+            reopened, 1,
+            "reconnecting entries opened separate upstreams"
+        );
     }
 }
