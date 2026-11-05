@@ -94,6 +94,9 @@ tracing-subscriber = { workspace = true }
 tracing-log = { workspace = true }
 
 [dev-dependencies]
+# `examples/fetch_blocks.rs` decodes block names and parses tree nodes.
+base58 = { workspace = true }
+dialog-search-tree = { workspace = true }
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 futures-util = { workspace = true }
