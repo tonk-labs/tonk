@@ -93,8 +93,8 @@ struct RegistrationState {
     /// Signs the permits `/ucan/` answers with and verifies them at
     /// `/object/`, derived from `service_seed` as the worker derives it.
     permit_key: PermitKey,
-    /// Where those permits are redeemed: this server's own address.
-    /// Not `origin`, which is the page origin a dev proxy fronts, and
+    /// Where those permits are redeemed: this server's own address, or
+    /// the address its clients reach it at when that differs. Not `origin`, which is the page origin a dev proxy fronts, and
     /// which does not forward `/object/`.
     endpoint: String,
     /// The backing S3 store `/object/` performs against, with the
@@ -159,6 +159,35 @@ impl AccessServer {
         deployment: Option<tonk_worker_api::DeploymentConfig>,
         public_origin: Option<String>,
         state_dir: Option<&std::path::Path>,
+    ) -> anyhow::Result<Self> {
+        Self::start_behind(
+            s3_server,
+            bucket,
+            access_key,
+            secret_key,
+            deployment,
+            public_origin,
+            state_dir,
+            None,
+        )
+        .await
+    }
+
+    /// [`start`](Self::start) a service its clients reach at
+    /// `public_endpoint` rather than at its own address, such as through
+    /// a shaped link (`tonk_perf::link`): the object permits it issues
+    /// name that address, so a client's block reads and writes cross the
+    /// same path as its redeems.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_behind(
+        s3_server: LocalS3,
+        bucket: &str,
+        access_key: &str,
+        secret_key: &str,
+        deployment: Option<tonk_worker_api::DeploymentConfig>,
+        public_origin: Option<String>,
+        state_dir: Option<&std::path::Path>,
+        public_endpoint: Option<String>,
     ) -> anyhow::Result<Self> {
         // Create S3 credentials for the authorizer
         let address = Address::builder(&s3_server.endpoint)
@@ -239,7 +268,9 @@ impl AccessServer {
             revocations: revocations.clone(),
             authorizer: authorizer.clone(),
             permit_key,
-            endpoint: endpoint.clone(),
+            endpoint: public_endpoint
+                .map(|public| public.trim_end_matches('/').to_string())
+                .unwrap_or_else(|| endpoint.clone()),
             objects,
             live,
         });
@@ -1833,6 +1864,10 @@ pub struct AccessServiceSettings {
     /// Record revocations without their signed documents, as the service
     /// did before it kept them, so refusals carry no evidence.
     pub drop_revocation_documents: bool,
+    /// The address clients reach this service at, when it is not the
+    /// service's own: object permits name it. A harness that puts a
+    /// shaped link in front of the service sets it to the link's.
+    pub public_endpoint: Option<String>,
 }
 
 impl Default for AccessServiceSettings {
@@ -1845,6 +1880,7 @@ impl Default for AccessServiceSettings {
             public_origin: None,
             state_dir: None,
             drop_revocation_documents: false,
+            public_endpoint: None,
         }
     }
 }
@@ -2089,7 +2125,7 @@ pub async fn access_service(
     }
 
     // Start the UCAN access service
-    let access_server = AccessServer::start(
+    let access_server = AccessServer::start_behind(
         s3_server,
         bucket,
         &settings.access_key_id,
@@ -2097,6 +2133,7 @@ pub async fn access_service(
         settings.deployment,
         settings.public_origin,
         settings.state_dir.as_deref(),
+        settings.public_endpoint,
     )
     .await?;
     if settings.drop_revocation_documents {

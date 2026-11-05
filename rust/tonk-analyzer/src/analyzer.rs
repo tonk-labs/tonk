@@ -5981,10 +5981,10 @@ seed/installed!:
         }
         let profile = include_str!("../../tonk-core/assets/library/profile.yaml");
         let inlined = inlined_declarations("profile.yaml", profile);
-        // Removal submits through space-remove's receipt-aware handler;
-        // rename still exercises declarative form binding inlining.
+        // Removal and rename submit through receipt-aware handlers;
+        // sign-out still exercises declarative binding inlining.
         assert!(
-            inlined.contains(&"on/repository-rename-submit".to_string()),
+            inlined.contains(&"on/sign-out".to_string()),
             "profile.yaml's rename form must carry its declaration inlined, got {inlined:?}",
         );
     }

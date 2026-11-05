@@ -219,6 +219,8 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::PromoteMember>()
         .command::<tonk_schema::command::PublishSpace>()
         .command::<tonk_schema::command::UnpublishSpace>()
+        .command::<tonk_schema::command::InviteAgent>()
+        .command::<tonk_schema::command::InviteByEmail>()
         .command::<tonk_schema::command::EnrollCustomer>()
         .command::<tonk_schema::command::ResendActivation>()
         .command::<tonk_schema::command::DeleteAccount>()

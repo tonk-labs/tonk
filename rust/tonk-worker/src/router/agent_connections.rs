@@ -684,7 +684,7 @@ pub async fn revoke(
     Path(id): Path<String>,
 ) -> Result<Json<AgentConnectionSummary>, TonkWorkerError> {
     enabled()?;
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     let group = groups(&tonk)
         .await?
         .into_iter()
@@ -703,7 +703,7 @@ pub async fn revoke(
         return Err(failure("space routing changed"));
     }
     let result = revoke_group(&tonk, &group, |chain, cid| {
-        let tonk = &*tonk;
+        let tonk = &tonk;
         let group = &group;
         async move {
             let remote = group.remote.parse().map_err(failure)?;
