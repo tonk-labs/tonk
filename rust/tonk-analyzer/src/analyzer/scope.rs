@@ -28,6 +28,7 @@ use tonk_template::event::EventDescriptor;
 /// the prefetch helpers drop their guards before recursing into
 /// the branch resolution chain.
 pub(crate) struct Scope {
+    pub(crate) graph_schemas: Mutex<HashMap<String, dialog_query::graph::GraphSchema>>,
     /// Anchor/variable → entity for non-meta head bindings
     /// (every head except `attribute!` / `concept!` whose
     /// declarations live in the dedicated maps below). One map
@@ -95,6 +96,7 @@ pub(crate) struct Scope {
 impl Scope {
     pub(crate) fn new() -> Self {
         Self {
+            graph_schemas: Mutex::new(HashMap::new()),
             declarations: Mutex::new(HashMap::new()),
             variables: Mutex::new(HashMap::new()),
             in_doc_attributes: Mutex::new(HashMap::new()),
@@ -409,6 +411,7 @@ pub(crate) fn attribute_concept(attribute: &AttributeDefinition) -> Option<Conce
     let descriptor =
         dialog_query::ConceptDescriptor::try_from([(name, attribute.descriptor.clone())]).ok()?;
     Some(ConceptDefinition {
+        edges: Default::default(),
         entity: descriptor.this(),
         descriptor: tonk_core::claim::ConceptDescriptor::Durable(descriptor),
     })

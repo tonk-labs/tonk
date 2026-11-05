@@ -432,6 +432,12 @@ pub enum AnalyzeErrorKind {
         /// Underlying validation message.
         reason: String,
     },
+    /// A graph query's matching/shaping configuration is malformed.
+    #[error("invalid graph query: {reason}")]
+    InvalidGraphQuery {
+        /// Why the query cannot be evaluated.
+        reason: String,
+    },
     /// `concept!` body was malformed.
     #[error("invalid `concept!` body: {reason}")]
     InvalidConceptBody {
@@ -785,6 +791,7 @@ impl AnalyzeErrorKind {
             Self::UnreferenceableAnchorName { .. } => "E_UNREFERENCEABLE_ANCHOR_NAME",
             Self::AssertionWithoutFields { .. } => "E_ASSERTION_WITHOUT_FIELDS",
             Self::InvalidAttributeBody { .. } => "E_INVALID_ATTRIBUTE_BODY",
+            Self::InvalidGraphQuery { .. } => "E_INVALID_GRAPH_QUERY",
             Self::InvalidConceptBody { .. } => "E_INVALID_CONCEPT_BODY",
             Self::ReservedName { .. } => "E_RESERVED_NAME",
             Self::UnknownConcept { .. } => "E_UNKNOWN_CONCEPT",

@@ -48,9 +48,9 @@ pub enum SyncState {
 pub enum Comparison {
     /// Local and upstream heads are identical.
     Synced,
-    /// Local is strictly ahead by one proven commit.
+    /// Local is strictly ahead by proven causal ordering.
     Ahead,
-    /// Local is strictly behind by one proven commit.
+    /// Local is strictly behind by proven causal ordering.
     Behind,
     /// The relationship can't be proven from the two heads alone.
     Diverged,
@@ -74,6 +74,8 @@ impl From<Comparison> for SyncState {
 ///
 /// - identical trees (including both heads absent) → [`Comparison::Synced`];
 /// - one side absent and the other present → the present side leads;
+/// - region-backed heads on the same origin use Dialog's exact causal-chain
+///   ordering (including a region head paired with an older inline-context head);
 /// - the local context includes the remote's → [`Comparison::Ahead`]
 ///   (local has observed everything the remote has, and more);
 /// - the remote context includes the local's → [`Comparison::Behind`].
@@ -87,8 +89,9 @@ impl From<Comparison> for SyncState {
 ///
 /// Two cases still fall back to `Diverged`:
 ///
-/// - **No published context.** [`Revision::context`] is `None` on heads
-///   minted before the history index existed. Without it the direction
+/// - **No comparable context.** Heads minted before the history index carry
+///   no context. Region-backed heads from different origins need tree reads
+///   to compare their contexts. Without that evidence the direction
 ///   cannot be proven from the head alone, so such a pairing reads as
 ///   `Diverged` (a pull-then-push still reconciles it; only the label is
 ///   conservative).
@@ -106,7 +109,26 @@ pub fn classify(local: Option<&Revision>, remote: Option<&Revision>) -> Comparis
             if local.tree == remote.tree {
                 return Comparison::Synced;
             }
-            let (Some(local_ctx), Some(remote_ctx)) = (&local.context, &remote.context) else {
+            // Dialog's region-backed heads omit the inline context. One
+            // origin (branch + issuer) still identifies one causal chain;
+            // its shared precedence comparison is exact without a tree read.
+            // Never use its cross-origin edition heuristic for sync status.
+            if (local.region || remote.region)
+                && local.origin() == remote.origin()
+                && (local.region || local.inline_context().is_some())
+                && (remote.region || remote.inline_context().is_some())
+            {
+                use dialog_capability::identity::Precedence;
+                return match local.precedence(remote) {
+                    Precedence::Same => Comparison::Synced,
+                    Precedence::After => Comparison::Ahead,
+                    Precedence::Before => Comparison::Behind,
+                    Precedence::Concurrent => Comparison::Diverged,
+                };
+            }
+            let (Some(local_ctx), Some(remote_ctx)) =
+                (local.inline_context(), remote.inline_context())
+            else {
                 // A head minted before the history index carries no context,
                 // so the direction can't be proven from the heads alone.
                 return Comparison::Diverged;
@@ -287,6 +309,64 @@ mod tests {
         // A pre-history-index head can't be ordered from the head alone.
         let remote = contextless(tree(1));
         let local = rev(tree(2), context(&[(origin(0), 2)]));
+        assert_eq!(classify(Some(&local), Some(&remote)), Comparison::Diverged);
+    }
+
+    fn region_head(byte: u8, edition: u64, issuer: &str) -> Revision {
+        let mut head = Revision::new(tree(byte), branch(), issuer.parse().unwrap());
+        head.edition = Edition::new(edition);
+        head.publish_region(edition);
+        head
+    }
+
+    #[dialog_common::test]
+    fn region_heads_on_one_origin_are_ordered_across_multiple_commits() {
+        let remote = region_head(1, 2, "did:key:alice");
+        let local = region_head(2, 8, "did:key:alice");
+        assert!(local.context.is_none() && remote.context.is_none());
+        assert_eq!(classify(Some(&local), Some(&remote)), Comparison::Ahead);
+        assert_eq!(classify(Some(&remote), Some(&local)), Comparison::Behind);
+    }
+
+    #[dialog_common::test]
+    fn region_heads_on_distinct_origins_are_not_ordered_by_edition() {
+        let remote = region_head(1, 2, "did:key:alice");
+        let local = region_head(2, 8, "did:key:bob");
+        assert_eq!(classify(Some(&local), Some(&remote)), Comparison::Diverged);
+        assert_eq!(classify(Some(&remote), Some(&local)), Comparison::Diverged);
+        let mut other_branch = local.clone();
+        other_branch.issuer = remote.issuer.clone();
+        other_branch.branch = "id:other-branch".parse().unwrap();
+        assert_eq!(
+            classify(Some(&other_branch), Some(&remote)),
+            Comparison::Diverged
+        );
+    }
+
+    #[dialog_common::test]
+    fn mixed_inline_and_region_heads_of_one_origin_remain_ordered() {
+        let mut remote = region_head(1, 2, "did:key:alice");
+        remote.region = false;
+        remote.count = None;
+        remote.context = Some(context(&[(remote.origin(), 2)]));
+        let local = region_head(2, 8, "did:key:alice");
+        assert_eq!(classify(Some(&local), Some(&remote)), Comparison::Ahead);
+        assert_eq!(classify(Some(&remote), Some(&local)), Comparison::Behind);
+        let mut other = local.clone();
+        other.issuer = "did:key:bob".parse().unwrap();
+        assert_eq!(classify(Some(&other), Some(&remote)), Comparison::Diverged);
+        remote.context = None;
+        assert_eq!(
+            classify(Some(&local), Some(&remote)),
+            Comparison::Diverged,
+            "a legacy head with no published context stays conservative"
+        );
+    }
+
+    #[dialog_common::test]
+    fn region_heads_with_same_version_and_different_trees_are_diverged() {
+        let local = region_head(1, 2, "did:key:alice");
+        let remote = region_head(2, 2, "did:key:alice");
         assert_eq!(classify(Some(&local), Some(&remote)), Comparison::Diverged);
     }
 

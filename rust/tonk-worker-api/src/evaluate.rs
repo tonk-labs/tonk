@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 /// the user's view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryMatchBlock {
+    /// Normalized graph for a concept with typed edges. Ordinary queries omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<serde_json::Value>,
     /// Display label for the source expression
     /// (`person ?alice:` → `"person"`).
     pub label: String,

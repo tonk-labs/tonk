@@ -435,6 +435,7 @@ mod tests {
     #[dialog_common::test]
     fn it_summarises_an_empty_result_in_one_line() {
         let block = QueryMatchBlock {
+            graph: None,
             label: "person".to_owned(),
             results: Vec::new(),
         };
@@ -451,6 +452,7 @@ mod tests {
             .map(|n| result(&format!("id:thing/{n}"), &[("name", json!("x"))]))
             .collect();
         let block = QueryMatchBlock {
+            graph: None,
             label: "thing".to_owned(),
             results,
         };
@@ -466,6 +468,7 @@ mod tests {
     #[dialog_common::test]
     fn it_does_not_fold_a_short_result() {
         let block = QueryMatchBlock {
+            graph: None,
             label: "thing".to_owned(),
             results: vec![result("id:thing/1", &[])],
         };

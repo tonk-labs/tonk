@@ -86,6 +86,7 @@ fn build_registry() -> Vec<(&'static str, ConceptDefinition)> {
 /// shape, so this one stays JSON.
 fn concept_descriptor() -> ConceptDefinition {
     ConceptDefinition {
+        edges: Default::default(),
         entity: "db:concept"
             .parse()
             .expect("`db:concept` is a valid entity URI"),
@@ -107,6 +108,7 @@ fn concept_descriptor() -> ConceptDefinition {
 /// no fixed-record Rust shape the derive can express.
 fn command_descriptor() -> ConceptDefinition {
     ConceptDefinition {
+        edges: Default::default(),
         entity: "db:command"
             .parse()
             .expect("`db:command` is a valid entity URI"),
@@ -235,6 +237,7 @@ fn view_descriptor() -> ConceptDefinition {
         .expect("view descriptor is valid")
     });
     ConceptDefinition {
+        edges: Default::default(),
         entity: "db:view".parse().expect("`db:view` is a valid entity URI"),
         descriptor: ConceptDescriptor::Durable(descriptor.clone()),
     }
@@ -295,6 +298,7 @@ fn event_descriptor() -> ConceptDefinition {
         .expect("event descriptor is well-formed")
     });
     ConceptDefinition {
+        edges: Default::default(),
         entity: "db:event"
             .parse()
             .expect("`db:event` is a valid entity URI"),
@@ -316,6 +320,7 @@ fn event_descriptor() -> ConceptDefinition {
 /// fields have no fixed-record Rust shape the derive can express.
 fn rule_descriptor() -> ConceptDefinition {
     ConceptDefinition {
+        edges: Default::default(),
         entity: "db:rule".parse().expect("`db:rule` is a valid entity URI"),
         descriptor: ConceptDescriptor::Durable(rule_of_rule_descriptor().clone()),
     }
@@ -338,6 +343,7 @@ where
         .parse()
         .expect("`db:<builtin>` is a valid entity URI");
     ConceptDefinition {
+        edges: Default::default(),
         entity,
         descriptor: ConceptDescriptor::Durable(S::descriptor().clone()),
     }

@@ -22,6 +22,9 @@ pub enum ReactorError {
         branch: String,
         reason: String,
     },
+    /// A graph schema or graph query failed.
+    #[error("graph query failed: {0}")]
+    Graph(String),
     /// A query against the branch failed.
     #[error("query failed: {0:?}")]
     QueryFailed(#[from] EvaluationError),

@@ -330,6 +330,7 @@ mod tests {
             revision_after: None,
             matches_before: Vec::new(),
             matches_after: vec![QueryMatchBlock {
+                graph: None,
                 label: "person".into(),
                 results: vec![QueryResult {
                     this: "did:key:zHj".into(),
@@ -375,6 +376,7 @@ mod tests {
         fn it_skips_blocks_with_zero_results() {
             let mut response = sample_response();
             response.matches_after = vec![QueryMatchBlock {
+                graph: None,
                 label: "person".into(),
                 results: vec![],
             }];

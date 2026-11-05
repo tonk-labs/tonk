@@ -43,6 +43,8 @@ web-time = { workspace = true }
 web-sys = { workspace = true, features = ["console"] }
 
 [dev-dependencies]
+dialog-peer = { workspace = true, features = ["helpers"] }
+tonk-notation = { workspace = true }
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 dialog-repository = { workspace = true, features = ["helpers"] }

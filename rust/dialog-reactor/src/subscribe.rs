@@ -16,6 +16,10 @@ pub struct Subscribe<'a> {
     pub branch: BranchReference<'a>,
     /// The query the subscription re-evaluates on every change.
     pub query: ConceptQuery,
+    /// Concept bookmark whose persisted typed edges shape this subscription.
+    pub graph: Option<String>,
+    /// Explicit root matching and edge shaping constraints.
+    pub graph_constraints: tonk_schema::graph::GraphConstraints,
     /// The client this subscriber serves, when known — see
     /// [`BranchState::retain_subscribers`](crate::BranchState::retain_subscribers).
     pub client: Option<String>,
@@ -30,9 +34,23 @@ impl<'a> Subscribe<'a> {
         Self {
             branch,
             query,
+            graph: None,
+            graph_constraints: Default::default(),
             client: None,
             level: 0,
         }
+    }
+
+    /// Shape this subscription using the named concept's typed edges.
+    pub fn graph(mut self, name: impl Into<String>) -> Self {
+        self.graph = Some(name.into());
+        self
+    }
+
+    /// Narrow a graph subscription at its matching and shaping stages.
+    pub fn graph_constraints(mut self, constraints: tonk_schema::graph::GraphConstraints) -> Self {
+        self.graph_constraints = constraints;
+        self
     }
 
     /// Tag the subscriber with the client it serves, so the owner
@@ -57,12 +75,34 @@ impl<'a> Subscribe<'a> {
         Env: LoadProvider + BranchOpenProvider + SelectProvider,
     {
         let session = self.branch.acquire(env).await?;
-        let subscriber = self.branch.reactor().register_subscription(
-            &session,
-            self.query,
-            self.client,
-            self.level,
-        )?;
+        let subscriber = if let Some(name) = self.graph {
+            let mut graph =
+                tonk_schema::graph::resolve_graph(self.query, &name, &session.handle().into(), env)
+                    .await
+                    .map_err(|error| ReactorError::Graph(error.to_string()))?
+                    .ok_or_else(|| {
+                        ReactorError::Graph(format!("concept {name:?} has no typed edges"))
+                    })?;
+            self.graph_constraints
+                .apply(&mut graph)
+                .map_err(|error| ReactorError::Graph(error.to_string()))?;
+            self.branch
+                .reactor()
+                .subscription_lifecycle
+                .register(|| {
+                    session
+                        .state
+                        .subscribe_graph(graph, self.client, self.level)
+                })
+                .ok_or(ReactorError::Shutdown)??
+        } else {
+            self.branch.reactor().register_subscription(
+                &session,
+                self.query,
+                self.client,
+                self.level,
+            )?
+        };
         session
             .subscription(subscriber.hash.clone())
             .poll()

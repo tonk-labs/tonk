@@ -445,6 +445,8 @@ impl Analyzable for AssertionNode {
 /// wrapper picks which one applies to a given node.
 #[derive(Debug, Clone)]
 pub struct QueryNodeAnalysis {
+    /// Typed graph query captured from the same scope as the root application.
+    pub graph: Option<dialog_query::graph::GraphQuery>,
     /// The built [`Application`] for this query — bare-symbol and
     /// analysis-time `?var` references already substituted.
     pub application: Application,

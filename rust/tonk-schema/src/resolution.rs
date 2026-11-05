@@ -139,6 +139,8 @@ impl AttributeReference {
 /// `Transient` variant.
 #[derive(Debug, Clone)]
 pub struct ConceptDefinition {
+    /// Typed edge target bookmarks.
+    pub edges: std::collections::BTreeMap<String, String>,
     /// The concept entity URI.
     pub entity: Entity,
     /// The reconstructed, durability-tagged descriptor.
@@ -204,6 +206,7 @@ impl ResolveConcept<'_> {
         };
 
         Ok(Some(ConceptDefinition {
+            edges: concept.edges,
             entity: concept.entity,
             descriptor,
         }))

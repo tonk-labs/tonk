@@ -82,6 +82,9 @@ use tonk_schema::transact::{Application, ApplicationPlan, Planner as _, Statemen
 /// the user's view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryMatchBlock {
+    /// Normalized graph for a concept with typed edges. Ordinary queries omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<dialog_query::graph::GraphResult>,
     /// Display label for the source expression
     /// (`person ?alice:` → `"person"`).
     pub label: String,
@@ -586,6 +589,7 @@ impl<'a> Evaluated<'a> {
 /// synthesized snapshots).
 #[derive(Clone)]
 struct LabeledQuery {
+    graph: Option<dialog_query::graph::GraphQuery>,
     application: Application,
     label: String,
 }
@@ -598,6 +602,7 @@ fn collect_queries(document: &tonk_analyzer::analysis::DocumentAnalysis) -> Vec<
         .iter()
         .filter_map(|expression| match &expression.analysis {
             ExpressionAnalysis::Query(node) => Some(LabeledQuery {
+                graph: node.analysis.graph.clone(),
                 application: node.analysis.application.clone(),
                 label: node.analysis.label.clone(),
             }),
@@ -614,6 +619,8 @@ fn collect_queries(document: &tonk_analyzer::analysis::DocumentAnalysis) -> Vec<
 /// Disjoint expressions cross-product (no shared variable to
 /// constrain on); connected expressions equi-join.
 struct QueryResults {
+    /// Graphs aligned with the user-written query expressions.
+    graphs: Vec<Option<dialog_query::graph::GraphResult>>,
     /// Per-expression frames for the *user-written* queries, in
     /// document order. Each frame carries every user-named
     /// variable bound by that expression's query.
@@ -646,8 +653,26 @@ async fn run_query<Env: EvaluateEnv>(
     env: &Env,
 ) -> Result<QueryResults, EvaluateError> {
     let mut per_expression = Vec::with_capacity(queries.len());
+    let mut graphs = Vec::with_capacity(queries.len());
     for query in queries {
-        let frames = collect_matches(query.application.clone(), txn, env).await?;
+        let mut frames = collect_matches(query.application.clone(), txn, env).await?;
+        let graph = if let Some(graph) = &query.graph {
+            let result = txn
+                .query()
+                .graph(graph.clone())
+                .perform(env)
+                .await
+                .map_err(|error| EvaluateError::Query(error.to_string()))?;
+            frames.retain(|frame| {
+                let entity =
+                    render_one_result(&graph.root.predicate, &query.application, frame).this;
+                result.roots.iter().any(|root| root.as_str() == entity)
+            });
+            Some(result)
+        } else {
+            None
+        };
+        graphs.push(graph);
         per_expression.push(frames);
     }
     let joined = natural_join(&per_expression);
@@ -662,6 +687,7 @@ async fn run_query<Env: EvaluateEnv>(
     }
 
     Ok(QueryResults {
+        graphs,
         per_expression,
         joined,
         synthesized_per_expression,
@@ -967,6 +993,12 @@ fn render_match_blocks(
                 .unwrap_or(&[])
         };
         let mut block = render_block(query.label.clone(), &query.application, source_frames);
+        block.graph = results.graphs.get(i).cloned().flatten().map(|mut graph| {
+            graph
+                .roots
+                .retain(|entity| block.results.iter().any(|row| row.this == entity.as_str()));
+            graph
+        });
         mark_transient(&mut block, &query.application, &transient);
         blocks.push(block);
     }
@@ -1032,6 +1064,7 @@ fn render_block(
             // renderer's per-expression block path doesn't reach
             // here for rules.
             return QueryMatchBlock {
+                graph: None,
                 label,
                 results: Vec::new(),
             };
@@ -1084,6 +1117,7 @@ fn render_block(
         block_results.push(render_one_result(&descriptor, application, frame));
     }
     QueryMatchBlock {
+        graph: None,
         label,
         results: fold_dictionary_rows(&descriptor, block_results),
     }
@@ -1305,7 +1339,11 @@ fn render_resolver_block(
         });
     }
 
-    QueryMatchBlock { label, results }
+    QueryMatchBlock {
+        graph: None,
+        label,
+        results,
+    }
 }
 
 /// Lower a typed [`Value`] into the JSON a match block carries.
@@ -5285,3 +5323,6 @@ person!:
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod graph_tests;
