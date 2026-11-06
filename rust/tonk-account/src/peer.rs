@@ -1,0 +1,1429 @@
+//! Opening the peer a tonk profile is.
+//!
+//! A profile is a dialog [`Peer`]: its key is kept in a
+//! [`CredentialStore`], its spaces live in a [`Storage`], and both belong
+//! to the system tonk runs as on this device. The worker and the CLI open
+//! their profiles the same way, so the steps live here once.
+
+use dialog_capability::{Provider, Subject, did};
+use dialog_common::ConditionalSync;
+use dialog_credentials::{Credential, SignerCredential};
+use dialog_did_web::Discover;
+use dialog_effects::authority::{Identify, OperatorExt as _};
+use dialog_effects::credential::{self as credential_fx, CredentialError, prelude::*};
+use dialog_effects::peer::RemoveAddress;
+use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt as _};
+use dialog_peer::{
+    Allowance, OpenCredential, Peer, PeerError, PeerSpace, SpaceVaultExt as _, StepFuture,
+};
+use dialog_remote_ucan::UcanAddress;
+use dialog_repository::{
+    ACCESS_BRANCH, AddAddressError, Branch, ConnectError, ConnectedBranch, ConnectedReplica,
+    HeldCaches, PeersEnv, Repository, ResolveEnv, SiteAddress, Upstream, contact,
+};
+use dialog_storage::provider::storage::{CredentialStore, Storage};
+use dialog_storage::resource::Resource;
+use dialog_ucan::UcanDelegation;
+use dialog_ucan_core::DelegationChain;
+use dialog_varsig::Principal as _;
+use std::collections::BTreeSet;
+use std::fmt::Display;
+use std::sync::Mutex;
+
+/// Moves a profile's state branch an earlier release wrote to the layout
+/// this release writes, before opening the profile writes into it.
+///
+/// Opening runs it every time, and it decides whether anything is left
+/// to move: a move an earlier open left half done, storage rewritten but
+/// definitions not, is finished by the next open. The state branch is the
+/// profile's account branch, which also keeps the profile library's
+/// definitions, so a profile the worker or the CLI opens is given the
+/// whole move (storage, definitions and rules) from the layer that knows
+/// the definitions; this crate sits below it.
+///
+/// Every step must hold however often it runs: a move that fails because
+/// another writer moved the branch first is run once more over the
+/// refreshed branch, which finishes what is left.
+pub trait Upgrade<S: PeerSpace>: ConditionalSync {
+    /// Migrate `branch`, acting as `peer`, if anything is left to move.
+    fn upgrade<'a>(&'a self, branch: &'a Branch, peer: &'a Peer<S>) -> StepFuture<'a>;
+}
+
+/// The name the key of the system tonk runs as is kept under, in the
+/// credential store of the profile directory. The system owns the storage
+/// and the credential store, and grants its profiles the storage.
+pub const SYSTEM_CREDENTIAL: &str = "tonk-system";
+
+/// The name of the vault a peer's space records the account it acts for
+/// in.
+pub const ACCOUNT_VAULT: &str = "account";
+
+/// The name the key guarding a profile's account before sign-in is kept
+/// under, beside the profile: the account's custodian until the account
+/// is handed over to the one the device signs in to.
+pub const ACCOUNT_CUSTODIAN: &str = "tonk-account-custodian-v1";
+
+/// The name the custodian of the account a peer acts for on `branch` is
+/// kept under. Each account branch of a profile is its own account, so
+/// each keeps its own custodian; the profile's [`ACCESS_BRANCH`] keeps the
+/// name every profile had before accounts were branches.
+pub fn custodian_name(branch: &str) -> String {
+    if branch == ACCESS_BRANCH {
+        ACCOUNT_CUSTODIAN.to_string()
+    } else {
+        format!("{ACCOUNT_CUSTODIAN}:{branch}")
+    }
+}
+
+/// Where the credential store of the directory at `directory` keeps the
+/// key named `name` on the filesystem, for the few places that must look
+/// without opening it: whether a key was ever kept, and what its file's
+/// permissions are.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn kept_key_path(directory: &std::path::Path, name: &str) -> std::path::PathBuf {
+    directory
+        .join("dialog.credential")
+        .join("credential/key")
+        .join(name)
+}
+
+/// Open the key of the system tonk runs as, from the credential store in
+/// `directory`, and the store, owned by that system.
+pub async fn open_system<S>(
+    directory: Directory,
+) -> Result<(CredentialStore<S>, SignerCredential), PeerError>
+where
+    S: PeerSpace,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
+{
+    let credentials = CredentialStore::<S>::new();
+    let opened = OpenCredential::open(SYSTEM_CREDENTIAL)
+        .at(directory.clone())
+        .perform(&credentials)
+        .await;
+    // Two processes opening the system for the first time race to create
+    // its key; the one that loses loads the key the other created.
+    let system = match opened {
+        Ok(system) => system,
+        Err(_) => OpenCredential::load(SYSTEM_CREDENTIAL)
+            .at(directory)
+            .perform(&credentials)
+            .await
+            .map_err(|error| PeerError::Open(format!("failed to open the system key: {error}")))?,
+    };
+    Ok((credentials.owned_by(system.did()), system))
+}
+
+/// Open the key of the profile at `location` from `credentials`: load it,
+/// or, with `create`, generate and keep one when there is none.
+///
+/// A profile from before keys were kept apart has its key in the space at
+/// `location`. That key is moved into `credentials`, and the space keeps
+/// only its verifier, so the profile opens as the identity it always had.
+pub async fn open_credential<S>(
+    location: &Location,
+    credentials: &CredentialStore<S>,
+    storage: &Storage<S>,
+    create: bool,
+) -> Result<SignerCredential, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
+{
+    let failed = |error: String| PeerError::Open(error);
+    match OpenCredential::load(location.name.clone())
+        .at(location.directory.clone())
+        .perform(credentials)
+        .await
+    {
+        Ok(credential) => return Ok(credential),
+        Err(dialog_peer::IdentityError::NotFound) => {}
+        Err(error) => return Err(failed(error.to_string())),
+    }
+
+    match credentials.adopt_from(storage, location).await {
+        Ok(Credential::Signer(signer)) => return Ok(signer),
+        Ok(Credential::Verifier(_)) | Err(storage_fx::StorageError::NotFound(_)) => {}
+        Err(error) => {
+            return Err(failed(format!("failed to keep the profile's key: {error}")));
+        }
+    }
+
+    if !create {
+        return Err(failed(format!("no profile key named {}", location.name)));
+    }
+    OpenCredential::open(location.name.clone())
+        .at(location.directory.clone())
+        .perform(credentials)
+        .await
+        .map_err(|error| failed(error.to_string()))
+}
+
+/// Open the peer a profile is: its key opened from `credentials` under the
+/// name `location` gives, its [home](home) space in `storage`, its records
+/// in the home's [`ACCESS_BRANCH`], granted the storage by `system`,
+/// spaces it names resolving against `base`, its records moved by
+/// `upgrade` when an earlier release wrote them, and [onboarded](onboard).
+/// With `create` false, a profile that holds no key is refused rather
+/// than given one.
+pub async fn open_peer<S>(
+    location: Location,
+    base: Directory,
+    storage: Storage<S>,
+    credentials: &CredentialStore<S>,
+    system: &SignerCredential,
+    create: bool,
+    upgrade: &dyn Upgrade<S>,
+) -> Result<Peer<S>, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
+{
+    open_peer_on(
+        location,
+        base,
+        storage,
+        credentials,
+        system,
+        create,
+        ACCESS_BRANCH,
+        upgrade,
+    )
+    .await
+}
+
+/// Open the peer a profile is as it acts on the account branch `branch`:
+/// as [`open_peer`], its records kept in the home's `branch`. Each account
+/// branch of a profile is its own account, with its own account vault,
+/// custody and delegations, so a profile on another account's branch
+/// acts for that account and nothing it holds for another.
+#[allow(clippy::too_many_arguments)]
+pub async fn open_peer_on<S>(
+    location: Location,
+    base: Directory,
+    storage: Storage<S>,
+    credentials: &CredentialStore<S>,
+    system: &SignerCredential,
+    create: bool,
+    branch: &str,
+    upgrade: &dyn Upgrade<S>,
+) -> Result<Peer<S>, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
+{
+    open(
+        location,
+        base,
+        storage,
+        credentials,
+        system,
+        create,
+        branch,
+        None,
+        upgrade,
+    )
+    .await
+}
+
+/// Open the peer a profile is on the account branch `branch`, as
+/// [`open_peer_on`], holding `caches`.
+///
+/// Peers holding one set share its tree nodes and its branch writers, so
+/// their commits to one branch take turns instead of meeting at the
+/// storage's publish lock, and none starts cold. A set is for one
+/// storage: every peer given it must be opened over the same `storage`.
+#[allow(clippy::too_many_arguments)]
+pub async fn open_peer_holding<S>(
+    location: Location,
+    base: Directory,
+    storage: Storage<S>,
+    credentials: &CredentialStore<S>,
+    system: &SignerCredential,
+    create: bool,
+    branch: &str,
+    caches: &HeldCaches,
+    upgrade: &dyn Upgrade<S>,
+) -> Result<Peer<S>, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
+{
+    open(
+        location,
+        base,
+        storage,
+        credentials,
+        system,
+        create,
+        branch,
+        Some(caches),
+        upgrade,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn open<S>(
+    location: Location,
+    base: Directory,
+    storage: Storage<S>,
+    credentials: &CredentialStore<S>,
+    system: &SignerCredential,
+    create: bool,
+    branch: &str,
+    caches: Option<&HeldCaches>,
+    upgrade: &dyn Upgrade<S>,
+) -> Result<Peer<S>, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
+{
+    let credential = open_credential(&location, credentials, &storage, create).await?;
+    record_location(&credential.did(), &location);
+    let home = home(&location, &base, &credential.did(), &storage).await?;
+    let builder = Peer::new(credential.clone())
+        .at(home)
+        .base(base)
+        .space(Repository::from(credential.did()).branch(branch))
+        .with(storage)
+        .grant(Allowance::storage(system));
+    let peer = match caches {
+        Some(caches) => builder.with(caches.clone()).build().await?,
+        None => builder.build().await?,
+    };
+    migrate_state(&peer, upgrade).await?;
+    onboard(&peer)
+        .await
+        .map_err(|error| PeerError::State(error.to_string()))?;
+    Ok(peer)
+}
+
+/// Move `peer`'s state branch with `upgrade`, which finds whatever an
+/// earlier release, or an earlier open that failed partway, left to move.
+/// Onboarding writes the branch directly, outside the reactor's migration
+/// gate, and a commit into the earlier layout is refused.
+async fn migrate_state<S: PeerSpace>(
+    peer: &Peer<S>,
+    upgrade: &dyn Upgrade<S>,
+) -> Result<(), PeerError> {
+    let state = peer.state();
+    let Err(first) = upgrade.upgrade(state, peer).await else {
+        return Ok(());
+    };
+    // Another process opening the same profile can move it first, so this
+    // one's commit on the same head loses. Every step holds however often
+    // it runs, so when the refreshed head shows another writer, the whole
+    // move runs once more over it and finishes what is left. When nothing
+    // else wrote, the failure would only repeat, so it is reported as is.
+    let ours = state.revision();
+    state.refresh(peer).await.map_err(|error| {
+        PeerError::Upgrade(format!(
+            "{first}; refreshing the branch to retry failed: {error}"
+        ))
+    })?;
+    if state.revision() == ours {
+        return Err(first);
+    }
+    upgrade
+        .upgrade(state, peer)
+        .await
+        .map_err(|again| PeerError::Upgrade(format!("{first}; retrying failed: {again}")))
+}
+
+/// Where the home space of the profile `profile` is: among the spaces it
+/// names, under its own DID, like any other space. The profile's name
+/// finds its key, and the key says where its space is.
+///
+/// A profile from before that keeps its home under its name, at
+/// `location`, and goes on living there: a store cannot be renamed, and
+/// what the profile holds is in it. A space of that name that is another
+/// key's is not this profile's home, and is left alone.
+async fn home<S>(
+    location: &Location,
+    base: &Directory,
+    profile: &dialog_varsig::Did,
+    storage: &Storage<S>,
+) -> Result<Location, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+{
+    let named = Subject::from(did!("local:storage"))
+        .attenuate(storage_fx::Storage)
+        .attenuate(location.clone())
+        .load()
+        .perform(storage)
+        .await;
+    match named {
+        Ok(held) if held.did() == *profile => Ok(location.clone()),
+        Ok(_) | Err(storage_fx::StorageError::NotFound(_)) => {
+            Ok(Location::new(base.clone(), profile.to_string()))
+        }
+        Err(error) => Err(PeerError::Open(format!(
+            "failed to look for the profile's space: {error}"
+        ))),
+    }
+}
+
+/// Where each profile opened in this process was opened from, by its DID:
+/// the name its key is kept under, and the directory the keys kept beside
+/// it are in. A profile from before homes were named by DID has its space
+/// there too.
+fn locations() -> &'static std::sync::Mutex<std::collections::HashMap<String, Location>> {
+    static LOCATIONS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Location>>,
+    > = std::sync::OnceLock::new();
+    LOCATIONS.get_or_init(Default::default)
+}
+
+fn record_location(profile: &dialog_varsig::Did, location: &Location) {
+    locations()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .insert(profile.to_string(), location.clone());
+}
+
+/// Where the profile `profile` opened in this process lives.
+fn location_of(profile: &dialog_varsig::Did) -> Result<Location, CredentialError> {
+    locations()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .get(&profile.to_string())
+        .cloned()
+        .ok_or_else(|| {
+            CredentialError::NotFound(format!("the profile {profile} was not opened here"))
+        })
+}
+
+/// Where the key `name` kept beside the profile `profile` lives: in the
+/// credential store of the profile's directory, under a name of the
+/// profile's own.
+fn kept_key(profile: &dialog_varsig::Did, name: &str) -> Result<Location, CredentialError> {
+    let directory = location_of(profile)?.directory;
+    let owner = blake3::hash(profile.to_string().as_bytes()).to_hex();
+    Ok(Location::new(directory, format!("{name}-{owner}")))
+}
+
+/// Move the key `name` a profile from before keys left its space kept
+/// there into the credential store beside it, where [`open_kept_key`]
+/// finds it, and remove it from the space. A record there holding only
+/// the key's public half is a key retired before, and is removed without
+/// being kept.
+///
+/// Safe to run on every open, and to stop anywhere: the key is kept
+/// before it leaves the space, and one the store already keeps is not
+/// replaced.
+pub async fn adopt_kept_key<S>(
+    profile: &dialog_varsig::Did,
+    name: &str,
+) -> Result<(), CredentialError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+    CredentialStore<S>: Provider<storage_fx::Create>,
+{
+    let space = match S::load(&location_of(profile)?).await {
+        Ok(space) => space,
+        Err(error) if S::is_not_found(&error) => return Ok(()),
+        Err(error) => return Err(CredentialError::Storage(error.to_string())),
+    };
+    let held = match profile
+        .clone()
+        .credential()
+        .key(name)
+        .load()
+        .perform(&space)
+        .await
+    {
+        Ok(held) => held,
+        Err(error) if is_missing(&error) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if let Credential::Signer(_) = &held {
+        let kept = Subject::from(did!("local:storage"))
+            .attenuate(storage_fx::Storage)
+            .attenuate(kept_key(profile, name)?)
+            .create(held)
+            .perform(&CredentialStore::<S>::new())
+            .await;
+        match kept {
+            Ok(_) | Err(storage_fx::StorageError::AlreadyExists(_)) => {}
+            Err(error) => return Err(CredentialError::Storage(error.to_string())),
+        }
+    }
+    profile
+        .clone()
+        .credential()
+        .key(name)
+        .retract()
+        .perform(&space)
+        .await
+}
+
+/// Open the key `name` kept for the profile `profile` in the credential
+/// store beside it: load it, or, with `create`, generate one when there is
+/// none. The key is generated as the platform generates keys, so in the
+/// browser it cannot be exported.
+pub async fn open_kept_key<S>(
+    profile: &dialog_varsig::Did,
+    name: &str,
+    create: bool,
+) -> Result<Option<SignerCredential>, CredentialError>
+where
+    S: PeerSpace,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
+{
+    let location = kept_key(profile, name)?;
+    let credentials = CredentialStore::<S>::new();
+    let loaded = OpenCredential::load(location.name.clone())
+        .at(location.directory.clone())
+        .perform(&credentials)
+        .await;
+    match loaded {
+        Ok(key) => return Ok(Some(key)),
+        Err(dialog_peer::IdentityError::NotFound) if !create => return Ok(None),
+        Err(dialog_peer::IdentityError::NotFound) => {}
+        Err(error) => return Err(CredentialError::Storage(error.to_string())),
+    }
+    OpenCredential::create(location.name)
+        .at(location.directory)
+        .perform(&credentials)
+        .await
+        .map(Some)
+        .map_err(|error| CredentialError::Storage(error.to_string()))
+}
+
+/// Destroy the key `name` kept for the profile `profile`: a later
+/// [`open_kept_key`] finds none.
+pub async fn forget_kept_key<S>(
+    profile: &dialog_varsig::Did,
+    name: &str,
+) -> Result<(), CredentialError>
+where
+    S: PeerSpace,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<credential_fx::Retract<Credential>>,
+{
+    let location = kept_key(profile, name)?;
+    OpenCredential::forget(location.name)
+        .at(location.directory)
+        .perform(&CredentialStore::<S>::new())
+        .await
+        .map_err(|error| CredentialError::Storage(error.to_string()))
+}
+
+/// Onboard `peer`, unless its space already records an account: the space
+/// creates the [`ACCOUNT_VAULT`], guarded by the [`ACCOUNT_CUSTODIAN`]
+/// kept beside the profile, and the account delegates to the peer. The
+/// peer holds no copy of the account's key.
+pub async fn onboard<S>(peer: &Peer<S>) -> Result<(), CredentialError>
+where
+    S: PeerSpace,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
+{
+    if peer.authority().await.is_ok() {
+        return Ok(());
+    }
+    let custodian = open_kept_key::<S>(&peer.did(), &custodian_name(peer.state().name()), true)
+        .await?
+        .ok_or_else(|| CredentialError::NotFound("no account custodian".into()))?;
+    let account = peer
+        .state()
+        .vault(ACCOUNT_VAULT)
+        .create()
+        .perform(peer)
+        .await?;
+    account.add(custodian.did()).perform(peer).await?;
+    account.delegate(peer.did()).perform(peer).await
+}
+
+/// Copy the site secrets `from` keeps under a name `keep` accepts to `to`,
+/// skipping one `to` keeps already, and answer how many were copied. A site
+/// secret is sealed to the peer that keeps it, so each is opened by `from`
+/// and sealed again by `to`; `from` keeps its own.
+///
+/// What a profile's account branch kept while every branch shared one peer
+/// follows the branch to the peer that now acts on it.
+pub async fn copy_site_secrets<S>(
+    from: &Peer<S>,
+    to: &Peer<S>,
+    keep: impl Fn(&str) -> bool,
+) -> Result<usize, CredentialError>
+where
+    S: PeerSpace,
+{
+    let failed = |error: &dyn Display| CredentialError::Storage(error.to_string());
+    from.state().refresh(from).await.map_err(|e| failed(&e))?;
+    let names: Vec<String> =
+        dialog_repository::secrets::secrets_of(from.state(), &from.did(), from)
+            .await
+            .map_err(|e| failed(&e))?
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| keep(name))
+            .collect();
+    let mut copied = 0;
+    for name in names {
+        if to
+            .secrets()
+            .site(name.as_str())
+            .load::<Vec<u8>>()
+            .perform(to)
+            .await
+            .is_ok()
+        {
+            continue;
+        }
+        let secret = from
+            .secrets()
+            .site(name.as_str())
+            .load::<Vec<u8>>()
+            .perform(from)
+            .await?;
+        to.secrets()
+            .site(name.as_str())
+            .save(secret)
+            .perform(to)
+            .await?;
+        copied += 1;
+    }
+    Ok(copied)
+}
+
+/// Mount the space of a repository whose key tonk does not hold, under
+/// `location` in `storage`: the space keeps the repository's public
+/// identity, and the peer acts on it only under delegations it holds.
+///
+/// A space a peer creates is created under a key it seals to its account,
+/// so a repository known only by its DID (an account's, or one joined
+/// through an invitation) is mounted in the storage directly.
+pub async fn mount_verifier<S>(
+    storage: &Storage<S>,
+    location: Location,
+    repository: &dialog_varsig::Did,
+) -> Result<Credential, storage_fx::StorageError>
+where
+    S: Clone + ConditionalSync,
+    Storage<S>: Provider<storage_fx::Create>,
+{
+    let verifier: dialog_credentials::Verifier = repository.to_string().parse().map_err(|_| {
+        storage_fx::StorageError::Storage(format!("{repository} names no public key"))
+    })?;
+    Subject::from(did!("local:storage"))
+        .attenuate(storage_fx::Storage)
+        .attenuate(location)
+        .create(Credential::from(verifier))
+        .perform(storage)
+        .await
+}
+
+/// The DID of the service reached at `address`: the `did:web` its host
+/// publishes a document for, whatever path the service is served under.
+pub fn service_did(address: &SiteAddress) -> Result<dialog_varsig::Did, ConnectReplicaError> {
+    let authority = service_name(address)?.replacen(':', "%3A", 1);
+    format!("did:web:{authority}")
+        .parse()
+        .map_err(|_| ConnectReplicaError::NotAService(format!("{address:?}")))
+}
+
+/// The name the host knows the service reached at `address` by: the
+/// host and port of its endpoint, the authority its `did:web` names.
+///
+/// Contact names are the host's, so one name is one peer: every
+/// repository at a service, and every account signed in through it, is
+/// reached through the same contact.
+pub fn service_name(address: &SiteAddress) -> Result<String, ConnectReplicaError> {
+    let SiteAddress::Ucan(ucan) = address else {
+        return Err(ConnectReplicaError::NotAService(format!("{address:?}")));
+    };
+    let endpoint = url::Url::parse(ucan.endpoint())
+        .map_err(|_| ConnectReplicaError::NotAService(ucan.endpoint().to_string()))?;
+    let host = endpoint
+        .host_str()
+        .ok_or_else(|| ConnectReplicaError::NotAService(ucan.endpoint().to_string()))?;
+    Ok(match endpoint.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    })
+}
+
+/// Connect to the replica of `subject` held by the service reached at
+/// `address`, looking the service up among the host's contacts by its
+/// [`service_name`].
+///
+/// Where the service is reached is what its DID document says. The first
+/// connect to a service in this process discovers it, recording the
+/// endpoint and the socket the document names and taking back an address
+/// at that endpoint it no longer names. A service whose document cannot be
+/// read is recorded at its endpoint alone and reached over requests: no
+/// socket is dialed that the service did not announce.
+pub async fn connect<Env: ConnectEnv>(
+    address: SiteAddress,
+    subject: dialog_varsig::Did,
+    env: &Env,
+) -> Result<ConnectedReplica, ConnectReplicaError> {
+    let name = service_name(&address)?;
+    let did = service_did(&address)?;
+    if first_in_process(env, &name).await {
+        // Best effort: the document is where the socket comes from, and a
+        // service is reached without one when it cannot be read.
+        let _ = contact(&did)
+            .discover()
+            .name(name.as_str())
+            .perform(env)
+            .await;
+    }
+    if let Ok(replica) = contact(name.as_str())
+        .connect()
+        .repository(subject.clone())
+        .open()
+        .perform(env)
+        .await
+        && reaches(replica.addresses(), &address)
+    {
+        return Ok(replica);
+    }
+    contact(&did)
+        .add_address(endpoint_of(address))
+        .name(name.as_str())
+        .perform(env)
+        .await?;
+    Ok(contact(name)
+        .connect()
+        .repository(subject)
+        .open()
+        .perform(env)
+        .await?)
+}
+
+/// What [`connect`] needs of its environment: the host's contacts, and
+/// discovery, which reads where a service is reached and takes back an
+/// address its document no longer names.
+pub trait ConnectEnv: PeersEnv + Provider<Discover> + Provider<RemoveAddress> {}
+
+impl<T> ConnectEnv for T where T: PeersEnv + Provider<Discover> + Provider<RemoveAddress> {}
+
+/// The services discovered in this process, by the host that recorded them
+/// and the service's name: each host follows a service's document once per
+/// process, so a document that changed is followed after a reload.
+static DISCOVERED: Mutex<BTreeSet<(String, String)>> = Mutex::new(BTreeSet::new());
+
+/// Whether the host `env` acts for has not yet discovered the service
+/// `name` in this process, marking it discovered.
+async fn first_in_process<Env: Provider<Identify> + ConditionalSync>(
+    env: &Env,
+    name: &str,
+) -> bool {
+    let Ok(host) = Identify.perform(env).await else {
+        return true;
+    };
+    DISCOVERED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert((host.profile().to_string(), name.to_string()))
+}
+
+/// `address` at its endpoint alone, without a socket: what a host records
+/// for a service whose document it could not read.
+fn endpoint_of(address: SiteAddress) -> SiteAddress {
+    match address {
+        SiteAddress::Ucan(ucan) => SiteAddress::Ucan(UcanAddress::new(ucan.endpoint())),
+        address => address,
+    }
+}
+
+/// Whether a peer reached at `addresses` is reached at `address`: at the
+/// same endpoint, whether or not either names a socket.
+pub fn reaches(addresses: &[SiteAddress], address: &SiteAddress) -> bool {
+    let SiteAddress::Ucan(wanted) = address else {
+        return addresses.contains(address);
+    };
+    addresses.iter().any(|recorded| {
+        matches!(recorded, SiteAddress::Ucan(ucan) if ucan.endpoint() == wanted.endpoint())
+    })
+}
+
+/// Why [`connect`] could not reach a replica.
+#[derive(Debug, thiserror::Error)]
+pub enum ConnectReplicaError {
+    /// The address is not a tonk service's endpoint, so it names no
+    /// service to look up.
+    #[error("{0} is not the endpoint of a service")]
+    NotAService(String),
+    /// The address could not be recorded among the host's contacts.
+    #[error(transparent)]
+    AddAddress(#[from] AddAddressError),
+    /// The peer could not be connected to.
+    #[error(transparent)]
+    Connect(#[from] ConnectError),
+}
+
+/// The upstream `branch` pulls from, when it tracks one. A branch may pull
+/// from several; tonk sets at most one, so the first is the one it set.
+pub fn upstream(branch: &Branch) -> Option<Upstream> {
+    branch.pulls().iter().next().cloned()
+}
+
+/// Hand `peer`'s account over to the account `grant` comes from: the
+/// account → device powerline tonk holds once the device signs in.
+///
+/// The grant is retained where the peer proves from, and the peer's
+/// [`ACCOUNT_VAULT`], opened through its [`ACCOUNT_CUSTODIAN`], is handed
+/// over to the account's DID, so the account the peer acts for is the one
+/// tonk signed in, not the one made up at onboarding. The custodian is
+/// forgotten after: the account it guarded is gone. A peer already acting
+/// for that account is left alone, and so is one whose custodian is gone,
+/// which was handed over to another account before.
+pub async fn hand_over<S>(peer: &Peer<S>, grant: &DelegationChain) -> Result<(), CredentialError>
+where
+    S: PeerSpace,
+    CredentialStore<S>: Provider<storage_fx::Load>
+        + Provider<storage_fx::Create>
+        + Provider<credential_fx::Retract<Credential>>,
+{
+    let account = grant.issuer().clone();
+    if peer.authority().await? == account {
+        return Ok(());
+    }
+    peer.access()
+        .save(UcanDelegation(grant.clone()))
+        .perform(peer)
+        .await
+        .map_err(|error| CredentialError::Storage(error.to_string()))?;
+    peer.state()
+        .refresh(peer)
+        .await
+        .map_err(|error| CredentialError::Storage(error.to_string()))?;
+    let custodian_name = custodian_name(peer.state().name());
+    let Some(custodian) = open_kept_key::<S>(&peer.did(), &custodian_name, false).await? else {
+        return Ok(());
+    };
+    let current = match peer
+        .state()
+        .vault(ACCOUNT_VAULT)
+        .load()
+        .via(&custodian)
+        .perform(peer)
+        .await
+    {
+        Ok(current) => current,
+        // The custodian guards an account the peer no longer acts for.
+        Err(CredentialError::Withheld(_)) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    current.hand_over(account).perform(peer).await?;
+    forget_kept_key::<S>(&peer.did(), &custodian_name).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dialog_credentials::{Ed25519Signer, Signer};
+
+    /// A profile from before site secrets were sealed to vaults has them
+    /// moved into its peer's site secrets, once: the old copies are gone,
+    /// a secret the peer already keeps is not overwritten by a stale one,
+    /// and running again moves nothing.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_moves_site_secrets_kept_in_the_profile_space() -> anyhow::Result<()> {
+        use dialog_storage::provider::storage::NativeSpace;
+        use dialog_storage::resource::Resource as _;
+
+        let temp = tempfile::tempdir()?;
+        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
+        let location = Location::new(directory.clone(), "legacy");
+        let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
+        let storage = Storage::<NativeSpace>::default().owned_by(system.did());
+        let peer = open_peer(
+            location.clone(),
+            directory,
+            storage,
+            &credentials,
+            &system,
+            true,
+            &MigrateBranch,
+        )
+        .await?;
+
+        // What a release before the move wrote: secrets in the profile's
+        // own space, under the profile's DID.
+        let space = NativeSpace::open(&location).await?;
+        let old = || dialog_peer::CredentialHandle::new(peer.did());
+        old()
+            .site("tonk-local-root-v1")
+            .save(b"root".to_vec())
+            .perform(&space)
+            .await?;
+        old()
+            .site("tonk-customer-v1")
+            .save(b"stale".to_vec())
+            .perform(&space)
+            .await?;
+        // A run stopped after copying this one, before retracting it, and
+        // the peer's copy updated since.
+        peer.secrets()
+            .site("tonk-customer-v1")
+            .save(b"current".to_vec())
+            .perform(&peer)
+            .await?;
+
+        let sites: Vec<String> = ["tonk-local-root-v1", "tonk-customer-v1", "tonk-absent-v1"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(migrate_site_secrets(&peer, &location, &sites).await?, 1);
+        assert_eq!(migrate_site_secrets(&peer, &location, &sites).await?, 0);
+
+        let read = |site: &'static str| peer.secrets().site(site).load::<Vec<u8>>().perform(&peer);
+        assert_eq!(read("tonk-local-root-v1").await?, b"root".to_vec());
+        assert_eq!(read("tonk-customer-v1").await?, b"current".to_vec());
+        for site in ["tonk-local-root-v1", "tonk-customer-v1"] {
+            assert!(
+                old()
+                    .site(site)
+                    .load::<Vec<u8>>()
+                    .perform(&space)
+                    .await
+                    .is_err(),
+                "the old copy of {site} is retracted"
+            );
+        }
+        Ok(())
+    }
+
+    /// A profile an earlier release wrote keeps its state branch laid out
+    /// the way that release keyed values, and this release refuses to
+    /// commit into such a tree. Opening it moves the branch to this
+    /// release's layout, so what the profile seals afterwards is kept.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_migrates_a_profile_an_earlier_release_wrote() -> anyhow::Result<()> {
+        use dialog_storage::provider::storage::NativeSpace;
+
+        let temp = tempfile::tempdir()?;
+        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
+        let open = || async {
+            let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
+            open_peer(
+                Location::new(directory.clone(), "tonk"),
+                directory.clone(),
+                Storage::<NativeSpace>::default().owned_by(system.did()),
+                &credentials,
+                &system,
+                true,
+                &MigrateBranch,
+            )
+            .await
+        };
+
+        let peer = open().await?;
+        let did = peer.did();
+        let authority = peer.authority().await?;
+        // How a release before the number band left the branch.
+        peer.state().rekey_storage(0).perform(&peer).await?;
+        assert!(peer.state().needs_migration(&peer).await?);
+        drop(peer);
+
+        let peer = open().await?;
+        assert_eq!(peer.did(), did);
+        assert_eq!(peer.authority().await?, authority);
+        assert!(!peer.state().needs_migration(&peer).await?);
+        peer.secrets()
+            .site("tonk-after-migration-v1")
+            .save(b"kept".to_vec())
+            .perform(&peer)
+            .await?;
+        assert_eq!(
+            peer.secrets()
+                .site("tonk-after-migration-v1")
+                .load::<Vec<u8>>()
+                .perform(&peer)
+                .await?,
+            b"kept".to_vec()
+        );
+        Ok(())
+    }
+
+    /// [`Branch::migrate`]: the storage rewrite and the rule upgrade, without
+    /// the definitions upgrade. Enough for a profile that keeps no library
+    /// definitions, as in this crate's tests.
+    struct MigrateBranch;
+
+    impl<S> Upgrade<S> for MigrateBranch
+    where
+        S: PeerSpace,
+    {
+        fn upgrade<'a>(&'a self, branch: &'a Branch, peer: &'a Peer<S>) -> StepFuture<'a> {
+            Box::pin(async move {
+                branch
+                    .migrate()
+                    .perform(peer)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| PeerError::Upgrade(error.to_string()))
+            })
+        }
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
+
+    /// The names of what `directory` holds.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn entries(directory: &std::path::Path) -> Vec<String> {
+        std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// A new profile's home is a space like any other: stored under the
+    /// profile's DID among the spaces it names, not under the name its key
+    /// is kept by. Opening it again by that name finds the same home.
+    ///
+    /// Native only, for the temporary directory it reads back: the browser
+    /// keeps the same layout as databases, which the worker's
+    /// `it_takes_a_new_space_into_custody_on_a_device_linked_without_a_key`
+    /// opens a profile through.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_keeps_a_new_profile_home_under_its_did() -> anyhow::Result<()> {
+        use dialog_storage::provider::storage::NativeSpace;
+
+        let keys = tempfile::tempdir()?;
+        let spaces = tempfile::tempdir()?;
+        let directory = Directory::At(keys.path().to_string_lossy().into_owned());
+        let base = Directory::At(spaces.path().to_string_lossy().into_owned());
+        let open = || async {
+            let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
+            open_peer(
+                Location::new(directory.clone(), "tonk"),
+                base.clone(),
+                Storage::<NativeSpace>::default().owned_by(system.did()),
+                &credentials,
+                &system,
+                true,
+                &MigrateBranch,
+            )
+            .await
+        };
+
+        let peer = open().await?;
+        assert_eq!(entries(spaces.path()), vec![peer.did().to_string()]);
+        assert!(
+            !entries(keys.path()).contains(&"tonk".to_string()),
+            "the profile got a space under its name: {:?}",
+            entries(keys.path())
+        );
+
+        let again = open().await?;
+        assert_eq!(again.did(), peer.did());
+        assert_eq!(again.authority().await?, peer.authority().await?);
+        assert_eq!(entries(spaces.path()), vec![peer.did().to_string()]);
+        Ok(())
+    }
+
+    /// A profile from before homes were named by DID keeps its home under
+    /// its name: it opens as the identity it had, in the space that holds
+    /// what it kept, and gets no second home under its DID.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_keeps_a_profile_home_that_was_named() -> anyhow::Result<()> {
+        use dialog_storage::provider::storage::NativeSpace;
+        use dialog_storage::resource::Resource as _;
+
+        let keys = tempfile::tempdir()?;
+        let spaces = tempfile::tempdir()?;
+        let directory = Directory::At(keys.path().to_string_lossy().into_owned());
+        let base = Directory::At(spaces.path().to_string_lossy().into_owned());
+        let location = Location::new(directory.clone(), "tonk");
+
+        // What a release before the credential store left: the profile's
+        // key in the space under its name.
+        let key = Ed25519Signer::generate().await?;
+        let held = Credential::Signer(SignerCredential::from(key.clone()));
+        Subject::from(key.did())
+            .credential()
+            .key(credential_fx::SELF)
+            .save(held)
+            .perform(&NativeSpace::open(&location).await?)
+            .await?;
+
+        let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
+        let peer = open_peer(
+            location,
+            base,
+            Storage::<NativeSpace>::default().owned_by(system.did()),
+            &credentials,
+            &system,
+            false,
+            &MigrateBranch,
+        )
+        .await?;
+
+        assert_eq!(peer.did(), key.did());
+        assert!(entries(keys.path()).contains(&"tonk".to_string()));
+        assert!(
+            entries(spaces.path()).is_empty(),
+            "the profile got a second home: {:?}",
+            entries(spaces.path())
+        );
+        Ok(())
+    }
+
+    fn service(endpoint: &str) -> SiteAddress {
+        SiteAddress::from(dialog_remote_ucan::UcanAddress::new(endpoint))
+    }
+
+    /// A service is named by the authority of its endpoint, whatever
+    /// path it is served under, and its DID is the `did:web` of that
+    /// authority, a port percent-encoded so it is not read as a path.
+    #[dialog_common::test]
+    fn it_names_a_service_by_its_host() -> anyhow::Result<()> {
+        let hosted = service("https://tonk.network/ucan");
+        assert_eq!(service_name(&hosted)?, "tonk.network");
+        assert_eq!(service_did(&hosted)?.to_string(), "did:web:tonk.network");
+        assert_eq!(
+            service_name(&service("https://tonk.network/sync"))?,
+            "tonk.network"
+        );
+
+        let local = service("http://localhost:8090/ucan");
+        assert_eq!(service_name(&local)?, "localhost:8090");
+        assert_eq!(service_did(&local)?.to_string(), "did:web:localhost%3A8090");
+
+        assert!(matches!(
+            service_name(&service("not a url")),
+            Err(ConnectReplicaError::NotAService(_))
+        ));
+        Ok(())
+    }
+
+    /// A peer reached at an address is reached at its endpoint, whether or
+    /// not the address recorded for it names the socket the service
+    /// announced.
+    #[dialog_common::test]
+    fn it_reaches_a_service_at_its_endpoint_whatever_its_socket() {
+        let endpoint = service("https://tonk.network/ucan/");
+        let announced = SiteAddress::Ucan(
+            UcanAddress::new("https://tonk.network/ucan/").with_socket("wss://tonk.network/ucan/"),
+        );
+        assert!(reaches(std::slice::from_ref(&announced), &endpoint));
+        assert!(reaches(std::slice::from_ref(&endpoint), &announced));
+        assert!(!reaches(
+            std::slice::from_ref(&announced),
+            &service("https://elsewhere.example/ucan/")
+        ));
+    }
+
+    /// Serve, until the test ends, the DID document of the service at a
+    /// loopback port: its access service, and its socket when `socket`.
+    /// Answers the service's endpoint.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn serve_document(socket: bool) -> anyhow::Result<String> {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let id = format!("did:web:127.0.0.1%3A{port}");
+        let endpoint = format!("http://127.0.0.1:{port}/ucan/");
+        let mut services = vec![serde_json::json!({
+            "id": format!("{id}#access"),
+            "type": dialog_remote_ucan::ACCESS_SERVICE,
+            "serviceEndpoint": endpoint,
+        })];
+        if socket {
+            services.push(serde_json::json!({
+                "id": format!("{id}#socket"),
+                "type": dialog_remote_ucan::ACCESS_SOCKET,
+                "serviceEndpoint": format!("ws://127.0.0.1:{port}/ucan/"),
+            }));
+        }
+        let body = serde_json::to_vec(&serde_json::json!({
+            "id": id,
+            "verificationMethod": [],
+            "service": services,
+        }))?;
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let mut request = [0u8; 2048];
+                    let _ = stream.read(&mut request).await;
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes()).await;
+                    let _ = stream.write_all(&body).await;
+                });
+            }
+        });
+        Ok(endpoint)
+    }
+
+    /// A service is dialed where its document says, and only there: one
+    /// whose document announces a socket is recorded with it, and one
+    /// whose document names none is recorded at its endpoint alone, so no
+    /// socket it never offered is tried.
+    ///
+    /// Native only, for the documents it serves on loopback ports.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_dials_the_socket_only_where_the_service_announces_it() -> anyhow::Result<()> {
+        use dialog_storage::provider::storage::NativeSpace;
+
+        let temp = tempfile::tempdir()?;
+        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
+        let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
+        let peer = open_peer(
+            Location::new(directory.clone(), "discovering"),
+            directory,
+            Storage::<NativeSpace>::default().owned_by(system.did()),
+            &credentials,
+            &system,
+            true,
+            &MigrateBranch,
+        )
+        .await?;
+        let subject = Ed25519Signer::generate().await?.did();
+
+        let live = serve_document(true).await?;
+        let replica = connect(service(&live), subject.clone(), &peer).await?;
+        assert_eq!(
+            replica.addresses(),
+            [SiteAddress::Ucan(
+                UcanAddress::new(live.as_str()).with_socket(live.replacen("http://", "ws://", 1))
+            )],
+            "the socket the document announces is dialed"
+        );
+
+        let quiet = serve_document(false).await?;
+        let replica = connect(service(&quiet), subject, &peer).await?;
+        assert_eq!(
+            replica.addresses(),
+            [service(&quiet)],
+            "a service whose document names no socket is not dialed at one"
+        );
+        Ok(())
+    }
+
+    /// Every repository at a service is reached through one contact,
+    /// looked up by the service's name and recorded under its `did:web`;
+    /// connecting again records nothing new.
+    ///
+    /// Native only, like the tests above, for the temporary profile
+    /// directory: the browser opens the same peer over OPFS, and the
+    /// worker's `it_takes_a_new_space_into_custody_on_a_device_linked_without_a_key`
+    /// connects through this path there.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_reaches_every_repository_at_a_service_through_one_contact() -> anyhow::Result<()> {
+        use dialog_storage::provider::storage::NativeSpace;
+
+        let temp = tempfile::tempdir()?;
+        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
+        let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
+        let peer = open_peer(
+            Location::new(directory.clone(), "contacts"),
+            directory,
+            Storage::<NativeSpace>::default().owned_by(system.did()),
+            &credentials,
+            &system,
+            true,
+            &MigrateBranch,
+        )
+        .await?;
+        // Nothing listens on port 1, so the service's document cannot be
+        // read and it is recorded at its endpoint alone.
+        let ucan = service("http://127.0.0.1:1/ucan");
+        let sync = service("http://127.0.0.1:1/sync");
+        let first = Ed25519Signer::generate().await?.did();
+        let second = Ed25519Signer::generate().await?.did();
+
+        connect(ucan.clone(), first.clone(), &peer).await?;
+        let state = peer.state().revision();
+        connect(ucan.clone(), first.clone(), &peer).await?;
+        assert_eq!(
+            peer.state().revision(),
+            state,
+            "a known service is not recorded again"
+        );
+        connect(sync.clone(), second.clone(), &peer).await?;
+
+        let by_name = peer
+            .contact("127.0.0.1:1")
+            .connect()
+            .repository(second)
+            .open()
+            .perform(&peer)
+            .await?;
+        assert!(by_name.addresses().contains(&ucan));
+        assert!(by_name.addresses().contains(&sync));
+        assert!(
+            by_name.addresses().iter().all(|address| matches!(
+                address,
+                SiteAddress::Ucan(ucan) if ucan.socket().is_none()
+            )),
+            "no socket is recorded that the service did not announce"
+        );
+        let by_did = peer
+            .contact(service_did(&ucan)?)
+            .connect()
+            .repository(first)
+            .open()
+            .perform(&peer)
+            .await?;
+        assert_eq!(by_did.addresses(), by_name.addresses());
+        Ok(())
+    }
+
+    /// Signing in hands the account made up at onboarding over to the
+    /// account tonk signed in, forgets the custodian that guarded it, and
+    /// doing it again changes nothing.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_hands_the_peer_account_over_at_sign_in() -> anyhow::Result<()> {
+        use dialog_storage::provider::storage::NativeSpace;
+
+        let temp = tempfile::tempdir()?;
+        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
+        let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
+        let peer = open_peer(
+            Location::new(directory.clone(), "signing-in"),
+            directory,
+            Storage::<NativeSpace>::default().owned_by(system.did()),
+            &credentials,
+            &system,
+            true,
+            &MigrateBranch,
+        )
+        .await?;
+        let onboarded = peer.authority().await?;
+        let account = Ed25519Signer::generate().await?;
+        let grant =
+            crate::delegations::mint_account_union(&Signer::from(account.clone()), &peer.did())
+                .await?;
+        assert_ne!(onboarded, account.did());
+
+        hand_over(&peer, &grant).await?;
+        assert_eq!(peer.authority().await?, account.did());
+        assert!(
+            open_kept_key::<NativeSpace>(&peer.did(), ACCOUNT_CUSTODIAN, false)
+                .await?
+                .is_none(),
+            "the custodian of the onboarded account is forgotten"
+        );
+
+        hand_over(&peer, &grant).await?;
+        assert_eq!(peer.authority().await?, account.did());
+        Ok(())
+    }
+}
+
+/// Make `target` what `branch` pulls from and pushes to, in place of any
+/// branch at a peer it tracked before: an account whose link moved is
+/// followed at its new place, and the old one is no longer synced with.
+pub async fn repoint_upstream<Env: ResolveEnv>(
+    branch: &Branch,
+    target: &ConnectedBranch,
+    env: &Env,
+) -> Result<(), RepointError> {
+    for upstream in branch.upstreams().iter() {
+        let Upstream::Remote {
+            remote,
+            branch: name,
+            ..
+        } = upstream
+        else {
+            continue;
+        };
+        if remote.same(target.repository()) && name == target.name() {
+            continue;
+        }
+        let previous = remote.branch(name.as_str()).open().perform(env).await?;
+        branch.unset_upstream(&previous).perform(env).await?;
+    }
+    branch.set_upstream(target).perform(env).await?;
+    Ok(())
+}
+
+/// Why [`repoint_upstream`] could not repoint a branch.
+#[derive(Debug, thiserror::Error)]
+pub enum RepointError {
+    /// The upstream tracked before could not be opened.
+    #[error(transparent)]
+    Open(#[from] dialog_repository::OpenRemoteBranchError),
+    /// The upstreams could not be recorded.
+    #[error(transparent)]
+    Record(#[from] dialog_repository::SetUpstreamError),
+}
+
+/// Move the site secrets a profile from before site secrets were sealed to
+/// vaults kept in its space at `location` into `peer`'s site secrets, for
+/// each of `sites`, and retract the old copies. Answers how many moved.
+///
+/// Safe to run on every open, and to stop anywhere: a secret the peer
+/// already keeps is not overwritten, so a run stopped between copying and
+/// retracting only retracts on the next, and one with nothing left to
+/// move changes nothing.
+pub async fn migrate_site_secrets<S>(
+    peer: &Peer<S>,
+    location: &Location,
+    sites: &[String],
+) -> Result<usize, CredentialError>
+where
+    S: PeerSpace,
+{
+    let space = match S::load(location).await {
+        Ok(space) => space,
+        Err(error) if S::is_not_found(&error) => return Ok(0),
+        Err(error) => return Err(CredentialError::Storage(error.to_string())),
+    };
+    let old = || dialog_peer::CredentialHandle::new(peer.did());
+    let mut moved = 0;
+    for site in sites {
+        let bytes = match old()
+            .site(site.as_str())
+            .load::<Vec<u8>>()
+            .perform(&space)
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(error) if is_missing(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        let kept = match peer
+            .secrets()
+            .site(site.as_str())
+            .load::<Vec<u8>>()
+            .perform(peer)
+            .await
+        {
+            Ok(_) => true,
+            Err(error) if is_missing(&error) => false,
+            Err(error) => return Err(error),
+        };
+        if !kept {
+            peer.secrets()
+                .site(site.as_str())
+                .save(bytes)
+                .perform(peer)
+                .await?;
+            moved += 1;
+        }
+        old().site(site.as_str()).retract().perform(&space).await?;
+    }
+    Ok(moved)
+}
+
+/// Whether `error` says a secret is absent: a store reports it as not
+/// found, a filesystem as a missing file.
+fn is_missing(error: &CredentialError) -> bool {
+    match error {
+        CredentialError::NotFound(_) => true,
+        CredentialError::Storage(message) => {
+            message.contains("No such file or directory") || message.contains("not found")
+        }
+        CredentialError::Corrupted(_) | CredentialError::Withheld(_) => false,
+    }
+}

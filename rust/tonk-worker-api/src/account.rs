@@ -50,25 +50,6 @@ pub struct AccountDeletionPlan {
     pub joined_spaces: usize,
 }
 
-/// One reviewed hosted-space deprovision. The worker signs the
-/// `/provider/remove` invocation itself — deletion is the account
-/// ending its hosting relationship, and any linked device holds that
-/// authority.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountSpaceDeletionRequest {
-    /// Reviewed repository subject.
-    pub subject: String,
-}
-
-/// Receipt for deleting one owned hosted space without deleting its account.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HostedSpaceDeletionResult {
-    /// Repository subject removed from Tonk services.
-    pub subject: String,
-}
-
 /// Attach provider services to an already persisted local root, naming the
 /// account repository this root owns.
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -1313,7 +1313,7 @@ fn server_capabilities() -> ServerCapabilities {
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_repository::Branch;
     use serde_json::json;
     use tonk_schema::concept::QueryEnv;
@@ -1427,7 +1427,7 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     impl<Op> EnvProvider for TestEnv<Op>
     where
-        Op: QueryEnv,
+        Op: QueryEnv + dialog_common::ConditionalSend,
     {
         type Opened = TestOpened<Op>;
         async fn open(&self, _repo: &Repo, _branch: &str) -> Option<Self::Opened> {
@@ -1442,7 +1442,7 @@ mod tests {
     /// `impl Trait` in the return type hides the operator's space
     /// parameter.
     async fn new_test_env() -> TestEnv<impl QueryEnv> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo
             .branch("main")
@@ -1495,7 +1495,7 @@ mod tests {
                     "uri": "tonk-buffer:///test",
                     "languageId": "carry-asserted",
                     "version": 1,
-                    "text": "attribute!:\n  the: io.gozala.person/name\n  as: text\n  cardinality: one\n  description: \"The person's full name\"\n"
+                    "text": "attribute!:\n  the: io.gozala.person/name\n  as: text\n  description: \"The person's full name\"\n"
                 }
             }
         });
@@ -2078,7 +2078,7 @@ mod tests {
             .map(|i| i["label"].as_str().unwrap_or_default())
             .collect();
         // Built-in `attribute` concept declares these fields.
-        for field in ["this", "id", "type", "cardinality", "description"] {
+        for field in ["this", "id", "as", "pick", "description"] {
             assert!(
                 labels.contains(&field),
                 "expected `{field}` in field completions, got {labels:?}",
@@ -2111,7 +2111,7 @@ mod tests {
         // First expression introduces ?alice and the &maintainer
         // anchor. Second expression's body is being typed —
         // cursor sits right after `?` on its `this:` line.
-        let text = "person:\n  this: ?alice\n  name: \"Alice\"\n\nattribute!: &maintainer\n  the: x.y/role\n  as: text\n  cardinality: one\n  description: ok\n\nperson!:\n  this: ?";
+        let text = "person:\n  this: ?alice\n  name: \"Alice\"\n\nattribute!: &maintainer\n  the: x.y/role\n  as: text\n  cardinality: :one\n  description: ok\n\nperson!:\n  this: ?";
         run(
             &mut server,
             &json!({

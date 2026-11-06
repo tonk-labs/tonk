@@ -6,7 +6,6 @@ members = [
   "rust/tonk-account",
   "rust/tonk-analytics",
   "rust/tonk-analyzer",
-  "rust/tonk-board",
   "rust/tonk-cli",
   "rust/tonk-code",
   "rust/tonk-common",
@@ -17,31 +16,34 @@ members = [
   "rust/tonk-evaluator",
   "rust/tonk-fab",
   "rust/tonk-guest",
+  "rust/tonk-handler-macros",
   "rust/tonk-host",
   "rust/tonk-identity",
   "rust/tonk-inspector",
   "rust/tonk-invite",
   "rust/tonk-language-server",
+  "rust/tonk-library",
   "rust/tonk-macros",
   "rust/tonk-notation",
+  "rust/tonk-intent",
+  "rust/tonk-lingo",
+  "rust/tonk-agent-peer",
   "rust/tonk-perf",
   "rust/tonk-portal",
   "rust/tonk-prose",
   "rust/tonk-render",
   "rust/tonk-router",
   "rust/tonk-schema",
-  "rust/tonk-sigil",
   "rust/tonk-table",
   "rust/tonk-template",
   "rust/tonk-tree",
   "rust/tonk-ui",
   "rust/tonk-worker",
   "rust/tonk-worker-api",
-  "rust/tonk-workspace",
 ]
 
 [workspace.package]
-version = "0.6.15"
+version = "0.6.16-rc.1"
 authors = ["Tonk Labs"]
 edition = "2024"
 license = "MIT"
@@ -54,7 +56,6 @@ tonk-access-service = { path = "./rust/tonk-access-service" }
 tonk-account = { path = "./rust/tonk-account" }
 tonk-analytics = { path = "./rust/tonk-analytics" }
 tonk-analyzer = { path = "./rust/tonk-analyzer" }
-tonk-board = { path = "./rust/tonk-board" }
 tonk-code = { path = "./rust/tonk-code" }
 tonk-common = { path = "./rust/tonk-common" }
 tonk-core = { path = "./rust/tonk-core" }
@@ -68,28 +69,29 @@ tonk-identity = { path = "./rust/tonk-identity" }
 tonk-inspector = { path = "./rust/tonk-inspector" }
 tonk-invite = { path = "./rust/tonk-invite" }
 tonk-language-server = { path = "./rust/tonk-language-server" }
+tonk-library = { path = "./rust/tonk-library" }
 tonk-macros = { path = "./rust/tonk-macros" }
+tonk-handler-macros = { path = "./rust/tonk-handler-macros" }
 tonk-notation = { path = "./rust/tonk-notation" }
+tonk-intent = { path = "./rust/tonk-intent" }
+tonk-lingo = { path = "./rust/tonk-lingo" }
 tonk-portal = { path = "./rust/tonk-portal" }
 tonk-prose = { path = "./rust/tonk-prose" }
 tonk-render = { path = "./rust/tonk-render" }
 tonk-router = { path = "./rust/tonk-router" }
 tonk-schema = { path = "./rust/tonk-schema" }
-tonk-sigil = { path = "./rust/tonk-sigil" }
 tonk-table = { path = "./rust/tonk-table" }
 tonk-template = { path = "./rust/tonk-template" }
 tonk-tree = { path = "./rust/tonk-tree" }
 tonk-ui = { path = "./rust/tonk-ui" }
 tonk-worker = { path = "./rust/tonk-worker" }
 tonk-worker-api = { path = "./rust/tonk-worker-api" }
-tonk-workspace = { path = "./rust/tonk-workspace" }
 
 aes-gcm = "0.10"
 anyhow = "1"
 async-trait = "0.1"
 automerge = "0.12"
 axum = { version = "0.8", default-features = false }
-axum-wasm-macros = "0.1"
 base58 = "0.2"
 base64 = "0.22"
 blake3 = "1.5"
@@ -126,6 +128,7 @@ idb = "0.6"
 indexmap = { version = "2", features = ["serde"] }
 ipld-core = { version = "0.4", features = ["serde"] }
 keyring = "3.6"
+rmcp = { version = "3.5", default-features = false, features = ["server", "transport-io"] }
 lsp-types = "0.97"
 matchit = "0.8"
 multibase = "0.9"
@@ -169,6 +172,7 @@ tempfile = "3"
 thirtyfour = "0.36"
 thiserror = "2"
 tokio = "1"
+tokio-tungstenite = "0.26"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["io"] }
 tower = "0.5"
@@ -197,24 +201,26 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+# 0.4.0-rc.4: trees read through the env (dialog-db#730, #735) and a
+# difference reads a shared leaf only where its ops touch (dialog-db#736).
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
 
 [profile.dev]
 opt-level = 1
@@ -233,6 +239,18 @@ strip = "debuginfo"
 lto = "thin"
 codegen-units = 1
 
+# The release test archive: release optimizations without link-time
+# optimization. LTO re-optimizes every crate a binary pulls in at each
+# link, and the archive links one binary per test target, which put the
+# release test build past CI's time limit. The one codegen unit `release`
+# compiles each crate in serializes the optimizer over the archive's many
+# test targets, and put the build past the limit again; the default count
+# lets them compile in parallel. Shipped builds keep `release`.
+[profile.release-test]
+inherits = "release"
+lto = false
+codegen-units = 16
+
 [profile.wasm-release]
 inherits = "release"
 opt-level = "s"
@@ -249,3 +267,26 @@ lto = "fat"
 inherits = "release"
 opt-level = "s"
 lto = "fat"
+
+# PR correctness checks retain assertions and overflow checking. Override the
+# dev wildcard explicitly so dependencies do not silently remain at opt-level 3.
+[profile.ci-test]
+inherits = "test"
+opt-level = 1
+lto = "off"
+codegen-units = 16
+
+[profile.ci-test.package."*"]
+opt-level = 1
+
+# Platform/browser smoke builds exercise release code paths without shipping
+# optimization. Real releases keep the profiles above unchanged.
+[profile.ci-release]
+inherits = "release"
+opt-level = 1
+lto = "off"
+codegen-units = 16
+
+[profile.ci-release.package."*"]
+opt-level = 1
+

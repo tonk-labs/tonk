@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Space preview capture spike</title>
+<style>body{font:16px system-ui}iframe{width:1000px;height:600px}img{width:320px;border:1px solid}pre{white-space:pre-wrap}</style>
+<h1>Sealed guest thumbnail spike</h1>
+<p>Source guest, then captured thumbnail. Synthetic fixture; no Tonk runtime.</p>
+<iframe sandbox="allow-scripts allow-forms allow-downloads"></iframe>
+<div id="images"></div><pre id="results">Running…</pre>
+<script>
+window.results = [];
+const frame = document.querySelector('iframe');
+addEventListener('message', e => {
+  if(e.source !== frame.contentWindow) return;
+  if(e.data.image) { const img=new Image();img.src=e.data.image;document.querySelector('#images').append(img); }
+  if(e.data.result) results.push(e.data.result);
+  document.querySelector('#results').textContent=JSON.stringify(results,null,2);
+});
+fetch('guest.html').then(r=>r.text()).then(html=>frame.srcdoc=html);
+</script>

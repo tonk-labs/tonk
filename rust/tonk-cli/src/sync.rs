@@ -13,7 +13,8 @@ use dialog_repository::{
     Branch, FetchError, PullError, PushError, Revision, TreeReference, Upstream,
 };
 use thiserror::Error;
-use tonk_schema::{SyncState, classify};
+use tonk_schema::SyncState;
+use tonk_worker_api::compare_heads;
 
 use crate::ExitCode;
 use crate::site::TonkSite;
@@ -64,6 +65,21 @@ pub enum SyncError {
          sync; run `tonk pull` and try again"
     )]
     NonFastForward,
+    /// A pull or push met a rival head on the upstream: another replica
+    /// writing with this branch's key built on the same head and minted
+    /// the same version over another tree (dialog-db/dialog-db#705).
+    /// Neither side can merge the other without dropping a write, and
+    /// nothing was written. Pulling does not recover it.
+    #[error(
+        "branch '{branch}' has a rival head on the upstream: another replica writing as this \
+         one minted the same version over another tree; one key must not write from two \
+         replicas at once. To recover, pull the upstream into a replica that has not written \
+         and write again there"
+    )]
+    RivalWriter {
+        /// Name of the local branch whose sync was refused.
+        branch: String,
+    },
     /// The access service refused the authority this device presented.
     ///
     /// This is the only place enforcement is real: possession of a replica
@@ -76,6 +92,8 @@ pub enum SyncError {
     Rejected {
         /// The access decision, as the service stated it.
         reason: String,
+        /// Definitive withdrawal/lapse, retained as a type for delivery recovery.
+        permanent: Option<PermanentRejection>,
     },
     /// The local deadline expired before one remote phase answered.
     ///
@@ -102,6 +120,15 @@ pub enum SyncError {
     Io(String),
 }
 
+/// Decisions that permanently prevent this exact grant delivery from installing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermanentRejection {
+    /// The authority has passed its signed deadline.
+    Expired,
+    /// The service verified a standard UCAN revocation.
+    Revoked,
+}
+
 impl crate::Coded for SyncError {
     /// CLI exit code for this failure mode.
     fn exit_code(&self) -> ExitCode {
@@ -110,7 +137,7 @@ impl crate::Coded for SyncError {
             | SyncError::Io(_)
             | SyncError::Rejected { .. }
             | SyncError::Timeout { .. } => ExitCode::IoError,
-            SyncError::NonFastForward => ExitCode::CommitError,
+            SyncError::NonFastForward | SyncError::RivalWriter { .. } => ExitCode::CommitError,
         }
     }
 }
@@ -125,7 +152,9 @@ impl crate::Coded for SyncError {
 /// not answer, or could not read what it was sent. Reporting them as denials
 /// would tell someone their authority was refused when nothing was refused,
 /// and stop them where a retry is the right move.
-fn rejection(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+fn rejection(
+    error: &(dyn std::error::Error + 'static),
+) -> Option<(String, Option<PermanentRejection>)> {
     let mut current = Some(error);
     while let Some(error) = current {
         if let Some(reason) = authorization(error)
@@ -136,7 +165,12 @@ fn rejection(error: &(dyn std::error::Error + 'static)) -> Option<String> {
                     | AuthorizeError::Malformed { .. }
             )
         {
-            return Some(reason.to_string());
+            let permanent = match reason {
+                AuthorizeError::Expired { .. } => Some(PermanentRejection::Expired),
+                AuthorizeError::Revoked { .. } => Some(PermanentRejection::Revoked),
+                _ => None,
+            };
+            return Some((reason.to_string(), permanent));
         }
         current = error.source();
     }
@@ -209,7 +243,7 @@ pub async fn push(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
         .perform(&site.operator)
         .await
         .map_err(|error| SyncError::Io(format!("open meta branch: {error}")))?;
-    if meta.upstream().is_some() {
+    if tonk_account::peer::upstream(&meta).is_some() {
         run_remote(
             "push metadata",
             upstream_target(&meta),
@@ -218,6 +252,9 @@ pub async fn push(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
         )
         .await?;
     }
+    // Include document cells in explicit push as well as auto-sync, so a
+    // saved offline edit can be published without repeating the edit.
+    crate::document::sync_all(site).await;
     Ok(SyncOutcome {
         before: before.clone(),
         after: before,
@@ -247,7 +284,7 @@ pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
         .perform(&site.operator)
         .await
         .map_err(|error| SyncError::Io(format!("open meta branch: {error}")))?;
-    if meta.upstream().is_some() {
+    if tonk_account::peer::upstream(&meta).is_some() {
         run_remote(
             "pull metadata",
             upstream_target(&meta),
@@ -256,6 +293,8 @@ pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
         )
         .await?;
     }
+    // The pulled heads may name document bytes this replica has not seen.
+    crate::document::sync_all(site).await;
     let after = branch.revision();
     Ok(SyncOutcome {
         before,
@@ -287,7 +326,7 @@ pub async fn status_with_hash(site: &TonkSite) -> Result<SyncStatus, SyncError> 
     let branch = session.handle();
     let local = branch.revision();
     let hash = local.as_ref().map(|revision| revision.tree.clone());
-    if branch.upstream().is_none() {
+    if tonk_account::peer::upstream(branch).is_none() {
         return Ok(SyncStatus {
             state: SyncState::NoUpstream,
             hash,
@@ -300,8 +339,15 @@ pub async fn status_with_hash(site: &TonkSite) -> Result<SyncStatus, SyncError> 
         map_fetch_error,
     )
     .await?;
+    let remote = remote
+        .into_iter()
+        .next()
+        .and_then(|fetched| fetched.revision);
+    let comparison = compare_heads(branch, local.as_ref(), remote.as_ref(), &site.operator)
+        .await
+        .map_err(|e| SyncError::Io(format!("resolve the heads' contexts: {e}")))?;
     Ok(SyncStatus {
-        state: classify(local.as_ref(), remote.as_ref()).into(),
+        state: comparison.into(),
         hash,
     })
 }
@@ -322,6 +368,11 @@ pub async fn status_with_hash(site: &TonkSite) -> Result<SyncStatus, SyncError> 
 /// came from the boundary that actually said no, and it is what a bug report
 /// needs.
 pub async fn rejection_report(site: &TonkSite, name: &str, reason: &str) -> String {
+    if site.is_scoped() {
+        return format!(
+            "could not sync '{name}': this connection's authority was refused\nthe access service said: {reason}\nrequest a new agent invite if access expired or was revoked; downloaded data and local edits are retained"
+        );
+    }
     let said = format!("the access service said: {reason}");
     let roster = crate::inventory::read_roster(site).await.ok();
     let identity = crate::site::Identity::of(site).await.ok();
@@ -344,8 +395,8 @@ pub async fn rejection_report(site: &TonkSite, name: &str, reason: &str) -> Stri
         return format!(
             "could not sync '{name}': the access service rejected this device's \
              authority\n{said}\nthis device may have been revoked; check \
-             `tonk account devices`, or ask a member for a new invite and claim \
-             it with `tonk join <URL>`"
+             account settings in Tonk, or ask a member for a new scoped invite \
+             and import it with `tonk join <URL>`"
         );
     };
     // Both roots appear in one sentence, so they are abbreviated against
@@ -363,9 +414,8 @@ pub async fn rejection_report(site: &TonkSite, name: &str, reason: &str) -> Stri
     };
     format!(
         "could not sync '{name}': this device holds no authority its access \
-         service accepts\n{said}\n'{name}' is owned by {owner}; {you}. sign \
-         into the owning account with `tonk account login`, or ask a member \
-         for an invite and claim it with `tonk join <URL>`",
+         service accepts\n{said}\n'{name}' is owned by {owner}; {you}. ask a member \
+         for a scoped invite in Tonk and import it with `tonk join <URL>`",
         owner = crate::inventory::describe(&owner.did, owner.name.as_deref(), length),
     )
 }
@@ -385,7 +435,7 @@ pub async fn status_offline(site: &TonkSite) -> Result<crate::context::SyncConte
     let branch = session.handle();
     let hash = branch.revision().map(|revision| revision.tree.to_string());
     Ok(crate::context::SyncContext::offline(
-        branch.upstream().is_some(),
+        tonk_account::peer::upstream(branch).is_some(),
         hash,
     ))
 }
@@ -424,9 +474,10 @@ fn map_run_error<E>(
 }
 
 fn upstream_target(branch: &Branch) -> String {
-    match branch.upstream() {
-        Some(Upstream::Remote { remote, branch, .. }) => format!("{remote}/{branch}"),
+    match tonk_account::peer::upstream(branch) {
+        Some(Upstream::Remote { remote, branch, .. }) => format!("{}/{branch}", remote.name()),
         Some(Upstream::Local { branch, .. }) => format!("local/{branch}"),
+        Some(Upstream::Unreachable { target, .. }) => format!("unreachable upstream {target}"),
         None => format!("configured upstream for {}", branch.name()),
     }
 }
@@ -434,7 +485,14 @@ fn upstream_target(branch: &Branch) -> String {
 fn map_push_error(error: PushError) -> SyncError {
     match error {
         PushError::BranchHasNoUpstream { branch } => SyncError::UpstreamNotConfigured { branch },
-        PushError::NonFastForward { .. } => SyncError::NonFastForward,
+        // A push that loses the race for the upstream head after the
+        // fast-forward check passed is refused by the conditional head
+        // write instead. Either way the upstream moved: pull and retry.
+        PushError::NonFastForward { .. }
+        | PushError::Publish(dialog_repository::PublishError::VersionMismatch { .. }) => {
+            SyncError::NonFastForward
+        }
+        PushError::WriterRacedItself { branch, .. } => SyncError::RivalWriter { branch },
         other => classify_failure(&other),
     }
 }
@@ -442,13 +500,14 @@ fn map_push_error(error: PushError) -> SyncError {
 fn map_pull_error(error: PullError) -> SyncError {
     match error {
         PullError::BranchHasNoUpstream { branch } => SyncError::UpstreamNotConfigured { branch },
+        PullError::WriterRacedItself { branch, .. } => SyncError::RivalWriter { branch },
         other => classify_failure(&other),
     }
 }
 
 fn classify_failure(error: &(dyn std::error::Error + 'static)) -> SyncError {
     match rejection(error) {
-        Some(reason) => SyncError::Rejected { reason },
+        Some((reason, permanent)) => SyncError::Rejected { reason, permanent },
         None => SyncError::Io(error.to_string()),
     }
 }
@@ -464,16 +523,47 @@ mod tests {
         /// The decision is buried under two layers that render it
         /// transparently, which is where a source-walk alone loses it.
         #[dialog_common::test]
+        fn only_expiry_and_standard_revocation_are_permanent_delivery_decisions() {
+            let did: dialog_varsig::Did =
+                "did:key:z6MkhFDyBYNT1Y1jNj8RJKVc7CWurCVPmrnGEGmbYxvwHJkX"
+                    .parse()
+                    .unwrap();
+            for (reason, expected) in [
+                (
+                    AuthorizeError::Expired {
+                        expiration: 10,
+                        at: 11,
+                    },
+                    PermanentRejection::Expired,
+                ),
+                (
+                    AuthorizeError::Revoked {
+                        subject: did,
+                        certificate: None,
+                        revocation: None,
+                    },
+                    PermanentRejection::Revoked,
+                ),
+            ] {
+                let error = PushError::Publish(PublishError::from(reason));
+                assert!(
+                    matches!(map_push_error(error), SyncError::Rejected { permanent: Some(actual), .. } if actual == expected)
+                );
+            }
+        }
+
+        #[dialog_common::test]
         fn it_reads_a_decision_out_of_the_wrappers_that_hide_it() {
             let denial = AuthorizeError::PolicyViolation {
                 predicate: "subject is provisioned".to_owned(),
             };
             let error = PushError::FetchRemoteBranch(ResolveError::from(denial).into());
 
-            let SyncError::Rejected { reason } = map_push_error(error) else {
+            let SyncError::Rejected { reason, permanent } = map_push_error(error) else {
                 panic!("an access decision must not read as transport failure");
             };
             assert!(reason.contains("subject is provisioned"), "{reason}");
+            assert!(permanent.is_none());
         }
 
         /// "We could not answer" is not "no". Reporting it as a denial would

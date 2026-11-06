@@ -4,18 +4,20 @@
 //! Each entry holds enough state to refresh the subscription
 //! against a new `(space, branch)` context: the consumer
 //! element, the query body, the optional tag, and the structural
-//! depth. The abort handle is held so the entry's `Drop` cancels
-//! the upstream.
+//! depth. The entry holds the shared stream its open rides, so the last
+//! entry's `Drop` cancels the upstream.
 //!
 //! Keyed by an opaque `EntryId`. v1 uses linear scans for both
 //! consumer lookup and context-refresh filtering — fine for the
 //! handful of subscriptions a page has. Future work: index by
-//! consumer element identity for O(1) unsubscribe, and ref-count
-//! entries sharing the same upstream subscription for dedup.
+//! consumer element identity for O(1) unsubscribe. Entries with the same
+//! upstream subscription share one transport (`crate::stream`).
 
 use std::collections::BTreeMap;
 
-use crate::sse::EventSource;
+use std::rc::Rc;
+
+use crate::stream::Stream;
 use wasm_bindgen::JsValue;
 use web_sys::Element;
 
@@ -45,14 +47,18 @@ pub(crate) struct Entry {
     /// the dispatcher and the host at subscribe time. Drives the
     /// shallowest-first refresh ordering.
     pub depth: u32,
-    /// Upstream transport handle. Dropping it cancels the SSE.
-    pub abort: Option<EventSource>,
+    /// The shared upstream stream this entry's current open rides.
+    /// Dropping the last entry's handle cancels the upstream.
+    pub stream: Option<Rc<Stream>>,
     /// Set when the stream announced an INTENTIONAL drop
     /// (`{"control":"update-pending"}`): a newer service worker is about
     /// to take over. The close-side reconnect then holds for the
     /// controller change (long fallback only) instead of dialing the
     /// outgoing worker on the usual short timer. Cleared on re-issue.
     pub awaiting_controller: bool,
+    /// Monotonic identity of the current transport open, including opens that
+    /// have not returned an abort handle yet.
+    pub attempt: u64,
 }
 
 /// The host's subscription table.
@@ -77,15 +83,11 @@ impl Registry {
         id
     }
 
-    /// Install an abort handle on an existing entry. If the entry
-    /// is gone (canceled during the await that produced the
-    /// handle), the handle is dropped immediately, cancelling the
-    /// upstream.
-    pub(crate) fn install_abort(&mut self, id: EntryId, abort: EventSource) {
-        match self.entries.get_mut(&id) {
-            Some(e) => e.abort = Some(abort),
-            None => drop(abort),
-        }
+    /// True only for the latest open of a still-live subscription.
+    pub(crate) fn is_current(&self, id: EntryId, attempt: u64) -> bool {
+        self.entries
+            .get(&id)
+            .is_some_and(|entry| entry.attempt == attempt)
     }
 
     /// Remove an entry by id, returning it. Dropping the entry

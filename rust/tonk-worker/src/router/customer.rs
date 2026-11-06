@@ -12,7 +12,6 @@ use axum::{
     Json,
     extract::{Extension, State},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_ucan_core::time::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -21,6 +20,7 @@ use tonk_account::customer::{CustomerStatus, Receipt};
 use tonk_account::pending::{PendingQueue, PendingWork};
 use tonk_account::{CUSTOMER_CREDENTIAL_SITE, PENDING_WORK_CREDENTIAL_SITE};
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 use tonk_identity::request::build_enroll_invocation;
 use url::Url;
 
@@ -97,7 +97,7 @@ pub(crate) async fn enroll_customer(
                 )
             })?,
     };
-    let device = state.profile.signer().signer().clone();
+    let device = state.profile.credential().signer().clone();
 
     let body = build_enroll_invocation(device, &link, &email, custody)
         .await
@@ -192,48 +192,86 @@ impl dialog_capability::Provider<tonk_schema::command::EnrollCustomer>
 ///
 /// No ceremony and no custody material — the enrollment's rows stand at
 /// the service, and re-enrolling to get a mail re-runs a passkey prompt
-/// the person waiting on their inbox never asked for. Outcome is the
-/// mail itself; failures are logged, and the rate limit means a silent
-/// round is the ordinary answer to an impatient second press.
+/// the person waiting on their inbox never asked for.
+///
+/// The outcome is recorded against the command entity as
+/// `xyz.tonk.resend-activation/{status,detail}` on the profile overlay:
+/// `requested` once the service accepted the invocation, `failed` when
+/// it never got there or refused it. `requested` does not promise a
+/// mail: the service rate limits sends and, so as not to say whether an
+/// account exists, answers a throttled request exactly like a sent one.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::ResendActivation>
     for crate::router::CommandEnv
 {
-    async fn execute(&self, _command: tonk_schema::command::ResendActivation) {
-        let state = self.state().read().await;
-        let account = match super::identity::root_did(&state).await {
-            Ok(account) => account,
-            Err(error) => {
-                log!("resend-activation: no account root: {error}");
-                return;
-            }
-        };
-        let device = state.profile.signer().signer().clone();
-        let body = match tonk_identity::request::build_resend_invocation(device, &account).await {
-            Ok(body) => body,
-            Err(error) => {
-                log!("resend-activation: invocation did not build: {error:#}");
-                return;
-            }
-        };
-        let origin = match service_origin() {
-            Ok(origin) => origin,
-            Err(error) => {
-                log!("resend-activation: no service origin: {error}");
-                return;
-            }
-        };
-        let endpoint = match ucan_endpoint(&origin) {
-            Ok(endpoint) => endpoint,
+    async fn execute(&self, command: tonk_schema::command::ResendActivation) {
+        let (status, detail) = match request_resend(self.state()).await {
+            Ok(()) => ("requested", "Another activation email was requested."),
             Err(error) => {
                 log!("resend-activation: {error}");
-                return;
+                (
+                    "failed",
+                    "Couldn't request another activation email. Try again.",
+                )
             }
         };
-        if let Err(error) = post_cbor(&endpoint, &body).await {
-            log!("resend-activation: the service refused: {error}");
-        }
+        report_resend_activation(self.state(), &command.this, status, detail).await;
+    }
+}
+
+/// Sign and post the `/customer/resend` invocation. The state guard is
+/// released before the network call.
+async fn request_resend(state: &AppState) -> Result<(), String> {
+    let (account, device) = {
+        let state = state.read().await.clone();
+        let account = super::identity::root_did(&state)
+            .await
+            .map_err(|error| format!("no account root: {error}"))?;
+        (account, state.profile.credential().signer().clone())
+    };
+    let body = tonk_identity::request::build_resend_invocation(device, &account)
+        .await
+        .map_err(|error| format!("invocation did not build: {error:#}"))?;
+    let origin = service_origin().map_err(|error| format!("no service origin: {error}"))?;
+    let endpoint = ucan_endpoint(&origin).map_err(|error| error.to_string())?;
+    post_cbor(&endpoint, &body)
+        .await
+        .map_err(|error| format!("the service refused: {error}"))?;
+    Ok(())
+}
+
+/// Per-command feedback for the resend button: local overlay state on
+/// the profile branch, never account data.
+async fn report_resend_activation(
+    state: &AppState,
+    receipt: &dialog_artifacts::Entity,
+    status: &str,
+    detail: &str,
+) {
+    let tonk = state.read().await.clone();
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .overlay()
+        .assert(
+            dialog_query::the!("xyz.tonk.resend-activation/status")
+                .of(receipt.clone())
+                .is(status.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .assert(
+            dialog_query::the!("xyz.tonk.resend-activation/detail")
+                .of(receipt.clone())
+                .is(detail.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .write()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("resend-activation: failed to publish result: {error}");
     }
 }
 
@@ -244,7 +282,8 @@ pub async fn get_state(
     State(state): State<AppState>,
     Extension(origin): Extension<RequestOrigin>,
 ) -> Result<Json<CustomerState>, TonkWorkerError> {
-    let state = state.read().await;
+    // A clone, not a guard: the probe is a round trip to the service.
+    let state = state.read().await.clone();
     let root = super::identity::root_did(&state).await?;
     let record = load_customer(&state).await?;
     let endpoint = origin
@@ -341,7 +380,7 @@ pub async fn provision_custody(
     State(state): State<AppState>,
     Json(request): Json<ProvisionCustodyRequest>,
 ) -> Result<Json<()>, TonkWorkerError> {
-    let state = state.read().await;
+    let state = state.read().await.clone();
     let custody: dialog_varsig::Did = request
         .custody
         .parse()
@@ -399,7 +438,7 @@ pub async fn queue_custody(
     State(state): State<AppState>,
     Json(request): Json<QueueCustodyRequest>,
 ) -> Result<Json<()>, TonkWorkerError> {
-    let state = state.read().await;
+    let state = state.read().await.clone();
     if let Some(consent_hex) = &request.consent_hex {
         // Reject malformed recovery material before it can poison the durable
         // queue. The access service still verifies its authority on replay.
@@ -450,7 +489,7 @@ pub(crate) async fn record_custody_cell(
     let mut transaction = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .transaction()
         // A message sealed to the passkey's custody DID: only a fresh
         // assertion of that passkey opens it. The account is a real
@@ -583,13 +622,13 @@ pub(crate) async fn provision_consumer(
     let link = super::account::account_link(state).await.ok_or_else(|| {
         TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
     })?;
-    let device = state.profile.signer().signer().clone();
+    let device = state.profile.credential().signer().clone();
     let body = build_provider_add_invocation(device, &link, consumer, consent, kind)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to build the add invocation: {error}"))
         })?;
-    let origin = service_origin()?;
+    let origin = home_service_origin(state).await?;
     match post_cbor(&ucan_endpoint(&origin)?, &body).await {
         Ok(_) => {
             // Only a SPACE lands in the directory. A custody namespace
@@ -631,7 +670,7 @@ pub(crate) async fn record_space_provider(
     if let Err(error) = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .transaction()
         .assert(SpaceProvider::new(consumer, &account))
         .commit()
@@ -653,13 +692,18 @@ pub(crate) async fn retract_space_provider(
     use dialog_query::{Output as _, Query, Term};
     use tonk_schema::{SpaceProvider, prelude::DidExt as _};
 
-    let branch = match state
+    let reference = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
-        .acquire(&state.operator)
-        .await
-    {
+        .branch(&state.active_branch);
+    // The retraction below commits through the session's handle, not the
+    // reactor's commit, so the once-per-process move of a branch an
+    // earlier release wrote runs here.
+    if let Err(error) = reference.migrate_once(&state.operator).await {
+        log!("space provider for {consumer} not retracted: {error}");
+        return;
+    }
+    let branch = match reference.acquire(&state.operator).await {
         Ok(branch) => branch,
         Err(error) => {
             log!("space provider for {consumer} not read: {error}");
@@ -710,7 +754,7 @@ pub(crate) async fn space_provider_recorded(
     let branch = match state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .acquire(&state.operator)
         .await
     {
@@ -755,7 +799,7 @@ pub(crate) async fn deprovision_consumer(
     let link = super::account::account_link(state).await.ok_or_else(|| {
         TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
     })?;
-    let device = state.profile.signer().signer().clone();
+    let device = state.profile.credential().signer().clone();
     let body = build_provider_remove_invocation(device, &link, consumer)
         .await
         .map_err(|error| {
@@ -785,6 +829,28 @@ pub(crate) fn service_origin() -> Result<Url, TonkWorkerError> {
     ))
 }
 
+/// The access service this profile's account lives on: the origin of the
+/// address its spaces sync to, [`super::account_state::account_remote`].
+///
+/// Spaces are provisioned and deprovisioned where they sync, so this reads
+/// the same answer space creation does rather than the origin the page
+/// happens to be served from. The two are usually one deployment, but not
+/// for a browser signed in through another deployment, whose account is
+/// attached at, and registered with, the deployment that approved it.
+pub(crate) async fn home_service_origin(
+    state: &crate::worker::TonkState,
+) -> Result<Url, TonkWorkerError> {
+    let remote = super::account_state::account_remote(state).await?;
+    let remote = Url::parse(&remote).map_err(|error| {
+        TonkWorkerError::Internal(format!("the account's sync address is not a URL: {error}"))
+    })?;
+    format!("{}/", remote.origin().ascii_serialization())
+        .parse()
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("the account's sync origin is not a URL: {error}"))
+        })
+}
+
 /// The same-origin `/ucan/` endpoint.
 pub(crate) fn ucan_endpoint(origin: &Url) -> Result<Url, TonkWorkerError> {
     origin
@@ -797,10 +863,12 @@ async fn load_customer(
 ) -> Result<Option<CustomerRecord>, TonkWorkerError> {
     let bytes = match state
         .profile
-        .credential()
-        .site(CUSTOMER_CREDENTIAL_SITE)
+        .secrets()
+        .site(
+            crate::credential::branch_site(CUSTOMER_CREDENTIAL_SITE, &state.active_branch).as_str(),
+        )
         .load::<Vec<u8>>()
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
     {
         Ok(bytes) => bytes,
@@ -950,7 +1018,7 @@ pub(crate) async fn record_activation(state: &crate::worker::TonkState) {
     if let Err(error) = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .transaction()
         .assert(AccountActive::new(account.this(), at))
         .commit()
@@ -1022,7 +1090,7 @@ pub(crate) async fn account_registration(
     let Ok(branch) = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .acquire(&state.operator)
         .await
     else {
@@ -1155,7 +1223,7 @@ pub(crate) async fn record_customer_status(
     let mut transaction = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .transaction()
         .assert(AccountRegistered::new(
             account.this(),
@@ -1209,10 +1277,12 @@ pub(super) async fn save_customer(
     })?;
     state
         .profile
-        .credential()
-        .site(CUSTOMER_CREDENTIAL_SITE)
+        .secrets()
+        .site(
+            crate::credential::branch_site(CUSTOMER_CREDENTIAL_SITE, &state.active_branch).as_str(),
+        )
         .save(bytes)
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to save the customer record: {error}"))
@@ -1222,10 +1292,10 @@ pub(super) async fn save_customer(
 async fn load_pending(state: &crate::worker::TonkState) -> Result<PendingQueue, TonkWorkerError> {
     let bytes = match state
         .profile
-        .credential()
+        .secrets()
         .site(PENDING_WORK_CREDENTIAL_SITE)
         .load::<Vec<u8>>()
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
     {
         Ok(bytes) => bytes,
@@ -1261,10 +1331,10 @@ async fn save_pending(
     })?;
     state
         .profile
-        .credential()
+        .secrets()
         .site(PENDING_WORK_CREDENTIAL_SITE)
         .save(bytes)
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("failed to save pending work: {error}")))
 }
@@ -1462,14 +1532,53 @@ pub(crate) async fn clear_customer(
 ) -> Result<(), TonkWorkerError> {
     state
         .profile
-        .credential()
-        .site(CUSTOMER_CREDENTIAL_SITE)
+        .secrets()
+        .site(
+            crate::credential::branch_site(CUSTOMER_CREDENTIAL_SITE, &state.active_branch).as_str(),
+        )
         .save(Vec::<u8>::new())
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to clear the customer record: {error}"))
         })
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod home_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    /// Provisioning follows where the account syncs, not what the
+    /// device's grant names. The fixture's grant names no home, and its
+    /// account syncs at [`super::super::account::TEST_ACCOUNT_REMOTE`],
+    /// so that is the service it provisions with and whose refusal counts.
+    #[dialog_common::test]
+    async fn it_provisions_where_the_account_syncs() {
+        let state = crate::router::tests::test_state().await;
+        let root = super::super::identity::local_root(&state).await.unwrap();
+        assert_eq!(
+            tonk_invite::home_address(&root.delegation).ok().flatten(),
+            None
+        );
+
+        assert_eq!(
+            home_service_origin(&state).await.unwrap().as_str(),
+            "https://accounts.tonk.xyz/"
+        );
+        assert!(
+            super::super::repository::remote_is_own_service(
+                &state,
+                super::super::account::TEST_ACCOUNT_REMOTE
+            )
+            .await
+        );
+        assert!(
+            !super::super::repository::remote_is_own_service(&state, "https://tonk.network/ucan/")
+                .await
+        );
+    }
 }
 
 #[cfg(test)]

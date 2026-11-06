@@ -15,13 +15,13 @@ use ::axum::{
     extract::{Path, State},
     http::HeaderMap,
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_repository::Revision;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_evaluator::evaluate::CommitSummary;
+use tonk_handler_macros::wasm_compat;
 use tonk_schema::claim::{Claim, TransactRequest};
 
 use super::AppState;
@@ -72,6 +72,12 @@ pub async fn transact(
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
+    if super::names_profile(&state, &path.repo).await {
+        let path = ProfileTransactPath {
+            branch: path.branch,
+        };
+        return transact_profile(State(state), Path(path), client, lifetime, _headers, body).await;
+    }
     log!("transact repo={}, branch={}", path.repo, path.branch);
     // First use of a directory-listed space this device has not
     // replicated mounts it on demand, as `query` and `GET /api/repository`
@@ -82,16 +88,11 @@ pub async fn transact(
     // re-ran the stamp, so the site never resolved its route and the
     // page sat on its loading placeholder for good.
     {
-        let tonk_state = state.read().await;
-        match super::adopt::ensure_space_mounted(&tonk_state, &path.repo).await {
-            Ok(true) => {
-                super::adopt::schedule_seed_upgrade(&tonk_state, state.clone(), &path.repo).await;
-            }
-            Ok(false) => {}
-            Err(error) => {
-                log!("on-demand mount of '{}' failed: {error}", path.repo);
-            }
-        }
+        // A clone, not a guard: mounting can pull the space over the
+        // network, and a guard held across that keeps every writer, and
+        // every reader queued behind one, waiting on the remote.
+        let tonk_state = state.read().await.clone();
+        super::adopt::mount_on_first_use(&tonk_state, &state, &path.repo).await;
     }
     // A read lock on `TonkState` — concurrent transactions and syncs don't
     // serialize on the outer lock. Transactions instead serialize on the
@@ -149,9 +150,11 @@ pub async fn transact(
     Ok(response)
 }
 
-/// `POST /api/profile/branch/{branch}/transact`
+/// [`transact`] for the profile's own repository, which [`transact`]
+/// hands a request naming it. A sealed guest is refused, and the commit's
+/// origin names no space.
 #[wasm_compat]
-pub async fn transact_profile(
+async fn transact_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileTransactPath>,
     client: Option<Extension<super::ClientId>>,
@@ -293,6 +296,25 @@ async fn transact_on_branch<'a>(
     let revision_before = session.handle().revision();
     let claim_count = request.claims.len();
 
+    // A branch with no head is one nobody has made yet: a tab opening
+    // `/space/{branch}@{did}` asserts its `tonk:load` here before the
+    // branch exists. Committing would publish an empty first revision and
+    // make the branch, which only `space/create-branch` may do. With only
+    // transients there is nothing durable to write, and no library on the
+    // branch whose rules could derive anything from them, so dispatch them
+    // as the absent-repository path above does.
+    if all_transient && revision_before.is_none() && !request.claims.is_empty() {
+        let transients = transient_changes(request.claims)?;
+        return Ok((
+            Json(TransactResponse {
+                revision_before: None,
+                revision_after: None,
+                commits: CommitSummary::default(),
+            }),
+            (!transients.is_empty()).then_some(transients),
+        ));
+    }
+
     // No claims: short-circuit to a no-op response so callers
     // can submit empty batches without paying for a commit.
     if request.claims.is_empty() {
@@ -354,10 +376,9 @@ mod profile_write_boundary {
 
     use axum::{Extension, body::Bytes, http::HeaderMap};
     use std::sync::Arc;
-    use tokio::sync::RwLock;
     use tonk_schema::claim::TransactRequest;
 
-    use super::transact_profile;
+    use super::{transact, transact_profile};
     use crate::{
         TonkWorkerError,
         router::{AppState, ClientId, ViewBinding},
@@ -367,7 +388,7 @@ mod profile_write_boundary {
     /// Returns the state and the `ClientId` of that client.
     async fn test_state_with_view_bound_client() -> (AppState, ClientId) {
         let state = crate::router::tests::test_state().await;
-        let app_state: AppState = Arc::new(RwLock::new(state));
+        let app_state: AppState = Arc::new(crate::StateLock::new(state));
         let client_id = ClientId("sealed-guest-test".to_owned());
         let bindings = app_state.read().await.view_bindings.clone();
         bindings.write().await.insert(
@@ -412,6 +433,66 @@ mod profile_write_boundary {
             "sealed-guest clients must not write profile/meta, got: {:?}",
             result,
         );
+    }
+
+    /// The profile's repository is reached through the repository route
+    /// by its DID, and the write boundary holds there: a sealed guest
+    /// naming the profile by its key is refused as it is through the
+    /// alias, and the branch is left where it was.
+    #[dialog_common::test]
+    async fn it_rejects_sealed_guest_writes_naming_the_profile_by_its_did() {
+        use dialog_capability::Principal as _;
+
+        let (state, client_id) = test_state_with_view_bound_client().await;
+        let (profile, branch, before) = {
+            let tonk = state.read().await;
+            let head = tonk
+                .reactor
+                .profile_repository()
+                .branch(&tonk.active_branch)
+                .acquire(&tonk.operator)
+                .await
+                .expect("the profile branch opens")
+                .handle()
+                .revision();
+            (
+                tonk.profile.did().to_string(),
+                tonk.active_branch.clone(),
+                head,
+            )
+        };
+        let body_bytes = Bytes::from(
+            serde_json::to_vec(&TransactRequest::default()).expect("TransactRequest serializes"),
+        );
+
+        let result = transact(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(super::TransactPath {
+                repo: profile,
+                branch: branch.clone(),
+            }),
+            Some(Extension(client_id)),
+            None,
+            HeaderMap::new(),
+            body_bytes,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(TonkWorkerError::Forbidden(_))),
+            "a sealed guest must not write the profile by its DID, got: {result:?}",
+        );
+        let tonk = state.read().await;
+        let after = tonk
+            .reactor
+            .profile_repository()
+            .branch(&branch)
+            .acquire(&tonk.operator)
+            .await
+            .expect("the profile branch opens")
+            .handle()
+            .revision();
+        assert_eq!(after, before, "nothing was written");
     }
 }
 
@@ -466,6 +547,8 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
         | ReactorError::Commit(_)
         | ReactorError::Pull(_)
         | ReactorError::Download(_)
-        | ReactorError::Push(_) => TonkWorkerError::Internal(err.to_string()),
+        | ReactorError::UnreadableHead { .. }
+        | ReactorError::Push(_)
+        | ReactorError::Upgrade { .. } => TonkWorkerError::Internal(err.to_string()),
     }
 }

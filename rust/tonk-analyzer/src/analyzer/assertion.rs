@@ -12,12 +12,12 @@ use tonk_notation::{
 
 use super::error::{AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind};
 use super::field::{
-    collection_entry_terms, field_value_to_term, is_meta_field, untyped_descriptor,
+    collection_entry_terms, field_value_to_term, is_meta_field, read_through, untyped_descriptor,
     validate_claim_attribute,
 };
 use super::scope::Scope;
 use crate::analyzer::Working;
-use dialog_query::attribute::Relation;
+use dialog_query::attribute::The;
 use tonk_core::claim::ValueMap;
 use tonk_core::meta::AnchorName;
 use tonk_schema::prelude::EntityExt;
@@ -38,20 +38,21 @@ fn type_spelling(ty: dialog_query::artifact::Type) -> String {
     }
 }
 
-/// How to spell a literal so it carries the declared type.
+/// What literal the declared type would read. A number literal's
+/// spelling carries no type, so the hint names a number the lens
+/// reads unchanged, never a sign or a decimal point.
 fn divergence_hint(expected: dialog_query::artifact::Type, value: &Value) -> String {
     use dialog_query::artifact::Type;
-    match (expected, value) {
-        (Type::UnsignedInt, Value::SignedInt(i)) if *i >= 0 => {
-            format!("write bare digits ({i}) for an unsigned integer")
+    match (expected.storage(), value) {
+        (Type::UnsignedInt, Value::SignedInt(_) | Value::Float(_)) => {
+            "write a non-negative whole number for a natural".into()
         }
-        (Type::SignedInt, Value::UnsignedInt(u)) => {
-            format!("write +{u} for a signed integer")
+        (Type::SignedInt, Value::Float(_)) => "write a whole number for an integer".into(),
+        (Type::UnsignedInt | Type::SignedInt | Type::Float, _) if value.data_type().is_number() => {
+            "write a number the declared size holds".into()
         }
-        (Type::Float, Value::SignedInt(i)) => format!("write {i}.0 for a float"),
-        (Type::Float, Value::UnsignedInt(u)) => format!("write {u}.0 for a float"),
         (Type::String, _) => "quote the value for text".into(),
-        _ => "spell the literal for that type, or align the attribute's `as:`".into(),
+        _ => "write a literal of that type, or align the attribute's `as:`".into(),
     }
 }
 
@@ -146,6 +147,11 @@ pub(crate) fn build_assertion_application(
             // instances must derive from that same entity for the
             // notation and wire paths to converge.
             let predicate_entity = resolved.entity.clone();
+            if let Some(error) =
+                check_retraction_has_entity(concept_name, &this, assertion, analysis)
+            {
+                return Err(error);
+            }
             let name_range = anchor.map(|a| a.range).unwrap_or(head_range);
             let this_term = this_term_for_assertion(
                 &this,
@@ -174,15 +180,13 @@ pub(crate) fn build_assertion_application(
             // every `with:` field, the user is almost certainly
             // missing a query — they wanted to update an
             // existing entity but the analyzer has no way to
-            // know that. `..: _` is the explicit opt-in for
-            // "yes, I'm creating a partial," so it suppresses
-            // the check.
+            // know that. (A body retracting anything here was
+            // already refused by `check_retraction_has_entity`.)
             if let Some(error) = check_complete_when_unbound(
                 concept_name,
                 &this,
                 &descriptor,
                 &user_fields,
-                has_rest_retraction,
                 analysis,
                 head_range,
             ) {
@@ -241,7 +245,7 @@ pub(crate) fn build_assertion_application(
                             assert_entries.push((key, value));
                         }
                     }
-                    let key_operand = Relation::key_operand(field_name);
+                    let key_operand = The::key_operand(field_name);
                     match assert_entries.split_first() {
                         Some(((key, value), rest)) => {
                             assert_terms.insert(key_operand.clone(), key.clone());
@@ -345,7 +349,10 @@ pub(crate) fn build_assertion_application(
             // a query per declaration name on every refresh.
             if super::view::is_view(&resolved) {
                 user_fields.remove(super::view::BINDINGS_FIELD);
-                if let Some(bindings) = super::view::compile_bindings(assertion, scope)? {
+                user_fields.remove(super::view::EMBEDS_FIELD);
+                let compiled = super::view::compile_bindings(assertion, scope)?;
+                analysis.warnings.extend(compiled.warnings);
+                if let Some(bindings) = compiled.bindings {
                     let encoded = bindings.encode().map_err(|reason| {
                         AnalyzeError::at(
                             AnalyzeErrorKind::InvalidViewBindings { reason },
@@ -358,6 +365,26 @@ pub(crate) fn build_assertion_application(
                     );
                     retract_terms.insert(
                         super::view::BINDINGS_FIELD.into(),
+                        Term::<dialog_query::Any>::blank(),
+                    );
+                    any_assert = true;
+                }
+                // The embeds ride the view the same way: resolved once
+                // here, so the renderer asks for the subject that was
+                // checked rather than one a caller supplied.
+                if let Some(embeds) = compiled.embeds {
+                    let encoded = embeds.encode().map_err(|reason| {
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::InvalidViewBindings { reason },
+                            head_range,
+                        )
+                    })?;
+                    assert_terms.insert(
+                        super::view::EMBEDS_FIELD.into(),
+                        Term::Constant(Value::Record(encoded)),
+                    );
+                    retract_terms.insert(
+                        super::view::EMBEDS_FIELD.into(),
                         Term::<dialog_query::Any>::blank(),
                     );
                     any_assert = true;
@@ -440,7 +467,7 @@ pub(crate) fn build_assertion_application(
             for (field_name, key, value) in extra_asserts {
                 let mut t = Parameters::new();
                 t.insert("this".into(), this_term.clone());
-                t.insert(Relation::key_operand(&field_name), key);
+                t.insert(The::key_operand(&field_name), key);
                 t.insert(field_name, value);
                 asserts.push(Application::Concept {
                     query: ConceptQuery {
@@ -456,7 +483,7 @@ pub(crate) fn build_assertion_application(
             for (field_name, key) in extra_retracts {
                 let mut t = Parameters::new();
                 t.insert("this".into(), this_term.clone());
-                t.insert(Relation::key_operand(&field_name), key);
+                t.insert(The::key_operand(&field_name), key);
                 t.insert(field_name, Term::<dialog_query::Any>::blank());
                 retracts.push(Application::Concept {
                     query: ConceptQuery {
@@ -478,9 +505,17 @@ pub(crate) fn build_assertion_application(
             // Claim heads don't yet support retraction
             // semantics — they have no schema to enumerate, so
             // `..: _` doesn't have a closed set of attributes
-            // to expand into. Field-level `_` is also not
-            // wired here (Stage 2.7+ extension).
-            //
+            // to expand into; refuse it rather than ignore it.
+            // Field-level `_` is also not wired here (Stage 2.7+
+            // extension).
+            if let Some(rest) = assertion.fields.iter().find(|f| f.name == "..") {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::RestRetractionOnDomain {
+                        domain: domain.clone(),
+                    },
+                    rest.name_range,
+                ));
+            }
             // Claim domains have no concept entity; the digest's
             // predicate slot uses an entity derived from the
             // domain string so two assertions in different
@@ -505,8 +540,9 @@ pub(crate) fn build_assertion_application(
                 }
                 validate_claim_attribute(domain, &field.name, field.name_range)?;
                 // Domain heads are OPEN-ENDED: no schema is imposed.
-                // A literal keeps the type its spelling gives it
-                // (`41` unsigned, `+41` signed, `41.0` float) and a
+                // A literal is the number it names, held as the
+                // narrowest type (`41`, `+41` and `41.0` are all the
+                // natural 41; `-7` an integer; `41.5` a float), and a
                 // mixed-type attribute is legal. A branch-declared
                 // `<domain>/<field>` attribute still lends its
                 // CARDINALITY (accumulate-vs-replace), but never its
@@ -522,12 +558,14 @@ pub(crate) fn build_assertion_application(
                 )?;
                 if let Some(declared) = scope.attribute_by_id(&format!("{domain}/{}", field.name)) {
                     // The declaration never blocks a raw write, but a
-                    // literal whose spelled type diverges from it is
-                    // worth a heads-up: the declaring concept will
-                    // not see this fact.
+                    // literal the declared type does not read unchanged
+                    // is worth a heads-up: the declaring concept will
+                    // not see this fact, or will see another number. A
+                    // number any number type reads (`41` under
+                    // `integer:` or `float:`) is no divergence.
                     if let (Some(expected), Term::Constant(value)) =
                         (declared.descriptor.content_type(), &term)
-                        && value.data_type() != expected
+                        && read_through(expected, value).is_none()
                     {
                         analysis.warnings.push(AnalyzeDiagnostic::warning(
                             AnalyzeDiagnosticKind::DeclaredTypeDivergence {
@@ -569,6 +607,45 @@ pub(crate) fn build_assertion_application(
     }
 }
 
+/// Refuse a retraction whose `this:` reaches no existing entity.
+///
+/// `field: _` and `..: _` retract from the entity `this:` selects.
+/// With `this:` omitted, or a `?var` that no query binds and no
+/// earlier expression minted, that entity is derived fresh from the
+/// body: it holds nothing to retract, and the expression would only
+/// assert its named fields onto a new, partial instance. The named
+/// fields of an assertion always set values, so they cannot double
+/// as a filter choosing what to retract; selecting is a query's job.
+fn check_retraction_has_entity(
+    concept_name: &str,
+    this: &ThisIntent,
+    assertion: &SyntaxApplication,
+    analysis: &Working,
+) -> Option<AnalyzeError> {
+    let retraction = assertion
+        .fields
+        .iter()
+        .find(|f| f.name != "this" && matches!(f.value, FieldValue::Blank))?;
+    let selector_form = match this {
+        ThisIntent::Uri(_) => return None,
+        ThisIntent::Derived => "`this:` is omitted".to_string(),
+        ThisIntent::Variable(name) => {
+            if analysis.variables.contains_key(name) || query_binds(analysis, name) {
+                return None;
+            }
+            format!("`?{name}` in `this:` isn't bound by any query")
+        }
+    };
+    Some(AnalyzeError::at(
+        AnalyzeErrorKind::RetractionWithoutEntity {
+            concept: concept_name.to_owned(),
+            retracted: format!("`{}: _`", retraction.name),
+            selector_form,
+        },
+        retraction.name_range,
+    ))
+}
+
 /// Derive the head's source-form intent — `(ThisIntent, name)`
 /// — from an expression's body and optional value-side anchor.
 ///
@@ -604,15 +681,29 @@ pub(crate) fn derive_head_intent(
     // infallibly.
     let name = match anchor {
         None => None,
-        Some(anchor) => Some(AnchorName::try_from(anchor.name.as_str()).map_err(|e| {
-            AnalyzeError::at(
-                AnalyzeErrorKind::InvalidAnchorName {
-                    name: e.name,
-                    reason: e.reason,
-                },
-                anchor.range,
-            )
-        })?),
+        Some(anchor) => {
+            let name = AnchorName::try_from(anchor.name.as_str()).map_err(|e| {
+                AnalyzeError::at(
+                    AnalyzeErrorKind::InvalidAnchorName {
+                        name: e.name,
+                        reason: e.reason,
+                    },
+                    anchor.range,
+                )
+            })?;
+            // Dialog would publish this name, but if the notation
+            // can't write it back as a reference, refuse it here
+            // rather than at the `this:` that later uses it.
+            if !tonk_notation::is_reference_name(&anchor.name) {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::UnreferenceableAnchorName {
+                        name: anchor.name.clone(),
+                    },
+                    anchor.range,
+                ));
+            }
+            Some(name)
+        }
     };
     let this = match fields.iter().find(|f| f.name == "this") {
         None => ThisIntent::Derived,
@@ -620,16 +711,15 @@ pub(crate) fn derive_head_intent(
             FieldValue::Variable(v) => ThisIntent::Variable(v.clone()),
             FieldValue::Uri(uri) => {
                 let entity: Entity =
-                    uri.parse()
-                        .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                            AnalyzeError::at(
-                                AnalyzeErrorKind::InvalidSubjectUri {
-                                    subject: uri.clone(),
-                                    reason: e.to_string(),
-                                },
-                                field.value_range,
-                            )
-                        })?;
+                    uri.parse().map_err(|e: dialog_artifacts::IdentityError| {
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::InvalidSubjectUri {
+                                subject: uri.clone(),
+                                reason: e.to_string(),
+                            },
+                            field.value_range,
+                        )
+                    })?;
                 ThisIntent::Uri(entity)
             }
             FieldValue::Symbol(name) => {
@@ -648,9 +738,11 @@ pub(crate) fn derive_head_intent(
                 ThisIntent::Uri(entity)
             }
             FieldValue::Literal(_)
+            | FieldValue::Include(_)
             | FieldValue::Blank
             | FieldValue::Nested(_)
-            | FieldValue::Premises(_) => {
+            | FieldValue::Premises(_)
+            | FieldValue::List(_) => {
                 return Err(AnalyzeError::at(
                     AnalyzeErrorKind::UnsupportedFieldValue {
                         field: "this".into(),
@@ -827,22 +919,35 @@ fn digest_into(
             }
             FieldValue::Uri(uri) => {
                 let entity: Entity =
-                    uri.parse()
-                        .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                            AnalyzeError::at(
-                                AnalyzeErrorKind::InvalidSubjectUri {
-                                    subject: uri.clone(),
-                                    reason: e.to_string(),
-                                },
-                                field.value_range,
-                            )
-                        })?;
+                    uri.parse().map_err(|e: dialog_artifacts::IdentityError| {
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::InvalidSubjectUri {
+                                subject: uri.clone(),
+                                reason: e.to_string(),
+                            },
+                            field.value_range,
+                        )
+                    })?;
                 Value::Entity(entity)
             }
             // Unbound variables, blanks and premises carry no content
             // identity: a variable is not a value yet, a blank is an
             // absence, and premises are a rule body.
             FieldValue::Variable(_) | FieldValue::Blank | FieldValue::Premises(_) => continue,
+            FieldValue::List(_) => {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::UnsupportedFieldValue {
+                        field: field.name.clone(),
+                        form: "a list (only an attribute's `the:` or `as:` and a command's `action:` take one)",
+                    },
+                    field.value_range,
+                ));
+            }
+            FieldValue::Include(include) => {
+                return Err(
+                    super::field::unexpanded_include(include, None).with_range(field.value_range)
+                );
+            }
             // Handled above.
             FieldValue::Nested(_) => continue,
         };
@@ -858,6 +963,11 @@ fn scalar_to_value(scalar: &Scalar) -> Value {
         Scalar::UnsignedInteger(u) => Value::UnsignedInt(*u),
         Scalar::Float(f) => Value::Float(*f),
         Scalar::Boolean(b) => Value::Boolean(*b),
+        Scalar::Bytes(bytes) => Value::Bytes(bytes.clone()),
+        // Digested as the bytes it was loaded as. The digest only has to
+        // be deterministic, and the field's declared type is not known
+        // here to say whether the stored value will be text.
+        Scalar::Included(bytes) => Value::Bytes(bytes.clone()),
         // dialog's `Value` has no Null variant; encode an explicit
         // absence as an empty string so the digest stays total.
         // This only matters for `null` literals in `with:` slots,
@@ -873,26 +983,17 @@ fn scalar_to_value(scalar: &Scalar) -> Value {
 ///   with no preceding query binding for `name`
 /// - AND the user-set field set is a strict subset of the
 ///   concept's `with:` schema
-/// - AND the body has no `..: _` rest-marker (which is the
-///   explicit opt-in for partial assertions)
 ///
-/// Returns `None` otherwise (intentional update, intentional
-/// full assert, or explicit partial via `..: _`).
+/// Returns `None` otherwise (intentional update or intentional
+/// full assert).
 fn check_complete_when_unbound(
     concept_name: &str,
     this: &ThisIntent,
     descriptor: &dialog_query::ConceptDescriptor,
     user_fields: &BTreeMap<&str, (&FieldValue, lsp_types::Range)>,
-    has_rest_retraction: bool,
     analysis: &Working,
     range: lsp_types::Range,
 ) -> Option<AnalyzeError> {
-    // `..: _` is the user's explicit "I know what I'm doing
-    // about every other field" — never trip the check.
-    if has_rest_retraction {
-        return None;
-    }
-
     // Determine whether `this:` reaches an existing entity.
     // `Uri` always does (the user wrote a concrete URI). Any
     // other case where the entity is "fresh" or "unbound"

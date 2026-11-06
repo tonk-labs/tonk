@@ -1,0 +1,194 @@
+# ===========================================================================
+# prose — a <tonk-prose> markdown document that merges.
+# ===========================================================================
+# The body is an automerge document, not a claim. It lives in a memory
+# cell named after this entity (see document.yaml); the branch holds only
+# a pointer, `document/heads`. `<tonk-prose subject={this}>` is all a view
+# needs: the element reads and edits the document through the host, with
+# no command binding and no rule, and two people typing at once keep both
+# edits. Editing writes nothing into the body of branch history.
+#
+# Agents edit a prose document with the `document/*` commands
+# (`document/replace`, `document/insert`, …) and read it through the
+# `document/content` mirror or the `document/*` history formulas.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Attributes
+# ---------------------------------------------------------------------------
+
+attribute!: &prose/content
+  description: |
+    The body BEFORE the document exists: a seed, or a document written
+    when prose bodies were claims (the <tonk-prose> `content` envelope,
+    or bare markdown). The first open turns it into the automerge
+    document and retracts it, the same way on every replica, so the text
+    is imported once. Never written by the editor.
+  the: io.gozala.prose/content
+  as: text
+
+# ---------------------------------------------------------------------------
+# Concept
+# ---------------------------------------------------------------------------
+
+concept!: &prose
+  this: tonk:prose
+  description: A prose document edited with <tonk-prose>; its body is an automerge document.
+  with:
+    format:
+      description: |
+        The text-family format, mirrored by the shared document engine.
+        A workbook must not match the prose concept.
+      the: io.gozala.prose/format
+      as: text
+  maybe:
+    content:
+      description: The body before the document exists (seed or claims-era); see above.
+      the: io.gozala.prose/content
+      as: text
+
+# A seed has durable source facts. The shared mirror projects the format
+# only for text documents (including newer read-only text formats), so
+# workbooks cannot match prose and existing documents need no migration.
+concept!: &prose/seed
+  description: A prose document's durable format and claims-era seed body.
+  with:
+    format:
+      description: The durable document format used to open the seed.
+      the: xyz.tonk.document/format
+      as: text
+    content: prose/content
+
+# Preserve `prose!: {format: ...}` as a creation interface. This only
+# declares the durable format; the body remains in the document cell.
+concept!: &prose/document
+  description: The durable document format declared when creating prose.
+  with:
+    format:
+      description: The durable document format used by the shared engine.
+      the: xyz.tonk.document/format
+      as: text
+
+rule!:
+  assert!: prose/document
+  when:
+    - assert: prose
+      where:
+        this: ?this
+        format: ?format
+
+# ---------------------------------------------------------------------------
+# Element — the editor, as branch data rather than a host bundle.
+#
+# <tonk-prose> ported to an `element!`: the methods in `prose-editor/` are its
+# custom-element class (text channel, versioned envelope, debounced
+# `change`, deferred teardown, switcher events), and `core` is its
+# ProseMirror editor core, built by `rust/tonk-prose/scripts/build.mjs`
+# into an expression that returns `createEditor`. So the component
+# carries the same editor as the host and installs into a space with
+# nothing from it. Rebuild `core.js` after changing
+# `rust/tonk-prose/src-js/editor`: `npm run build` there.
+#
+# Not `tonk-prose`: the host owns that name (and the runtime leaves
+# `tonk-` tags to the host), so a page can have both. The interface is
+# the same, and so is the stored envelope.
+# ---------------------------------------------------------------------------
+
+element!: &prose-editor
+  description: A ProseMirror markdown editor whose text content is the document; `change` carries the edit as a versioned envelope.
+  method:
+    connected: !include/text ./prose-editor/connected.js
+    disconnected: !include/text ./prose-editor/disconnected.js
+    attribute-changed: !include/text ./prose-editor/attribute-changed.js
+    mount: !include/text ./prose-editor/mount.js
+    adopt: !include/text ./prose-editor/adopt.js
+    schedule: !include/text ./prose-editor/schedule.js
+    flush: !include/text ./prose-editor/flush.js
+    emit: !include/text ./prose-editor/emit.js
+    decode: !include/text ./prose-editor/decode.js
+    encode: !include/text ./prose-editor/encode.js
+    tick: !include/text ./prose-editor/tick.js
+    observe: !include/text ./prose-editor/observe.js
+    stylesheet: !include/text ./prose-editor/stylesheet.js
+    core: !include/text ./prose-editor/core.js
+  getter:
+    # The document as bare markdown.
+    value: |
+      (self) => {
+        const state = self.__prose;
+        if (state?.editor) return state.editor.getMarkdown();
+        if (state?.buffered != null) return state.buffered;
+        const light = self.textContent ?? '';
+        const raw = light !== '' ? light : (self.getAttribute('content') ?? self.getAttribute('value'));
+        return raw === null ? '' : self.decode(raw).value;
+      }
+    # The document as the versioned envelope, for a lossless round trip.
+    content: |
+      (self) => self.encode(self.__prose?.known ?? 0n, self.value)
+    # The last version issued or adopted, as a decimal string.
+    version: |
+      (self) => String(self.__prose?.known ?? 0n)
+    # The live ProseMirror handle, once mounted.
+    editor: |
+      (self) => self.__prose?.editor ?? null
+    # Documents the heading switcher offers, set by the host.
+    candidates: |
+      (self) => self.__candidates ?? []
+  setter:
+    # Before the editor mounts, a write goes to the text it mounts from.
+    value: |
+      (self, next) => { if (self.__prose) self.adopt(String(next ?? '')); else self.textContent = String(next ?? ''); }
+    content: |
+      (self, next) => { if (self.__prose) self.adopt(String(next ?? '')); else self.textContent = String(next ?? ''); }
+    candidates: |
+      (self, next) => { self.__candidates = next; }
+
+# ---------------------------------------------------------------------------
+# View — render the document as an editor. `subject={this}` selects the
+# element's document mode: it asks the host for this entity's document at
+# this branch's heads and sends its edits back with the heads it last saw.
+# ---------------------------------------------------------------------------
+
+view!:
+  this: prose
+  show:
+    ui: |
+      <tonk-prose
+        subject={this}
+        placeholder="Write something…"
+        auto-focus
+        style="display: block; min-height: 12rem;"
+      ></tonk-prose>
+
+# ---------------------------------------------------------------------------
+# A directory view so `tonk render prose` (list of documents) resolves. One
+# <tonk-display> per instance — the single-display directory pattern.
+# ---------------------------------------------------------------------------
+
+view!:
+  this: prose
+  show:
+    directory: |
+      <div class="prose-directory">
+        <tonk-display entity={this} model={dom.host/model}></tonk-display>
+      </div>
+
+# ---------------------------------------------------------------------------
+# Seed one document so the model resolves on first render. The seed body is
+# a `content` claim; the first open imports it into the automerge document
+# and retracts it. Re-assert this id to reset the seed (an existing
+# document keeps its own body).
+# ---------------------------------------------------------------------------
+
+prose/seed!:
+  this: id:prose/doc
+  format: "automerge/text@1"
+  content: |
+    # Hello
+
+    Start editing. Try **bold**, *italic*, ~~strike~~ and `code`.
+
+    > a quote
+
+    - [ ] a todo
+    - [x] a done item

@@ -16,16 +16,17 @@
 //! that holds the account grant regains access to everything the account
 //! knows about.
 
-use dialog_artifacts::{Preload, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_credentials::Signer;
+use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
+use dialog_effects::blob::Load as BlobLoad;
 use dialog_effects::blob::{Import as BlobImport, Read as BlobRead, Write as BlobWrite};
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_repository::{
-    Branch, CommitError, Hydrate, PullError, RemoteSite, Revision, SetUpstreamError, Upstream,
+    Branch, CommitError, PullError, RemoteSite, ResolveEnv, Revision, SetUpstreamError, Upstream,
     UpstreamBranch,
 };
 use dialog_ucan::{Parameters, Scope, UcanDelegation};
@@ -33,6 +34,97 @@ use dialog_ucan_core::command::Command;
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::{DelegationBuilder, DelegationChain};
 use dialog_varsig::Did;
+
+/// Keep the validated current account-to-device powerline as the local proof
+/// candidate. The canonical identity record must already name this grant, so an
+/// interrupted cleanup can retry without restoring the superseded grant.
+///
+/// Other issuers, audiences and scoped grants are untouched. This withdraws old
+/// candidates from the local proof graph; it does not publish remote revocations.
+/// Callers serialize branch writes and retry a commit conflict from a fresh head.
+pub async fn reconcile_device_delegation<Env>(
+    branch: &Branch,
+    current: &DelegationChain,
+    env: &Env,
+) -> Result<(), DeviceGrantError>
+where
+    Env: Provider<Get>
+        + Provider<Put>
+        + Provider<Import>
+        + Provider<Resolve>
+        + Provider<Publish>
+        + Provider<Identify>
+        + Provider<Attest>
+        + Provider<BlobRead>
+        + Provider<BlobWrite>
+        + Provider<BlobImport>
+        + Provider<ArchiveLoad>
+        + Provider<BlobLoad>
+        + dialog_common::Holds
+        + Provider<Fork<RemoteSite, Get>>
+        + Provider<Fork<RemoteSite, Resolve>>
+        + Provider<Fork<RemoteSite, BlobRead>>
+        + ConditionalSync
+        + 'static,
+{
+    if current.proof_cids().len() != 1
+        || current.subject().is_some()
+        || !current
+            .proofs()
+            .next()
+            .expect("one proof")
+            .command()
+            .0
+            .is_empty()
+    {
+        return Err(DeviceGrantError::NotDeviceGrant);
+    }
+    branch.refresh(env).await?;
+    branch
+        .delegations()
+        .retain(UcanDelegation(current.clone()))
+        .perform(env)
+        .await?;
+    let retained = branch
+        .delegations()
+        .issued_to(current.audience().clone())
+        .perform(env)
+        .await?;
+    for grant in retained {
+        if grant.0.issuer() == current.issuer()
+            && grant.0.subject().is_none()
+            && grant
+                .0
+                .proofs()
+                .next()
+                .expect("one retained certificate")
+                .command()
+                .0
+                .is_empty()
+            && grant.0.proof_cids() != current.proof_cids()
+        {
+            branch.delegations().retract(grant).perform(env).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Why the active device grant could not be reconciled.
+#[derive(Debug, thiserror::Error)]
+pub enum DeviceGrantError {
+    /// Replacement requires a single subject-open, command-open device grant.
+    #[error("not an account-to-device powerline")]
+    NotDeviceGrant,
+    /// Refreshing the branch failed.
+    #[error("refresh device grants: {0}")]
+    Refresh(#[from] dialog_repository::ResolveError),
+    /// Reading the retained grants failed.
+    #[error("read device grants: {0}")]
+    Read(#[from] dialog_capability::access::AuthorizeError),
+    /// Committing a grant change failed.
+    #[error("commit device grants: {0}")]
+    Commit(#[from] CommitError),
+}
 
 /// Retain a `space → account-root` delegation into the account repository's
 /// branch, so the authority it carries replicates with the account.
@@ -53,6 +145,7 @@ pub async fn retain_space_delegation<Env>(
 ) -> Result<bool, CommitError>
 where
     Env: Provider<Get>
+        + Provider<BlobRead>
         + Provider<Put>
         + Provider<Import>
         + Provider<Resolve>
@@ -60,7 +153,10 @@ where
         + Provider<Identify>
         + Provider<Attest>
         + Provider<BlobWrite>
-        + Provider<Hydrate>
+        + Provider<BlobImport>
+        + Provider<ArchiveLoad>
+        + Provider<BlobLoad>
+        + dialog_common::Holds
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
@@ -107,28 +203,20 @@ pub async fn adopt_account_upstream<Env>(
     env: &Env,
 ) -> Result<Option<Revision>, AdoptError>
 where
-    Env: Provider<Get>
-        + Provider<Put>
-        + Provider<Import>
-        + Provider<Resolve>
-        + Provider<Publish>
-        + Provider<Identify>
-        + Provider<Attest>
+    Env: ResolveEnv
         + Provider<BlobRead>
         + Provider<BlobImport>
-        + Provider<Hydrate>
-        + Provider<Preload>
-        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
-        + Provider<Fork<RemoteSite, Resolve>>
-        + Provider<Fork<RemoteSite, BlobRead>>
-        + ConditionalSync
-        + 'static,
+        + Provider<Fork<RemoteSite, BlobRead>>,
 {
-    match access.upstream() {
-        None => access.set_upstream(account.into()).perform(env).await?,
-        Some(Upstream::Remote { .. }) => {}
-        Some(_) => return Err(AdoptError::ForeignUpstream),
+    let pulls = access.pulls();
+    if pulls.is_empty() {
+        access.set_upstream(account.into()).perform(env).await?;
+    } else if pulls
+        .iter()
+        .any(|upstream| matches!(upstream, Upstream::Local { .. }))
+    {
+        return Err(AdoptError::ForeignUpstream);
     }
     // Pull-and-materialize, not a bare pull: a bare pull adopts the head
     // by root, leaving the access branch partially replicated — and the
@@ -166,6 +254,112 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_test_configure!(run_in_browser);
+
+    async fn device_grant(
+        root: &dialog_credentials::Ed25519Signer,
+        audience: &Did,
+    ) -> DelegationChain {
+        DelegationChain::new(
+            DelegationBuilder::new()
+                .issuer(dialog_credentials::Signer::from(root.clone()))
+                .audience(audience)
+                .subject(UcanSubject::Any)
+                .command(vec![])
+                .try_build()
+                .await
+                .unwrap(),
+        )
+    }
+
+    #[dialog_common::test]
+    // Storybook LIFE-30: current device authority survives repeated sign-in.
+    async fn it_replaces_obsolete_device_grants_and_repairs_a_repeat() {
+        use dialog_capability::Subject;
+        use dialog_effects::storage::Location;
+        use dialog_peer::helpers::{open_peer, test_storage, unique_name};
+        use dialog_varsig::Principal as _;
+        let profile = open_peer(
+            test_storage().await,
+            Location::profile(unique_name("replace-grant")),
+        )
+        .await
+        .unwrap();
+        let operator = profile
+            .session(b"test")
+            .space(profile.state())
+            .allow(Subject::any())
+            .await
+            .unwrap();
+        let root = Ed25519Signer::import(&[41; 32]).await.unwrap();
+        let other_root = Ed25519Signer::import(&[42; 32]).await.unwrap();
+        let other_device = Ed25519Signer::import(&[43; 32]).await.unwrap().did();
+        let old = device_grant(&root, &profile.did()).await;
+        let current = device_grant(&root, &profile.did()).await;
+        let other_account = device_grant(&other_root, &profile.did()).await;
+        let other_audience = device_grant(&root, &other_device).await;
+        let scoped = DelegationChain::new(
+            DelegationBuilder::new()
+                .issuer(dialog_credentials::Signer::from(root.clone()))
+                .audience(&profile.did())
+                .subject(UcanSubject::Specific(root.did()))
+                .command(vec![])
+                .try_build()
+                .await
+                .unwrap(),
+        );
+        for grant in [&old, &other_account, &other_audience, &scoped] {
+            profile
+                .access()
+                .save(UcanDelegation(grant.clone()))
+                .perform(&operator)
+                .await
+                .unwrap();
+        }
+        // The profile handle predates the operator's retains: reconciliation must refresh it.
+        for _ in 0..2 {
+            reconcile_device_delegation(profile.state(), &current, &operator)
+                .await
+                .unwrap();
+            let held = profile
+                .state()
+                .delegations()
+                .issued_to(profile.did())
+                .perform(&operator)
+                .await
+                .unwrap();
+            let cids: Vec<_> = held.iter().map(|grant| grant.0.proof_cids()[0]).collect();
+            assert!(
+                !cids.contains(&old.proof_cids()[0]),
+                "obsolete grant must not remain selectable"
+            );
+            for grant in [&current, &other_account, &scoped] {
+                assert!(
+                    cids.contains(&grant.proof_cids()[0]),
+                    "current and unrelated authority must survive"
+                );
+            }
+            let other = profile
+                .state()
+                .delegations()
+                .issued_to(other_device.clone())
+                .perform(&operator)
+                .await
+                .unwrap();
+            assert!(
+                other
+                    .iter()
+                    .any(|grant| grant.0.proof_cids()[0] == other_audience.proof_cids()[0])
+            );
+            // A merge or older client can reintroduce a superseded grant. The same canonical
+            // record must repair it, even when sign-in does not change any record bytes.
+            profile
+                .access()
+                .save(UcanDelegation(old.clone()))
+                .perform(&operator)
+                .await
+                .unwrap();
+        }
+    }
 
     /// The union edge is subject-open and command-open, matching the grant
     /// it mirrors. A narrower return edge would make the union asymmetric,

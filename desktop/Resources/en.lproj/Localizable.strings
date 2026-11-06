@@ -1,0 +1,3 @@
+/* American English is the source language: the strings in code are already
+   American, so this table is empty. It exists so a US Mac resolves to "en"
+   rather than to the closest English table, en-GB. */

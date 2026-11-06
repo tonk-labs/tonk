@@ -2,12 +2,12 @@
 
 use ::axum::extract::Path;
 use ::axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_repository::{RepositoryExt as _, Revision};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 
 use super::super::AppState;
 use crate::TonkWorkerError;
@@ -74,7 +74,7 @@ pub async fn inspect_remote(
 
     let repo = tonk_state
         .profile
-        .repository(&params.repo)
+        .space(&params.repo)
         .load()
         .perform(&tonk_state.operator)
         .await
@@ -82,14 +82,9 @@ pub async fn inspect_remote(
             TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
         })?;
 
-    match repo
-        .remote(params.remote.as_str())
-        .load()
-        .perform(&tonk_state.operator)
-        .await
-    {
+    match crate::router::remotes::load(&repo, &params.remote, &tonk_state.operator).await {
         Ok(remote_repo) => Ok(Json(RemoteStatusResponse {
-            name: remote_repo.site().name().to_string(),
+            name: params.remote,
             subject: remote_repo.did().to_string(),
             exists: true,
         })),
@@ -117,7 +112,7 @@ pub async fn inspect_remote_branch(
 
     let repo = tonk_state
         .profile
-        .repository(&params.repo)
+        .space(&params.repo)
         .load()
         .perform(&tonk_state.operator)
         .await
@@ -125,23 +120,19 @@ pub async fn inspect_remote_branch(
             TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
         })?;
 
-    let remote_repo = match repo
-        .remote(params.remote.as_str())
-        .load()
-        .perform(&tonk_state.operator)
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            return Ok(Json(RemoteBranchStatusResponse {
-                remote: params.remote,
-                branch: params.branch,
-                success: false,
-                revision: None,
-                error: Some(format!("Remote not found: {}", e)),
-            }));
-        }
-    };
+    let remote_repo =
+        match crate::router::remotes::load(&repo, &params.remote, &tonk_state.operator).await {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(Json(RemoteBranchStatusResponse {
+                    remote: params.remote,
+                    branch: params.branch,
+                    success: false,
+                    revision: None,
+                    error: Some(format!("Remote not found: {}", e)),
+                }));
+            }
+        };
 
     match remote_repo
         .branch(params.branch.as_str())

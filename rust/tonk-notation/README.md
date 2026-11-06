@@ -44,6 +44,9 @@ Body field values become a [`FieldValue`]: a `Literal` [`Scalar`] (quoted or
 typed YAML scalar), a `?var` `Variable`, a `_` `Blank` (matches any value in a
 query, retracts the field in a claim), a bare-lowercase `Symbol` (name-table
 reference), a scheme/attribute `Uri`, a `Nested` mapping, or a `Premises` list.
+A bare-scheme URI (`keyword:`) can't be a plain YAML value, so it is spelled
+`:keyword` and parsed to `Uri("keyword:")`, in heads as well as values;
+[`spell_uri`] is the inverse for code that emits notation.
 Quotes are load-bearing: a quoted or block scalar is always a string literal,
 while a plain lowercase scalar classifies as a symbol.
 

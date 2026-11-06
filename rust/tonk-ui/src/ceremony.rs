@@ -17,7 +17,7 @@ pub(crate) fn begin_login_ceremony(
 ) -> Result<crate::custody_relay::Mediation, crate::custody_relay::CeremonyError> {
     use crate::custody_relay::CeremonyError;
 
-    narrate("Waiting for your passkey…");
+    narrate("Waiting for passkey…");
     // One assertion, and the worker does the rest: it opens the account
     // from its custody cell, mints this browser's delegation, records
     // the root and submits the link. The page holds no key material.
@@ -45,7 +45,7 @@ pub(crate) async fn run_account_ceremony(
     display_name: &str,
     narrate: impl Fn(&str),
 ) -> Result<(), crate::custody_relay::CeremonyError> {
-    narrate("Waiting for your passkey…");
+    narrate("Waiting for passkey…");
     let provider = proposed_remote()?;
     narrate("Creating your account…");
     crate::custody_relay::mediate_now(
@@ -61,8 +61,12 @@ pub(crate) async fn run_account_ceremony(
     )
     .await
     .map_err(|error| error.message)?;
-    crate::analytics::identify().await;
-    tonk_analytics::web::capture_account_created();
+    // Keep the receipt after bounded identity resolution so profile-based
+    // queries can count it, without delaying the completed account ceremony.
+    wasm_bindgen_futures::spawn_local(async {
+        crate::analytics::identify().await;
+        tonk_analytics::web::capture_account_created();
+    });
     Ok(())
 }
 

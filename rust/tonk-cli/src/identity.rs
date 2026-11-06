@@ -9,8 +9,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use dialog_effects::credential::CredentialError;
-use dialog_operator::{Operator, Profile};
-use dialog_storage::provider::storage::{NativeSpace, Storage};
+use dialog_effects::storage::Directory;
+use dialog_peer::{OpenCredential, Peer, Session};
+use dialog_storage::provider::storage::NativeSpace;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use serde::{Deserialize, Serialize};
@@ -52,14 +53,14 @@ fn missing_credential(error: &CredentialError) -> bool {
 /// `Storage::default()` has no mounts, so performing a credential load
 /// against one fails with "no mount for {did}" before it ever reaches
 /// the store — on every machine, provisioned or not.
-pub async fn local_root(profile: &Profile) -> Result<Option<LocalRoot>> {
+pub async fn local_root(profile: &Peer<NativeSpace>) -> Result<Option<LocalRoot>> {
     let store = crate::space::SpaceStore::open()?;
     local_root_in(profile, &store).await
 }
 
 /// Load the local root from one explicit native profile store.
 pub async fn local_root_in(
-    profile: &Profile,
+    profile: &Peer<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<Option<LocalRoot>> {
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
@@ -68,8 +69,8 @@ pub async fn local_root_in(
 
 /// Read the canonical root while recovering interrupted account replacements.
 pub(crate) async fn local_root_for_store(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
     store: &crate::space::SpaceStore,
 ) -> Result<Option<LocalRoot>> {
     let guard = crate::account_session::exclusive_transition_guard(store)?;
@@ -81,14 +82,14 @@ pub(crate) async fn local_root_for_store(
 
 /// Load the local root through an already-mounted site operator.
 pub(crate) async fn local_root_with_operator(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &Peer<NativeSpace>,
+    _operator: &Peer<NativeSpace, Session>,
 ) -> Result<Option<LocalRoot>> {
     let bytes = match profile
-        .credential()
+        .secrets()
         .site(LOCAL_ROOT_SITE)
         .load::<Vec<u8>>()
-        .perform(operator)
+        .perform(profile)
         .await
     {
         Ok(bytes) if bytes.is_empty() => return Ok(None),
@@ -103,7 +104,7 @@ pub(crate) async fn local_root_with_operator(
 
 /// Validate and persist exact root-to-device material from a browser handoff.
 pub async fn save_local_root(
-    profile: &Profile,
+    profile: &Peer<NativeSpace>,
     credential_id: String,
     delegation_hex: String,
 ) -> Result<LocalRoot> {
@@ -117,8 +118,8 @@ pub async fn save_local_root(
 /// resolved from the install behind its back — which would mount a different
 /// profile and refuse.
 pub async fn save_local_root_with_operator(
-    profile: &Profile,
-    operator: &dialog_operator::Operator<dialog_storage::provider::storage::NativeSpace>,
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
     credential_id: String,
     delegation_hex: String,
 ) -> Result<LocalRoot> {
@@ -148,34 +149,61 @@ pub async fn save_local_root_with_operator(
     // The latest handoff replaces this compatibility projection. Historical
     // UCAN certificates remain installed for local repository writes.
     profile
-        .save(UcanDelegation(chain))
+        .access()
+        .save(UcanDelegation(chain.clone()))
         .perform(operator)
         .await
         .context("failed to install the local-root delegation")?;
     profile
-        .credential()
+        .secrets()
         .site(LOCAL_ROOT_SITE)
         .save(serde_json::to_vec(&record).context("failed to serialize the local root")?)
-        .perform(operator)
+        .perform(profile)
         .await
         .context("failed to persist the local root")?;
+    // What the onboarding account sealed in tonk's own custody rows moves
+    // into the profile's custody first, so handing the account over below
+    // carries it to the signed-in account, as signing in does in a browser.
+    if let Some(secret) = crate::onboarding::read_if_openable_in(profile, operator).await? {
+        let branch = crate::custody::open_local_account_branch(profile, operator).await?;
+        for (subject, reason) in
+            crate::custody::migrate_onboarding(profile, operator, &branch, &secret, |_| async {
+                Ok(())
+            })
+            .await?
+        {
+            eprintln!("warning: {subject} stayed in the onboarding custody: {reason}");
+        }
+    }
+    // The peer now acts for the account it signed in to.
+    tonk_account::peer::hand_over(profile, &chain)
+        .await
+        .context("failed to hand the profile's account over to the signed-in account")?;
     Ok(record)
 }
 
 /// Open the user's profile, creating it on first run.
-pub async fn open() -> Result<Profile> {
-    let storage = Storage::<NativeSpace>::default();
-    Profile::open(PROFILE_NAME)
-        .perform(&storage)
-        .await
-        .with_context(|| format!("failed to open profile '{PROFILE_NAME}'"))
+pub async fn open() -> Result<Peer<NativeSpace>> {
+    crate::site::open_profile(PROFILE_NAME, Directory::Profile, true).await
 }
 
 /// Wipe the on-disk profile directory and create a fresh
 /// profile. The new profile has a brand-new DID — every site
 /// (`.tonk/`) the previous identity owned will be unreachable
 /// without re-delegation.
-pub async fn reset() -> Result<Profile> {
+pub async fn reset() -> Result<Peer<NativeSpace>> {
+    // The profile's key is kept in the credential store of the profile
+    // directory, beside the keys of everything else kept there, so a
+    // reset forgets that one key rather than removing a directory.
+    let (credentials, _) =
+        tonk_account::peer::open_system::<NativeSpace>(Directory::Profile).await?;
+    OpenCredential::forget(PROFILE_NAME)
+        .at(Directory::Profile)
+        .perform(&credentials)
+        .await
+        .context("failed to forget the profile's key")?;
+    // A profile from before its home was named by its DID keeps a space
+    // under its name, which goes with it.
     let dir = profile_dir()?;
     if dir.is_dir() {
         std::fs::remove_dir_all(&dir)
@@ -188,12 +216,19 @@ pub async fn reset() -> Result<Profile> {
 /// avoid creating a profile as a side effect of computing a hashed
 /// distinct id for a command that never touches the profile.
 pub fn exists() -> bool {
-    profile_dir().map(|dir| dir.is_dir()).unwrap_or(false)
+    profile_dir()
+        .map(|dir| {
+            let kept = dir
+                .parent()
+                .is_some_and(|keys| tonk_account::peer::kept_key_path(keys, PROFILE_NAME).exists());
+            kept || dir.is_dir()
+        })
+        .unwrap_or(false)
 }
 
-/// Filesystem path to the profile directory. `tonk identity
-/// --reset` calls `remove_dir_all` on this path; nothing else
-/// inside the crate depends on the on-disk layout.
+/// Filesystem path to the directory a profile from before its home was
+/// named by its DID keeps its space in. Its parent is the profile
+/// directory, where the credential store keeps the profile's key.
 fn profile_dir() -> Result<PathBuf> {
     let data_dir = dirs::data_dir().context("could not determine platform data directory")?;
     Ok(data_dir.join(STORAGE_NAMESPACE).join(PROFILE_NAME))

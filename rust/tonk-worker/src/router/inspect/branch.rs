@@ -2,12 +2,12 @@
 
 use ::axum::extract::Path;
 use ::axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_repository::{RepositoryExt as _, Revision};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 
 use super::super::AppState;
 use crate::TonkWorkerError;
@@ -68,7 +68,7 @@ pub async fn inspect_branch(
 
     let repo = tonk_state
         .profile
-        .repository(&params.repo)
+        .space(&params.repo)
         .load()
         .perform(&tonk_state.operator)
         .await
@@ -85,15 +85,23 @@ pub async fn inspect_branch(
             TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
         })?;
 
-    let upstream = branch.upstream().map(|u| {
+    let names = crate::router::remotes::list(&repo, &tonk_state.operator).await?;
+    let upstream = tonk_account::peer::upstream(&branch).map(|u| {
         use dialog_repository::Upstream;
         match u {
             Upstream::Local { branch, .. } => UpstreamInfo::Local {
                 branch: branch.to_string(),
             },
             Upstream::Remote { remote, branch, .. } => UpstreamInfo::Remote {
-                remote: remote.to_string(),
+                remote: names
+                    .iter()
+                    .find_map(|(name, recorded)| recorded.is(&remote).then(|| name.clone()))
+                    .unwrap_or_else(|| remote.name()),
                 branch: branch.to_string(),
+            },
+            Upstream::Unreachable { target, .. } => UpstreamInfo::Remote {
+                remote: target.to_string(),
+                branch: String::new(),
             },
         }
     });

@@ -4,7 +4,7 @@
 use dialog_artifacts::Entity;
 use dialog_capability::{Capability, Command, Provider};
 use dialog_effects::memory::{Resolve, Version};
-use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+use dialog_peer::helpers::{test_repo, test_session_with_peer};
 use dialog_query::the;
 use std::any::Any;
 use std::sync::Mutex;
@@ -184,6 +184,18 @@ struct RaceEnv<E> {
     inject: Mutex<Option<Vec<u8>>>,
 }
 
+impl<E: dialog_common::Holds> dialog_common::Holds for RaceEnv<E> {
+    fn held(&self, key: &str) -> Option<dialog_common::Held> {
+        self.inner.held(key)
+    }
+    fn hold(&self, key: String, handle: dialog_common::Held) {
+        self.inner.hold(key, handle)
+    }
+    fn held_or(&self, key: &str, make: &dyn Fn() -> dialog_common::Held) -> dialog_common::Held {
+        self.inner.held_or(key, make)
+    }
+}
+
 #[async_trait::async_trait]
 impl<C, E> Provider<C> for RaceEnv<E>
 where
@@ -213,7 +225,7 @@ where
 
 #[tokio::test]
 async fn review_raw_bytes_merge_cannot_erase_a_concurrent_cell_write() -> anyhow::Result<()> {
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
     let repo = test_repo(&operator, &profile).await;
     let branch = repo.branch("main").open().perform(&operator).await?;
     let entity: Entity = "id:review/raw".parse()?;
@@ -251,7 +263,7 @@ async fn review_raw_bytes_merge_cannot_erase_a_concurrent_cell_write() -> anyhow
 
 #[tokio::test]
 async fn review_each_legacy_branch_converts_its_own_body() -> anyhow::Result<()> {
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
     let repo = test_repo(&operator, &profile).await;
     let main = repo.branch("main").open().perform(&operator).await?;
     let other = repo.branch("other").open().perform(&operator).await?;
@@ -280,7 +292,7 @@ async fn review_each_legacy_branch_converts_its_own_body() -> anyhow::Result<()>
 
 #[tokio::test]
 async fn review_retry_after_lost_reply_does_not_duplicate_text() -> anyhow::Result<()> {
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
     let repo = test_repo(&operator, &profile).await;
     let branch = repo.branch("main").open().perform(&operator).await?;
     let entity: Entity = "id:review/retry".parse()?;
@@ -319,7 +331,7 @@ async fn review_retry_after_lost_reply_does_not_duplicate_text() -> anyhow::Resu
 
 #[tokio::test]
 async fn review_versions_heads_describe_the_complete_saved_version() -> anyhow::Result<()> {
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
     let repo = test_repo(&operator, &profile).await;
     let branch = repo.branch("main").open().perform(&operator).await?;
     let entity: Entity = "id:review/versions".parse()?;
@@ -362,7 +374,7 @@ async fn review_versions_heads_describe_the_complete_saved_version() -> anyhow::
 
 #[tokio::test]
 async fn versions_find_a_save_behind_many_unrelated_commits() -> anyhow::Result<()> {
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
     let repo = test_repo(&operator, &profile).await;
     let branch = repo.branch("main").open().perform(&operator).await?;
     let entity: Entity = "id:review/old-save".parse()?;
@@ -403,7 +415,7 @@ async fn versions_find_a_save_behind_many_unrelated_commits() -> anyhow::Result<
 
 #[tokio::test]
 async fn versions_include_the_complete_heads_of_a_branch_merge() -> anyhow::Result<()> {
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
     let repo = test_repo(&operator, &profile).await;
     let main = repo.branch("main").open().perform(&operator).await?;
     let entity: Entity = "id:review/merge-version".parse()?;

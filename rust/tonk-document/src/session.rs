@@ -24,10 +24,10 @@
 
 use std::collections::BTreeSet;
 
-use dialog_artifacts::{ArtifactSelector, Attribute, Entity, Statement, Update, Value};
+use dialog_artifacts::{ArtifactSelector, Entity, Pick, Relation, Statement, Update, Value};
 use dialog_capability::Subject;
 use dialog_reactor::{CommitProvider, PushProvider, SelectProvider};
-use dialog_repository::{Branch, RepositoryMemoryExt as _, Upstream};
+use dialog_repository::{Branch, Upstream};
 use futures_util::StreamExt as _;
 use thiserror::Error;
 
@@ -139,7 +139,7 @@ pub struct Written {
 /// One `(entity, attribute, value)` statement.
 #[derive(Clone)]
 struct Fact {
-    the: Attribute,
+    the: Relation,
     of: Entity,
     is: Value,
     unique: bool,
@@ -166,9 +166,9 @@ impl Fact {
 impl Statement for Fact {
     fn assert(self, update: &mut impl Update) {
         if self.unique {
-            update.associate_unique(self.the, self.of, self.is);
+            update.associate(self.the, self.of, self.is, Pick::Last);
         } else {
-            update.associate(self.the, self.of, self.is);
+            update.associate(self.the, self.of, self.is, Pick::All);
         }
     }
 
@@ -177,7 +177,7 @@ impl Statement for Fact {
     }
 }
 
-fn attribute(name: &str) -> Result<Attribute, SessionError> {
+fn attribute(name: &str) -> Result<Relation, SessionError> {
     name.parse()
         .map_err(|_| SessionError::Branch(format!("bad attribute {name}")))
 }
@@ -943,19 +943,13 @@ pub async fn sync<Env>(branch: &Branch, entity: &Entity, env: &Env) -> Result<Ou
 where
     Env: DocumentEnv + PushProvider,
 {
-    let Some(Upstream::Remote { remote: name, .. }) = branch.upstream() else {
+    let Some(Upstream::Remote { remote, .. }) = branch.pulls().iter().next().cloned() else {
         return Ok(Outcome::default());
     };
     let subject = branch.subject();
-    let remote = subject
-        .remote(name.clone())
-        .load()
-        .perform(env)
-        .await
-        .map_err(branch_error)?;
     let address = remote.address();
     let local = LocalCell::new(&subject, entity, env);
-    let marker = LocalCell::marker(&subject, &name, entity, env);
+    let marker = LocalCell::marker(&subject, &remote.name(), entity, env);
     let there = RemoteCell::new(
         &Subject::from(address.subject().clone()),
         entity,
@@ -975,14 +969,14 @@ pub async fn is_dirty<Env>(
 where
     Env: DocumentEnv,
 {
-    let Some(Upstream::Remote { remote: name, .. }) = branch.upstream() else {
+    let Some(Upstream::Remote { remote, .. }) = branch.pulls().iter().next().cloned() else {
         return Ok(false);
     };
     let subject = branch.subject();
     let Some((mut document, _)) = cell::load(&LocalCell::new(&subject, entity, env)).await? else {
         return Ok(false);
     };
-    let marker = LocalCell::marker(&subject, &name, entity, env);
+    let marker = LocalCell::marker(&subject, &remote.name(), entity, env);
     let known: Marker = match marker.resolve().await? {
         Some((bytes, _)) => serde_json::from_slice(&bytes).unwrap_or_default(),
         None => Marker::default(),
@@ -1020,38 +1014,56 @@ pub async fn mirror<Env: DocumentEnv>(
             // joins it with the entity's other claims. The text-family
             // format projection lets prose exclude workbook documents.
             overlay.retain_entities(|overlaid| overlaid != entity);
-            overlay.assert(Fact::one(TEXT, entity, text.clone())?);
-            overlay.assert(Fact::one(
-                "io.gozala.prose/format",
-                entity,
-                snapshot
-                    .newer
-                    .clone()
-                    .unwrap_or_else(|| snapshot.format.name().to_string()),
-            )?);
+            overlay
+                .assert(Fact::one(TEXT, entity, text.clone())?)
+                .map_err(branch_error)?;
+            overlay
+                .assert(Fact::one(
+                    "io.gozala.prose/format",
+                    entity,
+                    snapshot
+                        .newer
+                        .clone()
+                        .unwrap_or_else(|| snapshot.format.name().to_string()),
+                )?)
+                .map_err(branch_error)?;
         }
         Content::Table(table) => {
             overlay.retain_entities(|overlaid| !overlaid.to_string().starts_with(&prefix));
             for sheet in &table.sheets {
                 let sheet_entity = mirror_entity(entity, &sheet.id)?;
-                overlay.assert(Fact::one(
-                    SHEET_TABLE,
-                    &sheet_entity,
-                    Value::Entity(entity.clone()),
-                )?);
-                overlay.assert(Fact::one(SHEET_NAME, &sheet_entity, sheet.name.clone())?);
-                overlay.assert(Fact::one(SHEET_ORDER, &sheet_entity, sheet.order.clone())?);
+                overlay
+                    .assert(Fact::one(
+                        SHEET_TABLE,
+                        &sheet_entity,
+                        Value::Entity(entity.clone()),
+                    )?)
+                    .map_err(branch_error)?;
+                overlay
+                    .assert(Fact::one(SHEET_NAME, &sheet_entity, sheet.name.clone())?)
+                    .map_err(branch_error)?;
+                overlay
+                    .assert(Fact::one(SHEET_ORDER, &sheet_entity, sheet.order.clone())?)
+                    .map_err(branch_error)?;
                 for (at, content) in &sheet.cells {
                     let cell_entity = mirror_entity(entity, &format!("{}/{at}", sheet.id))?;
-                    overlay.assert(Fact::one(
-                        CELL_SHEET,
-                        &cell_entity,
-                        Value::Entity(sheet_entity.clone()),
-                    )?);
-                    overlay.assert(Fact::one(CELL_AT, &cell_entity, at.clone())?);
-                    overlay.assert(Fact::one(CELL_CONTENT, &cell_entity, content.clone())?);
+                    overlay
+                        .assert(Fact::one(
+                            CELL_SHEET,
+                            &cell_entity,
+                            Value::Entity(sheet_entity.clone()),
+                        )?)
+                        .map_err(branch_error)?;
+                    overlay
+                        .assert(Fact::one(CELL_AT, &cell_entity, at.clone())?)
+                        .map_err(branch_error)?;
+                    overlay
+                        .assert(Fact::one(CELL_CONTENT, &cell_entity, content.clone())?)
+                        .map_err(branch_error)?;
                     if let Some(style) = sheet.styles.get(at) {
-                        overlay.assert(Fact::one(CELL_STYLE, &cell_entity, style.clone())?);
+                        overlay
+                            .assert(Fact::one(CELL_STYLE, &cell_entity, style.clone())?)
+                            .map_err(branch_error)?;
                     }
                 }
             }
@@ -1063,7 +1075,7 @@ pub async fn mirror<Env: DocumentEnv>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
@@ -1091,8 +1103,9 @@ mod tests {
         the: &str,
         env: &Env,
     ) -> anyhow::Result<Vec<(Entity, Value)>> {
-        use dialog_query::{DynamicAttributeQuery, Output as _, Term, The};
-        let the: The = the.parse().map_err(|_| anyhow::anyhow!("bad attribute"))?;
+        use dialog_query::{DynamicAttributeQuery, Output as _, Term};
+        let the: dialog_query::Relation =
+            the.parse().map_err(|_| anyhow::anyhow!("bad attribute"))?;
         let query = DynamicAttributeQuery::new(
             Term::from(the),
             Term::var("of"),
@@ -1128,7 +1141,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_creates_edits_and_reads_a_document() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let doc = entity("id:prose/doc");
@@ -1190,7 +1203,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_writes_no_pointer_when_the_heads_did_not_change() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let doc = entity("id:prose/doc");
@@ -1216,7 +1229,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_reconciles_a_writer_that_kept_typing() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let doc = entity("id:prose/doc");
@@ -1287,7 +1300,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_isolates_a_document_between_branches() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let main = repo.branch("main").open().perform(&operator).await?;
         let feature = repo.branch("feature").open().perform(&operator).await?;
@@ -1327,7 +1340,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_converts_an_existing_prose_body_once() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let doc = entity("id:prose/doc");
@@ -1361,7 +1374,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_mirrors_a_document_into_the_overlay() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let doc = entity("id:prose/doc");
@@ -1410,7 +1423,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_mirrors_a_workbook_as_sheet_and_cell_facts() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let book = entity("id:table/book");
@@ -1468,7 +1481,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_adopts_claims_era_documents_in_one_sweep() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let prose = entity("id:prose/old");
@@ -1524,7 +1537,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_merges_a_document_when_dialog_merges_two_branches() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let main = repo.branch("main").open().perform(&operator).await?;
         let doc = entity("id:prose/doc");
@@ -1624,7 +1637,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_reads_a_past_version_without_moving_the_branch() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let doc = entity("id:prose/doc");
@@ -1669,7 +1682,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_refuses_an_edit_past_the_size_limit() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let doc = entity("id:prose/doc");
@@ -1723,7 +1736,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_takes_bytes_from_code_that_bundles_its_own_automerge() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let doc = entity("id:prose/doc");
@@ -1783,7 +1796,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_opens_a_newer_format_read_only() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let doc = entity("id:prose/doc");

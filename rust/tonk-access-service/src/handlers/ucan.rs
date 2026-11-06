@@ -38,15 +38,11 @@ struct PresignFailure {
 impl PresignFailure {
     fn authorization(refusal: Refusal) -> Self {
         let status = refusal.status();
+        let failure_kind = crate::observability::AccessFailureKind::of_authorization(&refusal);
         Self {
             refusal,
             operation: crate::observability::AccessOperation::Authorization,
-            failure_kind: match status {
-                401 | 403 => crate::observability::AccessFailureKind::AccessDenied,
-                503 => crate::observability::AccessFailureKind::Unavailable,
-                500..=599 => crate::observability::AccessFailureKind::Internal,
-                _ => crate::observability::AccessFailureKind::Invalid,
-            },
+            failure_kind,
             retryable: status >= 500,
             site: crate::observability::AccessSite::Ucan,
         }
@@ -97,7 +93,7 @@ fn with_cors_headers(response: Response) -> Response {
     );
     let _ = headers.set(
         "Access-Control-Expose-Headers",
-        "Content-Type, Content-Length, Content-Range, ETag, Server-Timing, UCAN-Command, UCAN-Subject, UCAN-Arguments",
+        "Content-Type, Content-Length, Content-Range, ETag, Retry-After, Server-Timing, UCAN-Command, UCAN-Subject, UCAN-Arguments",
     );
     response.with_headers(headers)
 }
@@ -234,10 +230,23 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
             .map(with_cors_headers);
     }
     #[cfg(target_arch = "wasm32")]
+    if crate::invitation::is_invitation(&body_bytes) {
+        return crate::handlers::invitation::handle(&body_bytes, &req, &env)
+            .await
+            .map(with_cors_headers);
+    }
+    #[cfg(target_arch = "wasm32")]
     if registration_command(&body_bytes).is_some() {
         return handle_registration(&body_bytes, &req, &env)
             .await
             .map(with_cors_headers);
+    }
+
+    // A ticket claim carries no proof, so it never reaches the chain walk:
+    // it is answered here, with the ticket itself.
+    #[cfg(target_arch = "wasm32")]
+    if tonk_account::ticket::is_claim(&body_bytes) {
+        return serve_claim(&body_bytes, &env).await.map(with_cors_headers);
     }
 
     let origin = match origin(&req) {
@@ -246,6 +255,56 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
     };
     let served = presign(&body_bytes, &origin, &env).await;
     answer(served, &body_bytes, &env, &ctx).map(with_cors_headers)
+}
+
+/// Answer a `/use/get/ticket/claim` with the ticket the space it names
+/// keeps for its subject (see [`tonk_account::ticket`]), or 404 when it
+/// keeps none. The claim is verified as any invocation is, chain and
+/// revocations included, so the holder's delegates claim for it; the
+/// space, not the holder, is screened, since that is what is served.
+#[cfg(target_arch = "wasm32")]
+async fn serve_claim(body_bytes: &[u8], env: &Env) -> Result<Response> {
+    use crate::revocation::{checker::IndexedRevocations, index::kv::KvRevocationIndex};
+
+    let container = match dialog_ucan_core::Container::from_bytes(body_bytes) {
+        Ok(container) => container,
+        Err(error) => {
+            return Refusal::Authorization(AuthorizeError::Malformed {
+                detail: error.to_string(),
+            })
+            .to_response();
+        }
+    };
+    let revocations = match env.kv("REVOCATIONS_KV") {
+        Ok(store) => IndexedRevocations(KvRevocationIndex::new(store)),
+        Err(_) => return unavailable().to_response(),
+    };
+    let claim = match dialog_remote_ucan_s3::verify_invocation(
+        container,
+        shared_resolver().as_ref(),
+        &revocations,
+    )
+    .await
+    .and_then(|chain| tonk_account::ticket::claimed(&chain))
+    {
+        Ok(claim) => claim,
+        Err(reason) => return Refusal::Authorization(reason).to_response(),
+    };
+    if let Err(failure) = screen_subject(claim.space.as_ref(), env).await {
+        failure.emit();
+        return failure.refusal.to_response();
+    }
+    let bucket = match env.bucket("BUCKET") {
+        Ok(bucket) => bucket,
+        Err(error) => {
+            return Refusal::unclassified(format!("Missing BUCKET: {error}")).to_response();
+        }
+    };
+    match crate::objects::read(&bucket, &claim.object_key()).await {
+        Ok(Some((bytes, _))) => Response::from_bytes(bytes),
+        Ok(None) => Ok(Response::empty()?.with_status(404)),
+        Err(error) => Refusal::unclassified(error).to_response(),
+    }
 }
 
 /// Serve an invocation that arrived in `Authorization`: verify it and
@@ -349,20 +408,47 @@ fn record_invocation(
     env: &Env,
     ctx: &Context,
 ) {
+    if let Some(write) = metering(body_bytes, outcome, reason, bytes, env) {
+        ctx.wait_until(write);
+    }
+}
+
+/// The write that meters the invocation `body_bytes` carries, to run
+/// after the answer is sent: under a request's `Context`, or a Durable
+/// Object's state for a frame of a socket. `None` when there is nothing
+/// to record.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn metering(
+    body_bytes: &[u8],
+    outcome: &'static str,
+    reason: Option<String>,
+    bytes: u64,
+    env: &Env,
+) -> Option<impl std::future::Future<Output = ()> + 'static> {
     use crate::store::ingest::{D1Ingest, IngestStore};
 
     let now = Date::now().as_millis() / 1_000;
-    let Some(record) = crate::metering::collect(body_bytes, outcome, reason, bytes, now) else {
-        return;
-    };
+    let record = crate::metering::collect(body_bytes, outcome, reason, bytes, now)?;
     match env.d1("INGEST") {
-        Ok(database) => ctx.wait_until(async move {
+        Ok(database) => Some(async move {
             if let Err(err) = D1Ingest::new(database).record(&record).await {
                 console_error!("metering write failed: {err}");
             }
         }),
-        Err(err) => console_error!("metering skipped, no INGEST binding: {err}"),
+        Err(err) => {
+            console_error!("metering skipped, no INGEST binding: {err}");
+            None
+        }
     }
+}
+
+/// Screen the subject of the invocation `body_bytes` carries, as a
+/// request is screened before it is served: a socket's frame is too.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn screen(body_bytes: &[u8], env: &Env) -> std::result::Result<(), Refusal> {
+    screen_provisioning(body_bytes, env)
+        .await
+        .map_err(|failure| failure.refusal)
 }
 
 /// Authorize the container and answer the signed permit, together
@@ -463,6 +549,15 @@ async fn perform(
     screen_provisioning(container_bytes, env).await?;
     let screened = Date::now().as_millis();
     let described = crate::describe::describe(verified.chain());
+    // Who invoked, by the end of its DID: enough to tell two clients'
+    // requests apart in a log.
+    let invoker = {
+        let did = verified.chain().issuer().to_string();
+        did[did.len().saturating_sub(6)..].to_string()
+    };
+    // A cell write is reported to its space's watches once it lands.
+    let written = crate::socket::cell_written(verified.chain())
+        .map(|(space, cell)| (verified.subject().to_string(), space, cell));
 
     // A write's bytes are the body, metered as declared; the layer
     // reads them as they arrive.
@@ -483,6 +578,11 @@ async fn perform(
         Answer::Performed(answer) => answer,
     };
     let stored = Date::now().as_millis();
+    if let Some((subject, space, cell)) = written
+        && (200..300).contains(&answer.status)
+    {
+        ctx.wait_until(crate::live::changed(env.clone(), subject, space, cell));
+    }
     let cache = access.provider().outcome();
     let fills = access.provider().take_fills();
     if !fills.is_empty() {
@@ -502,19 +602,35 @@ async fn perform(
     if let Some(version) = &answer.version {
         let _ = headers.set("ETag", &format!("\"{version}\""));
     }
+    if let Some(seconds) = answer.retry_after {
+        let _ = headers.set("Retry-After", &seconds.to_string());
+    }
     for (name, value) in &described {
         let _ = headers.set(name, value);
     }
+    let total = Date::now().as_millis().saturating_sub(started);
     let _ = headers.set(
         "Server-Timing",
         &format!(
-            "authorize;dur={}, screen;dur={}, store;dur={}, total;dur={}, cache;desc={}",
+            "authorize;dur={}, screen;dur={}, store;dur={}, total;dur={total}, cache;desc={}",
             authorized.saturating_sub(started),
             screened.saturating_sub(authorized),
             stored.saturating_sub(screened),
-            Date::now().as_millis().saturating_sub(started),
             cache.as_str()
         ),
+    );
+    // The same breakdown for a log, which sees neither the request's
+    // credential nor the response's headers.
+    let [(_, command), _, (_, arguments)] = &described;
+    console_log!(
+        "{command} by …{invoker}: {} in {total}ms (authorize {}ms, screen {}ms, store {}ms, \
+         cache {}, {bytes} bytes) {}",
+        answer.status,
+        authorized.saturating_sub(started),
+        screened.saturating_sub(authorized),
+        stored.saturating_sub(screened),
+        cache.as_str(),
+        arguments.chars().take(160).collect::<String>(),
     );
     let response = match answer.body {
         Content::Bytes(body) => Response::from_bytes(body),
@@ -670,7 +786,6 @@ async fn screen_provisioning(
     body_bytes: &[u8],
     env: &Env,
 ) -> std::result::Result<(), PresignFailure> {
-    use crate::provisioning::cache::{self, CachedVerdict};
     use crate::provisioning::container_subject;
 
     let Some(subject) = container_subject(body_bytes) else {
@@ -684,6 +799,16 @@ async fn screen_provisioning(
             crate::observability::AccessSite::Provisioning,
         ));
     };
+    screen_subject(&subject, env).await
+}
+
+/// Screen `subject` against the control store, through the isolate's
+/// cache of recent verdicts.
+#[cfg(target_arch = "wasm32")]
+async fn screen_subject(subject: &str, env: &Env) -> std::result::Result<(), PresignFailure> {
+    use crate::provisioning::cache::{self, CachedVerdict};
+
+    let subject = subject.to_owned();
     let now = Date::now().as_millis() / 1_000;
 
     if let Some(cached) = cache::isolate_lookup(&subject, now) {
@@ -839,7 +964,7 @@ thread_local! {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn shared_resolver() -> std::sync::Arc<dialog_remote_ucan_s3::DefaultResolver> {
+pub(crate) fn shared_resolver() -> std::sync::Arc<dialog_remote_ucan_s3::DefaultResolver> {
     RESOLVER.with(|cached| {
         cached
             .get_or_init(|| {
@@ -868,10 +993,8 @@ pub(crate) fn permit_key(env: &Env) -> std::result::Result<PermitKey, Refusal> {
         if let Some(key) = cached.get() {
             return Ok(key.clone());
         }
-        let seed = env
-            .secret("SERVICE_SECRET_KEY")
-            .map_err(|e| Refusal::unclassified(format!("Missing SERVICE_SECRET_KEY: {e}")))?
-            .to_string();
+        let seed = crate::secret::secret(env, "SERVICE_SECRET_KEY")
+            .map_err(|e| Refusal::unclassified(format!("Missing SERVICE_SECRET_KEY: {e}")))?;
         let key = PermitKey::derive(&seed).map_err(Refusal::unclassified)?;
         let _ = cached.set(key.clone());
         Ok(key)

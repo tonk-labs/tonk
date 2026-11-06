@@ -34,11 +34,42 @@
     if (devices) devices.innerHTML = '<div class="srowd"><b class="lft">Safari on this Mac<span class="dev-self"> · this device</span></b><span class="dev-r"><span class="dev-when">linked 12 Aug 2026</span></span></div><div class="srowd"><b class="lft">Alex’s MacBook CLI</b><span class="dev-r"><span class="dev-when">linked 26 Aug 2026</span><button class="cta" type="button">remove access</button></span></div>';
   }
 
+  function yamlBlock(source, after, from, through) {
+    const scope = source.slice(source.indexOf(after));
+    const start = scope.indexOf(from);
+    const end = scope.indexOf(through, start);
+    if (start < 0 || end < 0) throw new Error(`account fixture source marker is missing: ${from}`);
+    return scope.slice(start, end + through.length).replace(/^ {6}/gm, "");
+  }
+
+  function accountMarkup(source) {
+    const shell = yamlBlock(source, "this: tonk:settings", "              <account-settings>", "</account-settings>");
+    const registered = yamlBlock(source, "this: tonk:account/registered", "      <div data-account-registered>", "</tonk-dialog>\n      </div>")
+      .replace("{email}", "alex@example.com");
+    const editable = yamlBlock(source, "this: tonk:account/name", "<input class=\"sname\"", "profile/rename>")
+      .replace("{name}", "Alex Rivera");
+    const passkey = yamlBlock(source, "this: tonk:account/passkey", "<div class=\"srowd\"", "</div>")
+      .replace("{this}", "fixture-passkey")
+      .replace("{created-on}", "1Password")
+      .replace("{created-at}", "created 12 Aug 2026");
+    return shell
+      .replace(/<tonk-display model="tonk:account\/registered" view="settings"><\/tonk-display>/, registered)
+      .replace(/<tonk-display model="tonk:account\/name" view="editable"><\/tonk-display>/, editable)
+      .replace(/<tonk-display model="tonk:account\/passkey"><\/tonk-display>/, passkey)
+      .replace(/<tonk-display model="tonk:space\/owned" view="deletion"><\/tonk-display>/, "")
+      .replace(/<tonk-display model="state:ceremony" view="settings"><\/tonk-display>/, "");
+  }
+
   async function accountFixture() {
-    const markup = await fetch("../../../rust/tonk-workspace/src/ui_account_settings.html")
-      .then((response) => response.text());
+    const [profile, css] = await Promise.all([
+      fetch("../../../rust/tonk-core/assets/library/profile.yaml").then((response) => response.text()),
+      fetch("../../../rust/tonk-ui/styles.css").then((response) => response.text()),
+    ]);
+    const style = document.createElement("style");
+    style.textContent = css;
+    document.head.append(style);
     const host = document.createElement("ui-account-settings");
-    host.innerHTML = markup;
+    host.innerHTML = accountMarkup(profile);
     stage.append(host);
     populateSettings(host);
     if (screen === "WEB-10") {

@@ -53,8 +53,11 @@ pub struct Enroll {
     pub sealed: Cid,
 }
 
-impl Effect for Enroll {
+impl Attenuation for Enroll {
     type Of = Customer;
+}
+
+impl Effect for Enroll {
     type Output = Result<Receipt, RegistrationError>;
 }
 
@@ -84,8 +87,11 @@ pub struct Activate {
     pub terms: String,
 }
 
-impl Effect for Activate {
+impl Attenuation for Activate {
     type Of = Customer;
+}
+
+impl Effect for Activate {
     type Output = Result<Receipt, RegistrationError>;
 }
 
@@ -120,8 +126,11 @@ pub struct Add {
     pub kind: Option<String>,
 }
 
-impl Effect for Add {
+impl Attenuation for Add {
     type Of = Provider;
+}
+
+impl Effect for Add {
     type Output = Result<ConsumerReceipt, RegistrationError>;
 }
 
@@ -137,8 +146,11 @@ pub struct Remove {
     pub consumer: Did,
 }
 
-impl Effect for Remove {
+impl Attenuation for Remove {
     type Of = Provider;
+}
+
+impl Effect for Remove {
     type Output = Result<(), RegistrationError>;
 }
 
@@ -177,8 +189,11 @@ pub struct Revoke {
     pub path: Vec<Cid>,
 }
 
-impl Effect for Revoke {
+impl Attenuation for Revoke {
     type Of = Ucan;
+}
+
+impl Effect for Revoke {
     type Output = Result<RevokeReceipt, RegistrationError>;
 }
 
@@ -210,8 +225,11 @@ impl Attenuation for Consumer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Attenuate)]
 pub struct Provision;
 
-impl Effect for Provision {
+impl Attenuation for Provision {
     type Of = Consumer;
+}
+
+impl Effect for Provision {
     type Output = ();
 }
 
@@ -234,8 +252,11 @@ pub struct Resend {
     pub account: Did,
 }
 
-impl Effect for Resend {
+impl Attenuation for Resend {
     type Of = Customer;
+}
+
+impl Effect for Resend {
     type Output = ();
 }
 

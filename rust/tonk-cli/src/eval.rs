@@ -1,12 +1,12 @@
-//! `tonk eval` — read a notation document, evaluate it against
-//! the local site, and render the response.
+//! `tonk eval` — read a notation document, or several as one commit,
+//! evaluate it against the local site, and render the response.
 
 use std::path::PathBuf;
 
 use thiserror::Error;
 use tokio::io::AsyncReadExt as _;
-use tonk_evaluator::evaluate::{EvaluateError, SyntaxEvaluateExt};
-use tonk_notation::{Parsed, Syntax, parse};
+use tonk_evaluator::evaluate::{CommitSummary, EvaluateError, SyntaxEvaluateExt};
+use tonk_notation::{INLINE_LOCATION, Load, Parsed, Syntax, Url, expand, parse_at};
 
 use crate::ExitCode;
 use crate::authoring::build_home_recipe;
@@ -24,6 +24,10 @@ pub enum Source {
     File(PathBuf),
     /// Piped stdin or `-`. Diagnostics are labelled `<stdin>`.
     Stdin,
+    /// The standard library's `core.yaml`, compiled into this binary.
+    /// Its includes resolve to the files bundled with it (see
+    /// [`tonk_library`]).
+    Library(String),
 }
 
 impl Source {
@@ -34,6 +38,26 @@ impl Source {
             Source::Inline(_) => "<inline>".to_string(),
             Source::File(path) => path.display().to_string(),
             Source::Stdin => "<stdin>".to_string(),
+            Source::Library(_) => "<standard library>".to_string(),
+        }
+    }
+
+    /// Where the document lives, for resolving its `!include`s. A
+    /// file is its absolute `file:` URI; inline text and stdin have
+    /// no location, so they get [`INLINE_LOCATION`] and any include
+    /// in them is refused.
+    fn location(&self) -> Result<Url, EvalError> {
+        match self {
+            Source::File(path) => std::path::absolute(path)
+                .ok()
+                .and_then(|path| Url::from_file_path(path).ok())
+                .ok_or_else(|| {
+                    EvalError::Io(format!("cannot form a file URI for {}", path.display()))
+                }),
+            Source::Inline(_) | Source::Stdin => {
+                Ok(Url::parse(INLINE_LOCATION).expect("INLINE_LOCATION is a valid URI"))
+            }
+            Source::Library(_) => Ok(tonk_library::location("core.yaml")),
         }
     }
 
@@ -41,7 +65,7 @@ impl Source {
     /// both go through tokio.
     async fn read(&self) -> Result<String, EvalError> {
         match self {
-            Source::Inline(text) => Ok(text.clone()),
+            Source::Inline(text) | Source::Library(text) => Ok(text.clone()),
             Source::File(path) => tokio::fs::read_to_string(path)
                 .await
                 .map_err(|e| EvalError::Io(format!("failed to read {}: {e}", path.display()))),
@@ -141,9 +165,26 @@ pub async fn run_against_site(
     source: Source,
     options: Options,
 ) -> Result<Outcome, EvalError> {
-    let label = source.label();
-    let mut text = source.read().await?;
-    if let Some(model) = &options.home {
+    run_documents(site, vec![source], options).await
+}
+
+/// Evaluate `sources` in the order given into one transaction and one
+/// commit: a later document sees what an earlier one declared, and a
+/// rejected document leaves nothing committed. The response covers all
+/// of them; `--home` applies after the last.
+pub async fn run_documents(
+    site: &TonkSite,
+    sources: Vec<Source>,
+    options: Options,
+) -> Result<Outcome, EvalError> {
+    let several = sources.len() > 1;
+    let mut documents = Vec::new();
+    for source in sources {
+        documents.push((source.label(), source.location()?, source.read().await?));
+    }
+    if let Some(model) = &options.home
+        && let Some((_, _, text)) = documents.last_mut()
+    {
         text.push('\n');
         // Keep validation inside this same analyzed document: an empty query
         // binds no variables and writes nothing, but forces ordinary concept
@@ -153,7 +194,6 @@ pub async fn run_against_site(
         text.push_str(":\n\n");
         text.push_str(&build_home_recipe(std::slice::from_ref(model)));
     }
-    let syntax = parse_or_diagnose(&label, &text)?;
 
     let session = site
         .branch()
@@ -166,33 +206,61 @@ pub async fn run_against_site(
     crate::document::mirror_all(site, branch).await;
 
     let revision_before = branch.revision();
-    let evaluated = syntax
-        .evaluate(branch.transaction())
-        .perform(&site.operator)
-        .await
-        .map_err(map_evaluate_error)?;
 
-    // Compute the post-evaluation match view by re-running the
-    // analyzer's queries against the txn overlay. The overlay
-    // reflects every applied write plus the induce pass, so this
-    // is the same answer a post-commit branch query would give —
-    // computed *before* commit so we don't need the branch after
-    // the txn is consumed.
-    let matches_after = evaluated
-        .matches_after(&site.operator)
-        .await
-        .map_err(map_evaluate_error)?;
+    let mut txn = branch.transaction();
+    let mut writes = false;
+    let mut transients = dialog_artifacts::Changes::new();
+    let mut matches_before = Vec::new();
+    let mut matches_after = Vec::new();
+    let mut commits = CommitSummary::default();
+    for (label, location, text) in documents {
+        // A parse error names its document at every diagnostic; the
+        // others need the name when there is more than one document.
+        let named = |error: EvalError| match error {
+            EvalError::Analyze(message) if several => {
+                EvalError::Analyze(format!("{label}: {message}"))
+            }
+            EvalError::Commit(message) if several => {
+                EvalError::Commit(format!("{label}: {message}"))
+            }
+            other => other,
+        };
+        let mut syntax = parse_or_diagnose(&label, location, &text)?;
+        let blobs = expand_includes(&label, &mut syntax).await?;
+        let mut evaluated = syntax
+            .evaluate(txn)
+            .perform(&site.operator)
+            .await
+            .map_err(|e| named(map_evaluate_error(e)))?;
+        for blob in &blobs {
+            evaluated.txn = crate::blob::describe(evaluated.txn, blob);
+        }
+
+        // Compute the post-evaluation match view by re-running the
+        // analyzer's queries against the txn overlay. The overlay
+        // reflects every applied write plus the induce pass, so this
+        // is the same answer a post-commit branch query would give —
+        // computed *before* commit so we don't need the branch after
+        // the txn is consumed.
+        matches_after.extend(
+            evaluated
+                .matches_after(&site.operator)
+                .await
+                .map_err(|e| named(map_evaluate_error(e)))?,
+        );
+        transients.assert(evaluated.transients);
+        writes |= evaluated.analysis.analysis.has_statements();
+        matches_before.extend(evaluated.matches);
+        commits.claims += evaluated.commits.claims;
+        commits.entities.extend(evaluated.commits.entities);
+        txn = evaluated.txn;
+    }
 
     // Commit only a mutating document that wasn't run as a dry
     // run. Pure-query docs and `--dry-run` short-circuit so we
     // don't pay for (or apply) a commit.
-    let (response, committed) = if !options.dry_run && evaluated.analysis.analysis.has_statements()
-    {
-        // The commit sweeps transients, so the commands the document
-        // dispatched are read off the evaluation first.
-        let transients = evaluated.transients.clone();
-        let revision_after = evaluated
-            .txn
+    let (response, committed) = if !options.dry_run && writes {
+        let revision_after = txn
             .commit()
             .publish()
             .perform(&site.operator)
@@ -205,6 +273,9 @@ pub async fn run_against_site(
         for refusal in crate::document::dispatch(site, branch, &transients).await {
             eprintln!("warning: document command refused, nothing changed: {refusal}");
         }
+        // A document command may have committed its new heads after the
+        // notation transaction; the receipt must name the saved result.
+        let revision_after = branch.revision().unwrap_or(revision_after);
         // Re-poll the branch's subscriptions so the reactor's
         // commit contract holds. Tonk opens none, so this is a
         // no-op today, kept for parity with the worker's path.
@@ -213,9 +284,9 @@ pub async fn run_against_site(
             EvaluateResponse {
                 revision_before,
                 revision_after: Some(revision_after),
-                matches_before: evaluated.matches,
+                matches_before,
                 matches_after,
-                commits: evaluated.commits,
+                commits,
             },
             true,
         )
@@ -225,14 +296,13 @@ pub async fn run_against_site(
         // landed. Zero `claims` so the summary reflects what *did*
         // commit (nothing), not what *would* have — same contract
         // the worker's `transact=false` preview honors.
-        let mut commits = evaluated.commits;
         commits.claims = 0;
         (
             EvaluateResponse {
                 revision_before: revision_before.clone(),
                 revision_after: revision_before,
-                matches_before: evaluated.matches.clone(),
-                matches_after: evaluated.matches,
+                matches_before: matches_before.clone(),
+                matches_after: matches_before,
                 commits,
             },
             false,
@@ -249,26 +319,91 @@ pub async fn run_against_site(
     })
 }
 
+/// Replace every `!include` in `syntax` with what it names. Returns the
+/// `!include/asset` content, which the caller asserts on its transaction
+/// with [`crate::blob::describe`].
+async fn expand_includes(
+    label: &str,
+    syntax: &mut Syntax,
+) -> Result<Vec<crate::blob::Included>, EvalError> {
+    let files = Files {
+        blobs: std::sync::Mutex::default(),
+    };
+    let unexpanded = expand(syntax, &files).await;
+    if !unexpanded.is_empty() {
+        return Err(EvalError::Parse(format_diagnostics(label, &unexpanded)));
+    }
+    Ok(files.blobs.into_inner().unwrap_or_else(|e| e.into_inner()))
+}
+
 /// Drive the parser and project diagnostics onto either a clean
 /// [`Syntax`] or a parse error formatted for stderr.
-fn parse_or_diagnose(source: &str, text: &str) -> Result<Syntax, EvalError> {
-    let parsed = parse(text);
+fn parse_or_diagnose(source: &str, location: Url, text: &str) -> Result<Syntax, EvalError> {
+    let parsed = parse_at(location, text);
     surface_parse_diagnostics(source, parsed)
 }
 
 fn surface_parse_diagnostics(source: &str, parsed: Parsed) -> Result<Syntax, EvalError> {
     if !parsed.diagnostics.is_empty() {
-        let messages = parsed
-            .diagnostics
-            .iter()
-            .map(|d| format_diagnostic(source, d))
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(EvalError::Parse(messages));
+        return Err(EvalError::Parse(format_diagnostics(
+            source,
+            &parsed.diagnostics,
+        )));
     }
     parsed
         .syntax
         .ok_or_else(|| EvalError::Empty(format!("{source}: empty document")))
+}
+
+fn format_diagnostics(source: &str, diagnostics: &[lsp_types::Diagnostic]) -> String {
+    diagnostics
+        .iter()
+        .map(|d| format_diagnostic(source, d))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Loads `!include`d resources: `file:` URIs from the local
+/// filesystem, and the bundled standard library's includes from the
+/// binary. An include that names anything else is reported rather than
+/// fetched.
+///
+/// `!include/asset` content is remembered in `blobs` rather than stored:
+/// the caller asserts each one on the document's transaction, so its
+/// bytes are stored by the commit that refers to them, and a dry run
+/// stores nothing.
+struct Files {
+    blobs: std::sync::Mutex<Vec<crate::blob::Included>>,
+}
+
+impl Load for Files {
+    async fn load(&self, uri: &Url) -> Result<Vec<u8>, String> {
+        match uri.scheme() {
+            "file" => {
+                let path = uri
+                    .to_file_path()
+                    .map_err(|()| "not a local file path".to_owned())?;
+                tokio::fs::read(&path).await.map_err(|e| e.to_string())
+            }
+            _ if uri.as_str().starts_with(tonk_library::ROOT) => {
+                tonk_library::Bundled.load(uri).await
+            }
+            scheme => Err(format!(
+                "only `file:` resources can be included here, not `{scheme}:`"
+            )),
+        }
+    }
+
+    async fn store(&self, uri: &Url, bytes: Vec<u8>) -> Result<String, String> {
+        let path = std::path::PathBuf::from(uri.path());
+        let included = crate::blob::Included::new(&path, bytes).map_err(|e| e.to_string())?;
+        let reference = included.entity().to_string();
+        self.blobs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(included);
+        Ok(reference)
+    }
 }
 
 /// Format an LSP diagnostic as `source:line:col: message`. LSP

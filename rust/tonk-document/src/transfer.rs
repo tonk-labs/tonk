@@ -163,7 +163,7 @@ pub async fn restore<Env: DocumentEnv>(
 mod tests {
     use super::*;
     use crate::engine::{Edit, Stamp};
-    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use futures_util::stream;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -188,7 +188,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_keeps_a_document_across_an_export_and_an_import() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let stamp = Stamp {
             author: None,
             time: 1,

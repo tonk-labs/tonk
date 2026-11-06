@@ -65,21 +65,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alloc-no-stdlib"
-version = "2.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc7bb162ec39d46ab1ca8c77bf72e890535becd1751bb45f64c597edb4c8c6b3"
-
-[[package]]
-name = "alloc-stdlib"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e76a019e91224d279006ff972f1e984179a6e9feb050adba6ce8274aef23195"
-dependencies = [
- "alloc-no-stdlib",
-]
-
-[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -196,25 +181,25 @@ checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
 name = "async-trait"
-version = "0.1.89"
+version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
+checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 3.0.9",
 ]
 
 [[package]]
 name = "atoi"
-version = "2.0.0"
+version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f28d99ec8bfea296261ca1af174f24225171fea9664ba9003cbebee704810528"
+checksum = "d12c37257553c19e9aee6cba77814fdc9e07844abfc8b3a2c377cd920ee5a993"
 dependencies = [
  "num-traits",
 ]
@@ -234,7 +219,7 @@ dependencies = [
  "derive_utils",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -259,7 +244,7 @@ dependencies = [
  "rand 0.10.2",
  "rustc-hash",
  "serde",
- "sha2 0.11.0-rc.5",
+ "sha2 0.11.1",
  "smol_str",
  "thiserror 2.0.18",
  "tinyvec",
@@ -349,17 +334,7 @@ checksum = "7aa268c23bfbbd2c4363b9cd302a4f504fb2a9dfe7e3451d66f35dd392e20aca"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
-]
-
-[[package]]
-name = "axum-wasm-macros"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89e6832759c0999d93009d56f931e8bb454b78d2a73f999fe9c8caa21f7e7b22"
-dependencies = [
- "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -373,6 +348,12 @@ name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c7f02d4ea65f2c1853089ffd8d2787bdbc63de2f0d29dedbcf8ccdfa0ccd4cf"
+
+[[package]]
+name = "base16ct"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd307490d624467aa6f74b0eabb77633d1f758a7b25f12bceb0b22e08d9726f6"
 
 [[package]]
 name = "base256emoji"
@@ -417,6 +398,15 @@ name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
+
+[[package]]
+name = "bijoux"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0df3f02c7ce18790c3c2f547305fa61c8c9a73425d681bae7f978ccbf5abbc4"
+dependencies = [
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "bitflags"
@@ -482,27 +472,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "brotli"
-version = "8.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cc91aac060a7a1e25823bdccbfb6af1875b88f17c6daac97894eed8207166b3"
-dependencies = [
- "alloc-no-stdlib",
- "alloc-stdlib",
- "brotli-decompressor",
-]
-
-[[package]]
-name = "brotli-decompressor"
-version = "5.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a32acac15fe1967bc3986b2a6347dffc965602354ea6f450ad07e8bfd253583"
-dependencies = [
- "alloc-no-stdlib",
- "alloc-stdlib",
-]
-
-[[package]]
 name = "bs58"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -537,7 +506,7 @@ checksum = "89385e82b5d1821d2219e0b095efa2cc1f246cbf99080f3be46a1a85c0d392d9"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -673,7 +642,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -778,6 +747,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "convert_case"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -866,6 +844,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
 dependencies = [
  "hybrid-array",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -921,8 +900,26 @@ dependencies = [
  "cpufeatures 0.2.17",
  "curve25519-dalek-derive",
  "digest 0.10.7",
- "fiat-crypto",
+ "fiat-crypto 0.2.9",
  "rustc_version",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "curve25519-dalek"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5eed333089e2e1c1ac8c6c0398e5e2497b4c9926ca6d0365ed1e099afa5bc23"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.0",
+ "curve25519-dalek-derive",
+ "digest 0.11.3",
+ "fiat-crypto 0.3.0",
+ "rand_core 0.10.1",
+ "rustc_version",
+ "serde",
  "subtle",
  "zeroize",
 ]
@@ -935,7 +932,7 @@ checksum = "f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -986,7 +983,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -1007,6 +1004,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 
 [[package]]
+name = "derive_more"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d751e9e49156b02b44f9c1815bcb94b984cdcc4396ecc32521c739452808b134"
+dependencies = [
+ "derive_more-impl",
+]
+
+[[package]]
+name = "derive_more-impl"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
+dependencies = [
+ "convert_case 0.10.0",
+ "proc-macro2",
+ "quote",
+ "rustc_version",
+ "syn 2.0.118",
+ "unicode-xid",
+]
+
+[[package]]
 name = "derive_utils"
 version = "0.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1014,13 +1034,13 @@ checksum = "362f47930db19fe7735f527e6595e4900316b893ebf6d48ad3d31be928d57dd6"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
 name = "dialog-artifacts"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -1031,13 +1051,15 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-effects",
+ "dialog-number",
  "dialog-search-tree",
  "dialog-storage",
- "ed25519-dalek",
+ "ed25519-dalek 2.2.0",
  "futures-util",
  "getrandom 0.2.17",
  "leb128",
  "memchr",
+ "merkle-reference",
  "parking_lot",
  "rand 0.8.7",
  "rand_chacha 0.3.1",
@@ -1053,37 +1075,37 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
 ]
 
 [[package]]
 name = "dialog-capability"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "async-trait",
  "base58",
  "blake3",
- "convert_case",
+ "convert_case 0.6.0",
  "dialog-common",
  "dialog-macros",
  "dialog-varsig",
- "ed25519-dalek",
+ "ed25519-dalek 2.2.0",
  "rkyv",
  "serde",
  "serde-big-array",
  "serde_bytes",
  "serde_ipld_dagcbor",
- "signature",
+ "signature 2.2.0",
  "thiserror 2.0.18",
  "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
 name = "dialog-common"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1093,6 +1115,8 @@ dependencies = [
  "dialog-macros",
  "futures-util",
  "getrandom 0.2.17",
+ "getrandom 0.4.3",
+ "js-sys",
  "parking_lot",
  "rand 0.8.7",
  "rkyv",
@@ -1102,6 +1126,8 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",
+ "wasip3",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
@@ -1111,8 +1137,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-credentials"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1120,14 +1146,14 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-varsig",
- "ed25519-dalek",
+ "ed25519-dalek 2.2.0",
  "getrandom 0.2.17",
  "hkdf",
  "js-sys",
  "serde",
  "serde_bytes",
  "sha2 0.10.9",
- "signature",
+ "signature 2.2.0",
  "thiserror 2.0.18",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -1137,8 +1163,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-csv"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "async-trait",
  "base58",
@@ -1152,8 +1178,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-did-web"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "async-trait",
  "base58",
@@ -1167,7 +1193,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "signature",
+ "signature 2.2.0",
  "thiserror 2.0.18",
  "wasm-bindgen",
  "web-time",
@@ -1175,8 +1201,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-effects"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "async-trait",
  "base58",
@@ -1190,8 +1216,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-identity"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1208,25 +1234,26 @@ dependencies = [
 
 [[package]]
 name = "dialog-macros"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "blake3",
- "convert_case",
+ "convert_case 0.6.0",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
 name = "dialog-network"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "async-trait",
  "dialog-capability",
  "dialog-common",
  "dialog-effects",
+ "dialog-peer-iroh",
  "dialog-remote-fs",
  "dialog-remote-s3",
  "dialog-remote-ucan",
@@ -1235,9 +1262,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "dialog-operator"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+name = "dialog-number"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
+dependencies = [
+ "zmij",
+]
+
+[[package]]
+name = "dialog-peer"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1247,24 +1282,27 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-credentials",
+ "dialog-did-web",
  "dialog-effects",
  "dialog-identity",
  "dialog-network",
+ "dialog-query",
  "dialog-repository",
  "dialog-storage",
  "dialog-ucan",
  "dialog-ucan-core",
  "dialog-varsig",
  "dirs 5.0.1",
- "ed25519-dalek",
+ "ed25519-dalek 2.2.0",
  "getrandom 0.2.17",
+ "ipld-core",
  "parking_lot",
  "rand 0.8.7",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "serde",
  "serde_ipld_dagcbor",
- "signature",
+ "signature 2.2.0",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1273,9 +1311,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "dialog-peer-iroh"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
+dependencies = [
+ "async-trait",
+ "base58",
+ "blake3",
+ "dialog-capability",
+ "dialog-common",
+ "dialog-did-web",
+ "dialog-effects",
+ "dialog-ucan",
+ "dialog-ucan-core",
+ "dialog-varsig",
+ "form_urlencoded",
+ "futures-util",
+ "ipld-core",
+ "iroh-base",
+ "serde",
+ "serde_ipld_dagcbor",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "dialog-query"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1287,9 +1349,11 @@ dependencies = [
  "dialog-common",
  "dialog-effects",
  "dialog-macros",
+ "dialog-number",
  "futures",
  "futures-core",
  "futures-util",
+ "merkle-reference",
  "serde",
  "serde_ipld_dagcbor",
  "serde_json",
@@ -1303,7 +1367,7 @@ dependencies = [
 
 [[package]]
 name = "dialog-reactor"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1314,18 +1378,25 @@ dependencies = [
  "dialog-common",
  "dialog-credentials",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-repository",
  "dialog-search-tree",
  "dialog-storage",
  "futures-util",
+ "indexmap",
  "ipld-core",
  "parking_lot",
+ "serde",
+ "serde_ipld_dagjson",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tonk-account",
  "tonk-evaluator",
+ "tonk-intent",
+ "tonk-lingo",
  "tonk-schema",
  "wasm-bindgen-test",
  "web-sys",
@@ -1334,8 +1405,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-remote-fs"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1351,8 +1422,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-remote-s3"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1390,8 +1461,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-remote-ucan"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1405,22 +1476,30 @@ dependencies = [
  "dialog-remote-ucan-s3",
  "dialog-ucan-core",
  "dialog-varsig",
+ "futures",
  "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "js-sys",
  "reqwest 0.12.28",
  "serde",
+ "serde_bytes",
  "serde_ipld_dagcbor",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
 name = "dialog-remote-ucan-s3"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1447,7 +1526,7 @@ dependencies = [
  "serde_ipld_dagcbor",
  "serde_json",
  "sieve-cache",
- "signature",
+ "signature 2.2.0",
  "thiserror 2.0.18",
  "tokio",
  "tower",
@@ -1457,8 +1536,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-repository"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1468,6 +1547,7 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-credentials",
+ "dialog-did-web",
  "dialog-effects",
  "dialog-identity",
  "dialog-network",
@@ -1480,6 +1560,8 @@ dependencies = [
  "dialog-ucan",
  "dialog-ucan-core",
  "dialog-varsig",
+ "dirs 5.0.1",
+ "ed25519-dalek 2.2.0",
  "futures-util",
  "getrandom 0.2.17",
  "ipld-core",
@@ -1498,17 +1580,20 @@ dependencies = [
 
 [[package]]
 name = "dialog-search-tree"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
  "base58",
+ "bijoux",
  "blake3",
  "bytes",
  "dashmap",
+ "dialog-capability",
  "dialog-common",
+ "dialog-effects",
  "dialog-macros",
  "dialog-storage",
  "futures-core",
@@ -1528,15 +1613,14 @@ dependencies = [
 
 [[package]]
 name = "dialog-storage"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
  "base58",
  "blake3",
- "brotli",
  "bytes",
  "dialog-capability",
  "dialog-common",
@@ -1552,13 +1636,10 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "pidlock",
- "rand 0.8.7",
- "rexie",
  "s3s",
  "serde",
  "serde_ipld_dagcbor",
- "sieve-cache",
- "signature",
+ "signature 2.2.0",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -1568,15 +1649,14 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams 0.6.0",
  "web-sys",
  "web-time",
 ]
 
 [[package]]
 name = "dialog-ucan"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "async-trait",
  "base58",
@@ -1590,16 +1670,17 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_ipld_dagcbor",
- "signature",
+ "signature 2.2.0",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "dialog-ucan-core"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "base64",
+ "dialog-common",
  "dialog-varsig",
  "flate2",
  "futures",
@@ -1615,7 +1696,7 @@ dependencies = [
  "serde_bytes",
  "serde_ipld_dagcbor",
  "sha2 0.10.9",
- "signature",
+ "signature 2.2.0",
  "thiserror 2.0.18",
  "tracing",
  "wasm-bindgen",
@@ -1624,17 +1705,17 @@ dependencies = [
 
 [[package]]
 name = "dialog-varsig"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
 dependencies = [
  "dialog-common",
- "ed25519-dalek",
+ "ed25519-dalek 2.2.0",
  "k256",
  "leb128",
  "p256",
  "serde",
  "serde_bytes",
- "signature",
+ "signature 2.2.0",
  "thiserror 2.0.18",
 ]
 
@@ -1722,7 +1803,7 @@ checksum = "1ac70aa55017e108007fbaf5aa0f54b021c98f92ff8af59d42eda9da96e3dd4f"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -1730,6 +1811,12 @@ name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
+name = "dyn-clone"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "ecdsa"
@@ -1741,7 +1828,7 @@ dependencies = [
  "digest 0.10.7",
  "elliptic-curve",
  "rfc6979",
- "signature",
+ "signature 2.2.0",
  "spki",
 ]
 
@@ -1752,7 +1839,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
 dependencies = [
  "pkcs8",
- "signature",
+ "signature 2.2.0",
+]
+
+[[package]]
+name = "ed25519"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29fcf32e6c73d1079f83ab4d782de2d81620346a5f38c6237a86a22f8368980a"
+dependencies = [
+ "serdect",
+ "signature 3.0.0",
 ]
 
 [[package]]
@@ -1761,8 +1858,8 @@ version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
- "curve25519-dalek",
- "ed25519",
+ "curve25519-dalek 4.1.3",
+ "ed25519 2.2.3",
  "rand_core 0.6.4",
  "serde",
  "sha2 0.10.9",
@@ -1771,10 +1868,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "either"
-version = "1.18.0"
+name = "ed25519-dalek"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
+checksum = "6ebaa1a2bf1290ab3bfe5a7b771d050ebffab2711c19a81691c683a5144a25de"
+dependencies = [
+ "curve25519-dalek 5.0.0",
+ "ed25519 3.0.0",
+ "rand_core 0.10.1",
+ "serde",
+ "sha2 0.11.1",
+ "signature 3.0.0",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "either"
+version = "1.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "elliptic-curve"
@@ -1782,7 +1895,7 @@ version = "0.13.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5e6043086bf7973472e0c7dff2142ea0b680d30e18d9cc40f267efbf222bd47"
 dependencies = [
- "base16ct",
+ "base16ct 0.2.0",
  "crypto-bigint",
  "digest 0.10.7",
  "ff",
@@ -1854,6 +1967,12 @@ name = "fiat-crypto"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
+
+[[package]]
+name = "fiat-crypto"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 
 [[package]]
 name = "filetime"
@@ -1991,7 +2110,7 @@ checksum = "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -2083,18 +2202,6 @@ checksum = "f0d8a4362ccb29cb0b265253fb0a2728f592895ee6854fd9bc13f2ffda266ff1"
 dependencies = [
  "opaque-debug",
  "polyval",
-]
-
-[[package]]
-name = "gloo-timers"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
-dependencies = [
- "futures-channel",
- "futures-core",
- "js-sys",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -2232,9 +2339,9 @@ dependencies = [
 
 [[package]]
 name = "hmac"
-version = "0.13.0-rc.5"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef451d73f36d8a3f93ad32c332ea01146c9650e1ec821a9b0e46c01277d544f8"
+checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
 dependencies = [
  "digest 0.11.3",
 ]
@@ -2338,7 +2445,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots",
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]
@@ -2471,21 +2578,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "idb"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6554f394e990a1af530a528a7fdcad6e01b29cb1b990f89df3ffd62cf15f7828"
-dependencies = [
- "indexmap",
- "js-sys",
- "num-traits",
- "thiserror 2.0.18",
- "tokio",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
 name = "idna"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2545,6 +2637,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 
 [[package]]
+name = "iroh-base"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffd1efd1aaecd68d4d1b0727a30c5811f43fb822843e48f65f6e5db3b7256cc9"
+dependencies = [
+ "curve25519-dalek 5.0.0",
+ "data-encoding",
+ "data-encoding-macro",
+ "derive_more",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "n0-error",
+ "rand 0.10.2",
+ "serde",
+ "url",
+ "zeroize",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2598,7 +2709,7 @@ dependencies = [
  "quote",
  "rustc_version",
  "simd_cesu8",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -2617,7 +2728,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "38c0b942f458fe50cdac086d2f946512305e5631e720728f2a61aabcd47a6264"
 dependencies = [
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -2652,7 +2763,7 @@ dependencies = [
  "elliptic-curve",
  "once_cell",
  "sha2 0.10.9",
- "signature",
+ "signature 2.2.0",
 ]
 
 [[package]]
@@ -2768,7 +2879,7 @@ checksum = "757aee279b8bdbb9f9e676796fd459e4207a1f986e87886700abf589f5abf771"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -2794,9 +2905,9 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "md-5"
-version = "0.11.0-rc.5"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59e715bb6f273068fc89403d6c4f5eeb83708c62b74c8d43e3e8772ca73a6288"
+checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
 dependencies = [
  "cfg-if",
  "digest 0.11.3",
@@ -2813,6 +2924,14 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "merkle-reference"
+version = "0.4.0-rc.5"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=v0.4.0-rc.5#7b77541291143b4b858d63987112fbd97b6a350a"
+dependencies = [
+ "blake3",
+]
 
 [[package]]
 name = "mime"
@@ -2897,7 +3016,28 @@ checksum = "4568f25ccbd45ab5d5603dc34318c1ec56b117531781260002151b8530a9f931"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
+]
+
+[[package]]
+name = "n0-error"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26c59ea174675ce6bc196878851e5049e11b8b1f9af3ba87e4d6df8d828bb001"
+dependencies = [
+ "n0-error-macros",
+ "spez",
+]
+
+[[package]]
+name = "n0-error-macros"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4412346410d6616f3668c40e53c298e5320c7b856f7a960e5914e442601be79f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -3316,7 +3456,7 @@ checksum = "c96395f0a926bc13b1c17622aaddda1ecb55d49c8f1bf9777e4d877800a43f8b"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -3418,14 +3558,14 @@ checksum = "7347867d0a7e1208d93b46767be83e2b8f978c3dad35f775ac8d8847551d6fe1"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
 name = "quick-xml"
-version = "0.37.5"
+version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
+checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
  "memchr",
  "serde",
@@ -3635,6 +3775,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ref-cast"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e440fb4e4b4147295338efb76001ab9e4efc0e5839df2c47fc5ac2381d365c3"
+dependencies = [
+ "ref-cast-impl",
+]
+
+[[package]]
+name = "ref-cast-impl"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92ecd8964f8453721699a1ed72037b0db49ce2f5a5138486ee89bed6f67cdf3a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "regex"
 version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3711,7 +3871,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams 0.4.2",
  "web-sys",
- "webpki-roots",
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]
@@ -3752,17 +3912,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams 0.5.0",
  "web-sys",
-]
-
-[[package]]
-name = "rexie"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "887466cfa8a12c08ee4b174998135cea8ff0fd84858627cd793e56535a045bc9"
-dependencies = [
- "idb",
- "thiserror 1.0.69",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -3816,7 +3965,28 @@ checksum = "c0ed1a78a1b19d184b0daa629dd9a024573173ec7d485b287cb369fb3607cc1c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
+]
+
+[[package]]
+name = "rmcp"
+version = "3.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab5023804cbe0304cbe06197ac16e645a0a0d0ffa2953bf735c15c2fa0213350"
+dependencies = [
+ "chrono",
+ "futures",
+ "indexmap",
+ "pastey",
+ "pin-project-lite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3951,9 +4121,9 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "s3s"
-version = "0.13.0"
+version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcf5572ca9bae5fd92d4e5a3e934c73793ab743bcbc761cd5e86a622c2a5e98a"
+checksum = "abe1bd31748cb69848c2cf4028cecdadf5f8299ef3b02a83e21b20e7bda3aba9"
 dependencies = [
  "arc-swap",
  "arrayvec",
@@ -3967,7 +4137,7 @@ dependencies = [
  "crc-fast",
  "futures",
  "hex-simd",
- "hmac 0.13.0-rc.5",
+ "hmac 0.13.0",
  "http",
  "http-body",
  "http-body-util",
@@ -3984,8 +4154,8 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
- "sha1",
- "sha2 0.11.0-rc.5",
+ "sha1 0.11.0",
+ "sha2 0.11.1",
  "smallvec",
  "std-next",
  "subtle",
@@ -4043,6 +4213,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemars"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab508826f74a77ca9d5aba6ff19b522583ee3eaf28a19384ff3d0e5835fadf6e"
+dependencies = [
+ "chrono",
+ "dyn-clone",
+ "ref-cast",
+ "schemars_derive",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1c3a92094fa7d61aa124645844facb6b554dfc797136d0f5fd1f890e2bffc69"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4054,7 +4250,7 @@ version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3e97a565f76233a6003f9f5c54be1d9c5bdfa3eccfb189469f11ec4901c47dc"
 dependencies = [
- "base16ct",
+ "base16ct 0.2.0",
  "der",
  "generic-array",
  "pkcs8",
@@ -4164,7 +4360,18 @@ checksum = "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
+]
+
+[[package]]
+name = "serde_derive_internals"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -4223,7 +4430,7 @@ checksum = "175ee3e80ae9982737ca543e96133087cbd9a485eecc3bc4de9c1a37b47ea59c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -4252,13 +4459,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "sha1"
-version = "0.11.0-rc.5"
+name = "serdect"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b167252f3c126be0d8926639c4c4706950f01445900c4b3db0fd7e89fcb750a"
+checksum = "66cf8fedced2fcf12406bcb34223dffb92eaf34908ede12fed414c82b7f00b3e"
+dependencies = [
+ "base16ct 1.0.0",
+ "serde",
+]
+
+[[package]]
+name = "sha1"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
+ "digest 0.10.7",
+]
+
+[[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.0",
  "digest 0.11.3",
 ]
 
@@ -4275,12 +4503,12 @@ dependencies = [
 
 [[package]]
 name = "sha2"
-version = "0.11.0-rc.5"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c5f3b1e2dc8aad28310d8410bd4d7e180eca65fca176c52ab00d364475d0024"
+checksum = "47d7069beb7d6ac7b9acd1039986e73443f24234f41074da099d6f994ac9ad19"
 dependencies = [
  "cfg-if",
- "cpufeatures 0.2.17",
+ "cpufeatures 0.3.0",
  "digest 0.11.3",
 ]
 
@@ -4323,6 +4551,15 @@ checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "digest 0.10.7",
  "rand_core 0.6.4",
+]
+
+[[package]]
+name = "signature"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5"
+dependencies = [
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -4377,6 +4614,17 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "spez"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c87e960f4dca2788eeb86bbdde8dd246be8948790b7618d656e68f9b720a86e8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -4450,7 +4698,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -4464,6 +4712,17 @@ name = "syn"
 version = "2.0.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b9ae57f904213ebb649ce6895b8a66c66f0203b9319718f69a5612a065b1422"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
+
+[[package]]
+name = "syn"
+version = "3.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d78c8dee4c7bf0e14673097256fed6142ce9d3b85a408189d07482442145823b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4487,7 +4746,7 @@ checksum = "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -4555,7 +4814,7 @@ checksum = "5cf0ffc3ba4368e99597bd6afd83f4ff6febad66d9ae541ab46e697d32285fc0"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -4584,7 +4843,7 @@ checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -4595,7 +4854,7 @@ checksum = "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -4687,7 +4946,7 @@ checksum = "385a6cb71ab9ab790c5fe8d67f1645e6c450a7ce006a33de03daa956cf70a496"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -4724,6 +4983,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-tungstenite"
+version = "0.26.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a9daff607c6d2bf6c16fd681ccb7eecc83e4e2cdc1ca067ffaadfca5de7f084"
+dependencies = [
+ "futures-util",
+ "log",
+ "rustls",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tungstenite",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4738,8 +5013,9 @@ dependencies = [
 
 [[package]]
 name = "tonk-access-service"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-trait",
  "base58",
@@ -4753,7 +5029,7 @@ dependencies = [
  "dialog-credentials",
  "dialog-did-web",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-remote-s3",
  "dialog-remote-ucan",
@@ -4763,7 +5039,7 @@ dependencies = [
  "dialog-ucan",
  "dialog-ucan-core",
  "dialog-varsig",
- "ed25519-dalek",
+ "ed25519-dalek 2.2.0",
  "futures-util",
  "getrandom 0.2.17",
  "getrandom 0.4.3",
@@ -4785,20 +5061,23 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tonk-account",
  "tonk-email",
  "tonk-identity",
  "tonk-invite",
+ "tonk-perf",
  "tonk-worker-api",
  "url",
  "urlencoding",
+ "wasm-bindgen",
  "worker",
  "worker-macros",
 ]
 
 [[package]]
 name = "tonk-account"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "blake3",
@@ -4806,8 +5085,10 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-credentials",
+ "dialog-did-web",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
+ "dialog-remote-ucan",
  "dialog-repository",
  "dialog-storage",
  "dialog-ucan",
@@ -4815,10 +5096,12 @@ dependencies = [
  "dialog-varsig",
  "hex",
  "ipld-core",
+ "reqwest 0.12.28",
  "serde",
  "serde_bytes",
  "serde_ipld_dagcbor",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "url",
@@ -4826,8 +5109,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-agent-peer"
+version = "0.6.16-rc.1"
+dependencies = [
+ "axum",
+ "dirs 5.0.1",
+ "rmcp",
+ "rustix",
+ "serde_json",
+ "tokio",
+ "tonk-worker",
+]
+
+[[package]]
 name = "tonk-analytics"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "chrono",
  "dialog-common",
@@ -4847,7 +5143,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-analyzer"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4855,7 +5151,7 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-repository",
  "lsp-types",
@@ -4865,6 +5161,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tonk-core",
+ "tonk-library",
  "tonk-notation",
  "tonk-schema",
  "tonk-template",
@@ -4872,23 +5169,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "tonk-board"
-version = "0.6.15"
-dependencies = [
- "custom-elements",
- "js-sys",
- "serde-wasm-bindgen",
- "serde_json",
- "tonk-host",
- "tonk-schema",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
 name = "tonk-cli"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4902,8 +5184,9 @@ dependencies = [
  "dialog-common",
  "dialog-credentials",
  "dialog-csv",
+ "dialog-did-web",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-reactor",
  "dialog-remote-s3",
@@ -4941,6 +5224,7 @@ dependencies = [
  "tonk-evaluator",
  "tonk-identity",
  "tonk-invite",
+ "tonk-library",
  "tonk-notation",
  "tonk-render",
  "tonk-schema",
@@ -4958,7 +5242,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-code"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -4967,11 +5251,13 @@ dependencies = [
 
 [[package]]
 name = "tonk-common"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "dialog-common",
  "futures-util",
  "js-sys",
+ "serde",
+ "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -4980,7 +5266,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-core"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "base58",
  "dialog-artifacts",
@@ -4999,7 +5285,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-display"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "axum",
  "custom-elements",
@@ -5013,6 +5299,7 @@ dependencies = [
  "serde_ipld_dagjson",
  "serde_json",
  "tokio",
+ "tonk-common",
  "tonk-host",
  "tonk-notation",
  "tonk-schema",
@@ -5027,7 +5314,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-document"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5039,7 +5326,7 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-reactor",
  "dialog-repository",
@@ -5057,7 +5344,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-email"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -5066,22 +5353,25 @@ dependencies = [
 
 [[package]]
 name = "tonk-evaluator"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "dialog-artifacts",
  "dialog-capability",
  "dialog-common",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-repository",
+ "dialog-storage",
+ "futures-util",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tonk-analyzer",
  "tonk-core",
+ "tonk-library",
  "tonk-notation",
  "tonk-schema",
  "wasm-bindgen-test",
@@ -5089,7 +5379,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-fab"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "custom-elements",
  "dialog-common",
@@ -5100,6 +5390,7 @@ dependencies = [
  "tonk-analytics",
  "tonk-common",
  "tonk-host",
+ "tonk-portal",
  "tonk-schema",
  "tonk-worker-api",
  "urlencoding",
@@ -5111,21 +5402,18 @@ dependencies = [
 
 [[package]]
 name = "tonk-guest"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "console_error_panic_hook",
  "custom-elements",
  "dialog-common",
  "js-sys",
- "tonk-board",
  "tonk-display",
  "tonk-fab",
  "tonk-host",
  "tonk-inspector",
  "tonk-portal",
- "tonk-sigil",
  "tonk-tree",
- "tonk-workspace",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -5133,8 +5421,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-handler-macros"
+version = "0.6.16-rc.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+]
+
+[[package]]
 name = "tonk-host"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "bytes",
  "custom-elements",
@@ -5157,7 +5454,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-identity"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -5200,7 +5497,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-inspector"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "bs58",
  "custom-elements",
@@ -5219,8 +5516,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-intent"
+version = "0.6.16-rc.1"
+dependencies = [
+ "ipld-core",
+ "serde",
+ "serde_json",
+ "tonk-lingo",
+ "tonk-notation",
+ "tonk-template",
+]
+
+[[package]]
 name = "tonk-invite"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "blake3",
@@ -5228,23 +5537,32 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-credentials",
+ "dialog-effects",
+ "dialog-peer",
+ "dialog-storage",
  "dialog-ucan",
  "dialog-ucan-core",
  "dialog-varsig",
+ "flate2",
  "ipld-core",
+ "serde",
+ "serde_bytes",
+ "serde_ipld_dagcbor",
+ "serde_json",
  "tokio",
  "url",
+ "urlencoding",
  "wasm-bindgen-test",
 ]
 
 [[package]]
 name = "tonk-language-server"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "async-trait",
  "dialog-capability",
  "dialog-common",
- "dialog-operator",
+ "dialog-peer",
  "dialog-repository",
  "lsp-types",
  "serde",
@@ -5258,13 +5576,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-library"
+version = "0.6.16-rc.1"
+dependencies = [
+ "dialog-common",
+ "tokio",
+ "tonk-notation",
+ "wasm-bindgen-test",
+]
+
+[[package]]
+name = "tonk-lingo"
+version = "0.6.16-rc.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "tonk-macros"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "proc-macro2",
  "quote",
  "serde_ipld_dagjson",
- "syn",
+ "syn 2.0.118",
  "tonk-analyzer",
  "tonk-core",
  "tonk-notation",
@@ -5272,8 +5608,9 @@ dependencies = [
 
 [[package]]
 name = "tonk-notation"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
+ "base64",
  "dialog-common",
  "lsp-types",
  "saphyr",
@@ -5282,12 +5619,13 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "url",
  "wasm-bindgen-test",
 ]
 
 [[package]]
 name = "tonk-perf"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -5299,11 +5637,12 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
 name = "tonk-portal"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "bs58",
@@ -5331,7 +5670,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-prose"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -5340,13 +5679,14 @@ dependencies = [
 
 [[package]]
 name = "tonk-render"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "async-trait",
  "dialog-common",
  "dialog-query",
  "html5gum",
  "ipld-core",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
@@ -5357,7 +5697,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-router"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "dialog-common",
  "tokio",
@@ -5366,7 +5706,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-schema"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5377,9 +5717,10 @@ dependencies = [
  "dialog-common",
  "dialog-credentials",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-repository",
+ "dialog-ucan",
  "dialog-ucan-core",
  "dialog-varsig",
  "futures-util",
@@ -5393,29 +5734,21 @@ dependencies = [
  "serde_yaml",
  "thiserror 2.0.18",
  "tokio",
+ "tonk-account",
  "tonk-core",
  "tonk-evaluator",
  "tonk-identity",
+ "tonk-invite",
  "tonk-notation",
  "tonk-worker-api",
+ "url",
  "wasm-bindgen-test",
-]
-
-[[package]]
-name = "tonk-sigil"
-version = "0.6.15"
-dependencies = [
- "blake3",
- "bs58",
- "custom-elements",
- "js-sys",
- "wasm-bindgen",
- "web-sys",
+ "zeroize",
 ]
 
 [[package]]
 name = "tonk-table"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -5424,7 +5757,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-template"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "dialog-common",
  "indexmap",
@@ -5441,7 +5774,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-tree"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "custom-elements",
  "dialog-common",
@@ -5458,7 +5791,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-ui"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5493,11 +5826,15 @@ dependencies = [
  "tonk-common",
  "tonk-host",
  "tonk-identity",
+ "tonk-invite",
  "tonk-portal",
  "tonk-schema",
  "tonk-worker",
  "tonk-worker-api",
+ "tracing",
+ "tracing-subscriber",
  "url",
+ "urlencoding",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -5506,12 +5843,11 @@ dependencies = [
 
 [[package]]
 name = "tonk-worker"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "axum-wasm-macros",
  "base58",
  "base64",
  "blake3",
@@ -5524,9 +5860,10 @@ dependencies = [
  "dialog-credentials",
  "dialog-csv",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-reactor",
+ "dialog-remote-s3",
  "dialog-remote-ucan",
  "dialog-remote-ucan-s3",
  "dialog-repository",
@@ -5549,7 +5886,10 @@ dependencies = [
  "send_wrapper",
  "serde",
  "serde-wasm-bindgen",
+ "serde_ipld_dagcbor",
  "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -5561,11 +5901,14 @@ dependencies = [
  "tonk-document",
  "tonk-evaluator",
  "tonk-fab",
+ "tonk-handler-macros",
  "tonk-identity",
  "tonk-inspector",
  "tonk-invite",
  "tonk-language-server",
+ "tonk-library",
  "tonk-notation",
+ "tonk-render",
  "tonk-router",
  "tonk-schema",
  "tonk-template",
@@ -5584,11 +5927,13 @@ dependencies = [
 
 [[package]]
 name = "tonk-worker-api"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "dialog-artifacts",
  "dialog-capability",
  "dialog-common",
+ "dialog-effects",
+ "dialog-repository",
  "dialog-varsig",
  "indexmap",
  "ipld-core",
@@ -5598,30 +5943,6 @@ dependencies = [
  "tonk-account",
  "url",
  "wasm-bindgen-test",
-]
-
-[[package]]
-name = "tonk-workspace"
-version = "0.6.15"
-dependencies = [
- "bs58",
- "custom-elements",
- "dialog-common",
- "gloo-timers",
- "js-sys",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tonk-analytics",
- "tonk-common",
- "tonk-fab",
- "tonk-host",
- "tonk-schema",
- "tonk-worker-api",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test",
- "web-sys",
 ]
 
 [[package]]
@@ -5688,7 +6009,7 @@ checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -5744,6 +6065,25 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "tungstenite"
+version = "0.26.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4793cb5e56680ecbb1d843515b23b6de9a75eb04b66643e256a396d43be33c13"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "rand 0.9.5",
+ "rustls",
+ "rustls-pki-types",
+ "sha1 0.10.7",
+ "thiserror 2.0.18",
+ "utf-8",
+]
 
 [[package]]
 name = "typed-path"
@@ -5829,6 +6169,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
+name = "utf-8"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9"
+
+[[package]]
 name = "utf8_iter"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5846,6 +6192,7 @@ version = "1.23.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea5fab0d6c3c01ae70085a09cb03d4c7a1d6314e2b3e075392783396d724ca0a"
 dependencies = [
+ "getrandom 0.4.3",
  "js-sys",
  "wasm-bindgen",
 ]
@@ -5905,7 +6252,16 @@ version = "1.0.4+wasi-0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b67efb37e106e55ce722a510d6b5f9c17f083e5fc79afc2badeb12cc313d9487"
 dependencies = [
- "wit-bindgen",
+ "wit-bindgen 0.57.1",
+]
+
+[[package]]
+name = "wasip3"
+version = "0.9.0+wasi-0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1d5749fdf69bb9400562eba50f8f25f5cd800ef4b74300038b6f99ae7409674"
+dependencies = [
+ "wit-bindgen 0.62.0",
 ]
 
 [[package]]
@@ -5950,7 +6306,7 @@ dependencies = [
  "bumpalo",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
  "wasm-bindgen-shared",
 ]
 
@@ -5993,7 +6349,7 @@ checksum = "94eb68555b95bcea5e8cf4abe280b529049479fa995bfc23734af96a6aedc120"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -6088,6 +6444,15 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.8",
+]
+
+[[package]]
+name = "webpki-roots"
 version = "1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
@@ -6157,7 +6522,7 @@ checksum = "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -6168,7 +6533,7 @@ checksum = "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -6443,6 +6808,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
+name = "wit-bindgen"
+version = "0.62.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53cb4b5556c3a791e86838ea287782bdafa704d55b0e68b5b81a3a16b9ea5f4b"
+
+[[package]]
 name = "worker"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6483,7 +6854,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "strum",
- "syn",
+ "syn 2.0.118",
  "wasm-bindgen",
  "wasm-bindgen-macro-support",
  "worker-sys",
@@ -6513,7 +6884,7 @@ version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7e468321c81fb07fa7f4c636c3972b9100f0346e5b6a9f2bd0603a52f7ed277"
 dependencies = [
- "curve25519-dalek",
+ "curve25519-dalek 4.1.3",
  "rand_core 0.6.4",
  "serde",
  "zeroize",
@@ -6548,7 +6919,7 @@ checksum = "de844c262c8848816172cef550288e7dc6c7b7814b4ee56b3e1553f275f1858e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
  "synstructure",
 ]
 
@@ -6569,7 +6940,7 @@ checksum = "e2e817b7b52d0c7358d3246da9d69935ebb18116b2b102b4230dac079b4862f5"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -6589,7 +6960,7 @@ checksum = "11532158c46691caf0f2593ea8358fed6bbf68a0315e80aae9bd41fbade684a1"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
  "synstructure",
 ]
 
@@ -6610,7 +6981,7 @@ checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -6643,7 +7014,7 @@ checksum = "625dc425cab0dca6dc3c3319506e6593dcb08a9f387ea3b284dbd52a92c40555"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]

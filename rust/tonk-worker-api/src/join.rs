@@ -25,6 +25,9 @@ pub enum JoinFailureKind {
     Refused,
     /// A local failure stopped the join.
     ClaimFailed,
+    /// The space keeps no public ticket and this account holds no access
+    /// to it: opening it takes an invite from someone in it.
+    Private,
 }
 
 impl JoinFailureKind {
@@ -37,6 +40,7 @@ impl JoinFailureKind {
             Self::Unavailable => "unavailable",
             Self::Refused => "refused",
             Self::ClaimFailed => "claim-failed",
+            Self::Private => "private",
         }
     }
 
@@ -51,6 +55,7 @@ impl JoinFailureKind {
                 "This space's host declined the invite. Its owner needs to check the space's plan."
             }
             Self::ClaimFailed => "Tonk could not join this space.",
+            Self::Private => "This space is private. Ask someone in it for an invite link.",
         }
     }
 

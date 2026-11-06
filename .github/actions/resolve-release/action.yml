@@ -1,0 +1,114 @@
+name: 'Resolve release'
+description: 'Validate a pushed v* tag, derive its version and channel, and stamp the version into the workspace'
+
+# The tag is the only version source. A tag with a prerelease suffix
+# (`v0.7.0-rc.1`) is a staging release, one without (`v0.7.0`) is a stable
+# release, and the tag must point at a commit already on `main`, so nothing
+# ships that did not land through review.
+#
+# Stamping rewrites `[workspace.package] version` and the matching
+# workspace entries in `Cargo.lock` in the working tree. Nix builds a
+# dirty git tree from the working copy of tracked files, so the build
+# sees the stamped version and `tonk --version` matches the tag.
+#
+# Needs a checkout with `fetch-depth: 0` so `main` can be compared.
+
+outputs:
+  tag:
+    description: 'The release tag, e.g. v0.7.0-rc.1'
+    value: ${{ steps.resolve.outputs.tag }}
+  version:
+    description: 'The tag without its leading v, e.g. 0.7.0-rc.1'
+    value: ${{ steps.resolve.outputs.version }}
+  channel:
+    description: 'staging for a prerelease tag, stable otherwise'
+    value: ${{ steps.resolve.outputs.channel }}
+  prerelease:
+    description: 'true for a staging release'
+    value: ${{ steps.resolve.outputs.prerelease }}
+
+runs:
+  using: composite
+  steps:
+    - name: 'Resolve the tag'
+      id: resolve
+      shell: bash
+      env:
+        REF_TYPE: ${{ github.ref_type }}
+        REF_NAME: ${{ github.ref_name }}
+      run: |
+        set -euo pipefail
+
+        if [[ "$REF_TYPE" != tag ]]; then
+          echo "::error::releases run from a v* tag, not the $REF_TYPE $REF_NAME"
+          exit 1
+        fi
+
+        tag="$REF_NAME"
+        if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+          echo "::error::$tag is not a release tag; use v<major>.<minor>.<patch>[-<prerelease>]"
+          exit 1
+        fi
+        version="${tag#v}"
+
+        git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+        commit="$(git rev-parse "refs/tags/$tag^{commit}")"
+        if ! git merge-base --is-ancestor "$commit" origin/main; then
+          echo "::error::$tag points at $commit, which is not on main"
+          exit 1
+        fi
+
+        if [[ "$version" == *-* ]]; then
+          channel=staging
+          prerelease=true
+        else
+          channel=stable
+          prerelease=false
+        fi
+
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
+        echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+        echo "$tag -> $channel release of $version at $commit"
+
+    - name: 'Stamp the version'
+      shell: bash
+      env:
+        VERSION: ${{ steps.resolve.outputs.version }}
+      run: |
+        set -euo pipefail
+        python3 - <<'EOF'
+        import os, re
+
+        version = os.environ["VERSION"]
+
+        with open("Cargo.toml") as f:
+            manifest = f.read()
+        section = re.search(r"^\[workspace\.package\]\n(?:(?!^\[).*\n)*", manifest, re.M)
+        current = re.search(r'^version = "([^"]+)"', section.group(0), re.M)
+        if current is None:
+            raise SystemExit("no version in [workspace.package]")
+        old = current.group(1)
+        start = section.start() + current.start()
+        end = section.start() + current.end()
+        manifest = manifest[:start] + f'version = "{version}"' + manifest[end:]
+        with open("Cargo.toml", "w") as f:
+            f.write(manifest)
+
+        # Workspace members are the lock entries without a `source`; every
+        # one of them inherits the workspace version.
+        with open("Cargo.lock") as f:
+            packages = f.read().split("\n[[package]]\n")
+        stamped = 0
+        for i, package in enumerate(packages):
+            if "\nsource = " not in package and f'\nversion = "{old}"' in package:
+                packages[i] = package.replace(f'\nversion = "{old}"', f'\nversion = "{version}"', 1)
+                stamped += 1
+        if stamped == 0:
+            raise SystemExit(f"no workspace packages at {old} in Cargo.lock")
+        with open("Cargo.lock", "w") as f:
+            f.write("\n[[package]]\n".join(packages))
+
+        print(f"stamped {version} over {old} in Cargo.toml and {stamped} Cargo.lock entries")
+        EOF

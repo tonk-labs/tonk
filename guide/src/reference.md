@@ -22,7 +22,7 @@ A head ending in `!` writes; without `!` it queries.
 | `this:` | The entity to operate on: omitted (derived from content), `?v` (variable), bare name, or `did:key:…`. |
 | `with:` | In `concept!`/`command!`, the field-name to attribute map.       |
 | `when:` | In `rule!`, the list of premises that must hold.                |
-| `..: _` | Retract every attribute the concept selects that is not named.   |
+| `..: _` | Retract every attribute the concept selects that is not named. Assertions only, and `this:` must select an existing entity. |
 
 ## Field values
 
@@ -41,8 +41,8 @@ A head ending in `!` writes; without `!` it queries.
 | Field         | Values                                         |
 |---------------|------------------------------------------------|
 | `the`         | `domain/name` URI, the attribute's identity.   |
-| `as`          | `text`, `entity`, `unsigned-integer`, `float`. |
-| `cardinality` | `one` (default) or `many`.                     |
+| `as`          | `text`, `entity`, `natural`, `integer`, `float`, `boolean`. |
+| `pick`        | `last` (default), `all`, `top`, `max` or `min`. |
 | `description` | Required.                                      |
 
 ## `<tonk-display>`
@@ -60,15 +60,19 @@ A head ending in `!` writes; without `!` it queries.
 | `{field}`   | A field of the rendered entity.                  |
 | `{this}`    | The entity's own id.                             |
 
-## Command sources
+## Event bindings
 
-Read from the DOM event with the `the:` of a command field.
+`on:<name>=<command>` on an element binds the `event!:` declaration
+`on/<name>` to a command. Built in: `on:click`, `on:click-once`,
+`on:submit`, `on:change`, `on:toggle`. A declaration's `where:` maps each
+command field to a source:
 
-| URI                                            | Reads                              |
-|------------------------------------------------|------------------------------------|
-| `dom.event.current-target/value`               | the target's `value`               |
-| `dom.event.current-target.dataset/foo`         | the target's `data-foo`            |
-| `dom.event.detail/foo`                          | a custom event's `detail.foo`      |
+| Source                            | Reads                              |
+|-----------------------------------|------------------------------------|
+| `"{this}"`                        | the rendered entity's id           |
+| `".currentTarget.value"`          | the bound element's `value`        |
+| `".currentTarget.dataset.foo"`    | the bound element's `data-foo`     |
+| `".detail.foo"`                   | a custom event's `detail.foo`      |
 
 ## Blobs
 

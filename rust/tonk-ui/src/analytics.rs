@@ -33,6 +33,7 @@ use wasm_bindgen::closure::Closure;
 use crate::api;
 
 thread_local! {
+    static SPACE_ENTRIES: RefCell<tonk_analytics::discover::SpaceEntries> = RefCell::new(Default::default());
     static STARTUP: RefCell<Option<StartupAttempt>> = const { RefCell::new(None) };
     static PENDING_CREATE: RefCell<Option<WorkerAttempt>> = const { RefCell::new(None) };
     static PENDING_JOIN: RefCell<Option<WorkerAttempt>> = const { RefCell::new(None) };
@@ -186,6 +187,9 @@ fn capture_current_pageview() {
         .and_then(|w| w.location().pathname().ok())
         .unwrap_or_else(|| "/".to_owned());
     tonk_analytics::web::capture_pageview(&path);
+    SPACE_ENTRIES.with(|entries| {
+        tonk_analytics::web::capture_space_entry(&mut entries.borrow_mut(), &path);
+    });
 }
 
 fn attach_listeners() {
@@ -373,16 +377,13 @@ fn attach_worker_lifecycle_listener() {
                 return;
             }
             match message.event {
-                tonk_worker_api::AnalyticsEvent::SpaceCreated { space } => {
+                tonk_worker_api::AnalyticsEvent::SpaceCreated { space, template } => {
                     finish_worker_attempt(
                         &PENDING_CREATE,
                         tonk_analytics::product::Journey::Space,
                         tonk_analytics::product::ProductAction::CreateSpace,
                     );
-                    tonk_analytics::web::capture_space_conversion(
-                        tonk_analytics::launch::SpaceConversion::Created,
-                        &space,
-                    );
+                    tonk_analytics::web::capture_space_created(&space, template.as_deref());
                 }
                 tonk_worker_api::AnalyticsEvent::SpaceJoined { space } => {
                     finish_worker_attempt(
@@ -405,10 +406,48 @@ fn attach_worker_lifecycle_listener() {
     listener.forget();
 }
 
-/// Fetch the profile DID from the worker and identify with its hash,
-/// so web and CLI activity from one profile correlate. Best-effort.
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export async function resolve_analytics_identity(lookup) {
+    // Bound readiness + fetch together. A late lookup cannot change identity:
+    // only the result returned here is passed to PostHog by the caller.
+    for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt) await new Promise(resolve => setTimeout(resolve, attempt * 500));
+        let timer;
+        try {
+            const id = await Promise.race([
+                Promise.resolve().then(lookup),
+                new Promise((_, reject) => {
+                    timer = setTimeout(() => reject(new Error("identity timeout")), 5000);
+                }),
+            ]);
+            if (typeof id === "string" && /^tonk:[a-f0-9]{64}$/.test(id)) return id;
+        } catch (_) {
+            // Retry transient worker/readiness failures without sending errors.
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+    return null;
+}
+"#)]
+extern "C" {
+    async fn resolve_analytics_identity(lookup: &js_sys::Function) -> wasm_bindgen::JsValue;
+}
+
+/// Resolve a profile with bounded retries, without delaying product startup.
+/// Arrival events remain unresolved until this succeeds; they are traffic,
+/// never evidence of an active account. No analytics persistence is added.
 pub(crate) async fn identify() {
-    if let Ok(response) = api::identify().await {
-        tonk_analytics::web::identify(&tonk_analytics::distinct_id(&response.did));
+    let lookup = Closure::<dyn Fn() -> js_sys::Promise>::new(|| {
+        wasm_bindgen_futures::future_to_promise(async {
+            api::identify()
+                .await
+                .map(|response| tonk_analytics::distinct_id(&response.did).into())
+                .map_err(|_| wasm_bindgen::JsValue::NULL)
+        })
+    });
+    let id = resolve_analytics_identity(lookup.as_ref().unchecked_ref()).await;
+    if let Some(id) = id.as_string() {
+        tonk_analytics::web::identify(&id);
     }
 }

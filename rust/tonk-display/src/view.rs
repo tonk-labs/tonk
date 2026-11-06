@@ -48,6 +48,15 @@ struct Inner {
     renderer: Option<Renderer>,
 }
 
+impl crate::introspect::registry::ViewFacts for Inner {
+    fn slots(&self) -> Vec<(crate::introspect::slot::Slot, Option<web_sys::Node>)> {
+        self.renderer
+            .as_ref()
+            .map(Renderer::describe)
+            .unwrap_or_default()
+    }
+}
+
 /// The custom element.
 #[derive(Default)]
 pub struct TonkView {
@@ -132,6 +141,10 @@ impl CustomElement for TonkView {
 
         let state = Rc::new(RefCell::new(Inner { renderer }));
         *self.inner.borrow_mut() = Some(state.clone());
+        // Let the introspection overlay reach this view's slots. The
+        // registry holds a `Weak`, so registering does not keep a
+        // detached view alive and there is nothing to unregister.
+        crate::introspect::registry::register_view(&host, &state);
 
         // Attach a per-instance `draw(detail)` closure. The
         // prototype `render` method (installed once by `register`)
@@ -373,6 +386,65 @@ mod tests {
         assert!(
             host.query_selector(".edge-wall--closed").unwrap().is_none(),
             "clearing a failure for a new attempt must remove the wall"
+        );
+        host.remove();
+    }
+
+    /// The hub's link label: one root pinned to `{this}`, so a browser
+    /// with no link renders no marker and no name. A two-root fragment
+    /// (marker beside the name display) repeated as a whole, and the
+    /// synthetic zero-row conclusion rendered it for nobody.
+    #[dialog_common::test]
+    fn it_renders_the_link_label_only_for_a_link_row() {
+        let library = include_str!("../../tonk-core/assets/library/profile.yaml");
+        let template = library
+            .split("view!:\n  this: account/link\n  show:\n    label: |\n")
+            .nth(1)
+            .and_then(|tail| tail.split("\n\n").next())
+            .expect("link label template");
+        let host = mount(template);
+
+        call_draw(&host, &frame(&[("", &[])]));
+        assert!(
+            host.query_selector("[data-account-linked]")
+                .unwrap()
+                .is_none(),
+            "no link, no marker: {}",
+            host.inner_html(),
+        );
+        assert!(
+            host.query_selector("tonk-display").unwrap().is_none(),
+            "no link, no name display either: {}",
+            host.inner_html(),
+        );
+
+        call_draw(
+            &host,
+            &frame(&[("state:account-link", &[("account", "did:key:zAccount")])]),
+        );
+        assert!(
+            host.query_selector("[data-account-linked]")
+                .unwrap()
+                .is_some(),
+            "a link row renders the marker: {}",
+            host.inner_html(),
+        );
+        let name = host
+            .query_selector("tonk-display[model=\"tonk:account/name\"]")
+            .unwrap()
+            .expect("the name renders through the link");
+        assert_eq!(
+            name.get_attribute("entity").as_deref(),
+            Some("did:key:zAccount"),
+            "the name display is bound to the linked account"
+        );
+
+        call_draw(&host, &frame(&[("", &[])]));
+        assert!(
+            host.query_selector("[data-account-linked]")
+                .unwrap()
+                .is_none(),
+            "signing out takes the marker away again"
         );
         host.remove();
     }

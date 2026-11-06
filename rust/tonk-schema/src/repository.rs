@@ -19,7 +19,7 @@
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
-use crate::domain::repo::{Agents, Name};
+use crate::domain::repo::{Agents, Description, Name};
 
 /// A repository's own display name, stored on its content branch and
 /// keyed by the subject DID.
@@ -29,6 +29,15 @@ pub struct RepositoryName {
     pub this: Entity,
     /// The repository's display name.
     pub name: Name,
+}
+
+/// A repository's optional short description, stored on its content branch.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RepositoryDescription {
+    /// The repository's subject DID.
+    pub this: Entity,
+    /// The authored description.
+    pub description: Description,
 }
 
 /// A repository's synced agent context, keyed by the same subject DID as its

@@ -192,6 +192,75 @@ pub struct EdgeSnap {
     pub top: f64,
 }
 
+/// The available seat for an attached panel, measured from its 48px header.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelFit {
+    pub left: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+    pub width: f64,
+    pub height: f64,
+    pub rail_height: f64,
+    pub flip: bool,
+    pub up: bool,
+}
+
+pub fn fit_panel(
+    header: FabBox,
+    viewport: (f64, f64),
+    insets: EdgeInsets,
+    parent_width: f64,
+    visible_actions: u32,
+    was_flipped: bool,
+) -> PanelFit {
+    let (vw, vh) = viewport;
+    let left = header.left.clamp(
+        insets.left,
+        (vw - insets.right - header.width).max(insets.left),
+    );
+    let top = header.top.clamp(
+        insets.top,
+        (vh - insets.bottom - header.height).max(insets.top),
+    );
+    let right_edge = left + header.width;
+    let bottom_edge = top + header.height;
+    let room_left = right_edge - insets.left;
+    let room_right = vw - insets.right - left;
+    let flip = if (room_left - room_right).abs() < 1.0 {
+        was_flipped
+    } else {
+        room_left > room_right
+    };
+
+    let rail_height = (48.0 * f64::from(visible_actions + 1)).max(240.0);
+    let room_up = bottom_edge - insets.top;
+    let room_down = vh - insets.bottom - top;
+    let up = if room_up >= rail_height && room_down < rail_height {
+        true
+    } else if room_down >= rail_height && room_up < rail_height {
+        false
+    } else if room_up < rail_height && room_down < rail_height {
+        room_up > room_down
+    } else {
+        top + header.height / 2.0 >= vh / 2.0
+    };
+
+    PanelFit {
+        left,
+        top,
+        right: vw - right_edge,
+        bottom: vh - bottom_edge,
+        width: (parent_width - insets.left - insets.right)
+            .min(if flip { room_left } else { room_right })
+            .max(0.0),
+        height: if up { room_up } else { room_down },
+        rail_height,
+        flip,
+        up,
+    }
+}
+
 /// Settle a released FAB against its nearest viewport edge while preserving
 /// the free coordinate along that edge.
 pub fn snap_to_nearest_edge(
@@ -484,6 +553,48 @@ pub fn collapsed_claim_json(collapsed: bool) -> Value {
     })
 }
 
+/// Build a `TransactRequest` JSON body for `space/publish` (`publish`
+/// true) or `space/unpublish`. Routeless like `promote_claim_json`: the
+/// worker reads `space` off the command, and `time` makes each press a
+/// new transient.
+pub fn publication_claim_json(space: &str, publish: bool, time: f64) -> Value {
+    let (verb, description) = if publish {
+        ("publish", "Make a space readable by anyone.")
+    } else {
+        ("unpublish", "Make a published space private again.")
+    };
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": description,
+                        "with": {
+                            "space": { "the": format!("xyz.tonk.{verb}/space"), "cardinality": "one", "as": "Entity" },
+                            "time": { "the": format!("xyz.tonk.{verb}/time"), "cardinality": "one", "as": "float:64" }
+                        }
+                    }
+                },
+                "parameters": { "space": space, "time": time }
+            }
+        }]
+    })
+}
+
+/// The subscribe body for whether a space is published: the invitations
+/// on its branch recorded with kind `public`. Any row means published.
+pub fn publication_query_body() -> String {
+    json!({
+        "predicate": { "with": { "kind": {
+            "the": "xyz.tonk.invitation-execution/kind", "as": "Text", "cardinality": "one"
+        } } },
+        "terms": { "this": { "?": { "name": "this" } }, "kind": "public" }
+    })
+    .to_string()
+}
+
 /// Build a `TransactRequest` JSON body for the `member/promote` command.
 ///
 /// Asserted once the page has minted the admin hop under the passkey:
@@ -539,7 +650,7 @@ pub fn pause_claim_json(space: &str, time: f64) -> Value {
                     "concept": {
                         "description": "Toggle auto-sync (pause ⇄ resume) for a space.",
                         "with": {
-                            "time":  { "the": "xyz.tonk.command.pause-sync/time", "as": "Float" },
+                            "time":  { "the": "xyz.tonk.command.pause-sync/time", "as": "float:64" },
                             "space": { "the": "xyz.tonk.pause-sync/space", "as": "Entity" }
                         }
                     }
@@ -883,6 +994,80 @@ mod edge_snap {
                 top: 16.0,
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod panel_fit {
+    use super::*;
+
+    const INSETS: EdgeInsets = EdgeInsets {
+        top: 16.0,
+        right: 16.0,
+        bottom: 16.0,
+        left: 16.0,
+    };
+
+    #[test]
+    fn a_bottom_seat_grows_up_from_its_header() {
+        let fit = fit_panel(
+            FabBox {
+                left: 250.0,
+                top: 736.0,
+                width: 360.0,
+                height: 48.0,
+            },
+            (1000.0, 800.0),
+            INSETS,
+            1000.0,
+            6,
+            false,
+        );
+        assert!(fit.up);
+        assert_eq!(fit.bottom, 16.0);
+        assert_eq!(fit.height, 768.0);
+        assert_eq!(fit.rail_height, 336.0);
+    }
+
+    #[test]
+    fn a_free_top_seat_caps_width_to_the_opening_side() {
+        let fit = fit_panel(
+            FabBox {
+                left: 500.0,
+                top: 16.0,
+                width: 360.0,
+                height: 48.0,
+            },
+            (1000.0, 800.0),
+            INSETS,
+            1000.0,
+            5,
+            false,
+        );
+        assert!(fit.flip);
+        assert!(!fit.up);
+        assert_eq!(fit.right, 140.0);
+        assert_eq!(fit.width, 844.0);
+    }
+
+    #[test]
+    fn a_seat_left_outside_a_narrowed_viewport_is_clamped_before_expansion() {
+        let fit = fit_panel(
+            FabBox {
+                left: 900.0,
+                top: 16.0,
+                width: 360.0,
+                height: 48.0,
+            },
+            (800.0, 600.0),
+            INSETS,
+            800.0,
+            5,
+            true,
+        );
+        assert_eq!(fit.left, 424.0);
+        assert_eq!(fit.right, 16.0);
+        assert_eq!(fit.width, 768.0);
     }
 }
 
@@ -1275,6 +1460,31 @@ pub fn repo_name_query_body(subject: &str) -> Result<String, String> {
 }
 
 #[cfg(test)]
+mod publication {
+    use super::*;
+
+    /// The worker decodes `space/publish` and `space/unpublish` from their
+    /// own attribute namespaces; a claim in the other's would publish a
+    /// space someone meant to make private.
+    #[test]
+    fn it_names_each_verb_in_its_own_namespace() {
+        let publish = publication_claim_json("did:key:z6Mk", true, 1.0).to_string();
+        assert!(publish.contains("xyz.tonk.publish/space"));
+        assert!(!publish.contains("xyz.tonk.unpublish"));
+        let unpublish = publication_claim_json("did:key:z6Mk", false, 1.0).to_string();
+        assert!(unpublish.contains("xyz.tonk.unpublish/space"));
+        assert!(unpublish.contains("xyz.tonk.unpublish/time"));
+    }
+
+    #[test]
+    fn it_reads_publication_from_the_public_invitation_kind() {
+        let body = publication_query_body();
+        assert!(body.contains("xyz.tonk.invitation-execution/kind"));
+        assert!(body.contains(r#""kind":"public""#));
+    }
+}
+
+#[cfg(test)]
 mod space_name {
     use super::*;
 
@@ -1301,59 +1511,211 @@ mod space_name {
 
 /// The subscribe body for a space's member roster.
 ///
-/// ONE inline predicate carrying all three fields on the same entity, in
+/// One inline predicate carrying membership fields on the same entity, in
 /// directory mode (`this` unbound), so each member returns as a row. Three
 /// separate subscriptions would need client-side row-joining that no existing
 /// element does.
 ///
 /// All three are required fields: a member missing a synced name or role is
-/// invisible. That matches the seeded view's behaviour, but it is now this
-/// element's choice.
+/// invisible. The invitation reference is optional so founders and older
+/// memberships remain visible without provenance.
 pub fn member_roster_query_body() -> String {
     json!({
         "predicate": { "with": {
             "member": { "the": "xyz.tonk.membership/member", "as": "Entity", "cardinality": "one" },
             "role":   { "the": "xyz.tonk.membership/role",   "as": "Entity", "cardinality": "one" },
-            "name":   { "the": "xyz.tonk.membership/name",   "as": "Text", "cardinality": "one" }
+            "name":   { "the": "xyz.tonk.membership/name",   "as": "Text", "cardinality": "one" },
+            "invitation": { "the": "xyz.tonk.membership/invitation", "as": "Entity", "cardinality": "one", "optional": true }
         } },
         "terms": {
             "this":   { "?": { "name": "this" } },
             "member": { "?": { "name": "member" } },
             "role":   { "?": { "name": "role" } },
-            "name":   { "?": { "name": "name" } }
+            "name":   { "?": { "name": "name" } },
+            "invitation": { "?": { "name": "invitation" } }
         }
     })
     .to_string()
 }
 
-/// The one-shot query body for the signed-in member's own profile DID.
-///
-/// Reads the PROFILE branch's replica records by raw attribute: every
-/// replica there carries `xyz.tonk.replica/profile`, the profile that owns
-/// it, so any row answers. Directory mode (`this` unbound). Routeless from
-/// the FAB, whose host mounts `with="main@profile:tonk"`.
-pub fn self_did_query_body() -> String {
+/// Invitation provenance has its own subscription: founders and old memberships
+/// have no invitation, and invitations can arrive after the member row.
+pub fn member_invitations_query_body() -> String {
     json!({
         "predicate": { "with": {
-            "profile": { "the": "xyz.tonk.replica/profile", "as": "Entity", "cardinality": "one" }
+            "inviter": { "the": "xyz.tonk.invitation/inviter", "as": "Entity", "cardinality": "one" }
         } },
         "terms": {
-            "this":    { "?": { "name": "this" } },
-            "profile": { "?": { "name": "profile" } }
+            "this": { "?": { "name": "this" } },
+            "inviter": { "?": { "name": "inviter" } }
         }
-    })
-    .to_string()
+    }).to_string()
 }
 
-/// The profile DID from a `Conclusion[]` answer to [`self_did_query_body`]:
-/// the first row's `profile` field. `None` for an empty answer.
-pub fn self_did_from_conclusions(rows: &Value) -> Option<String> {
-    rows.as_array()?.iter().find_map(|row| {
-        row.get("fields")
-            .and_then(|fields| fields.get("profile"))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
+/// Read the worker-owned agent handoff state without relying on a seeded view.
+pub fn agent_handoff_query_body(subject: &str) -> Result<String, String> {
+    if subject.is_empty() {
+        return Err("agent_handoff_query_body: empty subject".into());
+    }
+    Ok(json!({
+        "predicate": { "with": {
+            "status": { "the": "xyz.tonk.agent-handoff/status", "as": "Text", "cardinality": "one" },
+            "link": { "the": "xyz.tonk.agent-handoff/link", "as": "Text", "cardinality": "one" },
+            "receipt": { "the": "xyz.tonk.agent-handoff/receipt", "as": "Text", "cardinality": "one", "optional": true },
+            "account": { "the": "xyz.tonk.agent-handoff/account", "as": "Entity", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": subject,
+            "status": { "?": { "name": "status" } },
+            "link": { "?": { "name": "link" } },
+            "receipt": { "?": { "name": "receipt" } },
+            "account": { "?": { "name": "account" } }
+        }
     })
+    .to_string())
+}
+
+/// Receipts remain durable data; only a locally requested invitation may
+/// turn one into transient feedback. This state is deliberately not persisted.
+#[derive(Clone, Debug, Default)]
+pub struct AgentConnectionFeedback {
+    pending: std::collections::HashSet<String>,
+    seen: std::collections::HashSet<String>,
+}
+
+impl AgentConnectionFeedback {
+    pub fn expect(&mut self, receipt: &str) {
+        if !receipt.is_empty() && !self.seen.contains(receipt) {
+            self.pending.insert(receipt.to_owned());
+        }
+    }
+
+    pub fn receive(&mut self, receipt: &str) -> bool {
+        let fresh = self.seen.insert(receipt.to_owned());
+        self.pending.remove(receipt) && fresh
+    }
+}
+
+pub fn agent_receipts_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "status": { "the": "xyz.tonk.agent-connection/status", "as": "Text", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": { "?": { "name": "this" } },
+            "status": "Agent connection confirmed"
+        }
+    }).to_string()
+}
+
+/// Build the inline transient understood by the worker's agent handoff provider.
+pub fn agent_handoff_claim_json(space: &str, time: f64, fresh: bool) -> serde_json::Value {
+    let mut with = json!({
+        "time": { "the": "xyz.tonk.agent-handoff/time", "as": "float:64" },
+        "space": { "the": "xyz.tonk.agent-handoff/space", "as": "Entity" }
+    });
+    let mut parameters = json!({ "time": time, "space": space });
+    if fresh {
+        with["fresh"] = json!({ "the": "xyz.tonk.agent-handoff/fresh", "as": "Text" });
+        parameters["fresh"] = json!("new");
+    }
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Create an agent invitation for this space.",
+                        "with": with
+                    }
+                },
+                "parameters": parameters
+            }
+        }]
+    })
+}
+
+/// The complete bearer prompt copied from the agent panel.
+pub fn agent_prompt(name: &str, link: &str) -> String {
+    format!(
+        "You're helping build the \"{name}\" Tonk space.\n\nConnect to the exact space this prompt came from:\n\n  npx --yes @tonk/cli join '{link}'\n\nThis reusable bearer link contains the invitation key and grants for this space. Keep it private. Run the command without CLI account login, browser approval, or account-switch flags. The command prints the chosen local name; use --name if you need a different local alias. Only report connected after it prints \"Agent connection confirmed\", which follows a successful pull and acknowledged receipt push. If interrupted, resume without the link using `npx --yes @tonk/cli --space NAME join`. If access expires or is revoked, ask me for a fresh invite. Local data and offline edits remain available. Multiple holders of this link share the same invitation authority and receipt; the receipt does not establish exclusive use or online presence.\n\nThen run `npx --yes @tonk/cli --space NAME status` and `npx --yes @tonk/cli help tutorial`. The command binds your original working directory to the connected space; elsewhere, pass --space with the printed local name. Ask me what I want to build. Use `npx --yes @tonk/cli` for each CLI command that changes data, schemas, or views; changes sync directly into this space. Finish with `npx --yes @tonk/cli space home <concept>` to put the result on the space home."
+    )
+}
+
+#[cfg(test)]
+mod agent_handoff {
+    use super::*;
+
+    #[test]
+    fn feedback_is_local_once_only_and_does_not_replay_receipts() {
+        let mut issuer = AgentConnectionFeedback::default();
+        let mut viewer = AgentConnectionFeedback::default();
+        assert!(!issuer.receive("old"));
+        issuer.expect("old");
+        assert!(!issuer.receive("old"));
+        issuer.expect("mine");
+        assert!(!issuer.receive("someone-elses"));
+        assert!(!viewer.receive("mine"));
+        assert!(issuer.receive("mine"));
+        issuer.expect("mine");
+        assert!(!issuer.receive("mine"));
+        let mut reopened = AgentConnectionFeedback::default();
+        assert!(!reopened.receive("mine"));
+    }
+
+    #[test]
+    fn it_uses_raw_handoff_attributes_for_old_spaces() {
+        let body = agent_handoff_query_body("did:key:space").expect("query");
+        assert!(body.contains("xyz.tonk.agent-handoff/status"));
+        assert!(body.contains("xyz.tonk.agent-handoff/link"));
+        assert!(!body.contains("tonk:agent-invite"));
+        assert!(agent_handoff_query_body("").is_err());
+    }
+
+    #[test]
+    fn it_marks_only_explicit_retries_as_fresh() {
+        let initial = agent_handoff_claim_json("did:key:space", 1.0, false).to_string();
+        let retry = agent_handoff_claim_json("did:key:space", 2.0, true).to_string();
+        assert!(!initial.contains("agent-handoff/fresh"));
+        assert!(retry.contains("agent-handoff/fresh"));
+        assert!(retry.contains("\"new\""));
+        assert!(initial.contains("xyz.tonk.agent-handoff/space"));
+        assert!(initial.contains("did:key:space"));
+    }
+
+    #[test]
+    fn the_prompt_preserves_the_bearer_and_confirmation_boundary() {
+        let prompt = agent_prompt("Atlas", "https://example.test/#tonk-agent-v2=secret");
+        assert!(prompt.contains("#tonk-agent-v2=secret"));
+        assert!(prompt.contains("Agent connection confirmed"));
+        assert!(prompt.contains("Keep it private"));
+    }
+}
+
+/// The member DID marked `is_self` by the repository read model. Memberships
+/// are keyed to the account root, which can differ from this device's profile.
+pub fn self_member_did_from_repository(info: &Value) -> Option<String> {
+    info.get("members")?.as_array()?.iter().find_map(|member| {
+        if member.get("is_self").and_then(Value::as_bool) == Some(true) {
+            member.get("did").and_then(Value::as_str).map(str::to_owned)
+        } else {
+            None
+        }
+    })
+}
+
+/// Whether the viewer only observes the space: it has members, and none of
+/// them is this account. That is a reader of a published space, who
+/// opened it from its address with the public ticket rather than an
+/// invite. A space with no members yet (its roster still arriving) is not
+/// read as observed, so a member never sees "observing" while loading.
+pub fn observes_from_repository(info: &Value) -> bool {
+    let members = info
+        .get("members")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    !members.is_empty() && self_member_did_from_repository(info).is_none()
 }
 
 /// Whether a member holding `role` runs the space: founders and admins
@@ -1364,28 +1726,36 @@ pub fn role_manages_members(role: &str) -> bool {
 }
 
 #[cfg(test)]
-mod self_did {
+mod self_member_did {
     use super::*;
 
     #[test]
-    fn it_queries_the_replica_profile_by_raw_attribute() {
-        let body = self_did_query_body();
-        assert!(body.contains("xyz.tonk.replica/profile"));
-        assert!(body.contains("\"this\":{\"?\""));
-        assert!(!body.contains("tonk:profile"));
+    fn it_uses_the_repository_member_identity_instead_of_the_device_profile() {
+        let rows = json!({ "profile": "did:key:zDevice", "members": [
+            { "did": "did:key:zOther", "is_self": false },
+            { "did": "did:key:zAccount", "is_self": true }
+        ] });
+        assert_eq!(
+            self_member_did_from_repository(&rows).as_deref(),
+            Some("did:key:zAccount")
+        );
+        assert_eq!(
+            self_member_did_from_repository(&json!({ "members": [] })),
+            None
+        );
     }
 
     #[test]
-    fn it_reads_the_profile_off_the_first_row() {
-        let rows = json!([
-            { "this": "r1", "fields": { "profile": "did:key:zMe" } },
-            { "this": "r2", "fields": { "profile": "did:key:zMe" } }
-        ]);
-        assert_eq!(
-            self_did_from_conclusions(&rows).as_deref(),
-            Some("did:key:zMe")
-        );
-        assert_eq!(self_did_from_conclusions(&json!([])), None);
+    fn it_observes_a_space_whose_members_do_not_include_the_viewer() {
+        assert!(observes_from_repository(&json!({ "members": [
+            { "did": "did:key:zFounder", "is_self": false }
+        ] })));
+        assert!(!observes_from_repository(&json!({ "members": [
+            { "did": "did:key:zFounder", "is_self": false },
+            { "did": "did:key:zAccount", "is_self": true }
+        ] })));
+        assert!(!observes_from_repository(&json!({ "members": [] })));
+        assert!(!observes_from_repository(&json!({})));
     }
 
     #[test]
@@ -1426,6 +1796,8 @@ mod member_roster {
         assert!(body.contains("xyz.tonk.membership/name"));
         assert!(body.contains("xyz.tonk.membership/member"));
         assert!(body.contains("xyz.tonk.membership/role"));
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["predicate"]["with"]["invitation"]["optional"], true);
         // Directory mode: `this` is an unbound variable, so every member row
         // comes back. A bound `this` would return one. `serde_json::Value`'s
         // `Display` is the COMPACT formatter (no spaces around `:`/`,`), so
@@ -1780,7 +2152,7 @@ pub fn forget_invite_claim_json(space: &str, time: f64) -> Value {
                     "concept": {
                         "description": "Drop a space's invite row once its link has been copied.",
                         "with": {
-                            "time":  { "the": "xyz.tonk.command.forget-invite/time", "as": "Float" },
+                            "time":  { "the": "xyz.tonk.command.forget-invite/time", "as": "float:64" },
                             "space": { "the": "xyz.tonk.command.forget-invite/space", "as": "Entity" }
                         }
                     }
@@ -1794,6 +2166,94 @@ pub fn forget_invite_claim_json(space: &str, time: f64) -> Value {
     })
 }
 
+/// Build the routeless FAB request for a fresh scoped tool invitation.
+///
+/// `space` is additive raw command data rather than a required field on the
+/// seeded command concept, so older spaces keep matching the same stable wire
+/// command while current app chrome can name its target explicitly.
+pub fn tool_connection_claim_json(space: &str, time: f64) -> Value {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Create a separate scoped invitation for a tool.",
+                        "with": {
+                            "time":  { "the": "xyz.tonk.agent-handoff/time", "as": "float:64" },
+                            "fresh": { "the": "xyz.tonk.agent-handoff/fresh", "as": "Text" },
+                            "space": { "the": "xyz.tonk.agent-handoff/space", "as": "Entity" }
+                        }
+                    }
+                },
+                "parameters": {
+                    "time": time,
+                    "fresh": "new",
+                    "space": space
+                }
+            }
+        }]
+    })
+}
+
+/// Read the worker's session-only scoped-invitation response directly.
+///
+/// The optional mode is absent when the deployment was built without
+/// `connection-invites`; status and link still produce an explicit refusal.
+pub fn tool_connection_state_query_body(subject: &str) -> Result<String, String> {
+    if subject.is_empty() {
+        return Err("tool_connection_state_query_body: empty subject".into());
+    }
+    Ok(json!({
+        "predicate": {
+            "with": {
+                "status": {
+                    "the": "xyz.tonk.agent-handoff/status", "as": "Text",
+                    "cardinality": "one"
+                },
+                "link": {
+                    "the": "xyz.tonk.agent-handoff/link", "as": "Text",
+                    "cardinality": "one"
+                },
+                "mode": {
+                    "the": "xyz.tonk.agent-handoff/mode", "as": "Text",
+                    "cardinality": "one", "optional": true
+                }
+            }
+        },
+        "terms": {
+            "this": subject,
+            "status": { "?": { "name": "status" } },
+            "link": { "?": { "name": "link" } },
+            "mode": { "?": { "name": "mode" } }
+        }
+    })
+    .to_string())
+}
+
+/// Secondary convenience copy for handing the same scoped link to an agent.
+/// The direct link action and this prompt never mint separate identities.
+pub fn tool_connection_prompt(link: &str, origin: &str) -> String {
+    let loopback = reqwest::Url::parse(origin)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|host| matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]"));
+    let executable = if loopback {
+        "tonk"
+    } else {
+        "npx --yes @tonk/cli"
+    };
+    let via = if origin.is_empty() || origin == "https://tonk.network" {
+        String::new()
+    } else {
+        format!(" --via \"{origin}\"")
+    };
+    format!(
+        "Connect to this Tonk space with the scoped tool link below:\n\n  {executable} join{via} '{link}'\n\nKeep the link private. Only report connected after the command prints \"Agent connection confirmed\". If interrupted, resume with `{executable} --space NAME join`.\n\nAfter connecting, work from the user's task. Use the space name printed by join as NAME in subsequent commands. Read `{executable} --space NAME space agents get` for shared space instructions. Run `{executable} --space NAME show` once if you need the schema. Inspect only the relevant concept or entity: `{executable} --space NAME query CONCEPT --where FIELD=VALUE` to find an instance (text/boolean equality), or `{executable} --space NAME show CONCEPT ENTITY` for a known instance. Once the target and fields are clear, make the requested change and check its local verification and push status. If the receipt says verification: verified, no extra show is needed for that check; otherwise inspect the entity with show. UI changes still need rendering. Missing space instructions are normal; continue with the task. Do not query every concept, enumerate all views, or read every guide before acting; expand discovery only to answer a specific question blocking the task. For workflow help, use `{executable} help tutorial`. If no task was supplied, report connected and ask what to do next."
+    )
+}
+
 pub fn invite_claim_json(space: &str, time: f64) -> Value {
     json!({
         "claims": [{
@@ -1804,7 +2264,7 @@ pub fn invite_claim_json(space: &str, time: f64) -> Value {
                     "concept": {
                         "description": "Mint a repo invite — generates a membership keypair and delegation.",
                         "with": {
-                            "time":  { "the": "xyz.tonk.command.invite/time", "as": "Float" },
+                            "time":  { "the": "xyz.tonk.command.invite/time", "as": "float:64" },
                             "space": { "the": "xyz.tonk.invite/space", "as": "Entity" }
                         }
                     }
@@ -1827,7 +2287,7 @@ pub fn invite_claim_json(space: &str, time: f64) -> Value {
 /// the assert incomplete, so the transient would commit and match nothing.
 pub fn enable_sync_claim_json(space: &str, remote: &str, share: bool, time: f64) -> Value {
     let mut with = json!({
-        "time":  { "the": "xyz.tonk.command.enable-sync/time", "as": "Float" },
+        "time":  { "the": "xyz.tonk.command.enable-sync/time", "as": "float:64" },
         "space": { "the": "xyz.tonk.enable-sync/space", "as": "Entity" }
     });
     let mut parameters = json!({
@@ -1882,6 +2342,40 @@ mod invite {
         );
         assert!(app["parameters"].get("marker").is_none());
         assert!(app["parameters"].get("this").is_none());
+    }
+
+    #[test]
+    fn tool_connection_names_the_space_and_requests_a_fresh_identity() {
+        let claim = tool_connection_claim_json("did:key:z6Mk", 2.0);
+        let app = &claim["claims"][0]["application"];
+        assert_eq!(app["parameters"]["space"], "did:key:z6Mk");
+        assert_eq!(app["parameters"]["fresh"], "new");
+        assert_eq!(
+            app["predicate"]["concept"]["with"]["space"]["the"],
+            "xyz.tonk.agent-handoff/space"
+        );
+    }
+
+    #[test]
+    fn tool_connection_query_and_prompt_preserve_the_scoped_link() {
+        let body = tool_connection_state_query_body("did:key:z6Mk").unwrap();
+        assert!(body.contains("xyz.tonk.agent-handoff/status"));
+        assert!(body.contains("xyz.tonk.agent-handoff/link"));
+        assert!(body.contains("xyz.tonk.agent-handoff/mode"));
+        let link = "https://example.test/join?agent=grants#tonk-agent-v2=secret";
+        let prompt = tool_connection_prompt(link, "https://staging.tonk.xyz");
+        assert!(prompt.contains(link));
+        assert!(prompt.contains("Agent connection confirmed"));
+        assert!(prompt.contains("npx --yes @tonk/cli join --via \"https://staging.tonk.xyz\""));
+        assert_eq!(prompt.matches(link).count(), 1);
+        let production = tool_connection_prompt(link, "https://tonk.network");
+        assert!(production.contains("npx --yes @tonk/cli join"));
+        assert!(!production.contains("--via"));
+        assert!(production.contains("`npx --yes @tonk/cli --space NAME join`"));
+        assert!(
+            tool_connection_prompt(link, "https://localhost:8080")
+                .contains("tonk join --via \"https://localhost:8080\"")
+        );
     }
 }
 
@@ -1955,7 +2449,7 @@ pub fn account_customer_query_body() -> String {
     json!({
         "predicate": { "with": {
             "registered_at": {
-                "the": "xyz.tonk.account/registered-at", "as": "UnsignedInteger",
+                "the": "xyz.tonk.account/registered-at", "as": "natural:64",
                 "cardinality": "one"
             },
             "email": {
@@ -1992,7 +2486,7 @@ pub fn account_active_query_body() -> String {
     json!({
         "predicate": { "with": {
             ACTIVATION_FIELD: {
-                "the": "xyz.tonk.account/activated-at", "as": "UnsignedInteger",
+                "the": "xyz.tonk.account/activated-at", "as": "natural:64",
                 "cardinality": "one"
             }
         } },
@@ -2067,7 +2561,7 @@ pub fn share_blocked_query_body(subject: &str) -> Result<String, String> {
         "predicate": { "with": {
             "blocked": { "the": "xyz.tonk.share/blocked", "as": "Text", "cardinality": "one" },
             "detail":  { "the": "xyz.tonk.share/detail",  "as": "Text", "cardinality": "one" },
-            "time":    { "the": "xyz.tonk.share/time",    "as": "Float", "cardinality": "one" }
+            "time":    { "the": "xyz.tonk.share/time",    "as": "float:64", "cardinality": "one" }
         } },
         "terms": {
             "this": subject,
@@ -2280,7 +2774,16 @@ mod share_state_blocked {
 /// Asserting a body *contains* an attribute URI does not catch this — the
 /// body is well-formed JSON either way. Only the variant name matters.
 #[cfg(test)]
-const WIRE_TYPES: [&str; 6] = ["Text", "Entity", "Float", "Integer", "Bytes", "Boolean"];
+const WIRE_TYPES: [&str; 8] = [
+    "Text",
+    "Entity",
+    "Float",
+    "Integer",
+    "Bytes",
+    "Boolean",
+    "float:64",
+    "natural:64",
+];
 
 #[cfg(test)]
 mod wire_types {
@@ -2294,6 +2797,7 @@ mod wire_types {
         let bodies: Vec<String> = vec![
             repo_name_query_body("did:key:zX").expect("repo name"),
             member_roster_query_body(),
+            member_invitations_query_body(),
             space_list_query_body(),
             profile_name_query_body(),
             invite_link_query_body("did:key:zX").expect("invite link"),

@@ -35,13 +35,44 @@
 //!   redelegating from the embedded ephemeral key. Absence marks it as
 //!   **audience-scoped** — only the chain's recorded audience DID can claim.
 //!
+//! ## Ticket links
+//!
+//! ```text
+//! <origin>/space/<space-did>#<base58-seed>
+//! ```
+//!
+//! An audience-open invite whose chain waits in the space, kept there as
+//! the seed's key's ticket, rather than riding in the URL. The redeemer
+//! claims it from the access service at the link's origin; see
+//! [`ticket`].
+//!
+//! ## Join addresses
+//!
+//! ```text
+//! <origin>/join/<link>
+//! ```
+//!
+//! Any of the links above, carried whole after another host's `/join/`,
+//! so a recipient joins on the host they keep their account on; see
+//! [`join_address`].
+//!
 //! The open/scoped distinction is the *audience* axis. The *subject* axis is
 //! always scoped to a specific repo — orthogonal and non-negotiable.
 //!
 //! [`Subject::Specific`]: dialog_ucan_core::subject::Subject::Specific
 //! [`Subject::Any`]: dialog_ucan_core::subject::Subject::Any
 
+mod attribution;
+pub mod connection;
+pub mod delivery;
+pub mod join_address;
+pub mod local_space_link;
+pub mod public;
 pub mod shortcut;
+pub mod ticket;
+
+pub use attribution::{INVITER, inviter, inviter_meta};
+pub use ticket::Ticket;
 
 use anyhow::{Context, Result};
 use dialog_credentials::{Ed25519Signer, Signer};
@@ -172,7 +203,7 @@ pub fn base_url_for_remote(endpoint: &str) -> Result<String> {
 
 /// Length in bytes of the Ed25519 seed embedded in the URL fragment for
 /// audience-open invites.
-const SEED_LEN: usize = 32;
+pub(crate) const SEED_LEN: usize = 32;
 
 /// Ed25519 seed for the ephemeral key in an audience-open invite.
 pub type EphemeralSeed = [u8; SEED_LEN];
@@ -204,6 +235,8 @@ pub enum InviteAudience {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Invite {
+    /// Original grant for a validated delivery envelope; never accepted independently.
+    original: Option<DelegationChain>,
     /// Delegation chain granting access to the repo named by [`Invite::subject`].
     pub chain: DelegationChain,
     /// Whether the invite is open to any redeemer or scoped to one DID.
@@ -234,7 +267,8 @@ impl Invite {
     /// Returns an error if the chain's subject is not
     /// [`Subject::Specific`][dialog_ucan_core::subject::Subject::Specific],
     /// or if `audience` is [`InviteAudience::Open`] and the seed does
-    /// not derive the chain's tail audience DID.
+    /// not derive the chain's tail audience DID, or signed inviter metadata
+    /// is malformed or not bound to the signing identity.
     pub async fn new(
         chain: DelegationChain,
         audience: InviteAudience,
@@ -245,6 +279,7 @@ impl Invite {
             "invite delegation chain must target a specific repo subject; \
              chains with Subject::Any are not valid invites"
         );
+        inviter(&chain)?;
         if let InviteAudience::Open { seed } = &audience {
             let signer = Ed25519Signer::import(seed)
                 .await
@@ -260,6 +295,7 @@ impl Invite {
             );
         }
         Ok(Self {
+            original: None,
             // The chain's own signed name, when the grant records one —
             // the invitation's historical fact, read before any loose
             // carrier gets a say.
@@ -292,6 +328,11 @@ impl Invite {
         self
     }
 
+    /// The signed invitation used for roster provenance, before service completion.
+    pub fn invitation_chain(&self) -> &DelegationChain {
+        self.original.as_ref().unwrap_or(&self.chain)
+    }
+
     /// Repo subject DID. Guaranteed specific by construction.
     pub fn subject(&self) -> &Did {
         self.chain
@@ -321,13 +362,26 @@ impl Invite {
     pub async fn parse_url(url: &str) -> Result<Self> {
         let parsed = Url::parse(url).context("invite URL is not a valid URL")?;
 
+        let mut original: Option<String> = None;
+        let mut delivery_id: Option<String> = None;
         let mut access: Option<String> = None;
         let mut remote_url: Option<Url> = None;
         let mut revocation_url: Option<Url> = None;
         let mut space_name: Option<String> = None;
         for (key, value) in parsed.query_pairs() {
             match key.as_ref() {
-                "access" => access = Some(value.into_owned()),
+                "original" => {
+                    anyhow::ensure!(original.is_none(), "duplicate original");
+                    original = Some(value.into_owned());
+                }
+                "delivery" => {
+                    anyhow::ensure!(delivery_id.is_none(), "duplicate delivery");
+                    delivery_id = Some(value.into_owned());
+                }
+                "access" => {
+                    anyhow::ensure!(access.is_none(), "duplicate access");
+                    access = Some(value.into_owned());
+                }
                 "remote" => {
                     let r = Url::parse(&value)
                         .context("invite `remote` parameter is not a valid URL")?;
@@ -356,6 +410,21 @@ impl Invite {
                 chain_bytes.len()
             )
         })?;
+
+        if original.is_some() || delivery_id.is_some() {
+            anyhow::ensure!(
+                parsed.fragment().is_none(),
+                "delivery cannot carry bearer authority"
+            );
+            let id = delivery_id.context("delivery identifier missing")?;
+            return delivery::DeliveryEnvelope {
+                invitation: id.clone(),
+                original: original.context("original invitation missing")?,
+                completed: access,
+            }
+            .into_invite(chain.audience(), &id)
+            .await;
+        }
 
         // The chain's own signed address wins over the loose parameter,
         // which stays as the carrier for chains minted before the meta
@@ -423,6 +492,17 @@ impl Invite {
         {
             let mut pairs = url.query_pairs_mut();
             pairs.append_pair("access", &access);
+            if let Some(original) = &self.original {
+                let leaf = original.proofs().last().context("missing original grant")?;
+                let Some(Ipld::String(id)) = leaf.meta().get(delivery::DELIVERY_ID) else {
+                    anyhow::bail!("original delivery identifier missing");
+                };
+                pairs.append_pair(
+                    "original",
+                    &bs58::encode(original.to_bytes()?).into_string(),
+                );
+                pairs.append_pair("delivery", id);
+            }
             if let Some(remote) = loose_remote {
                 pairs.append_pair("remote", remote.as_str());
             }

@@ -22,20 +22,16 @@ use std::collections::HashSet;
 
 use ::axum::extract::State;
 use ::axum::response::Redirect;
-use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 use tonk_schema::domain::replica::Profile as ProfileEntity;
 use tonk_schema::{LegacyReplica, Replica, SpaceKind, SpaceStatus, prelude::DidExt as _};
 
 use super::AppState;
 use crate::TonkWorkerError;
-
-/// The single branch the profile repository lives on. Mirrors the
-/// private copies in sibling modules.
-const PROFILE_BRANCH: &str = "main";
 
 /// Tally of what the migration stamped.
 #[derive(Clone, Copy, Debug, Default)]
@@ -77,7 +73,7 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
     let meta = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|e| {
@@ -149,7 +145,7 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
     let mut transaction = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction();
     let mut report = MigrationReport::default();
 
@@ -208,7 +204,6 @@ mod tests {
 
     use dialog_credentials::Ed25519Signer;
     use dialog_varsig::Principal as _;
-    use tokio::sync::RwLock;
 
     use super::*;
 
@@ -218,7 +213,7 @@ mod tests {
         let account = Ed25519Signer::import(&[75; 32]).await.unwrap().did();
         tonk.reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .transaction()
             .assert(Replica::account(tonk.profile.did(), account))
             .commit()
@@ -226,7 +221,7 @@ mod tests {
             .await
             .unwrap();
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
-        let state = Arc::new(RwLock::new(tonk));
+        let state = Arc::new(crate::StateLock::new(tonk));
 
         let report = run_migration(state.clone()).await.unwrap();
         assert_eq!(report.migrated, 0);
@@ -236,7 +231,7 @@ mod tests {
         let rows: Vec<SpaceStatus> = tonk
             .reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .unwrap()

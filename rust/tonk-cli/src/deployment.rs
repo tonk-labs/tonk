@@ -18,6 +18,10 @@ pub struct DeploymentDefaults {
     /// standalone revocation registry was deleted, and nothing here records
     /// one.
     pub access_remote: Url,
+    /// Access-service signing identity advertised by the same deployment.
+    /// Older deployments may omit it; callers that require service-bound
+    /// authorization must reject that absence themselves.
+    pub service_did: Option<String>,
 }
 
 /// Discover content defaults from the exact deployment used for account
@@ -46,14 +50,102 @@ pub async fn discover(account_url: &str) -> Result<DeploymentDefaults> {
         .json::<DeploymentConfig>()
         .await
         .context("deployment discovery returned malformed configuration")?;
-    let _ = config;
+    let service_did = config.service_did.filter(|did| !did.trim().is_empty());
     let access_remote = ceremony_origin
         .join("/ucan/")
         .context("failed to form deployment access URL")?;
     Ok(DeploymentDefaults {
         ceremony_origin,
         access_remote,
+        service_did,
     })
+}
+
+/// Optional deployment restriction for accountless invitation imports.
+/// When set (or `--via` is given), an invitation must name this
+/// deployment; when unset, the invitation's own deployment is used, as the
+/// browser does.
+pub const CONNECTION_ORIGIN_ENV: &str = "TONK_CONNECTION_ORIGIN";
+
+fn connection_origin(explicit: Option<&str>) -> Result<Url> {
+    match explicit {
+        None => ceremony_origin(crate::account::DEFAULT_LINK_PAGE),
+        Some(value) => {
+            let url = validated_http_url(value, "connection deployment origin")?;
+            anyhow::ensure!(
+                url.path() == "/" && url.query().is_none() && url.fragment().is_none(),
+                "connection deployment must be an origin without a path, query or fragment"
+            );
+            origin_url(&url)
+        }
+    }
+}
+
+/// Resolve the deployment a signed invitation names. By default that is the
+/// invitation's own deployment, the same one a browser join uses; `--via` or
+/// [`CONNECTION_ORIGIN_ENV`] restricts it to a configured deployment. Either
+/// way the endpoint must be a deployment's `/ucan/` route, and the deployment
+/// must answer its discovery document. No account is loaded and no approval
+/// page is opened.
+pub async fn discover_connection_remote(claimed_remote: &Url, via: Option<&str>) -> Result<Url> {
+    let configured = match via {
+        Some(via) => Some(via.to_owned()),
+        None => std::env::var(CONNECTION_ORIGIN_ENV)
+            .map(Some)
+            .or_else(|error| match error {
+                std::env::VarError::NotPresent => Ok(None),
+                std::env::VarError::NotUnicode(_) => {
+                    Err(anyhow::anyhow!("connection deployment origin is not UTF-8"))
+                }
+            })?,
+    };
+    discover_connection_remote_at(claimed_remote, configured.as_deref()).await
+}
+
+async fn discover_connection_remote_at(
+    claimed_remote: &Url,
+    explicit: Option<&str>,
+) -> Result<Url> {
+    let origin = match explicit {
+        Some(_) => connection_origin(explicit)?,
+        None => claimed_origin(claimed_remote)?,
+    };
+    let remote = origin.join("/ucan/")?;
+    anyhow::ensure!(
+        *claimed_remote == remote,
+        "connection_untrusted_route: this invitation is for {}, but joining is restricted to {origin} \
+         (by --via or {CONNECTION_ORIGIN_ENV})",
+        claimed_origin(claimed_remote)
+            .map(|claimed| claimed.to_string())
+            .unwrap_or_else(|_| claimed_remote.to_string()),
+    );
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .context("failed to build connection discovery client")?;
+    let response = client
+        .get(origin.join("/.well-known/tonk")?)
+        .send()
+        .await
+        .context("connection deployment discovery is unavailable")?;
+    anyhow::ensure!(
+        response.status().is_success(),
+        "connection deployment discovery failed"
+    );
+    let _: DeploymentConfig = response
+        .json()
+        .await
+        .context("connection deployment configuration is invalid")?;
+    Ok(remote)
+}
+
+/// The deployment origin of an invitation's signed endpoint, held to the same
+/// rules as a configured origin: https (or loopback http), no userinfo.
+fn claimed_origin(claimed_remote: &Url) -> Result<Url> {
+    let url = validated_http_url(claimed_remote.as_str(), "invitation endpoint")?;
+    origin_url(&url)
 }
 
 /// The registry record for a freshly linked account.
@@ -146,6 +238,117 @@ mod tests {
             let _ = axum::serve(listener, app).await;
         });
         Ok((origin, handle))
+    }
+
+    #[tokio::test]
+    async fn connection_discovery_restricts_to_a_configured_origin() -> Result<()> {
+        let (origin, server) = deployment_server("/accounts/").await?;
+        let remote: Url = format!("{origin}/ucan/").parse()?;
+        assert_eq!(
+            discover_connection_remote_at(&remote, Some(&origin)).await?,
+            remote
+        );
+        let mismatch: Url = "https://untrusted.example/ucan/".parse()?;
+        let error = discover_connection_remote_at(&mismatch, Some(&origin))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("connection_untrusted_route"), "{error}");
+        // Names both sides and how the restriction was set.
+        assert!(error.contains("https://untrusted.example/"), "{error}");
+        assert!(error.contains(&origin), "{error}");
+        assert!(error.contains(CONNECTION_ORIGIN_ENV), "{error}");
+        server.abort();
+        Ok(())
+    }
+
+    /// With nothing configured, an invitation joins through its own
+    /// deployment, as a browser join does.
+    #[tokio::test]
+    async fn connection_discovery_defaults_to_the_invitation_deployment() -> Result<()> {
+        let (origin, server) = deployment_server("/accounts/").await?;
+        let remote: Url = format!("{origin}/ucan/").parse()?;
+        assert_eq!(discover_connection_remote_at(&remote, None).await?, remote);
+        server.abort();
+        Ok(())
+    }
+
+    /// Following the invitation's deployment still requires it to be one: the
+    /// endpoint is its origin's `/ucan/` route, over https or loopback http,
+    /// and the origin serves a discovery document.
+    #[tokio::test]
+    async fn connection_discovery_requires_the_invitation_to_name_a_deployment() -> Result<()> {
+        let (origin, server) = deployment_server("/accounts/").await?;
+        let elsewhere: Url = format!("{origin}/other/").parse()?;
+        assert!(
+            discover_connection_remote_at(&elsewhere, None)
+                .await
+                .unwrap_err()
+                .to_string()
+                .starts_with("connection_untrusted_route")
+        );
+        server.abort();
+
+        let plaintext: Url = "http://deployment.example/ucan/".parse()?;
+        assert!(
+            discover_connection_remote_at(&plaintext, None)
+                .await
+                .is_err()
+        );
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+        let silent = format!("http://{}/ucan/", listener.local_addr()?);
+        let empty = tokio::spawn(async move {
+            let _ = axum::serve(listener, Router::new()).await;
+        });
+        let error = discover_connection_remote_at(&silent.parse()?, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "connection deployment discovery failed");
+        empty.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn connection_discovery_refuses_redirects() -> Result<()> {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+        let origin = format!("http://{}", listener.local_addr()?);
+        let app = Router::new().route(
+            "/.well-known/tonk",
+            get(|| async {
+                axum::response::Redirect::temporary("https://untrusted.example/.well-known/tonk")
+            }),
+        );
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let remote: Url = format!("{origin}/ucan/").parse()?;
+        assert_eq!(
+            discover_connection_remote_at(&remote, Some(&origin))
+                .await
+                .unwrap_err()
+                .to_string(),
+            "connection deployment discovery failed"
+        );
+        server.abort();
+        Ok(())
+    }
+
+    #[test]
+    fn connection_origin_is_independent_of_account_and_invite_data() {
+        assert_eq!(
+            connection_origin(None).unwrap().as_str(),
+            "https://tonk.network/"
+        );
+        for invalid in [
+            "http://remote.example",
+            "https://example.test/path",
+            "https://example.test/#secret",
+            "https://user:secret@example.test",
+        ] {
+            assert!(connection_origin(Some(invalid)).is_err());
+        }
     }
 
     #[tokio::test]

@@ -18,7 +18,6 @@ use ::axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_csv::{CsvExporter, CsvImporter};
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
@@ -26,6 +25,7 @@ use std::io::Cursor;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 
 use super::AppState;
 use super::evaluate::EvaluatePath;
@@ -66,9 +66,16 @@ fn strip_governance_rows(csv: &str) -> String {
 pub async fn export(
     State(state): State<AppState>,
     Path(path): Path<EvaluatePath>,
+    headers: HeaderMap,
 ) -> Result<Response, TonkWorkerError> {
+    if super::names_profile(&state, &path.repo).await {
+        let path = ProfileExportPath {
+            branch: path.branch,
+        };
+        return export_profile(State(state), Path(path), headers).await;
+    }
     log!("export repo={}, branch={}", path.repo, path.branch);
-    let tonk_state = state.write().await;
+    let tonk_state = state.read().await;
     let tonk_branch = tonk_state
         .reactor
         .repository(&path.repo)
@@ -80,7 +87,7 @@ pub async fn export(
     ))
 }
 
-/// `GET /api/profile/branch/{branch}/export`
+/// `GET /api/repository/profile:tonk/branch/{branch}/export`
 ///
 /// The profile's counterpart to [`export`]. The profile is a singleton,
 /// so there is no `repo` segment and the branch resolves through
@@ -102,7 +109,7 @@ pub async fn export_profile(
         .and_then(|value| value.to_str().ok())
         .is_some_and(|accept| accept.contains(SNAPSHOT_MEDIA_TYPE));
 
-    let tonk_state = state.write().await;
+    let tonk_state = state.read().await.clone();
     let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
 
     // CSV ships FACTS; the snapshot ships the tree itself -- every block
@@ -201,7 +208,7 @@ async fn export_branch_snapshot(
         .revision()
         .ok_or_else(|| TonkWorkerError::NotFound("branch has no revision".into()))?;
     let root = dialog_common::Blake3Hash::from(*revision.tree.hash());
-    let repository = dialog_repository::Repository::from(&tonk_state.profile);
+    let repository = dialog_repository::Repository::from(tonk_state.profile.did());
 
     // The profile is a PARTIAL replica: login materializes the
     // operational regions and leaves history and coverage by reference,
@@ -213,14 +220,24 @@ async fn export_branch_snapshot(
     // With no remote configured there is nothing to reach for; sparse is
     // then the honest answer.
     let export = repository.snapshot(revision).export();
-    let export = match repository
-        .remote(super::account_state::ACCOUNT_ACCESS_REMOTE)
-        .load()
-        .perform(&tonk_state.operator)
+    let upstream = match (
+        super::identity::local_root(tonk_state).await,
+        super::account_state::account_remote(tonk_state).await,
+    ) {
+        (Ok(root), Ok(remote)) => tonk_account::peer::connect(
+            dialog_repository::SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
+                remote.as_str(),
+            )),
+            root.root_did,
+            &tonk_state.operator,
+        )
         .await
-    {
-        Ok(upstream) => export.download(upstream),
-        Err(_) => export.sparse(),
+        .ok(),
+        _ => None,
+    };
+    let export = match upstream {
+        Some(upstream) => export.download(upstream),
+        None => export.sparse(),
     };
 
     dialog_repository::codec::encode(export.perform(&tonk_state.operator), vec![root])
@@ -272,7 +289,9 @@ pub async fn import(
         path.branch,
         body.len()
     );
-    let tonk_state = state.write().await;
+    // The import commits under the branch's write lock, so a read guard is
+    // enough.
+    let tonk_state = state.read().await;
     let tonk_branch = tonk_state
         .reactor
         .repository(&path.repo)
@@ -283,7 +302,7 @@ pub async fn import(
     let rows = CsvImporter::from(Cursor::new(body.to_vec()))
         .collect::<Vec<_>>()
         .await;
-    let (rest, documents) = tonk_document::transfer::take_documents(rows);
+    let (_, documents) = tonk_document::transfer::take_documents(rows);
     if !documents.is_empty() {
         let session = tonk_branch
             .acquire(&tonk_state.operator)
@@ -293,11 +312,40 @@ pub async fn import(
             .await
             .map_err(|e| TonkWorkerError::Router(e.to_string()))?;
     }
-    let revision = tonk_branch
-        .import(futures_util::stream::iter(rest))
-        .perform(&tonk_state.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Router(e.to_string()))?;
+    // The import publishes against the head it read, and nothing holds
+    // other writers of the branch off meanwhile, so one that loses the
+    // head's race reads the head again and imports onto it.
+    const IMPORT_ATTEMPTS: usize = 4;
+    let mut attempt = 0;
+    let revision = loop {
+        attempt += 1;
+        let rows = CsvImporter::from(Cursor::new(body.to_vec()))
+            .collect::<Vec<_>>()
+            .await;
+        let (rest, _) = tonk_document::transfer::take_documents(rows);
+        let importer = futures_util::stream::iter(rest);
+        match tonk_branch
+            .import(importer)
+            .perform(&tonk_state.operator)
+            .await
+        {
+            Ok(revision) => break revision,
+            Err(dialog_reactor::ImportError::Commit(dialog_repository::CommitError::Publish(
+                dialog_repository::PublishError::VersionMismatch { .. },
+            ))) if attempt < IMPORT_ATTEMPTS => {
+                let session = tonk_branch
+                    .acquire(&tonk_state.operator)
+                    .await
+                    .map_err(|e| TonkWorkerError::Router(e.to_string()))?;
+                session
+                    .handle()
+                    .refresh(&tonk_state.operator)
+                    .await
+                    .map_err(|e| TonkWorkerError::Router(e.to_string()))?;
+            }
+            Err(e) => return Err(TonkWorkerError::Router(e.to_string())),
+        }
+    };
 
     // Announce the moved head on the branch channel so subscribed
     // UIs refresh their revision/sync badges, the same as
@@ -355,7 +403,7 @@ mod tests {
     /// the real one a client takes.
     async fn seed(state: &AppState, repo: &str) {
         let (app, _lsp) = api_router_from_state(state.clone());
-        let doc = "attribute!: &probe-name\n  description: A name\n  the: xyz.tonk.probe/name\n  as: text\n  cardinality: one\n";
+        let doc = "attribute!: &probe-name\n  description: A name\n  the: xyz.tonk.probe/name\n  as: text\n  cardinality: :one\n";
         let response = app
             .oneshot(
                 Request::builder()

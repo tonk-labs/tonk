@@ -1,5 +1,7 @@
 //! Built-in manuals served by `tonk help <guide>`.
 
+/// Shared agent context used by MCP, desktop and browser hosts.
+pub const AGENT: &str = include_str!("guide-agent.md");
 /// Tonk vocabulary and mental model.
 pub const GLOSSARY: &str = include_str!("guide-glossary.md");
 /// Asserted-notation grammar reference.
@@ -12,6 +14,8 @@ pub const TUTORIAL: &str = include_str!("guide-tutorial.md");
 pub const SYNC: &str = include_str!("guide-sync.md");
 /// Views and display templates guide.
 pub const VIEWS: &str = include_str!("guide-views.md");
+/// Routes: pages at paths.
+pub const ROUTES: &str = include_str!("guide-routes.md");
 /// Events, effects, and rules guide.
 pub const EVENTS: &str = include_str!("guide-events.md");
 /// `<tonk-display>` reference.
@@ -26,11 +30,13 @@ pub const ELEMENT_TONK_TABLE: &str = include_str!("guide-element-tonk-table.md")
 /// Every guide name, in the order `tonk help -g` presents it.
 pub const TOPICS: &[&str] = &[
     "glossary",
+    "agent",
     "notation",
     "spaces",
     "tutorial",
     "sync",
     "views",
+    "routes",
     "events",
     "tonk-display",
     "tonk-prose",
@@ -42,11 +48,13 @@ pub const TOPICS: &[&str] = &[
 pub fn description(name: &str) -> Option<&'static str> {
     match name {
         "glossary" => Some("The words Tonk uses for facts, concepts, and writes"),
+        "agent" => Some("Shared Tonk tools, authoring context and verification"),
         "notation" => Some("Notation syntax, queries, assertions, names, and joins"),
         "spaces" => Some("Space selection, directory bindings, and resolution order"),
         "tutorial" => Some("The discover, define, write, view, and share loop"),
-        "sync" => Some("Upstreams, remotes, automatic sync, invites, and joins"),
+        "sync" => Some("Upstreams, remotes, automatic sync, and scoped connections"),
         "views" => Some("Templates, view resolution, and web components"),
+        "routes" => Some("Pages at paths: route patterns and route models"),
         "events" => Some("Effects, rules, transient concepts, and DOM events"),
         "tonk-display" => Some("Render an entity through a view"),
         "tonk-prose" => Some("Markdown editor element"),
@@ -60,11 +68,13 @@ pub fn description(name: &str) -> Option<&'static str> {
 pub fn topic(name: &str) -> Option<&'static str> {
     match name {
         "glossary" => Some(GLOSSARY),
+        "agent" => Some(AGENT),
         "notation" => Some(NOTATION),
         "spaces" => Some(SPACES),
         "tutorial" => Some(TUTORIAL),
         "sync" => Some(SYNC),
         "views" => Some(VIEWS),
+        "routes" => Some(ROUTES),
         "events" => Some(EVENTS),
         "tonk-display" => Some(ELEMENT_TONK_DISPLAY),
         "tonk-prose" => Some(ELEMENT_TONK_PROSE),
@@ -78,6 +88,8 @@ pub fn topic(name: &str) -> Option<&'static str> {
 pub const GUIDE: &str = concat!(
     include_str!("guide-glossary.md"),
     "\n",
+    include_str!("guide-agent.md"),
+    "\n",
     include_str!("../../tonk-notation/guide.md"),
     "\n",
     include_str!("guide-spaces.md"),
@@ -87,6 +99,8 @@ pub const GUIDE: &str = concat!(
     include_str!("guide-sync.md"),
     "\n",
     include_str!("guide-views.md"),
+    "\n",
+    include_str!("guide-routes.md"),
     "\n",
     include_str!("guide-events.md"),
     "\n",

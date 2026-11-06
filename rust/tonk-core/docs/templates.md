@@ -42,7 +42,7 @@ conclusion.fields  = { title: "...", summary: "...", ... }
 
 ## Cardinality drives iteration
 
-A field declared `cardinality: many` holds a *list* of values, not a
+A field declared `cardinality: :many` holds a *list* of values, not a
 scalar. The engine renders a many-field by **repeating the smallest
 subtree that contains the hole**, once per value:
 
@@ -71,7 +71,7 @@ The rule that picks the iteration root is purely structural (it does
 At **render** time the engine looks at the actual value: an
 `Ipld::List` iterates (one clone per item), a scalar renders once. So
 cardinality is observed from the data, not hard-coded in the plan — a
-`cardinality: one` field is simply the degenerate case that iterates
+`cardinality: :one` field is simply the degenerate case that iterates
 exactly once.
 
 Inside a repeated clone, the iterating field is *shadowed* to the
@@ -250,9 +250,13 @@ view!:
       </ul>
       <div class="launchpad">
         <h1>No trips yet</h1>
-        <button onclick=create>Plan one</button>
+        <button on:trip-create=trip/create>Plan one</button>
       </div>
 ```
+
+(The launchpad is chrome, so it has no `{this}`; `on/trip-create` is an
+`event!:` declaration whose sources don't read one, e.g. `time: ".timeStamp"`.
+See `tonk help events`.)
 
 The `<ul class="trips">` repeat root clones per trip; the
 `<div class="launchpad">` is chrome (no `{this}`/`{field}` reference), so
@@ -281,7 +285,7 @@ view!:
       </ul>
       <tonk-fallback>
         <h1>No trips yet</h1>
-        <button onclick=create>Plan one</button>
+        <button on:trip-create=trip/create>Plan one</button>
       </tonk-fallback>
 ```
 

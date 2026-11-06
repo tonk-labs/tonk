@@ -65,7 +65,18 @@ pub mod element_source;
 // announcing half (`assets/element-runtime.js`) on purpose — neither
 // knows how the other works.
 #[cfg(target_arch = "wasm32")]
+mod embed;
+#[cfg(target_arch = "wasm32")]
 mod fallback;
+#[cfg(target_arch = "wasm32")]
+mod font;
+/// The `<tonk-introspect>` overlay: run `inspect` from the command
+/// palette, pick a `<tonk-display>`, and see the slots its template
+/// filled, which concept fed them, and which of them just changed. The state machine and the slot
+/// description types are target-independent so they test natively;
+/// the overlay element itself is wasm-only.
+#[cfg(any(target_arch = "wasm32", test))]
+pub mod introspect;
 #[cfg(target_arch = "wasm32")]
 mod notation;
 #[cfg(target_arch = "wasm32")]
@@ -92,14 +103,19 @@ mod view;
 /// Idempotent.
 #[cfg(target_arch = "wasm32")]
 pub fn register() {
+    // Expose this realm's counters as `globalThis.__tonkDiagnostics`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    tonk_common::diagnostics::install_global();
     // Installed first: a tag announced while the other elements are
     // still registering is queued as a DOM mutation, not lost, but the
     // listener has to exist before the first sweep.
     registry::install();
     view::register();
+    introspect::register();
     notation::register();
     element::register();
     fallback::register();
+    font::register();
     component::register();
     upload::register();
 }

@@ -13,16 +13,16 @@
 
 use ::axum::Json;
 use ::axum::body::{Body, Bytes};
-use ::axum::extract::{Path, Request, State};
+use ::axum::extract::{Path, Query as UrlQuery, Request, State};
 use ::axum::http::{HeaderMap, StatusCode, header};
 use ::axum::response::{IntoResponse, Response};
-use axum_wasm_macros::wasm_compat;
 use http_body_util::BodyExt as _;
 use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tonk_handler_macros::wasm_compat;
 
 use crate::reactor::{Conclusion, Query, ReactorError};
 use crate::router::update_pending;
@@ -45,6 +45,16 @@ pub struct ProfileQueryPath {
     pub branch: String,
 }
 
+/// URL parameters for `/query`.
+#[derive(Debug, Default, Deserialize)]
+pub struct QueryParams {
+    /// How deeply the subscribing display is nested (0 when absent).
+    /// The branch notifies lower levels first, so a display learns of a
+    /// change before the displays nested inside it.
+    #[serde(default)]
+    pub level: u32,
+}
+
 /// Handler. Reads body, decides one-shot vs subscription based on
 /// `Accept`, dispatches to the reactor.
 #[wasm_compat]
@@ -54,34 +64,33 @@ pub async fn query(
     headers: HeaderMap,
     request: Request,
 ) -> Result<Response, TonkWorkerError> {
+    if super::names_profile(&state, &path.repo).await {
+        let path = ProfileQueryPath {
+            branch: path.branch,
+        };
+        return query_profile(State(state), Path(path), headers, request).await;
+    }
     let client = request_client(&request);
-    let tonk = state.read().await;
+    // A clone, not a guard: a first-use mount can pull over the network.
+    let tonk = state.read().await.clone();
     // First use of a directory-listed space this device has not
     // replicated mounts it on demand — the lazy half of
     // directory-driven adoption. A no-op for mounted repos.
-    match super::adopt::ensure_space_mounted(&tonk, &path.repo).await {
-        Ok(true) => {
-            super::adopt::schedule_seed_upgrade(&tonk, state.clone(), &path.repo).await;
-        }
-        Ok(false) => {}
-        Err(error) => {
-            tonk_common::log!("on-demand mount of '{}' failed: {error}", path.repo);
-        }
-    }
-    let branch = tonk.reactor.repository(&path.repo).branch(&path.branch);
-    query_on_branch(&tonk, branch, headers, request, client).await
+    super::adopt::mount_on_first_use(&tonk, &state, &path.repo).await;
+    let target = QueryTarget::Space {
+        repo: path.repo.clone(),
+        branch: path.branch.clone(),
+    };
+    query_on_branch(&state, &tonk, target, headers, request, client).await
 }
 
-/// `POST /api/profile/branch/{branch}/query`
-///
-/// Profile-side counterpart to [`query`]. The profile is its own
-/// repository but lives outside the named-repo namespace, so the
-/// route surface is parallel rather than nested. Same body / `Accept`
-/// / response contract — only the branch reference differs. Lets a
-/// `<tonk-display>` read the profile's meta branch (e.g. the Hub's
-/// list of spaces) the same way it reads any repository branch.
+/// [`query`] for the profile's own repository, which [`query`] hands a
+/// request naming it. Same body / `Accept` / response contract; there is
+/// no space to mount. Lets a `<tonk-display>` read the profile's meta
+/// branch (e.g. the Hub's list of spaces) the same way it reads any
+/// repository branch.
 #[wasm_compat]
-pub async fn query_profile(
+async fn query_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileQueryPath>,
     headers: HeaderMap,
@@ -89,8 +98,10 @@ pub async fn query_profile(
 ) -> Result<Response, TonkWorkerError> {
     let client = request_client(&request);
     let tonk = state.read().await;
-    let branch = tonk.reactor.profile_repository().branch(&path.branch);
-    query_on_branch(&tonk, branch, headers, request, client).await
+    let target = QueryTarget::Profile {
+        branch: path.branch.clone(),
+    };
+    query_on_branch(&state, &tonk, target, headers, request, client).await
 }
 
 /// The requesting SW client's id, when the fetch handler stamped one.
@@ -105,16 +116,176 @@ fn request_client(request: &Request) -> Option<String> {
         .filter(|id| !id.is_empty())
 }
 
+/// Move what an earlier release stored on `branch` to the shape this one
+/// reads and writes, the first time this worker opens the branch (see
+/// [`crate::reactor::BranchReference::migrate_once`]): the storage rewrite
+/// under the number band, attribute and concept definitions recorded the
+/// earlier way, and rules stored under an identity an earlier dialog
+/// release gave them. What moved is logged; a failure is logged and
+/// returned, so a stream can tell its page, and the read proceeds on what
+/// the earlier release left.
+pub(super) async fn migrate_while_opening(
+    tonk: &crate::worker::TonkState,
+    branch: crate::reactor::BranchReference<'_>,
+) -> Result<(), ReactorError> {
+    match branch.migrate_once(&tonk.operator).await {
+        Ok(Some(upgraded)) => {
+            if upgraded.storage.is_some() {
+                tonk_common::log!(
+                    "rewrote the storage of '{}' under one number band",
+                    branch.repository.name()
+                );
+            }
+            if !upgraded.definitions.is_empty() {
+                tonk_common::log!(
+                    "moved {} definition(s) on '{}' to their current identity",
+                    upgraded.definitions.moves.len() + upgraded.definitions.rewritten.len(),
+                    branch.repository.name()
+                );
+            }
+            if !upgraded.rules.reinstalled.is_empty() {
+                tonk_common::log!(
+                    "re-installed {} rule(s) on '{}' under their current identity",
+                    upgraded.rules.reinstalled.len(),
+                    branch.repository.name()
+                );
+            }
+            if !upgraded.rules.rewritten.is_empty() {
+                tonk_common::log!(
+                    "rewrote {} rule body(ies) on '{}' in the current format",
+                    upgraded.rules.rewritten.len(),
+                    branch.repository.name()
+                );
+            }
+            Ok(())
+        }
+        Ok(None) => Ok(()),
+        Err(error) if is_absence(&error) => Ok(()),
+        Err(error) => {
+            tonk_common::log!("upgrade on '{}' failed: {error}", branch.repository.name());
+            Err(error)
+        }
+    }
+}
+
+/// The control frame a stream opens with while its branch is being moved
+/// to this release's storage format. The host hands it to the page as a
+/// notice; the rows follow when the move is done.
+const UPGRADING_FRAME: &[u8] = br#"{"control":"upgrading"}"#;
+
+/// The frame a subscription opens with when its branch is not here yet (a
+/// space still joining or syncing in, a repository not mounted after a
+/// restart). It is not an answer: the rows follow when the branch arrives.
+/// An empty set would say "nothing matched", and a page already showing
+/// rows would delete them, then insert them again when the branch comes.
+const PENDING_FRAME: &[u8] = br#"{"control":"pending"}"#;
+
+/// Where a query's branch lives, by name, so a stream that outlives the
+/// request that opened it finds the branch again.
+#[derive(Clone)]
+enum QueryTarget {
+    /// A space, by repository name.
+    Space { repo: String, branch: String },
+    /// The profile's own repository.
+    Profile { branch: String },
+}
+
+impl QueryTarget {
+    fn branch<'a>(
+        &'a self,
+        tonk: &'a crate::worker::TonkState,
+    ) -> crate::reactor::BranchReference<'a> {
+        match self {
+            QueryTarget::Space { repo, branch } => tonk.reactor.repository(repo).branch(branch),
+            QueryTarget::Profile { branch } => tonk.reactor.profile_repository().branch(branch),
+        }
+    }
+}
+
+/// Run `future` detached from the request: on the service worker as a
+/// local task, natively on the runtime.
+fn spawn_detached<F>(future: F)
+where
+    F: std::future::Future<Output = ()> + dialog_common::ConditionalSend + 'static,
+{
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_futures::spawn_local(future);
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    drop(tokio::spawn(future));
+}
+
+/// The stream a page gets when the branch it subscribes to is about to be
+/// moved to this release's storage format: it opens with
+/// [`UPGRADING_FRAME`] at once, so the page says an upgrade is taking
+/// place rather than loading; the move runs detached from this request;
+/// then the subscription opens and its frames follow on the same stream.
+/// A failed move sends `{"control":"upgrade-failed","reason":…}` and the
+/// subscription still opens, on what the earlier release left.
+fn upgrading_response(
+    state: AppState,
+    target: QueryTarget,
+    query: dialog_query::ConceptQuery,
+    level: u32,
+    client: Option<String>,
+) -> Response {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+    let _ = sender.send(Bytes::from_static(UPGRADING_FRAME));
+    spawn_detached(async move {
+        // The guard is held for the move and the subscribe only: the
+        // frames are forwarded below without it, as a stream the request
+        // returned directly would be.
+        let subscribed = {
+            let tonk = state.read().await;
+            let branch = target.branch(&tonk);
+            if let Err(error) = migrate_while_opening(&tonk, branch).await {
+                let failed = serde_json::json!({
+                    "control": "upgrade-failed",
+                    "reason": error.to_string(),
+                });
+                let _ = sender.send(Bytes::from(failed.to_string()));
+            }
+            let mut subscribe = branch.subscribe(query.clone()).level(level);
+            if let Some(client) = client.clone() {
+                subscribe = subscribe.client(client);
+            }
+            match subscribe.perform(&tonk.operator).await {
+                Ok(subscriber) => Ok(subscriber.receiver),
+                Err(error) if is_absence(&error) => {
+                    let _ = sender.send(Bytes::from_static(PENDING_FRAME));
+                    Err(())
+                }
+                Err(error) => {
+                    tonk_common::log!("subscribe after upgrade failed: {error}");
+                    Err(())
+                }
+            }
+        };
+        let Ok(mut frames) = subscribed else {
+            return;
+        };
+        while let Some(frame) = frames.recv().await {
+            if sender.send(frame).is_err() {
+                break;
+            }
+        }
+    });
+    sse_response(receiver)
+}
+
 /// Shared body for [`query`] and [`query_profile`]. Takes a
 /// [`crate::reactor::BranchReference`] so the URL extraction is the
 /// only difference between the two routes.
-async fn query_on_branch<'a>(
-    tonk: &'a crate::worker::TonkState,
-    branch: crate::reactor::BranchReference<'a>,
+async fn query_on_branch(
+    state: &AppState,
+    tonk: &crate::worker::TonkState,
+    target: QueryTarget,
     headers: HeaderMap,
     request: Request,
     client: Option<String>,
 ) -> Result<Response, TonkWorkerError> {
+    let branch = target.branch(tonk);
+    let UrlQuery(params) = UrlQuery::<QueryParams>::try_from_uri(request.uri())
+        .map_err(|e| TonkWorkerError::Router(format!("invalid query parameters: {e}")))?;
     let bytes = request
         .into_body()
         .collect()
@@ -174,14 +345,32 @@ async fn query_on_branch<'a>(
         // the successor activates and `registration.waiting` becomes empty.
         if update_pending() || tonk.is_retiring() {
             let snapshot = match branch.query(query.clone()).perform(&tonk.operator).await {
-                Ok(rows) => rows,
-                Err(error) if is_absence(&error) => Vec::new(),
+                Ok(rows) => Some(rows),
+                Err(error) if is_absence(&error) => None,
                 Err(error) => return Err(reactor_to_error(error)),
             };
             return Ok(retry_later(snapshot));
         }
 
-        let mut subscribe = branch.subscribe(query.clone());
+        // A branch an earlier release wrote is moved to this release's
+        // format before it is read. The page hears so first: the stream
+        // opens with a notice, and the rows follow the move.
+        if branch
+            .migration_pending(&tonk.operator)
+            .await
+            .unwrap_or(false)
+        {
+            return Ok(upgrading_response(
+                state.clone(),
+                target,
+                query,
+                params.level,
+                client,
+            ));
+        }
+        let _ = migrate_while_opening(tonk, branch).await;
+
+        let mut subscribe = branch.subscribe(query.clone()).level(params.level);
         if let Some(client) = client.clone() {
             subscribe = subscribe.client(client);
         }
@@ -189,31 +378,21 @@ async fn query_on_branch<'a>(
             Ok(subscriber) => subscriber,
             Err(ReactorError::Shutdown) => {
                 let snapshot = match branch.query(query).perform(&tonk.operator).await {
-                    Ok(rows) => rows,
-                    Err(error) if is_absence(&error) => Vec::new(),
+                    Ok(rows) => Some(rows),
+                    Err(error) if is_absence(&error) => None,
                     Err(error) => return Err(reactor_to_error(error)),
                 };
                 return Ok(retry_later(snapshot));
             }
-            // The branch is not here YET. Absence is a result, not a
-            // failure, so answer with an open stream carrying the empty
-            // set and keep watching: when the repo mounts (a join in
-            // another tab, a directory row syncing in), the standing
-            // subscription attaches and delivers a real frame into this
-            // same stream. Erroring here instead closed the stream, and
-            // the page had nothing left to hear the answer on.
             // The branch is not here YET. Register in the reactor's
-            // waiting room and answer with an OPEN stream carrying the
-            // empty set: nothing matched, which is exactly what a
-            // present-but-empty branch answers. When the repo mounts or
-            // the branch is created, `acquire` moves this subscriber
-            // onto the real branch and the next poll delivers rows into
-            // this same stream. No polling, no reconnect.
+            // waiting room and answer with an OPEN stream that says so
+            // ([`PENDING_FRAME`]) rather than an empty set. When the repo
+            // mounts or the branch is created, `acquire` moves this
+            // subscriber onto the real branch and its first rows arrive
+            // on this same stream. No polling, no reconnect.
             Err(error) if is_absence(&error) => {
                 let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-                // The honest current answer, delivered immediately so the
-                // consumer leaves `loading` and renders its empty state.
-                let _ = sender.send(Bytes::from_static(b"[]"));
+                let _ = sender.send(Bytes::from_static(PENDING_FRAME));
                 if tonk
                     .reactor
                     .register_pending(
@@ -222,12 +401,13 @@ async fn query_on_branch<'a>(
                         dialog_reactor::PendingSubscription {
                             query,
                             client,
+                            level: params.level,
                             sender,
                         },
                     )
                     .is_err()
                 {
-                    return Ok(retry_later(Vec::new()));
+                    return Ok(retry_later(None));
                 }
                 return Ok(sse_response(receiver));
             }
@@ -236,6 +416,7 @@ async fn query_on_branch<'a>(
 
         Ok(sse_response(subscriber.receiver))
     } else {
+        let _ = migrate_while_opening(tonk, branch).await;
         // An absent repo/branch answers with the EMPTY SET, not a 404 —
         // "nothing matched" is a result, and it is the same result a
         // present-but-empty branch gives. See [`is_absence`].
@@ -250,15 +431,21 @@ async fn query_on_branch<'a>(
 
 /// Tell a query consumer to hold its reconnect for `controllerchange`, then
 /// close immediately so this response cannot pin the retiring worker.
-fn retry_later(conclusions: Vec<Conclusion>) -> Response {
-    let snapshot = serde_json::to_string(&tonk_worker_api::Frame::Snapshot { conclusions })
-        .expect("snapshot frame serialization failed");
+fn retry_later(conclusions: Option<Vec<Conclusion>>) -> Response {
+    // A branch that is not here has no snapshot to give, only the notice.
+    let first = match conclusions {
+        Some(conclusions) => {
+            serde_json::to_string(&tonk_worker_api::Frame::Snapshot { conclusions })
+                .expect("snapshot frame serialization failed")
+        }
+        None => String::from_utf8_lossy(PENDING_FRAME).into_owned(),
+    };
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
         .body(Body::from(format!(
-            "data: {snapshot}\n\ndata: {{\"control\":\"update-pending\"}}\n\n"
+            "data: {first}\n\ndata: {{\"control\":\"update-pending\"}}\n\n"
         )))
         .expect("response builder failed")
 }
@@ -273,7 +460,9 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
         | ReactorError::Commit(_)
         | ReactorError::Pull(_)
         | ReactorError::Download(_)
-        | ReactorError::Push(_) => TonkWorkerError::Internal(err.to_string()),
+        | ReactorError::UnreadableHead { .. }
+        | ReactorError::Push(_)
+        | ReactorError::Upgrade { .. } => TonkWorkerError::Internal(err.to_string()),
     }
 }
 
@@ -366,7 +555,9 @@ mod tests {
                 | ReactorError::Commit(_)
                 | ReactorError::Pull(_)
                 | ReactorError::Download(_)
-                | ReactorError::Push(_) => false,
+                | ReactorError::UnreadableHead { .. }
+                | ReactorError::Push(_)
+                | ReactorError::Upgrade { .. } => false,
             }
         }
         // `is_absence` must agree with that intent for the cases we can
@@ -376,5 +567,118 @@ mod tests {
             reason: "not replicated here".into(),
         };
         assert_eq!(is_absence(&missing_repo), absent(&missing_repo));
+    }
+
+    /// A rule an earlier dialog release stored under an entity that is not
+    /// its identity is inert: no read finds it and no commit fires it. The
+    /// first read of a branch laid out the way that release wrote moves
+    /// the storage to the band and the rule under its identity; a second
+    /// read finds the branch migrated and reads nothing.
+    ///
+    /// Native only: it needs a whole worker state, which the native test
+    /// fixture builds. The upgrade itself is target-agnostic dialog code,
+    /// covered on wasm by dialog-repository's `transaction::migration` tests.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn the_first_read_of_a_branch_re_installs_rules_stored_the_earlier_way() {
+        use dialog_artifacts::{ArtifactSelector, Entity, Pick, Value};
+        use dialog_query::rule::DeductiveRuleDescriptor;
+        use dialog_query::rule::statement::source_attr;
+        use dialog_query::{AttributeStatement, Cardinality};
+        use futures_util::TryStreamExt as _;
+
+        let state = crate::router::command::tests::native::test_state().await;
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch);
+        let descriptor: DeductiveRuleDescriptor = serde_json::from_value(serde_json::json!({
+            "deduce": { "with": { "label": { "the": "test.upgrade/label", "as": "Text" } } },
+            "when": [{
+                "assert": { "with": { "name": { "the": "test.upgrade/name", "as": "Text" } } },
+                "where": { "this": { "?": { "name": "this" } }, "name": { "?": { "name": "label" } } }
+            }]
+        }))
+        .expect("a rule descriptor");
+        let rule = descriptor.compile().expect("the rule compiles");
+        let legacy: Entity = "rule:stored-the-earlier-way".parse().expect("an entity");
+        branch
+            .transaction()
+            .assert(AttributeStatement {
+                the: source_attr().into(),
+                of: legacy.clone(),
+                is: Value::Bytes(rule.encode()),
+                cause: None,
+                cardinality: Some(Cardinality::Many),
+                pick: Some(Pick::All),
+            })
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .expect("the earlier release's rule is stored");
+        // Laid out the way the earlier release wrote, which is what gates
+        // the migration.
+        let handle = branch
+            .acquire(&tonk.operator)
+            .await
+            .expect("the branch opens")
+            .handle()
+            .clone();
+        handle
+            .rekey_storage(0)
+            .perform(&tonk.operator)
+            .await
+            .expect("the branch is laid out the earlier way");
+        assert!(
+            branch
+                .migration_pending(&tonk.operator)
+                .await
+                .expect("the layout is read"),
+            "a branch the earlier release laid out needs migrating"
+        );
+
+        let _ = migrate_while_opening(&tonk, branch).await;
+        assert!(
+            !branch
+                .migration_pending(&tonk.operator)
+                .await
+                .expect("the layout is read")
+        );
+
+        let session = branch
+            .acquire(&tonk.operator)
+            .await
+            .expect("the branch opens");
+        let stored_under = |entity: Entity| {
+            let handle = session.handle().clone();
+            let operator = &tonk.operator;
+            async move {
+                handle
+                    .claims()
+                    .select(ArtifactSelector::new().the(source_attr()).of(entity))
+                    .perform(operator)
+                    .await
+                    .expect("the source selects")
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .expect("the source reads")
+                    .len()
+            }
+        };
+        assert_eq!(
+            stored_under(rule.this()).await,
+            1,
+            "the rule is under its identity"
+        );
+        assert_eq!(
+            stored_under(legacy).await,
+            0,
+            "and no longer under the earlier entity"
+        );
+        assert!(
+            matches!(branch.migrate_once(&tonk.operator).await, Ok(None)),
+            "a second read does not upgrade again"
+        );
     }
 }

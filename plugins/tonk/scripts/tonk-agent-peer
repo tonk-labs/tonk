@@ -1,0 +1,117 @@
+#!/bin/sh
+# Launch the local Tonk peer as this plugin's stdio MCP server.
+#
+# The peer is a native binary published with each Tonk release, together with
+# the guest runtime its live views use. This launcher fetches them for this
+# platform, verifies the archive against the release's checksums.txt, caches
+# them, and execs the peer. It checks for a newer build on every start and
+# keeps using the cached one when offline. The Claude Desktop extension ships
+# this same launcher, so both update themselves.
+#
+# stdout belongs to the MCP protocol: every message here goes to stderr.
+#
+# Environment, all optional:
+#   TONK_CHANNEL       dev (default: latest main build), staging, or stable
+#   TONK_RELEASE       pin an exact release tag (wins over TONK_CHANNEL)
+#   TONK_AGENT_PEER_HOME     peer data directory (default ~/.tonk/agent-peer)
+#   TONK_AGENT_PEER_BINARY   run this binary instead (development)
+set -eu
+
+# Packaged previews pin this (see plugins/tonk/package.sh); the environment
+# still wins.
+PINNED_RELEASE=""
+
+REPO="tonk-labs/tonk"
+say() { printf 'tonk-agent-peer: %s\n' "$1" >&2; }
+die() { say "$1"; exit 1; }
+
+# Until the agent peer ships in a stable release, installs from the
+# marketplace follow the rolling build of main.
+CHANNEL="${TONK_CHANNEL:-dev}"
+case "$CHANNEL" in
+  stable)
+    BASE="https://github.com/${REPO}/releases/latest/download"
+    ;;
+  staging)
+    BASE="https://github.com/${REPO}/releases/download/tonk-staging"
+    ;;
+  dev)
+    BASE="https://github.com/${REPO}/releases/download/tonk-agent-peer-dev"
+    ;;
+  *) die "unknown TONK_CHANNEL '$CHANNEL' (use stable, staging or dev)" ;;
+esac
+TONK_RELEASE="${TONK_RELEASE:-$PINNED_RELEASE}"
+if [ -n "${TONK_RELEASE:-}" ]; then
+  BASE="https://github.com/${REPO}/releases/download/${TONK_RELEASE}"
+  CHANNEL="$TONK_RELEASE"
+fi
+
+if [ -n "${TONK_AGENT_PEER_BINARY:-}" ]; then
+  exec "$TONK_AGENT_PEER_BINARY"
+fi
+
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) PLATFORM="macos-arm64" ;;
+  Linux-x86_64) PLATFORM="linux-x86_64" ;;
+  *) die "no tonk-agent-peer build for $(uname -s) $(uname -m) yet" ;;
+esac
+ASSET="tonk-agent-peer-${PLATFORM}.tar.gz"
+
+CACHE="${HOME}/.tonk/bin/${CHANNEL}"
+BIN="${CACHE}/tonk-agent-peer"
+
+fetch() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$1" -o "$2"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q "$1" -O "$2"
+  else
+    return 1
+  fi
+}
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+# Download, verify and atomically install the current release's binary.
+# Returns non-zero, leaving any cached binary untouched, on any failure.
+update() {
+  mkdir -p "$CACHE"
+  chmod 0700 "${HOME}/.tonk/bin" "$CACHE" 2>/dev/null || true
+  tmp="$(mktemp -d "${CACHE}/.update.XXXXXX")" || return 1
+  trap 'rm -rf "$tmp"' EXIT
+  fetch "${BASE}/checksums.txt" "$tmp/checksums.txt" || return 1
+  expected="$(awk -v f="$ASSET" '{name=$2; sub(/^\*/, "", name); if (name == f) {print $1; exit}}' "$tmp/checksums.txt")"
+  [ -n "$expected" ] || { say "release has no $ASSET"; return 1; }
+  if [ -x "$BIN" ] && [ "$(cat "${CACHE}/sha256" 2>/dev/null || true)" = "$expected" ]; then
+    return 0
+  fi
+  fetch "${BASE}/${ASSET}" "$tmp/$ASSET" || return 1
+  [ "$(sha256_of "$tmp/$ASSET")" = "$expected" ] || { say "checksum mismatch for $ASSET"; return 1; }
+  tar -xzf "$tmp/$ASSET" -C "$tmp" || return 1
+  [ -f "$tmp/tonk-agent-peer" ] || { say "$ASSET has no tonk-agent-peer"; return 1; }
+  chmod 0755 "$tmp/tonk-agent-peer"
+  # The guest runtime for live views rides along when the release has one.
+  if [ -d "$tmp/runtime" ]; then
+    rm -rf "${CACHE}/runtime.old"
+    [ -d "${CACHE}/runtime" ] && mv "${CACHE}/runtime" "${CACHE}/runtime.old"
+    mv "$tmp/runtime" "${CACHE}/runtime"
+    rm -rf "${CACHE}/runtime.old"
+  fi
+  # A newer binary is a new file, so running peers keep theirs; its fresh
+  # modification time is how a running owner learns it is outdated.
+  mv -f "$tmp/tonk-agent-peer" "$BIN"
+  printf '%s\n' "$expected" > "${CACHE}/sha256"
+  say "installed tonk-agent-peer from ${CHANNEL}"
+}
+
+if ! (update); then
+  [ -x "$BIN" ] || die "could not download tonk-agent-peer from ${BASE}"
+  say "could not check for an update; using the cached binary"
+fi
+exec "$BIN"

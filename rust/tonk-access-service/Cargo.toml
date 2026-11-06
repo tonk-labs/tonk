@@ -36,9 +36,11 @@ dialog-varsig = { workspace = true }
 tonk-account = { workspace = true }
 tonk-email = { workspace = true }
 tonk-identity = { workspace = true }
+tonk-invite = { workspace = true }
 tonk-worker-api = { workspace = true }
 
 # Cryptography
+aes-gcm = { workspace = true }
 blake3 = { workspace = true }
 bs58 = { workspace = true }
 ed25519-dalek = { workspace = true }
@@ -84,7 +86,7 @@ dialog-common = { workspace = true, features = ["helpers"] }
 dialog-credentials = { workspace = true }
 # Only to name `Operator`/`Profile` in the shared account-device fixture;
 # already in the tree via dialog-repository.
-dialog-operator = { workspace = true, features = ["helpers"] }
+dialog-peer = { workspace = true, features = ["helpers"] }
 dialog-query = { workspace = true }
 dialog-remote-s3 = { workspace = true, features = ["helpers"] }
 dialog-remote-ucan-s3 = { workspace = true, features = ["helpers"] }
@@ -102,14 +104,28 @@ tonk-invite = { workspace = true }
 tonk-account = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# The space's Durable Object is a class `#[durable_object]` exports
+# through wasm-bindgen, whose expansion names it.
+wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# A shaped link to put in front of the service, for the test that its
+# permits name the address clients reach it at.
+tonk-perf = { path = "../tonk-perf", default-features = false }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rusqlite = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"], optional = true }
+# The local server's socket, served over the HTTP connection it upgrades.
+tokio-tungstenite = { workspace = true, optional = true }
 
 [features]
 default = []
+# Hold each write on a socket as long as the production bucket would, so a
+# local test sees the frames an object takes meanwhile.
+test-latency = []
 # Enable test helpers (local access service server)
 helpers = [
   "dep:anyhow",
@@ -120,6 +136,7 @@ helpers = [
   "dep:reqwest",
   "dep:rusqlite",
   "dep:tokio",
+  "dep:tokio-tungstenite",
   "dialog-common/helpers",
   "dialog-remote-s3/helpers",
   "dialog-remote-ucan-s3/helpers",

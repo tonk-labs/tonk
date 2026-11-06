@@ -4,16 +4,20 @@
 //! answered before the presign path: it writes to the revocation index
 //! rather than reading from it, so it is not a storage authorization.
 //!
-//! Three questions, in order. Have we recorded this already, in which
-//! case the answer is yes and nothing else needs asking. Is the subject
-//! one whose data we hold, since a revocation about a space we serve
-//! nothing for guards nothing. And does the evidence prove the subject
-//! could revoke the target, which
-//! [`tonk_identity::revocation::verify`] answers.
+//! First verify the signed revocation and its historical witnesses, then
+//! check that we hold the affected subject's data. An already-recorded
+//! fact is idempotent. Recording a new fact additionally requires current
+//! invocation authority whose proofs have not themselves been revoked.
 
+use dialog_capability::Did;
+use dialog_common::ConditionalSync;
+use dialog_credentials::DidKeyResolver;
+use dialog_ucan_core::{ContainerError, Environment, InvocationChain, VerificationContext};
+use dialog_varsig::AnySignature;
 use tonk_account::customer::{RegistrationError, RevokeReceipt};
 use tonk_identity::revocation::{VerifyError, verify};
 
+use crate::revocation::checker::IndexedRevocations;
 use crate::revocation::index::RevocationIndex;
 use crate::store::{Store, StoreError};
 
@@ -48,6 +52,27 @@ fn internal(error: StoreError) -> RegistrationError {
     }
 }
 
+/// A revocation [`record`] accepted.
+pub struct Revoked {
+    /// What the service answers with.
+    pub receipt: RevokeReceipt,
+    /// The space whose grant was withdrawn, whose watches must now be
+    /// checked again before they are told anything.
+    pub space: Did,
+}
+
+/// Verify a revocation and record it, answering with its receipt. See
+/// [`record`].
+pub async fn revoke<S: Store, I: RevocationIndex + ConditionalSync>(
+    store: &S,
+    index: &I,
+    container: &[u8],
+) -> Result<RevokeReceipt, RegistrationError> {
+    record(store, index, container)
+        .await
+        .map(|revoked| revoked.receipt)
+}
+
 /// Verify a revocation and record it.
 ///
 /// The consumer-row check is deliberately not the provisioning gate.
@@ -57,11 +82,11 @@ fn internal(error: StoreError) -> RegistrationError {
 /// answers a compromised key, which is exactly when a bill may also be
 /// unpaid. A subject we never registered, or one whose data we already
 /// purged, is refused — otherwise the index is an open write surface.
-pub async fn revoke<S: Store, I: RevocationIndex>(
+pub async fn record<S: Store, I: RevocationIndex + ConditionalSync>(
     store: &S,
     index: &I,
     container: &[u8],
-) -> Result<RevokeReceipt, RegistrationError> {
+) -> Result<Revoked, RegistrationError> {
     let verified = verify(container).await.map_err(|error| match error {
         VerifyError::Malformed(message) => RegistrationError::Invalid { message },
         VerifyError::Unauthorized(message) => RegistrationError::Unauthorized { message },
@@ -85,22 +110,78 @@ pub async fn revoke<S: Store, I: RevocationIndex>(
         return Err(RegistrationError::UnknownConsumer);
     }
 
-    let recorded = index
-        .record(&verified.target_cid, &subject)
+    let already_recorded = index
+        .subjects(&verified.target_cid)
         .await
         .map_err(|error| RegistrationError::Internal {
             message: error.to_string(),
+        })?
+        .contains(&subject);
+    if !already_recorded {
+        // Historical `pth` witnesses may already be revoked. Only the
+        // invocation's current `prf` authorizes a new write to the index.
+        // The ordinary chain verifier walks those proofs, not the witness
+        // pool. A valid replay needs no new authority or index mutation.
+        let chain = InvocationChain::<AnySignature>::try_from(container).map_err(|error| {
+            RegistrationError::Internal {
+                message: error.to_string(),
+            }
         })?;
+        let checker = IndexedRevocations(index);
+        let environment = Environment::new(chain.proof_store(), DidKeyResolver, &checker);
+        chain
+            .verify(&VerificationContext::new(&environment))
+            .await
+            .map_err(|error| match error {
+                ContainerError::Revoked { .. } => RegistrationError::Unauthorized {
+                    message: "revocation authority has been withdrawn".into(),
+                },
+                other => RegistrationError::Internal {
+                    message: other.to_string(),
+                },
+            })?;
+    }
 
-    Ok(RevokeReceipt {
-        revoked: verified
-            .target_cid
-            .parse()
+    let recorded = if already_recorded {
+        // A fact recorded before documents were kept gains its document
+        // from a replay. The container verified above, so it is evidence
+        // of exactly this fact.
+        let kept = index
+            .document(&verified.target_cid, &subject)
+            .await
             .map_err(|error| RegistrationError::Internal {
-                message: format!("verified target CID does not re-parse: {error}"),
-            })?,
-        subject: verified.subject,
-        recorded,
+                message: error.to_string(),
+            })?;
+        if kept.is_none() {
+            index
+                .record(&verified.target_cid, &subject, container)
+                .await
+                .map_err(|error| RegistrationError::Internal {
+                    message: error.to_string(),
+                })?;
+        }
+        false
+    } else {
+        index
+            .record(&verified.target_cid, &subject, container)
+            .await
+            .map_err(|error| RegistrationError::Internal {
+                message: error.to_string(),
+            })?
+    };
+
+    Ok(Revoked {
+        receipt: RevokeReceipt {
+            revoked: verified
+                .target_cid
+                .parse()
+                .map_err(|error| RegistrationError::Internal {
+                    message: format!("verified target CID does not re-parse: {error}"),
+                })?,
+            subject: verified.subject,
+            recorded,
+        },
+        space: verified.revoked_subject,
     })
 }
 
@@ -170,9 +251,42 @@ mod tests {
         // And it is the fact the chain walk will find on the next presign.
         assert!(
             index
-                .revoked_by_any(&receipt.revoked.to_string(), &BTreeSet::from([subject]))
+                .revoked_by_any(
+                    &receipt.revoked.to_string(),
+                    &BTreeSet::from([subject.clone()])
+                )
                 .await
                 .unwrap()
+        );
+        // With the signed revocation kept, so a refusal can carry it.
+        assert_eq!(
+            index
+                .document(&receipt.revoked.to_string(), &subject)
+                .await
+                .unwrap(),
+            Some(bytes)
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_the_document_a_replay_brings_for_a_bare_fact() {
+        // A revocation recorded before documents were kept is a fact with
+        // no evidence. Presenting the revocation again supplies it.
+        let (space, bytes) = revocation().await;
+        let subject = space.did().to_string();
+        let store = store_holding(&subject).await;
+        let index = MemoryRevocationIndex::default();
+        let target = tonk_identity::revocation::verify(&bytes)
+            .await
+            .expect("the artifact verifies")
+            .target_cid;
+        index.record(&target, &subject, b"").await.unwrap();
+
+        let receipt = revoke(&store, &index, &bytes).await.expect("replayed");
+        assert!(!receipt.recorded, "the fact itself was already there");
+        assert_eq!(
+            index.document(&target, &subject).await.unwrap(),
+            Some(bytes)
         );
     }
 
@@ -211,7 +325,7 @@ mod tests {
             .expect("grant");
         let target = grant.proof_cids()[0];
         let bytes =
-            tonk_identity::revocation::mint_self_revocation(device.clone(), &grant, &target)
+            tonk_identity::revocation::mint_root_revocation(device.clone(), &grant, &target)
                 .await
                 .expect("revocation");
 

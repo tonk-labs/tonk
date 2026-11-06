@@ -7,8 +7,7 @@ use ::axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use axum_wasm_macros::wasm_compat;
-use dialog_artifacts::{ArtifactSelector, Attribute, Entity, Value};
+use dialog_artifacts::{ArtifactSelector, Entity, Relation, Value};
 use dialog_effects::blob::BlobError;
 use dialog_repository::{Blob, CommitError, RepositoryExt as _};
 use futures_util::{StreamExt as _, stream};
@@ -16,11 +15,12 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 
 use super::AppState;
 use super::claim::RawClaim;
 use super::evaluate::EvaluatePath;
-use crate::TonkWorkerError;
+use crate::{TonkWorkerError, worker::TonkState};
 
 /// Path parameters for the blob route.
 #[derive(Debug, Deserialize)]
@@ -54,12 +54,12 @@ pub async fn serve(
         )));
     }
 
-    super::onboarding_space::hydrate_media(&state, &params.repo, &params.branch, &entity).await?;
+    hydrate_media(&state, &params.repo, &params.branch, &entity).await?;
 
     let tonk = state.read().await;
     let repo = tonk
         .profile
-        .repository(&params.repo)
+        .space(&params.repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -75,28 +75,13 @@ pub async fn serve(
             TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
         })?;
 
-    // Content type from the blob's metadata fact, if asserted.
-    let ct_attr: Attribute = "xyz.tonk.blob/content-type"
-        .parse()
-        .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {}", e)))?;
-    let ct_stream = branch
-        .claims()
-        .select(ArtifactSelector::new().the(ct_attr).of(entity.clone()))
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("content-type query: {}", e)))?;
-    tokio::pin!(ct_stream);
-    let content_type = match ct_stream.next().await {
-        Some(Ok(artifact)) => artifact
-            .value()
-            .ok()
-            .and_then(|value| String::try_from(value).ok())
+    // Media type from the asset's metadata, if asserted: the current
+    // attribute, or the legacy one blobs were described with before.
+    let content_type = match first_text(&branch, &tonk.operator, MEDIA_TYPE, &entity).await? {
+        Some(media_type) => media_type,
+        None => first_text(&branch, &tonk.operator, LEGACY_CONTENT_TYPE, &entity)
+            .await?
             .unwrap_or_else(|| "application/octet-stream".to_string()),
-        Some(Err(e)) => {
-            log!("blob: content-type query error: {:?}", e);
-            "application/octet-stream".to_string()
-        }
-        None => "application/octet-stream".to_string(),
     };
 
     // Blob bytes from the branch's content-addressed store.
@@ -144,11 +129,69 @@ pub struct BlobUploadResponse {
     pub size: usize,
 }
 
+/// The asset media type attribute every writer records (`tonk:asset`).
+const MEDIA_TYPE: &str = "tonk.dialog.asset/media-type";
+/// The asset name attribute every writer records (`tonk:asset`).
+const NAME: &str = "tonk.dialog.asset/name";
+/// The media type blobs were described with before `tonk:asset`, which
+/// older blobs and templates writing `tonk:blob` themselves still carry.
+const LEGACY_CONTENT_TYPE: &str = "xyz.tonk.blob/content-type";
+/// The legacy name attribute, read beside [`NAME`] for the same reason.
+const LEGACY_NAME: &str = "xyz.tonk.blob/name";
+
+/// The current text value of `attribute` on `entity`, if any. A failed
+/// read is logged and treated as absent: these facts describe content
+/// the route can still serve without them.
+async fn first_text(
+    branch: &dialog_repository::Branch,
+    operator: &crate::worker::DefaultOperator,
+    attribute: &str,
+    entity: &Entity,
+) -> Result<Option<String>, TonkWorkerError> {
+    let attribute: Relation = attribute
+        .parse()
+        .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
+    let stream = branch
+        .claims()
+        .select(ArtifactSelector::new().the(attribute).of(entity.clone()))
+        .perform(operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("metadata query: {e}")))?;
+    tokio::pin!(stream);
+    Ok(match stream.next().await {
+        Some(Ok(artifact)) => artifact
+            .value()
+            .ok()
+            .and_then(|value| String::try_from(value).ok()),
+        Some(Err(e)) => {
+            log!("blob: metadata query error: {:?}", e);
+            None
+        }
+        None => None,
+    })
+}
+
+/// Move `branch` of the space at `repo` to this release's storage format,
+/// once per process, before a blob import: the import commits the asset
+/// fact into the branch directly, not through the reactor, and a commit
+/// into a branch an earlier release wrote is refused.
+async fn migrate_once(tonk: &TonkState, repo: &str, branch: &str) -> Result<(), TonkWorkerError> {
+    tonk.reactor
+        .repository(repo)
+        .branch(branch)
+        .migrate_once(&tonk.operator)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("migrating '{repo}/{branch}' failed: {error}"))
+        })
+}
+
 /// Handler for `POST /api/repository/{repo}/branch/{branch}/blob`.
 ///
 /// Buffers the request body, writes it into the branch's content-addressed
-/// blob store, and asserts the blob's `xyz.tonk.blob/content-type` and
-/// `xyz.tonk.blob/name` facts — the name fact is always asserted, defaulting
+/// blob store, and asserts the asset's `tonk.dialog.asset/media-type` and
+/// `tonk.dialog.asset/name` facts — the name fact is always asserted, defaulting
 /// to an existing fact (on a headerless re-upload) or the entity string when
 /// the `X-Tonk-Blob-Name` header is absent — so the read route (`serve`, above) and
 /// `<tonk-display model=tonk:blob>` work immediately. Idempotent by content
@@ -187,20 +230,24 @@ pub async fn upload(
         .map(|s| s.to_string());
     let size = body.len();
 
-    let tonk = state.write().await;
+    // A read guard: the blob commit takes the branch's write lock and the
+    // metadata commit its transactor, so nothing here needs the state to
+    // itself, and a write guard would queue behind any sync in flight.
+    let tonk = state.read().await;
 
     // Ingest bytes into the content-addressed store. Direct branch access
     // (as `serve` reads from) — the blob store isn't part of the claim/fact
     // graph, so it doesn't go through the reactor.
     let repository = tonk
         .profile
-        .repository(&path.repo)
+        .space(&path.repo)
         .load()
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
             TonkWorkerError::NotFound(format!("Repository '{}' not found: {e}", path.repo))
         })?;
+    migrate_once(&tonk, &path.repo, path.branch.as_str()).await?;
     let branch_handle = repository
         .branch(path.branch.as_str())
         .open()
@@ -221,46 +268,27 @@ pub async fn upload(
     // mirroring `tonk blob add`. Committed through the reactor (like
     // `claim::assert_claim`), then drain the scheduled poll so subscribers
     // on this branch see the new facts.
-    let ct_attr: Attribute = "xyz.tonk.blob/content-type"
+    let media_type_attr: Relation = MEDIA_TYPE
+        .parse()
+        .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
+    let name_attr: Relation = NAME
         .parse()
         .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
 
     // Effective name: an explicit header wins; otherwise an already-
-    // asserted name fact is preserved (a raw re-upload must not clobber
-    // a good name with the hash default); otherwise the entity string.
-    // The name fact must always land — the `tonk:blob` concept query
-    // matches only rows with every field present, so a nameless blob
-    // would never reach the seeded media view.
-    let name_attr: Attribute = "xyz.tonk.blob/name"
-        .parse()
-        .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
+    // asserted name fact is preserved, current or legacy (a raw re-upload
+    // must not clobber a good name with the hash default); otherwise the
+    // entity string. The name fact must always land — the `tonk:asset`
+    // concept query matches only rows with every field present, so a
+    // nameless asset would never reach the seeded media view.
     let name = match name {
         Some(n) => n,
-        None => {
-            let existing = branch_handle
-                .claims()
-                .select(
-                    ArtifactSelector::new()
-                        .the(name_attr.clone())
-                        .of(entity.clone()),
-                )
-                .perform(&tonk.operator)
-                .await
-                .map_err(|e| TonkWorkerError::Internal(format!("name query: {e}")))?;
-            tokio::pin!(existing);
-            match existing.next().await {
-                Some(Ok(artifact)) => artifact
-                    .value()
-                    .ok()
-                    .and_then(|value| String::try_from(value).ok())
-                    .unwrap_or_else(|| entity.to_string()),
-                Some(Err(e)) => {
-                    log!("blob: name query error: {:?}", e);
-                    entity.to_string()
-                }
-                None => entity.to_string(),
-            }
-        }
+        None => match first_text(&branch_handle, &tonk.operator, NAME, &entity).await? {
+            Some(existing) => existing,
+            None => first_text(&branch_handle, &tonk.operator, LEGACY_NAME, &entity)
+                .await?
+                .unwrap_or_else(|| entity.to_string()),
+        },
     };
 
     let tx = tonk
@@ -269,16 +297,16 @@ pub async fn upload(
         .branch(&path.branch)
         .transaction()
         .assert(RawClaim {
-            the: ct_attr,
+            the: media_type_attr,
             of: entity.clone(),
             is: Value::String(content_type.clone()),
-            unique: true,
+            policy: dialog_artifacts::Pick::Last,
         })
         .assert(RawClaim {
             the: name_attr,
             of: entity.clone(),
             is: Value::String(name.clone()),
-            unique: true,
+            policy: dialog_artifacts::Pick::Last,
         });
     tx.commit()
         .perform(&tonk.operator)
@@ -314,16 +342,165 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use dialog_repository::{Blob, RepositoryExt as _};
     use futures_util::stream;
-    use tokio::sync::RwLock;
     use tower::ServiceExt;
 
     use crate::api_router_from_state;
     use crate::router::tests::{put_repo, test_state};
 
+    /// Read back what the branch holds under `attribute` for `entity`.
+    async fn fact(
+        app_state: &Arc<crate::StateLock<crate::TonkState>>,
+        repo: &str,
+        attribute: &str,
+        entity: &str,
+    ) -> Option<String> {
+        let guard = app_state.read().await;
+        let repository = guard
+            .profile
+            .space(repo)
+            .load()
+            .perform(&guard.operator)
+            .await
+            .unwrap();
+        let branch = repository
+            .branch("main")
+            .open()
+            .perform(&guard.operator)
+            .await
+            .unwrap();
+        super::first_text(
+            &branch,
+            &guard.operator,
+            attribute,
+            &entity.parse().unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn post(
+        app: &axum::Router,
+        uri: String,
+        body: Body,
+        name: Option<&str>,
+    ) -> serde_json::Value {
+        let mut request = Request::builder()
+            .uri(uri)
+            .method("POST")
+            .header("content-type", "image/png");
+        if let Some(name) = name {
+            request = request.header("x-tonk-blob-name", name);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(body).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// An upload describes the asset with the `tonk:asset` attributes
+    /// alone; the legacy ones are left to blobs that already carry them.
+    #[dialog_common::test]
+    async fn it_records_an_upload_with_the_asset_attributes() {
+        let tonk = test_state().await;
+        let app_state = Arc::new(crate::StateLock::new(tonk));
+        let (app, _lsp) = api_router_from_state(app_state.clone());
+        let repo = put_repo(&app, "blob-asset-attributes").await;
+
+        let json = post(
+            &app,
+            format!("/api/repository/{repo}/branch/main/blob"),
+            Body::from(b"\x89PNG\r\n\x1a\nnew".to_vec()),
+            Some("new.png"),
+        )
+        .await;
+        let entity = json["entity"].as_str().unwrap();
+
+        assert_eq!(
+            fact(&app_state, &repo, super::MEDIA_TYPE, entity)
+                .await
+                .as_deref(),
+            Some("image/png")
+        );
+        assert_eq!(
+            fact(&app_state, &repo, super::NAME, entity)
+                .await
+                .as_deref(),
+            Some("new.png")
+        );
+        assert_eq!(
+            fact(&app_state, &repo, super::LEGACY_CONTENT_TYPE, entity).await,
+            None
+        );
+        assert_eq!(
+            fact(&app_state, &repo, super::LEGACY_NAME, entity).await,
+            None
+        );
+    }
+
+    /// A blob named the legacy way keeps its name when the same bytes are
+    /// uploaded again without one, rather than falling back to its hash.
+    #[dialog_common::test]
+    async fn it_keeps_a_legacy_name_on_a_nameless_re_upload() {
+        let tonk = test_state().await;
+        let app_state = Arc::new(crate::StateLock::new(tonk));
+        let (app, _lsp) = api_router_from_state(app_state.clone());
+        let repo = put_repo(&app, "blob-legacy-name").await;
+        let payload = b"\x89PNG\r\n\x1a\nlegacy".to_vec();
+
+        let entity = post(
+            &app,
+            format!("/api/repository/{repo}/branch/main/blob"),
+            Body::from(payload.clone()),
+            Some("ignored.png"),
+        )
+        .await["entity"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // Make it look like a blob from before `tonk:asset`: only the
+        // legacy name, through the ordinary claim routes.
+        for (method, attribute, value) in [
+            ("retract", super::NAME, "ignored.png"),
+            ("assert", super::LEGACY_NAME, "legacy.png"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!(
+                            "/api/repository/{repo}/branch/main/claim/{method}/{entity}/{attribute}"
+                        ))
+                        .method("POST")
+                        .header("content-type", "text/plain")
+                        .body(Body::from(value))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{method} {attribute}");
+        }
+        assert_eq!(fact(&app_state, &repo, super::NAME, &entity).await, None);
+
+        let json = post(
+            &app,
+            format!("/api/repository/{repo}/branch/main/blob"),
+            Body::from(payload),
+            None,
+        )
+        .await;
+        assert_eq!(json["name"], "legacy.png");
+    }
+
     #[dialog_common::test]
     async fn it_serves_blob_bytes_with_the_asserted_content_type() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-serve").await;
 
@@ -335,7 +512,7 @@ mod tests {
             let guard = app_state.read().await;
             let repository = guard
                 .profile
-                .repository(&repo)
+                .space(&repo)
                 .load()
                 .perform(&guard.operator)
                 .await
@@ -385,7 +562,7 @@ mod tests {
         assert_eq!(
             resp.headers().get("content-type").unwrap(),
             "image/png",
-            "Content-Type comes from the xyz.tonk.blob/content-type fact",
+            "a blob described the legacy way is served with its content type",
         );
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
@@ -396,7 +573,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_uploads_bytes_and_serves_them_back() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-upload").await;
 
@@ -423,8 +600,8 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let entity = json["entity"].as_str().unwrap().to_string();
         assert!(
-            entity.starts_with("blob:"),
-            "entity is a blob ref: {entity}"
+            entity.starts_with("asset:"),
+            "entity is an asset ref: {entity}"
         );
         assert_eq!(json["contentType"], "image/png");
         assert_eq!(json["name"], "shot.png");
@@ -493,7 +670,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_accepts_an_upload_at_the_buffered_limit() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-large").await;
 
@@ -525,7 +702,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_defaults_the_name_fact_to_the_entity_when_no_header_is_sent() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-name-default").await;
 
@@ -557,7 +734,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_preserves_an_existing_name_on_a_headerless_reupload() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-name-keep").await;
         let payload = b"%PDF-1.4 named".to_vec();
@@ -605,7 +782,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_rejects_a_non_blob_entity() {
         let tonk = test_state().await;
-        let app_state = Arc::new(RwLock::new(tonk));
+        let app_state = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
         let repo = put_repo(&app, "blob-reject").await;
 
@@ -621,5 +798,163 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+// Compatibility for images deferred by older Welcome-space builds.
+fn internal(error: impl std::fmt::Display) -> TonkWorkerError {
+    TonkWorkerError::Internal(format!("welcome media: {error}"))
+}
+#[derive(Deserialize)]
+struct Media {
+    entity: dialog_artifacts::Entity,
+    url: String,
+}
+
+fn bundled_media() -> Result<Vec<Media>, TonkWorkerError> {
+    serde_json::from_str(include_str!(
+        "../../../tonk-core/assets/library/onboarding-media.json"
+    ))
+    .map_err(internal)
+}
+
+async fn import_blob(
+    tonk: &TonkState,
+    branch: &dialog_repository::Branch,
+    expected: &dialog_artifacts::Entity,
+    bytes: Vec<u8>,
+) -> Result<(), TonkWorkerError> {
+    // Verify before writing anything, including the branch's blob index.
+    if expected.blob_hash() != Some(*blake3::hash(&bytes).as_bytes()) {
+        return Err(internal("bundled blob hash mismatch"));
+    }
+    let chunks = futures_util::stream::iter(vec![Ok::<_, dialog_effects::blob::BlobError>(bytes)]);
+    let entity = Blob::import(chunks)
+        .write(branch.blobs())
+        .perform(&tonk.operator)
+        .await
+        .map_err(internal)?;
+    // Compared by hash: the import names what it stored `asset:<hash>`,
+    // while older Welcome spaces reference it as `blob:<hash>`.
+    if entity.blob_hash() != expected.blob_hash() {
+        return Err(internal("bundled blob hash mismatch"));
+    }
+    Ok(())
+}
+
+async fn hydrate_media(
+    state: &AppState,
+    key: &str,
+    branch_name: &str,
+    entity: &dialog_artifacts::Entity,
+) -> Result<(), TonkWorkerError> {
+    // By hash: older Welcome spaces name their images `blob:<hash>`, and
+    // dialog now names content `asset:<hash>`.
+    let Some(media) = bundled_media()?.into_iter().find(|media| {
+        media.entity.blob_hash().is_some() && media.entity.blob_hash() == entity.blob_hash()
+    }) else {
+        return Ok(());
+    };
+    // Read guards only, never the write one. This runs on every request
+    // for a starter image, and a writer queues behind any sync holding its
+    // read guard across a round trip, then stalls every request that
+    // arrives after it. The import needs no exclusion of its own: the
+    // commit recording the asset takes the branch's write lock, and
+    // recording an asset the branch already records mints nothing.
+    {
+        let tonk = state.read().await;
+        let branch = media_branch(&tonk, key, branch_name).await?;
+        if has_media(&tonk, &branch, entity).await? {
+            return Ok(());
+        }
+    }
+    // No guard while the bytes are fetched: on a cache miss they come
+    // over the network.
+    let bytes = fetch_media(&media.url).await?;
+    let tonk = state.read().await;
+    let branch = media_branch(&tonk, key, branch_name).await?;
+    if has_media(&tonk, &branch, entity).await? {
+        return Ok(());
+    }
+    import_blob(&tonk, &branch, entity, bytes).await
+}
+
+/// The branch a starter image is hydrated into, moved to this release's
+/// storage format first (see [`migrate_once`]).
+async fn media_branch(
+    tonk: &TonkState,
+    key: &str,
+    branch_name: &str,
+) -> Result<dialog_repository::Branch, TonkWorkerError> {
+    let repository = tonk
+        .profile
+        .space(key)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(internal)?;
+    migrate_once(tonk, key, branch_name).await?;
+    repository
+        .branch(branch_name)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(internal)
+}
+
+/// Whether `branch` already holds the starter image `entity`. Only this
+/// immutable, compiled-in allowlist is ever filled in: the caller has
+/// resolved its authorized repository and branch, and the bytes become
+/// ordinary branch blobs, so export/sync and later offline reads work.
+async fn has_media(
+    tonk: &TonkState,
+    branch: &dialog_repository::Branch,
+    entity: &dialog_artifacts::Entity,
+) -> Result<bool, TonkWorkerError> {
+    match Blob::from(entity.clone())
+        .read(branch.blobs())
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(dialog_repository::CommitError::Blob(dialog_effects::blob::BlobError::NotFound(_))) => {
+            Ok(false)
+        }
+        Err(error) => Err(internal(error)),
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_media(url: &str) -> Result<Vec<u8>, TonkWorkerError> {
+    use wasm_bindgen::JsCast as _;
+    use wasm_bindgen_futures::JsFuture;
+    #[wasm_bindgen::prelude::wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(catch, js_name = tonkBundledAsset)]
+        async fn bundled_asset(path: &str) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>;
+    }
+    let response: web_sys::Response = bundled_asset(url)
+        .await
+        .and_then(|v| v.dyn_into())
+        .map_err(|e| internal(format!("fetch {url}: {e:?}")))?;
+    if !response.ok() {
+        return Err(internal(format!("fetch {url}: HTTP {}", response.status())));
+    }
+    let bytes = JsFuture::from(
+        response
+            .array_buffer()
+            .map_err(|e| internal(format!("media body: {e:?}")))?,
+    )
+    .await
+    .map_err(|e| internal(format!("media body: {e:?}")))?;
+    Ok(js_sys::Uint8Array::new(&bytes).to_vec())
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn fetch_media(url: &str) -> Result<Vec<u8>, TonkWorkerError> {
+    match url {
+        "/library/welcome-CmZq5URy2ucFKNyZCFUtHiNvEaUNK4Z8UstvzwbjREFG.webp" => Ok(include_bytes!("../../../tonk-core/assets/library/welcome-CmZq5URy2ucFKNyZCFUtHiNvEaUNK4Z8UstvzwbjREFG.webp").to_vec()),
+        "/library/welcome-9hKHdfALCDKRL5z3Xkn2JUM72DWSzsSBwAvdbyaPF2sU.webp" => Ok(include_bytes!("../../../tonk-core/assets/library/welcome-9hKHdfALCDKRL5z3Xkn2JUM72DWSzsSBwAvdbyaPF2sU.webp").to_vec()),
+        _ => Err(internal("unknown bundled media")),
     }
 }

@@ -5,7 +5,20 @@ authors.workspace = true
 license.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "tonk-worker-host"
+path = "src/bin/hosted.rs"
+required-features = ["native-host"]
+
+[[bin]]
+name = "tonk-agent-worker"
+path = "src/bin/agent_worker.rs"
+required-features = ["native-host"]
+
 [features]
+native-host = ["axum/tokio", "axum/http1", "tokio/net", "tokio/rt-multi-thread", "tokio/macros", "tokio/signal"]
+# Local opt-in until a compatible CLI is published.
+connection-invites = []
 integration-tests = []
 web-integration-tests = []
 # Test helpers — wire-query builders and seeding fixtures.
@@ -15,8 +28,15 @@ web-integration-tests = []
 # way the service worker does. It is a dev-dependency for this crate's
 # own tests; downstream crates enabling `helpers` need it as a real one.
 helpers = ["dep:tower"]
+# Keep every space in memory instead of IndexedDB/OPFS on wasm, so the
+# worker runs where those do not exist (a Cloudflare Worker). No effect on
+# native builds. Exposes `hosted`.
+volatile-storage = []
 
 [dependencies]
+anyhow = { workspace = true }
+serde_yaml = { workspace = true }
+sha2_0_10 = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true, features = ["json", "macros", "query"] }
 base58 = { workspace = true }
@@ -24,7 +44,7 @@ base64 = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
-axum-wasm-macros = { workspace = true }
+tonk-handler-macros = { workspace = true }
 bs58 = { workspace = true }
 console_error_panic_hook = { workspace = true }
 dialog-capability = { workspace = true }
@@ -34,9 +54,10 @@ dialog-reactor = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-csv = { workspace = true }
 dialog-effects = { workspace = true }
-dialog-operator = { workspace = true }
+dialog-peer = { workspace = true }
 dialog-query = { workspace = true }
 dialog-remote-ucan-s3 = { workspace = true }
+dialog-remote-s3 = { workspace = true }
 dialog-remote-ucan = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-search-tree = { workspace = true }
@@ -53,6 +74,7 @@ lsp-types = { workspace = true }
 rand = { workspace = true }
 send_wrapper = { workspace = true }
 serde = { workspace = true }
+serde_ipld_dagcbor = { workspace = true }
 serde_json = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
 thiserror = { workspace = true }
@@ -70,6 +92,7 @@ zeroize = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-language-server = { workspace = true }
 tonk-notation = { workspace = true }
+tonk-render = { workspace = true }
 tonk-router = { workspace = true }
 tonk-schema = { workspace = true }
 tonk-worker-api = { workspace = true }
@@ -103,8 +126,10 @@ web-sys = { workspace = true, features = [
     "MessagePort",
     "Request",
     "RequestCache",
+    "RequestCredentials",
     "RequestInit",
     "RequestMode",
+    "RequestRedirect",
     "Response",
     "ResponseInit",
     "ResponseType",
@@ -121,16 +146,23 @@ web-time = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 reqwest = { workspace = true }
+# The files library documents include, compiled in: a native worker seeds
+# the library from compiled-in copies, with no served `/library/` to
+# fetch from.
+tonk-library = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
 getrandom_0_3 = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+axum = { workspace = true, features = ["tokio", "http1"] }
+
 [dev-dependencies]
 tonk-template = { workspace = true }
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
-dialog-operator = { workspace = true, features = ["helpers"] }
+dialog-peer = { workspace = true, features = ["helpers"] }
 dialog-repository = { workspace = true, features = ["helpers"] }
 rand = { workspace = true }
 tonk-access-service = { workspace = true, features = ["helpers"] }

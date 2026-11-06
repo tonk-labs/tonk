@@ -16,7 +16,6 @@
 //! `Server::handle_message`.
 
 use async_trait::async_trait;
-use tokio::sync::OwnedRwLockReadGuard;
 use tonk_language_server::{EnvProvider, Opened, Repo};
 use tonk_schema::query_source::Source;
 
@@ -68,7 +67,7 @@ impl EnvProvider for LspEnvProvider {
 /// with the operator its queries run on. The read guard keeps the
 /// operator borrowable for the whole request.
 pub struct LiveEnvironment {
-    guard: OwnedRwLockReadGuard<TonkState>,
+    guard: crate::state_lock::OwnedReadGuard<TonkState>,
     session: BranchSession,
 }
 

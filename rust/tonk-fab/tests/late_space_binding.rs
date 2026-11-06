@@ -90,3 +90,44 @@ async fn a_late_space_reaches_every_child_the_bar_authored() {
 
     fab.remove();
 }
+
+/// A `latent` bar is on a page with no space: it authors only what serves
+/// the profile (`<ui-site-request>`), none of the children addressed to a
+/// space. What decides is `latent`, not a missing `space`, which the test
+/// above shows is only a space that has not arrived yet.
+#[dialog_common::test]
+async fn a_latent_bar_authors_no_child_addressed_to_a_space() {
+    tonk_fab::register();
+    let document = window().expect("window").document().expect("document");
+    let fab = document
+        .create_element("tonk-fab")
+        .expect("create fab")
+        .dyn_into::<HtmlElement>()
+        .expect("html fab");
+    fab.set_attribute("with", "main@profile:tonk")
+        .expect("routing context");
+    fab.set_attribute("latent", "").expect("latent");
+    document
+        .body()
+        .expect("body")
+        .append_child(&fab)
+        .expect("mount the bar");
+    settle().await;
+
+    for &(selector, _, _) in tonk_fab::markup::SPACE_BINDINGS {
+        assert!(
+            fab.query_selector(selector)
+                .expect("valid selector")
+                .is_none(),
+            "a latent bar must not author <{selector}>",
+        );
+    }
+    assert!(
+        fab.query_selector("ui-site-request")
+            .expect("valid selector")
+            .is_some(),
+        "a latent bar still performs the profile's site requests",
+    );
+
+    fab.remove();
+}

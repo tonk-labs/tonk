@@ -28,6 +28,7 @@
 //! [analyze]: https://github.com/dialog-db/tonk-workers/tree/main/rust/tonk-schema/src/interpret.rs
 
 use lsp_types::Range;
+use url::Url;
 
 /// A whole asserted-notation document: a list of expressions.
 #[derive(Clone, Debug, PartialEq)]
@@ -38,6 +39,13 @@ pub struct Syntax {
     /// diagnostics ("root must be a mapping") have something to
     /// point at.
     pub range: Range,
+    /// Where the document lives — the URI its `!include` references
+    /// resolve against. A document read from a file carries its
+    /// `file:` URI; text with no location (a request body, an editor
+    /// buffer, an inline string) carries the opaque
+    /// [`INLINE_LOCATION`][crate::parse::INLINE_LOCATION], which
+    /// cannot be a base, so any relative `!include` in it is refused.
+    pub base: Url,
 }
 
 /// One top-level entry. Two flavours, distinguished by the head's
@@ -271,6 +279,69 @@ pub enum FieldValue {
     /// with field-named nesting) so the analyzer can rely on
     /// per-premise ranges for diagnostics.
     Premises(Vec<Premise>),
+    /// `!include <reference>` — the content of another resource,
+    /// named relative to the document's [`Syntax::base`]. The parser
+    /// only records the reference; [`expand`][crate::include::expand]
+    /// loads it and replaces this node with a
+    /// [`Literal`](FieldValue::Literal). An include that survives to
+    /// analysis was never expanded and is rejected there.
+    Include(Include),
+    /// A YAML sequence of scalars. An attribute's `as:` or `the:` lists
+    /// a ranked choice (values or relations, best first); a command's
+    /// `action:` lists the several names it answers to. Each item is a
+    /// scalar form (literal, symbol, URI); a nested mapping or sequence
+    /// is not an item. Everywhere else a list is rejected, and a
+    /// cardinality-many write repeats the assertion.
+    List(Vec<FieldValue>),
+}
+
+/// An `!include` reference, as written.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Include {
+    /// The URI reference after the tag — a relative path such as
+    /// `./intro.md`, or an absolute URI.
+    pub reference: String,
+    /// Which literal the loaded content becomes.
+    pub form: IncludeForm,
+}
+
+impl Include {
+    /// Resolve the reference against `base` per RFC 3986. Fails when
+    /// `base` cannot be a base (a `data:` URI, say) and the reference
+    /// is relative — the document has no location to be relative to.
+    pub fn resolve(&self, base: &Url) -> Result<Url, url::ParseError> {
+        base.join(&self.reference)
+    }
+}
+
+/// How an included resource's bytes become a field value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IncludeForm {
+    /// `!include` — the content as it is, a [`Scalar::Included`]. The
+    /// analyzer reads it as text where the field is declared text and
+    /// as bytes everywhere else, an untyped field included.
+    Bytes,
+    /// `!include/text` — the content is UTF-8 text and becomes a
+    /// [`Scalar::String`] wherever it is written. For an untyped field
+    /// that should hold text.
+    Text,
+    /// `!include/asset` — the content is stored as an asset, in the
+    /// space's blob store under its content address, and the field holds
+    /// the asset's `asset:<hash>` reference, a [`FieldValue::Uri`]. For
+    /// media and files a view renders from the blob store rather than
+    /// from the fact itself.
+    Asset,
+}
+
+impl IncludeForm {
+    /// The YAML tag (without its `!` handle) that selects this form.
+    pub fn tag(self) -> &'static str {
+        match self {
+            IncludeForm::Bytes => "include",
+            IncludeForm::Text => "include/text",
+            IncludeForm::Asset => "include/asset",
+        }
+    }
 }
 
 /// A primitive value. Mirrors the shapes saphyr produces for
@@ -279,16 +350,28 @@ pub enum FieldValue {
 pub enum Scalar {
     /// A textual scalar.
     String(String),
-    /// An integer literal.
+    /// A whole negative number, at least `i128::MIN`. A number
+    /// literal is held in the narrowest scalar whatever its spelling:
+    /// `-7` and `-7.0` both land here, `41`, `+41` and `41.0` are all
+    /// an [`UnsignedInteger`](Scalar::UnsignedInteger).
     Integer(i128),
-    /// An unsigned-integer literal too large for `i128`'s
-    /// negative half — preserved so we don't lose precision before
-    /// the analyzer coerces.
+    /// A whole non-negative number, at most `u128::MAX`.
     UnsignedInteger(u128),
-    /// A floating-point literal.
+    /// A number no integer scalar holds: fractional (`2.5`), or whole
+    /// but outside both integer ranges (`1e39`). Never a NaN.
     Float(f64),
     /// A boolean literal.
     Boolean(bool),
+    /// Binary content, written as `!!binary` base64 (YAML 1.1's
+    /// standard tag). Carried decoded so nothing downstream has to
+    /// know the transfer encoding.
+    Bytes(Vec<u8>),
+    /// Content an `!include` loaded. Bytes, like [`Scalar::Bytes`],
+    /// except that a slot declared to hold text reads them as UTF-8.
+    /// Kept apart from `Bytes` because `!!binary` is the author saying
+    /// "bytes" outright, and that must not turn into text by landing in
+    /// a text field.
+    Included(Vec<u8>),
     /// A `null` literal.
     Null,
 }

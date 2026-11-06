@@ -11,7 +11,6 @@
 use std::collections::HashMap;
 
 use ::axum::{Json, extract::Path, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_capability::access::{AuthorizeError, Recourse};
 use dialog_effects::Rejection;
 use dialog_repository::{PublishError, PullError, Revision};
@@ -19,8 +18,10 @@ use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_schema::{SyncState, classify};
+use tonk_handler_macros::wasm_compat;
+use tonk_schema::SyncState;
 use tonk_worker_api::SyncDisposition;
+use tonk_worker_api::compare_heads;
 pub use tonk_worker_api::{SyncResponse, SyncStatusResponse};
 
 use super::{AppState, BranchConfiguration};
@@ -250,7 +251,7 @@ async fn publish_settled_status(
     let handle = session.handle();
     let local = handle.revision();
 
-    if handle.upstream().is_none() {
+    if tonk_account::peer::upstream(handle).is_none() {
         publish_sync_status(tonk, repo, branch, SyncState::NoUpstream).await;
         return;
     }
@@ -262,7 +263,10 @@ async fn publish_settled_status(
     let remote = match observed {
         Some(remote) => remote,
         None => match handle.fetch().perform(&tonk.operator).await {
-            Ok(remote) => remote,
+            Ok(fetched) => fetched
+                .into_iter()
+                .next()
+                .and_then(|fetched| fetched.revision),
             Err(e) => {
                 log!("publish_settled_status: fetch {repo}/{branch} failed: {e}");
                 // An unserved subject is not offline: the service answered,
@@ -281,7 +285,7 @@ async fn publish_settled_status(
         },
     };
 
-    let state = SyncState::from(classify(local.as_ref(), remote.as_ref()));
+    let state = SyncState::from(compare(handle, local.as_ref(), remote.as_ref(), tonk).await);
     // Re-check pause: it could have landed during the (awaiting) fetch.
     if is_sync_enabled(tonk, repo, branch).await {
         publish_sync_status(tonk, repo, branch, state).await;
@@ -298,6 +302,50 @@ async fn publish_settled_status(
 /// of commits.
 const SYNC_RETRY_LIMIT: usize = 4;
 
+/// Admission window for retrying known publication conflicts. An in-flight
+/// push/pull keeps its normal I/O deadline and can finish after this window;
+/// this is not a cancellation deadline for an uncertain publication.
+const PUBLICATION_RETRY_WINDOW: web_time::Duration = web_time::Duration::from_secs(30);
+
+struct PublicationRetry {
+    started: web_time::Instant,
+    conflicts: u32,
+}
+
+impl PublicationRetry {
+    fn new() -> Self {
+        Self {
+            started: web_time::Instant::now(),
+            conflicts: 0,
+        }
+    }
+
+    fn delay(&mut self) -> Option<web_time::Duration> {
+        let remaining = PUBLICATION_RETRY_WINDOW.checked_sub(self.started.elapsed())?;
+        if remaining < web_time::Duration::from_millis(1) {
+            return None;
+        }
+        // Yield to a finite competing burst; jitter avoids writers repeatedly
+        // colliding in step. Cap the delay so a quiet upstream settles promptly.
+        let ceiling = (25_u64 << self.conflicts.min(6)).min(1_000);
+        let floor = ceiling / 2;
+        let delay = floor + rand::random::<u64>() % (ceiling - floor + 1);
+        self.conflicts = self.conflicts.saturating_add(1);
+        Some(web_time::Duration::from_millis(delay).min(remaining))
+    }
+
+    fn admits_retry(&self) -> bool {
+        self.started.elapsed() < PUBLICATION_RETRY_WINDOW
+    }
+
+    async fn wait(&mut self) -> bool {
+        let Some(delay) = self.delay() else {
+            return false;
+        };
+        crate::sleep(delay).await.is_ok() && self.admits_retry()
+    }
+}
+
 /// Whether `error` is a push refused because upstream moved under us.
 ///
 /// Two shapes, one meaning. A push that confirms upstream first is
@@ -306,16 +354,33 @@ const SYNC_RETRY_LIMIT: usize = 4;
 /// novelty shipped. Both say another writer got there first, and both
 /// converge the same way: the next sweep pulls, then pushes.
 fn is_upstream_moved(error: &crate::reactor::ReactorError) -> bool {
+    matches!(error, crate::reactor::ReactorError::Push(push) if is_push_out_of_date(push))
+}
+
+/// Whether a push was refused because upstream holds a head it has not
+/// merged: pulling that head and pushing again is the recovery.
+pub(crate) fn is_push_out_of_date(error: &dialog_repository::PushError) -> bool {
     matches!(
         error,
-        crate::reactor::ReactorError::Push(
-            dialog_repository::PushError::NonFastForward { .. }
-                | dialog_repository::PushError::PublishRemoteBranch(
-                    dialog_repository::PublishRemoteBranchError::Publish(
-                        PublishError::VersionMismatch { .. }
-                    )
+        dialog_repository::PushError::NonFastForward { .. }
+            | dialog_repository::PushError::PublishRemoteBranch(
+                dialog_repository::PublishRemoteBranchError::Publish(
+                    PublishError::VersionMismatch { .. }
                 )
-        )
+            )
+    )
+}
+
+/// Whether `error` is a push refused by a head write that said where
+/// upstream stands: dialog records that head before answering, so a pull
+/// can merge it without asking the remote again.
+fn is_recorded_conflict(error: &crate::reactor::ReactorError) -> bool {
+    matches!(
+        error,
+        crate::reactor::ReactorError::Push(dialog_repository::PushError::NonFastForward {
+            actual: Some(_),
+            ..
+        })
     )
 }
 
@@ -420,6 +485,14 @@ fn classified_service_failure(
                     message: "the service no longer serves this space".to_string(),
                 },
             },
+            // No chain this peer holds reaches the space: an access
+            // decision, as a revoked grant is once its holder has dropped
+            // the revoked chain, not a failure of the service.
+            AuthorizeError::UnprovenSubject { .. } => TonkWorkerError::Upstream {
+                status: 403,
+                code: Some("ACCESS_DENIED".to_string()),
+                message: "no access to this space".to_string(),
+            },
             _ => TonkWorkerError::Upstream {
                 status: 502,
                 code: Some("UPSTREAM_ERROR".to_string()),
@@ -443,7 +516,49 @@ fn classified_service_failure(
     })
 }
 
+/// [`compare_heads`] for a status: a head whose context cannot be read
+/// (its tree unreachable, its ancestry not local) is reported as
+/// `Diverged`, the classifier's own answer for a head it cannot order,
+/// rather than failing the status.
+async fn compare(
+    branch: &dialog_repository::Branch,
+    local: Option<&Revision>,
+    remote: Option<&Revision>,
+    tonk: &crate::worker::TonkState,
+) -> tonk_worker_api::Comparison {
+    match compare_heads(branch, local, remote, &tonk.operator).await {
+        Ok(comparison) => comparison,
+        Err(e) => {
+            log!("sync status: cannot resolve a head's context, reporting diverged: {e}");
+            tonk_worker_api::Comparison::Diverged
+        }
+    }
+}
+
+/// Whether `error` is a pull or push refused because the upstream holds a
+/// rival head: another replica writing with this branch's key built on
+/// the same head and minted the same version over another tree
+/// (dialog-db/dialog-db#705). Neither side can merge the other without
+/// dropping a write, and dialog wrote nothing, so no pull-and-retry
+/// recovers it: one key's writers must write one at a time.
+fn is_rival_writer(error: &crate::reactor::ReactorError) -> bool {
+    matches!(
+        error,
+        crate::reactor::ReactorError::Push(dialog_repository::PushError::WriterRacedItself { .. })
+            | crate::reactor::ReactorError::Pull(PullError::WriterRacedItself { .. })
+    )
+}
+
 fn sync_failure(error: &crate::reactor::ReactorError) -> TonkWorkerError {
+    if is_rival_writer(error) {
+        return TonkWorkerError::Upstream {
+            status: 409,
+            code: Some("SYNC_RIVAL_WRITER".to_string()),
+            message: "another replica writing as this one minted the same version over \
+                      another tree; one key must not write from two replicas at once"
+                .to_string(),
+        };
+    }
     if is_head_moved(error) || is_upstream_moved(error) {
         return TonkWorkerError::Upstream {
             status: 409,
@@ -540,7 +655,7 @@ pub fn branches_to_sync(branches: &HashMap<String, BranchConfiguration>) -> Vec<
 pub async fn mark_offline(state: &AppState) {
     let open: Vec<String> = {
         let tonk = state.read().await;
-        tonk.reactor.repos().read().keys().cloned().collect()
+        tonk.reactor.spaces()
     };
     for repo in open {
         let info = match super::repository::get_repository(State(state.clone()), Path(repo.clone()))
@@ -583,9 +698,19 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
         // and pushes. Falling through to the generic per-branch route below
         // would reconcile the same branch a second time every heartbeat, and
         // stamp status on a replica that has no chip to read it.
-        let (status, swept) = {
-            let tonk = state.read().await;
-            super::account_state::ensure_account_state_swept(&tonk).await
+        let sweep = async {
+            // A copy, not a guard: the sweep pulls and pushes.
+            let tonk = state.read().await.clone();
+            if switching_profiles(&tonk) {
+                return None;
+            }
+            Some(super::account_state::ensure_account_state_swept(&tonk).await)
+        };
+        let Some(swept) = unless_swapped(state, sweep).await else {
+            return Err("account sweep gave way to a profile switch".to_string());
+        };
+        let Some((status, swept)) = swept else {
+            return Err("account sweep deferred: a profile switch is under way".to_string());
         };
         if status != tonk_account::AccountStateStatus::Ready {
             return Err("account repository remains unhydrated".to_string());
@@ -662,8 +787,87 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
     }
 }
 
+/// Announces a profile swap to work that holds the state across remote IO.
+///
+/// A swap replaces the state under its write lock, which waits for every
+/// read guard. A sync holds one across its pull and push, so a slow or
+/// hung sync held a sign-out, or any profile switch, for as long as it
+/// ran. That work runs [`unless_swapped`] instead, and gives its guard up
+/// once a swap begins: the state it reconciles is being replaced, and the
+/// same branch is reconciled again by whichever state next holds it.
+#[derive(Clone)]
+pub(crate) struct ProfileSwaps(std::sync::Arc<tokio::sync::watch::Sender<u64>>);
+
+impl Default for ProfileSwaps {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(tokio::sync::watch::channel(0).0))
+    }
+}
+
+impl ProfileSwaps {
+    /// Tell the work running [`unless_swapped`] that a swap is waiting.
+    pub(crate) fn begin(&self) {
+        self.0.send_modify(|swaps| *swaps = swaps.wrapping_add(1));
+    }
+
+    /// How many swaps have begun: a sweep that sees it move is working
+    /// for a state that is gone, and stops rather than queue more for it.
+    pub(crate) fn begun(&self) -> u64 {
+        *self.0.borrow()
+    }
+}
+
+/// Run `work` unless a profile swap begins first, answering `None` then.
+///
+/// Dropping `work` releases whatever guard over the state it holds, so
+/// the swap waits for no remote round trip. Work begun once the swap is
+/// queued waits behind it, and so runs against the state that follows.
+pub(crate) async fn unless_swapped<T>(
+    state: &AppState,
+    work: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    use futures_util::future::{Either, select};
+
+    let mut swaps = state.read().await.profile_swaps.0.subscribe();
+    let swapped = async move {
+        // The sender lives as long as any state does; a closed channel
+        // announces nothing, so the work runs to its end.
+        if swaps.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    match select(std::pin::pin!(work), std::pin::pin!(swapped)).await {
+        Either::Left((done, _)) => Some(done),
+        Either::Right(_) => None,
+    }
+}
+
+/// Whether a profile switch (a sign-out, an added account) is under way.
+///
+/// A switch publishes the account branch itself on its way out, so an
+/// account sweep started meanwhile pushes the same blocks at the same
+/// time. One of the two head writes is then refused: a sign-out uploaded
+/// 365 blocks in 19 s, was refused, and pulled and pushed again. The
+/// sweep waits for the state that follows instead.
+pub(crate) fn switching_profiles(tonk: &crate::worker::TonkState) -> bool {
+    tonk.profile_transition.try_lock().is_err()
+}
+
+/// The error a remote operation answers with when a swap displaced it.
+fn gave_way(operation: &str, params: &SyncPath) -> TonkWorkerError {
+    log!(
+        "{operation} of {}/{} gave way to a profile switch",
+        params.repo,
+        params.branch
+    );
+    TonkWorkerError::Conflict(format!(
+        "{operation} of {}/{} gave way to a profile switch",
+        params.repo, params.branch
+    ))
+}
+
 /// Path parameters for sync endpoints.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct SyncPath {
     /// The repository name.
     pub repo: String,
@@ -677,18 +881,33 @@ pub async fn pull(
     State(state): State<AppState>,
     Path(params): Path<SyncPath>,
 ) -> Result<Json<SyncResponse>, TonkWorkerError> {
+    let work = pull_now(state.clone(), params.clone());
+    unless_swapped(&state, work)
+        .await
+        .unwrap_or_else(|| Err(gave_way("pull", &params)))
+}
+
+async fn pull_now(
+    state: AppState,
+    params: SyncPath,
+) -> Result<Json<SyncResponse>, TonkWorkerError> {
     log!(
         "Pulling from upstream: repo={}, branch={}",
         params.repo,
         params.branch
     );
 
-    // Before the lock, because renewal takes one of its own — and before
+    // Before the copy below, because renewal replaces the operator, and before
     // the presign below, because a worker that has just restarted holds
     // guest chains addressed to an operator that no longer exists.
     ensure_session_authority(&state).await?;
 
-    let tonk_state = state.write().await;
+    // A copy of the state, not a guard over it: what follows waits on the
+    // remote, and a guard held across that would queue any writer behind
+    // it, and every request after the writer.
+    let tonk_state = state.read().await.clone();
+    let gate = tonk_state.sync_queue.gate(&params.repo);
+    let _passage = gate.read().await;
 
     let session = tonk_state
         .reactor
@@ -706,7 +925,7 @@ pub async fn pull(
     // pull reaches dialog, comes back `BranchHasNoUpstream`, and lands in
     // the catch-all as a 503 "temporarily unavailable", which is untrue:
     // nothing is going to become available until a remote is attached.
-    if session.handle().upstream().is_none() {
+    if tonk_account::peer::upstream(session.handle()).is_none() {
         log!(
             "Pull skipped, no upstream: {}@{}",
             params.branch,
@@ -721,18 +940,11 @@ pub async fn pull(
         }));
     }
 
-    // Every branch pulls the same way: adopt the head, materialize
-    // nothing. `.download()` here walked every block the revision
-    // references, and history records live in the same tree as the
-    // data, so an account pull dragged the branch's whole lineage down
-    // before anything could render.
-    //
-    // What the account actually needs local is the handful of blocks
-    // the next boot's authorization walk reads, and those arrive by
-    // being READ: `NetworkedIndex` hydrates a read-miss from the remote
-    // and writes it into the local archive on the way through. So the
-    // account claims its capability chains by proving them instead,
-    // started detached below.
+    // A pull adopts the head and materializes nothing, except in the
+    // profile's own repository, where the reactor downloads the
+    // operational regions before the head moves: that branch holds the
+    // delegations that authorize every on-demand read, and a head adopted
+    // by reference names blocks only a proof through them could fetch.
     let hydrate = super::account_state::is_account_key(&tonk_state, &params.repo).await;
     let pulled = tonk_state
         .reactor
@@ -755,6 +967,7 @@ pub async fn pull(
             // and a view left waiting repainted only on its next
             // unrelated poll (or a manual refresh).
             if after != before {
+                migrate_adopted_head(&tonk_state, &params.repo, &params.branch).await;
                 let session = tonk_state
                     .reactor
                     .repository(&params.repo)
@@ -790,11 +1003,37 @@ pub async fn pull(
     }
 }
 
+/// Move a head a pull just adopted to this release's layout before the
+/// views over it are polled. The head an earlier release pushed, the
+/// profile an account links for instance, is laid out the earlier way;
+/// a view polled against it before the move reads definitions and rules
+/// this release does not match and shows them missing until a later
+/// commit or a newly opened query runs the move. Nothing to move, or a
+/// move this process already ran, is one root read; a failure is logged
+/// by the gate and the poll proceeds on what the earlier release left.
+async fn migrate_adopted_head(tonk_state: &crate::worker::TonkState, repo: &str, branch: &str) {
+    let _ = super::query::migrate_while_opening(
+        tonk_state,
+        tonk_state.reactor.repository(repo).branch(branch),
+    )
+    .await;
+}
+
 /// Push local changes to the upstream remote.
 #[wasm_compat]
 pub async fn push(
     State(state): State<AppState>,
     Path(params): Path<SyncPath>,
+) -> Result<Json<SyncResponse>, TonkWorkerError> {
+    let work = push_now(state.clone(), params.clone());
+    unless_swapped(&state, work)
+        .await
+        .unwrap_or_else(|| Err(gave_way("push", &params)))
+}
+
+async fn push_now(
+    state: AppState,
+    params: SyncPath,
 ) -> Result<Json<SyncResponse>, TonkWorkerError> {
     log!(
         "Pushing to upstream: repo={}, branch={}",
@@ -804,7 +1043,12 @@ pub async fn push(
 
     ensure_session_authority(&state).await?;
 
-    let tonk_state = state.write().await;
+    // A copy of the state, not a guard over it: what follows waits on the
+    // remote, and a guard held across that would queue any writer behind
+    // it, and every request after the writer.
+    let tonk_state = state.read().await.clone();
+    let gate = tonk_state.sync_queue.gate(&params.repo);
+    let _passage = gate.read().await;
 
     let session = tonk_state
         .reactor
@@ -816,33 +1060,111 @@ pub async fn push(
 
     let before = session.handle().revision();
 
-    match tonk_state
-        .reactor
-        .repository(&params.repo)
-        .branch(&params.branch)
-        .push()
-        .perform(&tonk_state.operator)
-        .await
-    {
-        Ok(_) => {
-            log!("Push succeeded: {}@{}", params.branch, params.repo);
-            let after = session.handle().revision();
-            announce_head(&params.repo, &params.branch, after.clone());
-            Ok(Json(SyncResponse {
-                success: true,
-                disposition: SyncDisposition::Completed,
-                before: before.clone(),
-                after,
-                error: None,
-            }))
-        }
-        Err(e) => {
-            log!("Push failed: {}@{}: {e:?}", params.branch, params.repo);
-            let error = sync_failure(&e);
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
-            Err(error)
-        }
+    // Publishing is a conditional write against the upstream head this
+    // replica last saw, so any other writer landing first refuses it: a
+    // second device, an agent, or this worker's own background sweep
+    // pushing the same branch. Converge the way a sweep does — pull the
+    // newer upstream into local, then publish the merge — rather than
+    // reporting a conflict the caller can do nothing about but retry.
+    let mut retry = PublicationRetry::new();
+    let mut attempt = 0;
+    loop {
+        log!(
+            "Push publication attempt {}: {}@{}",
+            attempt + 1,
+            params.branch,
+            params.repo
+        );
+        let error = match tonk_state
+            .reactor
+            .repository(&params.repo)
+            .branch(&params.branch)
+            .push()
+            .perform(&tonk_state.operator)
+            .await
+        {
+            Ok(_) => {
+                log!("Push succeeded: {}@{}", params.branch, params.repo);
+                let after = session.handle().revision();
+                announce_head(&params.repo, &params.branch, after.clone());
+                return Ok(Json(SyncResponse {
+                    success: true,
+                    disposition: SyncDisposition::Completed,
+                    before,
+                    after,
+                    error: None,
+                }));
+            }
+            Err(e) if is_upstream_moved(&e) => {
+                if !retry.wait().await {
+                    log!(
+                        "Push publication retry window exhausted after {} attempts: {}@{}",
+                        attempt + 1,
+                        params.branch,
+                        params.repo
+                    );
+                    let error = sync_failure(&e);
+                    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                    publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
+                    return Err(error);
+                }
+                attempt += 1;
+                log!(
+                    "Push raced an upstream update on {}@{} (attempt {attempt}); pulling",
+                    params.branch,
+                    params.repo
+                );
+                let head = session.handle().revision();
+                match pull_through_moved_head(
+                    &tonk_state,
+                    &params.repo,
+                    &params.branch,
+                    &session,
+                    false,
+                )
+                .await
+                {
+                    Ok(after) => {
+                        if after.is_some() && after != head {
+                            deliver_pulled_head(
+                                &tonk_state,
+                                &params.repo,
+                                &params.branch,
+                                &session,
+                            )
+                            .await;
+                        }
+                        // Reconciliation can itself spend the remaining
+                        // window. Do not admit another conditional write then.
+                        if retry.admits_retry() {
+                            continue;
+                        }
+                        log!(
+                            "Push publication retry window exhausted after reconciliation: {}@{}",
+                            params.branch,
+                            params.repo
+                        );
+                        sync_failure(&e)
+                    }
+                    Err(error) => {
+                        log!(
+                            "Push reconciliation failed after {} publication attempts: {}@{}",
+                            attempt,
+                            params.branch,
+                            params.repo
+                        );
+                        error
+                    }
+                }
+            }
+            Err(e) => {
+                log!("Push failed: {}@{}: {e:?}", params.branch, params.repo);
+                sync_failure(&e)
+            }
+        };
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
+        return Err(error);
     }
 }
 
@@ -868,7 +1190,8 @@ pub async fn sync_status(
     // Read-only: status acquires a branch and does a remote fetch but never
     // mutates `TonkState`. A read lock lets concurrent queries proceed instead
     // of blocking on the (network-bound) status request.
-    let tonk_state = state.read().await;
+    // A copy, not a guard: the fetch below waits on the remote.
+    let tonk_state = state.read().await.clone();
 
     // A status check fires whenever a space is opened, so this is the load-time
     // hook for the topbar identity chip: re-stamp the `state:self` overlay here,
@@ -909,7 +1232,7 @@ pub async fn sync_status(
     let handle = session.handle();
     let local = handle.revision();
 
-    if handle.upstream().is_none() {
+    if tonk_account::peer::upstream(handle).is_none() {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         publish_sync_status(
             &tonk_state,
@@ -926,7 +1249,10 @@ pub async fn sync_status(
     }
 
     let remote = match handle.fetch().perform(&tonk_state.operator).await {
-        Ok(remote) => remote,
+        Ok(fetched) => fetched
+            .into_iter()
+            .next()
+            .and_then(|fetched| fetched.revision),
         Err(e) => {
             let error = classified_service_failure(&e).unwrap_or(TonkWorkerError::Upstream {
                 status: 503,
@@ -939,7 +1265,8 @@ pub async fn sync_status(
         }
     };
 
-    let sync_state = SyncState::from(classify(local.as_ref(), remote.as_ref()));
+    let sync_state =
+        SyncState::from(compare(handle, local.as_ref(), remote.as_ref(), &tonk_state).await);
     // Publish the live status to the replica's `tonk/sync` overlay so the
     // chip's subscription reflects it — the same path the HTTP response
     // carries, now also a fact the UI can subscribe to.
@@ -967,6 +1294,16 @@ pub async fn sync_status(
 pub async fn sync(
     State(state): State<AppState>,
     Path(params): Path<SyncPath>,
+) -> Result<Json<SyncResponse>, TonkWorkerError> {
+    let work = sync_now(state.clone(), params.clone());
+    unless_swapped(&state, work)
+        .await
+        .unwrap_or_else(|| Err(gave_way("sync", &params)))
+}
+
+async fn sync_now(
+    state: AppState,
+    params: SyncPath,
 ) -> Result<Json<SyncResponse>, TonkWorkerError> {
     log!(
         "Syncing with upstream: repo={}, branch={}",
@@ -1016,8 +1353,6 @@ pub async fn sync(
         if !super::account_state::is_account_key(&tonk_state, &params.repo).await
             && !is_sync_enabled(&tonk_state, &params.repo, &params.branch).await
         {
-            drop(tonk_state);
-            let tonk_state = state.write().await;
             publish_paused_status(&tonk_state, &params.repo, &params.branch).await;
             log!("sync of {}/{} skipped: paused", params.repo, params.branch);
             return Ok(Json(SyncResponse {
@@ -1030,15 +1365,12 @@ pub async fn sync(
         }
     }
 
-    // Flip the chip to `pending` for the duration. This runs in its OWN brief
-    // write-lock scope that drops before the long pull/push lock below, so the
-    // overlay write + subscription re-poll reach the chip *before* the sync
-    // begins (a mid-sync publish wouldn't — the chip's re-poll needs the read
-    // lock the long write lock holds). The settled status is published by the
-    // status check the controller runs after `/sync` returns.
+    // Overlay updates and polls use the reactor's own synchronization. Taking
+    // an application write lock here would queue behind network-bound syncs
+    // and prevent later local readers (including device approval) from running.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
-        let tonk_state = state.write().await;
+        let tonk_state = state.read().await;
         publish_sync_status_attr(
             &tonk_state,
             &params.repo,
@@ -1051,23 +1383,27 @@ pub async fn sync(
     // Everything above this point is local — an offline or paused branch
     // returns without touching the network — so renewal waits until a
     // remote operation is actually going to happen. It has to happen
-    // before the read lock below, which is held across both directions.
+    // before the state is copied below, so the copy carries the renewed operator.
     ensure_session_authority(&state).await?;
 
-    // A READ lock, not a write lock. Pull/push reach the reactor and operator
-    // by shared reference (the reactor owns its own interior locks for the
-    // branch cache), so they don't need exclusive `TonkState`. Holding only a
-    // read lock lets status checks and the pause command interleave during the
-    // network-bound sync — the whole reason sync used to feel unresponsive and
-    // pause couldn't land mid-sync was the write lock serializing everything.
+    // A copy of the state, not a guard over it. Pull and push reach the
+    // reactor and operator by shared reference, so they need no guard at
+    // all, and one held across the round trips below queued any writer
+    // behind the remote, and every request after the writer: one slow sync
+    // froze the worker. A profile switch replaces the state this copy was
+    // taken from; `unless_swapped` stops the sync then. A session renewal
+    // replaces the operator; the one copied here stays valid until it
+    // expires. Removing this space waits at its gate instead.
     //
-    // Dropping to a read lock means a local commit can now race the pull on the
-    // same branch. That's safe since `tonk-2026-06-21`: `pull` publishes its
-    // merged head CAS'd against the version it merged from, so a racing commit
-    // makes the pull fail with a version mismatch instead of silently dropping
-    // the commit. We recover here by refreshing the branch head and retrying —
+    // A local commit can race the pull on the same branch. That's safe
+    // since `tonk-2026-06-21`: `pull` publishes its merged head CAS'd
+    // against the version it merged from, so a racing commit makes the
+    // pull fail with a version mismatch instead of silently dropping the
+    // commit. We recover here by refreshing the branch head and retrying;
     // the retry reuses the blocks the failed attempt already fetched.
-    let tonk_state = state.read().await;
+    let tonk_state = state.read().await.clone();
+    let gate = tonk_state.sync_queue.gate(&params.repo);
+    let _passage = gate.read().await;
 
     let session = tonk_state
         .reactor
@@ -1079,97 +1415,105 @@ pub async fn sync(
 
     let before = session.handle().revision();
 
+    // A watched space is told each head its upstream moves to, and the
+    // watch records it, so the pull merges that head rather than asking
+    // the remote where it stands: a round trip on every sync, the one a
+    // delivered head wakes included. A head the watch has not delivered
+    // yet is not lost: the push below is refused for it, and pulls it.
+    let assume_upstream = params.branch == "main" && tonk_state.sync_queue.is_watched(&params.repo);
+
     // Pull with bounded refresh-and-retry on a head that moved under us.
-    let mut after_pull = None;
-    let mut pull_error: Option<TonkWorkerError> = None;
-    // See the pull handler: authorization-bearing branches materialize
-    // their operational regions.
-    let hydrate = super::account_state::is_account_key(&tonk_state, &params.repo).await;
-    for attempt in 0..SYNC_RETRY_LIMIT {
-        let pull = tonk_state
-            .reactor
-            .repository(&params.repo)
-            .branch(&params.branch)
-            .pull();
-        let pulled = if hydrate {
-            pull.download()
-                .operational()
-                .perform(&tonk_state.operator)
-                .await
-        } else {
-            pull.perform(&tonk_state.operator).await
-        };
-        match pulled {
-            Ok(after) => {
-                log!("Pull succeeded: {}@{}", params.branch, params.repo);
-                if hydrate
-                    && let Err(error) =
-                        super::account_state::converge_account_state(&tonk_state).await
-                {
-                    log!("account-state convergence after sync pull failed: {error}");
-                }
-                after_pull = Some(after);
-                pull_error = None;
-                break;
-            }
-            Err(e) if is_head_moved(&e) && attempt + 1 < SYNC_RETRY_LIMIT => {
-                // A commit advanced the head while we merged. Refresh the
-                // handle's view of it and retry from the now-current snapshot.
-                log!(
-                    "Pull raced a commit on {}@{} (attempt {}); refreshing",
-                    params.branch,
-                    params.repo,
-                    attempt + 1
-                );
-                if let Err(refresh_err) = session.handle().refresh(&tonk_state.operator).await {
-                    log!("refresh after raced pull failed: {refresh_err:?}");
-                    pull_error = Some(TonkWorkerError::Internal(
-                        "failed to refresh local branch after a concurrent update".to_string(),
-                    ));
-                    break;
-                }
-            }
-            Err(e) => {
-                log!("Pull failed: {}@{}: {e:?}", params.branch, params.repo);
-                pull_error = Some(sync_failure(&e));
-                break;
-            }
+    let after_pull = match pull_through_moved_head(
+        &tonk_state,
+        &params.repo,
+        &params.branch,
+        &session,
+        assume_upstream,
+    )
+    .await
+    {
+        Ok(after) => after,
+        Err(error) => {
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
+            return Err(error);
         }
-    }
-    if let Some(error) = pull_error {
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
-        return Err(error);
-    }
-    let after_pull = after_pull.flatten();
+    };
     // A pull that moved the head changed what every live view over this
     // branch shows; deliver it now rather than after the push settles —
     // a refused or empty push left views waiting on a repaint that only
     // a manual refresh provided.
     if after_pull.is_some() && after_pull != before {
-        tonk_state
-            .reactor
-            .schedule_poll(std::sync::Arc::clone(&session.state));
-        tonk_state
-            .reactor
-            .run_scheduled_polls(&tonk_state.operator)
-            .await;
+        deliver_pulled_head(&tonk_state, &params.repo, &params.branch, &session).await;
     }
 
-    match tonk_state
-        .reactor
-        .repository(&params.repo)
-        .branch(&params.branch)
-        // The pull above just resolved this branch's upstream head, so
-        // the push does not resolve it again. What that gives up is
-        // early refusal when another writer moved upstream between the
-        // two: the novelty ships first and the conditional head write
-        // rejects it, which `sync_failure` reports as the same conflict.
-        .push()
-        .assuming_upstream()
-        .perform(&tonk_state.operator)
-        .await
-    {
+    // Another writer landing first refuses the push. It is pulled and
+    // pushed onto at once, rather than left for the drain to retry on its
+    // own schedule, which held a change back for seconds at a time while
+    // two devices took turns editing.
+    let mut attempt = 0;
+    let pushed = loop {
+        let pushed = tonk_state
+            .reactor
+            .repository(&params.repo)
+            .branch(&params.branch)
+            // The pull above just settled this branch's upstream head, so
+            // the push does not resolve it again. What that gives up is
+            // early refusal when another writer moved upstream between
+            // the two: the novelty ships first and the conditional head
+            // write rejects it.
+            .push()
+            .assuming_upstream()
+            .perform(&tonk_state.operator)
+            .await;
+        match pushed {
+            Err(e) if is_upstream_moved(&e) && attempt + 1 < SYNC_RETRY_LIMIT => {
+                attempt += 1;
+                log!(
+                    "Push raced an upstream update on {}@{} (attempt {attempt}); pulling",
+                    params.branch,
+                    params.repo
+                );
+                // A refusal that said where upstream stands recorded it,
+                // so the first pull after it merges that head without
+                // asking again. Only the first: dialog records a head only
+                // when it is newer than the one recorded, so a refusal can
+                // leave the record behind the remote, and a pull trusting
+                // it again would merge nothing new and lose the same race
+                // every time. Any later attempt asks the remote.
+                let head = session.handle().revision();
+                match pull_through_moved_head(
+                    &tonk_state,
+                    &params.repo,
+                    &params.branch,
+                    &session,
+                    attempt == 1 && is_recorded_conflict(&e),
+                )
+                .await
+                {
+                    Ok(after) => {
+                        if after.is_some() && after != head {
+                            deliver_pulled_head(
+                                &tonk_state,
+                                &params.repo,
+                                &params.branch,
+                                &session,
+                            )
+                            .await;
+                        }
+                    }
+                    Err(error) => {
+                        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                        publish_failure_status(&tonk_state, &params.repo, &params.branch, &error)
+                            .await;
+                        return Err(error);
+                    }
+                }
+            }
+            pushed => break pushed,
+        }
+    };
+    match pushed {
         Ok(pushed) => {
             log!("Push succeeded: {}@{}", params.branch, params.repo);
             let after = session.handle().revision();
@@ -1214,6 +1558,94 @@ pub async fn sync(
     }
 }
 
+/// Pull `repo`/`branch` into `session`, refreshing and retrying when a
+/// local commit advances the head mid-merge. With `assume_upstream`, the
+/// pull merges the upstream head last recorded instead of asking the
+/// remote for it.
+///
+/// Since `tonk-2026-06-21` a pull publishes its merged head CAS'd against
+/// the version it merged from, so a racing commit fails the pull with a
+/// version mismatch instead of silently dropping the commit. Each retry
+/// reuses the blocks the failed attempt already fetched, so only the cheap
+/// merge+CAS runs again. Authorization-bearing branches materialize their
+/// operational regions and converge account state afterwards.
+async fn pull_through_moved_head(
+    tonk_state: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+    session: &crate::reactor::BranchSession,
+    assume_upstream: bool,
+) -> Result<Option<Revision>, TonkWorkerError> {
+    let hydrate = super::account_state::is_account_key(tonk_state, repo).await;
+    for attempt in 0..SYNC_RETRY_LIMIT {
+        let pull = tonk_state.reactor.repository(repo).branch(branch).pull();
+        let pull = if assume_upstream {
+            pull.assuming_upstream()
+        } else {
+            pull
+        };
+        let pulled = if hydrate {
+            pull.download()
+                .operational()
+                .perform(&tonk_state.operator)
+                .await
+        } else {
+            pull.perform(&tonk_state.operator).await
+        };
+        match pulled {
+            Ok(after) => {
+                log!("Pull succeeded: {branch}@{repo}");
+                if hydrate
+                    && let Err(error) =
+                        super::account_state::converge_account_state(tonk_state).await
+                {
+                    log!("account-state convergence after sync pull failed: {error}");
+                }
+                return Ok(after);
+            }
+            Err(e) if is_head_moved(&e) && attempt + 1 < SYNC_RETRY_LIMIT => {
+                // A commit advanced the head while we merged. Refresh the
+                // handle's view of it and retry from the now-current snapshot.
+                log!(
+                    "Pull raced a commit on {branch}@{repo} (attempt {}); refreshing",
+                    attempt + 1
+                );
+                if let Err(refresh_err) = session.handle().refresh(&tonk_state.operator).await {
+                    log!("refresh after raced pull failed: {refresh_err:?}");
+                    return Err(TonkWorkerError::Internal(
+                        "failed to refresh local branch after a concurrent update".to_string(),
+                    ));
+                }
+            }
+            Err(e) => {
+                log!("Pull failed: {branch}@{repo}: {e:?}");
+                return Err(sync_failure(&e));
+            }
+        }
+    }
+    unreachable!("the final attempt returns on every outcome")
+}
+
+/// Repaint every live view over a branch whose head a pull just moved.
+/// Nothing else will: a pull commits nothing locally, so no commit-time
+/// poll runs, and a waiting view repainted only on its next unrelated
+/// poll (or a manual refresh).
+async fn deliver_pulled_head(
+    tonk_state: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+    session: &crate::reactor::BranchSession,
+) {
+    migrate_adopted_head(tonk_state, repo, branch).await;
+    tonk_state
+        .reactor
+        .schedule_poll(std::sync::Arc::clone(&session.state));
+    tonk_state
+        .reactor
+        .run_scheduled_polls(&tonk_state.operator)
+        .await;
+}
+
 /// A millisecond wall-clock stamp for sync-queue activity priority.
 /// `Date.now()` in the SW event context; native has no clock dependency
 /// (the stamp only orders sweeps, it never gates correctness), so 0 —
@@ -1252,9 +1684,51 @@ pub struct SyncQueue {
     /// Repo name → instant its last sweep failed. Held apart from `dirty` on
     /// purpose: see [`requeue`](Self::requeue).
     retrying: std::sync::Mutex<HashMap<String, f64>>,
+    /// Repo name → instant a watch of its upstream said the upstream moved.
+    /// Held apart from `dirty`: another device's change is not this one's
+    /// un-pushed work, so it does not lift the hidden-tab interval.
+    moved: std::sync::Mutex<HashMap<String, f64>>,
+    /// Repo name → whether the watch of its upstream is running (`true`) or
+    /// only being begun (`false`). A watched repo is left out of the
+    /// polling sweep: its watch says when it has something to pull.
+    watching: std::sync::Mutex<HashMap<String, bool>>,
+    /// Repo name → the wake of the loop that syncs it as it changes (see
+    /// [`space_loop`]). A wake that comes while that loop syncs is kept
+    /// for its next wait, so none is lost.
+    loops: std::sync::Mutex<HashMap<String, std::sync::Arc<tokio::sync::Notify>>>,
+    /// Woken when a repo with no loop yet is marked: the loop that begins
+    /// space loops sleeps on it (see [`push_loops`]).
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    /// Repo name → held while it syncs, by its loop and by a drain alike,
+    /// so one repo never syncs twice at once.
+    syncing: std::sync::Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    /// Repo → a gate every pull, push and sync of it passes through
+    /// (shared), and that removing it closes (exclusive). A sync holds no
+    /// guard over the state across its round trips, so this is what keeps
+    /// one from writing into a space while the space is being deleted.
+    gates: std::sync::Mutex<HashMap<String, std::sync::Arc<tokio::sync::RwLock<()>>>>,
 }
 
 impl SyncQueue {
+    /// The gate of `repo`: shared by its syncs, closed by its removal.
+    pub(crate) fn gate(&self, repo: &str) -> std::sync::Arc<tokio::sync::RwLock<()>> {
+        let key = super::adopt::space_subject(repo)
+            .map(|did| did.to_string())
+            .unwrap_or_else(|| repo.to_owned());
+        self.gates
+            .lock()
+            .map(|mut gates| gates.entry(key).or_default().clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether `repo` is waiting to sync.
+    #[cfg(test)]
+    pub fn is_dirty(&self, repo: &str) -> bool {
+        self.dirty
+            .lock()
+            .is_ok_and(|dirty| dirty.contains_key(repo))
+    }
+
     /// Record that `repo` has un-pushed local commits. `now` is a caller-
     /// supplied monotonic-ish timestamp (the SW stamps `Date.now()` at the
     /// event boundary — the reactor's deterministic paths can't read a clock).
@@ -1262,6 +1736,36 @@ impl SyncQueue {
         if let Ok(mut dirty) = self.dirty.lock() {
             dirty.insert(repo.to_owned(), now);
         }
+        self.wake(repo);
+    }
+
+    /// Wake the loop of `repo`, or, when it has none yet, the loop that
+    /// begins one.
+    fn wake(&self, repo: &str) {
+        let running = self
+            .loops
+            .lock()
+            .ok()
+            .and_then(|loops| loops.get(repo).cloned());
+        match running {
+            Some(wake) => wake.notify_one(),
+            None => self.wake.notify_one(),
+        }
+    }
+
+    /// What the loop that begins space loops waits on, held apart from the
+    /// queue so waiting does not hold the state lock the queue lives behind.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn waker(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        self.wake.clone()
+    }
+
+    /// The lock held while `repo` syncs.
+    pub(crate) fn syncing(&self, repo: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        self.syncing
+            .lock()
+            .map(|mut syncing| syncing.entry(repo.to_owned()).or_default().clone())
+            .unwrap_or_default()
     }
 
     /// How many repos have un-pushed local commits waiting.
@@ -1295,8 +1799,115 @@ impl SyncQueue {
             repos.into_iter().map(|(repo, _)| repo).collect()
         }
         let mut repos = take(&self.dirty);
+        repos.extend(take(&self.moved));
         repos.extend(take(&self.retrying));
         repos
+    }
+
+    /// Begin a loop for every marked repo that has none, answering each
+    /// with the wake its loop sleeps on.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn begin_loops(&self) -> Vec<(String, std::sync::Arc<tokio::sync::Notify>)> {
+        let mut marked: Vec<String> = Vec::new();
+        for slot in [&self.dirty, &self.moved] {
+            if let Ok(map) = slot.lock() {
+                marked.extend(map.keys().cloned());
+            }
+        }
+        let Ok(mut loops) = self.loops.lock() else {
+            return Vec::new();
+        };
+        let mut begun = Vec::new();
+        for repo in marked {
+            if !loops.contains_key(&repo) {
+                let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+                loops.insert(repo.clone(), wake.clone());
+                begun.push((repo, wake));
+            }
+        }
+        begun
+    }
+
+    /// Whether the loop waking on `wake` is still the loop of `repo`: it
+    /// is not once the repo is [forgotten](Self::forget).
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn is_loop_of(
+        &self,
+        repo: &str,
+        wake: &std::sync::Arc<tokio::sync::Notify>,
+    ) -> bool {
+        self.loops
+            .lock()
+            .map(|loops| {
+                loops
+                    .get(repo)
+                    .is_some_and(|running| std::sync::Arc::ptr_eq(running, wake))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Claim `repo` when it has un-pushed commits or a moved upstream,
+    /// dropping both marks: its loop syncs it. A mark made while it syncs
+    /// is claimed on the loop's next pass, so only its newest head is
+    /// pushed, never each one between. The retry set is left to the drain,
+    /// so a repo that keeps failing does not spin its loop.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn claim(&self, repo: &str) -> bool {
+        let mut claimed = false;
+        for slot in [&self.dirty, &self.moved] {
+            if let Ok(mut map) = slot.lock() {
+                claimed |= map.remove(repo).is_some();
+            }
+        }
+        claimed
+    }
+
+    /// Record that a watch of `repo`'s upstream said it moved: its loop
+    /// pulls it.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn moved(&self, repo: &str, now: f64) {
+        if let Ok(mut moved) = self.moved.lock() {
+            moved.insert(repo.to_owned(), now);
+        }
+        self.wake(repo);
+    }
+
+    /// Begin watching `repo`, answering `false` when a watch of it is
+    /// already begun.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn begin_watching(&self, repo: &str) -> bool {
+        let Ok(mut watching) = self.watching.lock() else {
+            return false;
+        };
+        if watching.contains_key(repo) {
+            return false;
+        }
+        watching.insert(repo.to_owned(), false);
+        true
+    }
+
+    /// The watch of `repo` is running: the sweep leaves `repo` to it.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn watched(&self, repo: &str) {
+        if let Ok(mut watching) = self.watching.lock() {
+            watching.insert(repo.to_owned(), true);
+        }
+    }
+
+    /// The watch of `repo` ended, or never began: the sweep pulls it again.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn end_watching(&self, repo: &str) {
+        if let Ok(mut watching) = self.watching.lock() {
+            watching.remove(repo);
+        }
+    }
+
+    /// Whether a running watch of `repo` says when it has something to pull.
+    pub(crate) fn is_watched(&self, repo: &str) -> bool {
+        self.watching
+            .lock()
+            .map(|watching| watching.get(repo).copied().unwrap_or(false))
+            .unwrap_or(false)
     }
 
     /// Queue `repo` for a retry after a failed sweep.
@@ -1330,6 +1941,18 @@ impl SyncQueue {
         if let Ok(mut retrying) = self.retrying.lock() {
             retrying.remove(repo);
         }
+        if let Ok(mut moved) = self.moved.lock() {
+            moved.remove(repo);
+        }
+        // Its loop, woken, finds it is no longer the repo's and ends.
+        let running = self
+            .loops
+            .lock()
+            .ok()
+            .and_then(|mut loops| loops.remove(repo));
+        if let Some(wake) = running {
+            wake.notify_one();
+        }
     }
 }
 
@@ -1352,12 +1975,10 @@ impl SyncQueue {
 pub async fn drain_sync(state: &AppState) {
     // One drain at a time, and concurrent triggers coalesce instead of
     // queueing: a keepalive beat arriving while a transact-triggered
-    // drain runs would only repeat the same sweep, and letting them
-    // interleave is how branch commits tear (session rotation and the
-    // account ensure both write without a per-branch lock in dialog).
-    // Whatever this beat would have pushed, the next one covers.
-    static DRAIN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    let Ok(_serialized) = DRAIN.try_lock() else {
+    // drain runs would only repeat the same sweep. Whatever this beat
+    // would have pushed, the next one covers.
+    static DRAINING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let Ok(_draining) = DRAINING.try_lock() else {
         return;
     };
 
@@ -1381,10 +2002,15 @@ pub async fn drain_sync(state: &AppState) {
 
     // Every currently-open repository — the pull population. Read the reactor's
     // cached repo map; a repo only appears once acquired, which every rendered
-    // space has done.
+    // space has done. A watched repo is left to its watch unless an active
+    // document needs bytes: branch watches only announce heads, not cells.
     let open: Vec<String> = {
         let tonk = state.read().await;
-        tonk.reactor.repos().read().keys().cloned().collect()
+        tonk.reactor
+            .spaces()
+            .into_iter()
+            .filter(|repo| !tonk.sync_queue.is_watched(repo) || super::document::needs_sync(repo))
+            .collect()
     };
 
     // Union, pending-first, de-duplicated while preserving order.
@@ -1395,13 +2021,35 @@ pub async fn drain_sync(state: &AppState) {
         .filter(|repo| seen.insert(repo.clone()))
         .collect();
 
+    let swaps = state.read().await.profile_swaps.clone();
+    let began = swaps.begun();
     for repo in &order {
-        if let Err(e) = sync_repository(state, repo).await {
+        if swaps.begun() != began {
+            log!("drain_sync: a profile switch replaced the state this drain was sweeping");
+            return;
+        }
+        // A space its loop is syncing waits for it: the drain then finds
+        // it current, rather than reconciling it a second time at once.
+        let syncing = state.read().await.sync_queue.syncing(repo);
+        let _syncing = reporting(&format!("drain waiting to sync {repo}"), syncing.lock()).await;
+        if let Err(e) = reporting(
+            &format!("drain's sync of {repo}"),
+            sync_repository(state, repo),
+        )
+        .await
+        {
             // Push didn't fully land — re-mark so the next heartbeat retries.
             log!("drain_sync: {repo} did not fully reconcile: {e}");
+            if swaps.begun() != began {
+                return;
+            }
             let tonk = state.read().await;
             tonk.sync_queue.requeue(repo, now);
         }
+    }
+
+    if swaps.begun() != began {
+        return;
     }
 
     // The account rides profile main, which no repository — and so no
@@ -1420,9 +2068,34 @@ pub async fn drain_sync(state: &AppState) {
         }
         swept
     };
-    if !account_already_swept {
+    // A watched account is swept when its watch says it moved, and when
+    // this device commits to it, by its own loop.
+    let account_watched = {
         let tonk = state.read().await;
-        let (status, swept) = super::account_state::ensure_account_state_swept(&tonk).await;
+        match super::account_state::require_ready_account_state(&tonk).await {
+            Ok(ready) => tonk.sync_queue.is_watched(&ready.key),
+            Err(_) => false,
+        }
+    };
+    if !account_already_swept && !account_watched {
+        let sweep = async {
+            // A clone, not a guard: the sweep pulls and pushes the account
+            // over the network, and a swap is already handled by
+            // `unless_swapped`.
+            let tonk = state.read().await.clone();
+            if switching_profiles(&tonk) {
+                return None;
+            }
+            Some(super::account_state::ensure_account_state_swept(&tonk).await)
+        };
+        let Some(swept) = unless_swapped(state, sweep).await else {
+            log!("drain_sync: account sweep gave way to a profile switch");
+            return;
+        };
+        let Some((status, swept)) = swept else {
+            log!("drain_sync: account sweep deferred: a profile switch is under way");
+            return;
+        };
         if status != tonk_account::AccountStateStatus::Unconfigured
             && let Err(error) = swept
         {
@@ -1431,14 +2104,297 @@ pub async fn drain_sync(state: &AppState) {
     }
 }
 
-/// Replace a due session with a disposable operator and bounded in-memory
-/// grant. Account and profile authority survives without invitation replay.
+/// Run `work`, logging every 30 s it is still running, so a sync that
+/// never ends says which it is: a hung one holds its space's lock, and
+/// the drain's, until the worker is killed.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn reporting<T>(what: &str, work: impl std::future::Future<Output = T>) -> T {
+    use futures_util::future::{Either, select};
+    let started = current_millis();
+    let mut work = std::pin::pin!(work);
+    loop {
+        let tick = std::pin::pin!(crate::sleep(web_time::Duration::from_secs(30)));
+        match select(work.as_mut(), tick).await {
+            Either::Left((done, _)) => return done,
+            Either::Right(_) => log!(
+                "{what} is still running after {}s",
+                ((current_millis() - started) / 1000.0) as u64
+            ),
+        }
+    }
+}
+
+/// Off the worker there is no one to tell: `work` is awaited as it is.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn reporting<T>(_what: &str, work: impl std::future::Future<Output = T>) -> T {
+    work.await
+}
+
+/// Push each local commit as it is made, and pull each head a watch
+/// delivers as it arrives, rather than when a drain's schedule comes round.
+///
+/// A drain runs on its own schedule (a debounce, held off while a page
+/// loads and after the last drain, else the loop's tick) and sweeps every
+/// open repository and the account, so a change waited seconds on either
+/// side for one. Instead each space gets a loop of its own the first time
+/// it is marked dirty or moved, and this loop begins them: it sleeps until
+/// a space with no loop is marked. Spaces sync apart, so one slow to push
+/// holds up no other. It ends when `stopped` says the worker is being
+/// replaced.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn push_loops(state: AppState, stopped: std::rc::Rc<dyn Fn() -> bool>) {
+    let wake = state.read().await.sync_queue.waker();
+    loop {
+        let begun = state.read().await.sync_queue.begin_loops();
+        for (repo, space) in begun {
+            wasm_bindgen_futures::spawn_local(space_loop(
+                state.clone(),
+                repo,
+                space,
+                stopped.clone(),
+            ));
+        }
+        wake.notified().await;
+        if stopped() {
+            return;
+        }
+    }
+}
+
+/// Sync `repo` each time it is marked dirty or moved, and sleep between.
+///
+/// A space committed to while it syncs is synced once more after, with its
+/// newest head: the commits between are never pushed one by one. A sync
+/// that fails leaves the space to the drain's retry, so a failing remote
+/// does not spin it. Offline, the marks wait for the drain on
+/// reconnecting. It ends when the worker is being replaced or the space is
+/// forgotten.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn space_loop(
+    state: AppState,
+    repo: String,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    stopped: std::rc::Rc<dyn Fn() -> bool>,
+) {
+    loop {
+        if stopped() {
+            log!("{repo} no longer syncs here: this worker is being replaced");
+            return;
+        }
+        let syncing = {
+            let tonk = state.read().await;
+            if !tonk.sync_queue.is_loop_of(&repo, &wake) {
+                return;
+            }
+            (!crate::worker::offline() && tonk.sync_queue.claim(&repo))
+                .then(|| tonk.sync_queue.syncing(&repo))
+        };
+        let Some(syncing) = syncing else {
+            wake.notified().await;
+            continue;
+        };
+        let _syncing = reporting(&format!("waiting to sync {repo}"), syncing.lock()).await;
+        let swaps = state.read().await.profile_swaps.clone();
+        let began = swaps.begun();
+        let synced = reporting(&format!("sync of {repo}"), sync_repository(&state, &repo)).await;
+        if swaps.begun() != began {
+            // The state this loop syncs for is gone; its queue went with it.
+            continue;
+        }
+        if let Err(error) = synced {
+            log!("sync of {repo} did not fully reconcile: {error}");
+            state
+                .read()
+                .await
+                .sync_queue
+                .requeue(&repo, current_millis());
+        }
+    }
+}
+
+/// Watch the upstream of every open repository not watched yet, so a
+/// change another device makes is pulled when it lands rather than when
+/// the next sweep comes round.
+///
+/// A repository whose `main` pulls from exactly one branch, at a service
+/// that can follow it, is watched; any other, and one whose watch ends,
+/// is left to the sweep, which tries the watch again on its next tick. A
+/// delivered head marks the repository [`moved`](SyncQueue::moved), which
+/// wakes its [`space_loop`] to sync it through the same reconciliation as a
+/// sweep.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn watch_open_repos(state: &AppState) {
+    let open: Vec<(String, std::sync::Arc<dialog_reactor::BranchState>)> = {
+        let tonk = state.read().await;
+        let repos = tonk.reactor.repos().read();
+        repos
+            .iter()
+            .filter_map(|(name, repo)| {
+                let branch = repo.branches().read().get("main").cloned()?;
+                Some((name.clone(), branch))
+            })
+            .collect()
+    };
+    for (repo, branch) in open {
+        let operator = {
+            let tonk = state.read().await;
+            if !is_sync_enabled(&tonk, &repo, "main").await
+                || !tonk.sync_queue.begin_watching(&repo)
+            {
+                continue;
+            }
+            tonk.operator.clone()
+        };
+        let state = state.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let held = |tonk: &crate::worker::TonkState| {
+                let repos = tonk.reactor.repos().read();
+                repos
+                    .get(&repo)
+                    .and_then(|held| held.branches().read().get("main").cloned())
+            };
+            watch_repo(&state, &repo, &branch, &operator, held).await;
+            state.read().await.sync_queue.end_watching(&repo);
+        });
+    }
+    watch_account(state).await;
+}
+
+/// Watch the account's upstream, as an open space's is, so another
+/// device's change to it is pulled when it lands, and the drain stops
+/// sweeping it on every tick to find out.
+///
+/// The account rides the profile's active branch, which no space
+/// represents, so it is followed under the account's key: a delivered
+/// head marks that key moved, and its loop sweeps the account.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn watch_account(state: &AppState) {
+    let (key, branch, operator) = {
+        let tonk = state.read().await;
+        let Ok(ready) = super::account_state::require_ready_account_state(&tonk).await else {
+            return;
+        };
+        let Some(branch) = account_branch(&tonk) else {
+            return;
+        };
+        if !tonk.sync_queue.begin_watching(&ready.key) {
+            return;
+        }
+        (ready.key, branch, tonk.operator.clone())
+    };
+    let state = state.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        watch_repo(&state, &key, &branch, &operator, account_branch).await;
+        state.read().await.sync_queue.end_watching(&key);
+    });
+}
+
+/// The branch the account rides, as the reactor holds it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn account_branch(
+    tonk: &crate::worker::TonkState,
+) -> Option<std::sync::Arc<dialog_reactor::BranchState>> {
+    tonk.reactor
+        .profile_repo_state()?
+        .branches()
+        .read()
+        .get(&tonk.active_branch)
+        .cloned()
+}
+
+/// Follow `repo`'s upstream until the watch ends, marking the repository
+/// moved and syncing it for each head that is ahead of the one known.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn watch_repo(
+    state: &AppState,
+    repo: &str,
+    branch: &std::sync::Arc<dialog_reactor::BranchState>,
+    operator: &crate::worker::DefaultOperator,
+    held: impl Fn(&crate::worker::TonkState) -> Option<std::sync::Arc<dialog_reactor::BranchState>>,
+) {
+    use dialog_repository::{Observation, Upstream};
+    use futures_util::{StreamExt as _, pin_mut};
+
+    let upstreams = branch.branch.pulls();
+    let mut each = upstreams.iter();
+    let (
+        Some(Upstream::Remote {
+            remote,
+            branch: name,
+            ..
+        }),
+        None,
+    ) = (each.next(), each.next())
+    else {
+        return;
+    };
+    let Ok(upstream) = remote.branch(name.clone()).open().perform(operator).await else {
+        return;
+    };
+    let observations = match upstream.watch().perform(operator).await {
+        Ok(observations) => observations,
+        Err(error) => {
+            log!("{repo} is not watched, the sweep pulls it: {error}");
+            return;
+        }
+    };
+    pin_mut!(observations);
+    state.read().await.sync_queue.watched(repo);
+    log!("{repo} is watched");
+    while let Some(observed) = observations.next().await {
+        // A profile switch rebuilds the reactor, and removing the space
+        // evicts it: this watch then answers to a branch nobody holds.
+        let current = held(&*state.read().await);
+        if !current.is_some_and(|current| std::sync::Arc::ptr_eq(&current, branch)) {
+            log!("{repo} is no longer watched: its branch was replaced");
+            return;
+        }
+        match observed {
+            Ok(Observation::Advanced(_)) => {
+                // Wakes its loop, which pulls the head just recorded now
+                // rather than on the next drain's schedule.
+                state.read().await.sync_queue.moved(repo, current_millis());
+            }
+            Ok(Observation::Diverged) => {
+                // Nothing was recorded, and the loop's pull merges the
+                // head last recorded, so ask the remote where it stands:
+                // that records it. Through a handle opened for it, since
+                // a fetch records against the edition its handle last saw.
+                let fetched = match remote.branch(name.clone()).open().perform(operator).await {
+                    Ok(fresh) => fresh
+                        .fetch()
+                        .perform(operator)
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string()),
+                    Err(error) => Err(error.to_string()),
+                };
+                if let Err(error) = fetched {
+                    log!("{repo}: a diverged head could not be fetched: {error}");
+                }
+                state.read().await.sync_queue.moved(repo, current_millis());
+            }
+            Ok(Observation::Stale) => {}
+            Err(error) => log!("{repo}: a watched head was not recorded: {error}"),
+        }
+    }
+    // The socket's report says why: closed, or ended by the service.
+    log!("{repo} is no longer watched: its watch ended");
+}
+
+/// Re-issue a due session's bounded in-memory grant to the same operator
+/// with a later expiry. Account and profile authority survives without
+/// invitation replay.
 /// Build over the existing storage pool outside the state write lock, then
 /// install only if the observed generation is still current. Losing
 /// candidates and construction failures have no durable session effects.
 pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), TonkWorkerError> {
-    renew_session_with(state, |profile, storage| async move {
-        crate::session::rotate(&profile, &storage).await
+    // The replacement proves with the same branch's authority as the
+    // session it replaces; renewing on `main` would sign the profile
+    // out of its account mid-session.
+    let access_branch = state.read().await.active_branch.clone();
+    renew_session_with(state, move |profile, _storage| async move {
+        crate::session::rotate(&profile, &access_branch).await
     })
     .await
 }
@@ -1446,7 +2402,7 @@ pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), Ton
 async fn renew_session_with<F, Fut>(state: &AppState, build: F) -> Result<(), TonkWorkerError>
 where
     F: FnOnce(
-        dialog_operator::Profile,
+        crate::worker::DefaultProfile,
         dialog_storage::provider::storage::Storage<crate::worker::DefaultSpace>,
     ) -> Fut,
     Fut: std::future::Future<Output = Result<crate::session::Session, TonkWorkerError>>,
@@ -1466,7 +2422,7 @@ where
     }
 
     // Signing happens outside the write lock; existing readers finish
-    // before the new operator and expiry are installed together.
+    // before the renewed operator and expiry are installed together.
     let session = build(profile, storage).await?;
 
     let mut tonk = state.write().await;
@@ -1586,6 +2542,8 @@ mod tests {
     fn it_classifies_revocation_from_the_typed_reason() {
         let error = sync_failure(&authorization_failure(AuthorizeError::Revoked {
             subject: dialog_capability::did!("key:zSubject"),
+            certificate: None,
+            revocation: None,
         }));
         assert!(matches!(
             error,
@@ -1594,6 +2552,23 @@ mod tests {
                 code: Some(ref code),
                 ..
             } if code == "CREDENTIAL_REVOKED"
+        ));
+    }
+
+    #[dialog_common::test]
+    fn it_classifies_no_chain_as_a_refusal_not_a_failure() {
+        let subject = dialog_capability::did!("key:zSubject");
+        let error = sync_failure(&authorization_failure(AuthorizeError::UnprovenSubject {
+            claimed: dialog_capability::did!("key:zHolder"),
+            authorized: subject,
+        }));
+        assert!(matches!(
+            error,
+            TonkWorkerError::Upstream {
+                status: 403,
+                code: Some(ref code),
+                ..
+            } if code == "ACCESS_DENIED"
         ));
     }
 
@@ -1786,7 +2761,7 @@ mod renewal_tests {
 
     async fn revision(state: &AppState) -> Option<dialog_repository::Revision> {
         let tonk = state.read().await;
-        dialog_repository::Repository::from(tonk.profile.signer().clone())
+        dialog_repository::Repository::from(tonk.profile.credential().clone())
             .branch(dialog_repository::ACCESS_BRANCH)
             .open()
             .perform(&tonk.operator)
@@ -1800,10 +2775,13 @@ mod renewal_tests {
         let (_app, state, _lsp) = api_router_with_state(test_state().await);
         let before = operator_did(&state).await;
         let head = revision(&state).await;
-        state.write().await.session_expires_at = crate::session::now();
+        let due = crate::session::now();
+        state.write().await.session_expires_at = due;
         ensure_session_authority(&state).await.unwrap();
         let renewed = operator_did(&state).await;
-        assert_ne!(before, renewed);
+        let extended = state.read().await.session_expires_at;
+        assert_eq!(before, renewed, "renewal keeps the operator key");
+        assert!(extended > due, "renewal extends the grant");
         assert_eq!(revision(&state).await, head);
         {
             let tonk = state.read().await;
@@ -1826,6 +2804,7 @@ mod renewal_tests {
         }
         ensure_session_authority(&state).await.unwrap();
         assert_eq!(operator_did(&state).await, renewed);
+        assert_eq!(state.read().await.session_expires_at, extended);
     }
 
     #[dialog_common::test]
@@ -1852,31 +2831,247 @@ mod renewal_tests {
         let (_app, state, _lsp) = api_router_with_state(test_state().await);
         let head = revision(&state).await;
         state.write().await.session_expires_at = crate::session::now();
+        // Both candidates carry the same operator key, so the loser marks
+        // its expiry to tell the two apart.
+        let losing = u64::MAX;
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (installed_tx, installed_rx) = tokio::sync::oneshot::channel();
         let winner = async {
-            renew_session_with(&state, |profile, storage| async move {
+            renew_session_with(&state, |profile, _storage| async move {
                 ready_rx.await.unwrap();
-                crate::session::rotate(&profile, &storage).await
+                crate::session::rotate(&profile, crate::router::repository::PROFILE_BRANCH).await
             })
             .await
             .unwrap();
-            let installed = operator_did(&state).await;
-            installed_tx.send(installed.clone()).unwrap();
+            let installed = state.read().await.session_expires_at;
+            installed_tx.send(()).unwrap();
             installed
         };
-        let loser = renew_session_with(&state, |profile, storage| async move {
-            let candidate = crate::session::rotate(&profile, &storage).await.unwrap();
+        let loser = renew_session_with(&state, |profile, _storage| async move {
+            let candidate =
+                crate::session::rotate(&profile, crate::router::repository::PROFILE_BRANCH)
+                    .await
+                    .unwrap();
             ready_tx.send(()).unwrap();
-            let installed = installed_rx.await.unwrap();
-            assert_ne!(candidate.operator.did().to_string(), installed);
-            Ok(candidate)
+            installed_rx.await.unwrap();
+            Ok(crate::session::Session {
+                expires_at: losing,
+                ..candidate
+            })
         });
         let (installed, result) = futures_util::join!(winner, loser);
         result.unwrap();
-        assert_eq!(operator_did(&state).await, installed);
+        assert_ne!(installed, losing);
+        assert_eq!(state.read().await.session_expires_at, installed);
         assert_eq!(revision(&state).await, head);
         ensure_session_authority(&state).await.unwrap();
-        assert_eq!(operator_did(&state).await, installed);
+        assert_eq!(state.read().await.session_expires_at, installed);
+    }
+}
+
+/// Publishing over `/sync/push` while another writer moves upstream.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod push_conflict_tests {
+    use axum::{
+        Router,
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    use crate::router::repository::profile_library_tests::test_state;
+    use crate::router::{AppState, api_router_with_state};
+
+    /// A sync holds the state across its remote round trips. A profile
+    /// swap used to wait for it, so one slow sync held a sign-out for as
+    /// long as it ran; the swap now tells it to give way.
+    #[dialog_common::test]
+    async fn it_releases_a_held_state_guard_when_a_profile_swap_begins() {
+        let state: AppState = std::sync::Arc::new(crate::StateLock::new(test_state().await));
+        let held = {
+            let state = state.clone();
+            tokio::spawn(async move {
+                super::unless_swapped(&state, async {
+                    let _guard = state.read().await;
+                    std::future::pending::<()>().await
+                })
+                .await
+            })
+        };
+        while state.try_write().is_ok() {
+            tokio::task::yield_now().await;
+        }
+        let waiting = std::time::Duration::from_millis(50);
+        assert!(
+            tokio::time::timeout(waiting, state.write()).await.is_err(),
+            "the held guard keeps the swap waiting until it is told to give way"
+        );
+
+        state.read().await.profile_swaps.clone().begin();
+        let swapped = tokio::time::timeout(std::time::Duration::from_secs(5), state.write()).await;
+        assert!(swapped.is_ok(), "the swap takes the state at once");
+        drop(swapped);
+        assert!(
+            held.await.unwrap().is_none(),
+            "the work that gave way answers that it did not finish"
+        );
+    }
+
+    #[test]
+    fn publication_backoff_is_capped_and_stops_at_the_window() {
+        let mut retry = super::PublicationRetry::new();
+        for _ in 0..32 {
+            let delay = retry.delay().expect("within publication window");
+            assert!(delay >= web_time::Duration::from_millis(12));
+            assert!(delay <= web_time::Duration::from_secs(1));
+        }
+        retry.started = web_time::Instant::now() - super::PUBLICATION_RETRY_WINDOW;
+        assert!(retry.delay().is_none(), "expired windows admit no retry");
+        assert!(
+            !retry.admits_retry(),
+            "a reconciliation that crosses the window admits no conditional publication"
+        );
+    }
+
+    async fn post(app: &Router, uri: String, body: &str) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .method("POST")
+                    .header("content-type", "text/plain")
+                    .body(Body::from(body.to_owned()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap_or_default())
+    }
+
+    async fn put_repo(app: &Router, label: &str) -> String {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{label}"))
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let info: crate::router::RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        info.name
+    }
+
+    /// `main` tracks a sibling `upstream` branch: the in-process stand-in
+    /// for a remote that another writer can advance directly.
+    async fn repo_with_sibling_upstream(state: &AppState, app: &Router, label: &str) -> String {
+        let repo = put_repo(app, label).await;
+        let tonk = state.read().await;
+        let repository = tonk
+            .reactor
+            .repository(&repo)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let upstream = repository
+            .repository()
+            .branch("upstream")
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let main = tonk
+            .reactor
+            .repository(&repo)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        main.handle()
+            .set_upstream(&upstream)
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        repo
+    }
+
+    async fn commit(app: &Router, repo: &str, branch: &str, marker: &str) {
+        let (status, body) = post(
+            app,
+            format!("/api/repository/{repo}/branch/{branch}/claim/assert/test:{marker}/test/value"),
+            marker,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "commit '{marker}': {body}");
+    }
+
+    async fn push(app: &Router, repo: &str) -> (StatusCode, serde_json::Value) {
+        post(
+            app,
+            format!("/api/repository/{repo}/branch/main/sync/push"),
+            "",
+        )
+        .await
+    }
+
+    async fn holds(state: &AppState, repo: &str, branch: &str, marker: &str) -> bool {
+        use futures_util::StreamExt as _;
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .repository(repo)
+            .branch(branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        session.handle().refresh(&tonk.operator).await.unwrap();
+        let selector = dialog_artifacts::ArtifactSelector::new()
+            .of(format!("test:{marker}").parse().unwrap())
+            .the("test/value".parse().unwrap());
+        let facts = session
+            .handle()
+            .claims()
+            .select(selector)
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        std::pin::pin!(facts).next().await.is_some()
+    }
+
+    #[dialog_common::test]
+    async fn it_publishes_local_changes_after_another_writer_moves_upstream() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let repo = repo_with_sibling_upstream(&state, &app, "push-after-upstream-moved").await;
+
+        commit(&app, &repo, "main", "base").await;
+        let (status, body) = push(&app, &repo).await;
+        assert_eq!(status, StatusCode::OK, "first publish: {body}");
+
+        // Another writer lands on upstream after our last pull, and we
+        // commit locally on top of the stale base.
+        commit(&app, &repo, "upstream", "theirs").await;
+        commit(&app, &repo, "main", "ours").await;
+
+        let (status, body) = push(&app, &repo).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "publish after upstream moved: {body}"
+        );
+        assert!(holds(&state, &repo, "upstream", "ours").await);
+        assert!(holds(&state, &repo, "upstream", "theirs").await);
+        assert!(holds(&state, &repo, "main", "theirs").await);
     }
 }

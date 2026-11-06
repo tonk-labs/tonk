@@ -31,6 +31,12 @@ pub enum TransferError {
     /// The dialog import / commit failed.
     #[error("import failed: {0}")]
     Import(dialog_repository::CommitError),
+
+    /// Whatever read stdout closed it before the export finished, as
+    /// `tonk export | head` does. Not a failure: the reader got what it
+    /// asked for, but the export was not written out in full.
+    #[error("stdout closed before the export finished")]
+    ReaderClosed,
 }
 
 impl crate::Coded for TransferError {
@@ -38,6 +44,7 @@ impl crate::Coded for TransferError {
     fn exit_code(&self) -> ExitCode {
         match self {
             TransferError::Io(_) => ExitCode::IoError,
+            TransferError::ReaderClosed => ExitCode::Success,
             TransferError::Export(_) | TransferError::Import(_) => ExitCode::CommitError,
         }
     }
@@ -140,13 +147,29 @@ async fn export_session(
             file.write_all(&buf).await?;
             file.flush().await?;
         }
-        Destination::Stdout => {
-            let mut out = tokio::io::stdout();
-            out.write_all(&buf).await?;
-            out.flush().await?;
-        }
+        Destination::Stdout => write_stdout(&mut tokio::io::stdout(), &buf).await?,
     }
     Ok(len)
+}
+
+/// Write `buf` to stdout, treating a reader that hung up early (a
+/// broken pipe) as [`TransferError::ReaderClosed`] rather than an I/O
+/// failure. Any other write error is still an error.
+async fn write_stdout<W>(out: &mut W, buf: &[u8]) -> Result<(), TransferError>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let written = match out.write_all(buf).await {
+        Ok(()) => out.flush().await,
+        Err(err) => Err(err),
+    };
+    match written {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => {
+            Err(TransferError::ReaderClosed)
+        }
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// Import artifacts from a CSV file at `path`, committing each row
@@ -197,4 +220,60 @@ pub async fn import(site: &TonkSite, path: &PathBuf) -> Result<Revision, Transfe
         .await
         .map_err(|e| std::io::Error::other(format!("acquire branch: {e}")))?;
     import_session(&session, site, importer).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// A sink whose writes and flushes all fail with one error kind.
+    struct Failing(std::io::ErrorKind);
+
+    impl tokio::io::AsyncWrite for Failing {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Err(self.0.into()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Err(self.0.into()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_reports_a_closed_reader_as_success() {
+        let mut out = Failing(std::io::ErrorKind::BrokenPipe);
+        let err = write_stdout(&mut out, b"a,b\n").await.unwrap_err();
+        assert!(matches!(err, TransferError::ReaderClosed), "{err:?}");
+        assert_eq!(crate::Coded::exit_code(&err), ExitCode::Success);
+    }
+
+    #[dialog_common::test]
+    async fn it_still_fails_on_other_write_errors() {
+        let mut out = Failing(std::io::ErrorKind::PermissionDenied);
+        let err = write_stdout(&mut out, b"a,b\n").await.unwrap_err();
+        assert!(matches!(err, TransferError::Io(_)), "{err:?}");
+        assert_eq!(crate::Coded::exit_code(&err), ExitCode::IoError);
+    }
+
+    #[dialog_common::test]
+    async fn it_writes_the_whole_buffer() {
+        let mut out = Vec::new();
+        write_stdout(&mut out, b"a,b\n").await.unwrap();
+        assert_eq!(out, b"a,b\n");
+    }
 }

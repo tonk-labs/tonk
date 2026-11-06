@@ -57,6 +57,12 @@
   Access-Control-Allow-Origin: *
   Cache-Control: no-cache
 
+# Passive tool bootstrap; short-link expansion may follow across origins.
+/agent/*
+  Access-Control-Allow-Origin: *
+  Cache-Control: no-cache
+  Referrer-Policy: no-referrer
+
 # ---- Content-hashed assets: immutable -------------------------------
 #
 # Trunk stamps a content hash into these names, and `hash-guest.sh` does the

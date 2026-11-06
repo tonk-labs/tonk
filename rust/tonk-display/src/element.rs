@@ -25,6 +25,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use tonk_common::diagnostics::{self, names};
+
 use crate::resolve::{ParsedSource, name_query, parse_source, phase1_query};
 use custom_elements::CustomElement;
 use ipld_core::ipld::Ipld;
@@ -32,6 +34,7 @@ use js_sys::{Array, Function, Promise, Reflect};
 use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
 use tonk_host::error::{ErrorDetail, ErrorKind};
 use tonk_host::install_depth_annotator;
+use tonk_notation::ValueType;
 use tonk_schema::conclusion::Conclusion;
 use tonk_schema::query::Query;
 use wasm_bindgen::JsCast;
@@ -44,6 +47,8 @@ use web_sys::{
 };
 
 use crate::fold::show_template;
+use crate::introspect::recorder::{Arrival, Recorder};
+use crate::introspect::registry;
 use crate::resolve::{
     DETAIL_FACET, DIRECTORY_FACET, TYPE_FACET, entity_query, instances_query, looks_like_uri,
     view_query,
@@ -145,6 +150,10 @@ struct Inner {
     /// drop every instance but the first. The lead conclusion (for
     /// notation / the result event) is `last_frame.first()`.
     last_frame: Vec<Conclusion>,
+    /// Set when an empty entity frame emptied rows this display had
+    /// rendered, and cleared by the next frame with rows, which is then
+    /// counted as content deleted and inserted again.
+    emptied: bool,
     /// The last full row set seen per subscription tag
     /// (`model` / `view` / `entity`), retained so an incremental
     /// `update` delta can be applied to the correct tag's set and the
@@ -206,6 +215,23 @@ struct Inner {
     /// The resolved model entity, surfaced to the portal as its `model`
     /// attribute (the bridge's `context.model`).
     portal_model: Option<String>,
+    /// Introspection's hold on this display's entity frames. `None`
+    /// is the ordinary case: no recording, no cost, frames applied as
+    /// they arrive. `Some` only while the display is being observed.
+    recorder: Option<crate::introspect::recorder::Recorder<Vec<Conclusion>>>,
+    /// Every facet the model's `show` dictionary declares. The
+    /// display renders one; the introspection view panel offers the
+    /// rest, since "which views does this model have?" is not
+    /// answerable from the mounted one.
+    facets: BTreeMap<String, String>,
+    /// The bookmark name the `model` attribute resolved through, for
+    /// the declaration's `&anchor`.
+    model_name: Option<String>,
+    /// Command name -> its resolved descriptor, retained from the
+    /// delegate refresh. A name that resolved to nothing is recorded
+    /// as `None` rather than dropped: a template binding a command
+    /// that does not exist is the finding, not the absence of a row.
+    command_descriptors: BTreeMap<String, Option<String>>,
     /// The explicit `view=` facet, when the host names one. `None`
     /// means the mode default (`ui` with an entity, `directory`
     /// without) — see [`effective_facet`]. Explicitness matters when
@@ -253,6 +279,7 @@ impl Inner {
             view_sub: None,
             entity_sub: None,
             last_frame: Vec::new(),
+            emptied: false,
             retained: BTreeMap::new(),
             carousel: None,
             slides: BTreeMap::new(),
@@ -265,6 +292,10 @@ impl Inner {
             host_watch: None,
             portal_descriptor: None,
             portal_model: None,
+            recorder: None,
+            facets: BTreeMap::new(),
+            model_name: None,
+            command_descriptors: BTreeMap::new(),
             view_facet: None,
             model_entity: None,
             default_slide: false,
@@ -294,6 +325,211 @@ impl Inner {
     }
 }
 
+impl crate::introspect::registry::DisplayFacts for Inner {
+    fn facts(&self, host: &Element) -> crate::introspect::slot::Snapshot {
+        use crate::introspect::slot::{Snapshot, declared_fields};
+        Snapshot {
+            model: host.get_attribute("model").filter(|v| !v.is_empty()),
+            model_entity: self.model_entity.clone(),
+            // `effective_facet` needs the whole `Inner`, and the
+            // mode default it applies is what actually rendered —
+            // reporting the bare attribute would hide the `ui` /
+            // `directory` choice, which is half of what an author
+            // is trying to see.
+            facet: Some(effective_facet(self)),
+            directory: self.directory,
+            entities: self
+                .last_frame
+                .iter()
+                .map(|conclusion| crate::introspect::slot::Entity {
+                    this: conclusion.this.clone(),
+                    fields: conclusion
+                        .fields
+                        .keys()
+                        .map(|name| {
+                            (
+                                name.clone(),
+                                rendered_value(&conclusion.this, &conclusion.fields, name),
+                            )
+                        })
+                        .collect(),
+                    values: conclusion.fields.clone(),
+                })
+                .collect(),
+            // In single-view mode there is exactly one slide. In
+            // carousel mode there are several and the one on screen
+            // is the carousel's business, so report the first
+            // rather than guess.
+            model_name: self.model_name.clone(),
+            descriptor: self.portal_descriptor.clone(),
+            facets: self.facets.clone(),
+            template: self
+                .slides
+                .values()
+                .next()
+                .map(|slide| slide.display.clone()),
+            commands: self
+                .command_descriptors
+                .iter()
+                .map(|(name, descriptor)| crate::introspect::slot::Definition {
+                    name: name.clone(),
+                    descriptor: descriptor.clone(),
+                })
+                .collect(),
+            fields: self
+                .portal_descriptor
+                .as_deref()
+                .map(declared_fields)
+                .unwrap_or_default(),
+            slots: Vec::new(),
+            timeline: self.timeline(),
+        }
+    }
+
+    fn timeline(&self) -> crate::introspect::recorder::Timeline {
+        self.recorder
+            .as_ref()
+            .map(Recorder::timeline)
+            .unwrap_or_default()
+    }
+
+    fn commands(&self, host: &Element) -> Vec<(crate::introspect::command::Command, Element)> {
+        use crate::introspect::command::commands_on;
+        // A display with no bound interactions has no delegate, which
+        // is not the same as one whose declarations failed to resolve:
+        // the first has nothing to show, the second has bindings that
+        // will never fire. Both reach `commands_on`, which reports an
+        // unresolved trigger rather than hiding the binding.
+        let table = self
+            .delegate
+            .as_ref()
+            .map(crate::events::delegate::Delegate::table);
+        let mut next_id = 0;
+        let mut out = Vec::new();
+        let Ok(elements) = host.query_selector_all("*") else {
+            return out;
+        };
+        for index in 0..elements.length() {
+            let Some(element) = elements
+                .item(index)
+                .and_then(|node| node.dyn_into::<Element>().ok())
+            else {
+                continue;
+            };
+            // Markup belonging to a display nested inside this one is
+            // that display's to explain, not ours.
+            if !owned_by(host, &element) {
+                continue;
+            }
+            let attributes = attributes_of(&element);
+            for command in commands_on(
+                &attributes,
+                |declaration| {
+                    table
+                        .and_then(|table| table.get(declaration))
+                        .map(|event| event.event_type.clone())
+                },
+                &mut next_id,
+            ) {
+                out.push((command, element.clone()));
+            }
+        }
+        out
+    }
+}
+
+/// Spell one field's value the way the renderer spelled it into a slot.
+///
+/// Routed through the renderer's own segment substitution rather than
+/// formatted here, so the panel can never report a value in a spelling
+/// the page did not use — which would turn the panel from an answer
+/// into a second question.
+fn rendered_value(this: &str, fields: &BTreeMap<String, Ipld>, name: &str) -> String {
+    tonk_template::render_segments_with_shadow(
+        &[tonk_template::Segment::Field(name.to_owned())],
+        this,
+        fields,
+        &BTreeMap::new(),
+    )
+}
+
+/// Act on an introspection control.
+///
+/// Free function rather than a trait method: seeking re-enters the
+/// frame path, which borrows the state itself, so the caller must not
+/// still be holding a borrow when it runs. The registry hands out a
+/// closure that lands here with nothing borrowed.
+fn apply_control(host: &Element, state: &Rc<RefCell<Inner>>, control: registry::Control) {
+    use registry::Control;
+    let replay = {
+        let mut s = state.borrow_mut();
+        match control {
+            Control::Record(true) => {
+                let mut recorder = Recorder::default();
+                // Seed with what is already on screen, so the first
+                // frame of the history is what the observer was
+                // looking at when they opened the hood.
+                recorder.seed(s.last_frame.clone());
+                s.recorder = Some(recorder);
+                None
+            }
+            Control::Record(false) => {
+                let held = s
+                    .recorder
+                    .take()
+                    .filter(|recorder| recorder.timeline().is_held());
+                // A display released while held has been showing an
+                // old frame; put the current one back before walking
+                // away from it.
+                held.map(|_| s.last_frame.clone()).filter(|_| false)
+            }
+            Control::Seek(position) => s
+                .recorder
+                .as_mut()
+                .and_then(|recorder| recorder.seek(position)),
+            Control::Hold => s.recorder.as_mut().and_then(Recorder::hold),
+            Control::Step(delta) => s
+                .recorder
+                .as_mut()
+                .and_then(|recorder| recorder.step(delta)),
+        }
+    };
+    let Some(frame) = replay else {
+        return;
+    };
+    set_replaying(state, true);
+    apply_entity_frame(host, state, frame, false);
+    set_replaying(state, false);
+}
+
+/// Suppress recording while a recorded frame is being re-applied.
+fn set_replaying(state: &Rc<RefCell<Inner>>, on: bool) {
+    if let Some(recorder) = state.borrow_mut().recorder.as_mut() {
+        recorder.replaying(on);
+    }
+}
+
+/// Whether `host` is the nearest `<tonk-display>` above `element`.
+fn owned_by(host: &Element, element: &Element) -> bool {
+    element
+        .closest("tonk-display")
+        .ok()
+        .flatten()
+        .is_some_and(|nearest| nearest.is_same_node(Some(host.as_ref())))
+}
+
+/// One element's attributes as `(name, value)` pairs.
+fn attributes_of(element: &Element) -> Vec<(String, String)> {
+    let attributes = element.attributes();
+    let mut out = Vec::with_capacity(attributes.length() as usize);
+    for index in 0..attributes.length() {
+        if let Some(attribute) = attributes.item(index) {
+            out.push((attribute.name(), attribute.value()));
+        }
+    }
+    out
+}
+
 /// The custom element.
 #[derive(Default)]
 pub struct TonkDisplay {
@@ -307,15 +543,13 @@ impl CustomElement for TonkDisplay {
 
     fn observed_attributes() -> &'static [&'static str] {
         // `entity`/`model`/`view` are the subject inputs: a change to any
-        // restarts the resolve/subscribe flow. `data-active` / `data-base`
-        // are host-context attributes a parent threads in (read by a
-        // template as `{dom.host/<attr>}`); a change to one does not alter
-        // what this display resolves, only the value projected into the
+        // restarts the resolve/subscribe flow. `data-active` is a
+        // host-context attribute a parent threads in (read by a template
+        // as `{dom.host/<attr>}`); a change to it does not alter what
+        // this display resolves, only the value projected into the
         // already-mounted view, so it is propagated in place rather than
-        // restarting. `data-base` lets a wrapping `<tonk-origin>` deliver
-        // the invite-URL base (`{origin}/join`) into the view after mount.
-        // See `attribute_changed_callback`.
-        &["entity", "model", "view", "data-active", "data-base"]
+        // restarting. See `attribute_changed_callback`.
+        &["entity", "model", "view", "data-active"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -332,15 +566,33 @@ impl CustomElement for TonkDisplay {
         // Install reset / update / error JS methods on the host
         // so the tonk-host invokes them by name when frames arrive.
         install_method_delegates(&host, &state);
+        // Let the introspection overlay ask this display what it
+        // resolved. The registry holds a `Weak`, so it neither keeps a
+        // detached display alive nor needs unregistering.
+        registry::register_display(&host, &state, {
+            let host = host.clone();
+            let state = Rc::downgrade(&state);
+            Rc::new(move |control| {
+                if let Some(state) = state.upgrade() {
+                    apply_control(&host, &state, control);
+                }
+            })
+        });
         *self.inner.borrow_mut() = Some(state.clone());
         start_flows(&host, state);
     }
 
-    fn disconnected_callback(&mut self, _this: &HtmlElement) {
+    fn disconnected_callback(&mut self, this: &HtmlElement) {
         if let Some(state) = self.inner.borrow_mut().take() {
             let mut inner = state.borrow_mut();
             inner.disposed = true;
             inner.abort_all();
+        }
+        // The rows this display mounted are gone with it, so a style
+        // only they referred to now has no referent. Anything another
+        // display still shows is still in the document and survives.
+        if let Some(document) = this.owner_document() {
+            crate::embed::revoke_unreferenced(&document);
         }
     }
 
@@ -384,7 +636,7 @@ impl CustomElement for TonkDisplay {
             s.retained.clear();
             // Tear down any mounted slide / carousel chrome so the
             // restart starts from a clean host.
-            clear_host(&host, &mut s);
+            clear_host(&host, &mut s, names::DISPLAY_REMOVED_RESTART);
         }
         state::set(&host, State::Loading);
         start_flows(&host, state);
@@ -431,9 +683,14 @@ fn install_method_shims() {
         "payload, opts",
         "if (typeof this.__tonkError === 'function') this.__tonkError(payload, opts);",
     );
+    let notice_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkNotice === 'function') this.__tonkNotice(payload, opts);",
+    );
     let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
     let _ = Reflect::set(&proto, &"update".into(), &update_fn);
     let _ = Reflect::set(&proto, &"error".into(), &error_fn);
+    let _ = Reflect::set(&proto, &"notice".into(), &notice_fn);
 }
 
 /// Per-instance: write closures to `__tonkReset` / `__tonkUpdate`
@@ -468,6 +725,45 @@ fn install_method_delegates(host: &Element, state: &Rc<RefCell<Inner>>) {
         }));
     let _ = Reflect::set(host, &"__tonkError".into(), error.as_ref());
     error.forget();
+
+    let host_for_notice = host.clone();
+    let state_for_notice = state.clone();
+    let notice: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |payload, opts| {
+            on_notice(&host_for_notice, &state_for_notice, payload, opts);
+        }));
+    let _ = Reflect::set(host, &"__tonkNotice".into(), notice.as_ref());
+    notice.forget();
+}
+
+/// `notice({ control }, { tag })` — a control frame about the stream
+/// rather than its rows. `upgrading` says the worker is moving the branch
+/// to this release's storage format before it answers: the display shows
+/// so until the rows arrive, in place of a bare loading state.
+///
+/// `pending` says the branch is not here yet. A display that already shows
+/// something keeps it: the rows follow on the same
+/// stream, so clearing now would only delete what is about to be inserted
+/// again. One with nothing yet treats it as the empty set it was sent
+/// before, which lands it in its absence state (`no-model`, `no-entity`),
+/// the slot an embedder fills to say the space is on its way.
+fn on_notice(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: JsValue) {
+    let control = Reflect::get(&payload, &"control".into())
+        .ok()
+        .and_then(|v| v.as_string());
+    match control.as_deref() {
+        Some("upgrading") => state::set_upgrading(host),
+        Some("pending") => {
+            let shows_rows = {
+                let s = state.borrow();
+                !s.slides.is_empty() || !s.last_frame.is_empty()
+            };
+            if !shows_rows {
+                on_reset(host, state, js_sys::Array::new().into(), opts);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// `reset(conclusions, { tag })` — first / full-snapshot frame.
@@ -698,11 +994,18 @@ fn on_error(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, _opts:
     // one: it is what separates a retryable hiccup from a settled
     // answer, and rebuilding the detail from `message` alone would
     // discard it and read every failure as `offline`.
+    let kind = Reflect::get(&payload, &"kind".into())
+        .ok()
+        .and_then(|v| v.as_string());
     let err = match Reflect::get(&payload, &"status".into())
         .ok()
         .and_then(|v| v.as_f64())
     {
         Some(status) => ErrorDetail::http(status as u16, message),
+        // The worker could not move the branch to this release's storage
+        // format: a settled answer about this process, not a transport
+        // hiccup, so it is loud and names itself.
+        None if kind.as_deref() == Some("upgrade") => ErrorDetail::new(ErrorKind::Upgrade, message),
         None => ErrorDetail::new(ErrorKind::Network, message),
     };
     if loud_state(&err) == State::Offline {
@@ -763,7 +1066,7 @@ fn start_flows(host: &Element, state: Rc<RefCell<Inner>>) {
 fn fail(host: &Element, state: &Rc<RefCell<Inner>>, err: ErrorDetail) {
     {
         let mut inner = state.borrow_mut();
-        clear_host(host, &mut inner);
+        clear_host(host, &mut inner, names::DISPLAY_REMOVED_ERROR);
     }
     let loud = loud_state(&err);
     state::set_error(host, loud, state::state_title(loud, err.kind), &err.message);
@@ -800,18 +1103,24 @@ fn loud_state(err: &ErrorDetail) -> State {
 /// `slot="no-model"` etc. on a flow restart, so a later absence state
 /// couldn't find them and would fall back to the built-in callout even
 /// though the embedder provided content.
-fn clear_host(host: &Element, inner: &mut Inner) {
+///
+/// `reason` names why the content goes, and is counted when anything that
+/// was rendered is actually removed.
+fn clear_host(host: &Element, inner: &mut Inner, reason: &'static str) {
+    let had_slides = !inner.slides.is_empty();
     inner.slides.clear();
     inner.carousel = None;
     inner.notation_source = None;
     inner.notation_item = None;
-    remove_rendered_children(host);
+    if remove_rendered_children(host) > 0 || had_slides {
+        diagnostics::count(reason);
+    }
 }
 
 /// Remove every direct child of `host` that the renderer mounted,
 /// keeping the embedder's authored `[slot]` children. Replaces a blanket
 /// `set_inner_html("")` so state-slot content survives a restart.
-fn remove_rendered_children(host: &Element) {
+fn remove_rendered_children(host: &Element) -> usize {
     // Walk the element children once, collecting the rendered ones (no
     // `slot` attribute) before removing — removing mid-walk would break
     // the sibling chain.
@@ -823,9 +1132,11 @@ fn remove_rendered_children(host: &Element) {
             to_remove.push(child);
         }
     }
+    let removed = to_remove.len();
     for child in to_remove {
         child.remove();
     }
+    removed
 }
 
 /// Bail if this flow's generation has been superseded or the
@@ -973,12 +1284,12 @@ async fn start_downstream(
     // model re-enters the same view unconditionally, so the only stable
     // number of levels is one.
     //
-    // Fall back to the notation dump rather than rendering nothing: the
+    // Fall back to the default display rather than rendering nothing: the
     // entity's data is still worth showing, and a card that silently
     // disappears is worse than one that shows what it holds. So a
     // self-rendering display skips only the VIEW flow (no view
     // subscription, no facet fallback) and keeps the entity
-    // subscription; `handle_entity_frame` mounts the notation dump.
+    // subscription; `handle_entity_frame` mounts the default display.
     let entity = host.get_attribute("entity").filter(|s| !s.is_empty());
     let directory = entity.is_none();
     let view = host.get_attribute("view").filter(|s| !s.is_empty());
@@ -987,7 +1298,7 @@ async fn start_downstream(
     } else {
         DETAIL_FACET
     });
-    let self_render = renders_itself(host, &model_entity, intended_facet);
+    let self_render = renders_itself(host, &model_entity, intended_facet, entity.as_deref());
 
     // The `view` attribute names a FACET — a `show` entry key of the
     // model's view instance (`ui`, `directory`, `label`, `title`, …)
@@ -1022,7 +1333,37 @@ async fn start_downstream(
         let mut s = state.borrow_mut();
         s.view_sub.take();
         s.entity_sub.take();
-        clear_host(host, &mut s);
+        clear_host(host, &mut s, names::DISPLAY_REMOVED_MODEL);
+        // Subscriptions can deliver their first frame before subscribe returns.
+        // Publish the complete rendering context before opening either stream.
+        s.directory = directory;
+        s.self_render = self_render;
+        s.view_settled = false;
+        // The explicit facet (if any) and the model entity, retained
+        // for the facet pick on each view frame and the `tonk:_`
+        // default fallback.
+        s.view_facet = view.clone();
+        s.model_entity = Some(model_entity.clone());
+        // Advertise the effective facet so the default-view notice can
+        // say WHICH view was not found — a directory's default and its
+        // cards' defaults otherwise read as the same message twice.
+        let facet = view.clone().unwrap_or_else(|| {
+            if directory {
+                DIRECTORY_FACET
+            } else {
+                DETAIL_FACET
+            }
+            .to_owned()
+        });
+        let _ = host.set_attribute("data-view-facet", &facet);
+        // Context handed to a `<tonk-portal>` if a view frame routes
+        // here in portal mode: the subject's model entity (the
+        // bridge's `context.model`) and its descriptor (so the bridge
+        // can build its own entity query). A text/html view's iframe
+        // fetches data itself, so the entity subscription above just
+        // no-ops against the portal (it has no `draw`).
+        s.portal_descriptor = Some(descriptor_json);
+        s.portal_model = Some(model_entity);
     }
 
     // The view query is model-constrained, so it resolves to one
@@ -1054,34 +1395,6 @@ async fn start_downstream(
         }
         s.view_sub = view_sub;
         s.entity_sub = Some(entity_sub);
-        s.directory = directory;
-        s.self_render = self_render;
-        s.view_settled = false;
-        // The explicit facet (if any) and the model entity, retained
-        // for the facet pick on each view frame and the `tonk:_`
-        // default fallback.
-        s.view_facet = view.clone();
-        s.model_entity = Some(model_entity.clone());
-        // Advertise the effective facet so the default-view notice can
-        // say WHICH view was not found — a directory's default and its
-        // cards' defaults otherwise read as the same message twice.
-        let facet = view.clone().unwrap_or_else(|| {
-            if directory {
-                DIRECTORY_FACET
-            } else {
-                DETAIL_FACET
-            }
-            .to_owned()
-        });
-        let _ = host.set_attribute("data-view-facet", &facet);
-        // Context handed to a `<tonk-portal>` if a view frame routes
-        // here in portal mode: the subject's model entity (the
-        // bridge's `context.model`) and its descriptor (so the bridge
-        // can build its own entity query). A text/html view's iframe
-        // fetches data itself, so the entity subscription above just
-        // no-ops against the portal (it has no `draw`).
-        s.portal_descriptor = Some(descriptor_json);
-        s.portal_model = Some(model_entity);
     }
     dispatch_event(host, "tonk-display:connected", None);
     Ok(())
@@ -1208,7 +1521,7 @@ fn handle_name_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
         s.downstream_generation = s.downstream_generation.wrapping_add(1);
         s.last_frame.clear();
         s.retained.clear();
-        clear_host(host, &mut s);
+        clear_host(host, &mut s, names::DISPLAY_REMOVED_NAME);
     }
     state::set(host, State::Loading);
     start_flows(host, state.clone());
@@ -1226,6 +1539,10 @@ fn handle_name_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
 ///   downstream view + entity flow against the freshest descriptor, so
 ///   a model (re)definition or a late-landing view is picked up.
 fn handle_model_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
+    // Read the bookmark name before the frame is consumed. It is what
+    // the introspection panel writes as the declaration's `&anchor`,
+    // and nothing else on the display needs it.
+    let name = phase1_name(&conclusions);
     let resolved = extract_phase1_conclusion(conclusions);
     let Some((model_entity, descriptor_json)) = resolved else {
         // The concept is not on the branch yet. Stay subscribed; the
@@ -1248,6 +1565,7 @@ fn handle_model_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: V
         if s.disposed {
             return;
         }
+        s.model_name = name;
         // The model subscription re-pushes on every branch revision,
         // including plain entity-data writes. Restart the downstream
         // flow only when the *resolved concept* actually changed —
@@ -1311,6 +1629,28 @@ fn extract_phase1_conclusion(conclusions: Vec<Conclusion>) -> Option<(String, St
     Some((first.this, source))
 }
 
+/// The concept's bookmark name from a phase-1 frame, for the
+/// declaration's `&anchor`. Absent for a concept addressed by URI.
+fn phase1_name(conclusions: &[Conclusion]) -> Option<String> {
+    ipld_str(conclusions.first()?.fields.get("name")).map(str::to_owned)
+}
+
+/// Every `facet -> template` entry in a folded view conclusion's
+/// `show` dictionary. [`show_template`] reads one; this reads them
+/// all, for the view panel's switcher.
+fn all_facets(conclusion: &Conclusion) -> BTreeMap<String, String> {
+    let Some(Ipld::Map(entries)) = conclusion.fields.get("show") else {
+        return BTreeMap::new();
+    };
+    entries
+        .iter()
+        .filter_map(|(facet, template)| match template {
+            Ipld::String(template) => Some((facet.clone(), template.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The facet this display renders: the explicit `view=` facet, else
 /// the mode default (`ui` with an entity, `directory` without).
 fn effective_facet(s: &Inner) -> String {
@@ -1337,6 +1677,10 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     // `show: {facet: template}` on the model entity's conclusion.
     let facet = effective_facet(&s);
     let folded = crate::fold::select_rows(conclusions);
+    // Retain the whole dictionary, not just the facet being rendered.
+    // "Which views does this model have?" is a question the mounted
+    // one cannot answer, and the frame already carries the answer.
+    s.facets = folded.first().map(all_facets).unwrap_or_default();
     let resolved = folded
         .first()
         .and_then(|c| show_template(c, &facet).map(str::to_owned));
@@ -1353,6 +1697,9 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
         // stale; drop it so the fallback can take its place (the
         // notation path refuses to mount over an existing slide).
         if !s.default_slide {
+            if !s.slides.is_empty() {
+                diagnostics::count(names::DISPLAY_REMOVED_VIEW_ABSENT);
+            }
             for (_, slide) in std::mem::take(&mut s.slides) {
                 if let Some(parent) = slide.item.parent_node() {
                     let _: Result<Node, _> = parent.remove_child(&slide.item);
@@ -1473,12 +1820,14 @@ const DEFAULT_MODEL: &str = "tonk:_";
 /// live; a later frame carrying the facet replaces this default (see
 /// the `default_slide` flag).
 fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
-    let (facet, explicit, model) = {
+    let (facet, explicit, model, generation, downstream_generation) = {
         let s = state.borrow();
         (
             effective_facet(&s),
             s.view_facet.is_some(),
             s.model_entity.clone().unwrap_or_default(),
+            s.generation,
+            s.downstream_generation,
         )
     };
     let host = host.clone();
@@ -1500,6 +1849,13 @@ fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
                 .and_then(|c| show_template(c, &facet).map(str::to_owned))
         }
         .await;
+        // Attribute/model changes can restart the flow while the query waits.
+        // A fallback from the previous mode must never paint into the new one.
+        if check_generation(&state, generation).is_err()
+            || check_downstream(&state, downstream_generation).is_err()
+        {
+            return;
+        }
         let Some(display) = resolved else {
             // Neither the model nor `tonk:_` carries the facet. An
             // EXPLICIT facet that resolves nowhere is a config error:
@@ -1540,6 +1896,17 @@ fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
         // slide present), don't clobber it with the default.
         let mut s = state.borrow_mut();
         if s.disposed || (!s.default_slide && !s.slides.is_empty()) {
+            return;
+        }
+        // Two view frames that both lack the facet each spawn this
+        // fallback before either mounts. The first one to land shows the
+        // default; a later one with the same template must leave it be,
+        // or every row is removed and inserted again for nothing.
+        if s.default_slide
+            && s.slides
+                .get("__default__")
+                .is_some_and(|slide| slide.display == display)
+        {
             return;
         }
         // Replace any prior slides with the single default slide.
@@ -1698,13 +2065,13 @@ fn mount_portal_slide(host: &Element, inner: &Inner, display: &str) -> Option<Sl
 
 /// Marker attribute stamped on a `<tonk-display>` host once its event
 /// delegate is installed — the persistent, queryable twin of the one-shot
-/// `tonk-display:bound` event. A `<tonk-page onmount=…>` whose command is
+/// `tonk-display:bound` event. A `<page-mount onmount=…>` whose command is
 /// handled by this display's delegate reads it to learn the delegate is
 /// listening, so it can fire `mount` even if it connected (or reconnected
 /// across a view reconcile) *after* the announcement and missed the event.
 /// Cleared while a fresh delegate refresh is pending, so it never reads
 /// ready during the async descriptor-resolve window. This is a DOM contract
-/// shared with `<tonk-page>` in the `tonk-workspace` crate — keep the string
+/// shared with `<page-mount>` in the standard library — keep the string
 /// in sync there.
 const BOUND_ATTR: &str = "data-bound";
 
@@ -1730,7 +2097,7 @@ fn schedule_delegate_refresh(host: &Element, state: &Rc<RefCell<Inner>>) {
     };
     // A fresh delegate is about to be (re)built asynchronously; until the
     // install completes the host is not ready to handle events. Drop the
-    // readiness marker now (synchronously) so a `<tonk-page>` reading it
+    // readiness marker now (synchronously) so a `<page-mount>` reading it
     // during the resolve window does not fire into a half-installed
     // delegate. The settling refresh re-stamps it on install.
     let _ = host.remove_attribute(BOUND_ATTR);
@@ -2003,6 +2370,11 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
     // descriptor JSON is parsed once here so click-time event
     // handlers don't pay the parse cost.
     let mut descriptors: Descriptors = Descriptors::new();
+    // The same resolution, kept for the introspection command panel:
+    // a name that resolved to nothing is recorded as `None` rather
+    // than dropped, since a template binding a command that does not
+    // exist is precisely what a reader needs told.
+    let mut resolved: BTreeMap<String, Option<String>> = BTreeMap::new();
     for name in &concept_names {
         // Bail mid-loop if a newer refresh has started — no point
         // resolving descriptors for a snapshot we won't install.
@@ -2017,6 +2389,7 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
         // pinned-`this` concept resolves via the Name index too.
         match resolve_model(host, name).await {
             Ok((_entity, descriptor_json)) => {
+                resolved.insert(name.clone(), Some(descriptor_json.clone()));
                 match serde_json::from_str::<serde_json::Value>(&descriptor_json) {
                     Ok(value) => {
                         descriptors.insert(name.clone(), value);
@@ -2033,6 +2406,7 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
                 // it will silently no-op on click. Continue with
                 // the rest so partial failures don't break the
                 // whole delegate.
+                resolved.insert(name.clone(), None);
             }
         }
     }
@@ -2071,16 +2445,17 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
         return;
     }
     s.delegate = Some(delegate);
+    s.command_descriptors = resolved;
     drop(s);
 
     // Persist readiness as a queryable marker *before* announcing it, so a
-    // `<tonk-page>` that connects — or reconnects across a view reconcile —
+    // `<page-mount>` that connects — or reconnects across a view reconcile —
     // after this point can detect the delegate is installed without having
     // caught the transient event below. See [`BOUND_ATTR`].
     let _ = host.set_attribute(BOUND_ATTR, "");
 
     // The delegate's listeners are now attached. Announce it so any
-    // mount-triggered element (e.g. `<tonk-page onmount=…>`) that
+    // mount-triggered element (e.g. `<page-mount onmount=…>`) that
     // connected *before* this point — its `mount` event would have fired
     // into the void, since the delegate installs asynchronously after the
     // template renders — can now fire knowing a listener exists. Carries
@@ -2105,7 +2480,35 @@ fn handle_entity_frame(
     // Everything is a list of folds: group the flat rows by `this` into
     // one folded conclusion per subject. Cardinality-one is just a
     // one-element frame; the renderer iterates `{this}` over the frame.
-    let frame = crate::fold::select_rows(conclusions);
+    apply_entity_frame(
+        host,
+        state,
+        crate::fold::select_rows(conclusions),
+        reconnect,
+    );
+}
+
+/// Apply an already-folded frame.
+///
+/// Split from [`handle_entity_frame`] so introspection can replay a
+/// recorded frame without folding it a second time. A folded frame is
+/// the whole state, so replaying one is how rewinding works: hand the
+/// renderer frame *i* again and it reconciles back to what frame *i*
+/// looked like. Nothing is inverted and nothing is reconstructed.
+fn apply_entity_frame(
+    host: &Element,
+    state: &Rc<RefCell<Inner>>,
+    frame: Vec<Conclusion>,
+    reconnect: bool,
+) {
+    // Record the arrival, and stop here if the display is being held.
+    // A held frame is still recorded — that is the point of holding,
+    // to be able to step forward into what was missed.
+    if let Some(recorder) = state.borrow_mut().recorder.as_mut()
+        && recorder.arrived(frame.clone()) == Arrival::Hold
+    {
+        return;
+    }
 
     if frame.is_empty() {
         // HOLD a reconnect-empty over previously rendered content: the
@@ -2123,6 +2526,7 @@ fn handle_entity_frame(
             reconnect && !s.last_frame.is_empty()
         };
         if held {
+            diagnostics::count(names::DISPLAY_ENTITY_HELD);
             let serial = state.borrow().entity_serial;
             let host = host.clone();
             let state = state.clone();
@@ -2137,6 +2541,10 @@ fn handle_entity_frame(
         }
 
         let mut s = state.borrow_mut();
+        if !s.last_frame.is_empty() {
+            diagnostics::count(names::DISPLAY_ENTITY_EMPTIED);
+            s.emptied = true;
+        }
         s.last_frame = Vec::new();
         // An empty frame means no rows matched — zero instances in a
         // collection, or a single entity whose row has not landed yet
@@ -2194,6 +2602,9 @@ fn handle_entity_frame(
     // notation + the result event.
     s.entity_serial += 1;
     let first = frame[0].clone();
+    if std::mem::take(&mut s.emptied) {
+        diagnostics::count(names::DISPLAY_ENTITY_REFILLED);
+    }
     s.last_frame = frame.clone();
     // Each slide sees the whole frame, augmented with the host's own
     // attributes under `dom.host/*`; notation, caching, and the result
@@ -2204,11 +2615,13 @@ fn handle_entity_frame(
     }
     update_notation(host, &s, &first);
     // A self-rendering display has no view flow to mount a slide; its
-    // data still shows — as the notation dump, mounted on the first
-    // non-empty frame and updated in place from then on.
+    // data still shows — through the DEFAULT display (`tonk:_`), as if
+    // the model had no view of its own, which for a single entity is the
+    // notation dump. Its owner is `tonk:_`, so nothing in it re-enters
+    // the view that was refused.
     if s.self_render && s.slides.is_empty() && s.notation_source.is_none() {
         drop(s);
-        mount_notation_fallback(host, state, &first);
+        spawn_default_view(host, state);
         dispatch_event(host, "tonk-display:result", Some(event_detail(&first)));
         return;
     }
@@ -2307,20 +2720,27 @@ async fn diagnose_no_entity(
                     .to_owned();
                 // The typed probe missed. Re-probing under the OTHER
                 // value types tells a mistyped fact (present under a
-                // different spelling) from a truly absent one — and
-                // pins which type actually holds it, so the value can
-                // be shown in ITS spelling (`+33`, not a bare `33`
-                // that would read as the very type it is not).
-                let declared_wire = spec.get("as").and_then(|t| t.as_str());
-                let mut found: Option<(String, &str)> = None;
+                // different type) from a truly absent one — and pins
+                // which type actually holds it, so the diagnosis can
+                // name both types next to the value.
+                let declared_wire = spec
+                    .get("as")
+                    .and_then(|t| t.as_str())
+                    .and_then(ValueType::from_wire);
+                let mut found: Option<(String, ValueType)> = None;
                 if let Some(declared_wire) = declared_wire {
-                    for candidate in ["SignedInteger", "UnsignedInteger", "Float", "Text"] {
+                    for candidate in [
+                        ValueType::Integer,
+                        ValueType::Natural,
+                        ValueType::Float,
+                        ValueType::Text,
+                    ] {
                         if candidate == declared_wire {
                             continue;
                         }
                         let mut probe = spec.clone();
                         if let Some(probe) = probe.as_object_mut() {
-                            probe.insert("as".into(), serde_json::json!(candidate));
+                            probe.insert("as".into(), serde_json::json!(candidate.uri()));
                         }
                         if let Some(value) = probe_field(host, &entity, field, &probe).await {
                             found = Some((spell_value(&value, candidate), candidate));
@@ -2330,11 +2750,16 @@ async fn diagnose_no_entity(
                 }
                 match (found, declared_wire) {
                     (Some((spelled, actual)), Some(declared_wire)) => {
+                        let actual = actual.anchor();
+                        let article = if actual.starts_with(['a', 'e', 'i', 'o', 'u']) {
+                            "an"
+                        } else {
+                            "a"
+                        };
                         let message = format!(
-                            "Attribute {uri} holds {spelled} — a {actual} value; the \
+                            "Attribute {uri} holds {spelled} — {article} {actual} value; the \
                              concept reads it as {declared}",
-                            actual = type_spelling(actual),
-                            declared = type_spelling(declared_wire),
+                            declared = declared_wire.anchor(),
                         );
                         mistyped.push((field.clone(), spelled, message));
                     }
@@ -2383,30 +2808,13 @@ fn first_field_text(value: &JsValue, field: &str) -> Option<String> {
     }
 }
 
-/// Spell a probed value the way its type is written in notation:
-/// signed integers carry an explicit sign, floats their decimal
-/// point, text its quotes.
-fn spell_value(value: &str, wire_type: &str) -> String {
+/// Spell a probed value as notation: text takes its quotes; a number
+/// is written plainly, since a literal's spelling carries no type (the
+/// diagnosis names the type beside it).
+fn spell_value(value: &str, wire_type: ValueType) -> String {
     match wire_type {
-        "SignedInteger" if !value.starts_with('-') => format!("+{value}"),
-        "Float" if !value.contains('.') => format!("{value}.0"),
-        "Text" => format!("{value:?}"),
+        ValueType::Text => format!("{value:?}"),
         _ => value.to_owned(),
-    }
-}
-
-/// The `as:` spelling of a wire descriptor type, for the diagnosis
-/// message.
-fn type_spelling(ty: &str) -> String {
-    match ty {
-        "Text" => "text".into(),
-        "UnsignedInteger" => "unsigned-integer".into(),
-        "SignedInteger" => "signed-integer".into(),
-        "Float" => "float".into(),
-        "Boolean" => "boolean".into(),
-        "Entity" => "entity".into(),
-        "Symbol" => "symbol".into(),
-        other => other.to_owned(),
     }
 }
 
@@ -2509,13 +2917,30 @@ fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool
 const MODEL_CHAIN: &str = "data-tonk-models";
 
 /// The models being rendered above `host`, innermost last.
+///
+/// Looked up across shadow roots. `closest` stops at one, and a view that
+/// renders inside an element's shadow tree (a notebook cell's results live
+/// in `<tonk-prose>`'s) would otherwise start with an empty chain and never
+/// see the notebook it sits in: a cell querying `notebook:` mounted the
+/// notebook again in its own results, forever.
 fn model_chain(host: &Element) -> Vec<String> {
-    host.closest(&format!("[{MODEL_CHAIN}]"))
-        .ok()
-        .flatten()
-        .and_then(|el| el.get_attribute(MODEL_CHAIN))
-        .map(|chain| chain.split('\u{1f}').map(str::to_owned).collect())
-        .unwrap_or_default()
+    let selector = format!("[{MODEL_CHAIN}]");
+    let mut at = host.clone();
+    loop {
+        if let Some(chain) = at
+            .closest(&selector)
+            .ok()
+            .flatten()
+            .and_then(|el| el.get_attribute(MODEL_CHAIN))
+        {
+            return chain.split('\u{1f}').map(str::to_owned).collect();
+        }
+        let root = at.get_root_node();
+        match root.dyn_into::<web_sys::ShadowRoot>() {
+            Ok(shadow) => at = shadow.host(),
+            Err(_) => return Vec::new(),
+        }
+    }
 }
 
 /// Whether rendering `model` here would render it inside ITSELF.
@@ -2537,20 +2962,56 @@ fn model_chain(host: &Element) -> Vec<String> {
 /// notebook's `ui` mounting notebook's `ui` forever — so a chain entry
 /// blocks only the facet it recorded. A bare entry with no facet (an
 /// older stamp, or a test's hand-written chain) stays a blanket block.
-fn renders_itself(host: &Element, model: &str, facet: &str) -> bool {
-    model_chain(host)
-        .iter()
-        .any(|seen| match seen.split_once('\u{1e}') {
-            Some((owner, seen_facet)) => owner == model && seen_facet == facet,
-            None => seen == model,
-        })
+///
+/// When both sides name an ENTITY, it has to match too: what loops is the
+/// same entity through the same view, and a notebook whose cell shows a
+/// DIFFERENT notebook is a card, not a cycle. And an entity may appear
+/// inside itself ONCE ([`SELF_NESTING`]): a notebook cell querying
+/// `notebook:` shows its own notebook as a card, and only that card's own
+/// repeat falls back to the default display. An entry or a display with
+/// no entity (a directory) keeps the (owner, facet) rule and repeats
+/// nothing.
+fn renders_itself(host: &Element, model: &str, facet: &str, entity: Option<&str>) -> bool {
+    let mut repeats = 0;
+    for seen in model_chain(host) {
+        let mut parts = seen.split('\u{1e}');
+        let owner = parts.next().unwrap_or_default();
+        let Some(seen_facet) = parts.next() else {
+            if seen == model {
+                return true;
+            }
+            continue;
+        };
+        if owner != model || seen_facet != facet {
+            continue;
+        }
+        match (parts.next(), entity) {
+            (Some(seen_entity), Some(entity)) if seen_entity != entity => {}
+            (Some(_), Some(_)) => repeats += 1,
+            _ => return true,
+        }
+    }
+    repeats > SELF_NESTING
 }
 
-/// Record `(owner, facet)` as rendered, for the displays mounted inside
-/// `view_el`.
-fn stamp_model_chain(host: &Element, view_el: &Element, model: &str, facet: &str) {
+/// How many times an entity may be rendered inside itself through the
+/// same view before the next repeat falls back to the default display.
+const SELF_NESTING: usize = 1;
+
+/// Record `(owner, facet)`, and the entity when the display has one, as
+/// rendered, for the displays mounted inside `view_el`.
+fn stamp_model_chain(
+    host: &Element,
+    view_el: &Element,
+    model: &str,
+    facet: &str,
+    entity: Option<&str>,
+) {
     let mut chain = model_chain(host);
-    chain.push(format!("{model}\u{1e}{facet}"));
+    chain.push(match entity {
+        Some(entity) => format!("{model}\u{1e}{facet}\u{1e}{entity}"),
+        None => format!("{model}\u{1e}{facet}"),
+    });
     let _ = view_el.set_attribute(MODEL_CHAIN, &chain.join("\u{1f}"));
 }
 
@@ -2668,7 +3129,22 @@ fn mount_view_slide(
     // the model being rendered: a counter card inside the DEFAULT
     // carousel must still resolve counter's own view, while a counter
     // display inside counter's OWN template must not.
-    stamp_model_chain(host, &view_el, owner, facet);
+    let entity = host.get_attribute("entity").filter(|s| !s.is_empty());
+    stamp_model_chain(host, &view_el, owner, facet, entity.as_deref());
+    // Read the embeds the template declares and inject what they name
+    // into the document head. From the template TEXT, not the mounted
+    // DOM: the markup below becomes the ROW template, so a `<link>`
+    // left in it would be cloned once per rendered row.
+    //
+    // Resolved against the MODEL entity, not `owner`. In directory mode
+    // `owner` is the row's own entity — one slide per instance — while a
+    // `style:` entry is declared on the view's subject, the same entity
+    // `view_query` read the template from. Asking a row for its view's
+    // style matches nothing, so the style silently never arrives.
+    let embed_owner = inner.model_entity.as_deref().unwrap_or(owner);
+    if let Some(template) = template.dyn_ref::<web_sys::HtmlTemplateElement>() {
+        crate::embed::resolve_embeds(host, template, display, embed_owner);
+    }
 
     let item: Element = if let Some(carousel) = inner.carousel.as_ref() {
         let wrapper = document.create_element("wa-carousel-item").ok()?;
@@ -3117,6 +3593,262 @@ mod tests {
         );
     }
 
+    /// One `style:` row, as the branch would answer a style query.
+    #[cfg(target_arch = "wasm32")]
+    fn style_rows(view: &str, name: &str, content: &str) -> Vec<Conclusion> {
+        let mut styles = std::collections::BTreeMap::new();
+        styles.insert(name.to_owned(), Ipld::String(content.to_owned()));
+        vec![Conclusion {
+            this: view.to_owned(),
+            fields: BTreeMap::from([("style".to_owned(), Ipld::Map(styles))]),
+        }]
+    }
+
+    /// Resolve embeds the way production does: into an inert
+    /// `<template>` the rows are cloned from, not against loose markup.
+    #[cfg(target_arch = "wasm32")]
+    fn resolve_into_template(
+        host: &Element,
+        markup: &str,
+        owner: &str,
+    ) -> web_sys::HtmlTemplateElement {
+        let document = window().expect("window").document().expect("document");
+        let template = document
+            .create_element("template")
+            .expect("template")
+            .dyn_into::<web_sys::HtmlTemplateElement>()
+            .expect("is a template");
+        template.set_inner_html(markup);
+        crate::embed::resolve_embeds(host, &template, markup, owner);
+        template
+    }
+
+    /// Wait real time, so `setTimeout`-based work can run.
+    #[cfg(target_arch = "wasm32")]
+    async fn sleep_ms(ms: i32) {
+        let window = window().expect("window");
+        let promise = Promise::new(&mut |resolve, _reject| {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+
+    /// Yield enough microtasks for the resolver's spawned task to run
+    /// its query round trip and inject.
+    #[cfg(target_arch = "wasm32")]
+    async fn settle() {
+        for _ in 0..8 {
+            let _ =
+                wasm_bindgen_futures::JsFuture::from(Promise::resolve(&JsValue::UNDEFINED)).await;
+        }
+    }
+
+    /// A template that declares an embed gets the content it names,
+    /// in the document head.
+    ///
+    /// The whole point of the `with:src` path: the style is NOT in
+    /// the rendered row (that markup becomes the row template and
+    /// would be cloned per row), it is one node in `<head>`.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_injects_the_style_a_template_embeds() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        let stub = stub_query_host(
+            style_rows("tonk:blobtest", "base", "body { color: rgb(1, 2, 3) }"),
+            |_| {},
+        );
+
+        let template = resolve_into_template(
+            &stub.host,
+            r#"<link rel=stylesheet with:src=base>"#,
+            "tonk:blobtest",
+        );
+        sleep_ms(150).await;
+
+        // The author wrote a `<link>`, so a `<link>` is what loads the
+        // stylesheet — it gets the content as a blob URL rather than
+        // being replaced by a `<style>` somewhere else in the document.
+        let link = template
+            .content()
+            .query_selector("link[rel=stylesheet]")
+            .expect("query")
+            .expect("the link the template declared is still there");
+        let href = link.get_attribute("href").unwrap_or_default();
+        assert!(
+            href.starts_with("blob:"),
+            "the declaration resolves to a loadable URL, got {href:?}",
+        );
+        assert_eq!(
+            link.get_attribute("data-tonk-embed").as_deref(),
+            Some("tonk:blobtest\u{1e}base"),
+            "and records which view's content it carries",
+        );
+
+        // Read the blob back through XHR rather than `fetch`: a sibling
+        // test installs a global `fetch` stub and never restores it, so
+        // fetching here would read that stub's canned response instead
+        // of this URL's contents.
+        let xhr = web_sys::XmlHttpRequest::new().expect("xhr");
+        xhr.open_with_async("GET", &href, false).expect("open");
+        xhr.send().expect("send");
+        assert_eq!(
+            xhr.response_text().ok().flatten().unwrap_or_default(),
+            "body { color: rgb(1, 2, 3) }",
+            "the URL carries the content the view declared",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// Re-mounting a view does not stack a second copy of its style.
+    ///
+    /// A display re-renders on every frame, so without the marker
+    /// check the head would grow one `<style>` per render.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_injects_one_node_however_often_a_view_mounts() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        let stub = stub_query_host(style_rows("tonk:demo", "repeat", "p { margin: 0 }"), |_| {});
+
+        let mut hrefs = Vec::new();
+        for _ in 0..3 {
+            let template = resolve_into_template(
+                &stub.host,
+                r#"<link rel=stylesheet with:src=repeat>"#,
+                "tonk:demo",
+            );
+            sleep_ms(120).await;
+            hrefs.push(
+                template
+                    .content()
+                    .query_selector("link[rel=stylesheet]")
+                    .expect("query")
+                    .and_then(|link| link.get_attribute("href"))
+                    .unwrap_or_default(),
+            );
+        }
+
+        // Each mount has its own `<link>` — that is the author's markup,
+        // cloned per row — but they all load ONE blob. Minting per mount
+        // would leak a URL every render, since nothing can tell a stale
+        // one from a clone still using it.
+        assert!(
+            hrefs.iter().all(|href| href.starts_with("blob:")),
+            "every mount resolves: {hrefs:?}",
+        );
+        assert_eq!(
+            hrefs
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            1,
+            "three mounts of one view share one minted URL: {hrefs:?}",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A directory view's embed resolves against the VIEW's subject,
+    /// not the row it is mounting.
+    ///
+    /// Directory mode mounts one slide per instance, so `owner` is that
+    /// row's own entity. A `style:` entry is declared on the view's
+    /// subject — the same entity `view_query` read the template from —
+    /// so resolving an embed against the row asks for a style no row
+    /// has, and the page renders silently unstyled. The hub shipped
+    /// exactly this way: the style was on `tonk:space` and every query
+    /// asked for a space's DID.
+    ///
+    /// Asserted on the QUERY rather than the injected node, because the
+    /// wrong subject fails by matching nothing — an assertion on the
+    /// absent `<style>` would also pass for a resolver that never ran.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_resolves_an_embed_against_the_view_not_the_row() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+
+        let asked: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let captured = asked.clone();
+        let events: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let counted = events.clone();
+        let stub = stub_query_host(
+            style_rows("tonk:space", "ui", "body { color: rgb(4, 5, 6) }"),
+            move |event| {
+                *counted.borrow_mut() += 1;
+                let detail = event.detail();
+                // `to_body` serializes with the default
+                // `serde_wasm_bindgen` serializer, which renders a Rust
+                // map as a JS `Map` — whose entries `Reflect::get` cannot
+                // see, so reading `terms` as a property yields nothing
+                // whatever the query said. The host decodes the body with
+                // `from_value`; this reads it the same way.
+                let Ok(body) = Reflect::get(&detail, &"query".into()) else {
+                    return;
+                };
+                let Ok(query) = serde_wasm_bindgen::from_value::<serde_json::Value>(body) else {
+                    return;
+                };
+                // The FIRST query is the compiled-embeds lookup, which
+                // is the one that must name the view; the style fetch
+                // that follows reads whatever subject it compiled to.
+                if captured.borrow().is_some() {
+                    return;
+                }
+                if let Some(this) = query
+                    .get("terms")
+                    .and_then(|terms| terms.get("this"))
+                    .and_then(|this| this.as_str())
+                {
+                    *captured.borrow_mut() = Some(this.to_owned());
+                }
+            },
+        );
+
+        // The directory shape: the view's subject is the model entity,
+        // while the slide being mounted is one row of it.
+        let mut inner = Inner::new();
+        inner.model_entity = Some("tonk:space".to_owned());
+        let _slide = mount_view_slide(
+            &stub.host,
+            &mut inner,
+            r#"<link rel=stylesheet with:src=ui>"#,
+            "did:key:zRow",
+            "directory",
+        )
+        .expect("slide mounts");
+        settle().await;
+
+        assert!(*events.borrow() >= 1, "the resolver queries for the embed");
+        assert_eq!(
+            asked.borrow().as_deref(),
+            Some("tonk:space"),
+            "the compiled-embeds lookup names the view, not the row being rendered",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A template declaring no embed injects nothing — the resolver
+    /// costs a template that embeds nothing no query at all.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_template_with_no_embed_injects_nothing() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        // No host claims queries: if the resolver queried anyway, the
+        // dispatch would fail rather than answer, and nothing could be
+        // injected — so this also pins that it does not try.
+        let stub = unclaimed_host();
+
+        let _template = resolve_into_template(&stub.host, r#"<p>{title}</p>"#, "tonk:demo");
+        settle().await;
+
+        let nodes = document
+            .query_selector_all("style[data-tonk-embed]")
+            .expect("query");
+        assert_eq!(nodes.length(), 0, "nothing declared, nothing injected");
+    }
+
     /// A declaration the artifact does NOT carry still goes to the
     /// branch — the fallback a view seeded before this field existed
     /// depends on.
@@ -3135,6 +3867,643 @@ mod tests {
             table.get("on/elsewhere").is_none(),
             "an uncovered name is resolved against the branch, which no host answered",
         );
+    }
+
+    /// A query the bridge has not claimed yet is retried, not read as
+    /// "this view declares no embeds".
+    ///
+    /// The bridge that answers a guest's query is wired up as the guest
+    /// boots, so a query issued in that window returns "no host claimed
+    /// the event". Taking that as an answer is how a fresh navigation
+    /// lands unstyled while a warm one does not — the two look
+    /// identical from the result alone.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn an_unclaimed_query_is_retried_rather_than_read_as_absence() {
+        use tonk_template::embed::{Embeds, ResolvedEmbed};
+
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+
+        let encoded = Embeds::new(BTreeMap::from([(
+            "ui".to_string(),
+            ResolvedEmbed {
+                entity: "tonk:space".into(),
+                name: "ui".into(),
+            },
+        )]))
+        .encode()
+        .expect("artifact encodes");
+
+        // Refuse to claim the first two queries, as an unbooted bridge
+        // does, then answer normally.
+        let seen = Rc::new(RefCell::new(0usize));
+        let counter = seen.clone();
+        let rows = vec![Conclusion {
+            this: "tonk:space".into(),
+            fields: BTreeMap::from([("embeds".to_string(), Ipld::Bytes(encoded))]),
+        }];
+        let mut stub = unclaimed_host();
+        let callback = Closure::wrap(Box::new(move |event: web_sys::Event| {
+            let Some(event) = event.dyn_ref::<CustomEvent>() else {
+                return;
+            };
+            let mut count = counter.borrow_mut();
+            *count += 1;
+            if *count <= 2 {
+                // Leave the event unclaimed: no `prevent_default`.
+                return;
+            }
+            event.prevent_default();
+            let detail = event.detail();
+            let value = serde_wasm_bindgen::to_value(&rows).expect("rows serialize");
+            let _ = Reflect::set(&detail, &"result".into(), &Promise::resolve(&value));
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        document
+            .body()
+            .expect("body")
+            .add_event_listener_with_callback("tonk-query", callback.as_ref().unchecked_ref())
+            .expect("listener installs");
+        stub.listener = Some(callback);
+
+        let _template = resolve_into_template(
+            &stub.host,
+            r#"<link rel=stylesheet with:src=ui>"#,
+            "tonk:space",
+        );
+        // Real time, not microtasks: the retry yields with `setTimeout`,
+        // which a microtask drain never advances.
+        sleep_ms(400).await;
+
+        assert!(
+            *seen.borrow() > 2,
+            "the unclaimed attempts are retried, not taken as an answer (saw {})",
+            seen.borrow(),
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A host that has left the document stops retrying.
+    ///
+    /// The bridge listens above the host, so an element detached from
+    /// the tree can never have its event claimed — retrying is waiting
+    /// for something that cannot happen, and a retry that outlives the
+    /// view that asked for it keeps firing into a document that has
+    /// moved on.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_detached_host_stops_retrying() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+
+        let seen = Rc::new(RefCell::new(0usize));
+        let counter = seen.clone();
+        let mut stub = unclaimed_host();
+        // Never claim, so every attempt fails and the loop would run to
+        // exhaustion if nothing stopped it.
+        let callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+            *counter.borrow_mut() += 1;
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        document
+            .body()
+            .expect("body")
+            .add_event_listener_with_callback("tonk-query", callback.as_ref().unchecked_ref())
+            .expect("listener installs");
+        stub.listener = Some(callback);
+
+        let _template = resolve_into_template(
+            &stub.host,
+            r#"<link rel=stylesheet with:src=ui>"#,
+            "tonk:space",
+        );
+        // Detach before the first backoff elapses.
+        stub.host.remove();
+        sleep_ms(400).await;
+
+        assert!(
+            *seen.borrow() <= 2,
+            "a detached host stops rather than running out its attempts (saw {})",
+            seen.borrow(),
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// Two views embedding the SAME style share one injected node.
+    ///
+    /// The marker is keyed by `(entity, name)` rather than by the view
+    /// doing the embedding, which is what makes one declaration dress
+    /// two pages — the arrangement `/settings` and the hub actually
+    /// use.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn two_views_embedding_one_style_share_a_single_node() {
+        use tonk_template::embed::{Embeds, ResolvedEmbed};
+
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+
+        // Both artifacts resolve to the SAME (entity, name) pair, as a
+        // bare `ui` on the owner and a cross-view `ui@space` do.
+        let pair = ResolvedEmbed {
+            entity: "tonk:space".into(),
+            name: "ui".into(),
+        };
+        let own = Embeds::new(BTreeMap::from([("ui".to_string(), pair.clone())]))
+            .encode()
+            .expect("encodes");
+        let cross = Embeds::new(BTreeMap::from([("ui@space".to_string(), pair)]))
+            .encode()
+            .expect("encodes");
+
+        for (artifact, template, owner) in [
+            (own, r#"<link rel=stylesheet with:src=ui>"#, "tonk:space"),
+            (
+                cross,
+                r#"<link rel=stylesheet with:src="ui@space">"#,
+                "tonk:settings",
+            ),
+        ] {
+            let stub = stub_query_host(
+                vec![
+                    Conclusion {
+                        this: owner.into(),
+                        fields: BTreeMap::from([("embeds".to_string(), Ipld::Bytes(artifact))]),
+                    },
+                    Conclusion {
+                        this: "tonk:space".into(),
+                        fields: BTreeMap::from([(
+                            "style".to_string(),
+                            Ipld::Map(BTreeMap::from([(
+                                "ui".to_string(),
+                                Ipld::String("body { color: rgb(7, 8, 9) }".into()),
+                            )])),
+                        )]),
+                    },
+                ],
+                |_| {},
+            );
+            let _template = resolve_into_template(&stub.host, template, owner);
+            sleep_ms(120).await;
+        }
+
+        let minted = document
+            .query_selector_all("link[data-tonk-embed-src]")
+            .expect("query");
+        assert_eq!(
+            minted.length(),
+            1,
+            "one declaration, one minted URL — however many views embed it",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A `font:` embed registers a face on the document.
+    ///
+    /// The dictionary the name lives in is what says how to read it: a
+    /// style is CSS text in the head, a font is bytes that become a
+    /// `FontFace`. Before this the renderer only ever built a
+    /// `<style>`, so a font embed resolved to a correct pair and then
+    /// injected nothing at all.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_font_embed_registers_a_face() {
+        use tonk_template::embed::{Embeds, ResolvedEmbed};
+
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        let before = document.fonts().size();
+
+        let artifact = Embeds::new(BTreeMap::from([(
+            "body".to_string(),
+            ResolvedEmbed {
+                entity: "tonk:demo".into(),
+                name: "body".into(),
+            },
+        )]))
+        .encode()
+        .expect("artifact encodes");
+
+        // A minimal, real WOFF so the face actually constructs: the
+        // bytes are what distinguish this from the style path, so a
+        // fixture the browser rejects would prove nothing.
+        let font = woff_fixture();
+        let stub = stub_query_host(
+            vec![
+                Conclusion {
+                    this: "tonk:demo".into(),
+                    fields: BTreeMap::from([("embeds".to_string(), Ipld::Bytes(artifact))]),
+                },
+                // No `style` entry by that name — the style lookup
+                // misses, and the font dictionary answers.
+                Conclusion {
+                    this: "tonk:demo".into(),
+                    fields: BTreeMap::from([(
+                        "font".to_string(),
+                        Ipld::Map(BTreeMap::from([("body".to_string(), Ipld::Bytes(font))])),
+                    )]),
+                },
+            ],
+            |_| {},
+        );
+
+        let _template = resolve_into_template(
+            &stub.host,
+            r#"<font-family name="body" with:src=body></font-family>"#,
+            "tonk:demo",
+        );
+        sleep_ms(200).await;
+
+        assert!(
+            document.fonts().size() > before,
+            "the font dictionary's bytes become a registered face",
+        );
+        assert!(
+            document
+                .query_selector("meta[data-tonk-embed-font]")
+                .expect("query")
+                .is_some(),
+            "and the registration is recorded so a re-mount does not repeat it",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A row cloned BEFORE the content arrives still gets it.
+    ///
+    /// This is the shape production actually has and every other test
+    /// here misses. Resolving is async — two query round-trips — while
+    /// `<tonk-view>` snapshots the host's children the moment it
+    /// connects. So the rows are normally in the document before the
+    /// content lands, and `cloneNode` COPIES: patching only the inert
+    /// template writes into an object nobody reads again.
+    ///
+    /// The symptom was a page with a correctly minted blob URL that
+    /// nothing pointed at — `minted: 1`, zero carriers, no stylesheet.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_row_cloned_before_the_content_arrives_still_gets_it() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+
+        let stub = stub_query_host(style_rows("tonk:demo", "ui", ".x{color:red}"), |_| {});
+
+        let markup = r#"<link rel="stylesheet" with:src="ui">"#;
+        let template = resolve_into_template(&stub.host, markup, "tonk:demo");
+
+        // Clone and mount NOW, while the query is still in flight —
+        // before `settle()`, which is precisely what production does.
+        let row = template
+            .content()
+            .clone_node_with_deep(true)
+            .expect("clone");
+        stub.host.append_child(&row).expect("row mounts");
+
+        settle().await;
+
+        let carrier = stub
+            .host
+            .query_selector("link[data-tonk-embed]")
+            .expect("query")
+            .expect("the mounted row's link is resolved, not just the template's");
+        let href = carrier.get_attribute("href").unwrap_or_default();
+        assert!(
+            href.starts_with("blob:"),
+            "the row's link points at the minted content; got {href:?}",
+        );
+        assert_eq!(
+            document
+                .query_selector_all("link[data-tonk-embed-src]")
+                .expect("query")
+                .length(),
+            1,
+            "and patching both roots mints once, not once per root",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// Registering the same font twice adds one face, not two.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_font_registers_once_however_often_its_view_mounts() {
+        use tonk_template::embed::{Embeds, ResolvedEmbed};
+
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+
+        let artifact = Embeds::new(BTreeMap::from([(
+            "body".to_string(),
+            ResolvedEmbed {
+                entity: "tonk:demo".into(),
+                name: "body".into(),
+            },
+        )]))
+        .encode()
+        .expect("artifact encodes");
+        let font = woff_fixture();
+
+        for _ in 0..3 {
+            let stub = stub_query_host(
+                vec![
+                    Conclusion {
+                        this: "tonk:demo".into(),
+                        fields: BTreeMap::from([(
+                            "embeds".to_string(),
+                            Ipld::Bytes(artifact.clone()),
+                        )]),
+                    },
+                    Conclusion {
+                        this: "tonk:demo".into(),
+                        fields: BTreeMap::from([(
+                            "font".to_string(),
+                            Ipld::Map(BTreeMap::from([(
+                                "body".to_string(),
+                                Ipld::Bytes(font.clone()),
+                            )])),
+                        )]),
+                    },
+                ],
+                |_| {},
+            );
+            let _template = resolve_into_template(
+                &stub.host,
+                r#"<font-family name="body" with:src=body></font-family>"#,
+                "tonk:demo",
+            );
+            sleep_ms(150).await;
+        }
+
+        let markers = document
+            .query_selector_all("meta[data-tonk-embed-font]")
+            .expect("query");
+        assert_eq!(
+            markers.length(),
+            1,
+            "three mounts of one view register one face",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A name in NEITHER dictionary injects nothing and registers
+    /// nothing.
+    ///
+    /// The compiled pair says where to look, not that anything is
+    /// there: the content is an ordinary keyed fact, so a view can
+    /// legitimately embed a name whose bytes have not replicated yet.
+    /// What must not happen is a `<style>` with no content, or a face
+    /// built from nothing.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_name_in_neither_dictionary_injects_nothing() {
+        use tonk_template::embed::{Embeds, ResolvedEmbed};
+
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        let before = document.fonts().size();
+
+        let artifact = Embeds::new(BTreeMap::from([(
+            "absent".to_string(),
+            ResolvedEmbed {
+                entity: "tonk:demo".into(),
+                name: "absent".into(),
+            },
+        )]))
+        .encode()
+        .expect("artifact encodes");
+
+        let stub = stub_query_host(
+            vec![Conclusion {
+                this: "tonk:demo".into(),
+                fields: BTreeMap::from([("embeds".to_string(), Ipld::Bytes(artifact))]),
+            }],
+            |_| {},
+        );
+        let _template = resolve_into_template(
+            &stub.host,
+            r#"<link rel=stylesheet with:src=absent>"#,
+            "tonk:demo",
+        );
+        sleep_ms(200).await;
+
+        assert!(
+            document
+                .query_selector("style[data-tonk-embed], meta[data-tonk-embed-font]")
+                .expect("query")
+                .is_none(),
+            "nothing is injected for content that is not there",
+        );
+        assert_eq!(
+            document.fonts().size(),
+            before,
+            "and no face is built from nothing",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// The smallest valid WOFF: a header with no tables.
+    ///
+    /// Real bytes rather than a placeholder because the browser
+    /// constructs the face from them — a fixture it rejects would make
+    /// the assertion above pass for the wrong reason.
+    #[cfg(target_arch = "wasm32")]
+    fn woff_fixture() -> Vec<u8> {
+        let mut woff = Vec::new();
+        woff.extend_from_slice(b"wOFF"); // signature
+        woff.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // flavor
+        woff.extend_from_slice(&44u32.to_be_bytes()); // length
+        woff.extend_from_slice(&0u16.to_be_bytes()); // numTables
+        woff.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        woff.extend_from_slice(&0u32.to_be_bytes()); // totalSfntSize
+        woff.extend_from_slice(&0u16.to_be_bytes()); // majorVersion
+        woff.extend_from_slice(&0u16.to_be_bytes()); // minorVersion
+        woff.extend_from_slice(&0u32.to_be_bytes()); // metaOffset
+        woff.extend_from_slice(&0u32.to_be_bytes()); // metaLength
+        woff.extend_from_slice(&0u32.to_be_bytes()); // metaOrigLength
+        woff.extend_from_slice(&0u32.to_be_bytes()); // privOffset
+        woff.extend_from_slice(&0u32.to_be_bytes()); // privLength
+        woff
+    }
+
+    /// A minted URL nothing points at any more is revoked.
+    ///
+    /// A blob URL is a document-lifetime resource the browser will not
+    /// collect on its own, so one minted for a view that is never shown
+    /// again would be held until the document died.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn an_unreferenced_url_is_revoked() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        let stub = stub_query_host(
+            style_rows("tonk:revoke", "gone", "body { color: rgb(9, 9, 9) }"),
+            |_| {},
+        );
+
+        let template = resolve_into_template(
+            &stub.host,
+            r#"<link rel=stylesheet with:src=gone>"#,
+            "tonk:revoke",
+        );
+        sleep_ms(150).await;
+        let href = template
+            .content()
+            .query_selector("link[rel=stylesheet]")
+            .expect("query")
+            .and_then(|link| link.get_attribute("href"))
+            .expect("the declaration resolved");
+        assert!(href.starts_with("blob:"), "got {href}");
+
+        // The template was never mounted, so nothing in the document
+        // refers to the content: the URL has no referent.
+        crate::embed::revoke_unreferenced(&document);
+
+        assert!(
+            document
+                .query_selector(&format!(
+                    "link[data-tonk-embed-src=\"{}\"]",
+                    "tonk:revoke\u{1e}gone"
+                ))
+                .expect("query")
+                .is_none(),
+            "the cache entry goes with the URL, so a later mount mints afresh",
+        );
+        let xhr = web_sys::XmlHttpRequest::new().expect("xhr");
+        xhr.open_with_async("GET", &href, false).expect("open");
+        assert!(xhr.send().is_err(), "the revoked URL no longer resolves",);
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A URL another display is still showing is NOT revoked.
+    ///
+    /// The URL is shared on purpose — every row cloned from a template
+    /// carries it, and a second view embedding the same content reuses
+    /// it — so revoking on one teardown would blank a page that is
+    /// still on screen. This is the case a maintained refcount gets
+    /// wrong and asking the document gets right.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_url_another_element_still_uses_survives() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        let stub = stub_query_host(
+            style_rows("tonk:shared", "ui", "body { color: rgb(3, 3, 3) }"),
+            |_| {},
+        );
+
+        let template = resolve_into_template(
+            &stub.host,
+            r#"<link rel=stylesheet with:src=ui>"#,
+            "tonk:shared",
+        );
+        sleep_ms(150).await;
+        let link = template
+            .content()
+            .query_selector("link[rel=stylesheet]")
+            .expect("query")
+            .expect("the link");
+        let href = link.get_attribute("href").expect("resolved");
+
+        // Stand a rendered row in the document, as a mounted view would.
+        let row = link
+            .clone_node_with_deep(true)
+            .expect("clone")
+            .dyn_into::<Element>()
+            .expect("element");
+        document
+            .body()
+            .expect("body")
+            .append_child(&row)
+            .expect("append");
+
+        crate::embed::revoke_unreferenced(&document);
+
+        let xhr = web_sys::XmlHttpRequest::new().expect("xhr");
+        xhr.open_with_async("GET", &href, false).expect("open");
+        assert!(
+            xhr.send().is_ok(),
+            "a URL still on screen survives another display's teardown",
+        );
+
+        // Once that row goes, so does the URL.
+        row.remove();
+        crate::embed::revoke_unreferenced(&document);
+        let after = web_sys::XmlHttpRequest::new().expect("xhr");
+        after.open_with_async("GET", &href, false).expect("open");
+        assert!(
+            after.send().is_err(),
+            "and is revoked once the last referent is gone",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A cross-view embed reaches the entity the ANALYZER resolved,
+    /// not the bare name the template wrote.
+    ///
+    /// `/settings` embeds `ui@space`: the template names `space`, the
+    /// analyzer resolved that to `tonk:space`, and the compiled pair
+    /// carries the resolved form. If the artifact fails to decode, the
+    /// renderer falls back to the template text and queries the bare
+    /// `space`, which matches nothing — a silently unstyled page, which
+    /// is exactly what this path exists to prevent. So the decode is
+    /// asserted on the SUBJECT that gets queried.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_cross_view_embed_queries_the_resolved_entity() {
+        use tonk_template::embed::{Embeds, ResolvedEmbed};
+
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+
+        let encoded = Embeds::new(BTreeMap::from([(
+            "ui@space".to_string(),
+            ResolvedEmbed {
+                entity: "tonk:space".into(),
+                name: "ui".into(),
+            },
+        )]))
+        .encode()
+        .expect("artifact encodes");
+
+        let asked: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let captured = asked.clone();
+        let stub = stub_query_host(
+            vec![Conclusion {
+                this: "tonk:settings".into(),
+                fields: BTreeMap::from([("embeds".to_string(), Ipld::Bytes(encoded))]),
+            }],
+            move |event| {
+                let detail = event.detail();
+                let Ok(body) = Reflect::get(&detail, &"query".into()) else {
+                    return;
+                };
+                let Ok(query) = serde_wasm_bindgen::from_value::<serde_json::Value>(body) else {
+                    return;
+                };
+                if let Some(this) = query
+                    .get("terms")
+                    .and_then(|terms| terms.get("this"))
+                    .and_then(|this| this.as_str())
+                {
+                    captured.borrow_mut().push(this.to_owned());
+                }
+            },
+        );
+
+        let _template = resolve_into_template(
+            &stub.host,
+            r#"<link rel="stylesheet" with:src="ui@space">"#,
+            "tonk:settings",
+        );
+        settle().await;
+
+        let asked = asked.borrow();
+        assert!(
+            asked.iter().any(|this| this == "tonk:space"),
+            "the style is fetched from the resolved entity; queries were {asked:?}",
+        );
+        assert!(
+            !asked.iter().any(|this| this == "space"),
+            "never the bare name the template wrote, which matches nothing: {asked:?}",
+        );
+        crate::embed::clear_injected(&document);
     }
 
     /// The stored artifact is read back through the view-bindings query.
@@ -3291,7 +4660,7 @@ mod tests {
         outer.append_child(&inner).expect("append");
 
         assert!(
-            !renders_itself(&inner, "tonk:notebook", "ui"),
+            !renders_itself(&inner, "tonk:notebook", "ui", None),
             "a different model nested inside one is ordinary nesting"
         );
     }
@@ -3312,7 +4681,7 @@ mod tests {
         outer.append_child(&inner).expect("append");
 
         assert!(
-            renders_itself(&inner, "tonk:notebook", "ui"),
+            renders_itself(&inner, "tonk:notebook", "ui", None),
             "a model already being rendered above must not render again"
         );
     }
@@ -3330,16 +4699,16 @@ mod tests {
         let outer = document.create_element("div").expect("outer");
         let middle = document.create_element("div").expect("middle");
         outer.append_child(&middle).expect("append");
-        stamp_model_chain(&middle, &middle, "concept:todo", "directory");
+        stamp_model_chain(&middle, &middle, "concept:todo", "directory", None);
         let inner = document.create_element("div").expect("inner");
         middle.append_child(&inner).expect("append");
 
         assert!(
-            !renders_itself(&inner, "concept:todo", "ui"),
+            !renders_itself(&inner, "concept:todo", "ui", None),
             "a detail card inside its model's directory template is nesting, not a cycle"
         );
         assert!(
-            renders_itself(&inner, "concept:todo", "directory"),
+            renders_itself(&inner, "concept:todo", "directory", None),
             "re-entering the SAME facet is still the cycle"
         );
     }
@@ -3355,17 +4724,56 @@ mod tests {
         let middle = document.create_element("div").expect("middle");
         outer.append_child(&middle).expect("append");
         // A board rendered inside the notebook extends the chain.
-        stamp_model_chain(&middle, &middle, "tonk:board", "ui");
+        stamp_model_chain(&middle, &middle, "tonk:board", "ui", None);
         let inner = document.create_element("div").expect("inner");
         middle.append_child(&inner).expect("append");
 
         assert!(
-            renders_itself(&inner, "tonk:notebook", "ui"),
+            renders_itself(&inner, "tonk:notebook", "ui", None),
             "the notebook is still above, two levels up"
         );
         assert!(
-            !renders_itself(&inner, "tonk:workspace", "ui"),
+            !renders_itself(&inner, "tonk:workspace", "ui", None),
             "an unrelated model is unaffected"
+        );
+    }
+
+    /// The same entity through the same view is refused past one level of
+    /// self-nesting, even when the repeat sits inside a SHADOW ROOT. A notebook cell's results render
+    /// in `<tonk-prose>`'s shadow tree, and the chain lookup stopped at
+    /// that boundary: a cell querying `notebook:` mounted its own notebook
+    /// in its results, which ran the cell again, forever.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_catches_an_entity_rendering_itself_across_a_shadow_root() {
+        let document = window().expect("window").document().expect("document");
+        let outer = document.create_element("div").expect("outer");
+        stamp_model_chain(&outer, &outer, "tonk:notebook", "ui", Some("id:nb/a"));
+        let host = document.create_element("div").expect("shadow host");
+        outer.append_child(&host).expect("append");
+        let init = web_sys::ShadowRootInit::new(web_sys::ShadowRootMode::Open);
+        let shadow = host.attach_shadow(&init).expect("shadow");
+        let inner = document.create_element("div").expect("inner");
+        shadow.append_child(&inner).expect("append");
+
+        assert!(
+            !renders_itself(&inner, "tonk:notebook", "ui", Some("id:nb/a")),
+            "an entity may show inside itself once"
+        );
+        stamp_model_chain(&inner, &inner, "tonk:notebook", "ui", Some("id:nb/a"));
+        let innermost = document.create_element("div").expect("innermost");
+        inner.append_child(&innermost).expect("append");
+        assert!(
+            renders_itself(&innermost, "tonk:notebook", "ui", Some("id:nb/a")),
+            "the repeat's own repeat is the cycle, seen across the shadow root"
+        );
+        assert!(
+            !renders_itself(&inner, "tonk:notebook", "ui", Some("id:nb/b")),
+            "a different notebook shown in a cell is a card, not a cycle"
+        );
+        assert!(
+            !renders_itself(&inner, "tonk:notebook", "label", Some("id:nb/a")),
+            "the same entity through another view is not a cycle"
         );
     }
 
@@ -4280,6 +5688,7 @@ mod tests {
             /// live subscription now, not a one-shot. `None` makes the
             /// model subscription stay empty (the `no-model` state).
             model_frame: Option<JsValue>,
+            initial_frames: BTreeMap<String, JsValue>,
         }
 
         impl FakeHost {
@@ -4304,6 +5713,7 @@ mod tests {
                     subscribe_tags: Vec::new(),
                     model_queries: Vec::new(),
                     model_frame,
+                    initial_frames: BTreeMap::new(),
                 }));
                 let mut listeners = Vec::new();
 
@@ -4357,7 +5767,7 @@ mod tests {
                                         .push(serde_wasm_bindgen::from_value(query).unwrap());
                                     s.model_frame.clone()
                                 } else {
-                                    None
+                                    s.initial_frames.get(&tag).cloned()
                                 }
                             };
                             let sub = Object::new();
@@ -4367,7 +5777,7 @@ mod tests {
                             if let Some(frame) = model_frame {
                                 let opts = Object::new();
                                 let _ =
-                                    Reflect::set(&opts, &"tag".into(), &JsValue::from_str("model"));
+                                    Reflect::set(&opts, &"tag".into(), &JsValue::from_str(&tag));
                                 if let Ok(reset) = Reflect::get(&consumer, &"reset".into())
                                     && let Ok(reset) = reset.dyn_into::<Function>()
                                 {
@@ -4747,6 +6157,121 @@ mod tests {
             );
         }
 
+        /// A branch that is not here yet answers `pending`, not an empty
+        /// set. A display with nothing to show lands in its absence state,
+        /// as the empty set put it before: that is the slot a space page
+        /// fills with "downloading".
+        #[dialog_common::test]
+        async fn it_reads_pending_as_absent_when_it_shows_nothing() {
+            let host = FakeHost::install(resolve_responses());
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"model".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            let payload = Object::new();
+            let _ = Reflect::set(&payload, &"control".into(), &"pending".into());
+            let opts = Object::new();
+            let _ = Reflect::set(&opts, &"tag".into(), &"model".into());
+            let notice: Function = Reflect::get(&display, &"notice".into())
+                .unwrap()
+                .dyn_into()
+                .unwrap();
+            let _ = notice.call2(&display, &payload, &opts);
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("no-model") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("no-model"),
+                "a fresh display reads `pending` as absent",
+            );
+
+            // The space arrives: the model subscription pushes a non-empty
+            // frame, the downstream view + entity subs open, and a view +
+            // entity frame render the row live.
+            host.push_frame("model", &model_concept_frame());
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"view".to_owned())
+                    && host.subscribe_tags().contains(&"entity".to_owned())
+                {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("view", &view_frame("<p>{count}</p>"));
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "7")])]));
+
+            assert!(
+                await_selector(&display, "tonk-view").await.is_some(),
+                "the display recovers and renders once the concept lands",
+            );
+            assert!(
+                display.query_selector("wa-callout").unwrap().is_none(),
+                "recovery leaves no latched callout behind",
+            );
+        }
+
+        /// A display that already shows rows keeps them through `pending`
+        /// (a reconnect to a worker that has not mounted the branch yet):
+        /// the rows follow on the same stream, so clearing would delete
+        /// what is about to be inserted again.
+        #[dialog_common::test]
+        async fn it_keeps_its_rows_through_pending() {
+            let dictionary = || {
+                show_rows(
+                    "tonk:_",
+                    &[("directory", "<ul><li data-id={this}>{title}</li></ul>")],
+                )
+            };
+            let host = FakeHost::install_with_model(
+                vec![name_row("did:key:zModel"), dictionary(), dictionary()],
+                Some(directory_model_frame()),
+            );
+            let display = mount_directory(&host, "item");
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame(
+                "entity",
+                &rows(&[("did:key:zItem1", &[("title", "Hello")])]),
+            );
+            host.push_frame("view", &rows(&[]));
+            await_selector(&display, "li[data-id]")
+                .await
+                .expect("the row renders");
+
+            for tag in ["entity", "model"] {
+                let payload = Object::new();
+                let _ = Reflect::set(&payload, &"control".into(), &"pending".into());
+                let opts = Object::new();
+                let _ = Reflect::set(&opts, &"tag".into(), &tag.into());
+                let notice: Function = Reflect::get(&display, &"notice".into())
+                    .unwrap()
+                    .dyn_into()
+                    .unwrap();
+                let _ = notice.call2(&display, &payload, &opts);
+            }
+            sleep(100).await;
+            assert!(
+                display.query_selector("li[data-id]").unwrap().is_some(),
+                "`pending` took down rows the display already showed",
+            );
+            assert_ne!(
+                display.get_attribute("data-state").as_deref(),
+                Some("no-model"),
+            );
+            host.container.remove();
+        }
+
         // The fix for the latched red box on a still-seeding space: when
         // the model concept is not on the branch yet, the model resolve
         // is an *empty subscription frame*, not a hard error. The display
@@ -5094,6 +6619,72 @@ mod tests {
             display
         }
 
+        #[dialog_common::test]
+        async fn it_discards_a_default_view_from_a_superseded_flow() {
+            crate::view::register();
+            let mut answer = None;
+            let pending = Promise::new(&mut |resolve, _| answer = Some(resolve));
+            let host = FakeHost::install(vec![pending.into()]);
+            let display = document().create_element("div").unwrap();
+            display.set_attribute("model", "item").unwrap();
+            host.container.append_child(&display).unwrap();
+            let state = Rc::new(RefCell::new(Inner::new()));
+            state.borrow_mut().directory = true;
+            spawn_default_view(&display, &state);
+            for _ in 0..100 {
+                if host.state.borrow().answered > 0 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(host.state.borrow().answered, 1);
+            state.borrow_mut().downstream_generation += 1;
+            answer
+                .unwrap()
+                .call1(
+                    &JsValue::NULL,
+                    &show_rows(DEFAULT_MODEL, &[("directory", "<p>Stale fallback</p>")]),
+                )
+                .unwrap();
+            sleep(50).await;
+            assert!(
+                display.query_selector("tonk-view").unwrap().is_none(),
+                "a fallback from an older model frame must not mount"
+            );
+            assert!(display.get_attribute("data-state").is_none());
+        }
+
+        #[dialog_common::test]
+        async fn it_sets_the_directory_facet_before_the_first_subscription_frame() {
+            let host = install_directory();
+            host.state.borrow_mut().initial_frames.insert(
+                "view".into(),
+                show_rows(
+                    "did:key:zModel",
+                    &[("directory", "<p class=\"early-directory\">Ready</p>")],
+                ),
+            );
+            host.state
+                .borrow_mut()
+                .initial_frames
+                .insert("entity".into(), rows(&[]));
+            let display = mount_directory(&host, "item");
+            assert!(
+                await_selector(&display, ".early-directory").await.is_some(),
+                "a view delivered during subscribe must use directory mode immediately"
+            );
+            assert!(
+                display
+                    .query_selector("[data-tonk-display-default-notice]")
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("empty")
+            );
+        }
+
         // A directory collection that goes empty -> one instance must
         // render the new instance *live*, with no reload. The empty frame
         // used to tear the mounted view down, so when the first instance
@@ -5236,6 +6827,76 @@ mod tests {
             assert!(
                 !chain.contains("did:key:zModel"),
                 "the default slide must not claim the model itself: {chain}",
+            );
+        }
+
+        // Two view frames that both lack the facet, arriving before the
+        // first fallback lands, must not tear the default down and build it
+        // again: the rows the first one rendered stay in place.
+        #[dialog_common::test]
+        async fn it_keeps_the_default_view_when_a_second_frame_lacks_the_facet() {
+            let dictionary = || {
+                show_rows(
+                    "tonk:_",
+                    &[("directory", "<ul><li data-id={this}>{title}</li></ul>")],
+                )
+            };
+            let host = FakeHost::install_with_model(
+                vec![name_row("did:key:zModel"), dictionary(), dictionary()],
+                Some(directory_model_frame()),
+            );
+            let display = mount_directory(&host, "item");
+            // Count every rendered row the display takes down.
+            let removed = Rc::new(RefCell::new(0usize));
+            let observer = {
+                let removed = removed.clone();
+                Closure::<dyn FnMut(js_sys::Array)>::new(move |records: js_sys::Array| {
+                    for record in records.iter() {
+                        let record: web_sys::MutationRecord = record.unchecked_into();
+                        let gone = record.removed_nodes();
+                        for i in 0..gone.length() {
+                            if let Some(node) = gone.item(i)
+                                && let Ok(el) = node.dyn_into::<Element>()
+                            {
+                                if el.matches("li[data-id]").unwrap_or(false) {
+                                    *removed.borrow_mut() += 1;
+                                }
+                                *removed.borrow_mut() += el
+                                    .query_selector_all("li[data-id]")
+                                    .map(|list| list.length() as usize)
+                                    .unwrap_or(0);
+                            }
+                        }
+                    }
+                })
+            };
+            let watch = web_sys::MutationObserver::new(observer.as_ref().unchecked_ref()).unwrap();
+            let options = web_sys::MutationObserverInit::new();
+            options.set_child_list(true);
+            options.set_subtree(true);
+            watch.observe_with_options(&display, &options).unwrap();
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame(
+                "entity",
+                &rows(&[("did:key:zItem1", &[("title", "Hello")])]),
+            );
+            host.push_frame("view", &rows(&[]));
+            host.push_frame("view", &rows(&[]));
+            await_selector(&display, "li[data-id]")
+                .await
+                .expect("the default directory template renders the instances");
+            // Let the second fallback finish its query and land.
+            sleep(100).await;
+            watch.disconnect();
+            assert_eq!(
+                *removed.borrow(),
+                0,
+                "the second frame rebuilt the default view instead of keeping it",
             );
         }
 
@@ -5389,7 +7050,7 @@ mod tests {
                     rows(&[]),
                     // TYPED probe of `count`: no unsigned value
                     rows(&[]),
-                    // SignedInteger re-probe: the fact lives there
+                    // `integer:` re-probe: the fact lives there
                     rows(&[("id:demo-counter", &[("count", "41")])]),
                 ],
                 Some(model_concept_frame()),
@@ -5409,15 +7070,15 @@ mod tests {
                 .await
                 .expect("the mismatch diagnosis renders");
             for _ in 0..200 {
-                if (query.text_content().unwrap_or_default()).contains("+41") {
+                if (query.text_content().unwrap_or_default()).contains("41") {
                     break;
                 }
                 sleep(5).await;
             }
             let text = query.text_content().unwrap_or_default();
             assert!(
-                text.contains("count") && text.contains("+41"),
-                "the stored value shows in ITS spelling, not a blank: {text}"
+                text.contains("count") && text.contains("41"),
+                "the stored value shows as the number it is, not a blank: {text}"
             );
             let notation = display
                 .query_selector("[data-error-2]")
@@ -5425,7 +7086,7 @@ mod tests {
                 .expect("the mistyped line carries its story");
             let message = notation.get_attribute("data-error-2").unwrap_or_default();
             assert!(
-                message.contains("signed-integer") && message.contains("unsigned-integer"),
+                message.contains("an integer value") && message.contains("reads it as natural"),
                 "the squiggle names both types: {message}"
             );
             let callout = display

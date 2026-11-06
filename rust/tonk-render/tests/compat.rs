@@ -79,9 +79,15 @@ const LIST: &str = "<ul><li data-id={this}>{name}</li></ul>";
 fn handoff_view(model: &str) -> String {
     let library = include_str!("../../tonk-core/assets/library/core.yaml");
     library
-        .split(&format!("view!:\n  this: {model}\n  show:\n    ui: |\n"))
+        .split(&format!("view!:\n  this: {model}\n  show:\n"))
         .nth(1)
         .expect("seeded handoff view")
+        .split("\nview!:\n")
+        .next()
+        .expect("view body")
+        .split("    ui: |\n")
+        .nth(1)
+        .expect("handoff UI presentation")
         .lines()
         .take_while(|line| line.starts_with("      ") || line.is_empty())
         .map(|line| line.strip_prefix("      ").unwrap_or(line))
@@ -92,29 +98,31 @@ fn handoff_view(model: &str) -> String {
 #[test]
 fn handoff_receipt_requires_a_matching_entity() {
     let template = handoff_view("tonk:agent-connection");
-    assert!(!render_template(&template, &[]).contains("Your agent connected"));
+    assert!(!render_template(&template, &[]).contains("agent setup confirmed"));
     let receipt = row(
         "id:tonk:agent-connection",
         &[("status", s("Agent connection confirmed"))],
     );
-    assert!(render_template(&template, &[receipt]).contains("Your agent connected"));
+    assert!(render_template(&template, &[receipt]).contains("agent setup confirmed"));
 }
 
 #[test]
 fn handoff_prompt_requires_a_matching_entity() {
     let template = handoff_view("tonk:agent-invite");
-    assert!(!render_template(&template, &[]).contains("Copy prompt"));
+    assert!(!render_template(&template, &[]).contains("copy-label=\"copy prompt\""));
     let ready = row(
         "id:space",
         &[
             ("name", s("Untitled")),
-            ("link", s("https://example.test/join#test")),
+            ("link", s("https://example.test/join#tonk-agent-v1=secret")),
             ("account", s("did:key:test")),
         ],
     );
     let html = render_template(&template, &[ready]);
-    assert!(html.contains("Copy prompt"));
-    assert!(html.contains("connect 'https://example.test/join#test'"));
+    assert!(html.contains("copy-label=\"copy prompt\""));
+    assert!(
+        html.contains("npx --yes @tonk/cli join 'https://example.test/join#tonk-agent-v1=secret'")
+    );
 }
 
 #[test]

@@ -21,9 +21,9 @@ use dialog_ucan::UcanDelegation;
 use dialog_varsig::{Did, Principal};
 use thiserror::Error;
 use tonk_invite::shortcut::{ShortcutRequest, is_shortcut, resolve_location};
-use tonk_invite::{Invite, InviteAudience};
+use tonk_invite::{Invite, InviteAudience, Ticket};
 use tonk_schema::prelude::DidExt;
-use tonk_schema::{Invitation, InvitationExecution, InvitedVia, MemberRole, Membership};
+use tonk_schema::{Invitation, InvitationExecution, InvitedVia, MemberRole, Membership, SeedKind};
 use url::Url;
 
 use crate::ExitCode;
@@ -107,10 +107,30 @@ pub struct ClaimOutcome {
     /// own record once content syncs — useful as a default label for
     /// the joined space.
     pub space_name: Option<String>,
+    /// Whether remote synchronization and membership publication completed.
+    pub completion: ClaimCompletion,
+}
+
+/// Structured completion state for a claimed ordinary invitation.
+#[derive(Debug)]
+pub enum ClaimCompletion {
+    /// The invitation has no remote; the local replica is ready for offline use.
+    LocalOnly,
+    /// Initial pull and membership publication both completed.
+    Complete,
+    /// Credentials and local data are retained, but the initial pull failed.
+    PullPending {
+        /// Redacted sync failure suitable for recovery output.
+        reason: String,
+    },
+    /// Pulled data and local membership are retained, but their push failed.
+    PublicationPending {
+        /// Redacted sync failure suitable for recovery output.
+        reason: String,
+    },
 }
 
 /// Validated invite information safe to use before changing local authority.
-#[derive(Debug)]
 pub struct InvitePreflight {
     /// Resolved long-form invite URL. Short links are expanded exactly once.
     pub url: String,
@@ -118,6 +138,18 @@ pub struct InvitePreflight {
     pub invitation: Invitation,
     /// Validated audience of a scoped invitation, absent for open invitations.
     pub expected_root: Option<Did>,
+    pub(crate) invite: Invite,
+}
+
+impl std::fmt::Debug for InvitePreflight {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InvitePreflight")
+            .field("invitation", &self.invitation)
+            .field("expected_root", &self.expected_root)
+            .field("url", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// Failure modes for [`mint`] / [`claim`].
@@ -168,7 +200,7 @@ pub async fn mint(
     base_url: Option<&str>,
     remote_url: Option<&str>,
 ) -> Result<InviteOutcome, InviteError> {
-    mint_for(site, base_url, remote_url, None, None).await
+    mint_for(site, base_url, remote_url, None, None, true).await
 }
 
 /// Mint an audience-open invite with an explicit revocation relay.
@@ -178,7 +210,7 @@ pub async fn mint_with_relay(
     remote_url: Option<&str>,
     revocation_url: Option<&str>,
 ) -> Result<InviteOutcome, InviteError> {
-    mint_for(site, base_url, remote_url, revocation_url, None).await
+    mint_for(site, base_url, remote_url, revocation_url, None, true).await
 }
 
 /// Mint a seed-free invite targeted to an exact recipient root DID.
@@ -188,7 +220,27 @@ pub async fn mint_targeted(
     remote_url: Option<&str>,
     recipient_root: &str,
 ) -> Result<InviteOutcome, InviteError> {
-    mint_for(site, base_url, remote_url, None, Some(recipient_root)).await
+    mint_for(site, base_url, remote_url, None, Some(recipient_root), true).await
+}
+
+/// Mint a seed-free targeted invite without publishing its local invitation
+/// record yet. Local-space linking persists recovery state first, then records
+/// the invitation as an idempotent publication stage.
+pub(crate) async fn mint_targeted_unrecorded(
+    site: &TonkSite,
+    base_url: Option<&str>,
+    remote_url: Option<&str>,
+    recipient_root: &str,
+) -> Result<InviteOutcome, InviteError> {
+    mint_for(
+        site,
+        base_url,
+        remote_url,
+        None,
+        Some(recipient_root),
+        false,
+    )
+    .await
 }
 
 /// Mint a root-targeted invite with an explicit revocation relay.
@@ -205,6 +257,7 @@ pub async fn mint_targeted_with_relay(
         remote_url,
         revocation_url,
         Some(recipient_root),
+        true,
     )
     .await
 }
@@ -215,6 +268,7 @@ async fn mint_for(
     remote_url: Option<&str>,
     revocation_url: Option<&str>,
     recipient_root: Option<&str>,
+    record: bool,
 ) -> Result<InviteOutcome, InviteError> {
     // Push local state to the upstream before minting, so a joiner
     // receives current repo state — including the stdlib seed that
@@ -227,7 +281,7 @@ async fn mint_for(
             .branch()
             .await
             .map_err(|e| InviteError::Io(format!("acquire branch: {e}")))?;
-        session.handle().upstream().is_some()
+        tonk_account::peer::upstream(session.handle()).is_some()
     };
     if has_upstream {
         if let Err(e) = sync::pull(site).await {
@@ -265,23 +319,19 @@ async fn mint_for(
     // historical fact ("you were invited to a space called X", true
     // after any rename), which the claimer uses as the space's first
     // label until content syncs.
-    let mut meta = std::collections::BTreeMap::new();
+    // Use the same account identity as the roster, including the onboarding
+    // account before linking. Invite::new validates its path to the signer.
+    let inviter = site::member_did(site)
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to resolve inviter identity: {e:#}")))?;
+    let mut meta = tonk_invite::inviter_meta(&inviter);
     if let Some(remote) = &parsed_remote {
         meta.extend(tonk_invite::home_address_meta(remote));
     }
     if let Some(name) = crate::account_spaces::repository_name(site).await {
         meta.extend(tonk_invite::space_name_meta(&name));
     }
-    let mut delegate = site
-        .profile
-        .access()
-        .claim(Subject::from(site.repository.did()).attenuate(Use))
-        .delegate(audience.clone());
-    if !meta.is_empty() {
-        delegate = delegate.meta(meta);
-    }
-    let delegation: UcanDelegation = delegate
-        .perform(&site.operator)
+    let delegation = mint_invitation_delegation(site, &inviter, &audience, meta)
         .await
         .map_err(|e| InviteError::Io(format!("failed to build delegation: {e}")))?;
     let chain = delegation.into_chain();
@@ -302,19 +352,145 @@ async fn mint_for(
         .map_err(|e| InviteError::Io(format!("failed to assemble invite: {e}")))?
         .with_revocation_url(relay);
 
-    let url = invite
-        .to_url(base_url.unwrap_or(DEFAULT_BASE_URL))
-        .map_err(|e| InviteError::Io(format!("failed to serialize invite URL: {e}")))?;
+    // An open invite with a remote leaves its grant in the space as the
+    // ephemeral key's ticket, and the link names only the space and the
+    // key's seed, on the host serving the space, where the recipient
+    // claims it. Everything else — a scoped invite, a local-only space, an
+    // open one whose ticket the space did not keep, or one asked for on a
+    // base off the remote's origin (a ticket is claimed from the origin
+    // its link is on, which has to be the host keeping it) — carries the
+    // chain in `access=`, which redeems the same way.
+    let ticket_link = match (&invite.audience, &invite.remote_url) {
+        (InviteAudience::Open { seed }, Some(remote)) if on_origin_of(base_url, remote) => {
+            issue_ticket(site, remote, &invite.chain, *seed).await
+        }
+        _ => None,
+    };
+    let url = match ticket_link {
+        Some(link) => link,
+        None => invite
+            .to_url(base_url.unwrap_or(DEFAULT_BASE_URL))
+            .map_err(|e| InviteError::Io(format!("failed to serialize invite URL: {e}")))?,
+    };
     let url = tonk_analytics::launch::space_referral_url(&url, site.repository.did().repo_key())
         .map_err(|e| InviteError::Io(format!("failed to add invite referral attribution: {e}")))?;
 
     // Record the invitation on the repo's meta branch — the durable,
     // secret-free half of the invite (the seed stays in the URL).
-    let invitation = Invitation::from_chain(&invite.chain)
-        .expect("Invite invariant: chain has a specific subject");
+    if record {
+        record_invitation(site, &invite.chain, &invite.audience).await?;
+    }
+
+    Ok(InviteOutcome {
+        url,
+        subject: site.repository.did(),
+        audience,
+    })
+}
+
+/// Prove the space through the selected account before signing its invitation.
+/// General device proof search can pick another valid root; that proves access,
+/// but cannot establish the account identity we put in the invitation.
+async fn mint_invitation_delegation(
+    site: &TonkSite,
+    inviter: &Did,
+    audience: &Did,
+    meta: std::collections::BTreeMap<String, ipld_core::ipld::Ipld>,
+) -> anyhow::Result<UcanDelegation> {
+    use anyhow::Context as _;
+    use dialog_capability::access::{Authorization as _, Proof as _};
+
+    let profile = site.profile.did();
+    if inviter == &profile {
+        // Isolated connection profiles have no ambient account identity.
+        return Ok(site
+            .profile
+            .access()
+            .claim(Subject::from(site.repository.did()).attenuate(Use))
+            .delegate(audience.clone())
+            .meta(meta)
+            .perform(&site.operator)
+            .await?);
+    }
+    let mut chain = site::recover_prefix(
+        &site.profile,
+        site.operator.local(),
+        &site.repository.did(),
+        inviter,
+    )
+    .await?
+    .context("the space has no authority path to the inviter account")?;
+    let identity = site::recover_prefix(&site.profile, site.operator.local(), inviter, &profile)
+        .await?
+        .context("the inviter account has no authority path to this device")?;
+    for grant in identity.proofs() {
+        chain = chain.push(grant.clone())?;
+    }
+    let scope = dialog_ucan::Scope {
+        subject: dialog_ucan_core::subject::Subject::Specific(site.repository.did()),
+        command: dialog_ucan_core::command::Command::parse("/use")?,
+        parameters: dialog_ucan::Parameters::default(),
+    };
+    // The canonical proof supplies its own bounds; do not carry a lifetime
+    // obtained by proving the device through a different root.
+    Ok(dialog_ucan::UcanProof::from_chain(&chain, scope)
+        .claim(site.profile.credential().signer().clone())?
+        .meta(meta)
+        .delegate(audience.clone())
+        .await?)
+}
+
+/// Whether a link built on `base` lands on `remote`'s origin: no base,
+/// or one on the same origin.
+fn on_origin_of(base: Option<&str>, remote: &Url) -> bool {
+    base.is_none_or(|base| Url::parse(base).is_ok_and(|base| base.origin() == remote.origin()))
+}
+
+/// Leave an open invite's `chain` in its space, at the service at
+/// `remote`, as the ticket of the key `seed` derives, and answer the
+/// ticket link that redeems it: `{origin}/space/{did}#{seed}`.
+///
+/// `None`, with a warning, when the service did not keep the ticket: the
+/// caller then hands out the `access=` link, which redeems the same way.
+async fn issue_ticket(
+    site: &TonkSite,
+    remote: &Url,
+    chain: &dialog_ucan_core::DelegationChain,
+    seed: [u8; 32],
+) -> Option<String> {
+    let subject = chain.subject()?.clone();
+    if let Err(error) = tonk_account::ticket::issue(
+        dialog_repository::SiteAddress::from(dialog_remote_ucan::UcanAddress::new(remote.as_str())),
+        chain,
+        &site.operator,
+    )
+    .await
+    {
+        eprintln!(
+            "warning: the space did not keep the invite's ticket; sharing the full link: {error}"
+        );
+        return None;
+    }
+    match Ticket::new(subject, seed, remote).and_then(|ticket| ticket.to_url()) {
+        Ok(link) => Some(link),
+        Err(error) => {
+            eprintln!("warning: the ticket link did not assemble; sharing the full link: {error}");
+            None
+        }
+    }
+}
+
+/// Record a previously minted invitation after its recovery state is durable.
+pub(crate) async fn record_invitation(
+    site: &TonkSite,
+    chain: &dialog_ucan_core::DelegationChain,
+    audience: &InviteAudience,
+) -> Result<(), InviteError> {
+    let invitation =
+        Invitation::from_chain(chain).expect("Invite invariant: chain has a specific subject");
     let execution = InvitationExecution::new(
         &invitation,
-        if matches!(&invite.audience, InviteAudience::Open { .. }) {
+        if matches!(audience, InviteAudience::Open { .. }) {
             "open"
         } else {
             "scoped"
@@ -327,6 +503,11 @@ async fn mint_for(
         .perform(&site.operator)
         .await
         .map_err(|e| InviteError::Io(format!("failed to open meta branch: {e}")))?;
+    // Written directly, outside the site's branch gate: a meta branch an
+    // earlier release wrote is moved to this release's format first.
+    dialog_reactor::migrate(&meta, &site.operator)
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to migrate meta branch: {e}")))?;
     meta.transaction()
         .assert(invitation)
         .assert(execution)
@@ -335,12 +516,7 @@ async fn mint_for(
         .perform(&site.operator)
         .await
         .map_err(|e| InviteError::Io(format!("failed to record invitation: {e}")))?;
-
-    Ok(InviteOutcome {
-        url,
-        subject: site.repository.did(),
-        audience,
-    })
+    Ok(())
 }
 
 /// Derive the invite base URL from a remote's endpoint — the CLI's
@@ -390,14 +566,33 @@ pub async fn claim(
     invite_url: &str,
     config: SiteConfig,
 ) -> Result<ClaimOutcome, InviteError> {
+    let preflight = preflight(invite_url).await?;
+    claim_prepared_inner(root, preflight, config, true).await
+}
+
+/// Claim a preflighted ordinary invitation without resolving or parsing it
+/// again. The outcome exposes incomplete remote work for strict CLI callers.
+pub async fn claim_prepared(
+    root: &Path,
+    preflight: InvitePreflight,
+    config: SiteConfig,
+) -> Result<ClaimOutcome, InviteError> {
+    claim_prepared_inner(root, preflight, config, false).await
+}
+
+async fn claim_prepared_inner(
+    root: &Path,
+    preflight: InvitePreflight,
+    config: SiteConfig,
+    print_recovery_warnings: bool,
+) -> Result<ClaimOutcome, InviteError> {
     if root.exists() {
         return Err(InviteError::SiteAlreadyExists(root.to_path_buf()));
     }
 
-    let invite_url = resolve_invite_url(invite_url).await?;
-    let invite = parse_invite_url(&invite_url).await?;
-    let invitation = Invitation::from_chain(&invite.chain)
-        .expect("Invite invariant: chain has a specific subject");
+    let InvitePreflight {
+        invitation, invite, ..
+    } = preflight;
     let invitation_execution = InvitationExecution::new(
         &invitation,
         if matches!(&invite.audience, InviteAudience::Open { .. }) {
@@ -444,8 +639,6 @@ pub async fn claim(
                 let store_operator = crate::account_state::store_operator_with_config(
                     &profile,
                     &config.account_store,
-                    &config.profile_name,
-                    config.profile_directory.clone(),
                 )
                 .await
                 .map_err(|e| InviteError::Io(format!("{e:#}")))?;
@@ -462,6 +655,18 @@ pub async fn claim(
             }
         };
     let space_name = invite.space_name.clone();
+    // The membership hangs off the invite principal, so the account holds
+    // that principal's key: at sign-in the handover re-issues
+    // `principal -> account` with the chain proving it, as a browser's join
+    // does. A targeted invite carries no key and is rooted at the account.
+    let principal = match &invite.audience {
+        InviteAudience::Open { seed } => Some(
+            <Ed25519Signer<dialog_credentials::Extractable> as dialog_credentials::key::ExtractableKey>::import(seed)
+                .await
+                .map_err(|e| InviteError::Io(format!("the invite key did not derive: {e:?}")))?,
+        ),
+        InviteAudience::Scoped => None,
+    };
     let claimed = invite
         .claim(&member)
         .await
@@ -483,6 +688,13 @@ pub async fn claim(
     )
     .map_err(|e| InviteError::Io(format!("failed to record the local invitation claim: {e}")))?;
     retain_claim_authority(&joined, chain).await;
+    if let Some(principal) = principal {
+        joined
+            .profile
+            .adopt_principal(SeedKind::Invite.held(), principal)
+            .await
+            .map_err(|e| InviteError::Io(format!("failed to hold the invite's key: {e}")))?;
+    }
 
     // Wire the embedded remote (if any) onto the freshly
     // bootstrapped site. Match the worker's `DEFAULT_REMOTE` so
@@ -491,6 +703,7 @@ pub async fn claim(
     // (carried through on the claim chain), not the joiner's.
     let mut auto_configured_remote: Option<String> = None;
     let mut synced = false;
+    let mut pull_failure = None;
     if let Some(url) = &remote_url {
         remote::add_with_revocation(
             &joined,
@@ -515,10 +728,15 @@ pub async fn claim(
         // `tonk pull` — but a real sync error is worth surfacing.
         match sync::pull(&joined).await {
             Ok(_) => synced = true,
-            Err(e) => eprintln!(
-                "warning: joined, but the initial pull from '{DEFAULT_REMOTE}' failed: {e}\n\
-                 run `tonk pull` before making changes so you don't diverge from upstream"
-            ),
+            Err(error) => {
+                pull_failure = Some(error.to_string());
+                if print_recovery_warnings {
+                    eprintln!(
+                        "warning: joined, but the initial pull from '{DEFAULT_REMOTE}' failed: {error}\n\
+                         run `tonk pull` before making changes so you don't diverge from upstream"
+                    );
+                }
+            }
         }
     }
 
@@ -530,12 +748,22 @@ pub async fn claim(
     // that otherwise completed, and the next `tonk push` carries the row.
     // Only when the pull succeeded — pushing onto an upstream this replica
     // never reconciled with is how a joiner diverges.
-    if synced && let Err(e) = sync::push(&joined).await {
-        eprintln!(
-            "warning: joined, but publishing this device's roster row failed: {e}\n\
-             run `tonk push` so the space's other members can see you"
-        );
-    }
+    let publication_failure = if synced {
+        match sync::push(&joined).await {
+            Ok(_) => None,
+            Err(error) => {
+                if print_recovery_warnings {
+                    eprintln!(
+                        "warning: joined, but publishing this device's roster row failed: {error}\n\
+                         run `tonk push` so the space's other members can see you"
+                    );
+                }
+                Some(error.to_string())
+            }
+        }
+    } else {
+        None
+    };
 
     joined.reactor.shutdown();
     drop(joined);
@@ -546,12 +774,22 @@ pub async fn claim(
         ))
     })?;
 
+    let completion = if remote_url.is_none() {
+        ClaimCompletion::LocalOnly
+    } else if let Some(reason) = pull_failure {
+        ClaimCompletion::PullPending { reason }
+    } else if let Some(reason) = publication_failure {
+        ClaimCompletion::PublicationPending { reason }
+    } else {
+        ClaimCompletion::Complete
+    };
     Ok(ClaimOutcome {
         subject,
         remote_url,
         auto_configured_remote,
         synced,
         space_name,
+        completion,
     })
 }
 
@@ -784,21 +1022,30 @@ async fn resolve_shortcut(short_url: &str) -> Result<String, InviteError> {
 /// the later claim can reuse the result instead of making a second request.
 /// No local state is created and no authority is changed.
 pub async fn preflight(invite_url: &str) -> Result<InvitePreflight, InviteError> {
-    let invite_url = resolve_invite_url(invite_url).await?;
+    let invite_url = resolve_url(invite_url).await?;
+    preflight_resolved(invite_url).await
+}
+
+/// Validate an already-resolved ordinary invitation without another shortcut
+/// request. Callers must obtain the URL from [`resolve_url`].
+pub(crate) async fn preflight_resolved(invite_url: String) -> Result<InvitePreflight, InviteError> {
     let invite = parse_invite_url(&invite_url).await?;
-    let invitation = Invitation::from_chain(&invite.chain)
+    let invitation = Invitation::from_chain(invite.invitation_chain())
         .expect("Invite invariant: chain has a specific subject");
     Ok(InvitePreflight {
         url: invite_url,
         invitation,
-        expected_root: match invite.audience {
+        expected_root: match &invite.audience {
             InviteAudience::Scoped => Some(invite.chain.audience().clone()),
             InviteAudience::Open { .. } => None,
         },
+        invite,
     })
 }
 
-async fn resolve_invite_url(invite_url: &str) -> Result<String, InviteError> {
+/// Resolve an invite shortcut to its complete URL, preserving its secret
+/// fragment. Full invite URLs pass through unchanged.
+pub async fn resolve_url(invite_url: &str) -> Result<String, InviteError> {
     if is_shortcut(invite_url) {
         resolve_shortcut(invite_url).await
     } else {
@@ -807,7 +1054,38 @@ async fn resolve_invite_url(invite_url: &str) -> Result<String, InviteError> {
 }
 
 async fn parse_invite_url(invite_url: &str) -> Result<Invite, InviteError> {
+    if let Some(ticket) = Ticket::parse_url(invite_url)
+        .map_err(|error| InviteError::InvalidInvite(error.to_string()))?
+    {
+        return claim_ticket(ticket).await;
+    }
     Invite::parse_url(invite_url)
+        .await
+        .map_err(|error| InviteError::InvalidInvite(error.to_string()))
+}
+
+/// Fetch the ticket a ticket link's space keeps for the link's key, and
+/// read it as the open invite it is. A claim only reads, so validating a
+/// ticket link this way changes nothing.
+async fn claim_ticket(ticket: Ticket) -> Result<Invite, InviteError> {
+    let holder = ticket
+        .holder()
+        .await
+        .map_err(|error| InviteError::InvalidInvite(error.to_string()))?;
+    let holder_did = dialog_varsig::Principal::did(&holder);
+    let fetched =
+        tonk_account::ticket::claim(ticket.remote(), holder, &holder_did, None, ticket.subject())
+            .await
+            .map_err(|error| {
+                InviteError::Io(format!("failed to claim the space's ticket: {error}"))
+            })?
+            .ok_or_else(|| {
+                InviteError::InvalidInvite(
+                    "the space no longer holds this link's ticket".to_owned(),
+                )
+            })?;
+    ticket
+        .redeem(&fetched)
         .await
         .map_err(|error| InviteError::InvalidInvite(error.to_string()))
 }

@@ -1,117 +1,15 @@
 //! Getting the account's encryption key onto a device that needs it.
 //!
-//! Custody seals to the account's X25519 recipient, which only a holder
-//! of the account secret can derive. The onboarding account's secret is
-//! local, so its recipient is derived on demand. A passkey account's
-//! secret only exists inside a WebAuthn assertion on a page, so a linked
-//! device whose root record predates the key asks the page that
-//! originated the operation to run one (`request_webauthn`), and waits
-//! for the page to save the key with the root (`POST /api/identity/root`)
-//! before continuing. Nothing is replayed: the operation that needed the
-//! key simply resumes once it is there.
+//! A passkey account's secret only exists inside a WebAuthn assertion on
+//! a page, so the ceremonies that need it ask the page that originated
+//! the operation to run one. Taking a space or an invite principal into
+//! custody needs none of this: dialog seals the key to the account's own
+//! DID.
 
-use crate::TonkWorkerError;
-use crate::router::{AppState, ClientId};
-use dialog_varsig::Did;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use crate::router::AppState;
+use crate::router::ClientId;
 use tonk_common::log;
-
-thread_local! {
-    /// Operations waiting for the page to record an encryption key.
-    static WAITERS: std::cell::RefCell<Vec<tokio::sync::oneshot::Sender<Did>>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// How long an operation waits for the page's assertion before giving
-/// up. Generous: the user has to touch a passkey.
-const ASSERTION_TIMEOUT: web_time::Duration = web_time::Duration::from_secs(120);
-
-/// Wake every operation waiting for the key. Called by the root save
-/// whenever a record carrying a recipient lands.
-pub(crate) fn notify_encryption_key(recipient: &Did) {
-    WAITERS.with(|waiters| {
-        for waiter in waiters.borrow_mut().drain(..) {
-            let _ = waiter.send(recipient.clone());
-        }
-    });
-}
-
-/// Make sure a custody recipient is obtainable before an operation that
-/// custodies a seed takes the state lock.
-///
-/// Returns at once when the device has no passkey root (the onboarding
-/// recipient derives locally) or when the root record already carries the
-/// key. Otherwise asks `client` for a passkey assertion and waits for the
-/// key to be saved. Must be called WITHOUT the state lock held: the page
-/// answers through `/api/identity/root`, which needs it.
-pub(crate) async fn ensure_recipient(
-    state: &AppState,
-    client: Option<&ClientId>,
-) -> Result<(), TonkWorkerError> {
-    let root = {
-        let tonk = state.read().await;
-        match super::identity::local_root(&tonk).await {
-            Ok(root) => root,
-            Err(TonkWorkerError::RootRequired) => return Ok(()),
-            Err(error) => return Err(error),
-        }
-    };
-    if root.encryption_key.is_some() {
-        return Ok(());
-    }
-    {
-        let tonk = state.read().await;
-        if super::account_state::published_sealed_inbox(&tonk, &root.root_did)
-            .await?
-            .is_some()
-        {
-            return Ok(());
-        }
-    }
-    let Some(client) = client else {
-        return Err(TonkWorkerError::Conflict(
-            "the account has not published its encryption key on this device, and no page \
-             asked for this operation, so no passkey assertion can derive it"
-                .to_string(),
-        ));
-    };
-    request_and_wait(client).await
-}
-
-async fn request_and_wait(client: &ClientId) -> Result<(), TonkWorkerError> {
-    // Registered before the request goes out, so an answer that arrives
-    // faster than this task resumes is not missed.
-    let receiver = wait_for_key();
-    super::navigate::request_webauthn(client, tonk_worker_api::WebAuthnKind::EncryptionKey).await?;
-    await_key(receiver, ASSERTION_TIMEOUT).await.map(|_| ())
-}
-
-/// Register for the next recorded encryption key.
-fn wait_for_key() -> tokio::sync::oneshot::Receiver<Did> {
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    WAITERS.with(|waiters| waiters.borrow_mut().push(sender));
-    receiver
-}
-
-/// Wait for a registered key, giving up after `timeout`.
-async fn await_key(
-    receiver: tokio::sync::oneshot::Receiver<Did>,
-    timeout: web_time::Duration,
-) -> Result<Did, TonkWorkerError> {
-    use futures_util::future::{Either, select};
-
-    let timeout = Box::pin(crate::r#async::sleep(timeout));
-    match select(Box::pin(receiver), timeout).await {
-        Either::Left((Ok(recipient), _)) => Ok(recipient),
-        Either::Left((Err(_), _)) => Err(TonkWorkerError::Internal(
-            "the encryption-key waiter was dropped".to_string(),
-        )),
-        Either::Right(_) => Err(TonkWorkerError::Conflict(
-            "no passkey assertion answered in time; the account's encryption key is still \
-             unpublished on this device"
-                .to_string(),
-        )),
-    }
-}
 
 /// Ask the page to mediate a passkey so this worker can mint custody
 /// material.
@@ -196,20 +94,61 @@ pub(crate) async fn receive(
         return;
     };
 
-    let context_current = match source.as_ref() {
-        Some(client) => {
-            let tonk = state.read().await;
-            super::session::client_context_is_current(&tonk, client).await
-        }
-        None => true,
-    };
-    let answer = if !context_current {
-        Err("profile changed; reload required".to_string())
+    // Only device and agent approval opt into progress. Keep other custody
+    // ceremonies on their established protocol and lifetime.
+    let request = js_sys::Reflect::get(&data, &"request".into()).unwrap_or(JsValue::UNDEFINED);
+    let approval = matches!(
+        js_sys::Reflect::get(&request, &"kind".into())
+            .ok()
+            .and_then(|value| value.as_string())
+            .as_deref(),
+        Some("authorize-device" | "authorize-agent" | "revoke-agent")
+    );
+    let progress_requested = js_sys::Reflect::get(&data, &"progress".into())
+        .ok()
+        .and_then(|value| value.as_bool())
+        == Some(true);
+    // The guard is owned by receive and its message event's waitUntil. Its
+    // progress is independent of background sync and stops on every exit.
+    let _progress = if approval && progress_requested {
+        tonk_identity::handoff::CustodyProgress::start(&port).ok()
     } else {
-        match custodian_from(&data).await {
-            Ok(custodian) => perform(state, source.as_ref(), &data, custodian).await,
-            Err(error) => Err(error),
+        None
+    };
+    let operation_state = state.clone();
+    let operation = async {
+        let state = operation_state;
+        let context_current = match source.as_ref() {
+            Some(client) => {
+                let tonk = state.read().await;
+                super::session::client_context_is_current(&tonk, client).await
+            }
+            None => true,
+        };
+        if !context_current {
+            Err("profile changed; reload required".to_string())
+        } else {
+            match custodian_from(&data).await {
+                Ok(custodian) => perform(state, source.as_ref(), &data, custodian).await,
+                Err(error) => Err(error),
+            }
         }
+    };
+    // Bound the WHOLE approval, including lock waits, key import and status
+    // publication. Dropping it prevents a late success after this reply.
+    // Leave room inside the receivers' five-minute lifetime for the passkey
+    // and for importing the published grant.
+    let answer = if approval {
+        complete_authorization(
+            &state,
+            &request,
+            operation,
+            web_time::Duration::from_secs(120),
+            web_time::Duration::from_secs(5),
+        )
+        .await
+    } else {
+        operation.await
     };
 
     let reply = js_sys::Object::new();
@@ -238,6 +177,251 @@ pub(crate) async fn receive(
     }
     if let Err(error) = port.post_message(&reply) {
         log!("custody: the reply did not post: {error:?}");
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn complete_authorization<T>(
+    state: &AppState,
+    request: &wasm_bindgen::JsValue,
+    operation: impl std::future::Future<Output = Result<T, String>>,
+    timeout: web_time::Duration,
+    report_timeout: web_time::Duration,
+) -> Result<T, String> {
+    // Awaiting this helper drops the unfinished operation before reporting,
+    // so it cannot subsequently replace the failure with a late success.
+    if let Some(outcome) = authorization_deadline(operation, timeout).await {
+        return outcome;
+    }
+    let error = "The connection took too long to finish. Start a new connection and try again.";
+    let intent = serde_wasm_bindgen::from_value::<tonk_worker_api::CustodyIntent>(request.clone());
+    if let Ok(
+        intent @ (tonk_worker_api::CustodyIntent::AuthorizeDevice(_)
+        | tonk_worker_api::CustodyIntent::AuthorizeAgent(_)
+        | tonk_worker_api::CustodyIntent::RevokeAgent(_)),
+    ) = intent
+    {
+        let report = async {
+            let tonk = state.read().await;
+            match &intent {
+                tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization) => {
+                    super::ceremony::report_authorization(
+                        &tonk,
+                        authorization,
+                        tonk_schema::ceremony_state::FAILED,
+                        error,
+                    )
+                    .await
+                }
+                tonk_worker_api::CustodyIntent::RevokeAgent(request) => {
+                    super::agents::withdraw::note(
+                        &request.agent,
+                        &request.space,
+                        Some(super::agents::withdraw::Removal::Failed {
+                            reason: "The removal took too long to finish. The access stays listed; try again.".into(),
+                        }),
+                    );
+                    super::ceremony::report(
+                        &tonk,
+                        tonk_schema::ceremony::REVOKE_AGENT,
+                        tonk_schema::ceremony_state::FAILED,
+                        error,
+                    )
+                    .await
+                }
+                _ => {
+                    super::ceremony::report(
+                        &tonk,
+                        tonk_schema::ceremony::AUTHORIZE_AGENT,
+                        tonk_schema::ceremony_state::FAILED,
+                        error,
+                    )
+                    .await
+                }
+            }
+            Ok(())
+        };
+        // A stalled state lock or overlay write must not strand the terminal
+        // reply again. The timeout remains authoritative even if reporting fails.
+        if authorization_deadline(report, report_timeout)
+            .await
+            .is_none()
+        {
+            log!("custody: approval timeout status could not be published in time");
+        }
+    }
+    Err(error.into())
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn authorization_deadline<T>(
+    operation: impl std::future::Future<Output = Result<T, String>>,
+    timeout: web_time::Duration,
+) -> Option<Result<T, String>> {
+    let deadline = crate::sleep(timeout);
+    match futures_util::future::select(std::pin::pin!(operation), std::pin::pin!(deadline)).await {
+        futures_util::future::Either::Left((outcome, _)) => Some(outcome),
+        futures_util::future::Either::Right(_) => None,
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod deadline_tests {
+    use super::authorization_deadline;
+    use std::{cell::Cell, rc::Rc};
+    use web_time::Duration;
+
+    #[dialog_common::test]
+    async fn approval_deadline_publishes_failure_for_only_the_timed_out_request() {
+        use dialog_query::{Output as _, Query};
+        use tonk_schema::{CeremonyStatus, ceremony_state};
+        let state = std::sync::Arc::new(crate::StateLock::new(
+            crate::router::tests::test_state_without_account().await,
+        ));
+        let request = tonk_worker_api::DeviceAuthorization {
+            audience: "did:key:test".into(),
+            callback: "https://example.test/callback?request=1".into(),
+            name: "Tonk connection".into(),
+            expected_account: None,
+        };
+        let mut other = request.clone();
+        other.callback.push('2');
+        {
+            let tonk = state.read().await;
+            for approval in [&request, &other] {
+                crate::router::ceremony::report_authorization(
+                    &tonk,
+                    approval,
+                    ceremony_state::WORKING,
+                    "",
+                )
+                .await;
+            }
+        }
+        let encoded = serde_wasm_bindgen::to_value(
+            &tonk_worker_api::CustodyIntent::AuthorizeDevice(request.clone()),
+        )
+        .unwrap();
+        let error = super::complete_authorization(
+            &state,
+            &encoded,
+            std::future::pending::<Result<(), String>>(),
+            Duration::from_millis(5),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("took too long"));
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let rows: Vec<CeremonyStatus> = session
+            .handle()
+            .query()
+            .select(Query::<CeremonyStatus>::default())
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        let requested = crate::router::ceremony::authorization_entity(&request);
+        let other = crate::router::ceremony::authorization_entity(&other);
+        let row = rows
+            .iter()
+            .find(|row| row.this.to_string() == requested)
+            .unwrap();
+        assert_eq!(row.state.0, ceremony_state::FAILED);
+        assert_eq!(row.detail.0, error);
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.this.to_string() == other)
+                .unwrap()
+                .state
+                .0,
+            ceremony_state::WORKING
+        );
+    }
+
+    #[dialog_common::test]
+    async fn approval_deadline_bounds_failure_reporting_when_the_state_is_locked() {
+        let state = std::sync::Arc::new(crate::StateLock::new(
+            crate::router::tests::test_state_without_account().await,
+        ));
+        let request =
+            serde_wasm_bindgen::to_value(&tonk_worker_api::CustodyIntent::AuthorizeDevice(
+                tonk_worker_api::DeviceAuthorization {
+                    audience: "did:key:test".into(),
+                    callback: "https://example.test/callback".into(),
+                    name: "Tonk connection".into(),
+                    expected_account: None,
+                },
+            ))
+            .unwrap();
+        let _locked = state.write().await;
+        let completion = super::complete_authorization(
+            &state,
+            &request,
+            std::future::pending::<Result<(), String>>(),
+            Duration::from_millis(5),
+            Duration::from_millis(5),
+        );
+        let result = authorization_deadline(completion, Duration::from_secs(1)).await;
+        assert!(
+            result
+                .expect("status publication must not block the terminal reply")
+                .unwrap_err()
+                .contains("took too long")
+        );
+    }
+
+    #[dialog_common::test]
+    async fn approval_deadline_cancels_work_before_it_can_report_late_success() {
+        struct Dropped(Rc<Cell<bool>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        let dropped = Rc::new(Cell::new(false));
+        let completed = Rc::new(Cell::new(false));
+        let guard = Dropped(dropped.clone());
+        let finish = completed.clone();
+        let operation = async move {
+            let _guard = guard;
+            crate::sleep(Duration::from_millis(50)).await.unwrap();
+            finish.set(true);
+            Ok(String::from("callback"))
+        };
+        let result = authorization_deadline(operation, Duration::from_millis(5)).await;
+        assert!(result.is_none());
+        assert!(
+            dropped.get(),
+            "the worker operation must be cancelled, not detached"
+        );
+        crate::sleep(Duration::from_millis(75)).await.unwrap();
+        assert!(
+            !completed.get(),
+            "a timed-out approval must never report DONE later"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn approval_deadline_preserves_completed_results_and_refusals() {
+        for expected in [
+            Ok(String::from("callback")),
+            Err(String::from("wrong account")),
+        ] {
+            let result = authorization_deadline(
+                std::future::ready(expected.clone()),
+                Duration::from_millis(100),
+            )
+            .await;
+            assert_eq!(result, Some(expected));
+        }
     }
 }
 
@@ -303,6 +487,13 @@ async fn perform(
             let target =
                 super::ceremony::authorize_device(&state, &custodian, authorization).await?;
             navigate_reply(&target)
+        }
+        tonk_worker_api::CustodyIntent::AuthorizeAgent(authorization) => {
+            let target = super::agent_session::authorize(&state, &custodian, authorization).await?;
+            navigate_reply(&target)
+        }
+        tonk_worker_api::CustodyIntent::RevokeAgent(request) => {
+            super::agents::withdraw::authorize(&state, &custodian, request).await
         }
     }
 }
@@ -551,7 +742,8 @@ async fn complete_login(
         tonk.disposition()
     );
     let profile_changed = tonk.disposition() != super::profiles::AccountProfileDisposition::Current;
-    let device = tonk.profile.signer().signer().clone();
+    let signed_out = tonk.signed_out().map(str::to_owned);
+    let device = tonk.profile.credential().signer().clone();
     let ceremony =
         tonk_identity::ceremony::link_device(root.clone(), device.did(), link.device_name.clone())
             .await
@@ -569,6 +761,30 @@ async fn complete_login(
     crate::router::identity::persist_root(&tonk, root_record)
         .await
         .map_err(|error| format!("the account root was not recorded: {error}"))?;
+
+    // Seeds an earlier release sealed to this account's encryption key in
+    // tonk's own custody rows move into the custody tonk and dialog share
+    // now, the one moment the account's secret is here to open them.
+    // Best-effort: a seed that stays is picked up at the next login.
+    match tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(branch) => {
+            match super::rotation::migrate_custody(&tonk, branch.handle(), account.secret()).await {
+                Ok(moved) => {
+                    for (subject, reason) in &moved.failures {
+                        log!("custody: {subject} stayed in the old custody: {reason}");
+                    }
+                }
+                Err(error) => log!("custody: the old custody was not read: {error}"),
+            }
+        }
+        Err(error) => log!("custody: the old custody was not opened: {error}"),
+    }
 
     // No request: the roster is DeviceLink facts on the account's own
     // branch, and the sweep describes this device's row from the root
@@ -636,6 +852,10 @@ async fn complete_login(
         if let Err(error) = crate::router::account::finish_link(&deferred).await {
             log!("login: the account link did not finish: {error}");
         }
+        // What was made while signed out joins the account signed back in to.
+        if let Some(signed_out) = &signed_out {
+            crate::router::rotation::carry_from(&deferred, signed_out).await;
+        }
         stamp_account_linking(&deferred, account_entity, false).await;
         // The page has what it needs; the push follows now rather than
         // holding the "linking" marker until the last PUT lands.
@@ -662,7 +882,7 @@ async fn stamp_account_linking(
     let main = match tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -722,7 +942,7 @@ async fn recorded_account(
     let Ok(branch) = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     else {
@@ -891,7 +1111,7 @@ async fn create(
         tonk.disposition()
     );
     let profile_changed = tonk.disposition() != super::profiles::AccountProfileDisposition::Current;
-    let device = tonk.profile.signer().signer().clone();
+    let device = tonk.profile.credential().signer().clone();
     let device_did = device.did();
 
     let ceremony = tonk_identity::ceremony::create_custody_request(
@@ -959,7 +1179,7 @@ async fn create(
     if let Some(name) = display_name {
         tonk.reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&tonk.active_branch)
             .transaction()
             .assert(AccountDisplayName::new(account_did.this(), name.to_owned()))
             .commit()
@@ -1117,9 +1337,8 @@ async fn custodian_named(
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::*;
-    use crate::router::tests::{test_state, test_state_without_account, test_state_without_root};
+    use crate::router::tests::test_state;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
@@ -1302,7 +1521,7 @@ mod tests {
     async fn it_records_the_envelope_as_a_fact_when_it_mints_one() {
         use dialog_query::{Output as _, Query, Term};
 
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let custodian = tonk_identity::custodian::Custodian::Passkey(
             tonk_identity::webcrypto_kek::Custodian::adopt(vec![3], &[13u8; 32], &[23u8; 32])
                 .await
@@ -1331,7 +1550,7 @@ mod tests {
         let branch = tonk
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile main acquires");
@@ -1354,87 +1573,5 @@ mod tests {
             rows[0].message.0, material.sealed,
             "the row carries the sealed envelope, not a reference to one"
         );
-    }
-
-    /// An onboarding device derives its recipient locally: nothing to ask.
-    #[dialog_common::test]
-    async fn it_needs_no_assertion_without_a_passkey_root() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
-        ensure_recipient(&state, None).await.unwrap();
-    }
-
-    /// The fixture's root carries the key a ceremony would have recorded.
-    #[dialog_common::test]
-    async fn it_needs_no_assertion_when_the_root_carries_the_key() {
-        let state = Arc::new(RwLock::new(test_state().await));
-        ensure_recipient(&state, None).await.unwrap();
-    }
-
-    /// The page answers by saving the key with the root; that save is
-    /// what wakes the waiting operation.
-    #[dialog_common::test]
-    async fn it_wakes_the_waiter_when_the_root_save_records_the_key() {
-        let state = test_state_without_account().await;
-        let receiver = wait_for_key();
-        let recipient = {
-            use dialog_varsig::Principal as _;
-            tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new([9u8; 32]))
-                .secret()
-                .did()
-        };
-        let root = super::super::identity::local_root(&state).await.unwrap();
-        super::super::identity::persist_root(
-            &state,
-            tonk_worker_api::SaveRootRequest {
-                credential_id: root.credential_id,
-                delegation_hex: hex::encode(root.bytes),
-                passkey: None,
-                encryption_key: Some(recipient.to_string()),
-            },
-        )
-        .await
-        .unwrap();
-        let woken = await_key(receiver, web_time::Duration::from_secs(5))
-            .await
-            .unwrap();
-        assert_eq!(woken, recipient);
-    }
-
-    /// Without a page to ask, a linked device lacking the key refuses
-    /// rather than waiting on nothing.
-    #[dialog_common::test]
-    async fn it_refuses_without_a_client_to_ask() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
-        strip_recorded_key(&state).await;
-        let error = ensure_recipient(&state, None).await.unwrap_err();
-        assert!(matches!(error, TonkWorkerError::Conflict(_)), "{error}");
-    }
-
-    /// Overwrite the local root record without its recipient and drop the
-    /// published fact, the shape of a device linked before the key
-    /// existed.
-    async fn strip_recorded_key(state: &AppState) {
-        use tonk_schema::prelude::DidExt as _;
-        let tonk = state.read().await;
-        let root = super::super::identity::local_root(&tonk).await.unwrap();
-        super::super::identity::forget_encryption_key(&tonk)
-            .await
-            .unwrap();
-        let published = super::super::account_state::published_sealed_inbox(&tonk, &root.root_did)
-            .await
-            .unwrap()
-            .expect("the fixture published one");
-        tonk.reactor
-            .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
-            .transaction()
-            .retract(tonk_schema::AccountSealedInbox::new(
-                root.root_did.this(),
-                published.this(),
-            ))
-            .commit()
-            .perform(&tonk.operator)
-            .await
-            .unwrap();
     }
 }

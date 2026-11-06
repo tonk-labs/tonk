@@ -39,6 +39,8 @@ pub(crate) enum AccountAction {
     LoadDevices,
     LoadProfiles,
     LinkCli,
+    AuthorizeAgent,
+    RevokeAgent,
     SwitchProfile,
     SignOut,
     LoadDeletionPlan,
@@ -127,6 +129,8 @@ fn diagnostic_message(action: AccountAction, detail: &str) -> String {
             | AccountAction::LogIn
             | AccountAction::AddPasskey
             | AccountAction::LinkCli
+            | AccountAction::AuthorizeAgent
+            | AccountAction::RevokeAgent
             | AccountAction::DeleteAccount
             | AccountAction::FinishAccountBackup
     );
@@ -365,6 +369,12 @@ fn fallback(action: AccountAction) -> &'static str {
         }
         AccountAction::LinkCli => {
             "The terminal didn't receive the account link. Return to the terminal and start login again."
+        }
+        AccountAction::AuthorizeAgent => {
+            "We couldn't finish connecting the agent. Start connecting again from your app."
+        }
+        AccountAction::RevokeAgent => {
+            "We couldn't confirm that the agent's access was removed. It stays listed; try again."
         }
         AccountAction::SwitchProfile => {
             "We couldn't switch accounts. Reload settings and try again."

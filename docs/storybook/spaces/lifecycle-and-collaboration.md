@@ -1,5 +1,10 @@
 # Space lifecycle and collaboration
 
+> **Out of date:** the `tonk account` commands (`login`, `logout`, `status`,
+> `sync`, `devices`, `space`) and `tonk link` were removed from the CLI
+> (#982, #1025). Journeys below that use them describe the old flow. For the
+> current CLI, run `tonk help -g`.
+
 ## Summary
 
 A space starts as a local repository registration, an account-owned hosted
@@ -34,22 +39,146 @@ can synchronize within the delegated authority. If the owner revokes the
 invite, later remote operations are rejected while any already-local replica is
 handled according to the documented local authority boundary.
 
+This import is separate from `tonk space link NAME`: join creates a local
+replica from invitation authority, while space link attaches an existing local
+space to an account and hosted service.
+
+### Desktop contact lookup (preparation for `COLLAB-02`)
+
+In the redesigned Desktop Address Book, **Add Contact** accepts a name and
+an email or account key. **Look Up** sends the email to the selected Tonk
+server. A confirmed account shows its DID for review; **Save** records that DID,
+email, server, lookup time, and local labels in the existing address book on
+this Mac. Searching contacts also matches the saved email. Entering a DID
+manually remains available without a network request.
+
+Unconfirmed registration, no account found, and suspended accounts have distinct
+messages and cannot be saved from the email. A network failure, rate limit,
+redirect, or inconsistent account document offers no key and permits retry.
+Changing the input invalidates the old result; closing the sheet or changing
+accounts discards an outstanding lookup. Editing an existing contact keeps its
+key fixed while allowing name/label changes. Old contacts without email metadata
+continue to load.
+
+This is a directory assertion from the lookup date, not a continuing guarantee
+of email ownership. Saving a contact does not grant space access. For a missing
+account, choose a space and explicitly **Send Invite**. Pending, suspended and
+unavailable lookup results do not offer sending. Existing labels, including
+“Verified”, remain personal annotations.
+
+Focused native tests cover HTTP results, response binding, stale reads, legacy
+persistence and account separation. Production lookup and a full signed-in
+Desktop invitation journey are not claimed by those tests. Implementation and
+execution evidence: [contact lookup plan](../../../plans/2026-10-21-desktop-contact-email-lookup.md).
+
+### Email invitation and account creation (`COLLAB-02`)
+
+**Send Invite** binds the selected account, email and space to a durable delivery
+ID before dispatch. The service checks the sender's account and space authority,
+stores the original signed grant, and sends a seven-day `/email-invite#…` locator.
+A timeout is shown as unconfirmed delivery; retrying after reopening the desktop
+reuses the same ID and original grant. The mail transport uses a stable
+idempotency key with bounded attempts and cooldown. Sending creates no contact
+with a placeholder key.
+
+The emailed page offers **Create Account or Sign In**, using the existing passkey
+and email-confirmation ceremony. Signup returns to the exact local invitation
+route, including after profile reload. **Join Space** requires the account whose
+confirmed email matches the invitation; a forwarded locator and an unconfirmed
+account cannot gain access. A successful claim pins its recipient; repeating it
+returns the same completion and imports through the normal join path. Service
+completion preserves the original inviter and space owner.
+
+The native HTTP/worker regression exercises sending, captured delivery, duplicate
+send, actual enrollment and email confirmation, wrong-account refusal, repeat
+join, and Alice/Bob/Carol provenance. Four service tests cover restart, races,
+revoked devices, expiry, cancellation, quotas and a lost transport acknowledgement.
+Desktop tests cover durable retry IDs and account separation. Browser execution,
+production email delivery and cross-device recovery have separate evidence in the
+[email invitation plan](../../../plans/2026-10-21-email-invite-onboarding.md).
+
+### Invite an existing contact (`COLLAB-02`)
+
+In the Desktop Address Book, a contact's detail and its context menu offer
+**Invite to a space…** for anyone other than the signed-in account. The sheet
+lists my spaces the contact has not already joined. **Copy invite link** mints a
+link only that contact's account can claim. The grant names the chosen space and
+the contact's account key, which is the root DID that an email lookup saves and
+that a roster lists. The link is kept on this Mac, copied, and recorded in
+Activity. It then appears in the space's Links as “Link for <name>” with Copy
+and Revoke. There is no Reset, because no other account can use the link. The
+app refuses a worker response that is open, or that is addressed to anyone
+else. Sending this link by email is not offered yet: the email invitation above
+is only for addresses with no account.
+
+Opening the link signed in as the contact claims it through the ordinary
+`/join` path. Any other account is refused with “This invite was issued to a
+different identity.” A contact saved from a manually entered device key, rather
+than an account key, gets a link nobody can claim. Desktop model tests cover
+minting, retention, journal, telemetry and wrong-audience rejection. Worker
+tests cover the targeted claim and the refusal. A signed-in claim of a link
+minted from Desktop has not been run end to end.
+
+### Invitation sender (`COLLAB-01`, `COLLAB-02`)
+
+When Alice invites Bob and Bob mints a new invitation for Carol, Carol's
+invitation and membership provenance name Bob as inviter. Alice remains the
+space's founder. This applies to new worker and CLI invitations, including
+CLI onboarding and linked accounts. Forwarding an existing URL keeps its
+original signed sender. Older links retain their previous attribution and do
+not establish a verified sender.
+
+> Technical note: the leaf grant signs the minting account DID. Its authority
+> path must connect that account to the signer through identity grants; a
+> space-sharing grant cannot authorize impersonating the upstream owner.
+
+Native regressions exercise confirmed email lookup, competing address-claim
+refusal, targeted invitations and wrong-recipient rejection, then inspect the
+persisted Alice → Bob → Carol provenance and founder role. The CLI also pulls
+Carol's invitation back into Alice's replica. See the
+[worker spike](../../../plans/2026-10-20-identity-discovery-spike.md) and
+[CLI verification](../../../plans/2026-10-20-cli-invitation-sender-attribution.md).
+These checks do not verify browser rendering, real email delivery, interrupted
+claims or cross-device recovery. Desktop contact lookup and email onboarding
+are covered separately above.
+
+### Duplicate a space (`SPACE-14`)
+
+From the Hub row's **more** menu, **duplicate** opens a named creation dialog
+with “Copy of …” prefilled. Cancel closes the dialog before creation. Submit
+shows **duplicating…**, prevents repeat submission while pending, and opens the
+new space once its copy completes.
+
+The new space carries the source's current main-branch data, definitions, and
+indexed blobs. It has a fresh DID and creator ownership. Source membership,
+invitations, grants, repository metadata, remotes, other branches, history, and
+seed-installation records do not carry over. Content entity references remain
+intact; edits to the copy do not edit the original. Normal new-space account
+hosting policy applies independently of the source's provider.
+
+The source must be available on this device. An unreadable source fails before
+allocation. A storage failure after allocation can leave an unfinished copy;
+the dialog reports failure and asks the person to check their spaces before
+retrying. Restart, lost-response, remote-hydration, and concurrent-change
+recovery remain unverified. Existing Hub screenshots predate this menu action.
+
 ### Share-menu presentation decision
 
-The browser calls the transferable artifact a **share link**. Opening Share
-shows **copy link** closest to the FABB, with the live member count farther
-away. Copy is the bottom row when opening upward and the top row when opening
-downward. Copy stays open while minting
-and writing the clipboard; only a successful browser write changes the label
-to **copied**. After 1.2 seconds the share stack closes. A failed write shows
-**couldn’t copy** and leaves the stack available for retry.
+The browser calls the transferable artifact a **share link**. The v0.17 FABB
+has one **copy share link** row. Selecting it opens an attached panel and starts
+the real invite mint once. Pending, copied, and retryable failure feedback stays
+in that panel; a double-click cannot rotate the credential twice. Accountless
+sharing keeps the initiating space visible, raises **add an account** through a
+typed contained task, then restores the share panel. Clipboard work still needs
+a fresh gesture after an account or sync repair.
 
-Selecting the member count opens a scrollable **members** dialog with names,
-owner/admin labels, and **you** marking the current profile. The share stack
-stays compact even with a long roster. Changing spaces closes the popup and
-clears the previous membership. Existing account and activation gates still
-apply to copying links. The members popup uses the opaque `#fcfbfb` card
-surface from `DESIGN.md`; the specified aubergine backdrop remains.
+Members has its own attached, scrollable panel. It renders the live count,
+names, owner/admin labels, and **you** marking the current profile. Reset,
+update, and retract frames repaint the panel without a body-mounted dialog.
+The current membership projection has no authoritative relationship kind,
+parent ID, or last-active timestamp, so the reference's people-agent map remains
+blocked on a data-contract decision. The product does not infer agent edges or
+activity from roles or row arrival time.
 
 Account linking migrates the founder membership together with its name and
 role. Account-name sweeps also repair older retired-founder rows when retained
@@ -79,20 +208,38 @@ This source-and-browser-tested binding decision restores `COLLAB-01`,
 `COLLAB-05`, `WEB-04`, and `WEB-05` on 2026-09-17. No screenshot was recaptured
 because every rendered state of the stack is unchanged.
 
-### FABB naming and blank-space prompt decision
+### FABB naming and explicit agent invitation decision
 
 The in-place FABB rename remains an edit while ordinary whitespace is typed;
 Enter or leaving the field commits the complete trimmed name. A blank space's
-agent prompt has one textual contract: the text on screen and the value copied
-by its button include the same task, commands, and final build guidance.
+content no longer mints an agent invitation automatically. **Connect agent** is
+available from every space and mints only on explicit panel intent. Its copied
+value contains the complete task, `tonk join` command, privacy warning, expiry
+and revocation guidance, and the literal `Agent connection confirmed` success
+boundary. The panel queries raw response attributes so previously seeded spaces
+do not depend on a new standard-library concept.
 The rename starts in a single-line text control with its caret after the current
 name, so Safari accepts the first typed character inside the FABB shadow root.
 
 This source-and-browser-tested interaction decision refines `SPACE-03`,
-`SPACE-04`, and `DATA-02` on 2026-09-02, with the Safari caret boundary refined
-by a focused Safari shadow-root reproduction and FABB browser regression on
-2026-09-17. No screenshot was recaptured because the resting FABB and prompt
-geometry are unchanged.
+`SPACE-04`, `ACCT-C14`, and `DATA-02`. Component coverage proves explicit mint,
+retry, old-space query compatibility, and complete prompt rendering. The local
+CLI import and fresh account browser journey remain separate integration gates.
+
+### In-space task ownership decision
+
+Share, agent, activation, sync-repair, and account decisions use one contained
+FABB presenter. A native modal in the trusted page provides whole-space
+modality, while the guest supplies only a versioned purpose, request identity,
+translated edge rectangle, and dismissal policy. It cannot supply privileged
+HTML. A second task is rejected as busy; stale results cannot settle a later
+request; resize, drag, and visual-viewport movement reseat the same form.
+
+Cancellation and completion restore the exact initiating panel and focus in
+the same space. Account setup is a distinct anchored presentation of the real
+registration ceremony: it keeps passkey, email activation, resend, retry, and
+recovery behavior, and does not route through Settings. Guest disconnect
+releases the trusted modal and its portal lease.
 
 ### Space-switcher and absent-space presentation decision
 
@@ -112,6 +259,67 @@ press behavior follow the surrounding Rust UI contract.
 This is a source-derived presentation decision for `SPACE-11`, `UI-04`,
 `WEB-04`, and `WEB-05`. The focused query, DOM-frame, and profile-library tests
 cover the authored contract; running-product browser evidence remains distinct.
+
+### Ticket links and public spaces decision
+
+An audience-open invite is a ticket link: the space's own address with the
+seed of a fresh key as its fragment, `/space/{did}#{seed}`. The inviter leaves
+the delegation chain in the space as that key's ticket, so the link carries no
+authority of its own. Opening it derives the key, claims the ticket from the
+space's access service, and joins as an `access=` link does. Taking the ticket
+back hides the grant from the next claim; revoking the delegation is what stops
+a recipient who already claimed.
+
+Publishing a space leaves a read-only ticket for a public principal every
+client can derive (seed `blake3("")`), and every account holds a powerline from
+it. Anyone who opens the space's bare address, `/space/{did}`, with no access of
+their own claims that ticket and reads the space as an observer: not a member,
+on no roster, holding no key. Their FABB sync disc is half filled, the same
+disc as a paused space (neither syncs its own changes), reads "sync: read-only,
+observing", and offers no share or agent link. Unpublishing takes the ticket
+back and revokes the delegation, so earlier observers stop reading too, and the
+next visitor meets the private wall.
+
+Publishing is offered in the FABB to whoever runs the space (founder or admin)
+and in the command palette as "make space public" / "make space private".
+
+> Technical note: the claim is a `/use/get/ticket/claim` invocation whose
+> subject is the ticket's holder (the key) and whose `space` argument names the
+> space that keeps it. The holder invokes it itself, needing no proof, or a
+> principal it delegated the claim to presents the chain. The access service
+> verifies it like any invocation and answers with the bytes at
+> `{space}/ticket/{subject}`, so a claim reaches only its subject's ticket. The
+> bare address may arrive percent-encoded: Cloudflare's asset handling
+> redirects `/space/did:key:…` to `/space/did%3Akey%3A…`, and both name the
+> same space.
+>
+> Opening a space's own address mounts its view before the space is on the
+> device, and the view's subscriptions wait for it. When the join installs
+> the space it hands them the space, so the page renders it where it is, with
+> no reload. A ticket link's address carries its seed, so after the join it
+> gives way to the space's own address in place of the history entry, again
+> without a load, and Back does not lead to the seed. A join that finds the
+> space already present, as a page that opened its own new space does,
+> changes nothing.
+
+A link opens on the host that minted it. A recipient who keeps their account
+on another host (a link from tonk.network, an account on tonk.foundation)
+joins it there in one of two ways:
+
+- Paste it into that host's bare `/join` page, which no longer returns home:
+  it shows a field for a share link from any host.
+- Carry it in the address, as `/seed/<url>` carries a definitions URL:
+  `https://tonk.foundation/join/https://tonk.network/space/{did}#{seed}`. The
+  link's seed stays the address's fragment, so no server sees it.
+
+Both run the ordinary join on the carried link, so the ticket is claimed from
+the host that minted it and the space's remote is that host. A pasted link
+never enters the address bar or the history. A carried address that does not
+redeem shows the failure wall; on the paste page the field stays beneath it
+for another link.
+
+This is the presentation decision for `COLLAB-01`, `COLLAB-03`, `COLLAB-06`,
+`COLLAB-07`, `WEB-16`, `WEB-17`, and `WEB-18`.
 
 ### FABB stack pointer-tolerance decision
 
@@ -363,6 +571,23 @@ URLs, DIDs, data, or argument values.
   `tonk render` alone does not prove route behavior.
 - Run accountless claim → account link → second-device pull as one restart-aware
   journey, not only lower-layer authority assertions.
+- Decide the local-write contract for an observer of a published space: today
+  its writes stay on the device and its sync disc is the only signal.
+- Surface a refused or failed publish; today it is only logged.
+- Offer "make space public/private" in the palette only to whoever runs the
+  space, and only the verb that applies.
+- Confirm on a deployment that a first visit to a published space and a ticket
+  link both render the space without a manual reload.
 
 Source audit pinned to Tonk commit `a3f8670b1`.
 Onboarding-account addendum pinned to Tonk commit `b564e83b1`.
+
+Duplication source addendum pinned to `bd852af81`; post-rebase browser evidence
+uses artifact `12b87892fca818d5` (2026-09-29).
+
+Ticket links and public spaces addendum pinned to the commit that adds it, on
+top of `3c83082`; running-product captures use a local debug artifact built
+from that tree (2026-10-09).
+
+Invitation-sender addendum accompanies the discovery and attribution changes
+on base `3abfe85a8b` (2026-10-20); prior visual captures are unchanged.

@@ -6,11 +6,15 @@
 //! `tonk eval`, not a second write path.
 
 use dialog_query::{ConceptDescriptor, Type};
+use tonk_notation::spell_uri;
 
 /// Error rendering a raw CLI value or building a notation document
 /// against a concept's descriptor.
 #[derive(Debug, thiserror::Error)]
 pub enum DataError {
+    /// A query filter cannot be represented by the supported typed syntax.
+    #[error("{0}")]
+    Filter(String),
     /// A `--field` name isn't in the concept's `with:` map.
     #[error("unknown field '{field}' on {concept}; valid fields: {}", valid.join(", "))]
     UnknownField {
@@ -33,6 +37,61 @@ pub enum DataError {
     },
 }
 
+/// Build a read-only concept query with typed equality constraints.
+/// Literal constraints remain in the query, so Dialog does the filtering.
+pub fn build_query(
+    descriptor: &ConceptDescriptor,
+    concept: &str,
+    entity: Option<&str>,
+    filters: &[String],
+) -> Result<String, DataError> {
+    let mut constraints = std::collections::BTreeMap::new();
+    for filter in filters {
+        let (field, raw) = filter.split_once('=').ok_or_else(|| {
+            DataError::Filter(
+                "expected --where FIELD=VALUE (for example --where done=false)".into(),
+            )
+        })?;
+        let Some((_, fd)) = descriptor.with().iter().find(|(name, _)| *name == field) else {
+            return Err(DataError::UnknownField {
+                concept: concept.into(),
+                field: field.into(),
+                valid: valid_fields(descriptor),
+            });
+        };
+        if !matches!(fd.content_type(), Some(Type::String | Type::Boolean)) {
+            return Err(DataError::Filter(format!(
+                "--where currently supports text and boolean fields; use `tonk eval` to filter '{field}'"
+            )));
+        }
+        let value = render_value(fd.content_type(), raw).map_err(|error| match error {
+            DataError::BadValue { ty, raw, .. } => DataError::BadValue {
+                field: field.into(),
+                ty,
+                raw,
+            },
+            error => error,
+        })?;
+        if constraints.insert(field, value).is_some() {
+            return Err(DataError::Filter(format!(
+                "duplicate --where field '{field}'; use each field once"
+            )));
+        }
+    }
+    let mut doc = format!(
+        "{concept}:\n  this: {}\n",
+        entity.map_or("?__tonk_entity".into(), spell_uri)
+    );
+    for (index, (field, _)) in descriptor.with().iter().enumerate() {
+        let value = constraints
+            .get(field)
+            .cloned()
+            .unwrap_or_else(|| format!("?__tonk_field_{index}"));
+        doc.push_str(&format!("  {field}: {value}\n"));
+    }
+    Ok(doc)
+}
+
 /// Render one raw CLI value into its notation form given the field's
 /// declared type. Text is always quoted (a bare value that parses as a
 /// symbol/bool would be misread); numerics/bools are bare literals
@@ -44,30 +103,28 @@ pub fn render_value(ty: Option<Type>, raw: &str) -> Result<String, DataError> {
         ty: ty.into(),
         raw: raw.into(),
     };
-    match ty {
+    // A sized number type (`natural:64`) is spelled as the numbers it
+    // stores.
+    match ty.map(Type::storage) {
         Some(Type::UnsignedInt) => {
-            raw.parse::<u128>().map_err(|_| bad("UnsignedInteger"))?;
+            raw.parse::<u128>().map_err(|_| bad("natural"))?;
             Ok(raw.to_string())
         }
         Some(Type::SignedInt) => {
-            raw.parse::<i128>().map_err(|_| bad("SignedInteger"))?;
-            // Spell the signedness: bare digits parse as unsigned, so
-            // a non-negative signed value carries an explicit `+`.
-            if raw.starts_with('+') || raw.starts_with('-') {
-                Ok(raw.to_string())
-            } else {
-                Ok(format!("+{raw}"))
-            }
+            // A literal names a number, not a type: the field's
+            // declared type reads it, so no `+` is spelled.
+            let value: i128 = raw.parse().map_err(|_| bad("integer"))?;
+            Ok(value.to_string())
         }
         Some(Type::Float) => {
-            raw.parse::<f64>().map_err(|_| bad("Float"))?;
+            raw.parse::<f64>().map_err(|_| bad("float"))?;
             Ok(raw.to_string())
         }
         Some(Type::Boolean) => {
-            raw.parse::<bool>().map_err(|_| bad("Boolean"))?;
+            raw.parse::<bool>().map_err(|_| bad("boolean"))?;
             Ok(raw.to_string())
         }
-        Some(Type::Entity) | Some(Type::Symbol) => Ok(raw.to_string()),
+        Some(Type::Entity) | Some(Type::Symbol) => Ok(spell_uri(raw).into_owned()),
         _ => Ok(quote_string(raw)), // String/Bytes/Record/None → quoted text
     }
 }
@@ -148,7 +205,20 @@ pub fn build_supersede(
     fields: &[(String, String)],
 ) -> Result<String, DataError> {
     let body = render_pairs(descriptor, concept, fields)?.join("\n");
+    let entity = spell_uri(entity);
     Ok(format!("{concept}!:\n  this: {entity}\n{body}\n"))
+}
+
+/// Read back an entity while constraining every requested value.
+pub fn build_match(
+    descriptor: &ConceptDescriptor,
+    concept: &str,
+    entity: &str,
+    fields: &[(String, String)],
+) -> Result<String, DataError> {
+    let body = render_pairs(descriptor, concept, fields)?.join("\n");
+    let entity = spell_uri(entity);
+    Ok(format!("{concept}:\n  this: {entity}\n{body}\n"))
 }
 
 /// Build a retraction document: a single field (`field: _`) or the
@@ -156,6 +226,7 @@ pub fn build_supersede(
 /// itself an assertion — a claim invalidating an old one — not a
 /// deletion.
 pub fn build_retract(concept: &str, entity: &str, field: Option<&str>) -> String {
+    let entity = spell_uri(entity);
     match field {
         Some(f) => format!("{concept}!:\n  this: {entity}\n  {f}: _\n"),
         None => format!("{concept}!:\n  this: {entity}\n  ..: _\n"),
@@ -164,12 +235,14 @@ pub fn build_retract(concept: &str, entity: &str, field: Option<&str>) -> String
 
 #[cfg(test)]
 mod tests {
+    /// A number is spelled plainly whatever the field's type: the
+    /// declared type is the lens, so the literal carries no sign.
     #[test]
-    fn it_spells_signed_values_with_an_explicit_sign() {
+    fn it_spells_signed_values_as_plain_numbers() {
         use dialog_query::artifact::Type;
         assert_eq!(
             super::render_value(Some(Type::SignedInt), "41").unwrap(),
-            "+41"
+            "41"
         );
         assert_eq!(
             super::render_value(Some(Type::SignedInt), "-7").unwrap(),
@@ -177,7 +250,7 @@ mod tests {
         );
         assert_eq!(
             super::render_value(Some(Type::SignedInt), "+8").unwrap(),
-            "+8"
+            "8"
         );
         assert_eq!(
             super::render_value(Some(Type::UnsignedInt), "41").unwrap(),
@@ -209,6 +282,12 @@ mod tests {
         assert_eq!(
             render_value(Some(Type::Entity), "did:key:z6Mk").unwrap(),
             "did:key:z6Mk"
+        );
+        // A bare-scheme URI is spelled as a keyword, the only form
+        // YAML reads as a value.
+        assert_eq!(
+            render_value(Some(Type::Entity), "keyword:").unwrap(),
+            ":keyword"
         );
     }
     #[test]

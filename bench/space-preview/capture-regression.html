@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Production preview capture regression</title>
+<h1>Production preview capture regression</h1>
+<pre id="result">Running…</pre>
+<script type="module">
+// Serve the repository root over HTTP. Exercise the unmodified production
+// script in opaque guests, including real SVG decode and WebP export.
+const source = await fetch('../../rust/tonk-portal/src/preview_capture.js').then(r => r.text());
+const theme = '.theme { --fixture: "' + 'x'.repeat(140000) + '"; }';
+const cases = [
+  { name: 'hidden panels, code, large assets and duplicate CSS fit', capture: true,
+    html: `<style>${theme}${theme}</style><h1>Starter-like home</h1>
+      <div hidden>${'<span>Hidden note</span>'.repeat(700)}</div>
+      <tonk-component module="${'x'.repeat(500000)}"></tonk-component>
+      <div data-large="${'x'.repeat(500000)}">Visible welcome content</div>
+      <img src="data:image/png;base64,${'A'.repeat(400000)}">` },
+  { name: 'visible node limit still enforced', capture: false,
+    html: '<span>Visible note</span>'.repeat(700) },
+  { name: 'unique CSS limit still enforced', capture: false,
+    html: `<h1>Home</h1><style>${theme}${theme.replace('.theme', '.other')}</style>` },
+];
+window.results = [];
+for (const test of cases) {
+  const frame = document.createElement('iframe');
+  frame.sandbox = 'allow-scripts';
+  frame.style.cssText = 'width:1000px;height:600px';
+  let received;
+  const listen = event => {
+    if (event.source === frame.contentWindow && event.data?.image) received = event.data.image;
+  };
+  window.addEventListener('message', listen);
+  const setup = `window.tonk = {context:{preview:'did:key:fixture'},ready:Promise.resolve(),
+    preview:request=>parent.postMessage(request,'*')};`;
+  frame.srcdoc = test.html + '<script>' + setup + source.replaceAll('</script', '<\\/script') + '<' + '/script>';
+  document.body.append(frame);
+  await new Promise(resolve => setTimeout(resolve, 6500));
+  const captured = typeof received === 'string' && received.startsWith('data:image/webp;base64,');
+  window.results.push({ name: test.name, passed: captured === test.capture, bytes: received?.length ?? 0 });
+  window.removeEventListener('message', listen);
+  frame.remove();
+  document.querySelector('#result').textContent = JSON.stringify(window.results, null, 2);
+}
+window.done = true;
+</script>

@@ -1,0 +1,11 @@
+Baseline browser regression before attempt guards:
+
+it_ignores_an_old_open_that_finishes_after_navigation
+
+    assertion `left == right` failed: late old checkpoint reached the connected consumer
+          left: 2
+         right: 1
+
+Result: 0 passed; 1 failed.
+The consumer received the new checkpoint, then an old checkpoint after the
+older pending fetch was resolved. Both used the same live registry entry.

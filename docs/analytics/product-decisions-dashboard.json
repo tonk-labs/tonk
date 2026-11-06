@@ -14,11 +14,11 @@
   "related_dashboards": [
     {
       "id": 928106,
-      "description": "Registration, login, activation, custody, and native account lifecycle. Settings, profile, and terminal-link interactions are on Product decisions (dashboard 954308)."
+      "description": "Account operation attempts and outcomes, not account totals. Signup receipts precede email activation. Successful activation attempts are separate. Current account totals and status come from CONTROL customer rows; profile hashes identify devices/profiles, not accounts."
     },
     {
       "id": 929973,
-      "description": "Acquisition and launch conversion using the compatibility events. Readiness, errors, and interaction abandonment are on Product decisions (dashboard 954308)."
+      "description": "Production signup and space activity. Seven-day signup cohorts; profiles, not accounts."
     },
     {
       "id": 816712,
@@ -26,7 +26,7 @@
     },
     {
       "id": 816709,
-      "description": "Stable production shell traffic and legacy engagement metrics. Current product interactions, readiness, errors, and abandonment are on Product decisions (dashboard 954308)."
+      "description": "Production activity. DAU and WAU count profiles, including guests and automatic commits."
     },
     {
       "id": 816708,

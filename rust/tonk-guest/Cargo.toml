@@ -20,16 +20,13 @@ path = "src/bin/guest.rs"
 [dependencies]
 console_error_panic_hook = { workspace = true }
 tonk-display = { workspace = true }
-tonk-board = { workspace = true }
 tonk-fab = { workspace = true }
-tonk-workspace = { workspace = true }
 tonk-tree = { workspace = true }
 tonk-inspector = { workspace = true }
 tonk-portal = { workspace = true }
 # The real host IO surface the guest installs (`install_io`); its fetch/SSE
 # transport rides the portal bootstrap's `window.fetch` relay.
 tonk-host = { workspace = true }
-tonk-sigil = { workspace = true, features = ["web"] }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 js-sys = { workspace = true }

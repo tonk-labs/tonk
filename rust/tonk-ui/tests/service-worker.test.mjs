@@ -148,9 +148,17 @@ async function loadWith({
   assetManifestHash = "dev",
   assetPaths = ["/", "/ui-abc.js"],
   activateSource = "async () => ({})",
+  navigationNetworkMs = null,
   exports = [],
 }) {
-  const body = source
+  let patched = source;
+  if (navigationNetworkMs != null) {
+    patched = patched.replace(
+      /^const NAVIGATION_NETWORK_MS = .*$/m,
+      `const NAVIGATION_NETWORK_MS = ${navigationNetworkMs};`,
+    );
+  }
+  const body = patched
     .replace(/^const BUILD_ID = .*$/m, `const BUILD_ID = "${buildId}";`)
     .replace(/^const WORKER_WASM_HASH = .*$/m, `const WORKER_WASM_HASH = "${wasmHash}";`)
     .replace(
@@ -374,6 +382,46 @@ describe("exact fetch routing", () => {
     );
     self.onfetch(app.event);
     assert.equal(await (await app.response()).text(), "APP SHELL");
+  });
+
+  test("tool invite navigation serves its static document without booting Rust", async () => {
+    const { self, caches } = withGlobals();
+    self.clients.get = async () => ({ frameType: "top-level" });
+    const mod = await loadWith({
+      buildId: "published-build",
+      wasmHash: "dev",
+      assetPaths: ["/", "/agent/"],
+      activateSource: 'async () => { throw new Error("tool landing booted Rust"); }',
+      exports: ["SHELL_CACHE"],
+    });
+    const cache = await caches.open(mod.SHELL_CACHE);
+    await cache.put("/", new Response("APP SHELL"));
+    await cache.put("https://tonk.test/agent/", new Response("TOOL INSTRUCTIONS"));
+    const landing = fetchEvent({
+      method: "GET",
+      mode: "navigate",
+      url: "https://tonk.test/agent/?agent=fixture",
+    }, "controlled-top-level");
+    self.onfetch(landing.event);
+    assert.equal(await (await landing.response()).text(), "TOOL INSTRUCTIONS");
+  });
+
+  test("development tool landing uses the server without a stamped manifest", async () => {
+    const { self } = withGlobals({
+      fetchImpl: async () => new Response("DEV TOOL INSTRUCTIONS"),
+    });
+    await loadWith({
+      buildId: "dev",
+      wasmHash: "dev",
+      activateSource: 'async () => { throw new Error("tool landing booted Rust"); }',
+    });
+    const landing = fetchEvent({
+      method: "GET",
+      mode: "navigate",
+      url: "https://tonk.test/agent/",
+    });
+    self.onfetch(landing.event);
+    assert.equal(await (await landing.response()).text(), "DEV TOOL INSTRUCTIONS");
   });
 
   test("doctor remains reachable when Rust initialization has failed", async () => {
@@ -841,6 +889,10 @@ describe("immutable generation install", () => {
     let install;
     self.oninstall({ waitUntil: (promise) => { install = promise; } });
     await install;
+    // Activation moves this worker out of the installing slot; only then can a
+    // page ask it to claim.
+    self.registration.active = self.registration.installing;
+    self.registration.installing = null;
 
     const pending = [];
     self.onmessage({
@@ -1944,7 +1996,7 @@ describe("immutable generation caches", () => {
     assert.deepEqual(cache.mutations, [], "no old entry may be overwritten or deleted");
   });
 
-  test("Rust deferred imports read their sealed library generation offline", async () => {
+  test("Rust bundled assets read their sealed library generation offline", async () => {
     let fetches = 0;
     const { caches } = withGlobals({ fetchImpl: async () => {
       fetches++;
@@ -1952,7 +2004,7 @@ describe("immutable generation caches", () => {
     }});
     const mod = await loadWith({ exports: ["SHELL_CACHE"] });
     const cache = await caches.open(mod.SHELL_CACHE);
-    for (const path of ["/library/onboarding-demos.yaml", "/library/welcome-image.webp"]) {
+    for (const path of ["/library/core.yaml", "/library/welcome-image.webp"]) {
       await cache.put("https://tonk.test" + path, new Response("retained bytes"));
       assert.equal(await (await self.tonkBundledAsset(path)).text(), "retained bytes");
     }
@@ -2160,6 +2212,91 @@ describe("immutable generation caches", () => {
   });
 });
 
+describe("session overlay handoff", () => {
+  const CACHE = "TONK_OVERLAY_HANDOFF";
+  const SNAPSHOT = "/__tonk/overlay-handoff";
+  const PENDING = "/__tonk/overlay-handoff-pending";
+  const settled = (promises) => {
+    let done = false;
+    Promise.all(promises).then(() => { done = true; });
+    return () => done;
+  };
+  const turns = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  test("activation holds for an announced predecessor snapshot", async () => {
+    const { self, caches } = withGlobals();
+    await loadWith({});
+    const handoff = await caches.open(CACHE);
+    await handoff.put(PENDING, new Response("announced"));
+
+    const pending = [];
+    self.onactivate({ waitUntil: (promise) => pending.push(promise) });
+    const done = settled(pending);
+    await turns(150);
+    assert.equal(done(), false, "activation must wait for the snapshot");
+
+    await handoff.put(SNAPSHOT, new Response(new Uint8Array([1])));
+    await Promise.all(pending);
+    assert.equal(await handoff.match(PENDING), undefined, "the announcement is consumed");
+    assert.ok(await handoff.match(SNAPSHOT), "the snapshot is left for the Rust worker to take");
+  });
+
+  test("activation without an announcement does not wait", async () => {
+    const { self } = withGlobals();
+    await loadWith({});
+    const pending = [];
+    self.onactivate({ waitUntil: (promise) => pending.push(promise) });
+    const done = settled(pending);
+    await turns(50);
+    assert.equal(done(), true);
+  });
+
+  test("a predecessor that never writes its snapshot stalls activation only briefly", async () => {
+    const { self, caches } = withGlobals();
+    await loadWith({});
+    await (await caches.open(CACHE)).put(PENDING, new Response("announced"));
+    const started = Date.now();
+    const pending = [];
+    self.onactivate({ waitUntil: (promise) => pending.push(promise) });
+    await Promise.all(pending);
+    const waited = Date.now() - started;
+    assert.ok(waited >= 900 && waited < 3_000, `waited ${waited}ms`);
+    assert.equal(await (await caches.open(CACHE)).match(PENDING), undefined);
+  });
+
+  test("the incumbent announces while a successor installs and withdraws if it fails", async () => {
+    const listeners = new Map();
+    const candidateListeners = new Map();
+    const candidate = {
+      state: "installing",
+      addEventListener: (type, fn) => candidateListeners.set(type, fn),
+      removeEventListener: () => {},
+    };
+    const registration = {
+      active: null,
+      waiting: null,
+      installing: null,
+      addEventListener: (type, fn) => listeners.set(type, fn),
+    };
+    const { self, caches } = withGlobals({ registration });
+    registration.active = self.serviceWorker;
+    await loadWith({});
+    await (await caches.open(CACHE)).put(SNAPSHOT, new Response("left over"));
+
+    registration.installing = candidate;
+    listeners.get("updatefound")();
+    await turns(20);
+    const handoff = await caches.open(CACHE);
+    assert.ok(await handoff.match(PENDING), "the incumbent announces the handoff");
+    assert.equal(await handoff.match(SNAPSHOT), undefined, "a leftover snapshot is dropped");
+
+    candidate.state = "redundant";
+    candidateListeners.get("statechange")();
+    await turns(20);
+    assert.equal(await handoff.match(PENDING), undefined, "a failed successor withdraws it");
+  });
+});
+
 describe("the failure page", () => {
   test("offers only a retry on the first failures", async () => {
     // A transient failure (storage settling, a boot race) should not
@@ -2320,4 +2457,79 @@ test("optional download retention failure does not break verified foreground loa
   caches.open = async () => { throw new Error("quota exceeded"); };
   const mod = await loadWith({ exports: ["sharedVerifiedAsset"] });
   assert.equal(await (await mod.sharedVerifiedAsset("/", await sha256Hex(utf8(body)))).text(), body);
+});
+
+describe("navigation before the offline copy is adopted", () => {
+  async function rootFixture(buildId) {
+    const root = "<!doctype html><title>root</title>";
+    const manifestText = JSON.stringify({
+      version: 1,
+      build: buildId,
+      assets: { "/": await sha256Hex(utf8(root)) },
+    });
+    return { root, manifestText, manifestHash: await sha256Hex(utf8(manifestText)) };
+  }
+
+  test("a restarted worker serves a page it already downloaded without the network", async () => {
+    const buildId = "nav-restart";
+    const { root, manifestText, manifestHash } = await rootFixture(buildId);
+    let stalled = false;
+    withGlobals({
+      fetchImpl: async input => {
+        if (stalled) return new Promise(() => {});
+        const path = new URL(input).pathname;
+        if (path === "/asset-manifest.json") return new Response(manifestText);
+        if (path === "/") return new Response(root);
+        return new Response("", { status: 404 });
+      },
+    });
+    const options = { buildId, assetManifestHash: manifestHash, assetPaths: ["/"], exports: ["serveNavigation"] };
+    let mod = await loadWith(options);
+    assert.equal(await (await mod.serveNavigation()).text(), root);
+
+    stalled = true;
+    mod = await loadWith(options);
+    const response = await Promise.race([
+      mod.serveNavigation(),
+      new Promise(resolve => setTimeout(() => resolve(null), 500)),
+    ]);
+    assert.ok(response, "navigation waited on a stalled network for bytes it already had");
+    assert.equal(await response.text(), root);
+  });
+
+  test("a page the worker never downloaded does not wait forever on a stalled network", async () => {
+    const buildId = "nav-stall";
+    const { manifestHash } = await rootFixture(buildId);
+    withGlobals({ fetchImpl: () => new Promise(() => {}) });
+    const mod = await loadWith({
+      buildId,
+      assetManifestHash: manifestHash,
+      assetPaths: ["/"],
+      navigationNetworkMs: 50,
+      exports: ["serveNavigation"],
+    });
+    const response = await Promise.race([
+      mod.serveNavigation(),
+      new Promise(resolve => setTimeout(() => resolve(null), 1_000)),
+    ]);
+    assert.ok(response, "navigation never answered");
+    assert.match(await response.text(), /Checking for a recoverable Tonk version/);
+  });
+
+  test("a development build never answers from a retained manifest", async () => {
+    let manifest = JSON.stringify({ version: 1, build: "dev-nav", assets: { "/": "0".repeat(64) } });
+    let requests = 0;
+    withGlobals({
+      fetchImpl: async () => {
+        requests++;
+        return new Response(manifest);
+      },
+    });
+    const options = { buildId: "dev-nav", exports: ["fetchVerifiedAssetManifest"] };
+    await (await loadWith(options)).fetchVerifiedAssetManifest();
+    manifest = JSON.stringify({ version: 1, build: "dev-nav", assets: { "/": "0".repeat(64), "/new.js": "1".repeat(64) } });
+    const entries = await (await loadWith(options)).fetchVerifiedAssetManifest();
+    assert.equal(requests, 2);
+    assert.equal(entries.length, 2);
+  });
 });

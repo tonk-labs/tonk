@@ -65,7 +65,10 @@ impl Refusal {
                 AuthorizeError::InvalidSignature { .. }
                 | AuthorizeError::InvalidAudience { .. }
                 | AuthorizeError::Expired { .. }
-                | AuthorizeError::NotValidBefore { .. } => 401,
+                | AuthorizeError::NotValidBefore { .. }
+                // A fresh invocation would do.
+                | AuthorizeError::Stale { .. }
+                | AuthorizeError::Replayed { .. } => 401,
                 AuthorizeError::UnprovenSubject { .. }
                 | AuthorizeError::CommandEscalation { .. }
                 | AuthorizeError::PolicyViolation { .. }
@@ -86,13 +89,30 @@ impl Refusal {
         }
     }
 
+    /// The JSON-encoded reason: what a refused request's body carries,
+    /// and what a socket's answer carries in its place.
+    pub fn body(&self) -> Vec<u8> {
+        let body = match self {
+            Self::Authorization(reason) => serde_json::to_vec(reason),
+            Self::Rejection(rejection) => serde_json::to_vec(rejection),
+        };
+        body.unwrap_or_default()
+    }
+
     /// Convert to a worker [`Response`]: the JSON-encoded reason under
-    /// the matching status.
+    /// the matching status, and when to try again as `Retry-After`, when
+    /// the refusal says.
     pub fn to_response(&self) -> worker::Result<Response> {
         let response = match self {
             Self::Authorization(reason) => Response::from_json(reason),
             Self::Rejection(rejection) => Response::from_json(rejection),
         }?;
-        Ok(response.with_status(self.status()))
+        let response = response.with_status(self.status());
+        if let Self::Rejection(rejection) = self
+            && let Some(seconds) = rejection.retry_after()
+        {
+            let _ = response.headers().set("Retry-After", &seconds.to_string());
+        }
+        Ok(response)
     }
 }

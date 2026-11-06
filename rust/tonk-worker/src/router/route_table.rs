@@ -17,39 +17,38 @@ const ROUTES: &[&str] = &[
     "/api",
     "/api/account",
     "/api/account/attach",
+    "/api/account/connections",
+    "/api/account/connections/{id}/revoke",
     "/api/account/deletion/plan",
     "/api/account/devices",
     "/api/account/devices/register",
     "/api/account/devices/revoke",
     "/api/account/display-name",
-    "/api/account/spaces/delete",
+    "/api/agent/deny",
+    "/api/agent/request/{handle}",
+    "/api/agent/session",
+    "/api/agents",
+    "/api/agents/{key}/revoke",
     "/api/custody/provision",
     "/api/custody/queue",
     "/api/customer",
     "/api/customer/pending",
     "/api/identify",
     "/api/identity/root",
+    "/api/inspect/diagnostics",
     "/api/inspect/repository/{repo}/archive/index/{hash}",
     "/api/inspect/repository/{repo}/branch/{branch}",
     "/api/inspect/repository/{repo}/remote/{remote}",
     "/api/inspect/repository/{repo}/remote/{remote}/archive/index/{hash}",
     "/api/inspect/repository/{repo}/remote/{remote}/branch/{branch}",
+    "/api/local-space-link/approve",
+    "/api/local-space-link/complete",
+    "/api/local-space-link/describe",
+    "/api/local-space-link/provision",
     "/api/migrate/repo-vs-profile",
     "/api/profile",
-    "/api/profile/branch/{branch}/evaluate",
-    // Raw data plane: serves the profile branch's tree as bytes, selected by
-    // Accept (CSV rows or a CARv1 snapshot). No user intent to carry as a
-    // fact, and the caller reads the body once — the same shape as the
-    // repository branch's `export` below.
-    "/api/profile/branch/{branch}/export",
-    "/api/profile/branch/{branch}/query",
-    "/api/profile/branch/{branch}/site",
-    "/api/profile/branch/{branch}/transact",
     "/api/profile/join",
     "/api/profile/library",
-    "/api/profile/repository",
-    // Bootstrap must choose the initial route before the page mounts a site.
-    "/api/profile/welcome",
     "/api/profiles",
     "/api/profiles/activate",
     "/api/profiles/add",
@@ -64,13 +63,10 @@ const ROUTES: &[&str] = &[
     // and pages that ARE intent go through the `document/*` commands.
     "/api/repository/{repo}/branch/{branch}/document/{entity}",
     "/api/repository/{repo}/branch/{branch}/evaluate",
+    "/api/repository/{repo}/branch/{branch}/evaluate/conditional",
     "/api/repository/{repo}/branch/{branch}/export",
     "/api/repository/{repo}/branch/{branch}/host/{host}/{entity}",
     "/api/repository/{repo}/branch/{branch}/import",
-    // Device-local continuation of the bundled snapshot import: hydrates fixed
-    // data/schema bytes before the selected page can resolve its model. This
-    // is data-plane import, not a user-authored operation or command.
-    "/api/repository/{repo}/branch/{branch}/onboarding",
     "/api/repository/{repo}/branch/{branch}/query",
     "/api/repository/{repo}/branch/{branch}/site",
     "/api/repository/{repo}/branch/{branch}/sync",
@@ -84,6 +80,10 @@ const ROUTES: &[&str] = &[
     "/api/repository/{repo}/remote",
     "/api/site",
     "/api/sync",
+    // A framed MCP view's peer takes the delegation to its own key before
+    // it holds any branch of the shown space to assert a command on
+    // (plan #1200 stage 7, route A).
+    "/api/view/access",
 ];
 
 /// Every path literal passed to `.route(` in `router.rs`, sorted.

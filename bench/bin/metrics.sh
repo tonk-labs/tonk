@@ -87,36 +87,39 @@ JOURNEY_DEF='
   def is_bare_tonk:
     is_tonk and test("(tonk|@tonk/cli)([[:space:]]+--space[[:space:]]+[^[:space:]]+)?[^A-Za-z0-9_.-]*$");
   def is_agents_set:
-    is_tonk and has_subcommand("agents[[:space:]]+set");
+    is_tonk and has_subcommand("(space[[:space:]]+)?agents[[:space:]]+set");
   def is_agents_read:
-    is_tonk and has_subcommand("agents") and (is_agents_set | not);
+    is_tonk and has_subcommand("(space[[:space:]]+)?agents") and (is_agents_set | not);
   def requests_help:
     is_tonk and has_subcommand(
       "--help|help"
       + "|[^[:space:]]+[[:space:]]+(-h|--help)"
       + "|[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+(-h|--help)"
     );
+  def is_show_entity:
+    is_tonk and has_subcommand("show[[:space:]]+[^-[:space:]][^[:space:]]*[[:space:]]+[^-[:space:]][^[:space:]]*|show[[:space:]]+[^[:space:]]+:[^[:space:]]+");
   def is_orientation:
     is_bare_tonk
     or requests_help
     or is_agents_read
-    or (is_tonk and has_subcommand("context|guide|schema|status|concept[[:space:]]+ls|view[[:space:]]+ls"));
+    or (is_tonk and has_subcommand("context|guide|schema|status|concept[[:space:]]+ls|view[[:space:]]+ls"))
+    or (is_tonk and has_subcommand("show") and (is_show_entity | not));
   def is_live_read:
     is_tonk and (
       (
-        has_subcommand("context|schema|query|render|status|concept[[:space:]]+ls|view[[:space:]]+ls")
+        has_subcommand("context|schema|show|query|render|status|concept[[:space:]]+ls|view[[:space:]]+ls")
         and (requests_help | not)
       )
       or is_agents_read
       or is_bare_tonk
     );
   def is_direct_data_read:
-    is_tonk and has_subcommand("query|render") and (requests_help | not);
+    (is_tonk and has_subcommand("query|render") or is_show_entity) and (requests_help | not);
   def is_eval:
     is_tonk and has_subcommand("eval");
   def is_explicit_content_write:
     is_tonk
-    and has_subcommand("concept[[:space:]]+add|view[[:space:]]+add|agents[[:space:]]+set|assert|retract|home|import|join")
+    and has_subcommand("concept[[:space:]]+add|view[[:space:]]+add|(space[[:space:]]+)?agents[[:space:]]+set|assert|retract|home|import|join")
     and (test("--help|--dry-run") | not);
   def revision_changed:
     (

@@ -162,6 +162,9 @@ pub use axum::*;
 mod router;
 pub use router::*;
 
+pub mod state_lock;
+pub use state_lock::StateLock;
+
 mod credential;
 
 mod onboarding;
@@ -175,10 +178,13 @@ pub use worker::*;
 pub mod device;
 pub mod session;
 
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+mod handoff;
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod cache;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub use cache::{set_asset_paths, set_build_id};
+pub use cache::{set_asset_origin, set_asset_paths, set_build_id};
 
 mod r#async;
 pub use r#async::*;

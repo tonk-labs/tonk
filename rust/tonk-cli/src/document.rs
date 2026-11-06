@@ -12,8 +12,8 @@
 //! - **the mirror** is built before an evaluation. The worker keeps it
 //!   up to date as documents change; a CLI process is short-lived, so it
 //!   derives it on demand.
-//! - **the sync pass** runs inside auto-sync, after the branch pull and
-//!   after the branch push.
+//! - **the sync pass** follows branch pulls and pushes, whether requested
+//!   explicitly or by auto-sync.
 //! - **history formulas** answer `tonk query document/<formula>`.
 
 use dialog_artifacts::Changes;

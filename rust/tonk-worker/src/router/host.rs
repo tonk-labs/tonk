@@ -31,14 +31,14 @@ use ::axum::{
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use axum_wasm_macros::wasm_compat;
-use dialog_artifacts::{ArtifactSelector, Attribute, Entity, Value};
+use dialog_artifacts::{ArtifactSelector, Entity, Relation, Value};
 use dialog_repository::RepositoryExt as _;
 use futures_util::StreamExt;
 use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -215,7 +215,7 @@ pub async fn guest(
         client_id,
     );
 
-    let attribute: Attribute = attribute_str.parse().map_err(|e| {
+    let attribute: Relation = attribute_str.parse().map_err(|e| {
         TonkWorkerError::Router(format!("Invalid attribute '{}': {}", attribute_str, e))
     })?;
     let entity: Entity = entity_str
@@ -243,7 +243,7 @@ pub async fn guest(
 
     let repo = tonk
         .profile
-        .repository(&params.repo)
+        .space(&params.repo)
         .load()
         .perform(&tonk.operator)
         .await

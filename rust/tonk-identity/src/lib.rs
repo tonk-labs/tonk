@@ -17,12 +17,15 @@
 pub type Error = anyhow::Error;
 
 pub mod account;
+pub mod agent;
 pub mod ceremony;
 pub mod clearance;
 pub mod custodian;
 pub mod custody;
 pub mod delegation;
 pub mod envelope;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod handoff;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod install;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

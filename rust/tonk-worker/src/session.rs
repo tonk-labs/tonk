@@ -12,10 +12,23 @@
 //! stolen device at most one session lifetime even if the registry is
 //! unreachable.
 //!
-//! Each boot and renewal creates a disposable operator and a matching
-//! bounded grant held only in memory. Membership and invitation authority
-//! belong to accounts and profiles, so replacing this final hop needs no
-//! invitation replay or durable session write.
+//! The operator key is derived from the profile and the access branch
+//! under a fixed label, so the same profile on the same branch signs as
+//! the same operator across boots and renewals. The operator is part of
+//! the identity of every history it writes: a fresh key per boot would
+//! start a new lineage each time and grow the version vector without
+//! bound. The time bound lives on the grant alone, and each boot and
+//! renewal issues a new bounded grant to that key, held only in memory.
+//! Membership and invitation authority belong to accounts and profiles,
+//! so re-issuing this final hop needs no invitation replay or durable
+//! session write.
+//!
+//! A stable key means a renewal re-delegates to whatever key held the
+//! lapsed grant. The key is never stored or exported: it is re-derived
+//! from the profile key on each boot, sealed in the browser, and on
+//! native held only in the memory of the process that also holds the
+//! profile seed. Reaching it therefore takes the profile, which already
+//! holds everything the operator could be granted.
 //!
 //! Renewal rides the sync drain — the regular beat this worker has —
 //! rather than chasing every presign path. The gap that leaves: a
@@ -24,10 +37,9 @@
 //! drain's rotation heals. Service-worker lifetimes make that window
 //! rare; revisit only if it is ever observed.
 
-use dialog_capability::{Provider, Subject};
-use dialog_operator::{DeriveOperator, Operator, Profile};
-use dialog_storage::provider::space::SpaceProvider;
-use dialog_storage::provider::storage::Storage;
+use dialog_capability::Subject;
+use dialog_peer::{Peer, PeerSpace, Session as SessionMode};
+use dialog_repository::Repository;
 use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
 
@@ -49,55 +61,62 @@ pub use tonk_identity::session::SESSION_TTL_SECONDS;
 /// drives the worker, and a quiet page can go a while between drains.
 pub const RENEWAL_MARGIN_SECONDS: u64 = 60 * 60;
 
+/// The label every worker session's operator key is derived under. The
+/// access branch follows it, so each of the profile's accounts signs as
+/// its own operator. Changing it changes every worker operator, and so
+/// forks every history they write.
+const SESSION_CONTEXT: &[u8] = b"tonk/worker-session/v1/";
+
 /// A signing session: the operator that signs presigns, and the moment
 /// the delegation authorizing it stops being valid.
 pub struct Session<S: Clone = DefaultSpace> {
-    /// The operator, keyed for this session alone.
-    pub operator: Operator<S>,
+    /// The operator, keyed by the profile and the access branch.
+    pub operator: Peer<S, SessionMode>,
     /// Expiry of the `profile → operator` delegation, unix seconds.
     pub expires_at: u64,
 }
 
-/// Open a fresh signing session for `profile` over `storage`.
+/// Open a signing session for `profile`.
 ///
-/// `storage` is cloned rather than created, so the session's operator
-/// mounts into the same pool as every handle already open against it.
-/// A session built over its own pool would leave the reactor's cached
-/// repositories talking to the previous one.
-pub async fn open<S>(profile: &Profile, storage: &Storage<S>) -> Result<Session<S>, TonkWorkerError>
-where
-    S: SpaceProvider + Clone + 'static,
-    S: Provider<dialog_effects::blob::Read>
-        + Provider<dialog_effects::blob::Write>
-        + Provider<dialog_effects::blob::Import>,
-{
-    rotate(profile, storage).await
+/// The session shares the profile's storage, so its operator mounts into
+/// the same pool as every handle already open against it. A session built
+/// over its own pool would leave the reactor's cached repositories talking
+/// to the previous one.
+pub async fn open<S: PeerSpace>(profile: &Peer<S>) -> Result<Session<S>, TonkWorkerError> {
+    rotate(profile, crate::router::repository::PROFILE_BRANCH).await
 }
 
-/// Create a fresh operator and bounded in-memory profile grant.
-/// Existing session credentials and delegations are left untouched.
-pub async fn rotate<S>(
-    profile: &Profile,
-    storage: &Storage<S>,
-) -> Result<Session<S>, TonkWorkerError>
-where
-    S: SpaceProvider + Clone + 'static,
-    S: Provider<dialog_effects::blob::Read>
-        + Provider<dialog_effects::blob::Write>
-        + Provider<dialog_effects::blob::Import>,
-{
-    let mut context = [0u8; 32];
-    getrandom::fill(&mut context).map_err(|error| {
-        TonkWorkerError::Internal(format!("failed to generate session entropy: {error}"))
-    })?;
+/// Open a signing session whose operator proves from, and retains
+/// delegations into, `access_branch` of the profile repository.
+///
+/// The profile keeps one branch per account, and the branch it is on
+/// carries that account's authority: the operator has to prove with the
+/// grants of the account the profile is signed in as, not with whatever
+/// `main` happens to hold.
+pub async fn open_on<S: PeerSpace>(
+    profile: &Peer<S>,
+    access_branch: &str,
+) -> Result<Session<S>, TonkWorkerError> {
+    rotate(profile, access_branch).await
+}
+
+/// Derive the branch's operator and issue it a new bounded in-memory
+/// profile grant. The operator key is the same on every call for the same
+/// profile and branch; only the grant and its expiry are new. Existing
+/// session credentials and delegations are left untouched.
+pub async fn rotate<S: PeerSpace>(
+    profile: &Peer<S>,
+    access_branch: &str,
+) -> Result<Session<S>, TonkWorkerError> {
+    let context = [SESSION_CONTEXT, access_branch.as_bytes()].concat();
     let expiration = Timestamp::new(SystemTime::now() + Duration::from_secs(SESSION_TTL_SECONDS))
         .map_err(|error| {
         TonkWorkerError::Internal(format!("session expiration out of range: {error}"))
     })?;
     let operator = profile
-        .derive(context)
-        .allow_until(Subject::any(), expiration)
-        .build(storage.clone())
+        .session(context)
+        .space(Repository::from(profile.did()).branch(access_branch))
+        .grant(profile.access().claim(Subject::any()).expires(expiration))
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to build a session operator: {error}"))
@@ -136,54 +155,124 @@ mod tests {
     use dialog_ucan_core::{DelegationBuilder, DelegationChain};
     use dialog_varsig::Principal;
 
-    /// A throwaway profile in a scratch directory, plus the storage it
-    /// is mounted in. Names are unique per call so tests never share a
-    /// profile key or a certificate store.
-    ///
-    /// The name must be unique across PROCESSES, not just within one: the
-    /// runner starts a process per test, so a bare per-process counter
-    /// hands two concurrent tests the same name — and therefore the same
-    /// profile directory, whose writer lock one of them then loses.
-    /// `unique_name` folds in the pid for exactly this reason.
-    async fn scratch() -> (Storage<DefaultSpace>, Profile) {
-        let name = dialog_operator::helpers::unique_name("session-test");
-        let storage = Storage::<DefaultSpace>::default();
-        let profile = Profile::open(name)
-            .at(Directory::Temp)
-            .perform(&storage)
+    use crate::worker::{DefaultOperator, DefaultProfile};
+
+    /// A native credential directory belonging only to this fixture. Reusing
+    /// the name reopens the same durable keys; other fixtures use other names.
+    fn scratch_directory(name: &str) -> Directory {
+        // A unique profile name does not isolate the directory's tonk-system
+        // key. Parallel native tests must not race to create that shared key
+        // between opening storage and granting the profile access to it.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Directory::At(
+                std::env::temp_dir()
+                    .join(name)
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = name;
+            Directory::Temp
+        }
+    }
+
+    /// Open a throwaway profile, unique across calls and test processes.
+    async fn scratch() -> DefaultProfile {
+        let name = dialog_peer::helpers::unique_name("session-test");
+        crate::device::open_profile_at(&name, scratch_directory(&name))
             .await
-            .expect("profile opens");
-        (storage, profile)
+            .expect("profile opens")
+            .1
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_isolates_scratch_profile_storage_owners() {
+        let first = scratch().await;
+        let second = scratch().await;
+        assert!(first.storage().system().is_some());
+        assert!(second.storage().system().is_some());
+        assert_ne!(first.storage().system(), second.storage().system());
     }
 
     #[dialog_common::test]
     async fn it_bounds_the_session_within_the_ttl() {
-        let (storage, profile) = scratch().await;
+        let profile = scratch().await;
         let before = now();
 
-        let session = open(&profile, &storage).await.unwrap();
+        let session = open(&profile).await.unwrap();
 
         assert!(session.expires_at >= before + SESSION_TTL_SECONDS);
         assert!(session.expires_at <= now() + SESSION_TTL_SECONDS);
     }
 
     #[dialog_common::test]
-    async fn it_creates_distinct_sessions_across_opens() {
-        let (storage, profile) = scratch().await;
+    async fn it_keeps_the_operator_across_opens() {
+        let profile = scratch().await;
 
-        let first = open(&profile, &storage).await.unwrap();
-        let second = open(&profile, &storage).await.unwrap();
+        let first = open(&profile).await.unwrap();
+        let second = open(&profile).await.unwrap();
 
-        assert_ne!(first.operator.did(), second.operator.did());
-        assert_eq!(first.operator.profile_did(), profile.did());
-        assert_eq!(second.operator.profile_did(), profile.did());
+        assert_eq!(first.operator.did(), second.operator.did());
+        assert_eq!(first.operator.home().clone(), profile.did());
+        assert_eq!(second.operator.home().clone(), profile.did());
+    }
+
+    #[dialog_common::test]
+    async fn it_derives_the_operator_from_the_label_and_access_branch() {
+        let profile = scratch().await;
+
+        let session = open_on(&profile, "account").await.unwrap();
+        let expected = profile
+            .credential()
+            .derive(b"tonk/worker-session/v1/account")
+            .await
+            .unwrap();
+
+        assert_eq!(session.operator.did(), expected.did());
+    }
+
+    #[dialog_common::test]
+    async fn it_derives_a_distinct_operator_per_access_branch() {
+        let profile = scratch().await;
+
+        let main = open(&profile).await.unwrap();
+        let account = open_on(&profile, "account").await.unwrap();
+        let again = open_on(&profile, "account").await.unwrap();
+
+        assert_ne!(main.operator.did(), account.operator.did());
+        assert_eq!(account.operator.did(), again.operator.did());
+    }
+
+    #[dialog_common::test]
+    async fn it_renews_the_grant_without_changing_the_operator() {
+        let profile = scratch().await;
+        let space = retain_space(&profile, &open(&profile).await.unwrap().operator).await;
+        let first = open(&profile).await.unwrap();
+
+        // Expiry is in whole seconds; let one pass so the renewal's bound
+        // is observably later.
+        crate::sleep(web_time::Duration::from_millis(1100))
+            .await
+            .unwrap();
+        let renewed = rotate(&profile, crate::router::repository::PROFILE_BRANCH)
+            .await
+            .unwrap();
+
+        assert_eq!(renewed.operator.did(), first.operator.did());
+        assert!(renewed.expires_at > first.expires_at);
+        assert_proof(&profile, &first, &space).await;
+        assert_proof(&profile, &renewed, &space).await;
     }
 
     async fn access_revision(
-        profile: &Profile,
-        operator: &Operator<DefaultSpace>,
+        profile: &DefaultProfile,
+        operator: &DefaultOperator,
     ) -> Option<dialog_repository::Revision> {
-        dialog_repository::Repository::from(profile.signer().clone())
+        dialog_repository::Repository::from(profile.credential().clone())
             .branch(dialog_repository::ACCESS_BRANCH)
             .open()
             .perform(operator)
@@ -193,8 +282,8 @@ mod tests {
     }
 
     async fn retain_space(
-        profile: &Profile,
-        operator: &Operator<DefaultSpace>,
+        profile: &DefaultProfile,
+        operator: &DefaultOperator,
     ) -> dialog_varsig::Did {
         let space = Ed25519Signer::generate().await.unwrap();
         let grant = DelegationBuilder::new()
@@ -214,7 +303,7 @@ mod tests {
         space.did()
     }
 
-    async fn assert_proof(profile: &Profile, session: &Session, space: &dialog_varsig::Did) {
+    async fn assert_proof(profile: &DefaultProfile, session: &Session, space: &dialog_varsig::Did) {
         let proof = profile
             .access()
             .prove(Subject::from(space.clone()).attenuate(dialog_effects::Use))
@@ -230,16 +319,16 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_authorizes_replacement_sessions_without_committing() {
-        let (storage, profile) = scratch().await;
-        let setup = open(&profile, &storage).await.unwrap();
+        let profile = scratch().await;
+        let setup = open(&profile).await.unwrap();
         let space = retain_space(&profile, &setup.operator).await;
         let revision = access_revision(&profile, &setup.operator).await;
-        let first = open(&profile, &storage).await.unwrap();
+        let first = open(&profile).await.unwrap();
         assert_eq!(access_revision(&profile, &first.operator).await, revision);
-        let second = open(&profile, &storage).await.unwrap();
+        let second = open(&profile).await.unwrap();
         assert_eq!(access_revision(&profile, &second.operator).await, revision);
-        assert_ne!(first.operator.did(), second.operator.did());
-        assert_eq!(second.operator.profile_did(), profile.did());
+        assert_eq!(first.operator.did(), second.operator.did());
+        assert_eq!(second.operator.home().clone(), profile.did());
         for session in [&first, &second] {
             assert_proof(&profile, session, &space).await;
             assert_proof(&profile, session, &space).await;
@@ -248,19 +337,16 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_ignores_legacy_sessions_and_reopens_durable_storage() {
-        let name = dialog_operator::helpers::unique_name("session-reopen");
+        let name = dialog_peer::helpers::unique_name("session-reopen");
         let (profile_did, old_operator, space, revision, legacy) = {
-            let storage = Storage::<DefaultSpace>::default();
-            let profile = Profile::open(&name)
-                .at(Directory::Temp)
-                .perform(&storage)
+            let (_, profile) = crate::device::open_profile_at(&name, scratch_directory(&name))
                 .await
                 .unwrap();
             // Simulate Safari's saved grant naming an audience unrelated
             // to the operator reconstructed from the legacy context.
             let old = profile
-                .derive(b"legacy-other-operator")
-                .build(storage.clone())
+                .session(b"legacy-other-operator")
+                .space(profile.state())
                 .await
                 .unwrap();
             let expiration =
@@ -281,10 +367,10 @@ mod tests {
             }))
             .unwrap();
             profile
-                .credential()
+                .secrets()
                 .site("tonk-session-v1")
                 .save(legacy.clone())
-                .perform(&storage)
+                .perform(&profile)
                 .await
                 .unwrap();
             (
@@ -297,22 +383,19 @@ mod tests {
         };
         // All prior operators, profiles, branches and the storage pool have
         // been released. Reopen the same durable profile with a new pool.
-        let storage = Storage::<DefaultSpace>::default();
-        let profile = Profile::open(&name)
-            .at(Directory::Temp)
-            .perform(&storage)
+        let (_, profile) = crate::device::open_profile_at(&name, scratch_directory(&name))
             .await
             .unwrap();
-        let session = open(&profile, &storage).await.unwrap();
+        let session = open(&profile).await.unwrap();
         assert_eq!(profile.did(), profile_did);
         assert_ne!(session.operator.did(), old_operator);
         assert_eq!(access_revision(&profile, &session.operator).await, revision);
         assert_proof(&profile, &session, &space).await;
         let after = profile
-            .credential()
+            .secrets()
             .site("tonk-session-v1")
             .load::<Vec<u8>>()
-            .perform(&storage)
+            .perform(&profile)
             .await
             .unwrap();
         assert_eq!(

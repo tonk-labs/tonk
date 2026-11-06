@@ -20,15 +20,9 @@
 //! would multiply the test surface for a corner case we haven't
 //! seen in real schemas yet.
 //!
-//! Known fidelity gap: `db.meta/description` claims on
-//! *concepts* are not surfaced. The dialog query engine's
-//! anonymous-concept dispatch path (which the `concept:` head
-//! lands on) only binds `this`, `name`, and a synthesised
-//! `source`; reconstructed descriptors set `description: None`.
-//! Concept descriptions are optional in the analyzer, so the
-//! emitted schema still re-submits cleanly — only the prose is
-//! lost. Attribute descriptions round-trip because the
-//! `attribute:` query returns the underlying claim directly.
+//! The reconstructed `concept:` source may omit its description. A separate
+//! batched metadata read recovers stored descriptions without excluding concepts
+//! that have none. Attribute descriptions come from the attribute query itself.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -146,6 +140,77 @@ pub async fn list_all_concepts(site: &TonkSite) -> Result<Vec<ConceptSummary>> {
         .collect())
 }
 
+/// Compact schema orientation, without reading any concept's instances.
+/// Full field descriptions and attribute identities belong to named `show`
+/// and `show --notation`; `--all` expands the overview's concepts and fields.
+pub fn render_overview(space: &str, concepts: &[ConceptSummary], all: bool) -> String {
+    const CONCEPT_LIMIT: usize = 20;
+    const FIELD_LIMIT: usize = 8;
+    const DESCRIPTION_LIMIT: usize = 80;
+
+    let mut visible: Vec<_> = concepts
+        .iter()
+        .filter(|concept| all || !is_system_concept(&concept.name))
+        .collect();
+    visible.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut out = format!("Space: {space}\n\nConcepts ({})\n", visible.len());
+    let concept_limit = if all { usize::MAX } else { CONCEPT_LIMIT };
+    let field_limit = if all { usize::MAX } else { FIELD_LIMIT };
+    for concept in visible.iter().take(concept_limit) {
+        let _ = write!(out, "  {}  ", concept.name);
+        for (index, field) in concept.field_specs.iter().take(field_limit).enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            let many = if field.cardinality == "many" {
+                "[]"
+            } else {
+                ""
+            };
+            let optional = if field.required { "" } else { "?" };
+            let _ = write!(out, "{}: {}{many}{optional}", field.name, field.value_type);
+        }
+        if concept.field_specs.is_empty() {
+            out.push_str("(no fields)");
+        }
+        if concept.field_specs.len() > field_limit {
+            let _ = write!(
+                out,
+                ", ... {} more fields (tonk show {})",
+                concept.field_specs.len() - field_limit,
+                concept.name
+            );
+        }
+        if let Some(description) = &concept.description {
+            let description = description.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !description.is_empty() {
+                out.push_str(" — ");
+                out.extend(description.chars().take(DESCRIPTION_LIMIT));
+                if description.chars().count() > DESCRIPTION_LIMIT {
+                    out.push_str("...");
+                }
+            }
+        }
+        out.push('\n');
+    }
+    if visible.is_empty() {
+        out.push_str("  No application concepts. Define one with tonk concept add.\n");
+    }
+    if visible.len() > concept_limit {
+        let _ = writeln!(
+            out,
+            "  {} more concepts; use tonk show --all to see them.",
+            visible.len() - concept_limit
+        );
+    }
+    out.push_str("\n? = optional; [] = many\n\nInspect instances:  tonk query <concept> [--where FIELD=VALUE]\nInspect schema:     tonk show <concept>\nUpdate an instance: tonk assert <concept> <entity> --<field> <value>\nVerify:             check the write receipt; verified means a fresh local read matched.\nIf not verified:    tonk show <concept> <entity>\n");
+    if !all && visible.len() < concepts.len() {
+        out.push_str("\nRuntime concepts omitted; use tonk show --all to include them.\n");
+    }
+    out.push_str("Full schema export: tonk show --notation\n");
+    out
+}
+
 /// Render the site's full schema as a re-submittable notation
 /// document. Output is a sequence of `attribute! …:` heads
 /// followed by `concept! …:` heads — attributes first so concept
@@ -257,8 +322,8 @@ async fn enumerate_attributes(site: &TonkSite) -> Result<Vec<AttributeInfo>> {
     const QUERY: &str = r#"attribute:
   this:        ?a
   id:          ?the
-  type:        ?type
-  cardinality: ?card
+  as:          ?type
+  pick:        ?pick
   description: ?desc
 "#;
     let response = run_query(site, QUERY).await?;
@@ -274,8 +339,18 @@ async fn enumerate_attributes(site: &TonkSite) -> Result<Vec<AttributeInfo>> {
         out.push(AttributeInfo {
             name: names.get(&entity).cloned(),
             the: take_string(&row.fields, "id"),
-            type_name: take_string(&row.fields, "type"),
-            cardinality: take_string(&row.fields, "cardinality"),
+            type_name: {
+                let wire = take_string(&row.fields, "as");
+                tonk_notation::ValueType::from_wire(&wire)
+                    .map(|kind| kind.anchor().to_owned())
+                    .unwrap_or(wire)
+            },
+            cardinality: {
+                let wire = take_string(&row.fields, "pick");
+                tonk_notation::Pick::from_wire(&wire)
+                    .map(|pick| pick.anchor().to_owned())
+                    .unwrap_or(wire)
+            },
             description: take_string(&row.fields, "description"),
         });
     }
@@ -303,10 +378,10 @@ async fn enumerate_attributes(site: &TonkSite) -> Result<Vec<AttributeInfo>> {
 /// here so callers can ask "what's this entity's display name?"
 /// in one lookup.
 async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String>> {
-    let name_attr: dialog_artifacts::Attribute = "db.name/referent"
+    let name_attr: dialog_artifacts::Relation = "db.name/referent"
         .parse()
         .context("db.name/referent should be a valid attribute URI")?;
-    let the_term: attribute::The = name_attr.into();
+    let the_term: attribute::Relation = name_attr.into();
     let session = site.branch().await?;
     let claims: Vec<dialog_query::Claim> = session
         .handle()
@@ -348,6 +423,7 @@ async fn enumerate_concepts(site: &TonkSite) -> Result<Vec<ConceptInfo>> {
   source:      ?source
 "#;
     let response = run_query(site, QUERY).await?;
+    let descriptions = descriptions_by_entity(site).await?;
     let block = expect_block(&response, "concept")?;
     let mut out: Vec<ConceptInfo> = Vec::with_capacity(block.results.len());
     for row in &block.results {
@@ -373,10 +449,14 @@ async fn enumerate_concepts(site: &TonkSite) -> Result<Vec<ConceptInfo>> {
         if is_builtin_concept(&name) {
             continue;
         }
-        let description = match row.fields.get("description") {
-            Some(Json::String(s)) if !s.is_empty() => Some(s.clone()),
-            _ => None,
-        };
+        let description =
+            descriptions
+                .get(&row.this)
+                .cloned()
+                .or_else(|| match row.fields.get("description") {
+                    Some(Json::String(s)) if !s.is_empty() => Some(s.clone()),
+                    _ => None,
+                });
         out.push(ConceptInfo {
             name,
             entity: row.this.to_string(),
@@ -386,6 +466,34 @@ async fn enumerate_concepts(site: &TonkSite) -> Result<Vec<ConceptInfo>> {
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
+}
+
+/// Read optional descriptions once rather than adding a required description
+/// join (which would hide undescribed concepts) or a per-concept query.
+async fn descriptions_by_entity(site: &TonkSite) -> Result<HashMap<String, String>> {
+    let attribute: dialog_artifacts::Relation = "db.meta/description".parse()?;
+    let session = site.branch().await?;
+    let claims: Vec<dialog_query::Claim> = session
+        .handle()
+        .query()
+        .select(AttributeQuery::new(
+            Term::from(attribute::Relation::from(attribute)),
+            Term::<Entity>::var("of"),
+            Term::<dialog_query::Any>::var("is"),
+            Term::<attribute::Cause>::blank(),
+            None,
+        ))
+        .perform(&site.operator)
+        .try_vec()
+        .await
+        .map_err(|error| anyhow!("concept descriptions query failed: {error:?}"))?;
+    Ok(claims
+        .into_iter()
+        .filter_map(|claim| {
+            let description = String::try_from(claim.is).ok()?;
+            (!description.is_empty()).then(|| (claim.of.to_string(), description))
+        })
+        .collect())
 }
 
 /// Built-in concept names hard-coded in
@@ -456,8 +564,8 @@ fn render_attribute(out: &mut String, attr: &AttributeInfo) {
     if !attr.type_name.is_empty() {
         let _ = writeln!(out, "  as:          {}", attr.type_name);
     }
-    if !attr.cardinality.is_empty() {
-        let _ = writeln!(out, "  cardinality: {}", attr.cardinality);
+    if !attr.cardinality.is_empty() && attr.cardinality != "last" {
+        let _ = writeln!(out, "  pick:        :{}", attr.cardinality);
     }
     out.push('\n');
 }
@@ -480,18 +588,24 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
             // Anonymous — emit the inline definition so the
             // re-submitted document carries enough information to
             // reconstruct the attribute. Uses `the:` URI plus the
-            // type and cardinality.
+            // type, or the values it lists, and the pick.
             None => {
                 let _ = writeln!(out, "    {field}:");
                 let _ = writeln!(out, "      the:         {uri}");
-                if let Some(t) = attr_descriptor.content_type() {
+                let among = attr_descriptor.descriptor().among();
+                if !among.is_empty() {
+                    let _ = writeln!(out, "      as:");
+                    for value in among {
+                        let _ = writeln!(out, "        - {}", value_to_notation(value));
+                    }
+                } else if let Some(t) = attr_descriptor.content_type() {
                     let _ = writeln!(out, "      as:          {}", type_to_notation(&t));
                 }
-                let card = match attr_descriptor.cardinality() {
-                    Cardinality::One => "one",
-                    Cardinality::Many => "many",
-                };
-                let _ = writeln!(out, "      cardinality: {card}");
+                let pick = attr_descriptor.descriptor().pick();
+                let implied = if among.is_empty() { "last" } else { "top" };
+                if pick.name() != implied {
+                    let _ = writeln!(out, "      pick:        :{}", pick.name());
+                }
                 let desc = attr_descriptor.description();
                 if !desc.is_empty() {
                     let _ = writeln!(out, "      description: {}", quote_string(desc));
@@ -502,15 +616,21 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
     out.push('\n');
 }
 
-/// Map a dialog `Type` onto the string accepted by the analyzer
-/// in `as:` slots. The serde rename on `ValueDataType` already
-/// produces these strings; serializing through serde_json gives
-/// us a quoted form (`"\"Text\""`) so we trim the quotes.
-pub(crate) fn type_to_notation(ty: &Type) -> String {
-    match serde_json::to_string(ty) {
-        Ok(s) => s.trim_matches('"').to_string(),
-        Err(_) => format!("{ty:?}"),
+/// A listed value as the notation writes it: an entity as its URI, text
+/// quoted, anything else as dialog spells it.
+fn value_to_notation(value: &dialog_artifacts::Value) -> String {
+    match value {
+        dialog_artifacts::Value::Entity(entity) => entity.to_string(),
+        dialog_artifacts::Value::String(text) => quote_string(text),
+        other => serde_json::to_string(&other.untagged()).unwrap_or_default(),
     }
+}
+
+/// Map a dialog `Type` onto the anchor the analyzer accepts in `as:`
+/// slots: `text`, `natural`, ..., and a sized number type by its
+/// entity, `natural:64`.
+pub(crate) fn type_to_notation(ty: &Type) -> String {
+    tonk_notation::type_anchor(ty.uri()).to_string()
 }
 
 fn quote_string(s: &str) -> String {

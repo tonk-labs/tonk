@@ -37,8 +37,8 @@ use tonk_schema::rule::{Rule, StoredRuleError, stored_rule};
 
 use super::assertion::{body_digest, derive_head_intent};
 use super::declaration::{
-    DeclaredApplication, attribute_application, build_concept_retractions, concept_application,
-    parse_attribute_body, parse_concept_body,
+    DeclaredApplication, action_application, attribute_application, build_concept_retractions,
+    concept_application, parse_attribute_body, parse_concept_body, role_application,
 };
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::rule::{collect_rule_concepts, is_rule_retract_body, parse_rule_this_entity};
@@ -446,6 +446,46 @@ pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
 fn collect_view_needs(fields: &[Field], needs: &mut Vec<Need>) {
     collect_view_model_needs(fields, needs);
     collect_view_binding_needs(fields, needs);
+    collect_view_embed_needs(fields, needs);
+}
+
+/// The views a template's `with:src=<name>@<entity>` embeds read
+/// from. Only the entity half needs resolving: the name half is a key
+/// in that view's own `style:` / `font:` map, which is data, not a
+/// reference.
+///
+/// A reference that names no entity reads the enclosing view's own
+/// content, so there is nothing to prefetch for it — the assertion
+/// being lowered already has those blocks in hand.
+///
+/// Both spellings are prefetched for the same reason the command half
+/// is: a template writes the entity as a published name or as a URI,
+/// and the one that does not apply resolves to nothing, which costs a
+/// lookup and no correctness.
+fn collect_view_embed_needs(fields: &[Field], needs: &mut Vec<Need>) {
+    for field in fields {
+        if field.name != "show" {
+            continue;
+        }
+        let FieldValue::Nested(entries) = &field.value else {
+            continue;
+        };
+        for entry in entries {
+            let FieldValue::Literal(tonk_notation::Scalar::String(template)) = &entry.value else {
+                continue;
+            };
+            for embed in tonk_template::embed::scan(template) {
+                let Some(name) = embed.entity else {
+                    continue;
+                };
+                let range = entry.value_range;
+                if let Ok(entity) = name.parse::<Entity>() {
+                    needs.push(Need::ConceptByEntity { entity, range });
+                }
+                needs.push(Need::Concept { name, range });
+            }
+        }
+    }
 }
 
 /// The concept a view's `this:` names, in both spellings a reference
@@ -609,6 +649,18 @@ impl Graph {
         scope: &Scope,
         resolver: &R,
     ) -> Result<Resolved, AnalyzeError> {
+        // An anchor the document declares under a built-in anchor's
+        // name, a type's or a pick's, shadows it within the document.
+        for expression in &syntax.expressions {
+            if let Expression::Claim(Effectful {
+                anchor: Some(anchor),
+                ..
+            }) = expression
+                && tonk_notation::builtin(&anchor.name).is_some()
+            {
+                scope.shadowed_builtins.lock().insert(anchor.name.clone());
+            }
+        }
         // Pass 1 — attribute needs (concept `with:` dependencies).
         for need in &self.needs {
             match need {
@@ -707,7 +759,7 @@ impl Graph {
             let anchor = anchor.as_ref();
             match pending.kind {
                 DeclarationKind::Attribute => {
-                    let plan = parse_attribute_body(a)?;
+                    let plan = parse_attribute_body(a, scope)?;
                     let entity = plan.entity.clone();
                     let attribute = AttrDef {
                         entity: entity.clone(),
@@ -742,7 +794,11 @@ impl Graph {
                         pending.index,
                         DeclaredApplication {
                             application: Some(application),
-                            inline_attributes: Vec::new(),
+                            inline_attributes: plan
+                                .role
+                                .iter()
+                                .map(|role| role_application(&entity, role))
+                                .collect(),
                             retractions: Vec::new(),
                         },
                     );
@@ -810,7 +866,23 @@ impl Graph {
                     let inline_attributes = plan
                         .inline_attributes
                         .into_iter()
-                        .map(|attr| attribute_application(&attr.descriptor, &attr.entity, None))
+                        .flat_map(|attr| {
+                            let role = attr
+                                .role
+                                .as_deref()
+                                .map(|role| role_application(&attr.entity, role));
+                            std::iter::once(attribute_application(
+                                &attr.descriptor,
+                                &attr.entity,
+                                None,
+                            ))
+                            .chain(role)
+                        })
+                        .chain(
+                            plan.action
+                                .iter()
+                                .map(|name| action_application(&entity, name)),
+                        )
                         .collect();
                     // Field retractions (`with: { f: _ }` / `..: _`)
                     // dissociate stored fields read off the branch.
@@ -864,6 +936,25 @@ impl Graph {
                         )
                     })?;
                     if let Some(def) = found {
+                        scope.record_concept(Some(name), def);
+                        continue;
+                    }
+                    // No concept by that name: an attribute is a concept
+                    // with one field (see `scope::attribute_concept`).
+                    let attribute = match scope.attribute(name) {
+                        Some(attribute) => Some(attribute),
+                        None => resolver.attribute(name).await.map_err(|e| {
+                            AnalyzeError::at(
+                                AnalyzeErrorKind::ResolverFailed {
+                                    context: format!("attribute {name:?}"),
+                                    reason: e.to_string(),
+                                },
+                                *range,
+                            )
+                        })?,
+                    };
+                    if let Some(def) = attribute.as_ref().and_then(super::scope::attribute_concept)
+                    {
                         scope.record_concept(Some(name), def);
                     }
                 }
@@ -1216,8 +1307,8 @@ view!: &counter/view
     async fn it_resolves_a_self_contained_document_without_touching_the_resolver() {
         let syntax = must_parse(
             "concept!: &point\n  description: \"a point\"\n  with:\n    \
-             x:\n      description: \"x coord\"\n      the: demo/x\n      \
-             cardinality: one\n      as: signed-integer\npoint!: &origin\n  x: 0\n",
+             x:\n      description: \"x coord\"\n      the: \"demo/x\"\n      \
+             cardinality: :one\n      as: signed-integer\npoint!: &origin\n  x: 0\n",
         );
         let scope = Scope::new();
         let graph = push(&syntax).expect("push");

@@ -1,20 +1,20 @@
 //! Persist and validate the provider-neutral local passkey root.
 
 use axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
+use tonk_handler_macros::wasm_compat;
 use tonk_worker_api::{PasskeyMetadata, RootStatus, SaveRootRequest};
 
 use super::AppState;
 use crate::TonkWorkerError;
-use crate::worker::{DefaultOperator, TonkState};
-use dialog_operator::Profile;
+use crate::worker::DefaultProfile;
+use crate::worker::TonkState;
 
-const LOCAL_ROOT_SITE: &str = "tonk-local-root-v1";
+pub(crate) const LOCAL_ROOT_SITE: &str = "tonk-local-root-v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct LocalRootRecord {
@@ -87,21 +87,21 @@ pub(crate) async fn validate_grant(
 pub(crate) async fn load_record(
     state: &TonkState,
 ) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
-    load_record_from(&state.profile, &state.operator).await
+    load_record_from(&state.profile, &state.active_branch).await
 }
 
 /// Load and validate the serialized root record belonging to an explicit
 /// profile. Account routing uses this without constructing a full TonkState
 /// for every inactive roster entry.
 async fn load_record_from(
-    profile: &Profile,
-    operator: &DefaultOperator,
+    profile: &DefaultProfile,
+    branch: &str,
 ) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
     let bytes = match profile
-        .credential()
-        .site(LOCAL_ROOT_SITE)
+        .secrets()
+        .site(crate::credential::branch_site(LOCAL_ROOT_SITE, branch).as_str())
         .load::<Vec<u8>>()
-        .perform(operator)
+        .perform(profile)
         .await
     {
         Ok(bytes) => bytes,
@@ -122,20 +122,6 @@ async fn load_record_from(
         )));
     }
     Ok(Some(record))
-}
-
-/// Return the verified historical account root for an explicit profile.
-/// A missing record is a rootless profile; a malformed or misaddressed grant
-/// is an unreadable profile and is never treated as a match.
-pub(crate) async fn historical_root_did(
-    profile: &Profile,
-    operator: &DefaultOperator,
-) -> Result<Option<dialog_varsig::Did>, TonkWorkerError> {
-    let Some(record) = load_record_from(profile, operator).await? else {
-        return Ok(None);
-    };
-    let delegation = validate_grant(record.delegation, &profile.did()).await?;
-    Ok(Some(delegation.issuer().clone()))
 }
 
 /// Load and validate the local root, failing when it is missing.
@@ -159,6 +145,35 @@ pub(crate) async fn local_root(state: &TonkState) -> Result<LocalRoot, TonkWorke
         passkey: record.passkey,
         encryption_key,
     })
+}
+
+/// Have the peer act for the account its branch signed in to. A branch
+/// signed in while branches shared one peer recorded its root, but its
+/// own peer starts on an onboarding account; handing it over is what
+/// signing in did. A branch never signed in, or one already acting for
+/// its root, is left as it is.
+pub(crate) async fn follow_signed_in_account(state: &TonkState) -> Result<(), TonkWorkerError> {
+    if load_record(state).await?.is_none() {
+        return Ok(());
+    }
+    let root = local_root(state).await?;
+    // A repair, not a precondition. Its commit can need a tree node only
+    // the account remote holds, and a refused fetch failed the whole boot:
+    // the worker then served nothing, sign-out included. The next boot
+    // tries again.
+    if let Err(error) = reconcile_root_delegation(state, &root.delegation).await {
+        tonk_common::log!("boot kept its device grants as they were: {error}");
+    }
+    if state.profile.authority().await.ok().as_ref() == Some(&root.root_did) {
+        return Ok(());
+    }
+    tonk_account::peer::hand_over(&state.profile, &root.delegation)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "failed to hand the branch's account over to its signed-in account: {error}"
+            ))
+        })
 }
 
 /// Return the verified local root DID.
@@ -205,12 +220,28 @@ pub(crate) async fn forget_encryption_key(state: &TonkState) -> Result<(), TonkW
     })?;
     state
         .profile
-        .credential()
-        .site(LOCAL_ROOT_SITE)
+        .secrets()
+        .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
         .save(encoded)
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("failed to save local root: {error}")))
+}
+
+/// Forget the local root record: the device no longer holds a grant.
+///
+/// Signing out ends here, after the grant is retracted and its
+/// revocation published, so the next sign-in has to reopen the passkey
+/// to mint a new one. Idempotent, like the retract it performs.
+pub(crate) async fn forget_root(state: &TonkState) -> Result<(), TonkWorkerError> {
+    state
+        .profile
+        .secrets()
+        .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
+        .retract()
+        .perform(&state.profile)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("failed to forget local root: {error}")))
 }
 
 pub(crate) async fn persist_root(
@@ -268,6 +299,7 @@ pub(crate) async fn persist_root(
             record.encryption_key = existing.encryption_key.clone();
         }
         if existing == record {
+            reconcile_root_delegation(state, &chain).await?;
             return Ok(status(local_root(state).await?));
         }
         // Same root, different record — a re-minted grant or refreshed
@@ -278,25 +310,27 @@ pub(crate) async fn persist_root(
         // An unreadable stored delegation refuses too — the roots can't
         // be proven equal.
         //
-        // A root is replaceable only when this profile has NO account
-        // attachment history at all: a creation ceremony binds the
-        // root before registration can still fail (an email already
-        // taken, a service outage), and that half-created record must
-        // not wedge the profile — a retry may replace it. A stored
-        // attachment OR the sign-out tombstone both refuse: signed out
-        // or signed in, this profile's spaces and delegations hang off
-        // the stored root, and a different account arrives through
-        // add-account, never by rebinding this profile.
+        // A different root is refused only while the branch the profile
+        // is on follows another account: that branch's spaces and
+        // delegations hang off the account it follows, and a different
+        // account arrives through add-account, on a branch that follows
+        // nothing. A branch following nothing takes any root — the
+        // half-created record a failed registration leaves behind must
+        // not wedge the profile, and after signing out the branch is
+        // free for whichever account signs in next.
         if stored_root.as_ref() != Some(chain.issuer()) {
-            if super::account::has_attachment_history(state).await {
+            use tonk_schema::prelude::DidExt as _;
+            if let Some(followed) = super::profile::active_account(state).await
+                && followed != chain.issuer().this()
+            {
                 return Err(TonkWorkerError::Conflict(
-                    "a different account is already signed in on this profile; \
+                    "a different account is signed in on this branch; \
                      use \"Add account\" to sign in with another account"
                         .to_string(),
                 ));
             }
             tonk_common::log!(
-                "replacing a dangling account root (no attachment was ever made): {} -> {}",
+                "replacing a root the branch does not follow: {} -> {}",
                 stored_root
                     .map(|did| did.to_string())
                     .unwrap_or_else(|| "unreadable".to_string()),
@@ -305,8 +339,8 @@ pub(crate) async fn persist_root(
         }
     }
 
-    // Saving the new grant below leaves earlier access certificates in
-    // the profile store intact.
+    // Retain before persisting the canonical record. Cleanup follows the
+    // record write, so an interrupted cleanup retries with the new grant.
     state
         .profile
         .access()
@@ -321,25 +355,29 @@ pub(crate) async fn persist_root(
     })?;
     state
         .profile
-        .credential()
-        .site(LOCAL_ROOT_SITE)
+        .secrets()
+        .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
         .save(encoded)
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to save local root: {error}"))
         })?;
+    // The peer now acts for the account it signed in to.
+    tonk_account::peer::hand_over(&state.profile, &chain)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "failed to hand the profile's account over to the signed-in account: {error}"
+            ))
+        })?;
+    reconcile_root_delegation(state, &chain).await?;
 
     let encryption_key = record
         .encryption_key
         .as_deref()
         .map(parse_encryption_key)
         .transpose()?;
-    // An operation may be waiting on exactly this: a page answered the
-    // worker's request for a passkey assertion by saving the key.
-    if let Some(recipient) = &encryption_key {
-        super::custody::notify_encryption_key(recipient);
-    }
     Ok(status(LocalRoot {
         root_did: chain.issuer().clone(),
         device_did: state.profile.did(),
@@ -349,6 +387,40 @@ pub(crate) async fn persist_root(
         passkey: record.passkey,
         encryption_key,
     }))
+}
+
+/// A fresh root record must also be the grant the local prover selects.
+/// Serialize with profile writes; a concurrent pull can still move the head,
+/// so retry that typed conflict with a refreshed view of retained grants.
+pub(super) async fn reconcile_root_delegation(
+    state: &TonkState,
+    chain: &DelegationChain,
+) -> Result<(), TonkWorkerError> {
+    use dialog_repository::{CommitError, PublishError};
+    use tonk_account::delegations::{DeviceGrantError, reconcile_device_delegation};
+
+    let branch = state
+        .reactor
+        .profile_repository()
+        .branch(&state.active_branch)
+        .acquire(&state.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("open device grant branch: {error}")))?;
+    let _transacting = branch.transactor().lock().await;
+    for attempt in 0..=4 {
+        match reconcile_device_delegation(branch.handle(), chain, &state.operator).await {
+            Ok(()) => return Ok(()),
+            Err(DeviceGrantError::Commit(CommitError::Publish(
+                PublishError::VersionMismatch { .. },
+            ))) if attempt < 4 => continue,
+            Err(error) => {
+                return Err(TonkWorkerError::Internal(format!(
+                    "reconcile device grant: {error}"
+                )));
+            }
+        }
+    }
+    unreachable!("the last attempt returns its error")
 }
 
 /// Parse a ceremony-supplied recipient, refusing anything that is not
@@ -390,7 +462,6 @@ mod tests {
     use dialog_credentials::Ed25519Signer;
     use dialog_varsig::Principal;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
 
     use crate::router::tests::{test_state, test_state_without_account, test_state_without_root};
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -417,14 +488,14 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_reports_a_missing_local_root() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let Json(result) = get(State(state)).await.unwrap();
         assert!(matches!(result, RootStatus::Missing { .. }));
     }
 
     #[dialog_common::test]
     async fn it_persists_and_reloads_a_local_root() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let device = state.read().await.profile.did();
         let (request, grant) = request_for(1, &device).await;
 
@@ -436,7 +507,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_preserves_passkey_creation_metadata_with_the_local_root() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let device = state.read().await.profile.did();
         let (request, _) = request_for(1, &device).await;
         let mut request = serde_json::to_value(request).unwrap();
@@ -461,7 +532,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_keeps_the_encryption_key_with_the_local_root() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let device = state.read().await.profile.did();
         let recipient = recipient_did(1);
         let (mut request, _) = request_for(1, &device).await;
@@ -490,7 +561,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_an_encryption_key_that_is_not_x25519() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let device = state.read().await.profile.did();
         let (mut request, grant) = request_for(1, &device).await;
         request.encryption_key = Some(grant.issuer().to_string());
@@ -502,7 +573,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_a_grant_for_another_device() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let other = Ed25519Signer::import(&[9u8; 32]).await.unwrap().did();
         let (request, _) = request_for(1, &other).await;
 
@@ -514,7 +585,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_replacing_a_ready_root_with_another_root() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let device = state.read().await.profile.did();
         let (second, _) = request_for(2, &device).await;
 
@@ -524,36 +595,19 @@ mod tests {
         ));
     }
 
-    /// Sign-out keeps the profile's root, data, and certificates; a
-    /// later ceremony that resolves a DIFFERENT passkey is another
-    /// account arriving, and each account gets its own profile via
-    /// add-account. Persisting it here would silently rebind this
-    /// profile's spaces to a root that never owned them.
+    /// While the branch follows an account, another account's root is
+    /// refused: that account arrives through add-account, on a branch
+    /// following nothing.
     #[dialog_common::test]
-    async fn it_rejects_a_different_root_on_a_previously_linked_profile() {
-        let state = Arc::new(RwLock::new(test_state().await));
-        let (profile_name, previous_root) = {
+    async fn it_rejects_a_different_root_while_the_branch_follows_an_account() {
+        let state = Arc::new(crate::StateLock::new(test_state().await));
+        let previous_root = {
             let state = state.read().await;
-            (
-                state.profile_name.clone(),
-                local_root(&state).await.unwrap().root_did,
-            )
+            local_root(&state).await.unwrap().root_did
         };
         let device = state.read().await.profile.did();
         let (replacement, _) = request_for(2, &device).await;
 
-        let _ = super::super::account::unlink(State(state.clone()), None)
-            .await
-            .unwrap();
-        let _ = super::super::profiles::activate(
-            State(state.clone()),
-            None,
-            Json(tonk_worker_api::ActivateProfileRequest {
-                profile: profile_name,
-            }),
-        )
-        .await
-        .unwrap();
         let error = save(State(state.clone()), Json(replacement))
             .await
             .unwrap_err();
@@ -569,6 +623,24 @@ mod tests {
         );
     }
 
+    /// After signing out the branch follows nothing, so another
+    /// account's root is taken.
+    #[dialog_common::test]
+    async fn it_accepts_a_different_root_after_signing_out() {
+        let state = Arc::new(crate::StateLock::new(test_state().await));
+        let device = state.read().await.profile.did();
+        let (replacement, grant) = request_for(2, &device).await;
+
+        let _ = super::super::account::unlink(State(state.clone()), None)
+            .await
+            .unwrap();
+        let Json(status) = save(State(state.clone()), Json(replacement)).await.unwrap();
+
+        assert!(matches!(
+            status,
+            RootStatus::Ready { root_did, .. } if root_did == grant.issuer().to_string()
+        ));
+    }
     /// The dangling case `has_attachment_history` exists for: a
     /// creation ceremony saved the root, registration failed, and no
     /// attachment (nor sign-out tombstone) was ever written. A retry
@@ -576,7 +648,7 @@ mod tests {
     /// wedging the profile.
     #[dialog_common::test]
     async fn it_replaces_a_dangling_root_when_no_attachment_was_ever_made() {
-        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_account().await));
         let device = state.read().await.profile.did();
         let (replacement, _) = request_for(2, &device).await;
         let replacement_credential = replacement.credential_id.clone();
@@ -595,7 +667,7 @@ mod tests {
     /// tightening the different-root path must not break re-sign-in.
     #[dialog_common::test]
     async fn it_accepts_the_same_root_again_after_signing_out() {
-        let state = Arc::new(RwLock::new(test_state().await));
+        let state = Arc::new(crate::StateLock::new(test_state().await));
         let (device, profile_name) = {
             let state = state.read().await;
             (state.profile.did(), state.profile_name.clone())
@@ -619,15 +691,6 @@ mod tests {
         let _ = super::super::account::unlink(State(state.clone()), None)
             .await
             .unwrap();
-        let _ = super::super::profiles::activate(
-            State(state.clone()),
-            None,
-            Json(tonk_worker_api::ActivateProfileRequest {
-                profile: profile_name,
-            }),
-        )
-        .await
-        .unwrap();
         let Json(status) = save(State(state.clone()), Json(request)).await.unwrap();
 
         assert!(matches!(
@@ -637,8 +700,43 @@ mod tests {
     }
 
     #[dialog_common::test]
+    // Storybook LIFE-30: current device authority survives repeated sign-in.
+    async fn it_repairs_obsolete_grants_when_following_an_existing_root() {
+        let state = test_state_without_root().await;
+        let (request, current) = request_for(74, &state.profile.did()).await;
+        persist_root(&state, request).await.unwrap();
+        let (_, obsolete) = request_for(74, &state.profile.did()).await;
+        state
+            .profile
+            .access()
+            .save(UcanDelegation(obsolete.clone()))
+            .perform(&state.operator)
+            .await
+            .unwrap();
+        // Boot reaches this even when the peer already follows the recorded account.
+        follow_signed_in_account(&state).await.unwrap();
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(&state.active_branch)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        branch.handle().refresh(&state.operator).await.unwrap();
+        let grants = branch
+            .handle()
+            .delegations()
+            .issued_by(current.issuer().clone())
+            .perform(&state.operator)
+            .await
+            .unwrap();
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].0.proof_cids(), current.proof_cids());
+    }
+
+    #[dialog_common::test]
     async fn it_accepts_an_idempotent_repeat_of_the_same_record() {
-        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let state = Arc::new(crate::StateLock::new(test_state_without_root().await));
         let device = state.read().await.profile.did();
         let (request, _) = request_for(1, &device).await;
 

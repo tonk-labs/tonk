@@ -1,0 +1,16 @@
+{
+  "name": "@tonk/e2e-hosted-agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test --test-timeout=600000 agent.test.mjs"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.3.0",
+    "playwright": "1.63.0"
+  }
+}

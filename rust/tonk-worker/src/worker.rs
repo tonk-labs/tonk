@@ -18,7 +18,7 @@ use axum::{
     body::Body,
     http::{HeaderValue, header::HeaderName},
 };
-use dialog_operator::{Operator, Profile};
+use dialog_peer::{Peer, Session};
 use dialog_storage::provider::storage::Storage;
 use js_sys::Promise;
 use send_wrapper::SendWrapper;
@@ -347,34 +347,107 @@ async fn passthrough(_request: Request, _is_navigation: bool) -> Result<JsValue,
 }
 
 /// Default storage type — IndexedDB on WASM, filesystem on native.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "volatile-storage")
+))]
 pub type DefaultSpace = dialog_storage::provider::storage::WebSpace;
+
+/// In-memory storage on WASM, for a hosted peer in an isolate that has
+/// neither IndexedDB nor OPFS (a Cloudflare Worker). Nothing survives the
+/// state it was opened for.
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    feature = "volatile-storage"
+))]
+pub type DefaultSpace = dialog_storage::provider::storage::VolatileSpace;
 
 /// Default storage type — filesystem on native.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub type DefaultSpace = dialog_storage::provider::storage::NativeSpace;
 
 /// Concrete operator type for the default storage backend.
-pub type DefaultOperator = Operator<DefaultSpace>;
+pub type DefaultOperator = Peer<DefaultSpace, Session>;
+
+/// The profile this worker signs as: a peer acting with its own key.
+pub type DefaultProfile = Peer<DefaultSpace>;
 
 /// Application state containing the profile and operator.
+///
+/// Cheap to clone: everything but the operator and its expiry sits
+/// behind one shared [`TonkShared`], which a `TonkState` derefs to. A
+/// request that waits on the network clones the state out of its guard
+/// rather than holding the guard across the round trip, so a writer
+/// (a profile switch, a session renewal, removing a space) never queues
+/// behind a slow remote, and no reader queues behind that writer.
+#[derive(Clone)]
 pub struct TonkState {
-    /// The user's persistent profile.
-    pub profile: Profile,
     /// The operator derived from the profile — the key that signs
     /// presign invocations. Rotated by
     /// [`session`](crate::session) before its delegation lapses, so it
     /// is not stable for the life of the worker.
     pub operator: DefaultOperator,
+    /// When the current operator's delegation stops being valid, unix
+    /// seconds. Consulted by the sync drain, which rotates the session
+    /// as this approaches.
+    pub session_expires_at: u64,
+    /// The branch of the profile repository this state is on: the
+    /// account's branch when signed in, an upstream-less one when not.
+    /// Read from `meta` at boot; a switch records a new active branch
+    /// there and rebuilds the state, so it is fixed for one state's life.
+    pub active_branch: String,
+    shared: Arc<TonkShared>,
+}
+
+impl TonkState {
+    /// A state over `shared` on `active_branch`, acting as `operator`
+    /// until `session_expires_at`.
+    pub fn from_parts(
+        operator: DefaultOperator,
+        session_expires_at: u64,
+        active_branch: String,
+        shared: TonkShared,
+    ) -> Self {
+        Self {
+            operator,
+            session_expires_at,
+            active_branch,
+            shared: Arc::new(shared),
+        }
+    }
+
+    /// The shared part, to rewire a state no clone has been taken of
+    /// yet (one just built, before it is installed).
+    ///
+    /// # Panics
+    ///
+    /// If a clone of this state is alive.
+    pub fn shared_mut(&mut self) -> &mut TonkShared {
+        Arc::get_mut(&mut self.shared).expect("the state is not shared yet")
+    }
+}
+
+impl std::ops::Deref for TonkState {
+    type Target = TonkShared;
+
+    fn deref(&self) -> &TonkShared {
+        &self.shared
+    }
+}
+
+/// What a [`TonkState`] shares with its clones: everything but the
+/// operator, which a session renewal replaces, and the small values
+/// beside it.
+pub struct TonkShared {
+    /// The user's persistent profile.
+    pub profile: DefaultProfile,
     /// The storage pool every space is mounted in. Held so a rotated
     /// operator can be built over the *same* pool: a replacement with
     /// its own would leave the reactor's cached repository and branch
     /// handles talking to the retired one.
     pub storage: Storage<DefaultSpace>,
-    /// When the current operator's delegation stops being valid, unix
-    /// seconds. Consulted by the sync drain, which rotates the session
-    /// as this approaches.
-    pub session_expires_at: u64,
     /// Display name the profile was opened under. `Profile` does
     /// not retain this internally, so we carry it here for routes
     /// that report it back to the UI (e.g. `GET /api/profile`).
@@ -443,9 +516,37 @@ pub struct TonkState {
     /// Monotonic active-profile context. Browser clients bind to the value
     /// they first use and become stale when a profile promotion advances it.
     pub(crate) context_generation: Arc<AtomicU64>,
+    /// Shared across every profile's state, as the transition lock is:
+    /// raised as a swap begins, so syncs give up their guard on the state.
+    pub(crate) profile_swaps: crate::router::ProfileSwaps,
 }
 
 impl TonkState {
+    /// End a native host generation and release its live query subscriptions.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn shutdown(&self) {
+        self.retire();
+    }
+
+    /// Open the ordinary worker runtime in an explicit native storage directory.
+    /// The caller owns authentication, process isolation and the directory's
+    /// lifetime. No default user profile or process working directory is used.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn open_native(directory: &std::path::Path) -> Result<Self, crate::TonkWorkerError> {
+        std::fs::create_dir_all(directory.join("spaces"))
+            .map_err(|error| crate::TonkWorkerError::Internal(error.to_string()))?;
+        let directory = directory
+            .canonicalize()
+            .map_err(|error| crate::TonkWorkerError::Internal(error.to_string()))?;
+        let registry = crate::device::Registry::new(
+            "hosted".to_owned(),
+            dialog_effects::storage::Directory::At(directory.to_string_lossy().into_owned()),
+        );
+        let storage = registry.storage().await?;
+        let profile = registry.open_profile(&storage, "hosted").await?;
+        boot_state(storage, "hosted".to_owned(), profile, registry).await
+    }
+
     /// Enter the one-way retiring state and release every query stream.
     pub(crate) fn retire(&self) {
         self.retiring.store(true, Ordering::Release);
@@ -459,7 +560,7 @@ impl TonkState {
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
-// (Profile, Operator) contain `web_sys::CryptoKey` handles (via
+// (the profile and operator peers) contain `web_sys::CryptoKey` handles (via
 // Ed25519SigningKey::WebCrypto) which are !Send/!Sync, but cross-thread access
 // cannot occur in a single-threaded browser context.
 #[cfg(target_arch = "wasm32")]
@@ -477,7 +578,7 @@ mod route_for_tests {
 
     async fn state_with_view_client(client: &str, repo: &str, branch: &str) -> AppState {
         let state = router::tests::test_state().await;
-        let app_state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(state));
+        let app_state: AppState = std::sync::Arc::new(crate::StateLock::new(state));
         let bindings = app_state.read().await.view_bindings.clone();
         bindings.write().await.insert(
             ClientId(client.to_owned()),
@@ -502,7 +603,7 @@ mod route_for_tests {
     #[dialog_common::test]
     async fn it_lets_non_view_clients_through_to_api() {
         let state = router::tests::test_state().await;
-        let app_state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(state));
+        let app_state: AppState = std::sync::Arc::new(crate::StateLock::new(state));
         let r = route_for(
             "/api/repository/r/branch/main/query",
             "no-such-client",
@@ -547,6 +648,43 @@ mod route_for_tests {
 
     // The scheduler's clock is passed in (not `Date::now()`), so these drive it
     // with fixed timestamps — no real time, fully deterministic.
+
+    #[dialog_common::test]
+    async fn it_does_not_extend_fetch_lifetimes_after_retirement() {
+        use wasm_bindgen::JsCast as _;
+
+        let state = std::sync::Arc::new(crate::StateLock::new(router::tests::test_state().await));
+        let lifetimes = js_sys::Array::new();
+        let captured = lifetimes.clone();
+        let wait_until =
+            wasm_bindgen::closure::Closure::<dyn FnMut(Promise)>::new(move |promise: Promise| {
+                captured.push(&promise);
+            });
+        let event = js_sys::Object::new();
+        js_sys::Reflect::set(&event, &"waitUntil".into(), wait_until.as_ref()).unwrap();
+        let request = Request::new_with_str(
+            "https://tonk.test/api/repository/profile:tonk/branch/main/query",
+        )
+        .unwrap();
+        js_sys::Reflect::set(&event, &"request".into(), &request).unwrap();
+        let scheduler = SyncScheduler::default();
+
+        // A live worker still schedules its ordinary debounce lifetime.
+        schedule_sync_drain(event.unchecked_ref(), &scheduler, &state);
+        assert_eq!(lifetimes.length(), 1);
+        scheduler.stop();
+        let ticket = scheduler.generation.get();
+        for _ in 0..5 {
+            schedule_sync_drain(event.unchecked_ref(), &scheduler, &state);
+        }
+        assert_eq!(
+            lifetimes.length(),
+            1,
+            "retired query traffic must not keep rearming the debounce lifetime"
+        );
+        assert_eq!(scheduler.generation.get(), ticket);
+        JsFuture::from(Promise::all(&lifetimes)).await.unwrap();
+    }
 
     /// No repo holds un-pushed local commits: the ordinary reading, and the
     /// one under which the quiet interval applies.
@@ -1718,7 +1856,7 @@ const SYNC_HIDDEN_MAX_MS: i32 = 3_600_000;
 pub(crate) async fn boot_state(
     storage: Storage<DefaultSpace>,
     profile_name: String,
-    profile: Profile,
+    profile: DefaultProfile,
     registry: crate::device::Registry,
 ) -> Result<TonkState, crate::TonkWorkerError> {
     boot_state_with_profile_library(storage, profile_name, profile, registry, Default::default())
@@ -1730,44 +1868,117 @@ pub(crate) async fn boot_state(
 pub(crate) async fn boot_state_with_profile_library(
     storage: Storage<DefaultSpace>,
     profile_name: String,
-    profile: Profile,
+    profile: DefaultProfile,
     registry: crate::device::Registry,
     profile_library: crate::router::ProfileLibraryCache,
 ) -> Result<TonkState, crate::TonkWorkerError> {
-    let reactor = crate::Reactor::new(profile.clone());
+    let state = open_state(storage, profile_name, profile, registry, profile_library).await?;
+    bootstrap_profile(&state).await.map_err(|e| {
+        crate::TonkWorkerError::Internal(format!("failed to bootstrap profile meta: {e}"))
+    })?;
+    crate::router::identity::follow_signed_in_account(&state).await?;
+    Ok(state)
+}
+
+/// [`boot_state`] without the profile bootstrap: no meta commit, no
+/// profile library, no account overlays, no signed-in account to follow.
+///
+/// For a hosted peer, whose profile is a throwaway signing identity that
+/// is never synced or browsed: the bootstrap's commits and its
+/// `/library/profile.yaml` fetch cost every open and serve nothing.
+#[cfg(any(feature = "volatile-storage", test))]
+pub(crate) async fn boot_unbootstrapped_state(
+    storage: Storage<DefaultSpace>,
+    profile_name: String,
+    profile: DefaultProfile,
+    registry: crate::device::Registry,
+) -> Result<TonkState, crate::TonkWorkerError> {
+    open_state(storage, profile_name, profile, registry, Default::default()).await
+}
+
+async fn open_state(
+    storage: Storage<DefaultSpace>,
+    profile_name: String,
+    profile: DefaultProfile,
+    registry: crate::device::Registry,
+    profile_library: crate::router::ProfileLibraryCache,
+) -> Result<TonkState, crate::TonkWorkerError> {
+    // A switch hands over the peer of the branch it leaves; the profile's
+    // own branch is where every other branch's peer is derived from.
+    let profile = if profile.state().name() == crate::router::repository::PROFILE_BRANCH {
+        profile
+    } else {
+        registry
+            .open_on(
+                &storage,
+                &profile_name,
+                crate::router::repository::PROFILE_BRANCH,
+            )
+            .await?
+    };
+    let reactor = crate::Reactor::new(profile.credential().clone());
     // Session construction reads branch reference cells, but no longer
     // walks or retains delegation content. Hydrating after a construction
     // failure cannot repair entropy, signing, or local reference errors;
     // surface them without touching the profile's durable contents.
-    let session = crate::session::open(&profile, &storage).await?;
-
-    let state = TonkState {
-        profile,
-        operator: session.operator,
-        storage,
-        session_expires_at: session.expires_at,
-        profile_name,
-        reactor,
-        admission: Default::default(),
-        #[cfg(any(test, feature = "helpers"))]
-        reject_admission_content_reads: Default::default(),
-        retiring: Arc::new(AtomicBool::new(false)),
-        view_bindings: Default::default(),
-        bridges: Default::default(),
-        commands: crate::router::command_providers(),
-        sync_queue: Default::default(),
-        clients: Default::default(),
-        seed_upgrades: Default::default(),
-        account_keys: Default::default(),
-        profile_library,
-        registry,
-        profile_transition: Arc::new(Mutex::new(())),
-        context_generation: Arc::new(AtomicU64::new(0)),
+    let session = crate::session::open(&profile).await?;
+    // Which branch the profile is on. Reading `meta` takes an operator,
+    // so the bootstrap session opens on `main`; a profile that is on
+    // another branch gets a session whose authority is that branch's.
+    let active_branch = crate::router::profile::active_branch_name(&reactor, &session.operator)
+        .await
+        .unwrap_or_else(|| crate::router::repository::PROFILE_BRANCH.to_owned());
+    let (profile, session) = if active_branch == crate::router::repository::PROFILE_BRANCH {
+        (profile, session)
+    } else {
+        // Each account branch is its own account: the peer acting on it
+        // keeps its records, custody and delegations in the branch, and
+        // what the branch kept while branches shared one peer follows it.
+        let branch = registry
+            .open_on(&storage, &profile_name, &active_branch)
+            .await?;
+        let suffix = format!("-{active_branch}");
+        tonk_account::peer::copy_site_secrets(&profile, &branch, |name| name.ends_with(&suffix))
+            .await
+            .map_err(|error| {
+                crate::TonkWorkerError::Internal(format!(
+                    "failed to move the branch's site secrets: {error}"
+                ))
+            })?;
+        registry
+            .migrate_branch_secrets(&branch, &profile_name, &active_branch)
+            .await?;
+        let session = crate::session::open_on(&branch, &active_branch).await?;
+        (branch, session)
     };
-    bootstrap_profile(&state).await.map_err(|e| {
-        crate::TonkWorkerError::Internal(format!("failed to bootstrap profile meta: {e}"))
-    })?;
-    Ok(state)
+
+    Ok(TonkState::from_parts(
+        session.operator,
+        session.expires_at,
+        active_branch,
+        crate::worker::TonkShared {
+            profile,
+            storage,
+            profile_name,
+            reactor,
+            admission: Default::default(),
+            #[cfg(any(test, feature = "helpers"))]
+            reject_admission_content_reads: Default::default(),
+            retiring: Arc::new(AtomicBool::new(false)),
+            view_bindings: Default::default(),
+            bridges: Default::default(),
+            commands: crate::router::command_providers(),
+            sync_queue: Default::default(),
+            clients: Default::default(),
+            seed_upgrades: Default::default(),
+            account_keys: Default::default(),
+            profile_library,
+            registry,
+            profile_transition: Arc::new(Mutex::new(())),
+            context_generation: Arc::new(AtomicU64::new(0)),
+            profile_swaps: Default::default(),
+        },
+    ))
 }
 
 /// The main Tonk service worker that handles browser fetch events.
@@ -1807,6 +2018,11 @@ pub struct TonkServiceWorker {
     /// `online` event) restarts it.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     sync_loop: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Whether the loop that begins each space's push loop runs: they push
+    /// each commit, and pull each watched head, as it comes (see
+    /// [`crate::router::push_loops`]).
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    push_loop: std::cell::Cell<bool>,
 }
 
 #[wasm_bindgen]
@@ -1834,14 +2050,17 @@ impl TonkServiceWorker {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         crate::patch_idb_dead_shims();
 
-        // 1. Create storage backend
-        let storage = Storage::<DefaultSpace>::default();
+        // 1. Create storage backend, owned by the system tonk runs as.
+        let registry = crate::device::Registry::device();
+        let storage = registry
+            .storage()
+            .await
+            .map_err(|e| JsError::new(&format!("Failed to open storage: {}", e)))?;
 
         // 2. Open the profile this device signs as. Usually the one it
         // started with; a device that has signed out (or added an
         // account) since then signs as whatever profile the registry's
         // pointer names.
-        let registry = crate::device::Registry::device();
         let (profile_name, profile) = registry
             .open_active(&storage)
             .await
@@ -1854,6 +2073,18 @@ impl TonkServiceWorker {
         let state = boot_state(storage, profile_name, profile, registry)
             .await
             .map_err(|e| JsError::new(&format!("Failed to initialize the worker: {e}")))?;
+
+        // A predecessor retiring for this worker left its session overlay
+        // behind. Restore it before serving anything, so no read or
+        // subscription observes this worker without it.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        if let Some(overlays) = crate::handoff::take().await {
+            let restored = state
+                .reactor
+                .import_overlays(overlays, &state.operator)
+                .await;
+            log!("Restored {restored} session overlay(s) from the previous worker");
+        }
 
         // 5. Wrap state in the router. `api_router_with_state`
         // returns the LSP hub *and* a cloneable `AppState` handle:
@@ -1875,7 +2106,10 @@ impl TonkServiceWorker {
         {
             let state = state.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                let tonk = state.read().await;
+                // A clone, not a guard: these chores pull the account and
+                // post to the access service, and no request should wait
+                // on them.
+                let tonk = state.read().await.clone();
                 // Best-effort roster upsert so existing installs
                 // self-populate a switcher entry for the profile they
                 // already have — the grandfathering path.
@@ -1905,6 +2139,8 @@ impl TonkServiceWorker {
             sync_scheduler: SyncScheduler::default(),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             sync_loop: std::rc::Rc::new(std::cell::Cell::new(false)),
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            push_loop: std::cell::Cell::new(false),
         })
     }
 
@@ -1944,13 +2180,23 @@ impl TonkServiceWorker {
             // LSP shutdown ran first, the successor could activate and clear
             // `registration.waiting` while query reconnects still saw this
             // generation as live. The reactor gate makes the latch and every
-            // active/pending subscriber registration atomic.
-            {
+            // active/pending subscriber registration atomic. The overlay is
+            // exported first: shutdown drops the cached branches holding it.
+            let overlays = {
                 let tonk = state.read().await;
+                let overlays = tonk.reactor.export_overlays();
                 tonk.retire();
-            }
+                overlays
+            };
             lsp.shutdown().await;
             log!("Streams are released");
+            // Written even when empty: the successor's activation waits for
+            // this snapshot, and an empty one tells it there is nothing to
+            // carry rather than leaving it to time out.
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            crate::handoff::save(overlays).await;
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            drop(overlays);
             Ok(JsValue::UNDEFINED)
         })
     }
@@ -2240,6 +2486,16 @@ impl TonkServiceWorker {
     /// it. This replaces the page-side `POST /api/sync` heartbeat.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     fn ensure_sync_loop(&self) {
+        // The push loops sleep until a commit or a watched head wakes
+        // them, so they run for the worker's life, apart from the drain's
+        // loop.
+        if !self.sync_scheduler.stopped() && !self.push_loop.replace(true) {
+            let scheduler = self.sync_scheduler.clone();
+            wasm_bindgen_futures::spawn_local(crate::router::push_loops(
+                self.state.clone(),
+                std::rc::Rc::new(move || scheduler.stopped()),
+            ));
+        }
         // A worker being replaced starts no new work — its loop would keep
         // waking up and pinning it in `waiting`.
         if self.sync_scheduler.stopped() || self.sync_loop.get() {
@@ -2273,6 +2529,10 @@ impl TonkServiceWorker {
                     log!("sync loop parked: every open space is paused");
                     break;
                 }
+                // Open spaces whose upstream can be followed are watched,
+                // and leave the sweep below; one whose watch ended is
+                // watched again here.
+                crate::router::watch_open_repos(&state).await;
                 // Through the SAME gate as the per-fetch drain: a loop tick used
                 // to call `drain_sync` directly, so it could start a second
                 // drain on top of one already running (they only consulted
@@ -2334,8 +2594,7 @@ const SYNC_LOOP_MS: u64 = 2_000;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn has_syncable_repo(state: &AppState) -> bool {
     let tonk = state.read().await;
-    let repos: Vec<String> = tonk.reactor.repos().read().keys().cloned().collect();
-    for repo in repos {
+    for repo in tonk.reactor.spaces() {
         if crate::router::is_sync_enabled(&tonk, &repo, "main").await {
             return true;
         }
@@ -2349,17 +2608,9 @@ async fn has_syncable_repo(state: &AppState) -> bool {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn has_live_subscribers(state: &AppState) -> bool {
     let tonk = state.read().await;
-    {
-        let repos = tonk.reactor.repos().read();
-        for repo in repos.values() {
-            for branch in repo.branches().read().values() {
-                if !branch.subscriptions().lock().is_empty() {
-                    return true;
-                }
-            }
-        }
-    }
-    if let Some(repo) = tonk.reactor.profile_repo_state() {
+    // The profile's own repository is among the cached ones.
+    let repos = tonk.reactor.repos().read();
+    for repo in repos.values() {
         for branch in repo.branches().read().values() {
             if !branch.subscriptions().lock().is_empty() {
                 return true;
@@ -2438,6 +2689,13 @@ async fn any_client_visible() -> bool {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &AppState) {
     use wasm_bindgen::JsCast;
+
+    // Handoff queries can arrive faster than the debounce expires. Refusing
+    // the drain only after sleeping still extends every fetch by 500ms and
+    // prevents the incumbent from becoming idle enough to activate its successor.
+    if scheduler.stopped() {
+        return;
+    }
 
     let ticket = scheduler.next(js_sys::Date::now());
     // Record the burst-opener (method + path + query — the query carries the
@@ -2536,4 +2794,133 @@ fn event_source_client_id(event: &web_sys::ExtendableMessageEvent) -> Option<Str
     let source = event.source()?;
     let client: web_sys::Client = source.dyn_into().ok()?;
     Some(client.id())
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod native_host_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn native_worker_boots_the_shared_router_in_isolated_storage() {
+        let directory =
+            std::env::temp_dir().join(format!("tonk-worker-host-{}", rand::random::<u64>()));
+        let state = TonkState::open_native(&directory)
+            .await
+            .expect("native worker boot");
+        let did = state.profile.did().to_string();
+        assert!(matches!(state.registry.space_location("example").directory,
+            dialog_effects::storage::Directory::At(ref path) if path == &directory.canonicalize().unwrap().join("spaces").to_string_lossy()));
+        let (router, _) = crate::api_router(state);
+        let response = router
+            .clone()
+            .oneshot(
+                ::axum::http::Request::builder()
+                    .uri("/api/profile")
+                    .body(::axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), ::axum::http::StatusCode::OK);
+        let created = router
+            .clone()
+            .oneshot(
+                ::axum::http::Request::builder()
+                    .method("PUT")
+                    .uri("/api/repository/host-test")
+                    .header("content-type", "application/json")
+                    .body(::axum::body::Body::from(r#"{"branch":{"main":{}}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = created.status();
+        let bytes = ::axum::body::to_bytes(created.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            ::axum::http::StatusCode::CREATED,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let repository: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let key = repository["name"].as_str().expect("routing key");
+        let document = "concept!: &host-example\n  with:\n    title: { the: example.host/title, as: text, description: Test title }\nhost-example!:\n  this: urn:host:record\n  title: Shared worker\n";
+        let evaluated = router
+            .clone()
+            .oneshot(
+                ::axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/repository/{key}/branch/main/evaluate"))
+                    .header("content-type", "text/plain")
+                    .body(::axum::body::Body::from(document))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = evaluated.status();
+        let bytes = ::axum::body::to_bytes(evaluated.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            ::axum::http::StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        for document in [
+            "library/install!:\n  component: tonk:library/notebook\n  time: 1.0\n",
+            "notebook/named!:\n  this: urn:host:notebook\n  title: General commands\nblock/edit!:\n  subject: urn:host:block\n  notebook: urn:host:notebook\n  source: Written through the shared worker\n",
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    ::axum::http::Request::builder()
+                        .method("POST")
+                        .uri(format!("/api/repository/{key}/branch/main/evaluate"))
+                        .header("content-type", "text/plain")
+                        .body(::axum::body::Body::from(document))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = ::axum::body::to_bytes(response.into_body(), 1_000_000)
+                .await
+                .unwrap();
+            assert_eq!(
+                status,
+                ::axum::http::StatusCode::OK,
+                "{}",
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+        drop(router);
+        let reopened = TonkState::open_native(&directory)
+            .await
+            .expect("reopen native worker");
+        assert_eq!(reopened.profile.did().to_string(), did);
+        let (router, _) = crate::api_router(reopened);
+        let read = router
+            .oneshot(
+                ::axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/repository/{key}/branch/main/evaluate?transact=false"
+                    ))
+                    .header("content-type", "text/plain")
+                    .body(::axum::body::Body::from("notebook/block:\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read.status(), ::axum::http::StatusCode::OK);
+        let bytes = ::axum::body::to_bytes(read.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("Written through the shared worker"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

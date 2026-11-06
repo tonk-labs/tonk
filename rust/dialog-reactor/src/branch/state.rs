@@ -3,13 +3,13 @@
 //! operations on the branch happen directly on the state without
 //! routing through the reactor's name-keyed lookup.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
 use dialog_artifacts::Statement;
 use dialog_query::ConceptQuery;
 use dialog_repository::Branch;
+use indexmap::IndexMap;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
@@ -28,8 +28,10 @@ pub struct BranchState {
     /// `Cell<Revision>` keeps this handle current as the branch
     /// advances).
     pub branch: Branch,
-    /// Subscriptions on this branch, keyed by query hash.
-    subscriptions: Mutex<HashMap<QueryHash, Subscription>>,
+    /// Subscriptions on this branch, keyed by query hash, in the order
+    /// they were created. [`Self::poll`] walks them lowest level first (see
+    /// [`Subscription::level`]), creation order breaking ties.
+    subscriptions: Mutex<IndexMap<QueryHash, Subscription>>,
     /// Serializes *transactions* on this branch — concurrent writers (e.g.
     /// two browser tabs committing through one service worker) line up rather
     /// than racing the head CAS and failing. Guards nothing but the right to be
@@ -44,6 +46,16 @@ pub struct BranchState {
     /// block — a transaction. Per branch, so commits to different branches
     /// proceed in parallel.
     transactor: tokio::sync::Mutex<()>,
+    /// Whether [`BranchReference::migrate_once`] has run this branch's one
+    /// migration since it was opened (to completion or to a failure). A
+    /// call that found nothing to move does not set it.
+    ///
+    /// [`BranchReference::migrate_once`]: crate::BranchReference::migrate_once
+    migration_claimed: std::sync::atomic::AtomicBool,
+    /// Whether that migration is running now: claimed, found needed, and
+    /// not yet finished. A page asking whether to show an upgrade notice
+    /// reads it.
+    migrating: std::sync::atomic::AtomicBool,
 }
 
 impl BranchState {
@@ -51,9 +63,34 @@ impl BranchState {
     pub fn new(branch: Branch) -> Self {
         Self {
             branch,
-            subscriptions: Mutex::new(HashMap::new()),
+            subscriptions: Mutex::new(IndexMap::new()),
             transactor: tokio::sync::Mutex::new(()),
+            migration_claimed: std::sync::atomic::AtomicBool::new(false),
+            migrating: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Mark the one migration this branch runs while open as run.
+    pub(crate) fn claim_migration(&self) {
+        self.migration_claimed
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the migration has run, to completion or to a failure.
+    pub(crate) fn migration_claimed(&self) -> bool {
+        self.migration_claimed
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Mark the migration as running, or as finished.
+    pub(crate) fn set_migrating(&self, running: bool) {
+        self.migrating
+            .store(running, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the migration is running now.
+    pub fn is_migrating(&self) -> bool {
+        self.migrating.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// The per-branch transaction lock. A transaction takes it
@@ -71,13 +108,22 @@ impl BranchState {
     /// overlay now, folds it in at the single `QueryLayer::from(&Branch)`
     /// point, and bumps an epoch so the branch's subscriptions re-evaluate
     /// on their next poll. A cardinality-one re-assert overwrites in place.
+    ///
+    /// The overlay holds facts only, so a statement that changes an asset
+    /// is refused; that is a mistake in the caller, reported in the log.
     pub fn assert_overlay<S: Statement>(&self, claim: S) {
-        self.branch.overlay().assert(claim);
+        if let Err(error) = self.branch.overlay().assert(claim) {
+            dialog_common::log!("overlay assert refused: {error}");
+        }
     }
 
-    /// Retract a [`Statement`] from the branch's session overlay.
+    /// Retract a [`Statement`] from the branch's session overlay. A
+    /// statement that changes an asset is refused, as for
+    /// [`assert_overlay`](Self::assert_overlay).
     pub fn retract_overlay<S: Statement>(&self, claim: S) {
-        self.branch.overlay().retract(claim);
+        if let Err(error) = self.branch.overlay().retract(claim) {
+            dialog_common::log!("overlay retract refused: {error}");
+        }
     }
 
     /// Drop every fact in the branch's session overlay. Used to keep
@@ -91,7 +137,7 @@ impl BranchState {
 
     /// Borrow the subscription map. Used by [`SubscriptionPoll`]
     /// to walk subscribers, and by tests asserting on cache state.
-    pub fn subscriptions(&self) -> &Mutex<HashMap<QueryHash, Subscription>> {
+    pub fn subscriptions(&self) -> &Mutex<IndexMap<QueryHash, Subscription>> {
         &self.subscriptions
     }
 
@@ -139,10 +185,11 @@ impl BranchState {
         &self,
         query: ConceptQuery,
         client: Option<String>,
+        level: u32,
         sender: mpsc::UnboundedSender<Bytes>,
     ) -> QueryHash {
         let hash = QueryHash::from(&query);
-        self.install_subscriber(query, client, sender);
+        self.install_subscriber(query, client, level, sender);
         hash
     }
 
@@ -150,10 +197,11 @@ impl BranchState {
         &self,
         query: ConceptQuery,
         client: Option<String>,
+        level: u32,
     ) -> Result<Subscriber, ReactorError> {
         let hash = QueryHash::from(&query);
         let (sender, receiver) = mpsc::unbounded_channel();
-        self.install_subscriber(query, client, sender);
+        self.install_subscriber(query, client, level, sender);
         Ok(Subscriber { hash, receiver })
     }
 
@@ -165,6 +213,7 @@ impl BranchState {
         &self,
         query: ConceptQuery,
         client: Option<String>,
+        level: u32,
         sender: mpsc::UnboundedSender<Bytes>,
     ) {
         let hash = QueryHash::from(&query);
@@ -189,6 +238,7 @@ impl BranchState {
             sender,
             status: Status::Pending,
             client,
+            level,
         });
     }
 
@@ -227,13 +277,59 @@ impl BranchState {
     /// fan out to subscribers. Each subscription is polled via
     /// the same `SubscriptionPoll::perform` path the public
     /// chain uses.
+    ///
+    /// Lower levels go first. A display's level is how many displays
+    /// enclose it, so it learns of a change before the displays nested
+    /// inside it do: a parent that re-renders
+    /// its children away first spares them a frame for an address it is
+    /// replacing. Creation order breaks ties (a stable sort over the
+    /// insertion-ordered map).
     pub async fn poll<'a, Env: SelectProvider>(self: &'a Arc<Self>, env: &'a Env) {
         let hashes: Vec<QueryHash> = {
             let subs = self.subscriptions.lock();
-            subs.keys().cloned().collect()
+            let mut ordered: Vec<(u32, QueryHash)> = subs
+                .iter()
+                .map(|(hash, subscription)| (subscription.level(), hash.clone()))
+                .collect();
+            ordered.sort_by_key(|(level, _)| *level);
+            ordered.into_iter().map(|(_, hash)| hash).collect()
         };
+        // A poll can await the network (a node still held remotely), and
+        // an overlay write re-evaluates every subscription on the branch,
+        // so a slow one is named with what it serves.
+        const SLOW: web_time::Duration = web_time::Duration::from_millis(500);
+        let started = web_time::Instant::now();
+        let count = hashes.len();
         for hash in hashes {
-            SubscriptionPoll { state: self, hash }.perform(env).await;
+            let polled = web_time::Instant::now();
+            let (level, subscribers) = {
+                let subs = self.subscriptions.lock();
+                subs.get(&hash)
+                    .map(|subscription| (subscription.level(), subscription.subscribers.len()))
+                    .unwrap_or_default()
+            };
+            SubscriptionPoll {
+                state: self,
+                hash: hash.clone(),
+            }
+            .perform(env)
+            .await;
+            let elapsed = polled.elapsed();
+            if elapsed >= SLOW {
+                dialog_common::log!(
+                    "[reactor] slow subscription poll: {hash:?} on {} level={level} subscribers={subscribers} elapsed_ms={}",
+                    self.branch.name(),
+                    elapsed.as_millis()
+                );
+            }
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= SLOW {
+            dialog_common::log!(
+                "[reactor] slow branch poll: {count} subscriptions on {} elapsed_ms={}",
+                self.branch.name(),
+                elapsed.as_millis()
+            );
         }
     }
 }

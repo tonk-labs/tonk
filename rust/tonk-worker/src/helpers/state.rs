@@ -15,12 +15,10 @@
 #![cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 
 use dialog_credentials::Ed25519Signer;
-use dialog_operator::Profile;
-use dialog_storage::provider::storage::Storage;
 use dialog_varsig::Principal as _;
 use tonk_schema::prelude::DidExt as _;
 
-use crate::worker::{DefaultSpace, TonkState};
+use crate::worker::TonkState;
 
 /// A random id minted once per test *process*, mixed into every profile
 /// name so two runs never collide on storage a shared browser profile
@@ -58,49 +56,52 @@ pub async fn test_state_without_root() -> TonkState {
     );
 
     crate::patch_idb_versionchange();
-    let storage = Storage::<DefaultSpace>::default();
-    let profile = Profile::open(&profile_name)
-        .perform(&storage)
-        .await
-        .expect("Failed to create test profile");
+    let (storage, profile) =
+        crate::device::open_profile_at(&profile_name, dialog_effects::storage::Directory::Profile)
+            .await
+            .expect("Failed to create test profile");
 
-    let session = crate::session::open(&profile, &storage)
+    let session = crate::session::open(&profile)
         .await
         .expect("Failed to open a test signing session");
 
-    let reactor = crate::Reactor::new(profile.clone());
+    let reactor = crate::Reactor::new(profile.credential().clone());
     // The registry mirrors production shape — the state's own profile
     // is the registry profile, exactly as `Registry::device()` signs
     // as `tonk` until the first rotation. Uniquely named per state,
     // so tests neither collide with each other nor touch the real
     // registry, while rotated/activated profiles still resolve in the
     // same directory the test profile itself lives in.
-    let registry = crate::device::Registry {
-        profile: profile_name.clone(),
-        directory: dialog_effects::storage::Directory::Profile,
-    };
-    TonkState {
-        seed_upgrades: Default::default(),
-        profile,
-        operator: session.operator,
-        storage,
-        session_expires_at: session.expires_at,
-        profile_name,
-        reactor,
-        admission: Default::default(),
-        reject_admission_content_reads: Default::default(),
-        retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        view_bindings: Default::default(),
-        bridges: Default::default(),
-        sync_queue: Default::default(),
-        commands: crate::router::command_providers(),
-        clients: Default::default(),
-        account_keys: Default::default(),
-        profile_library: Default::default(),
-        registry,
-        profile_transition: Default::default(),
-        context_generation: Default::default(),
-    }
+    let registry = crate::device::Registry::new(
+        profile_name.clone(),
+        dialog_effects::storage::Directory::Profile,
+    );
+    TonkState::from_parts(
+        session.operator,
+        session.expires_at,
+        crate::router::repository::PROFILE_BRANCH.to_owned(),
+        crate::worker::TonkShared {
+            seed_upgrades: Default::default(),
+            profile,
+            storage,
+            profile_name,
+            reactor,
+            admission: Default::default(),
+            reject_admission_content_reads: Default::default(),
+            retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            view_bindings: Default::default(),
+            bridges: Default::default(),
+            sync_queue: Default::default(),
+            commands: crate::router::command_providers(),
+            clients: Default::default(),
+            account_keys: Default::default(),
+            profile_library: Default::default(),
+            registry,
+            profile_transition: Default::default(),
+            context_generation: Default::default(),
+            profile_swaps: Default::default(),
+        },
+    )
 }
 
 /// The root seed for a test profile, derived from its name.
@@ -173,7 +174,7 @@ pub(crate) async fn persist_test_root(state: &TonkState) -> dialog_varsig::Did {
     state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .transaction()
         .assert(tonk_schema::AccountSealedInbox::new(
             root_did.this(),
@@ -193,5 +194,17 @@ pub async fn test_state() -> TonkState {
     crate::router::account::attach_test_account(&state)
         .await
         .unwrap();
+    // What a link records on `meta`: the branch the profile is on follows
+    // the account's branch on the peer serving it. Without it a sign-out
+    // finds the branch following nothing and stays put.
+    crate::router::profile::ensure_profile_meta_branch(&state).await;
+    let root = crate::router::identity::local_root(&state)
+        .await
+        .expect("the fixture has a local root")
+        .root_did;
+    let address = dialog_repository::SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
+        crate::router::account::TEST_ACCOUNT_REMOTE,
+    ));
+    crate::router::account_state::record_account_branch(&state, &root, &address).await;
     state
 }

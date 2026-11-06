@@ -31,7 +31,6 @@ use ::axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::Entity;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -39,6 +38,7 @@ use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_document::engine::{Content, Edit, EditRequest, Format, Stamp, Table};
 use tonk_document::session::{self, Snapshot};
+use tonk_handler_macros::wasm_compat;
 
 use super::{AppState, CommandEnv};
 use crate::TonkWorkerError;
@@ -166,6 +166,24 @@ struct Tracker {
     /// Branches whose documents were scanned once this worker lifetime:
     /// the dirty set does not survive a restart, the cells do.
     scanned: HashSet<(String, String)>,
+}
+
+impl Tracker {
+    fn needs_sync(&self, repo: &str, now: f64) -> bool {
+        self.dirty.iter().any(|(r, _, _)| r == repo)
+            || self
+                .requested
+                .iter()
+                .any(|((r, _, _), at)| r == repo && now - at <= REQUEST_WINDOW_SECONDS)
+    }
+}
+
+/// Branch watches carry heads, not document bytes. Keep active documents in
+/// the sweep even when their repository's branch is already being watched.
+pub(crate) fn needs_sync(repo: &str) -> bool {
+    tracker()
+        .lock()
+        .is_ok_and(|tracker| tracker.needs_sync(repo, now_seconds()))
 }
 
 fn tracker() -> &'static Mutex<Tracker> {
@@ -650,6 +668,24 @@ pub(crate) async fn sync_documents(
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn it_sweeps_active_documents_even_when_the_branch_is_watched() {
+        let mut tracker = Tracker::default();
+        let key = (
+            "space".to_string(),
+            "main".to_string(),
+            "id:doc".to_string(),
+        );
+        assert!(!tracker.needs_sync("space", 100.0));
+        tracker.requested.insert(key.clone(), 100.0);
+        assert!(tracker.needs_sync("space", 100.0 + REQUEST_WINDOW_SECONDS));
+        assert!(!tracker.needs_sync("another-space", 100.0));
+        assert!(!tracker.needs_sync("space", 101.0 + REQUEST_WINDOW_SECONDS));
+        tracker.dirty.insert(key);
+        assert!(tracker.needs_sync("space", 101.0 + REQUEST_WINDOW_SECONDS));
+    }
+
     use crate::router::command::tests::native::test_state;
     use crate::router::{CommandOrigin, dispatch};
     use ::axum::body::to_bytes;
@@ -774,7 +810,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn review_opening_an_existing_document_rebuilds_its_mirror() {
-        use dialog_query::{DynamicAttributeQuery, The};
+        use dialog_query::{DynamicAttributeQuery, Relation};
         let state = test_state().await;
         let repo = space(&state).await;
         post(&state, &repo, serde_json::json!({"format":"automerge/text@1", "edits":[{"edit":"set-text","text":"mirror me"}]})).await;
@@ -798,7 +834,7 @@ mod tests {
         let tonk = state.read().await;
         let session = acquire(&tonk, &repo, "main").await.unwrap();
         let query = DynamicAttributeQuery::new(
-            Term::from(session::TEXT.parse::<The>().unwrap()),
+            Term::from(session::TEXT.parse::<Relation>().unwrap()),
             Term::var("of"),
             Term::var("is"),
             Term::var("cause"),
@@ -823,7 +859,7 @@ mod tests {
         prepare_mirrors(&tonk, tonk.reactor.repository(&repo).branch("main")).await;
         let mirror_query = || {
             DynamicAttributeQuery::new(
-                Term::from(session::TEXT.parse::<The>().unwrap()),
+                Term::from(session::TEXT.parse::<Relation>().unwrap()),
                 Term::var("of"),
                 Term::var("is"),
                 Term::var("cause"),

@@ -133,7 +133,7 @@ impl From<DocumentRestore> for Request {
 pub fn requests(transients: &Changes) -> Vec<Request> {
     let mut by_entity: HashMap<Entity, EntityFacts> = HashMap::new();
     for instruction in transients.clone().into_instructions() {
-        if let Instruction::Assert(artifact) | Instruction::Replace(artifact) = instruction {
+        if let Instruction::Assert(artifact, _) = instruction {
             by_entity
                 .entry(artifact.of.clone())
                 .or_default()
@@ -185,7 +185,7 @@ mod tests {
     use super::*;
     use crate::engine::{Content, Format};
     use dialog_artifacts::Statement as _;
-    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::the;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -212,7 +212,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_decodes_and_runs_a_command_from_transient_facts() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let doc: Entity = "id:prose/doc".parse().unwrap();

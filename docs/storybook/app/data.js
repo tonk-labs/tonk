@@ -42,6 +42,20 @@ window.STORYBOOK_DATA = {
       "id": "B-07",
       "severity": "medium",
       "title": "Renamed account retains an old founder membership in a space"
+    },
+    {
+      "area": "Space adoption and sync",
+      "decision": "fixed in source",
+      "id": "B-08",
+      "severity": "high",
+      "title": "Returning device cannot open a space with old branch facts"
+    },
+    {
+      "area": "Space library upgrade",
+      "decision": "fixed in source",
+      "id": "B-09",
+      "severity": "high",
+      "title": "A release resets a space's home and name"
     }
   ],
   "coverage": [
@@ -172,12 +186,12 @@ window.STORYBOOK_DATA = {
       "variants": "Root missing; account ready/unhydrated/unconfigured; service online/offline."
     },
     {
-      "evidence": "Whole real-browser regression; asserts one device row.",
-      "gaps": "Offline logout, lost detach, reload during logout/login, concurrent revoke/delete, stale local grant.",
+      "evidence": "Whole real-browser regression; asserts one device row. Worker test: a space made while signed out is listed on the account's branch, re-rooted at the account, its seed sealed to the account, and the emptied workspace forgotten with its onboarding account retired; switching between two accounts carries nothing. Whole real-browser re-sign-in through another deployment: the space syncs to and is accepted by the account's deployment, and no signed-out workspace is left listed.",
+      "gaps": "Offline logout, lost detach, reload during logout/login, concurrent revoke/delete, stale local grant, a seed that fails to move (the workspace stays, both listing the space), the passkey sign-back-in carry in a whole browser.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B08",
-      "title": "Log out and sign back into the same account/profile.",
-      "variants": "Same root and server device row; local provider removed."
+      "title": "Log out and sign back into the same account/profile; what was made or joined while signed out joins the account.",
+      "variants": "Same root and server device row; local provider removed; spaces made or joined while signed out."
     },
     {
       "evidence": "Partial unit/flow logic.",
@@ -332,12 +346,28 @@ window.STORYBOOK_DATA = {
       "variants": "Browser opens/fails; --no-open; signed out; stale subject."
     },
     {
-      "evidence": "Invite preflight, trusted approval routing, exact-invitation retry, receipt publication/isolation, naming fallback, parser, standard-library prompt, and browser authorization integration tests.",
-      "gaps": "Whole published-npm-to-browser-space run, remote-offline command test, process interruption at each post-claim boundary, duplicate original-invite process retry.",
+      "evidence": "Historical lower-layer evidence retained; new CLI refuses these entry points without mutation.",
+      "gaps": "People and agents now use ACCT-C14.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C13",
-      "title": "Copy an empty-space prompt and run tonk connect to link, join, pull, and acknowledge that space.",
-      "variants": "Active/unlinked CLI account; long/short/malformed invite; default/explicit approval page; synced name absent/colliding; interrupted before receipt."
+      "title": "Retired: account-bound agent setup through join or browser-mediated connect.",
+      "variants": "Old sharing/account handoffs and legacy resume metadata."
+    },
+    {
+      "evidence": "Tool-only CLI routing/no-mutation, account-independence, credential isolation, worker explicit-space issuance, FAB source tests, two packaged whole-browser tool-connection journeys, and the existing packaged person-membership journey passed for Plan 005. Plan 007 adds passing mounted settings tests for confirmed-only grouping, named/legacy rows, inactive-row filtering, retry and account layout.",
+      "gaps": "Profile switching while open, connect-dialog responsive/focus/reduced-motion inspection, published CLI/browser matrix, staging, Safari and global revocation propagation remain open. Settings desktop/narrow/dark, focus and reduced-motion checks passed for Plan 007.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C14",
+      "title": "Choose **connect a tool**, run one-way tonk join without browser/account approval, optionally name the connection with --agent-name, and manage completed connections grouped by space in Settings; **invite someone** remains browser-only membership.",
+      "variants": "Empty, same-account, unrelated-account, or malformed-legacy CLI; person link; repeated bearer holders; independent issuers/invites; fresh/returning space; profile/space switch; restart; offline or revoked authority."
+    },
+    {
+      "evidence": "Worker unit and store tests for the request binding, grant install, and provisioning at the account's deployment; settings-element tests for the via pane (the answer waits for the bound display), the Option press on the account cell, and a web request's approval pane; dialog tests for the Tonk address it accepts; whole real-browser flow across two deployments with separate access services: sign in with no passkey screen between approving and the passkey, then a space made on the asking deployment provisions, pushes, and is recovered at home.",
+      "gaps": "Asking browser reloaded or closed mid-approval, service worker restarted between ask and answer, a space created before the account's encryption key has synced in, revoking the asking browser from the approving one, an approving deployment older than the asking one.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C15",
+      "title": "Sign a browser in through another deployment: Option+click \"add an account\" (or open /account?via) on a deployment that does not hold the account, name the Tonk that does, approve there with its passkey in one step (\"approve with passkey\" brings up the passkey), and come back signed in. /settings/link?via=<origin> asks for a named Tonk directly.",
+      "variants": "Unlinked asking browser; asking branch already following an account; approve/decline; answer replayed, crafted, or late."
     },
     {
       "evidence": "Whole browser revoke-CLI flow; DOM list tests; presenter tests require response uncertainty to lead to refresh before retry.",
@@ -460,6 +490,46 @@ window.STORYBOOK_DATA = {
       "variants": "Blank/existing home; notation/dry-run/no-sync; file/stdin."
     },
     {
+      "evidence": "Native provider tests seed from a served document and refuse unusable seeds without creating a space; a whole-browser regression seeds a space from another origin through the real dialog and renders the included template, after a missing seed is refused in the dialog.",
+      "gaps": "Sources that deny cross-origin reads, a seed whose apply fails after the pre-check, source updates, and the CLI space new --seed counterpart.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-13",
+      "title": "Create a space from the definitions at a URL by opening /seed/<url> and confirming the New-space dialog.",
+      "variants": "Same-origin or cross-origin source that allows reading; source with !includes beside it; missing, non-https, redirecting, non-UTF-8, or unanalyzable source."
+    },
+    {
+      "evidence": "Native snapshot, identity, metadata and command-containment tests; whole-browser menu/dialog/create/navigation regression.",
+      "gaps": "Remote hydration, interrupted writes, response loss, concurrent deletion and account changes.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-14",
+      "title": "Duplicate a space from the Hub into a new identity.",
+      "variants": "Available main content and blobs; missing or unreadable source; local-only or active account."
+    },
+    {
+      "evidence": "Node coverage for remote metadata escaping and catalog retry; native command coverage for ordered required files and checksum refusal before creation; cross-origin browser regression for catalog retry, two-step modal, refusal/retry, single creation and copied home.",
+      "gaps": "Upstream availability, interrupted writes, response loss after creation, account changes, hosted sync, and full interactions within every template.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-15",
+      "title": "Browse a live community catalog in Discover, inspect details and an expanded photo, then copy with a separate name/description modal.",
+      "variants": "Catalog loading/failure/retry; empty or populated collection; details and photo; back from copy options; unavailable or changed source; retry; remote template home."
+    },
+    {
+      "evidence": "Focused cache/authorization/fallback tests and a pre-rebase Chrome smoke check of automatic capture, decoded blurred cards, and zero mounted space frames in the Hub.",
+      "gaps": "Browser coverage after the Discover rebase, other browsers, physical mobile performance, and complex media fidelity.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-16",
+      "title": "Recognize a visited home from its blurred Hub thumbnail.",
+      "variants": "Unvisited/visited; unsupported view; cache miss/expiry; account switch; desktop/narrow."
+    },
+    {
+      "evidence": "Native worker tests for the missing check, a tab's load through /transact making nothing, starting from main, empty or the remote's branch, and the profile-only command; a whole-browser regression drives the panel and asserts the space view renders on the new branch.",
+      "gaps": "Remote-held branch and unreachable remote in a browser, the FABB on a non-main branch, refusals surfaced in the panel, branch listing and merge.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-17",
+      "title": "Open a branch of a space by URL (/space/{branch}@{did}), and make one the space lacks from the panel that offers \"branch off main\" or \"start empty\".",
+      "variants": "Existing branch; missing branch on a space that is here; space still arriving; remote holding the branch; remote unreachable; invalid name."
+    },
+    {
       "evidence": "Eight space_link tests, including signer recovery and post-invite retry, plus authority/browser happy paths.",
       "gaps": "Crash/retry at every ownership/hosting/listing/upstream stage, partial remote commit, concurrent link.",
       "group": "Spaces: account directory, sync, and collaboration",
@@ -492,8 +562,8 @@ window.STORYBOOK_DATA = {
       "variants": "No upstream/synced/ahead/behind/diverged/unreachable/revoked."
     },
     {
-      "evidence": "Broad sync and access tests.",
-      "gaps": "Lost response after commit, concurrent push, retry/idempotency, bounded timeout.",
+      "evidence": "Broad sync and access tests. Executed native worker/MCP regressions prove finite remote-write bursts settle after more than four refusals, same-artifact replicas converge, and sustained contention or an unknown publication outcome retains local state without repeating evaluation.",
+      "gaps": "Whole CLI/browser journeys under these failures, device restart, and in-flight I/O deadlines; the 30-second retry admission window is not a hard request timeout.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "SYNC-02",
       "title": "Push local main.",
@@ -508,36 +578,36 @@ window.STORYBOOK_DATA = {
       "variants": "R0–R6; dirty/ahead/diverged; remote changes during fetch."
     },
     {
-      "evidence": "Data verb and sync integration coverage.",
-      "gaps": "Whole command × all remote states, response loss, local commit succeeds/push fails recovery.",
+      "evidence": "Data verb and sync integration coverage. Native worker processes now verify one committing evaluation through publication retries, immediate stop on unavailable publication or a lost accepted response, and retained-state refusal of another write. A separate 30-operation native reliability workload verifies independently read fields and concurrent-writer convergence.",
+      "gaps": "Whole CLI/browser command × all remote states, device/process loss, and explicit retained-publication recovery; native evidence does not establish hosted runtime behavior.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "SYNC-04",
       "title": "Auto-pull/write/auto-push around a write.",
       "variants": "--dry-run, --no-sync, TONK_NO_SYNC, offline, conflict."
     },
     {
-      "evidence": "Broad invite/integration coverage.",
-      "gaps": "Shortcut timeout/malformed answer, lost push, stable URL privacy, concurrent revoke.",
+      "evidence": "Broad invite/integration coverage; worker and CLI tests mint ticket links and claim them back; whole real-browser share tests copy a ticket link from the FABB and from the sign-up ceremony.",
+      "gaps": "Shortcut timeout/malformed answer, lost push, stable URL privacy, concurrent revoke, a ticket write that lands after the link was handed out.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "COLLAB-01",
-      "title": "Mint an audience-open invite.",
-      "variants": "Zero/one/many remotes; shortening on/off/offline; upstream states."
+      "title": "Mint an audience-open invite: a ticket link, /space/{did}#{seed}, whose chain the space keeps as the link key's ticket.",
+      "variants": "Zero/one/many remotes; service keeps tickets or not (falls back to the access= link); explicit --base-url on or off the remote's origin; shortening on/off/offline; upstream states."
     },
     {
-      "evidence": "Partial invite tests.",
-      "gaps": "Full claim boundary, wrong recipient, root rotation, URL leakage.",
+      "evidence": "Native production HTTP/worker email flow, four service tests and desktop retry/account isolation tests pass. Browser evidence is tracked in the email invitation plan.",
+      "gaps": "Production mail delivery, cross-device recovery, sender cancellation UI, and invitation-record retention policy.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "COLLAB-02",
-      "title": "Mint a recipient-root invite.",
-      "variants": "Valid/wrong DID; accountless/account recipient; remote variants."
+      "title": "Mint a recipient-root invite, or email an unregistered recipient through signup and confirmation.",
+      "variants": "Valid/wrong DID; absent/pending/active email; selected account and space; retry/restart/expiry."
     },
     {
       "evidence": "Join, profile, and authority tests; accountless claim terminates at the onboarding account and remains usable after account union.",
       "gaps": "Process error matrix, crash between claim and registration, response loss, concurrent claim, browser-only invite-seed rotation after native login.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "COLLAB-03",
-      "title": "Join or claim an invite into a named space.",
-      "variants": "Fresh/existing name; remote/no remote; malformed/expired/revoked/already claimed; no passkey account."
+      "title": "Join or claim an invite into a named space, including opening a ticket link, which claims the link key's ticket with /use/get/ticket/claim before joining.",
+      "variants": "Fresh/existing name; remote/no remote; access= or ticket link; raw or percent-encoded DID; ticket taken back; malformed/expired/revoked/already claimed; no passkey account."
     },
     {
       "evidence": "Invite revocation integration and real-browser access cutoff.",
@@ -554,6 +624,22 @@ window.STORYBOOK_DATA = {
       "id": "COLLAB-05",
       "title": "Claim while accountless, later add an account, recover on another device.",
       "variants": "Provider-free root; customer activation states; second device."
+    },
+    {
+      "evidence": "Worker test publishes, reads the public ticket, unpublishes and finds it taken back and revoked; palette lowering tests; whole real-browser test publishes from the FABB and unpublishes from the palette.",
+      "gaps": "A refused or failed publish is only logged; the palette offers both verbs to everyone on every space; partial unpublish (ticket withdrawn, revocation lost); concurrent publish from two devices.",
+      "group": "Spaces: account directory, sync, and collaboration",
+      "id": "COLLAB-06",
+      "title": "Make a space public, and private again, from the FABB or the command palette.",
+      "variants": "Founder/admin (offered) or member/reader (not offered); already public/private; account not hosting the space; service refuses; palette on the space's page or elsewhere (space named)."
+    },
+    {
+      "evidence": "Worker test: a fresh device claims the public ticket and replicates, from the bare address and from a percent-encoded notebook route; a newcomer after unpublish gets Private from either, the earlier reader's pull is refused as Revoked. Access-service tests: the ticket's holder and its delegate claim it; any other principal is refused as InvalidAudience. Whole real-browser test: an encoded-address visitor sees the space itself rendered (not only the FABB) with the half-filled observer disc and no share link, without a reload; the next visitor after unpublish sees the private wall. The test checks the space renders in the same document, with no reload; it fails on a build whose join leaves the waiting view on its loading state.",
+      "gaps": "Readers can still write locally (never synced); a deployment pass on the preview; offline first visit; a reader later invited as a member.",
+      "group": "Spaces: account directory, sync, and collaboration",
+      "id": "COLLAB-07",
+      "title": "Open a published space from its address, bare or a link into one of its pages, as an observer, and meet the private wall once it is unpublished.",
+      "variants": "Fresh or returning visitor; no account or an account; raw or percent-encoded DID (a normalizing deployment redirects to the encoded form); the bare address or a route of the space (/space/{did}/notebook/…); already a member; space unpublished before or after the first visit."
     },
     {
       "evidence": "Strong authoring/process coverage.",
@@ -609,7 +695,7 @@ window.STORYBOOK_DATA = {
       "group": "Authoring, data, rendering, and transfer",
       "id": "DATA-07",
       "title": "Evaluate notation from inline text, file, explicit -, or piped stdin.",
-      "variants": "Query/write/mixed; JSON/quiet/home/dry-run/no-sync."
+      "variants": "Query/write/mixed; JSON/quiet/home/dry-run/no-sync; file-relative !include (inline/stdin refuse it)."
     },
     {
       "evidence": "Listing/schema tests.",
@@ -650,6 +736,14 @@ window.STORYBOOK_DATA = {
       "id": "DATA-12",
       "title": "Define a custom element and have the browser resolve it on use.",
       "variants": "List/empty; inline/file method source; attribute defaults; re-authoring one method or one default; notation; write flags."
+    },
+    {
+      "evidence": "Shared document, worker-route, editor and CLI regression suites; two-browser access-service journey.",
+      "gaps": "Preview deployment and scoped agent grants for document cells; the existing agent grant only covers branch revisions and archives.",
+      "group": "Authoring, data, rendering, and transfer",
+      "id": "DATA-14",
+      "title": "Edit and recover shared Automerge prose and workbooks.",
+      "variants": "Concurrent writers; branch-specific versions; lost reply; offline restart; newer format; size limit; CSV round-trip; explicit CLI push/pull."
     },
     {
       "evidence": "Parser/unit and process coverage.",
@@ -789,16 +883,22 @@ window.STORYBOOK_DATA = {
         "SPACE-06",
         "SPACE-07",
         "SPACE-08",
+        "SPACE-13",
+        "SPACE-14",
+        "SPACE-15",
+        "SPACE-16",
         "UI-04"
       ],
       "name": "Space directory",
       "source_paths": [
         "rust/tonk-ui/src/bin/ui.rs",
         "rust/tonk-ui/styles.css",
-        "rust/tonk-fab/src/markup.rs"
+        "rust/tonk-fab/src/markup.rs",
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-worker/src/router/repository/duplication.rs"
       ],
       "status": "captured",
-      "summary": "The Hub lists local, owned, and joined spaces and exposes the account and create-space routes.",
+      "summary": "The Hub lists local, owned, and joined spaces and offers create, duplicate, and Discover template-copy actions. Visited homes can show cached blurred thumbnails without opening spaces from the Hub. The screenshot predates duplication, Discover, and real previews.",
       "surface": "browser"
     },
     {
@@ -808,10 +908,12 @@ window.STORYBOOK_DATA = {
       "id": "WEB-03",
       "journey_ids": [
         "ACCT-C13",
+        "ACCT-C14",
         "SPACE-09",
         "DATA-02",
         "DATA-09",
-        "UI-04"
+        "UI-04",
+        "SPACE-17"
       ],
       "name": "Space home",
       "source_paths": [
@@ -830,6 +932,7 @@ window.STORYBOOK_DATA = {
       "capture": "running product",
       "id": "WEB-04",
       "journey_ids": [
+        "ACCT-C14",
         "SPACE-06",
         "SYNC-01",
         "SYNC-02",
@@ -838,14 +941,18 @@ window.STORYBOOK_DATA = {
         "COLLAB-01",
         "CLI-03"
       ],
-      "name": "Space actions and switching",
+      "name": "Space actions and attached panels",
       "source_paths": [
         "rust/tonk-ui/src/bin/ui.rs",
         "rust/tonk-fab/src/markup.rs",
+        "rust/tonk-fab/src/bar.rs",
+        "rust/tonk-fab/src/tool_connection.rs",
+        "rust/tonk-fab/src/agent_panel.rs",
+        "rust/tonk-fab/src/member_roster.rs",
         "rust/tonk-fab/src/skin.rs"
       ],
       "status": "captured",
-      "summary": "The expanded floating action bar names the current space and lists every other account-directory space alongside renaming, sharing, sync, and appearance actions.",
+      "summary": "The v0.17 floating action bar names the current space and separates person invitations from scoped tool connections alongside share, members, and Tonk-home actions.",
       "surface": "browser"
     },
     {
@@ -860,14 +967,17 @@ window.STORYBOOK_DATA = {
         "COLLAB-04",
         "COLLAB-05"
       ],
-      "name": "Join and share ceremonies",
+      "name": "Share and contained account tasks",
       "source_paths": [
         "rust/tonk-ui/src/bin/ui.rs",
-        "rust/tonk-fab/src/markup.rs",
-        "rust/tonk-fab/src/share.rs"
+        "rust/tonk-ui/src/fabb_task.rs",
+        "rust/tonk-fab/src/contained_tasks.rs",
+        "rust/tonk-fab/src/trusted_tasks.rs",
+        "rust/tonk-fab/src/share.rs",
+        "rust/tonk-portal/src/task.rs"
       ],
       "status": "captured",
-      "summary": "Invite claim, accountless accreditation, share, and absent-space access states explain what will change and retain actionable Tonk navigation before authority moves.",
+      "summary": "Share, sync repair, activation, and account-required states stay attached to the originating FABB or replace it through one trusted contained task without leaving the space.",
       "surface": "browser"
     },
     {
@@ -892,7 +1002,7 @@ window.STORYBOOK_DATA = {
     {
       "area": "Accounts",
       "artifact": "app/screens/web-07-account-choice.png",
-      "capture": "production-source fixture",
+      "capture": "running product",
       "id": "WEB-07",
       "journey_ids": [
         "ACCT-B01",
@@ -903,8 +1013,9 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Account choice",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-ui/src/register_dialog.rs",
+        "rust/tonk-ui/styles.css",
+        "rust/tonk-ui/src/account_flow.rs"
       ],
       "status": "captured",
       "summary": "A provider-free profile can create an account, log in, choose a browser profile, or return to local Tonk.",
@@ -913,7 +1024,7 @@ window.STORYBOOK_DATA = {
     {
       "area": "Accounts",
       "artifact": "app/screens/web-08-account-create.png",
-      "capture": "production-source fixture",
+      "capture": "running product",
       "id": "WEB-08",
       "journey_ids": [
         "ACCT-B02",
@@ -923,8 +1034,9 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Create account",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-ui/src/register_dialog.rs",
+        "rust/tonk-ui/styles.css",
+        "rust/tonk-ui/src/account_flow.rs"
       ],
       "status": "captured",
       "summary": "The account creation form collects an email and turns passkey cancellation, unsupported authenticators, and remote failures into distinct recovery steps.",
@@ -933,7 +1045,7 @@ window.STORYBOOK_DATA = {
     {
       "area": "Accounts",
       "artifact": "app/screens/web-09-account-login.png",
-      "capture": "production-source fixture",
+      "capture": "running product",
       "id": "WEB-09",
       "journey_ids": [
         "ACCT-B03",
@@ -942,8 +1054,9 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Log in with a passkey",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-ui/src/register_dialog.rs",
+        "rust/tonk-ui/styles.css",
+        "rust/tonk-ui/src/account_flow.rs"
       ],
       "status": "captured",
       "summary": "The browser explains that a passkey ceremony will select the existing account before linking this profile.",
@@ -959,16 +1072,17 @@ window.STORYBOOK_DATA = {
         "ACCT-C03",
         "ACCT-C04",
         "ACCT-C05",
-        "ACCT-C06"
+        "ACCT-C06",
+        "ACCT-C15"
       ],
-      "name": "CLI authorization handoff",
+      "name": "Tonk connection approval",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs",
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-ui/styles.css",
         "rust/tonk-cli/src/account.rs"
       ],
       "status": "captured",
-      "summary": "The browser names the waiting CLI device and requires explicit passkey approval or cancellation.",
+      "summary": "The browser shows the Tonk connection name and granting account email, explains full-account access, and offers decline or passkey approval. Device IDs and callback destinations stay internal.",
       "surface": "browser"
     },
     {
@@ -986,8 +1100,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Account settings",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-ui/styles.css"
       ],
       "status": "captured",
       "summary": "Account facts and management stay visible while pending email confirmation is named directly and authoritative edits remain disabled until account state is ready.",
@@ -1008,8 +1122,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Devices and revocation",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-ui/styles.css"
       ],
       "status": "captured",
       "summary": "The devices panel identifies this device, confirms revocation, and requires a refresh before retry when the result cannot be confirmed.",
@@ -1027,8 +1141,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Deletion review",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-ui/styles.css"
       ],
       "status": "captured",
       "summary": "The destructive confirmation enumerates exact scope, says when cancellation changed nothing, and treats a lost result as uncertain before retry.",
@@ -1072,6 +1186,65 @@ window.STORYBOOK_DATA = {
       ],
       "status": "captured",
       "summary": "Successful and failed activation settle explicitly without exposing service response bodies, routes, or HTTP details.",
+      "surface": "browser"
+    },
+    {
+      "area": "Space",
+      "artifact": "app/screens/web-16-make-space-public.png",
+      "capture": "running product",
+      "id": "WEB-16",
+      "journey_ids": [
+        "COLLAB-06"
+      ],
+      "name": "Make space public",
+      "source_paths": [
+        "rust/tonk-fab/src/markup.rs",
+        "rust/tonk-fab/src/bar.rs",
+        "rust/tonk-fab/src/skin.rs",
+        "rust/tonk-fab/src/publication.rs",
+        "rust/tonk-worker/src/router/publication.rs"
+      ],
+      "status": "captured",
+      "summary": "The owner's FABB menu on a private space offers \"make space public\" beside sharing; once public it offers \"make space private\" instead. Only whoever runs the space sees either.",
+      "surface": "browser"
+    },
+    {
+      "area": "Space",
+      "artifact": "app/screens/web-17-observing-public-space.png",
+      "capture": "running product",
+      "id": "WEB-17",
+      "journey_ids": [
+        "COLLAB-03",
+        "COLLAB-07"
+      ],
+      "name": "Observing a public space",
+      "source_paths": [
+        "rust/tonk-fab/src/markup.rs",
+        "rust/tonk-fab/src/bar.rs",
+        "rust/tonk-fab/src/skin.rs",
+        "rust/tonk-fab/src/member_roster.rs",
+        "rust/tonk-worker/src/router/join.rs"
+      ],
+      "status": "captured",
+      "summary": "A visitor with no invite opens a published space's address and reads it as an observer: the space renders without a reload, the sync disc is half filled (read-only), and no share or agent link is offered.",
+      "surface": "browser"
+    },
+    {
+      "area": "Space",
+      "artifact": "app/screens/web-18-space-is-private.png",
+      "capture": "running product",
+      "id": "WEB-18",
+      "journey_ids": [
+        "COLLAB-01",
+        "COLLAB-07"
+      ],
+      "name": "This space is private",
+      "source_paths": [
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-worker/src/router/join.rs"
+      ],
+      "status": "captured",
+      "summary": "Opening a space's address with no access of one's own, when the space keeps no public ticket (never published, or made private again), ends on the private wall rather than a failure.",
       "surface": "browser"
     },
     {
@@ -1248,7 +1421,8 @@ window.STORYBOOK_DATA = {
         "DATA-06",
         "DATA-08",
         "DATA-09",
-        "DATA-12"
+        "DATA-12",
+        "DATA-14"
       ],
       "name": "Concepts, views, and data verbs",
       "source_paths": [
@@ -1561,6 +1735,14 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
+      "claim": "Re-sign-in selects the current device grant (The simple case).",
+      "device": "returning-browser + restart",
+      "file": "verification/accounts.md",
+      "id": "LIFE-30",
+      "priority": "P1",
+      "result": "Focused regressions: it_replaces_obsolete_device_grants_and_repairs_a_repeat, it_repairs_obsolete_grants_when_following_an_existing_root, it_retracts_a_device_grant_added_after_the_branch_was_cached. it_keeps_the_current_device_grant_after_account_hydration also passes against a real local access service: old grant revoked, fresh grant installed, first-hydration and already-hydrated cases, bidirectional remote edits without restart. Live passkey and native callback with this patch remain unverified."
+    },
+    {
       "claim": "Linked browser approves a waiting CLI end to end (Simple case).",
       "device": "hybrid",
       "file": "verification/accounts.md",
@@ -1706,7 +1888,7 @@ window.STORYBOOK_DATA = {
     },
     {
       "claim": "Empty-space prompt connects an agent CLI to the exact originating space (Agent handoff).",
-      "device": "hybrid + second-client",
+      "device": "historical / retired + second-client",
       "file": "verification/accounts.md",
       "id": "HANDOFF-19",
       "priority": "P1",
@@ -1714,11 +1896,19 @@ window.STORYBOOK_DATA = {
     },
     {
       "claim": "Agent connection validates before authority and retains a named recovery path after interruption (Interrupted agent connection).",
-      "device": "hybrid + offline + restart",
+      "device": "historical / retired",
       "file": "verification/accounts.md",
       "id": "HANDOFF-20",
       "priority": "P1",
       "result": "Automated preflight/approval/fallback/exact-invitation/spoof-rejection/receipt coverage; revoked-authority reclaim, command interruption, remote-offline recovery, and whole-process original-invite retry remain unrun."
+    },
+    {
+      "claim": "Explicit tool connection imports without a CLI account while person links remain browser-only membership (Scoped tool connection).",
+      "device": "hybrid + restart + two-actor",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-21",
+      "priority": "P1",
+      "result": "Native routing/account/isolation and worker/FAB checks passed during Plan 005. The feature-enabled packaged archive ran and passed tool_connection_rejects_person_links_and_confirms_the_cli and it_keeps_copied_agent_grants_independent_of_cli_accounts; the existing person-membership browser journey also passed. Plan 007 adds passing confirmed-only/named settings, legacy/inactive-row filtering/retry and account-grid browser tests, including settings 390px, keyboard and reduced-motion checks. See the scoped-tool journey for artifact and source boundaries. Status remains Drafted pending connect-dialog/profile-switch, Safari, deployed and global-enforcement evidence."
     },
     {
       "claim": "Device list identifies self separately from shared rows (Resolve).",
@@ -2017,6 +2207,22 @@ window.STORYBOOK_DATA = {
       "result": "Pass (native, 2026-08-30): focused real-binary create/create and bind/remove overlap regressions."
     },
     {
+      "claim": "Hub duplication creates an independent identity (Duplicate a space).",
+      "device": "fresh-browser + native",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-14",
+      "priority": "P1",
+      "result": "Partial pass (2026-09-29, post-rebase artifact 12b87892fca818d5): browser menu/name/create/navigation and native data/identity/containment checks pass. Interrupted writes, remote hydration and retry after response loss are unrun."
+    },
+    {
+      "claim": "Visited homes have blurred cached Hub previews without background space mounts (Space directory).",
+      "device": "browser + cache failure",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-16",
+      "priority": "P2",
+      "result": "Partial pass: focused Node contracts and pre-rebase Chrome desktop/narrow smoke check. Discover-integrated browser, other browsers and physical-device performance unrun."
+    },
+    {
       "claim": "Status reports R0–R6 without mutation (Settle).",
       "device": "two-actor",
       "file": "verification/cli-spaces-ui.md",
@@ -2081,12 +2287,28 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
-      "claim": "Share shows copy link and member count; members opens a scrollable popup (Share-menu presentation decision).",
+      "claim": "Share, members, and recovery stay attached to the v0.17 FABB (Share-menu presentation decision).",
       "device": "browser + touch",
       "file": "verification/cli-spaces-ui.md",
       "id": "COLLAB-05",
       "priority": "P2",
-      "result": "—"
+      "result": "Partial (component, 2026-09-22): FABB Wasm suites cover double-click, refusal routing, contained task ownership, responsive panels, and 12-member reset/update/retract. Real copied-link use, account completion, touch device, and Safari remain unrun."
+    },
+    {
+      "claim": "Only whoever runs a space is offered to publish it, and publishing from the FABB or the palette leaves a public ticket that unpublishing takes back and revokes (Ticket links and public spaces decision).",
+      "device": "browser + palette",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "COLLAB-06",
+      "priority": "P1",
+      "result": "Partial (local real-browser, 3c83082, 2026-10-09): it_opens_a_published_space_to_a_visitor_as_an_observer publishes from the FABB and unpublishes from the palette. The member/reader not-offered half and a refused publish are unrun."
+    },
+    {
+      "claim": "A visitor with no access opens a published space from its bare address, or from a link into one of its pages, as an observer, without a reload, and meets the private wall once it is unpublished (Ticket links and public spaces decision).",
+      "device": "fresh-browser + encoded address",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "COLLAB-07",
+      "priority": "P1",
+      "result": "Pass (local real-browser, 2026-10-09, on top of 3c83082 with the in-place reload): the stuck first load reported on the preview reproduced locally before the fix and passes after it. A deployment pass remains unrun from this environment. Deep link (BUG-220, 2026-11-03): a link into a page of the space (/space/did%3Akey%3A…/notebook/…) claimed nothing and left the page silently; the worker test now opens it from a notebook route and refuses it as Private after unpublish. The real-browser pass for a deep link is not yet run."
     },
     {
       "claim": "Concept and all view kinds round-trip through list/show/render (Inventory).",
@@ -2102,7 +2324,7 @@ window.STORYBOOK_DATA = {
       "file": "verification/cli-spaces-ui.md",
       "id": "DATA-02",
       "priority": "P1",
-      "result": "—"
+      "result": "Partial (component, 2026-09-22): explicit mint and complete prompt render pass; local import and running-product home replacement remain unrun."
     },
     {
       "claim": "Assert/update/no-op/retract preserve untouched fields and handle concurrent claims (Inventory).",
@@ -2185,6 +2407,14 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
+      "claim": "Shared document edits converge and remain recoverable (Shared documents).",
+      "device": "cli + two browsers + restart",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "DATA-14",
+      "priority": "P1",
+      "result": "Regression suites are listed in the PR validation record; preview deployment and scoped agent document grants remain outside this pass."
+    },
+    {
       "claim": "Every route family mounts exactly one correct top-level element (Resolve).",
       "device": "fresh-browser",
       "file": "verification/cli-spaces-ui.md",
@@ -2201,12 +2431,12 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
-      "claim": "Service-worker update never mixes asset generations (Cross a boundary).",
-      "device": "two-actor",
+      "claim": "Service-worker update preserves a usable account UI across library generations (Cross a boundary).",
+      "device": "two-actor + legacy-account",
       "file": "verification/cli-spaces-ui.md",
       "id": "UI-03",
       "priority": "P1",
-      "result": "—"
+      "result": "Exact pre-stack fixture reproduces schema-validation failure on staging d69c737ef. Worker regressions profile_library_upgrades_* check migration, decoded stylesheet bindings, preservation and idempotence. Deployed account recovery, Safari, and the full two-generation UI journey remain unverified."
     },
     {
       "claim": "Account gate permits provider-free/local use and blocks only authority-specific work (Exit early).",
@@ -2284,9 +2514,9 @@ window.STORYBOOK_DATA = {
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 7,
-    "pass": 2,
-    "unrun": 110
+    "other": 16,
+    "pass": 3,
+    "unrun": 107
   },
   "visualCommit": "49a873a23"
 };

@@ -55,8 +55,9 @@ impl BranchSession {
         &self,
         query: ConceptQuery,
         client: Option<String>,
+        level: u32,
     ) -> Result<Subscriber, ReactorError> {
-        self.state.subscribe(query, client)
+        self.state.subscribe(query, client, level)
     }
 
     /// Reference a single subscription on this branch by its

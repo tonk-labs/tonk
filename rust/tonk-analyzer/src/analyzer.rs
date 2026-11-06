@@ -152,6 +152,8 @@ pub fn analyze_local(syntax: &Syntax) -> Result<Tree<Syntax>, AnalyzeError> {
         ));
     }
 
+    reject_unexpanded_includes(syntax)?;
+
     // push → resolve(LocalOnly) → build. The graph's resolve phase
     // is genuinely synchronous when the resolver does no IO:
     // `LocalOnly` answers every external need with `None` without
@@ -164,6 +166,41 @@ pub fn analyze_local(syntax: &Syntax) -> Result<Tree<Syntax>, AnalyzeError> {
     let resolved = poll_ready(graph.resolve(syntax, &scope, &graph::LocalOnly))?;
     rule::check_overlapping_transient_rule_triggers(syntax, &scope)?;
     expand(syntax, &scope, resolved)
+}
+
+/// Refuse a document that still carries an `!include`.
+///
+/// Included content is inlined by [`tonk_notation::expand`] before
+/// analysis, so one that survives was never loaded: its document has
+/// no location to resolve against (an inline body, whose base is
+/// [`tonk_notation::INLINE_LOCATION`]), or the pipeline that ran it
+/// does not load included resources. Checked up front, against the
+/// document's base, so the error says which of the two it was.
+fn reject_unexpanded_includes(syntax: &Syntax) -> Result<(), AnalyzeError> {
+    fn find(fields: &[tonk_notation::Field]) -> Option<&tonk_notation::Field> {
+        fields.iter().find_map(|field| match &field.value {
+            tonk_notation::FieldValue::Include(_) => Some(field),
+            tonk_notation::FieldValue::Nested(nested) => find(nested),
+            tonk_notation::FieldValue::Premises(premises) => {
+                premises.iter().find_map(|premise| find(&premise.bindings))
+            }
+            _ => None,
+        })
+    }
+    let found = syntax
+        .expressions
+        .iter()
+        .find_map(|expression| find(&expression.application().fields));
+    match found {
+        Some(field) => {
+            let tonk_notation::FieldValue::Include(include) = &field.value else {
+                unreachable!("find only returns includes");
+            };
+            Err(field::unexpanded_include(include, Some(&syntax.base))
+                .with_range(field.value_range))
+        }
+        None => Ok(()),
+    }
 }
 
 /// Drive a future that performs no real IO to completion on the
@@ -223,6 +260,8 @@ impl<'s, 'a> Analyze<'s, 'a> {
                 syntax.range,
             ));
         }
+
+        reject_unexpanded_includes(syntax)?;
 
         let scope = Scope::new();
         let graph = graph::push(syntax)?;
@@ -781,7 +820,7 @@ fn as_constant_entity(term: &dialog_query::Term<dialog_query::Any>) -> Option<En
 mod tests {
     use super::*;
     use dialog_artifacts::{Entity, Value};
-    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::{ConceptDescriptor, Term, the};
     use dialog_repository::Branch;
     use tonk_core::meta::AnchorName;
@@ -807,6 +846,8 @@ mod tests {
         + dialog_query::Provider<dialog_effects::memory::Publish>
         + dialog_query::Provider<dialog_effects::archive::Import>
         + dialog_query::Provider<dialog_effects::authority::Attest>
+        + dialog_query::Provider<dialog_effects::blob::Import>
+        + dialog_query::Provider<dialog_effects::blob::Size>
     {
     }
 
@@ -815,10 +856,12 @@ mod tests {
             + dialog_query::Provider<dialog_effects::memory::Publish>
             + dialog_query::Provider<dialog_effects::archive::Import>
             + dialog_query::Provider<dialog_effects::authority::Attest>
+            + dialog_query::Provider<dialog_effects::blob::Import>
+            + dialog_query::Provider<dialog_effects::blob::Size>
     {
     }
 
-    /// `Op` is the concrete operator type [`test_operator_with_profile`]
+    /// `Op` is the concrete operator type [`test_session_with_peer`]
     /// returns; tests build fixtures via [`new_fixture`] and
     /// never need to name it directly.
     struct Fixture<Op>
@@ -831,7 +874,7 @@ mod tests {
 
     /// Open a fresh test repo with one empty `main` branch.
     async fn new_fixture() -> Fixture<impl FixtureEnv> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo
             .branch("main")
@@ -907,33 +950,11 @@ mod tests {
         async fn assert_concept_named(&self, name: &str, descriptor: &ConceptDescriptor) {
             let mut txn = self.branch.transaction();
             for (_, attr) in descriptor.with().iter() {
-                let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
-                let type_label = attr
-                    .content_type()
-                    .and_then(|t| serde_json::to_value(t).ok())
-                    .and_then(|v| v.as_str().map(str::to_owned))
-                    .unwrap_or_else(|| "Text".to_owned());
-                txn = txn
-                    .assert(
-                        the!("db.attribute/id")
-                            .of(attr_entity.clone())
-                            .is(attr.the().to_string()),
-                    )
-                    .assert(
-                        the!("db.attribute/type")
-                            .of(attr_entity.clone())
-                            .is(type_label),
-                    )
-                    .assert(
-                        the!("db.attribute/cardinality")
-                            .of(attr_entity.clone())
-                            .is("one".to_owned()),
-                    )
-                    .assert(
-                        the!("db.meta/description")
-                            .of(attr_entity)
-                            .is(String::new()),
-                    );
+                for statement in tonk_schema::concept::attribute_statements(attr.descriptor())
+                    .expect("attribute facts")
+                {
+                    txn = txn.assert(statement);
+                }
             }
             let concept_entity = descriptor.this();
             let id_entity: Entity = format!("id:{name}").parse().expect("id:<name> parses");
@@ -998,28 +1019,11 @@ mod tests {
                     .expect("descriptor JSON is well-formed");
             let mut txn = self.branch.transaction();
             for (_, attr) in descriptor.with().iter() {
-                let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
-                txn = txn
-                    .assert(
-                        the!("db.attribute/id")
-                            .of(attr_entity.clone())
-                            .is(attr.the().to_string()),
-                    )
-                    .assert(
-                        the!("db.attribute/type")
-                            .of(attr_entity.clone())
-                            .is("Text".to_owned()),
-                    )
-                    .assert(
-                        the!("db.attribute/cardinality")
-                            .of(attr_entity.clone())
-                            .is("one".to_owned()),
-                    )
-                    .assert(
-                        the!("db.meta/description")
-                            .of(attr_entity)
-                            .is(String::new()),
-                    );
+                for statement in tonk_schema::concept::attribute_statements(attr.descriptor())
+                    .expect("attribute facts")
+                {
+                    txn = txn.assert(statement);
+                }
             }
             // Pin the concept at `entity` by emitting its facts there
             // directly (mirrors `emit_concept_facts`): the marker plus
@@ -1032,7 +1036,7 @@ mod tests {
             for (field, attr) in descriptor.with().iter() {
                 let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
                 let the = format!("db.concept.with/{field}")
-                    .parse::<dialog_query::attribute::The>()
+                    .parse::<dialog_query::attribute::Relation>()
                     .expect("with attribute parses");
                 txn = txn.assert(the.of(entity.clone()).is(attr_entity));
             }
@@ -1172,6 +1176,188 @@ mod tests {
         fixture.analyze(syntax).await
     }
 
+    /// An attribute declares how a field reads it: a listed `as:` or
+    /// `the:` is a ranked choice, and `pick:` names any other of
+    /// dialog's picks. An unknown pick is refused by the analyzer, and a
+    /// pick its attribute cannot read under by dialog.
+    #[dialog_common::test]
+    fn it_lowers_a_select_policy_with_its_listed_values() {
+        let syntax = must_parse(
+            "\
+concept!: &job
+  description: \"a job\"
+  with:
+    status:
+      description: \"where it stands\"
+      the: x.y/status
+      as:
+        - case:suspended
+        - case:active
+    handle:
+      description: \"the email, else the phone\"
+      the:
+        - x.y/email
+        - x.y/phone
+      as: text
+",
+        );
+        let result = super::analyze_local(&syntax);
+        assert!(result.is_ok(), "ranked reads lower: {:?}", result.err());
+
+        let syntax = must_parse(
+            "\
+concept!: &job
+  description: \"a job\"
+  with:
+    status:
+      description: \"where it stands\"
+      the: x.y/status
+      as: entity
+      pick: :newest
+",
+        );
+        let result = super::analyze_local(&syntax);
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|error| format!("{error:?}").contains("unknown pick")),
+            "an unknown policy is refused: {result:?}"
+        );
+
+        let syntax = must_parse(
+            "\
+concept!: &job
+  description: \"a job\"
+  with:
+    status:
+      description: \"where it stands\"
+      the: x.y/status
+      as: entity
+      pick: :top
+",
+        );
+        let result = super::analyze_local(&syntax);
+        assert!(
+            result.is_err(),
+            "a top read without listed values is refused by dialog: {result:?}"
+        );
+    }
+
+    /// A pick is a keyword: `pick: :all` names the entity `all:`, which
+    /// is what the attribute records. The bare word and the quoted word,
+    /// which earlier releases wrote, name the same entity; a pick quoted
+    /// as its entity (`"all:"`) is no pick's name and is refused.
+    #[dialog_common::test]
+    async fn it_resolves_picks_as_built_in_anchors() {
+        let entity = |source: &str| -> Option<String> {
+            let syntax = must_parse(source);
+            let analysis = flat(super::analyze_local(&syntax).expect("lowers"));
+            let Statement::Assert(Application::Concept { query, .. }) =
+                &analysis.mutate.statements[0]
+            else {
+                panic!("expected Assert(Concept)");
+            };
+            match query.terms.get("pick") {
+                Some(Term::Constant(Value::Entity(entity))) => Some(entity.to_string()),
+                _ => None,
+            }
+        };
+        let declare = |pick: &str| {
+            format!(
+                "attribute!: &tags\n  the: x.y/tags\n  description: \"labels\"\n  as: text\n  pick: {pick}\n"
+            )
+        };
+        assert_eq!(entity(&declare(":all")).as_deref(), Some("all:"));
+        assert_eq!(entity(&declare(":max")).as_deref(), Some("max:"));
+        assert_eq!(entity(&declare("all")).as_deref(), Some("all:"));
+        assert_eq!(entity(&declare("\"all\"")).as_deref(), Some("all:"));
+        let syntax = must_parse(&declare("\"all:\""));
+        let error = super::analyze_local(&syntax).expect_err("refused");
+        assert!(
+            matches!(
+                &error.kind,
+                AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("unknown pick \"all:\"")
+            ),
+            "a pick quoted as its entity is refused: {error:?}"
+        );
+    }
+
+    /// An attribute body written directly under `with:`, without the
+    /// field name it belongs to, is named as that mistake at the key
+    /// that gives it away, whether the key is `the:` (otherwise read as
+    /// a field referring to a relation that is no entity URI) or `as:`
+    /// (otherwise read as a field referring to a type entity that is no
+    /// attribute). Nested under its field, the same body lowers.
+    #[dialog_common::test]
+    async fn it_names_an_attribute_body_missing_its_field_name() {
+        for (document, key) in [
+            (
+                "concept!: &person\n  description: Person\n  with:\n    the: io.gozala.person/name\n    as: :text\n    description: Name\n",
+                "the",
+            ),
+            (
+                "concept!: &person\n  description: Person\n  with:\n    as: :text\n",
+                "as",
+            ),
+        ] {
+            let syntax = must_parse(document);
+            let err = analyze_empty(&syntax).await.unwrap_err();
+            let expected = format!("`{key}:` directly under `with:`");
+            assert!(
+                matches!(
+                    &err.kind,
+                    AnalyzeErrorKind::InvalidConceptBody { reason }
+                        if reason.contains(&expected) && reason.contains("without a field name")
+                ),
+                "expected the missing field name named for `{key}:`, got {err:?}"
+            );
+            assert_eq!(
+                err.range.map(|range| range.start.line),
+                Some(3),
+                "anchored at the `{key}:` key: {err:?}"
+            );
+        }
+        let nested = must_parse(
+            "concept!: &person\n  description: Person\n  with:\n    name:\n      the: io.gozala.person/name\n      as: :text\n      description: Name\n",
+        );
+        analyze_empty(&nested)
+            .await
+            .expect("the nested body lowers");
+    }
+
+    /// A field under `with:` names the attribute it reads. A relation
+    /// or a type in its place is told apart from an unknown attribute:
+    /// each is a key of the attribute body the field would declare
+    /// inline, and the message says so.
+    #[dialog_common::test]
+    async fn it_tells_a_relation_or_a_type_apart_from_an_attribute_reference() {
+        let relation = must_parse(
+            "concept!: &person\n  description: Person\n  with:\n    name: io.gozala.person/name\n",
+        );
+        let err = analyze_empty(&relation).await.unwrap_err();
+        assert!(
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::InvalidConceptBody { reason }
+                    if reason.contains("is a relation, not an attribute entity")
+                        && reason.contains("`the: io.gozala.person/name`")
+            ),
+            "a relation in an attribute's place is named: {err:?}"
+        );
+        let kind =
+            must_parse("concept!: &person\n  description: Person\n  with:\n    name: :text\n");
+        let err = analyze_empty(&kind).await.unwrap_err();
+        assert!(
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::InvalidConceptBody { reason }
+                    if reason.contains("is a type, not an attribute") && reason.contains("`as: text:`")
+            ),
+            "a type in an attribute's place is named: {err:?}"
+        );
+    }
+
     /// An instance head's `&anchor` must be resolvable by a later
     /// field reference in the same document, under both the full
     /// (branch-backed) pipeline and the env-free local path.
@@ -1185,7 +1371,7 @@ concept!: &thing
     source:
       description: \"src\"
       the: x.y/source
-      cardinality: one
+      cardinality: :one
       as: text
 
 thing!: &my-thing
@@ -1197,7 +1383,7 @@ concept!: &holder
     target:
       description: \"e\"
       the: x.y/target
-      cardinality: one
+      cardinality: :one
       as: entity
 
 holder!: &my-holder
@@ -1228,7 +1414,7 @@ concept!: &thing
     source:
       description: \"src\"
       the: x.y/source
-      cardinality: one
+      cardinality: :one
       as: text
 
 thing!: &my-thing
@@ -1241,7 +1427,7 @@ concept!: &holder
     target:
       description: \"e\"
       the: x.y/target
-      cardinality: one
+      cardinality: :one
       as: entity
 
 holder!: &my-holder
@@ -1326,9 +1512,42 @@ holder!: &my-holder
         let syntax = Syntax {
             expressions: Vec::new(),
             range: lsp_types::Range::default(),
+            base: tonk_notation::Url::parse(tonk_notation::INLINE_LOCATION).unwrap(),
         };
         let err = analyze_empty(&syntax).await.unwrap_err();
         assert!(matches!(err.kind, AnalyzeErrorKind::EmptyDocument));
+    }
+
+    /// A document with no location of its own cannot `!include`: the
+    /// reference has nothing to be relative to.
+    #[dialog_common::test]
+    async fn it_rejects_an_include_in_an_inline_document() {
+        let syntax = must_parse("note!:\n  this: ?n\n  body: !include ./body.md\n");
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        let AnalyzeErrorKind::UnexpandedInclude { reference, .. } = &err.kind else {
+            panic!("expected UnexpandedInclude, got {err:?}");
+        };
+        assert_eq!(reference, "./body.md");
+        assert!(err.to_string().contains("no location"), "{err}");
+        assert_eq!(err.range.map(|r| r.start.line), Some(2));
+    }
+
+    /// A located document whose includes were never expanded is still
+    /// refused — nested under a mapping too — rather than analyzed as
+    /// if the value were missing.
+    #[dialog_common::test]
+    fn it_rejects_an_unexpanded_include_in_a_located_document() {
+        let parsed = tonk_notation::parse_at(
+            tonk_notation::Url::parse("file:///notes/today.yaml").unwrap(),
+            "note!:\n  this: ?n\n  meta:\n    image: !include a.webp\n",
+        );
+        let syntax = parsed.syntax.unwrap();
+        let err = analyze_local(&syntax).unwrap_err();
+        assert!(
+            matches!(err.kind, AnalyzeErrorKind::UnexpandedInclude { .. }),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("file:///notes/a.webp"), "{err}");
     }
 
     /// `attribute!: &foo` declares a content-derived attribute
@@ -1341,7 +1560,7 @@ holder!: &my-holder
 attribute!: &person-name
   the:         io.gozala.person/name
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "Person's name"
 "#,
         );
@@ -1354,6 +1573,66 @@ attribute!: &person-name
         let Statement::Assert(Application::Concept { .. }) = &analysis.mutate.statements[0] else {
             panic!("expected Assert(Concept)");
         };
+    }
+
+    /// A declaration records the policy its attribute is read under
+    /// beside the arity: `select` spells it, and a ranked `as:` list
+    /// is carried as `among`, a JSON list best first. A reader
+    /// rebuilding the descriptor from the branch needs both, since
+    /// `cardinality` keeps only the arity.
+    #[dialog_common::test]
+    async fn it_records_the_policy_and_the_ranked_values_of_an_attribute() {
+        let syntax = must_parse(
+            r#"
+attribute!: &status
+  the: x.y/status
+  description: "where it stands"
+  as:
+    - case:suspended
+    - case:active
+attribute!: &tags
+  the: x.y/tags
+  description: "labels"
+  as: text
+  pick: :all
+attribute!: &name
+  the: x.y/name
+  description: "a name"
+  as: text
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let terms_of = |index: usize| {
+            let Statement::Assert(Application::Concept { query, .. }) =
+                &analysis.mutate.statements[index]
+            else {
+                panic!("expected Assert(Concept)");
+            };
+            query.terms.clone()
+        };
+        let text = |terms: &dialog_query::Parameters, field: &str| match terms.get(field) {
+            Some(Term::Constant(Value::String(text))) => Some(text.clone()),
+            _ => None,
+        };
+        let entity = |terms: &dialog_query::Parameters, field: &str| match terms.get(field) {
+            Some(Term::Constant(Value::Entity(entity))) => Some(entity.to_string()),
+            _ => None,
+        };
+        let status = terms_of(0);
+        assert_eq!(entity(&status, "pick").as_deref(), Some("top:"));
+        assert_eq!(entity(&status, "as").as_deref(), Some("entity:"));
+        assert_eq!(
+            text(&status, "among").as_deref(),
+            Some(r#"["case:suspended","case:active"]"#),
+            "the ranked values ride as a JSON list, best first"
+        );
+        let tags = terms_of(1);
+        assert_eq!(entity(&tags, "pick").as_deref(), Some("all:"));
+        assert_eq!(entity(&tags, "as").as_deref(), Some("text:"));
+        assert!(text(&tags, "among").is_none(), "a set ranks nothing");
+        let name = terms_of(2);
+        assert_eq!(entity(&name, "pick").as_deref(), Some("last:"));
+        assert!(text(&name, "among").is_none());
     }
 
     /// A concept whose name contains a `/` (`demo/stuff`) is a
@@ -1391,12 +1670,12 @@ demo/stuff!:
 attribute!: &person-name
   the:         io.gozala.person/name
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "Person's name"
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          UnsignedInteger
-  cardinality: one
+  cardinality: :one
   description: "Person's age"
 concept!: &person
   description: "Person concept"
@@ -1426,7 +1705,7 @@ concept!: &person
 attribute!: &issue/title
   the:         io.gozala.issue/title
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "Issue title"
 concept!: &issue
   description: "Work item"
@@ -1458,12 +1737,12 @@ concept!: &person
       description: "Name of the person"
       the:         xyz.tonk.person/name
       as:          Text
-      cardinality: one
+      cardinality: :one
     age:
       description: "Age of the person"
       the:         xyz.tonk.person/age
       as:          UnsignedInteger
-      cardinality: one
+      cardinality: :one
 "#,
         );
         let analysis = flat(analyze_empty(&syntax).await.unwrap());
@@ -1484,6 +1763,318 @@ concept!: &person
             panic!("expected Assert(Concept) for concept");
         };
         assert_eq!(name.as_ref().map(AnchorName::as_str), Some("person"));
+    }
+
+    /// The `role` of an attribute, read off one asserted application.
+    fn asserted_role(statement: &Statement) -> Option<(Entity, String)> {
+        let Statement::Assert(Application::Concept { query, this, .. }) = statement else {
+            return None;
+        };
+        let ThisIntent::Uri(entity) = this else {
+            return None;
+        };
+        match query.terms.get("role") {
+            Some(Term::Constant(Value::String(role))) => Some((entity.clone(), role.clone())),
+            _ => None,
+        }
+    }
+
+    /// A command field's `role:` is asserted as its own fact on the
+    /// field's attribute entity, after the attribute itself.
+    #[dialog_common::test]
+    async fn it_asserts_an_inline_fields_role_on_its_attribute() {
+        let syntax = must_parse(
+            r#"
+command!: &notebook/retitle
+  description: "Rename a notebook"
+  with:
+    title:
+      description: "The new title"
+      the:         xyz.tonk.notebook.retitle/title
+      as:          Text
+      role:        :goal
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let statements = &analysis.mutate.statements;
+        // The attribute, its role, then the command.
+        assert_eq!(statements.len(), 3);
+        let Statement::Assert(Application::Concept {
+            this: ThisIntent::Uri(attribute),
+            ..
+        }) = &statements[0]
+        else {
+            panic!("expected the attribute first");
+        };
+        assert_eq!(
+            asserted_role(&statements[1]),
+            Some((attribute.clone(), "goal".to_owned()))
+        );
+    }
+
+    /// `role:` on an `attribute!` head is asserted the same way.
+    #[dialog_common::test]
+    async fn it_asserts_an_attribute_heads_role() {
+        let syntax = must_parse(
+            r#"
+attribute!: &rename/name
+  description: "The new name"
+  the:         xyz.tonk.rename/name
+  as:          Text
+  role:        :goal
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let roles: Vec<_> = analysis
+            .mutate
+            .statements
+            .iter()
+            .filter_map(asserted_role)
+            .map(|(_, role)| role)
+            .collect();
+        assert_eq!(roles, vec!["goal".to_owned()]);
+    }
+
+    /// A role is not part of the attribute: the same attribute with and
+    /// without one is the same entity.
+    #[dialog_common::test]
+    async fn it_keeps_a_roles_attribute_identity() {
+        let declare = |role: &str| {
+            must_parse(&format!(
+                r#"
+attribute!: &rename/name
+  description: "The new name"
+  the:         xyz.tonk.rename/name
+  as:          Text
+{role}"#
+            ))
+        };
+        let entity = |analysis: &Flat| match &analysis.mutate.statements[0] {
+            Statement::Assert(Application::Concept {
+                this: ThisIntent::Uri(entity),
+                ..
+            }) => entity.clone(),
+            other => panic!("expected the attribute, got {other:?}"),
+        };
+        let plain = flat(analyze_empty(&declare("")).await.unwrap());
+        let with_role = flat(
+            analyze_empty(&declare("  role:        :goal\n"))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(entity(&plain), entity(&with_role));
+    }
+
+    /// An action name is text, so it is quoted: a bare word is a
+    /// reference, and `action:` refuses one rather than storing it as
+    /// text.
+    #[dialog_common::test]
+    async fn it_refuses_a_bare_action_name() {
+        for action in ["rename", "[\"rename\", retitle]"] {
+            let syntax = must_parse(&format!(
+                "command!: &notebook/retitle\n  description: \"Rename a notebook\"\n  action: {action}\n  with:\n    title:\n      description: \"The new title\"\n      the: xyz.tonk.notebook.retitle/title\n      as: text\n"
+            ));
+            let result = analyze_empty(&syntax).await;
+            assert!(
+                matches!(
+                    result.as_ref().map_err(|error| &error.kind),
+                    Err(AnalyzeErrorKind::InvalidConceptBody { reason }) if reason.contains("quote it")
+                ),
+                "a bare action name is refused: {result:?}"
+            );
+        }
+    }
+
+    /// Each of a command's `action:` names is asserted as a palette name,
+    /// on the command's own entity.
+    #[dialog_common::test]
+    async fn it_asserts_a_commands_action_on_the_command() {
+        let syntax = must_parse(
+            r#"
+command!: &notebook/retitle
+  description: "Rename a notebook"
+  action: ["rename", "retitle"]
+  with:
+    title:
+      description: "The new title"
+      the:         xyz.tonk.notebook.retitle/title
+      as:          Text
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let command = analysis
+            .mutate
+            .statements
+            .iter()
+            .find_map(|statement| match statement {
+                Statement::Assert(Application::Concept {
+                    this: ThisIntent::Uri(entity),
+                    name: Some(name),
+                    ..
+                }) if name.as_str() == "notebook/retitle" => Some(entity.clone()),
+                _ => None,
+            })
+            .expect("the command is asserted");
+        let actions: Vec<_> = analysis
+            .mutate
+            .statements
+            .iter()
+            .filter_map(|statement| match statement {
+                Statement::Assert(Application::Concept {
+                    query,
+                    this: ThisIntent::Uri(entity),
+                    ..
+                }) if entity == &command => match query.terms.get("name") {
+                    Some(Term::Constant(Value::String(name))) => Some(name.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        let mut actions = actions;
+        actions.sort();
+        assert_eq!(actions, vec!["rename".to_owned(), "retitle".to_owned()]);
+    }
+
+    /// A list is an attribute's ranked `the:` or `as:`, or a command's
+    /// several names; anywhere else the parser refuses it rather than
+    /// reading it as one value.
+    #[dialog_common::test]
+    fn it_refuses_a_list_outside_action() {
+        let parsed = parse(
+            r#"
+attribute!: &rename/name
+  description: ["The new name", "or another"]
+  the:         xyz.tonk.rename/name
+  as:          Text
+"#,
+        );
+        assert!(
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("Sequence values are not supported")),
+            "diagnostics: {:#?}",
+            parsed.diagnostics
+        );
+    }
+
+    /// A role nothing knows is an error, not a silent fact.
+    #[dialog_common::test]
+    async fn it_rejects_an_unknown_role() {
+        let syntax = must_parse(
+            r#"
+attribute!: &rename/name
+  description: "The new name"
+  the:         xyz.tonk.rename/name
+  as:          Text
+  role:        :gaol
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(&err.kind, AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("unknown role \"gaol\"")),
+            "expected InvalidAttributeBody naming the role, got {err:?}"
+        );
+    }
+
+    /// A keyword-valued field reads the spellings earlier releases
+    /// wrote, the bare word and the quoted word, as the keyword: the
+    /// published templates are written that way. All three spellings
+    /// lower to the same statements.
+    #[dialog_common::test]
+    async fn it_reads_the_older_spellings_of_a_keyword() {
+        for (field, word) in [("pick", "all"), ("cardinality", "many"), ("role", "goal")] {
+            let lowered = |value: String| async move {
+                let syntax = must_parse(&format!(
+                    r#"
+attribute!: &rename/name
+  description: "The new name"
+  the:         xyz.tonk.rename/name
+  as:          text
+  {field}: {value}
+"#
+                ));
+                let analysis = flat(
+                    analyze_empty(&syntax)
+                        .await
+                        .unwrap_or_else(|err| panic!("{field}: {value} did not analyze: {err:?}")),
+                );
+                format!("{:?}", analysis.mutate.statements)
+            };
+            let keyword = lowered(format!(":{word}")).await;
+            assert_eq!(
+                lowered(word.to_owned()).await,
+                keyword,
+                "bare {field}: {word}"
+            );
+            assert_eq!(
+                lowered(format!("{word:?}")).await,
+                keyword,
+                "quoted {field}: {word}"
+            );
+        }
+    }
+
+    /// A word no keyword of the field spells is still refused, in the
+    /// bare spelling as in the keyword one.
+    #[dialog_common::test]
+    async fn it_rejects_an_unknown_bare_keyword() {
+        let syntax = must_parse(
+            r#"
+attribute!: &rename/name
+  description: "The new name"
+  the:         xyz.tonk.rename/name
+  as:          text
+  pick:        everything
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(&err.kind, AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("unknown pick \"everything\"")),
+            "expected the unknown pick refused, got {err:?}"
+        );
+    }
+
+    /// The keyword spelling of a pick lowers to the same pick the
+    /// earlier bare spelling did.
+    #[dialog_common::test]
+    async fn it_reads_a_pick_keyword() {
+        let syntax = must_parse(
+            r#"
+attribute!: &task/tags
+  description: "Tags"
+  the:         xyz.tonk.task/tags
+  as:          text
+  pick:        :all
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[0]
+        else {
+            panic!("expected the attribute");
+        };
+        assert!(matches!(
+            query.terms.get("pick"),
+            Some(Term::Constant(Value::Entity(pick))) if pick.to_string() == "all:"
+        ));
+    }
+
+    /// A relation named by a bare symbol is a reference, not text.
+    #[dialog_common::test]
+    async fn it_refuses_a_bare_symbol_as_a_relation() {
+        let syntax = must_parse(
+            r#"
+attribute!: &job/status
+  description: "Status"
+  the:         job/status
+  as:          text
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(&err.kind, AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("reference to an anchor")),
+            "expected the bare relation refused, got {err:?}"
+        );
     }
 
     /// A `maybe:` block declares optional fields. The descriptor
@@ -1595,7 +2186,7 @@ concept!: &person
 attribute!: &person-nick
   the:         xyz.tonk.person/nickname
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "Nickname"
 concept!: &person
   with:
@@ -1689,7 +2280,7 @@ concept!: &person
       description: "Name of the person"
       the:         xyz.tonk.person/name
       as:          Text
-      cardinality: one
+      cardinality: :one
 concept!: &view
   description: "A view"
   with:
@@ -1697,7 +2288,7 @@ concept!: &view
       description: "Source concept"
       the:         db.view/source
       as:          Entity
-      cardinality: one
+      cardinality: :one
 view!: &title
   source: person
 "#,
@@ -1731,7 +2322,7 @@ view!: &title
 attribute!: &foo
   the:         x.y/foo
   as:          Text
-  cardinality: one
+  cardinality: :one
 "#,
         );
         let err = analyze_empty(&syntax).await.unwrap_err();
@@ -1753,7 +2344,7 @@ attribute!:
   this:        ?person-name
   the:         io.gozala.person/name
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "Person's name"
 "#,
         );
@@ -1786,7 +2377,7 @@ attribute!:
 attribute!: &person-name
   the:         io.gozala.person/name
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "Person's name"
 "#,
         );
@@ -1818,7 +2409,7 @@ attribute!: &person-name
 attribute!: &a
   the:         x.y/a
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "A"
 concept!: &a
   with:
@@ -1848,7 +2439,7 @@ concept!: &{reserved}
     tag:
       the: x.y/tag
       as: Text
-      cardinality: one
+      cardinality: :one
       description: "T"
 "#
             ));
@@ -1872,13 +2463,13 @@ concept!: &{reserved}
 attribute!: &foo
   the:         x.y/a
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "A"
 attribute!:
   this:        ?foo
   the:         x.y/b
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "B"
 "#,
         );
@@ -2216,11 +2807,11 @@ person!:
     }
 
     /// A bare integer literal written into an `unsigned-integer`
-    /// field is schema-coerced to `Value::UnsignedInt`. The
-    /// notation parser always parses `0` as a signed
-    /// `Scalar::Integer`; the analyzer knows the field's declared
-    /// type and must produce an unsigned term so induction over
-    /// `math/sum` (unsigned-only) doesn't fail with `TypeMismatch`.
+    /// field is written through the field's type as `Value::UnsignedInt`.
+    /// A literal carries no type of its own; the analyzer knows the
+    /// field's declared type and must produce an unsigned term so
+    /// induction over `math/sum` (unsigned-only) doesn't fail with
+    /// `TypeMismatch`.
     #[dialog_common::test]
     async fn it_coerces_integer_literal_to_unsigned_for_unsigned_field() {
         let syntax = must_parse(
@@ -2251,10 +2842,11 @@ counter!:
         );
     }
 
-    /// A bare integer literal in a `signed-integer` field stays
-    /// signed — the coercion is type-directed, not blanket.
+    /// A bare number literal in a `signed-integer` field is written as
+    /// a signed integer: the field's declared type is the lens, not the
+    /// literal's spelling (the parser holds `7` as the natural 7).
     #[dialog_common::test]
-    async fn it_keeps_integer_literal_signed_for_signed_field() {
+    async fn it_writes_a_number_literal_as_signed_for_signed_field() {
         let syntax = must_parse(
             r#"
 reading!:
@@ -2337,9 +2929,9 @@ person!:
 
     /// A claim head (`squash.bug:`) has no schema, so its fields
     /// carry no declared type. With `expected = None`, any literal
-    /// is accepted, typed by its spelling — bare `3` is unsigned —
-    /// and never raises `TypeMismatch`. Guards the "no type
-    /// specified accepts any type" rule.
+    /// is accepted as the narrowest type holding the number it names
+    /// — `3` is the natural 3 — and never raises `TypeMismatch`.
+    /// Guards the "no type specified accepts any type" rule.
     #[dialog_common::test]
     async fn it_accepts_any_literal_for_untyped_claim_field() {
         let syntax = must_parse(
@@ -2362,10 +2954,90 @@ xyz.tonk.person!:
         );
     }
 
-    /// A raw domain write whose literal diverges from a declared
-    /// attribute's type still analyzes — raw domains are open-ended —
-    /// but carries a warning-severity diagnostic with the spelling
-    /// that would match the declaration.
+    /// `syntax` with the named top-level field of its first expression
+    /// replaced by content an `!include` loaded — what
+    /// [`tonk_notation::expand`] leaves behind.
+    fn with_included(mut syntax: Syntax, name: &str, bytes: &[u8]) -> Syntax {
+        let application = match &mut syntax.expressions[0] {
+            Expression::Query(application) => application,
+            Expression::Claim(claim) => &mut claim.inner,
+        };
+        let field = application
+            .fields
+            .iter_mut()
+            .find(|field| field.name == name)
+            .expect("field to replace");
+        field.value =
+            tonk_notation::FieldValue::Literal(tonk_notation::Scalar::Included(bytes.to_vec()));
+        syntax
+    }
+
+    /// Included content in a field declared `as: text` is read as text.
+    #[dialog_common::test]
+    async fn it_reads_included_content_as_text_for_a_text_field() {
+        let syntax = with_included(
+            must_parse(
+                "person!:\n  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv\n  bio: \"_\"\n",
+            ),
+            "bio",
+            b"# About me\n",
+        );
+        let resolver = fixed_concept_typed("person", &[("bio", "xyz.tonk.person/bio", "Text")]);
+        let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
+        let Statement::Assert(Application::Concept { query: q, .. }) =
+            &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        assert!(
+            matches!(q.terms.get("bio"), Some(Term::Constant(Value::String(s))) if s == "# About me\n"),
+            "included content in a text field should be text, got {:?}",
+            q.terms.get("bio")
+        );
+    }
+
+    /// Included content that is not UTF-8 has no text reading, so a
+    /// text field refuses it rather than decoding it lossily.
+    #[dialog_common::test]
+    async fn it_refuses_included_content_that_is_not_text_for_a_text_field() {
+        let syntax = with_included(
+            must_parse(
+                "person!:\n  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv\n  bio: \"_\"\n",
+            ),
+            "bio",
+            &[0xff, 0xfe],
+        );
+        let resolver = fixed_concept_typed("person", &[("bio", "xyz.tonk.person/bio", "Text")]);
+        let err = analyze_with(&syntax, &resolver).await.unwrap_err();
+        assert!(err.to_string().contains("not UTF-8"), "{err}");
+    }
+
+    /// An untyped field says nothing about text, so included content
+    /// stays the bytes it was loaded as.
+    #[dialog_common::test]
+    async fn it_keeps_included_content_as_bytes_for_an_untyped_field() {
+        let syntax = with_included(
+            must_parse(
+                "xyz.tonk.person!:\n  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv\n  bio: \"_\"\n",
+            ),
+            "bio",
+            b"# About me\n",
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let Statement::Assert(application) = &analysis.mutate.statements[0] else {
+            panic!("expected an Assert statement");
+        };
+        let term = application.parameters().get("bio").cloned();
+        assert!(
+            matches!(&term, Some(Term::Constant(Value::Bytes(bytes))) if bytes == b"# About me\n"),
+            "included content on an untyped field should stay bytes, got {term:?}"
+        );
+    }
+
+    /// A raw domain write whose literal the declared attribute's type
+    /// does not read unchanged still analyzes — raw domains are
+    /// open-ended — but carries a warning-severity diagnostic naming
+    /// the declared type and the kind of number it reads.
     #[dialog_common::test]
     async fn it_warns_when_a_domain_literal_diverges_from_a_declaration() {
         let syntax = must_parse(
@@ -2380,7 +3052,7 @@ concept!: &person
 
 io.test.person!:
   this: test:1
-  age: 41
+  age: 41.5
 "#,
         );
         let tree = analyze_empty(&syntax).await.unwrap();
@@ -2393,8 +3065,12 @@ io.test.person!:
         assert_eq!(warnings.len(), 1, "one divergence warning: {warnings:?}");
         let message = warnings[0].message();
         assert!(
-            message.contains("signed-integer") && message.contains("+41"),
-            "the warning names the declared type and the spelling: {message}"
+            message.contains("signed-integer") && message.contains("whole number"),
+            "the warning names the declared type and what it reads: {message}"
+        );
+        assert!(
+            !message.contains('+'),
+            "no spelling carries a type, so none is suggested: {message}"
         );
         assert!(
             matches!(
@@ -2403,6 +3079,52 @@ io.test.person!:
             ),
             "advisory, not an error",
         );
+    }
+
+    /// A number literal is the number it names, not a type: `41`,
+    /// `+41` and `41.0` written raw under an attribute declared
+    /// `signed-integer` or `float` are what the declaration reads, so
+    /// none of them is a divergence.
+    #[dialog_common::test]
+    async fn it_does_not_warn_when_a_declared_number_type_reads_the_literal() {
+        let syntax = must_parse(
+            r#"
+concept!: &person
+  description: "A person"
+  with:
+    age:
+      description: "Age"
+      the: io.test.person/age
+      as: signed-integer
+    height:
+      description: "Height"
+      the: io.test.person/height
+      as: float
+
+io.test.person!:
+  this: test:1
+  age: 41
+  height: 180
+
+io.test.person!:
+  this: test:2
+  age: +41
+  height: +180
+
+io.test.person!:
+  this: test:3
+  age: 41.0
+  height: 180.0
+"#,
+        );
+        let tree = analyze_empty(&syntax).await.unwrap();
+        let warnings: Vec<_> = tree
+            .analysis
+            .diagnostics
+            .iter()
+            .filter(|d| d.code() == "W_DECLARED_TYPE_DIVERGENCE")
+            .collect();
+        assert!(warnings.is_empty(), "no divergence: {warnings:?}");
     }
 
     /// Unknown concept in head position → `UnknownConcept`.
@@ -2437,12 +3159,12 @@ attribute:
         let Application::Concept { query, .. } = &q.queries[0] else {
             panic!("expected Concept application");
         };
-        // The four anonymous-attribute fields — id/type/
-        // cardinality/description — must all be present in the
+        // The anonymous-attribute fields — id/as/pick/description —
+        // must all be present in the
         // unified term map. `name` is intentionally not in the
         // built-in `attribute:` view (only anchor-form attrs
         // carry a `db.meta/name` claim).
-        for field in ["id", "type", "cardinality", "description"] {
+        for field in ["id", "as", "pick", "description"] {
             assert!(query.terms.contains(field), "missing {field}");
         }
     }
@@ -2466,7 +3188,7 @@ branch:
             panic!("expected Concept application");
         };
         assert!(query.terms.contains("name"));
-        assert!(query.terms.contains("origin"));
+        assert!(query.terms.contains("replica"));
     }
 
     /// Built-in `attribute:` empty-body query surfaces every
@@ -2481,7 +3203,7 @@ branch:
         let Application::Concept { query, .. } = &q.queries[0] else {
             panic!("expected Concept application");
         };
-        for field in ["id", "type", "cardinality", "description"] {
+        for field in ["id", "as", "pick", "description"] {
             assert!(query.terms.contains(field), "missing {field}");
         }
     }
@@ -2582,7 +3304,7 @@ concept!: &foo
       description: "y"
       the: x.y/bar
       as: Text
-      cardinality: one
+      cardinality: :one
 "#,
         );
         let analysis = flat(analyze_empty(&syntax).await.unwrap());
@@ -2801,6 +3523,55 @@ person!:
         );
     }
 
+    /// A name dialog would accept as `id:<name>` but the notation
+    /// can't reference back (`Demo` reads as a string, `42` as a
+    /// number) is refused at the `&name` that writes it, with the
+    /// anchor's own error, not later at a `this:` that uses it.
+    #[dialog_common::test]
+    async fn it_rejects_unreferenceable_anchor_name_at_anchor() {
+        for name in ["Demo", "demo_1", "42", "true", "demo/Q"] {
+            let syntax = must_parse(&format!("person!: &{name}\n  name: \"Alice\"\n"));
+            let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+            let err = analyze_with(&syntax, &resolver).await.unwrap_err();
+            assert!(
+                matches!(&err.kind, AnalyzeErrorKind::UnreferenceableAnchorName { name: n } if n == name),
+                "&{name} should be refused as unreferenceable, got {err:?}"
+            );
+        }
+    }
+
+    /// `this: demo/1` resolves a numbered anchor name declared by an
+    /// earlier expression (`&demo/1`). Regression: the reference
+    /// used to parse as a string literal and fail with
+    /// `UnsupportedFieldValue` on `this`.
+    #[dialog_common::test]
+    async fn it_resolves_digit_led_qualified_symbol_in_this() {
+        let syntax = must_parse(
+            r#"
+person!: &demo/1
+  name: "Alice"
+person!:
+  this: demo/1
+  name: "Renamed"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
+        let entity = analysis
+            .declarations
+            .get("demo/1")
+            .expect("demo/1 should be declared")
+            .clone();
+        let Statement::Assert(Application::Concept { this, .. }) = &analysis.mutate.statements[1]
+        else {
+            panic!("expected Assert(Concept) for second expression");
+        };
+        assert!(
+            matches!(this, ThisIntent::Uri(e) if e == &entity),
+            "expected ThisIntent::Uri(<demo/1>), got {this:?}"
+        );
+    }
+
     /// `this: alice` resolves through the in-doc anchor table
     /// — `&alice` declared by an earlier expression in the same
     /// document means a later `this: alice` lands on that
@@ -2919,7 +3690,7 @@ concept!: &my-thing
       description: "the label"
       the:         x.y/label
       as:          Text
-      cardinality: one
+      cardinality: :one
 my-thing!:
   this: my-thing
   label: "hi"
@@ -2955,7 +3726,7 @@ person!: &foo
 attribute!: &foo
   the:         x.y/foo
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "F"
 "#,
         );
@@ -2979,6 +3750,28 @@ person!:
 "#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let err = analyze_with(&syntax, &resolver).await.unwrap_err();
+        assert!(matches!(
+            err.kind,
+            AnalyzeErrorKind::UnsupportedFieldValue { .. }
+        ));
+    }
+
+    /// A list on a fact's field is refused by the analyzer too: the
+    /// parser lets a list through under a listing field's name
+    /// (`action:` here), and a fact asserting several values is still
+    /// several assertions.
+    #[dialog_common::test]
+    async fn it_rejects_a_list_on_a_fact_field() {
+        let syntax = must_parse(
+            r#"
+person!:
+  action:
+    - Alice
+    - Bob
+"#,
+        );
+        let resolver = fixed_concept("person", &[("action", "io.gozala.person/action")]);
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
         assert!(matches!(
             err.kind,
@@ -3140,7 +3933,7 @@ attribute!:
   this: ?person-name
   the:         x.y/name
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "x"
 concept!:
   this: ?person
@@ -3179,12 +3972,12 @@ concept!: &view
       description: "Concept this view renders"
       the:         xyz.tonk.view/model
       as:          Entity
-      cardinality: one
+      cardinality: :one
     display:
       description: "HTML template"
       the:         xyz.tonk.view/display
       as:          Text
-      cardinality: one
+      cardinality: :one
 view!:
   model: tonk:view
   display: "x"
@@ -3540,12 +4333,12 @@ concept!: &person
       description: "Name"
       the:         x.y/name
       as:          Text
-      cardinality: one
+      cardinality: :one
     age:
       description: "Age"
       the:         x.y/age
       as:          UnsignedInteger
-      cardinality: one
+      cardinality: :one
 "#,
         );
         let analysis = flat(analyze_empty(&syntax).await.unwrap());
@@ -3588,7 +4381,7 @@ concept!: &person
 attribute!: &age
   the:         x.y/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: "Person's age"
 "#,
         );
@@ -3609,7 +4402,7 @@ attribute!: &age
             "bytes",
         ] {
             let src = format!(
-                "attribute!: &foo\n  the:         x.y/foo\n  as:          {ty}\n  cardinality: one\n  description: \"x\"\n"
+                "attribute!: &foo\n  the:         x.y/foo\n  as:          {ty}\n  cardinality: :one\n  description: \"x\"\n"
             );
             let syntax = must_parse(&src);
             analyze_empty(&syntax)
@@ -3627,7 +4420,7 @@ attribute!: &age
 attribute!: &age
   the:         x.y/age
   as:          UnsignedInteger
-  cardinality: one
+  cardinality: :one
   description: "x"
 "#,
         );
@@ -3643,7 +4436,7 @@ attribute!: &age
 attribute!: &age
   the:         x.y/age
   as:          quaternion
-  cardinality: one
+  cardinality: :one
   description: "x"
 "#,
         );
@@ -3819,7 +4612,7 @@ person!:
 attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 "#,
         );
@@ -3838,7 +4631,7 @@ concept!: &person
       description: Name of the person
       the:         x.y/name
       as:          text
-      cardinality: one
+      cardinality: :one
 "#,
         );
         analyze_empty(&syntax).await.unwrap();
@@ -3856,7 +4649,7 @@ concept!: &person
 attribute!: &foo
   the:         x.y/foo
   as:          text
-  cardinality: one
+  cardinality: :one
   description: recipe
 "#,
         );
@@ -3883,7 +4676,7 @@ concept!: &thing
       description: A short title
       the:         x.y/title
       as:          text
-      cardinality: one
+      cardinality: :one
 "#,
         );
         let err = analyze_empty(&syntax).await.unwrap_err();
@@ -3905,7 +4698,7 @@ concept!: &thing
 attribute!: &foo
   the:         x.y/foo
   as:          text
-  cardinality: one
+  cardinality: :one
   description: "recipe"
 "#,
         );
@@ -4094,10 +4887,11 @@ person!: &alice
         );
     }
 
-    /// `..: _` is the explicit opt-in for "I know this is
-    /// partial." Accepted.
+    /// `..: _` does not acknowledge a partial fresh entity: a `?var`
+    /// no query binds mints a new entity, which has nothing to
+    /// retract. Refused rather than read as "I know this is partial".
     #[dialog_common::test]
-    async fn it_allows_partial_assertion_with_rest_marker() {
+    async fn it_rejects_partial_assertion_with_rest_marker() {
         let syntax = must_parse(
             r#"
 person!:
@@ -4113,7 +4907,11 @@ person!:
                 ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
-        analyze_with(&syntax, &resolver).await.unwrap();
+        let err = analyze_with(&syntax, &resolver).await.unwrap_err();
+        assert!(
+            matches!(err.kind, AnalyzeErrorKind::RetractionWithoutEntity { .. }),
+            "expected RetractionWithoutEntity, got {err:?}"
+        );
     }
 
     /// Setting every `with:` field is intentional — pass.
@@ -4181,8 +4979,12 @@ person!:
         );
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
         assert!(
-            matches!(err.kind, AnalyzeErrorKind::IncompleteAssertion { .. }),
-            "expected IncompleteAssertion for `age: _` on unbound entity, got {err:?}"
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::RetractionWithoutEntity { retracted, selector_form, .. }
+                    if retracted == "`age: _`" && selector_form.contains("?alice")
+            ),
+            "expected RetractionWithoutEntity for `age: _` on unbound entity, got {err:?}"
         );
     }
 
@@ -4231,6 +5033,127 @@ person:
         // `bogus:` is on line 2 (0-indexed) of the doc — the
         // head is on line 1.
         assert_eq!(range.start.line, 2, "expected `bogus:` line, got {range:?}");
+    }
+
+    fn ticket_concept() -> ConceptSpec {
+        fixed_concept(
+            "ticket",
+            &[
+                ("title", "xyz.test.ticket/title"),
+                ("queue", "xyz.test.ticket/queue"),
+            ],
+        )
+    }
+
+    /// `..: _` in a query is a mistyped deletion (`ticket:` for
+    /// `ticket!:`). It is refused, pointing at the `..` key and
+    /// naming the assertion head the user likely meant — not
+    /// silently read as a query that ignores it.
+    #[dialog_common::test]
+    async fn it_rejects_rest_retraction_in_a_query() {
+        let syntax = must_parse(
+            r#"
+ticket:
+  queue: "writer"
+  ..: _
+"#,
+        );
+        let err = analyze_with(&syntax, &ticket_concept()).await.unwrap_err();
+        assert!(
+            matches!(&err.kind, AnalyzeErrorKind::RestRetractionInQuery { head } if head == "ticket"),
+            "expected RestRetractionInQuery, got {err:?}"
+        );
+        assert_eq!(err.code(), "E_REST_RETRACTION_IN_QUERY");
+        assert!(
+            err.to_string().contains("did you mean `ticket!:`?"),
+            "the message names the assertion head: {err}"
+        );
+        let range = err.range.expect("the error carries a range");
+        assert_eq!(range.start.line, 3, "points at `..:`, got {range:?}");
+    }
+
+    /// `..: _` with `this:` omitted has no existing entity to retract
+    /// from: the entity would be derived fresh from the body, so the
+    /// expression would only assert `queue: "writer"` onto a new,
+    /// partial ticket. Refused, pointing at the `..` key — the named
+    /// fields of an assertion set values, they do not select.
+    #[dialog_common::test]
+    async fn it_rejects_rest_retraction_without_this() {
+        let syntax = must_parse(
+            r#"ticket!:
+  queue: "writer"
+  ..: _
+"#,
+        );
+        let err = analyze_with(&syntax, &ticket_concept()).await.unwrap_err();
+        assert!(
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::RetractionWithoutEntity { concept, retracted, selector_form }
+                    if concept == "ticket"
+                        && retracted == "`..: _`"
+                        && selector_form.contains("omitted")
+            ),
+            "expected RetractionWithoutEntity, got {err:?}"
+        );
+        assert_eq!(err.code(), "E_RETRACTION_WITHOUT_ENTITY");
+        let range = err.range.expect("the error carries a range");
+        assert_eq!(range.start.line, 2, "points at `..:`, got {range:?}");
+    }
+
+    /// The same holds for a `?var` that no query binds: it mints a
+    /// fresh entity, which has nothing to retract.
+    #[dialog_common::test]
+    async fn it_rejects_rest_retraction_on_an_unbound_variable() {
+        let syntax = must_parse(
+            r#"ticket!:
+  this: ?t
+  ..: _
+"#,
+        );
+        let err = analyze_with(&syntax, &ticket_concept()).await.unwrap_err();
+        assert!(
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::RetractionWithoutEntity { selector_form, .. }
+                    if selector_form.contains("?t")
+            ),
+            "expected RetractionWithoutEntity, got {err:?}"
+        );
+    }
+
+    /// A `?var` a query binds does reach existing entities, so the
+    /// query-then-retract form is the accepted way to delete matches.
+    #[dialog_common::test]
+    async fn it_accepts_rest_retraction_on_a_query_bound_variable() {
+        let syntax = must_parse(
+            r#"ticket:
+  this: ?t
+  queue: "writer"
+
+ticket!:
+  this: ?t
+  ..: _
+"#,
+        );
+        analyze_with(&syntax, &ticket_concept()).await.unwrap();
+    }
+
+    /// A claim domain has no schema for `..` to stand for, so the
+    /// rest-marker on a domain head is refused rather than ignored.
+    #[dialog_common::test]
+    async fn it_rejects_rest_retraction_on_a_claim_domain() {
+        let syntax = must_parse(
+            r#"xyz.test!:
+  this: id:thing
+  ..: _
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(&err.kind, AnalyzeErrorKind::RestRetractionOnDomain { domain } if domain == "xyz.test"),
+            "expected RestRetractionOnDomain, got {err:?}"
+        );
     }
 
     /// Category 2 from the user's classification: assertion
@@ -4412,7 +5335,7 @@ concept!: &thing
       description: "Label of the thing"
       the:         xyz.tonk.thing/label
       as:          Text
-      cardinality: one
+      cardinality: :one
 person!:
   this: did:key:zPersonAlice
   name: "Alice"
@@ -4516,14 +5439,14 @@ concept!: &ping
       description: "Tag"
       the:         io.gozala.ping/tag
       as:          Text
-      cardinality: one
+      cardinality: :one
 concept!: &pong
   with:
     tag:
       description: "Tag"
       the:         io.gozala.pong/tag
       as:          Text
-      cardinality: one
+      cardinality: :one
 ping!:
   this: did:key:zPingSubject
   tag:  "hi"
@@ -4697,14 +5620,14 @@ concept!: &ping
       description: "Tag"
       the:         io.gozala.ping/tag
       as:          Text
-      cardinality: one
+      cardinality: :one
 concept!: &pong
   with:
     tag:
       description: "Tag"
       the:         io.gozala.pong/tag
       as:          Text
-      cardinality: one
+      cardinality: :one
 ping!:
   this: did:key:zPingSubject
   tag:  "hi"
@@ -4737,7 +5660,7 @@ command!: &ping
       description: "Tag"
       the:         io.gozala.ping/tag
       as:          Text
-      cardinality: one
+      cardinality: :one
 ping!:
   this: did:key:zPingSubject
   tag:  "hi"
@@ -4752,7 +5675,7 @@ concept!: &ping
       description: "Tag"
       the:         io.gozala.ping/tag
       as:          Text
-      cardinality: one
+      cardinality: :one
 ping!:
   this: did:key:zPingSubject
   tag:  "hi"
@@ -4872,7 +5795,7 @@ person:
 attribute!:
   the: io.gozala.person/nickname
   as: text
-  cardinality: one
+  cardinality: :one
   description: "Optional short name"
 "#,
         );
@@ -4905,14 +5828,22 @@ mod library_analysis_tests {
         // concepts, which says nothing about the file. `profile.yaml`
         // declares its own copies of the shared concepts, so it analyzes
         // standalone.
-        let chained: [(&str, &str); 3] = [
+        let chained: [(&str, &str); 5] = [
+            (
+                "code-editor.yaml",
+                include_str!("../../tonk-core/assets/library/code-editor.yaml"),
+            ),
+            (
+                "language/python.yaml",
+                include_str!("../../tonk-core/assets/library/language/python.yaml"),
+            ),
             (
                 "notebook.yaml",
                 include_str!("../../tonk-core/assets/library/notebook.yaml"),
             ),
             (
-                "prose.yaml",
-                include_str!("../../tonk-core/assets/library/prose.yaml"),
+                "prose-editor.yaml",
+                include_str!("../../tonk-core/assets/library/prose-editor.yaml"),
             ),
             (
                 "table.yaml",
@@ -4975,8 +5906,9 @@ mod library_analysis_tests {
     /// The worker asserts these as typed facts rather than notation, so
     /// what is pinned here is that the DECLARATIONS exist and accept the
     /// shape: identity plus source on `seed/available`, and the install
-    /// fields on `seed/installed` over the same entity. A seed a check
-    /// merely found asserts only the first, which is why the two are
+    /// fields on `seed/install` over the same entity — or on
+    /// `seed/installed`, as releases before it recorded installs. A seed a
+    /// check merely found asserts only the first, which is why the two are
     /// separable rather than one concept with optional fields.
     #[test]
     fn it_analyzes_a_seed_record() {
@@ -4986,10 +5918,15 @@ mod library_analysis_tests {
   source: "/library/core.yaml"
   replaces: seed:none
 
-seed/installed!:
+seed/install!:
   this: seed:abc
   prior: seed:none
   version: "1@abc"
+
+seed/installed!:
+  this: seed:def
+  prior: seed:none
+  version: "1@def"
 "#;
         assert_analyzes("core.yaml + seed record", &format!("{core}\n{body}"));
     }
@@ -5032,8 +5969,8 @@ seed/installed!:
                 include_str!("../../tonk-core/assets/library/table.yaml"),
             ),
             (
-                "prose.yaml",
-                include_str!("../../tonk-core/assets/library/prose.yaml"),
+                "prose-editor.yaml",
+                include_str!("../../tonk-core/assets/library/prose-editor.yaml"),
             ),
         ] {
             let inlined = inlined_declarations(name, &format!("{core}\n{body}"));
@@ -5044,9 +5981,11 @@ seed/installed!:
         }
         let profile = include_str!("../../tonk-core/assets/library/profile.yaml");
         let inlined = inlined_declarations("profile.yaml", profile);
+        // Removal and rename submit through receipt-aware handlers;
+        // sign-out still exercises declarative binding inlining.
         assert!(
-            inlined.contains(&"on/space-create".to_string()),
-            "profile.yaml's create form must carry its declaration inlined, got {inlined:?}",
+            inlined.contains(&"on/sign-out".to_string()),
+            "profile.yaml's rename form must carry its declaration inlined, got {inlined:?}",
         );
     }
 
@@ -5071,7 +6010,7 @@ seed/installed!:
         let core = include_str!("../../tonk-core/assets/library/core.yaml");
         let notebook = include_str!("../../tonk-core/assets/library/notebook.yaml");
         let profile = include_str!("../../tonk-core/assets/library/profile.yaml");
-        let prose = include_str!("../../tonk-core/assets/library/prose.yaml");
+        let prose = include_str!("../../tonk-core/assets/library/prose-editor.yaml");
         let table = include_str!("../../tonk-core/assets/library/table.yaml");
 
         for (name, prelude, target, from, to, expected) in [
@@ -5096,7 +6035,7 @@ seed/installed!:
             // property path. The rest read `.detail.*` / `.currentTarget.*`,
             // which this check does not look at.
             (
-                "prose.yaml event source",
+                "prose-editor.yaml event source",
                 core,
                 prose,
                 "subject: \"{this}\"",
@@ -5133,10 +6072,7 @@ seed/installed!:
                 "{name} no longer contains {from:?}; point this gate at a live interpolation",
             );
             let source = format!("{prelude}\n{broken}");
-            let parsed = tonk_notation::parse(&source);
-            let syntax = parsed
-                .syntax
-                .unwrap_or_else(|| panic!("{name} yields a syntax tree"));
+            let syntax = parse_library(name, &source);
             let error = analyze_local(&syntax)
                 .err()
                 .unwrap_or_else(|| panic!("{name} with {to:?} must not lower"));
@@ -5149,10 +6085,7 @@ seed/installed!:
         use dialog_artifacts::Value as ArtifactValue;
         use dialog_query::Term as QueryTerm;
 
-        let parsed = tonk_notation::parse(source);
-        let syntax = parsed
-            .syntax
-            .unwrap_or_else(|| panic!("{name} yields a syntax tree"));
+        let syntax = parse_library(name, source);
         let tree =
             analyze_local(&syntax).unwrap_or_else(|error| panic!("{name} must analyze: {error:?}"));
         let mut out = Vec::new();
@@ -5175,16 +6108,43 @@ seed/installed!:
     }
 
     fn assert_analyzes(name: &str, source: &str) {
-        let parsed = tonk_notation::parse(source);
+        let syntax = parse_library(name, source);
+        let result = analyze_local(&syntax);
+        assert!(result.is_ok(), "{name} must analyze: {:?}", result.err());
+    }
+
+    /// Parse a library document where the bundled library lives and
+    /// inline what it `!include`s, as seeding does. Every library document
+    /// sits in the one directory, so the file name only labels failures.
+    fn parse_library(name: &str, source: &str) -> tonk_notation::Syntax {
+        let parsed = tonk_notation::parse_at(tonk_library::location("document.yaml"), source);
         assert!(
             parsed.diagnostics.is_empty(),
             "{name} must parse: {:#?}",
             parsed.diagnostics
         );
-        let syntax = parsed
+        let mut syntax = parsed
             .syntax
             .unwrap_or_else(|| panic!("{name} yields a syntax tree"));
-        let result = analyze_local(&syntax);
-        assert!(result.is_ok(), "{name} must analyze: {:?}", result.err());
+        // The bundled loader answers without waiting, so one poll settles
+        // the expansion and these tests stay synchronous.
+        let unexpanded = {
+            let expansion =
+                std::pin::pin!(tonk_notation::expand(&mut syntax, &tonk_library::Bundled));
+            match std::future::Future::poll(
+                expansion,
+                &mut std::task::Context::from_waker(std::task::Waker::noop()),
+            ) {
+                std::task::Poll::Ready(unexpanded) => unexpanded,
+                std::task::Poll::Pending => {
+                    panic!("{name}: bundled includes load without waiting")
+                }
+            }
+        };
+        assert!(
+            unexpanded.is_empty(),
+            "{name} includes must resolve: {unexpanded:#?}"
+        );
+        syntax
     }
 }

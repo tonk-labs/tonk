@@ -46,8 +46,9 @@ pub struct Invitation {
     pub this: Entity,
     /// Reference to the repository the invite grants access to.
     pub subject: Subject,
-    /// Reference to the minting profile's root identity on the chain as
-    /// minted, before any claim redelegation extends it.
+    /// Reference to the minting account bound to the leaf signer, before
+    /// any claim redelegation extends it. Legacy invitations without signed
+    /// attribution retain their first audience, which may be the original owner.
     pub inviter: Inviter,
     /// The chain's tail audience: the ephemeral key DID for open
     /// invites, the recipient DID for scoped ones. Revocation proves
@@ -67,27 +68,26 @@ impl Invitation {
     /// Build the invitation record for a delegation chain — the chain
     /// exactly as serialized into the invite URL.
     ///
-    /// Returns `None` when the chain has no specific subject
-    /// (`Subject::Any` chains are not valid invites; `tonk_invite::
-    /// Invite` already rejects them at construction, so callers
-    /// holding an `Invite` can expect `Some`).
+    /// Returns `None` when signed inviter metadata is invalid or the chain has
+    /// no specific subject. `tonk_invite::Invite` rejects both at construction,
+    /// so callers holding an unmodified `Invite` can expect `Some`.
     pub fn from_chain(chain: &DelegationChain) -> Option<Self> {
         let subject = chain.subject()?.clone();
         let leaf_cid = chain
             .proof_cids()
             .last()
             .expect("delegation chains are non-empty by construction");
-        // Root-first chains begin `space → root → device`. Membership and
-        // provenance are account semantics, so attribute the invite to the
-        // first hop's audience (the root), never the device that happened to
-        // sign the final invite hop. Legacy one-hop chains naturally retain
-        // their original audience as the best available identity.
-        let inviter = chain
-            .proofs()
-            .next()
-            .expect("delegation chains are non-empty by construction")
-            .audience()
-            .clone();
+        // New invitations bind the minting account to the leaf signer.
+        // Preserve historical records for leaves without this metadata:
+        // their first audience was used as the inviter, even on reshares.
+        let inviter = tonk_invite::inviter(chain).ok()?.unwrap_or_else(|| {
+            chain
+                .proofs()
+                .next()
+                .expect("delegation chains are non-empty by construction")
+                .audience()
+                .clone()
+        });
         let audience = chain.audience().clone();
         // The canonical CID string, not the raw bytes: it keeps the
         // hash input human-inspectable and independent of `Cid`'s
@@ -267,5 +267,74 @@ mod tests {
             .unwrap();
         let chain = DelegationChain::new(delegation);
         assert!(Invitation::from_chain(&chain).is_none());
+    }
+
+    #[dialog_common::test]
+    async fn it_projects_the_bound_resharer_and_rejects_owner_impersonation() {
+        let alice = signer(&INVITER_SEED).await;
+        let bob = signer(&CLAIMER_SEED).await;
+        let device = signer(&[5; 32]).await;
+        let carol = signer(&EPHEMERAL_SEED).await;
+        let space = signer(&SUBJECT_SEED).await;
+        let first = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(space.clone()))
+            .audience(&alice.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let share = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(alice.clone()))
+            .audience(&bob.did())
+            .subject(UcanSubject::Specific(space.did()))
+            .command(vec![])
+            .meta(tonk_invite::inviter_meta(&alice.did()))
+            .try_build()
+            .await
+            .unwrap();
+        let identity = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(bob.clone()))
+            .audience(&device.did())
+            .subject(UcanSubject::Any)
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let prefix = DelegationChain::new(first)
+            .push(share)
+            .unwrap()
+            .push(identity)
+            .unwrap();
+        for (declared, expected) in [
+            (Some(bob.did()), Some(bob.did())),
+            (Some(alice.did()), None),
+            (None, Some(alice.did())),
+        ] {
+            let leaf = DelegationBuilder::new()
+                .issuer(dialog_credentials::Signer::from(device.clone()))
+                .audience(&carol.did())
+                .subject(UcanSubject::Specific(space.did()))
+                .command(vec![])
+                .meta(
+                    declared
+                        .as_ref()
+                        .map(tonk_invite::inviter_meta)
+                        .unwrap_or_default(),
+                )
+                .try_build()
+                .await
+                .unwrap();
+            let chain = prefix.clone().push(leaf).unwrap();
+            let record = Invitation::from_chain(&chain);
+            assert_eq!(
+                record.as_ref().map(|record| record.inviter.0.to_string()),
+                expected.map(|did| did.to_string())
+            );
+            if let Some(record) = record {
+                assert_eq!(record.subject.0.to_string(), space.did().to_string());
+                assert_eq!(record.audience.0.to_string(), carol.did().to_string());
+            }
+        }
     }
 }

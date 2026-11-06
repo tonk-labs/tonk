@@ -335,7 +335,7 @@ impl ListConcepts<'_> {
         self,
         env: &Env,
     ) -> Result<Vec<ConceptDefinition>, ResolveError> {
-        use dialog_query::{AttributeQuery, Output as _, Term, attribute::The};
+        use dialog_query::{AttributeQuery, Output as _, Term};
 
         let marker: Entity = "db:concept"
             .parse()
@@ -343,9 +343,9 @@ impl ListConcepts<'_> {
         let claims: Vec<dialog_query::Claim> = self
             .source
             .select(AttributeQuery::from(
-                Term::<The>::from(
+                Term::<dialog_query::Relation>::from(
                     "db.meta/concept"
-                        .parse::<The>()
+                        .parse::<dialog_query::Relation>()
                         .expect("`db.meta/concept` is a valid attribute"),
                 )
                 .of(Term::<Entity>::var("concept"))
@@ -403,9 +403,8 @@ impl ListNames<'_> {
 mod tests {
     use super::*;
     use crate::concept::{AnonymousConcept, TransientConcept};
-    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
-    use dialog_query::the;
     use tonk_core::meta::name;
 
     /// Assert a concept's backing attribute facts plus the concept
@@ -421,33 +420,18 @@ mod tests {
         Env: QueryEnv
             + dialog_capability::Provider<dialog_effects::memory::Publish>
             + dialog_capability::Provider<dialog_effects::archive::Import>
-            + dialog_capability::Provider<dialog_effects::authority::Attest>,
+            + dialog_capability::Provider<dialog_effects::authority::Attest>
+            + dialog_capability::Provider<dialog_effects::blob::Import>
+            + dialog_capability::Provider<dialog_effects::blob::Size>,
     {
         let txn = branch.transaction();
         let mut txn = txn;
         for (_, attr) in descriptor.with().iter() {
-            let attr_entity: Entity = attr.to_uri().parse()?;
-            txn = txn
-                .assert(
-                    the!("db.attribute/id")
-                        .of(attr_entity.clone())
-                        .is(attr.the().to_string()),
-                )
-                .assert(
-                    the!("db.attribute/type")
-                        .of(attr_entity.clone())
-                        .is("Text".to_string()),
-                )
-                .assert(
-                    the!("db.attribute/cardinality")
-                        .of(attr_entity.clone())
-                        .is("one".to_string()),
-                )
-                .assert(
-                    the!("db.meta/description")
-                        .of(attr_entity)
-                        .is(String::new()),
-                );
+            for statement in
+                crate::concept::attribute_statements(attr.descriptor()).expect("attribute facts")
+            {
+                txn = txn.assert(statement);
+            }
         }
 
         let entity = descriptor.this();
@@ -473,7 +457,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_resolves_a_concept_by_entity() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -497,7 +481,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_resolves_a_concept_by_name() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -529,7 +513,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_resolves_a_transient_concept_to_the_transient_variant() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -557,7 +541,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_returns_none_for_an_unknown_named_concept() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -571,7 +555,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_lists_every_concept_on_the_branch() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -588,7 +572,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_lists_every_published_name() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 

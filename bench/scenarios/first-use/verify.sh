@@ -3,35 +3,22 @@
 set -euo pipefail
 
 TONK="${TONK:?}"
-response="$(
-  "$TONK" eval -c 'task:
-  this: ?task
-  title: ?title
-  done: ?done' --format json --no-sync
-)"
+response="$("$TONK" query task --json)"
 
 jq -n \
-  --argjson response "$response" '
-  [
-    $response.matches_after[]
-    | select(.label == "task")
-    | .results[]
-    | {
-        this,
-        title: .fields.title,
-        done: .fields.done
-      }
-  ] as $tasks
+  --argjson response "$response" \
+  --slurpfile baseline "${RUN_DIR:?}/baseline-tasks.json" '
+  $baseline[0] as $before
+  | [$before[] | select(.title == "Draft launch email" and .done == false)] as $targets
+  | ($before | map(if .this == $targets[0].this then .done = true else . end)) as $expected
   | {
       available: true,
       passed: (
-        ($tasks | length) == 2
-        and ($tasks | map(.this) | unique | length) == 2
-        and ($tasks | map(select(.title == "Draft launch email" and .done == true)) | length) == 1
-        and ($tasks | map(select(.title == "Book venue" and .done == false)) | length) == 1
+        ($targets | length) == 1
+        and ($response | sort_by(.this)) == ($expected | sort_by(.this))
       ),
-      task_count: ($tasks | length),
-      distinct_entities: ($tasks | map(.this) | unique | length),
-      tasks: $tasks
+      task_count: ($response | length),
+      distinct_entities: ($response | map(.this) | unique | length),
+      tasks: $response
     }
   '

@@ -36,10 +36,10 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use axum_wasm_macros::wasm_compat;
 use futures_util::StreamExt as _;
 use http_body_util::BodyExt as _;
 use tokio::sync::{Mutex, broadcast};
+use tonk_handler_macros::wasm_compat;
 // `wasm_compat` expands to code that uses `oneshot` by bare path
 // on the wasm cfg; on native it isn't referenced. Import it
 // unconditionally so both cfgs see the symbol.

@@ -40,6 +40,11 @@ pub const SUSPENDED: &str = "case:suspended";
 /// `status` URI for a locally custodied account, held until a real one
 /// replaces it.
 pub const ONBOARDING: &str = "case:onboarding";
+/// `status` URI for an onboarding account a real one replaced: its
+/// `retired-at` is set. Ranked above `onboarding` and below
+/// `registered`, so a retired account that also enrolled reads as
+/// enrolled.
+pub const RETIRED: &str = "case:retired";
 
 /// The account enrolled an address with an access service, keyed by the
 /// immutable account subject.
@@ -210,7 +215,7 @@ impl AccountSealedInbox {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use dialog_operator::helpers;
+    use dialog_peer::helpers;
     use dialog_query::{Output as _, Query, Term};
     use dialog_varsig::did;
     #[cfg(target_arch = "wasm32")]
@@ -223,7 +228,7 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     async fn converge(a_first: bool) -> Result<String> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let base = repository.branch("base").open().perform(&operator).await?;
         let base_revision = base
@@ -320,7 +325,7 @@ mod tests {
     /// own, and an account carries whichever have happened.
     #[dialog_common::test]
     async fn it_reads_registration_activation_and_suspension_apart() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let account = did!("test:account").this();
@@ -451,7 +456,7 @@ mod tests {
     /// registered.
     #[dialog_common::test]
     async fn it_does_not_race_enrollment_against_activation() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let account = did!("test:account").this();
@@ -533,18 +538,43 @@ pub struct EmailStatus {
     pub state: crate::domain::email_status::State,
 }
 
+/// This device holds an account's authority on the active branch.
+///
+/// Published on the branch overlay by the worker whenever the link
+/// changes, and re-published at boot, so a view can tell a linked branch
+/// from one whose account facts merely remain after a sign-out.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AccountLink {
+    /// Always [`AccountLink::ENTITY`]: one row per branch overlay.
+    pub this: Entity,
+    /// The linked account.
+    pub account: crate::domain::account_link::Account,
+}
+
+impl AccountLink {
+    /// The single entity the link row lives on.
+    pub const ENTITY: &str = "state:account-link";
+
+    /// A link to `account`.
+    pub fn new(this: Entity, account: Entity) -> Self {
+        Self {
+            this,
+            account: crate::domain::account_link::Account(account),
+        }
+    }
+}
+
 /// Where a passkey-gated command got to, on the profile overlay.
 ///
 /// The hub's settings page asserts `tonk:delete-account`,
 /// `tonk:authorize-device`, or `tonk:add-passkey` and then watches this
-/// one row: the worker writes it as the ceremony advances, so the page
+/// status row: the worker writes it as the ceremony advances, so the page
 /// renders progress and failure from facts rather than from a response
-/// body. One row, replaced at each step; `ceremony` says which command
-/// the row is about, so a stale row from an earlier ceremony is
-/// recognisable as such.
+/// body. The row is replaced at each step. Account approvals use a
+/// request-specific entity; other ceremonies use [`CeremonyStatus::ENTITY`].
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CeremonyStatus {
-    /// The entity the page watches, `state:ceremony`.
+    /// The entity the page watches: a request-specific approval or `state:ceremony`.
     pub this: Entity,
     /// Which ceremony: `delete-account`, `authorize-device`, `add-passkey`.
     pub ceremony: crate::domain::ceremony_status::Ceremony,
@@ -556,7 +586,7 @@ pub struct CeremonyStatus {
 }
 
 impl CeremonyStatus {
-    /// The entity every ceremony reports to.
+    /// Default entity for ceremonies without a request-specific progress row.
     pub const ENTITY: &str = "state:ceremony";
 
     /// A report about `ceremony`.
@@ -578,6 +608,22 @@ pub mod ceremony {
     pub const AUTHORIZE_DEVICE: &str = "authorize-device";
     /// `tonk:add-passkey`.
     pub const ADD_PASSKEY: &str = "add-passkey";
+    /// Making an agent for an app signing in over OAuth.
+    pub const AUTHORIZE_AGENT: &str = "authorize-agent";
+    /// Withdrawing what a share link gave one of the account's agents.
+    pub const REVOKE_AGENT: &str = "revoke-agent";
+    /// `tonk:add-profile` — signing up a fresh profile's account.
+    ///
+    /// Unlike its siblings the worker does not drive this one to
+    /// completion: it rotates the profile, asks the page to raise the
+    /// signup, and the page's own ceremony runs from there. The status
+    /// exists so the hub can show that a signup is up without holding
+    /// that fact in element state, which a re-render would lose.
+    pub const ADD_PROFILE: &str = "add-profile";
+    /// `tonk:sign-in-via` and `tonk:finish-sign-in-via`: signing this
+    /// browser in through another deployment. One name for both halves,
+    /// so the page shows one line however far the round trip got.
+    pub const SIGN_IN_VIA: &str = "sign-in-via";
 }
 
 /// The states a [`CeremonyStatus`] can report.

@@ -23,6 +23,18 @@ pub struct QueryResult {
     pub this: String,
     /// Field name → bound value.
     pub fields: BTreeMap<String, serde_json::Value>,
+    /// `true` when this entity was asserted through a transient
+    /// concept (a command): it is returned here, but never written to
+    /// the branch, so re-reading it from the store finds nothing. A
+    /// renderer must draw it from `fields`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub transient: bool,
+}
+
+/// `skip_serializing_if` predicate: keep `transient` off the wire
+/// unless it is set, so existing consumers see an unchanged shape.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Commit-side summary.

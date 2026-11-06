@@ -32,6 +32,8 @@ let
       "Cargo.toml"
       "rust-toolchain.toml"
       "rust"
+      # The shared MCP tool catalog, embedded by tonk-agent-peer.
+      "mcp/tools.json"
     ];
   };
 
@@ -105,7 +107,7 @@ let
   # Build WASM dependencies separately (different target)
   # Exclude native-only crates that can't compile for wasm32-unknown-unknown.
   # If you add a new native-only crate, add it to the --exclude list here.
-  wasmCargoExcludeArgs = "--workspace --exclude tonk-cli --exclude tonk-perf";
+  wasmCargoExcludeArgs = "--workspace --exclude tonk-cli --exclude tonk-agent-peer --exclude tonk-perf";
 
   wasmAttributes = commonAttributes // {
     CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
@@ -127,7 +129,62 @@ let
       // {
         version = "0.1.0";
 
-        cargoArtifacts = nativeArtifacts;
+        cargoArtifacts =
+          if attributes ? CARGO_PROFILE then
+            craneLib.buildDepsOnly (
+              commonAttributes
+              // {
+                pname = "${attributes.pname}-deps";
+                CARGO_PROFILE = attributes.CARGO_PROFILE;
+                cargoExtraArgs = attributes.cargoExtraArgs or "";
+              }
+            )
+          else
+            nativeArtifacts;
+      }
+      // attributes
+    );
+
+  # A fully static Linux build, for binaries shipped outside Nix. A
+  # `buildCrate` binary names Nix's glibc as its ELF interpreter and
+  # library path, so on any other distribution the kernel cannot start it
+  # ("required file not found"). Linking statically against musl leaves no
+  # interpreter and no libc to find. Only x86_64 Linux ships.
+  muslTarget = "x86_64-unknown-linux-musl";
+  muslCc = pkgs.pkgsCross.musl64.stdenv.cc;
+  muslToolchain = rustToolchain.override { targets = [ muslTarget ]; };
+  muslCraneLib = (crane.mkLib pkgs).overrideToolchain (_: muslToolchain);
+  muslAttributes = commonAttributes // {
+    nativeBuildInputs = buildInputs ++ [
+      muslToolchain
+      muslCc
+    ];
+    # musl replaces every system library: nothing of the host's links in.
+    buildInputs = [ ];
+    CARGO_BUILD_TARGET = muslTarget;
+    CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${muslCc}/bin/${muslCc.targetPrefix}cc";
+    # C code in dependencies (`ring`) is compiled for the target with the
+    # musl compiler; build scripts still run on the host.
+    CC_x86_64_unknown_linux_musl = "${muslCc}/bin/${muslCc.targetPrefix}cc";
+    AR_x86_64_unknown_linux_musl = "${muslCc}/bin/${muslCc.targetPrefix}ar";
+    HOST_CC = "${pkgs.stdenv.cc}/bin/cc";
+  };
+
+  buildStaticCrate =
+    attributes:
+    muslCraneLib.buildPackage (
+      muslAttributes
+      // {
+        version = "0.1.0";
+        cargoArtifacts = muslCraneLib.buildDepsOnly (
+          muslAttributes
+          // {
+            pname = "${attributes.pname}-static-deps";
+            CARGO_PROFILE = attributes.CARGO_PROFILE or "release";
+            cargoExtraArgs = attributes.cargoExtraArgs or "";
+          }
+        );
       }
       // attributes
     );
@@ -147,21 +204,38 @@ let
       // attributes
     );
 
+  # `depsBuildCommand` lists the Cargo builds Trunk will run, with their
+  # profiles, binaries and features. Trunk builds each asset under the profile
+  # its `index.html` link names, and the shared Wasm artifacts are built under
+  # `release`, so without it every asset recompiles all of its dependencies.
   buildTrunkCrate =
     attributes:
     let
       crateRoot = builtins.dirOf attributes.trunkConfig;
+      depsBuildCommand = attributes.depsBuildCommand or null;
+      cargoArtifacts =
+        if depsBuildCommand == null then
+          wasmArtifacts
+        else
+          craneLib.buildDepsOnly (
+            wasmAttributes
+            // {
+              pname = "${attributes.pname}-trunk-deps";
+              buildPhaseCargoCommand = depsBuildCommand;
+              doCheck = false;
+            }
+          );
     in
     craneLib.buildTrunkPackage (
       wasmAttributes
       // {
-        cargoArtifacts = wasmArtifacts;
+        inherit cargoArtifacts;
         preBuild = ''
           cd ${crateRoot}
         '';
         inherit wasm-bindgen-cli;
       }
-      // attributes
+      // builtins.removeAttrs attributes [ "depsBuildCommand" ]
     );
 
   # Build cargo-nextest test archive
@@ -170,29 +244,27 @@ let
       name,
       args ? "",
       target ? null,
-      # Extra cargo args for a dedicated dependency-only build. An archive
-      # whose feature set pulls dependencies the shared workspace artifacts
-      # never compile (e.g. tonk-ui's `integration-tests` WebDriver stack)
-      # names them here so they are cached across source changes instead of
-      # rebuilt inside every archive derivation.
-      depsExtraArgs ? null,
+      # One profile and target/feature graph for both the dependency cache and
+      # nextest. Raw nextest does not honor Crane's CARGO_PROFILE default.
+      profile ? "test",
     }:
     let
-      targetAttributes = if target == "wasm32-unknown-unknown" then wasmAttributes else commonAttributes;
-
-      sharedArtifacts = if target == "wasm32-unknown-unknown" then wasmArtifacts else nativeArtifacts;
-
-      targetArtifacts =
-        if depsExtraArgs == null then
-          sharedArtifacts
-        else
-          craneLib.buildDepsOnly (
-            targetAttributes
-            // {
-              pname = "tonk-workspace-${name}-deps";
-              cargoExtraArgs = depsExtraArgs;
-            }
-          );
+      baseAttributes = if target == "wasm32-unknown-unknown" then wasmAttributes else commonAttributes;
+      targetAttributes = baseAttributes // {
+        CARGO_PROFILE = profile;
+      };
+      targetArtifacts = craneLib.buildDepsOnly (
+        targetAttributes
+        // {
+          pname = "tonk-workspace-${name}-deps";
+          cargoExtraArgs = args;
+          # nextest archives consume test artifacts. Compile that graph once;
+          # separate check/build passes produce artifacts this consumer does
+          # not need. --no-run also supports cross-compiled Wasm tests.
+          buildPhaseCargoCommand = "cargoWithProfile test ${args} --no-run";
+          doCheck = false;
+        }
+      );
     in
     craneLib.mkCargoDerivation (
       targetAttributes
@@ -201,7 +273,7 @@ let
         cargoArtifacts = targetArtifacts;
 
         buildPhaseCargoCommand = ''
-          cargo nextest archive \
+          cargo nextest archive --cargo-profile ${profile} --timings \
             ${args} \
             --archive-file ./tests-${name}.tar.zst
         '';
@@ -209,6 +281,7 @@ let
         installPhaseCommand = ''
           mkdir -p $out
           cp ./*.tar.zst $out/
+          cp -r target/cargo-timings $out/cargo-timings
         '';
 
         doInstallCargoArtifacts = false;
@@ -246,6 +319,7 @@ in
 {
   inherit
     buildCrate
+    buildStaticCrate
     buildWasmCrate
     buildTrunkCrate
     buildTestArchive

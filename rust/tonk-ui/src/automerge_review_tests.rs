@@ -91,9 +91,15 @@ async fn review_automerge_two_browsers_with_access_service(env: TestEnvironment)
         eprintln!("AUTOMERGE REVIEW: real prose elements converged across two browser profiles");
         let table_base = get_json(&first, &table_path).await?;
         successful_body("read workbook", &table_base);
-        // Request the second document before sweeping: this also exercises late bytes.
-        let _ = get_json(&second, &table_path).await?;
-        for _ in 0..3 {
+        // Request the second document before sweeping: this also exercises late
+        // bytes. A sync poke is debounced, so wait for the actual base instead
+        // of assuming that a fixed number of pokes has fetched it.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let read = get_json(&second, &table_path).await?;
+            if read["status"] == 200 && read["body"]["heads"] == table_base["body"]["heads"] && read["body"]["table"] == table_base["body"]["table"] { break; }
+            anyhow::ensure!(tokio::time::Instant::now() < deadline, "second browser never received the workbook base: {read}");
+            let _ = post_json(&first, "/api/sync", serde_json::json!({})).await?;
             let _ = post_json(&second, "/api/sync", serde_json::json!({})).await?;
             tokio::time::sleep(Duration::from_millis(1200)).await;
         }

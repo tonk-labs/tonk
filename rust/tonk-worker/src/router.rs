@@ -11,7 +11,6 @@ use ::axum::{
     routing::post,
     routing::put,
 };
-use tokio::sync::RwLock;
 
 use crate::worker::TonkState;
 
@@ -37,10 +36,19 @@ pub(crate) fn update_pending() -> bool {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         use wasm_bindgen::JsCast;
+        // A Workers isolate's global passes as a service worker scope but
+        // has no registration to update.
         return js_sys::global()
             .dyn_into::<web_sys::ServiceWorkerGlobalScope>()
-            .map(|scope| scope.registration().waiting().is_some())
-            .unwrap_or(false);
+            .ok()
+            .and_then(|scope| js_sys::Reflect::get(&scope, &"registration".into()).ok())
+            .filter(|registration| registration.is_object())
+            .is_some_and(|registration| {
+                registration
+                    .unchecked_into::<web_sys::ServiceWorkerRegistration>()
+                    .waiting()
+                    .is_some()
+            });
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     false
@@ -53,7 +61,12 @@ pub(crate) mod account;
 mod account_deletion;
 mod ceremony;
 pub(crate) mod customer;
+mod email_invitation;
 mod email_status;
+#[cfg(all(test, feature = "integration-tests", not(target_arch = "wasm32")))]
+mod identity_discovery_spike;
+mod link_timing;
+mod sign_in_via;
 
 pub(crate) mod account_state;
 pub use account_state::AccountKeys;
@@ -67,36 +80,71 @@ pub(crate) mod custody;
 /// account, then retire it.
 pub(crate) mod rotation;
 
+#[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
+mod agent_link;
+// Built natively too, without the feature, for this crate's own tests:
+// the space writer is tested against a native access service.
+#[cfg(any(feature = "volatile-storage", test))]
+#[cfg_attr(not(feature = "volatile-storage"), allow(dead_code, unused_imports))]
+mod hosted;
 mod join;
+mod view_access;
+#[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
+pub use agent_link::AgentLinkWorker;
+#[cfg(feature = "volatile-storage")]
+pub use hosted::{
+    HostedPeer, NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, join as agent_join, mcp,
+    telemetry, view, writer_seed,
+};
+#[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
+mod local_peer;
+#[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
+pub use local_peer::{LocalPeer, try_lock as try_lock_peer};
+pub(crate) mod public_access;
+mod publication;
+mod space_invite;
 pub use join::{JoinRequest, JoinResponse};
+mod local_space_link;
 
 pub(crate) mod account_devices;
 
 mod create_invite;
 pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
+pub(crate) mod agent_connections;
+mod agent_session;
+mod agents;
 mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
 mod members;
 
+/// Making a branch a space does not have yet, as a command.
+mod branch;
+
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
 
-mod repository;
+pub(crate) mod repository;
 pub(crate) use repository::ProfileLibraryCache;
 pub use repository::{
     BranchConfiguration, MemberInfo, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
     UpstreamConfiguration, bootstrap_profile,
 };
 
+/// The remotes a repository names, as its meta branch records them.
+pub(crate) mod remotes;
+
 mod sync;
 pub use dialog_repository::Revision;
+pub(crate) use sync::ProfileSwaps;
 pub use sync::{
     SyncQueue, SyncResponse, SyncStatusResponse, branches_to_sync, drain_sync, sync_repository,
 };
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use sync::{is_sync_enabled, mark_offline};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) use sync::{push_loops, watch_open_repos};
 // Re-exported so API consumers (the UI) can name the state without
 // depending on `tonk-schema` directly.
 pub use tonk_schema::SyncState;
@@ -111,8 +159,7 @@ pub use lsp::LspHub;
 
 mod lsp_env;
 
-mod onboarding_space;
-mod profile;
+pub(crate) mod profile;
 pub use profile::{ProfileInfo, SpaceEntry};
 
 pub(crate) mod profiles;
@@ -120,6 +167,8 @@ pub(crate) mod profiles;
 mod profile_name;
 
 mod evaluate;
+mod library;
+mod seed;
 pub use evaluate::{CommitSummary, EvaluatePath, EvaluateResponse, QueryMatchBlock, QueryResult};
 
 mod query;
@@ -134,6 +183,11 @@ pub use session::{ClientRegistry, ClientState, SiteResponse};
 
 mod transact;
 pub use transact::{ProfileTransactPath, TransactPath, TransactResponse};
+
+// The views a hosted peer outlines for an agent; built where `hosted` is.
+#[cfg(any(feature = "volatile-storage", test))]
+#[cfg_attr(not(feature = "volatile-storage"), allow(dead_code))]
+mod view_tree;
 
 mod transfer;
 pub use transfer::ImportResponse;
@@ -151,21 +205,32 @@ mod document;
 
 mod migration;
 
+mod interpret;
 mod navigate;
+mod site_request;
+mod site_select;
+
+mod diagnostics;
 
 mod command;
 pub use command::{CommandEnv, CommandOrigin, CommandProviders, command_providers, dispatch};
 
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod intent;
 #[cfg(test)]
 mod route_table;
 #[cfg(test)]
 mod wire_compat;
 
 /// Shared application state containing profile and operator.
-pub type AppState = Arc<RwLock<TonkState>>;
+pub type AppState = Arc<crate::StateLock<TonkState>>;
 
 fn is_profile_scoped_path(path: &str) -> bool {
-    path.starts_with("/api/") && !matches!(path, "/api/identify" | "/api/health")
+    path.starts_with("/api/")
+        && !matches!(
+            path,
+            "/api/identify" | "/api/health" | "/api/inspect/diagnostics"
+        )
 }
 
 async fn profile_context_fence(
@@ -186,6 +251,67 @@ async fn profile_context_fence(
     Ok(next.run(request).await)
 }
 
+/// The token a repository route's `{repo}` segment names the profile's
+/// own repository by: `profile:<name>`, as a view's `main@profile:tonk`
+/// context spells it. The worker serves one profile, so the name is not
+/// consulted.
+const PROFILE_ALIAS: &str = "profile:";
+
+/// Whether `repo` is the key of the profile's own repository.
+///
+/// The profile's repository is a repository like any other, reached by
+/// its DID through the same routes. What sets it apart is what may be
+/// done to it: a sealed guest never writes it, and its commits belong to
+/// no space. Each route that makes that distinction asks here.
+pub(crate) async fn names_profile(state: &AppState, repo: &str) -> bool {
+    state.read().await.reactor.profile_key() == repo
+}
+
+/// The path a repository route is asked for, with a `profile:<name>`
+/// repository segment replaced by `key`, the profile's DID, or `None`
+/// when the path names no profile alias.
+fn resolve_profile_alias(path: &str, key: &str) -> Option<String> {
+    let rest = path.strip_prefix("/api/repository/")?;
+    let (repo, tail) = match rest.split_once('/') {
+        Some((repo, tail)) => (repo, Some(tail)),
+        None => (rest, None),
+    };
+    let alias = repo.starts_with(PROFILE_ALIAS)
+        || repo
+            .get(..PROFILE_ALIAS.len() + 2)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("profile%3a"));
+    if !alias {
+        return None;
+    }
+    Some(match tail {
+        Some(tail) => format!("/api/repository/{key}/{tail}"),
+        None => format!("/api/repository/{key}"),
+    })
+}
+
+/// Route a request naming the profile's repository by its alias to the
+/// repository's own key, before the router matches it. One place knows
+/// the alias; every route past it sees a repository key.
+async fn profile_alias(
+    State(state): State<AppState>,
+    mut request: ::axum::extract::Request,
+    next: Next,
+) -> Response {
+    if request.uri().path().starts_with("/api/repository/profile") {
+        let key = state.read().await.reactor.profile_key().to_owned();
+        if let Some(path) = resolve_profile_alias(request.uri().path(), &key) {
+            let rewritten = match request.uri().query() {
+                Some(query) => format!("{path}?{query}"),
+                None => path,
+            };
+            if let Ok(uri) = rewritten.parse() {
+                *request.uri_mut() = uri;
+            }
+        }
+    }
+    next.run(request).await
+}
+
 /// Root handler that returns a welcome message.
 async fn root(State(_state): State<AppState>) -> &'static str {
     "Hello, Tonk!"
@@ -198,7 +324,7 @@ async fn root(State(_state): State<AppState>) -> &'static str {
 /// the SW entry point can call [`LspHub::shutdown`] when a newer
 /// worker version begins installing.
 pub fn api_router(state: TonkState) -> (Router, Arc<LspHub>) {
-    api_router_from_state(Arc::new(RwLock::new(state)))
+    api_router_from_state(Arc::new(crate::StateLock::new(state)))
 }
 
 /// Largest accepted `POST …/blob` body. The handler buffers the whole
@@ -213,7 +339,7 @@ pub const BLOB_UPLOAD_LIMIT: usize = 64 * 1024 * 1024;
 /// request path, before deciding whether to dispatch into the
 /// router or pass a fetch through to the network.
 pub fn api_router_with_state(state: TonkState) -> (Router, AppState, Arc<LspHub>) {
-    let state = Arc::new(RwLock::new(state));
+    let state = Arc::new(crate::StateLock::new(state));
     let (router, hub) = api_router_from_state(state.clone());
     (router, state, hub)
 }
@@ -227,15 +353,15 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
         .route(
+            "/api/inspect/diagnostics",
+            get(diagnostics::read).delete(diagnostics::reset),
+        )
+        .route(
             "/api/identity/root",
             get(identity::get).post(identity::save),
         )
         .route("/api/account", get(account::get).delete(account::unlink))
         .route("/api/account/deletion/plan", get(account_deletion::plan))
-        .route(
-            "/api/account/spaces/delete",
-            post(account_deletion::delete_space),
-        )
         .route("/api/account/attach", post(account::link))
         .route("/api/account/display-name", post(account::set_display_name))
         // Customer registration with the same-origin access service.
@@ -256,53 +382,22 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route("/api/profiles", get(profiles::list))
         .route("/api/profiles/activate", post(profiles::activate))
         .route("/api/profiles/add", post(profiles::add))
-        // Profile-as-repository routes. The profile is its own
-        // repository but lives outside the named-repo namespace
-        // (no `repo` segment), so it gets a parallel route
-        // surface here rather than nesting under
-        // `/api/repository/{repo}/...`.
-        .route(
-            "/api/profile/repository",
-            get(repository::get_profile_repository),
-        )
-        .route(
-            "/api/profile/branch/{branch}/query",
-            post(query::query_profile),
-        )
-        .route(
-            "/api/profile/branch/{branch}/evaluate",
-            post(evaluate::evaluate_profile),
-        )
+        // The profile's own repository has no routes of its own: it is
+        // reached through `/api/repository/{repo}/…` like every other,
+        // by its DID or the `profile:<name>` alias (see `profile_alias`).
         .route(
             "/api/profile/library",
             post(repository::update_profile_library),
-        )
-        .route(
-            "/api/profile/branch/{branch}/transact",
-            post(transact::transact_profile),
-        )
-        // The profile's own CSV export, alongside `/query` and
-        // `/transact`. The repository route cannot serve the profile:
-        // the profile is a singleton reached through
-        // `profile_repository()`, not by name.
-        .route(
-            "/api/profile/branch/{branch}/export",
-            get(transfer::export_profile),
         )
         // Register the requesting client's site (per-tab navigation state).
         // The page calls this on load and on each client-side navigation; the
         // SW asserts the tab's `tonk:site` and returns the site id. Reads never
         // stamp — see `router/session.rs`.
-        .route("/api/profile/welcome", post(onboarding_space::welcome))
         .route("/api/site", post(session::register_site))
         // Per-branch site registration: the branch comes from the URL (like
         // `/query` and `/transact`), not from parsing the document path. A
         // `<tonk-site>` scoped by `<tonk-repository>`/`<tonk-branch>` ancestors
         // posts its path here and renders the returned site entity.
-        .route(
-            "/api/profile/branch/{branch}/site",
-            post(session::register_site_on_profile),
-        )
         .route(
             "/api/repository/{repo}/branch/{branch}/site",
             post(session::register_site_on_repo),
@@ -310,6 +405,23 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // Join an invite — creates a fresh replica or refreshes
         // access on an existing one. See `router/join.rs`.
         .route("/api/profile/join", post(join::join))
+        .route("/api/view/access", post(view_access::accept))
+        .route(
+            "/api/local-space-link/approve",
+            post(local_space_link::approve),
+        )
+        .route(
+            "/api/local-space-link/describe",
+            post(local_space_link::describe),
+        )
+        .route(
+            "/api/local-space-link/provision",
+            post(local_space_link::provision),
+        )
+        .route(
+            "/api/local-space-link/complete",
+            post(local_space_link::complete),
+        )
         .route(
             "/api/migrate/repo-vs-profile",
             get(migration::repo_vs_profile),
@@ -331,6 +443,18 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             post(revoke_invite::revoke),
         )
         .route("/api/repository/{repo}/invites", get(revoke_invite::list))
+        .route("/api/account/connections", get(agent_connections::list))
+        // A new agent and its first session, for the OAuth approval page.
+        .route("/api/agent/session", post(agent_session::create))
+        .route("/api/agent/request/{handle}", get(agent_session::request))
+        .route("/api/agent/deny", post(agent_session::deny))
+        // The account's agents and what each can reach, for the hub.
+        .route("/api/agents", get(agents::list))
+        .route("/api/agents/{key}/revoke", post(agents::revoke))
+        .route(
+            "/api/account/connections/{id}/revoke",
+            post(agent_connections::revoke),
+        )
         // Opt-in remote attach — wires a remote (and branch upstream)
         // onto an existing repo, idempotently. See
         // `router/repository.rs::attach_remote`.
@@ -379,6 +503,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/branch/{branch}/evaluate",
             post(evaluate::evaluate),
         )
+        .route(
+            "/api/repository/{repo}/branch/{branch}/evaluate/conditional",
+            post(evaluate::evaluate_conditional),
+        )
         // CSV export / import — stream the branch's artifacts out as
         // `text/csv`, or commit a CSV body's rows as assertions. See
         // `router/transfer.rs`.
@@ -418,15 +546,12 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/branch/{branch}/host/{host}/{entity}",
             get(host::guest),
         )
-        .route(
-            "/api/repository/{repo}/branch/{branch}/onboarding",
-            post(onboarding_space::prepare),
-        )
         // Content-addressed blob bytes: GET serves an entity's bytes; POST
         // ingests a new blob into the branch store and returns its ref.
         // `<tonk-display>` points `<img src>` at the GET form for
-        // `tonk:blob` models; `Content-Type` there comes from the blob's
-        // `xyz.tonk.blob/content-type` fact, which POST asserts.
+        // `tonk:blob` models; `Content-Type` there comes from the asset's
+        // `tonk.dialog.asset/media-type` fact, which POST asserts, or the
+        // legacy `xyz.tonk.blob/content-type` one older blobs carry.
         // The upload body is buffered whole in the service worker (no
         // streaming yet), so the limit is a deliberate ceiling rather than
         // axum's 2 MiB default — which real image files routinely exceed.
@@ -480,6 +605,12 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             state.clone(),
             profile_context_fence,
         ));
+    // A layer runs after its router has matched a route, so the alias is
+    // resolved by a router of its own in front, whose only service is the
+    // one above.
+    let router = Router::new()
+        .fallback_service(router)
+        .layer(middleware::from_fn_with_state(state, profile_alias));
     (router, lsp_hub)
 }
 
@@ -504,8 +635,8 @@ pub mod tests {
     // by their old path, so keep it resolving without widening them.
     pub(crate) use crate::helpers::state::{persist_test_root, test_root_seed};
 
+    use crate::worker::DefaultProfile;
     use dialog_credentials::Ed25519Signer;
-    use dialog_operator::Profile;
     use dialog_repository::RepositoryExt as _;
     use dialog_storage::provider::storage::Storage;
     use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject as UcanSubject};
@@ -552,7 +683,7 @@ pub mod tests {
 
         for (method, uri) in [
             ("GET", "/api/profile"),
-            ("POST", "/api/profile/branch/main/transact"),
+            ("POST", "/api/repository/profile:tonk/branch/main/transact"),
         ] {
             let stale = app
                 .clone()
@@ -652,7 +783,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -686,7 +817,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -721,7 +852,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -754,7 +885,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -787,7 +918,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -848,6 +979,114 @@ pub mod tests {
     /// of "not signed in": no root at all, and a root with no account behind
     /// it. Neither may create a space — one that exists without an account is
     /// local-only and never backed up, and nothing later would say so.
+    /// A repository route names the profile's own repository by its
+    /// `profile:<name>` alias, encoded or not, and the alias resolves to
+    /// the profile's key wherever in the route it sits. Nothing else is
+    /// taken for the alias.
+    #[dialog_common::test]
+    fn it_resolves_the_profile_alias_to_the_profile_key() {
+        let key = "did:key:zProfile";
+        let resolve = |path| super::resolve_profile_alias(path, key);
+        assert_eq!(
+            resolve("/api/repository/profile:tonk/branch/main/query").as_deref(),
+            Some("/api/repository/did:key:zProfile/branch/main/query")
+        );
+        assert_eq!(
+            resolve("/api/repository/profile%3Atonk/branch/meta/transact").as_deref(),
+            Some("/api/repository/did:key:zProfile/branch/meta/transact")
+        );
+        assert_eq!(
+            resolve("/api/repository/profile:tonk").as_deref(),
+            Some("/api/repository/did:key:zProfile")
+        );
+        for other in [
+            "/api/repository/did:key:zSpace/branch/main/query",
+            "/api/repository/profile/branch/main/query",
+            "/api/repository/profiles:tonk",
+            "/api/profile",
+            "/api/profiles/add",
+        ] {
+            assert_eq!(resolve(other), None, "{other}");
+        }
+    }
+
+    /// The alias and the DID reach one repository through one route: what
+    /// is written naming the profile one way is read naming it the other.
+    #[dialog_common::test]
+    async fn it_serves_the_profile_repository_by_alias_and_by_did() {
+        use dialog_capability::Principal as _;
+
+        let (app, state, _lsp) = super::api_router_with_state(test_state_without_root().await);
+        let profile = state.read().await.profile.did().to_string();
+        let info = |uri: String| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+            }
+        };
+        let by_alias = info("/api/repository/profile:tonk".to_owned()).await;
+        let by_did = info(format!("/api/repository/{profile}")).await;
+        assert_eq!(by_alias, by_did);
+        assert_eq!(by_did["subject"], serde_json::json!(profile));
+    }
+
+    /// The profile's own repository is a repository like any other: named
+    /// by the profile's DID, it is the one the profile chain reaches, with
+    /// one cached state and one handle per branch however it is asked for.
+    /// It is not counted among the spaces.
+    #[dialog_common::test]
+    async fn it_reaches_the_profile_repository_by_its_did() {
+        use dialog_capability::Principal as _;
+
+        let (app, state, _lsp) = super::api_router_with_state(test_state_without_root().await);
+        let space = put_repo(&app, "beside-the-profile").await;
+        let tonk = state.read().await;
+        let profile = tonk.profile.did().to_string();
+        assert_eq!(tonk.reactor.profile_key(), profile);
+
+        let through_chain = tonk
+            .reactor
+            .profile_repository()
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let by_did = tonk
+            .reactor
+            .repository(&profile)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&through_chain, &by_did));
+
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let same = tonk
+            .reactor
+            .repository(&profile)
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&main.state, &same.state));
+
+        let spaces = tonk.reactor.spaces();
+        assert!(spaces.contains(&space), "{spaces:?}");
+        assert!(!spaces.contains(&profile), "{spaces:?}");
+    }
+
     /// A space creates before any account exists, delegated to the most
     /// durable key the profile holds (plan/Account model.md §2): the
     /// device key when there is no root, the root when there is one.
@@ -859,7 +1098,7 @@ pub mod tests {
             let tonk = state.read().await;
             let repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -883,7 +1122,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -914,7 +1153,7 @@ pub mod tests {
 
         let repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -958,7 +1197,7 @@ pub mod tests {
         for key in [first, second] {
             let repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -1348,7 +1587,7 @@ pub mod tests {
                     "predicate": { "kind": "transient", "concept": {
                         "description": "Mint a repo invite — generates a membership keypair and delegation.",
                         "with": {
-                            "time": { "as": "Float", "cardinality": "one", "description": "",
+                            "time": { "as": "float:64", "cardinality": "one", "description": "",
                                 "the": "dom.event/time-stamp" },
                             "marker": { "as": "Entity", "cardinality": "one", "description": "",
                                 "the": "dom.event.current-target.dataset/invite" },
@@ -1380,8 +1619,12 @@ pub mod tests {
         // Dispatch runs post-commit; poll the `tonk:invitation` join keyed
         // by the repo subject — `access`/`remote` from the durable
         // authorization, `code` (the seed) and `link` (the assembled URL)
-        // from the session overlay.
-        for _ in 0..50 {
+        // from the session overlay. Bounded by time, not by a count of
+        // yields: an open invite first tries to leave its ticket at the
+        // remote, and how long an unreachable one takes to fail (this
+        // fixture's is) varies run to run.
+        let deadline = js_sys::Date::now() + 30_000.0;
+        while js_sys::Date::now() < deadline {
             let q = serde_json::json!({
                 "terms": {
                     "this": subject,
@@ -1485,7 +1728,7 @@ pub mod tests {
                     "predicate": { "kind": "transient", "concept": {
                         "description": "Attach a remote and mint an invite.",
                         "with": {
-                            "time": { "the": "dom.event/time-stamp", "as": "Float" },
+                            "time": { "the": "dom.event/time-stamp", "as": "float:64" },
                             "marker": { "the": "dom.event.current-target.dataset/enable-sync", "as": "Entity" },
                             "space": { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
                             "remote": { "the": "xyz.tonk.enable-sync/remote", "as": "Text" },
@@ -1500,7 +1743,7 @@ pub mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/profile/branch/main/transact")
+                    .uri("/api/repository/profile:tonk/branch/main/transact")
                     .method("POST")
                     .header("content-type", "application/json")
                     .body(Body::from(command.to_string()))
@@ -2108,10 +2351,9 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_sweeps_a_tagged_repo_with_no_upstream_branches_as_a_no_op() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
         let repo = "test-bgsync-noupstream";
 
@@ -2129,10 +2371,9 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_treats_a_tag_for_an_unknown_repo_as_a_no_op() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
 
         // Nothing to retry for a repo that does not exist, so the
         // sweep resolves rather than rejecting.
@@ -2201,10 +2442,9 @@ pub mod tests {
     /// Returns the router for driving the HTTP surface.
     async fn repo_with_sibling_upstream(label: &str) -> (Router, String) {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
         let repo = put_repo(&app, label).await;
         let repo = repo.as_str();
@@ -2463,14 +2703,14 @@ pub mod tests {
         let body = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -2522,7 +2762,7 @@ concept!: &person
         let body = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 "#;
 
@@ -2603,7 +2843,7 @@ concept!: &person
         let first = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 "#;
         let response = app
@@ -2626,7 +2866,7 @@ concept!: &person
         let second = r#"attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -2679,7 +2919,7 @@ concept!: &person
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 concept!: &person
@@ -2775,7 +3015,7 @@ person!: &alice
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 concept!: &person
@@ -2881,13 +3121,13 @@ person!: &alice
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -3053,13 +3293,13 @@ person!:
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -3122,7 +3362,7 @@ person!: &alice
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 concept!: &person
@@ -3178,13 +3418,13 @@ concept!: &person
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -3239,13 +3479,13 @@ concept!: &person
         let setup = r#"attribute!: &tagged-name
   the:         io.gozala.tagged/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: Name of the tagged item
 
 attribute!: &tagged-tag
   the:         io.gozala.tagged/tag
   as:          text
-  cardinality: many
+  cardinality: :many
   description: Tags applied to the item
 
 concept!: &tagged
@@ -3299,13 +3539,13 @@ tagged!: &dave
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -3359,7 +3599,7 @@ person!: &erin
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 concept!: &person
@@ -3415,13 +3655,13 @@ person!:
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 attribute!: &employee-id
   the:         io.gozala.employee/id
   as:          text
-  cardinality: one
+  cardinality: :one
   description: Employee identifier
 
 concept!: &person
@@ -3521,7 +3761,7 @@ employee:
             r#"attribute!: &{name}
   the:         {the}
   as:          text
-  cardinality: one
+  cardinality: :one
   description: A test attribute
 "#
         );
@@ -3944,11 +4184,10 @@ employee:
     async fn it_reads_one_shot_via_the_reactor_query_effect() {
         use dialog_query::{ConceptQuery, Query as ConceptPattern};
         use std::sync::Arc;
-        use tokio::sync::RwLock;
         use tonk_schema::meta::Name;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-query-effect";
@@ -4267,10 +4506,9 @@ employee:
     #[dialog_common::test]
     async fn it_skips_broadcast_when_repoll_is_unchanged() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-noop-repoll";
@@ -4315,10 +4553,9 @@ employee:
     #[dialog_common::test]
     async fn it_prunes_dropped_subscriber_on_change() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-prune";
@@ -4359,6 +4596,235 @@ employee:
         assert!(
             session.state.subscriptions().lock().is_empty(),
             "dropped subscriber's subscription must be pruned after a change-driven poll"
+        );
+    }
+
+    /// A branch polls its subscriptions lowest level first. The page gives
+    /// a display its nesting depth as its level, because a nested display must see
+    /// a change after its parent: otherwise it renders a frame for an
+    /// address its parent is about to replace. Creation order can't stand
+    /// in for level, because after a worker restart the page reconnects its
+    /// subscriptions in any order.
+    #[dialog_common::test]
+    async fn it_polls_outer_levels_before_nested_ones() {
+        use std::sync::Arc;
+        use tokio::sync::mpsc::unbounded_channel;
+        use tonk_schema::query::Query as WireQuery;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
+        let (repo, subject) = put_repo_info(&app, "test-reactor-poll-order").await;
+
+        let guard = app_state.read().await;
+        let session = guard
+            .reactor
+            .repository(&repo)
+            .branch("main")
+            .acquire(&guard.operator)
+            .await
+            .expect("acquire");
+        session.state.assert_overlay(tonk_schema::SpaceLocal::new(
+            &subject.parse().unwrap(),
+            true,
+        ));
+
+        // Every query names its term differently, which gives it its own
+        // hash and tags its rows with the query they came from.
+        let query = |term: &str| {
+            let wire: WireQuery = serde_json::from_value(serde_json::json!({
+                "predicate": { "with": { term: {
+                    "the": "xyz.tonk.space/local", "as": "Boolean", "cardinality": "one"
+                } } },
+                "terms": { "this": subject, term: { "?": { "name": term } } }
+            }))
+            .expect("query decodes");
+            wire.into_concept_query().expect("concept query")
+        };
+
+        // Every subscriber shares one channel, so the receiver sees frames
+        // in the order the branch delivered them. Deeper levels register
+        // first (as nested displays can after a reconnect), four per level.
+        let (sender, mut receiver) = unbounded_channel();
+        // A query shared across levels is polled at its outermost, even
+        // though its deepest subscriber created it (first of all).
+        session
+            .state
+            .adopt_subscriber(query("shared"), None, 9, sender.clone());
+        let mut expected = Vec::new();
+        for level in (0..4u32).rev() {
+            for index in 0..4 {
+                let term = format!("l{level}n{index}");
+                session
+                    .state
+                    .adopt_subscriber(query(&term), None, level, sender.clone());
+                expected.push((level, term));
+            }
+        }
+        session
+            .state
+            .adopt_subscriber(query("shared"), None, 0, sender.clone());
+        expected.sort_by_key(|(level, _)| *level);
+        let mut expected: Vec<String> = expected.into_iter().map(|(_, term)| term).collect();
+        expected.insert(0, "shared".into());
+        expected.insert(0, "shared".into());
+        let terms = expected.clone();
+
+        session.state.poll(&guard.operator).await;
+
+        let mut delivered = Vec::new();
+        while let Ok(bytes) = receiver.try_recv() {
+            let frame: serde_json::Value = serde_json::from_slice(&bytes).expect("frame decodes");
+            let rows = frame["conclusions"].as_array().expect("a snapshot");
+            assert_eq!(rows.len(), 1, "each query matches the stamp: {frame}");
+            let row = rows[0].to_string();
+            let term = terms
+                .iter()
+                .find(|term| row.contains(&format!("\"{term}\"")))
+                .unwrap_or_else(|| panic!("row names its query: {frame}"));
+            delivered.push(term.clone());
+        }
+        assert_eq!(delivered, expected);
+    }
+
+    /// A subscription request carries its level in the URL, and the branch
+    /// records it on the subscriber.
+    #[dialog_common::test]
+    async fn it_records_the_level_a_subscription_request_names() {
+        use std::sync::Arc;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
+        let repo = "test-reactor-level";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+        seed_named_entity(&app, repo).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/main/query?level=3"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("accept", "text/event-stream")
+                    .body(Body::from(named_concept_wire_query().to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = SseReader::new(response.into_body());
+        let _snapshot = read_sse_frame(&mut body).await;
+
+        let guard = app_state.read().await;
+        let session = guard
+            .reactor
+            .repository(repo)
+            .branch("main")
+            .acquire(&guard.operator)
+            .await
+            .expect("acquire");
+        let levels: Vec<u32> = session
+            .state
+            .subscriptions()
+            .lock()
+            .values()
+            .flat_map(|subscription| subscription.subscribers.iter().map(|s| s.level))
+            .collect();
+        assert_eq!(levels, vec![3]);
+    }
+
+    /// A subscription to a branch laid out the way an earlier release wrote
+    /// opens with the `upgrading` control frame, before anything else, so
+    /// the page can say an upgrade is taking place; the rows follow once
+    /// the branch is moved to this release's format, and a later request
+    /// finds nothing left to move.
+    #[dialog_common::test]
+    async fn a_subscription_to_a_branch_an_earlier_release_wrote_opens_with_the_upgrading_frame() {
+        use std::sync::Arc;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
+        let repo = "test-upgrading-frame";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+        seed_named_entity(&app, repo).await;
+
+        // Lay the branch out the way the earlier release wrote it.
+        {
+            let guard = app_state.read().await;
+            let branch = guard.reactor.repository(repo).branch("main");
+            let handle = branch
+                .acquire(&guard.operator)
+                .await
+                .expect("acquire")
+                .handle()
+                .clone();
+            handle
+                .rekey_storage(0)
+                .perform(&guard.operator)
+                .await
+                .expect("the branch is laid out the earlier way");
+            assert!(
+                branch
+                    .migration_pending(&guard.operator)
+                    .await
+                    .expect("the layout is read"),
+                "the branch needs migrating"
+            );
+        }
+
+        let mut body =
+            open_subscription_with_query(&app, repo, "main", named_concept_wire_query()).await;
+        let first = body.next_event().await.expect("a first frame");
+        assert_eq!(
+            first,
+            serde_json::json!({ "control": "upgrading" }),
+            "the stream opens with the upgrading notice"
+        );
+        let snapshot = read_sse_frame(&mut body).await;
+        let rows = snapshot["conclusions"]
+            .as_array()
+            .expect("a snapshot follows the notice");
+        assert_eq!(rows.len(), 1, "the rows follow the move: {snapshot}");
+
+        let guard = app_state.read().await;
+        assert!(
+            !guard
+                .reactor
+                .repository(repo)
+                .branch("main")
+                .migration_pending(&guard.operator)
+                .await
+                .expect("the layout is read"),
+            "the branch is migrated"
+        );
+    }
+
+    /// A branch that is not here yet has no answer, so a subscription to
+    /// it opens with the `pending` notice, never with an empty set: an
+    /// empty set says "nothing matched", and a page that already shows
+    /// rows (a reconnect, a worker restart) would delete them only to
+    /// insert them again when the branch arrives.
+    #[dialog_common::test]
+    async fn a_subscription_to_a_branch_not_here_yet_opens_pending_not_empty() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let mut body = open_subscription_with_query(
+            &app,
+            "test-not-here-yet",
+            "main",
+            named_concept_wire_query(),
+        )
+        .await;
+        let first = body.next_event().await.expect("a first frame");
+        assert_eq!(
+            first,
+            serde_json::json!({ "control": "pending" }),
+            "the stream opens with the pending notice"
         );
     }
 
@@ -4409,10 +4875,9 @@ employee:
     #[dialog_common::test]
     async fn it_keeps_subscription_live_across_pull() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-pull";
@@ -4492,10 +4957,9 @@ employee:
     #[dialog_common::test]
     async fn it_releases_sse_subscribers_on_shutdown() {
         use std::sync::Arc;
-        use tokio::sync::RwLock;
 
         let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-shutdown-releases";
@@ -4588,7 +5052,7 @@ employee:
         let body = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: "name"
 "#;
 
@@ -4702,13 +5166,13 @@ employee:
         let seed = r#"attribute!: &person-name
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: "name"
 
 attribute!: &person-age
   the:         xyz.tonk.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: "age"
 
 concept!: &person
@@ -4783,13 +5247,13 @@ concept!: &person
         let seed = r#"attribute!: &person-name
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: "name"
 
 attribute!: &person-age
   the:         xyz.tonk.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: "age"
 
 concept!: &person
@@ -4923,5 +5387,785 @@ person!:
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod approval_stall_diagnosis {
+    use super::repository::profile_library_tests::test_state;
+    use axum::{
+        Router,
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+    pub(crate) async fn put_repo(app: &Router, label: &str) -> String {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}", label))
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "expected 201 from PUT /api/repository/{label}, got {status}",
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let info: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        info.name
+    }
+    #[test]
+    fn local_identity_remains_responsive_during_stalled_sync_and_pull() {
+        // Unoptimized native network/authority futures need more stack than
+        // the test harness default. Keep this fixture independent of CI env.
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(stalled_sync_and_pull());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn stalled_sync_and_pull() {
+        use super::repository::{
+            BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
+        };
+        use dialog_remote_ucan::UcanAddress;
+        use dialog_repository::SiteAddress;
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/ucan/", listener.local_addr().unwrap());
+        let (app, state, _lsp) = super::api_router_with_state(test_state().await);
+        let repo = put_repo(&app, "approval-stall").await;
+        let config = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(&endpoint))),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/remote"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&config).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let syncing = super::sync::sync(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(super::sync::SyncPath {
+                repo: repo.clone(),
+                branch: "main".into(),
+            }),
+        );
+        tokio::pin!(syncing);
+        let socket = tokio::select! {
+            accepted = listener.accept() => accepted.unwrap().0,
+            result = &mut syncing => panic!("sync returned before reaching remote: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("sync did not reach remote"),
+        };
+        // Keep the accepted connection open without answering: remote IO is pending.
+        assert!(state.try_read().is_ok(), "sync alone allows local readers");
+        let mut pulling = Box::pin(super::sync::pull(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(super::sync::SyncPath {
+                repo,
+                branch: "main".into(),
+            }),
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut pulling)
+                .await
+                .is_err()
+        );
+        let identity = super::identity::get(axum::extract::State(state.clone()));
+        let outcome = tokio::time::timeout(Duration::from_millis(100), identity).await;
+        let blocked = outcome.is_err();
+        drop(pulling);
+        let recovered = tokio::time::timeout(
+            Duration::from_secs(1),
+            super::identity::get(axum::extract::State(state.clone())),
+        )
+        .await;
+        assert!(
+            recovered.is_ok(),
+            "identity recovers after cancelling only the queued pull"
+        );
+        eprintln!(
+            "remote sync pending; concurrent pull blocked identity={blocked}; identity after cancellation=true"
+        );
+        drop(socket);
+        assert!(
+            !blocked,
+            "queued writer behind remote sync blocks local identity reads"
+        );
+    }
+
+    /// Requests that commit, export, import or hydrate a starter image
+    /// answer while a sync holds its read guard across a round trip
+    /// the remote never answers.
+    ///
+    /// Each of these used to take the state's write guard, which waits for
+    /// every reader to finish. With a sync in flight that is the whole
+    /// round trip, and while the writer waits, every request after it waits
+    /// too. The remote here accepts the connection and never answers, so a
+    /// route that still took the write guard would never answer at all.
+    #[test]
+    fn writing_routes_answer_while_a_sync_waits_on_its_remote() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(writing_routes_during_a_stalled_sync());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn writing_routes_during_a_stalled_sync() {
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (app, state, _lsp) = super::api_router_with_state(test_state().await);
+        let (repo, mut syncing, _sockets) =
+            a_sync_waiting_on_its_remote(&app, &state, &listener, "stalled-sync-writers").await;
+
+        let branch = format!("/api/repository/{repo}/branch/main");
+        let requests: Vec<(&str, String, &str, Vec<u8>)> = vec![
+            (
+                "POST",
+                format!("{branch}/claim/assert/test:stalled/test/name"),
+                "text/plain",
+                b"asserted".to_vec(),
+            ),
+            (
+                "POST",
+                format!("{branch}/claim/retract/test:stalled/test/name"),
+                "text/plain",
+                b"asserted".to_vec(),
+            ),
+            (
+                "POST",
+                format!("{branch}/blob"),
+                "text/plain",
+                b"uploaded while a sync waits".to_vec(),
+            ),
+            (
+                "GET",
+                format!("{branch}/blob/blob:CmZq5URy2ucFKNyZCFUtHiNvEaUNK4Z8UstvzwbjREFG"),
+                "",
+                Vec::new(),
+            ),
+            ("GET", format!("{branch}/export"), "", Vec::new()),
+        ];
+        for (method, uri, content_type, body) in requests {
+            let answered = tokio::time::timeout(
+                Duration::from_secs(10),
+                send(&app, method, &uri, content_type, body),
+            )
+            .await;
+            let Ok((status, body)) = answered else {
+                panic!("{method} {uri} waited on the sync's round trip");
+            };
+            assert!(
+                status.is_success(),
+                "{method} {uri}: {status}: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        // The export's rows back in, onto a branch the upload above moved
+        // through another handle than the import's. The asset facts dialog
+        // records itself are left out: an import refuses its namespace.
+        let (_, exported) = send(&app, "GET", &format!("{branch}/export"), "", Vec::new()).await;
+        let exported = String::from_utf8(exported)
+            .unwrap()
+            .lines()
+            .filter(|row| !row.starts_with("dialog."))
+            .map(|row| format!("{row}\n"))
+            .collect::<String>()
+            .into_bytes();
+        let imported = tokio::time::timeout(
+            Duration::from_secs(10),
+            send(
+                &app,
+                "POST",
+                &format!("{branch}/import"),
+                "text/csv",
+                exported,
+            ),
+        )
+        .await
+        .expect("an import waited on the sync's round trip");
+        assert!(
+            imported.0.is_success(),
+            "import: {}: {}",
+            imported.0,
+            String::from_utf8_lossy(&imported.1)
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut syncing)
+                .await
+                .is_err(),
+            "the sync is still waiting on its remote"
+        );
+    }
+
+    async fn send(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> (StatusCode, Vec<u8>) {
+        let mut request = Request::builder().uri(uri).method(method);
+        if !content_type.is_empty() {
+            request = request.header("content-type", content_type);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, body.to_vec())
+    }
+
+    /// A space with a remote that accepts connections and never answers,
+    /// and a sync of it driven until it waits on that remote. The sockets
+    /// are returned so the remote stays silent while the test runs.
+    async fn a_sync_waiting_on_its_remote(
+        app: &Router,
+        state: &super::AppState,
+        listener: &tokio::net::TcpListener,
+        label: &str,
+    ) -> (
+        String,
+        std::pin::Pin<
+            Box<
+                impl std::future::Future<
+                    Output = Result<axum::Json<super::sync::SyncResponse>, crate::TonkWorkerError>,
+                >,
+            >,
+        >,
+        Vec<tokio::net::TcpStream>,
+    ) {
+        use super::repository::{
+            BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
+        };
+        use dialog_remote_ucan::UcanAddress;
+        use dialog_repository::SiteAddress;
+        use std::time::Duration;
+
+        let endpoint = format!("http://{}/ucan/", listener.local_addr().unwrap());
+        let repo = put_repo(app, label).await;
+        let config = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(&endpoint))),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/remote"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&config).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let mut syncing = Box::pin(super::sync::sync(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(super::sync::SyncPath {
+                repo: repo.clone(),
+                branch: "main".into(),
+            }),
+        ));
+        let mut sockets = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        // Past its first connection, a sync that has gone quiet for half a
+        // second is waiting on the remote, not working locally.
+        loop {
+            tokio::select! {
+                accepted = listener.accept() => sockets.push(accepted.unwrap().0),
+                result = &mut syncing => panic!("sync returned before reaching its remote: {result:?}"),
+                _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                    if !sockets.is_empty() {
+                        break;
+                    }
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "the sync never reached its remote"
+                    );
+                }
+            }
+        }
+        (repo, syncing, sockets)
+    }
+
+    /// A sync waiting on its remote holds no guard over the state, so a
+    /// route that takes the write guard answers, and so does every request
+    /// after it. Creating a space is such a route. When a sync held a read
+    /// guard across its round trip, the create waited for the remote, and
+    /// with a write-preferring lock every request behind it waited too: a
+    /// remote that never answers froze the worker.
+    #[test]
+    fn a_writer_answers_while_a_sync_waits_on_its_remote() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(a_writer_during_a_stalled_sync());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn a_writer_during_a_stalled_sync() {
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (app, state, _lsp) = super::api_router_with_state(test_state().await);
+        let (_repo, mut syncing, _sockets) =
+            a_sync_waiting_on_its_remote(&app, &state, &listener, "stalled-under-a-writer").await;
+
+        assert!(
+            state.try_write().is_ok(),
+            "a sync waiting on its remote holds a guard over the state"
+        );
+        let created = tokio::time::timeout(
+            Duration::from_secs(10),
+            put_repo(&app, "created-while-a-sync-waits"),
+        )
+        .await;
+        assert!(
+            created.is_ok(),
+            "creating a space waited on another space's sync"
+        );
+        let profile = tokio::time::timeout(
+            Duration::from_secs(10),
+            super::profile::get_profile(axum::extract::State(state.clone())),
+        )
+        .await;
+        assert!(
+            profile.is_ok(),
+            "a read after the create waited on the sync"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut syncing)
+                .await
+                .is_err(),
+            "the sync is still waiting on its remote"
+        );
+    }
+
+    /// Creating a space provisions it with the access service, a round trip
+    /// to that service. The create used to make it under the write guard,
+    /// so every other request waited on the service, up to its timeout. It
+    /// now provisions with no guard held: while the service is silent, a
+    /// writer could take the guard and a read answers.
+    #[test]
+    fn creating_a_space_holds_no_guard_while_it_provisions() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(creation_during_a_stalled_provision());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    /// Make `tonk` an active customer served by `provider`, so a create
+    /// provisions there.
+    async fn served_by(tonk: &crate::worker::TonkState, provider: &str) {
+        use dialog_credentials::Ed25519Signer;
+        use tonk_schema::prelude::DidExt as _;
+
+        let root = Ed25519Signer::import(&[79; 32]).await.unwrap();
+        let grant = tonk_identity::delegation::mint_device_delegation(root, &tonk.profile.did())
+            .await
+            .unwrap();
+        super::identity::persist_root(
+            tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "provisioning-stall".into(),
+                delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await
+        .unwrap();
+        let root = super::identity::local_root(tonk).await.unwrap().root_did;
+        let record = tonk_account::AccountProviderRecord::attach(provider, 1).unwrap();
+        tonk.profile
+            .secrets()
+            .site(tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE)
+            .save(record.encode().unwrap())
+            .perform(&tonk.profile)
+            .await
+            .unwrap();
+        tonk.reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .transaction()
+            .assert(tonk_schema::AccountRegistered::new(
+                root.this(),
+                "stalled@example.test".into(),
+                provider.into(),
+                1,
+            ))
+            .assert(tonk_schema::AccountActive::new(root.this(), 2))
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(super::customer::is_active(tonk).await);
+    }
+
+    async fn creation_during_a_stalled_provision() {
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider = format!("http://{}/ucan/", listener.local_addr().unwrap());
+        let tonk = test_state().await;
+        served_by(&tonk, &provider).await;
+        let (app, state, _lsp) = super::api_router_with_state(tonk);
+
+        let mut creating = Box::pin(put_repo(&app, "provisioned-while-the-service-stalls"));
+        let socket = tokio::select! {
+            accepted = listener.accept() => accepted.unwrap().0,
+            _ = &mut creating => panic!("the create answered without provisioning"),
+            _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                panic!("the create never reached the access service")
+            }
+        };
+
+        assert!(
+            state.try_write().is_ok(),
+            "a create waiting on the access service holds a guard over the state"
+        );
+        let profile = tokio::time::timeout(
+            Duration::from_secs(2),
+            super::profile::get_profile(axum::extract::State(state.clone())),
+        )
+        .await;
+        assert!(profile.is_ok(), "a read waited on a create's provisioning");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut creating)
+                .await
+                .is_err(),
+            "the create is still waiting on the access service"
+        );
+
+        // A service that hangs up leaves the space local-only: the create
+        // still answers.
+        drop(socket);
+        drop(listener);
+        tokio::time::timeout(Duration::from_secs(30), creating)
+            .await
+            .expect("the create answers once the service hangs up");
+    }
+
+    /// The account panel's `GET /api/customer` asks the access service for
+    /// the customer's live status. While that service is silent, the route
+    /// holds no guard over the state.
+    #[test]
+    fn the_customer_probe_holds_no_guard_while_the_service_answers() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(customer_probe_during_a_stalled_service());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn customer_probe_during_a_stalled_service() {
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}/", listener.local_addr().unwrap());
+        let tonk = test_state().await;
+        served_by(&tonk, &format!("{origin}ucan/")).await;
+        let (_app, state, _lsp) = super::api_router_with_state(tonk);
+
+        let mut probing = Box::pin(super::customer::get_state(
+            axum::extract::State(state.clone()),
+            axum::Extension(crate::axum::RequestOrigin::parse(&origin).unwrap()),
+        ));
+        let socket = tokio::select! {
+            accepted = listener.accept() => accepted.unwrap().0,
+            _ = &mut probing => panic!("the probe answered without asking the service"),
+            _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                panic!("the probe never reached the service")
+            }
+        };
+        assert!(
+            state.try_write().is_ok(),
+            "the customer probe holds a guard over the state while the service answers"
+        );
+        drop(socket);
+        drop(listener);
+        let _ = tokio::time::timeout(Duration::from_secs(30), probing)
+            .await
+            .expect("the probe answers once the service hangs up");
+    }
+
+    /// Turning sync on for a space provisions it with the access service, a
+    /// round trip. While that service is silent, the attach holds no guard
+    /// over the state.
+    #[test]
+    fn enabling_sync_holds_no_guard_while_it_provisions() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(enabling_sync_during_a_stalled_provision());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn enabling_sync_during_a_stalled_provision() {
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider = format!("http://{}/ucan/", listener.local_addr().unwrap());
+        let (app, state, _lsp) = super::api_router_with_state(test_state().await);
+        // Created before the account is served, so it is local-only.
+        let key = put_repo(&app, "synced-while-the-service-stalls").await;
+        served_by(&*state.read().await, &provider).await;
+
+        let mut enabling = Box::pin(super::repository::enable_sync_inner(
+            &state, &key, &provider,
+        ));
+        let socket = tokio::select! {
+            accepted = listener.accept() => accepted.unwrap().0,
+            _ = &mut enabling => panic!("sync was turned on without asking the service"),
+            _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                panic!("turning sync on never reached the service")
+            }
+        };
+        assert!(
+            state.try_write().is_ok(),
+            "turning sync on holds a guard over the state while the service answers"
+        );
+        drop(socket);
+        drop(listener);
+        let _ = tokio::time::timeout(Duration::from_secs(30), enabling)
+            .await
+            .expect("turning sync on answers once the service hangs up");
+    }
+
+    /// What used to keep a sync from writing into a space being removed
+    /// was the write guard the removal took, which waited out every sync.
+    /// A sync now holds no guard, so the space's own gate does it: removing
+    /// the space waits for that space's sync, and only for it. Removing
+    /// another space, and reads, go on meanwhile.
+    #[test]
+    fn removing_a_space_waits_for_its_own_sync_only() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(removal_during_a_stalled_sync());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn removal_during_a_stalled_sync() {
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (app, state, _lsp) = super::api_router_with_state(test_state().await);
+        let other = put_repo(&app, "removed-beside-a-sync").await;
+        let (repo, syncing, sockets) =
+            a_sync_waiting_on_its_remote(&app, &state, &listener, "removed-while-syncing").await;
+
+        let other: dialog_varsig::Did = other.parse().unwrap();
+        let removed = tokio::time::timeout(
+            Duration::from_secs(10),
+            super::repository::remove_space_inner(&state, &other),
+        )
+        .await;
+        assert!(
+            matches!(removed, Ok(Ok(()))),
+            "removing another space waited on this one's sync: {removed:?}"
+        );
+
+        let subject: dialog_varsig::Did = repo.parse().unwrap();
+        let mut removing = Box::pin(super::repository::remove_space_inner(&state, &subject));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), &mut removing)
+                .await
+                .is_err(),
+            "the space was removed while its sync was still in flight"
+        );
+        let profile = tokio::time::timeout(
+            Duration::from_secs(10),
+            super::profile::get_profile(axum::extract::State(state.clone())),
+        )
+        .await;
+        assert!(
+            profile.is_ok(),
+            "a read waited on a removal waiting on a sync"
+        );
+
+        drop(syncing);
+        drop(sockets);
+        let removed = tokio::time::timeout(Duration::from_secs(10), &mut removing).await;
+        assert!(
+            matches!(removed, Ok(Ok(()))),
+            "the removal did not finish once the sync was gone: {removed:?}"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn completed_authorization_returns_before_the_status_lock_is_available() {
+        use dialog_query::{Output as _, Query};
+        use std::time::Duration;
+        use tonk_schema::{CeremonyStatus, ceremony_state};
+
+        let (app, state, _lsp) = super::api_router_with_state(test_state().await);
+        put_repo(&app, "terminal-approval").await;
+        let (session, operator) = {
+            let tonk = state.read().await;
+            (
+                tonk.reactor
+                    .profile_repository()
+                    .branch(&tonk.active_branch)
+                    .acquire(&tonk.operator)
+                    .await
+                    .unwrap(),
+                tonk.operator.clone(),
+            )
+        };
+        for (index, result) in [
+            Ok("http://127.0.0.1:1234/?fixture=grant".to_owned()),
+            Err("registration refused".to_owned()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let request = tonk_worker_api::DeviceAuthorization {
+                audience: "did:key:test".into(),
+                callback: format!("http://127.0.0.1:1234/?attempt={index}"),
+                name: "test Desktop".into(),
+                expected_account: None,
+            };
+            let entity = super::ceremony::authorization_entity(&request);
+            let locked = state.write().await;
+            let returned = super::ceremony::finish_authorization(&state, request, result.clone());
+            assert_eq!(
+                returned, result,
+                "custody receives the original terminal result"
+            );
+            tokio::task::yield_now().await;
+            let before: Vec<CeremonyStatus> = session
+                .handle()
+                .query()
+                .select(Query::<CeremonyStatus>::default())
+                .perform(&operator)
+                .try_vec()
+                .await
+                .unwrap();
+            assert!(
+                !before.iter().any(|row| row.this.to_string() == entity),
+                "the terminal result returned while publication was still blocked"
+            );
+            drop(locked);
+            let row = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let rows: Vec<CeremonyStatus> = session
+                        .handle()
+                        .query()
+                        .select(Query::<CeremonyStatus>::default())
+                        .perform(&operator)
+                        .try_vec()
+                        .await
+                        .unwrap();
+                    if let Some(row) = rows.into_iter().find(|row| row.this.to_string() == entity) {
+                        break row;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("terminal status is eventually published after releasing the lock");
+            match result {
+                Ok(target) => {
+                    assert_eq!(row.state.0, ceremony_state::DONE);
+                    assert_eq!(row.detail.0, target);
+                }
+                Err(error) => {
+                    assert_eq!(row.state.0, ceremony_state::FAILED);
+                    assert_eq!(row.detail.0, error);
+                }
+            }
+        }
     }
 }

@@ -1,0 +1,55 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>body{margin:0;font:18px system-ui;background:#f6f2e8;color:#182925}#source{box-sizing:border-box;width:1000px;min-height:600px;padding:30px}h1{font-size:38px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.card{background:white;padding:16px;border:1px solid #759184;border-radius:12px}.badge{background:#b8e7cb;padding:8px}canvas{width:120px;height:40px}</style>
+<main id="source"><h1>Garden planning</h1><p>Real DOM capture from an opaque-origin guest</p><div class="grid"></div><p>Shadow DOM: <shadow-card></shadow-card></p><p>Canvas: <canvas width="120" height="40"></canvas></p><input value="Original value"></main>
+<script>
+const grid=document.querySelector('.grid');
+for(let i=0;i<12;i++)grid.insertAdjacentHTML('beforeend',`<article class="card"><strong>Bed ${i+1}</strong><p>Tomatoes, herbs and flowers</p><span class="badge">Ready to plant</span></article>`);
+document.querySelector('shadow-card').attachShadow({mode:'open'}).innerHTML='<span style="background:#eecc77;padding:8px">Shadow content marker</span>';
+const ctx=document.querySelector('canvas').getContext('2d');ctx.fillStyle='#c24c68';ctx.fillRect(0,0,120,40);
+document.querySelector('input').value='Edited live value';
+const send=result=>parent.postMessage({result},'*');
+const wait=()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+const longTasks=[];new PerformanceObserver(list=>longTasks.push(...list.getEntries().map(e=>({start:e.startTime,duration:e.duration})))).observe({type:'longtask',buffered:true});
+async function capture(mode, count) {
+  const start=performance.now();
+  const source=document.querySelector('#source');
+  let visited=0;
+  function clone(node) {
+    if(node.nodeType!==1)return node.cloneNode(true);
+    const out=document.createElement(node.tagName==='SHADOW-CARD'?'span':node.tagName.toLowerCase());
+    for(const attr of node.attributes)out.setAttribute(attr.name,attr.value);
+    if(mode==='inline'){const css=getComputedStyle(node);for(const key of css)out.style.setProperty(key,css.getPropertyValue(key));}
+    visited++;
+    if(node instanceof HTMLCanvasElement){const img=document.createElement('img');img.src=node.toDataURL();img.style.cssText=out.style.cssText;return img;}
+    if(node instanceof HTMLInputElement)out.setAttribute('value',node.value);
+    for(const child of (node.shadowRoot||node).childNodes)out.append(clone(child));
+    return out;
+  }
+  const copy=(mode==='inline'||mode==='hybrid')?clone(source):source.cloneNode(true);
+  const markup=new XMLSerializer().serializeToString(copy);
+  const css=mode==='inline'?'':document.querySelector('style').textContent;
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000"><foreignObject width="100%" height="100%"><body xmlns="http://www.w3.org/1999/xhtml"><style>${css}</style>${markup}</body></foreignObject></svg>`;
+  const serialized=performance.now();
+  const url=mode==='blob'?URL.createObjectURL(new Blob([svg],{type:'image/svg+xml'})):'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg);
+  try {
+    const img=new Image();img.src=url;await img.decode();
+    const decoded=performance.now();const canvas=document.createElement('canvas');canvas.width=320;canvas.height=320;
+    canvas.getContext('2d').drawImage(img,0,0,320,320);
+    const drawn=performance.now();const blob=await new Promise(r=>canvas.toBlob(r,'image/webp',0.75));
+    const end=performance.now();
+    if(count===0)parent.postMessage({image:canvas.toDataURL('image/png')},'*');
+    return {mode,count,visited,serializeMs:serialized-start,decodeMs:decoded-serialized,drawMs:drawn-decoded,totalMs:end-start,bytes:blob.size,svgBytes:svg.length};
+  } catch(e){return {mode,error:e.name+': '+e.message};}
+  finally{if(mode==='blob')URL.revokeObjectURL(url);}
+}
+(async()=>{
+  await wait();
+  try{parent.document.body;send({isolation:'FAILED'});}catch(e){send({isolation:e.name});}
+  for(const mode of ['blob','data','inline','hybrid'])for(let i=0;i<6;i++){send(await capture(mode,i));await wait();}
+  // A denser view measures the cost of computed-style copying.
+  for(let i=0;i<88;i++)grid.append(grid.firstElementChild.cloneNode(true));
+  for(const mode of ['inline','hybrid'])for(let i=0;i<3;i++){send({...await capture(mode,i),dense:true});await wait();}
+  await new Promise(r=>setTimeout(r,100));send({done:true,longTasks});
+})();
+</script>

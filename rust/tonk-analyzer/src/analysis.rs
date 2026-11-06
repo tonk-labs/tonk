@@ -151,11 +151,18 @@ impl DocumentAnalysis {
     /// installing a rule whose body references not-yet-asserted
     /// facts would produce no novelty on first commit.
     pub fn statements(&self) -> Vec<PlannedStatement> {
+        self.statements_from(0)
+    }
+
+    /// [`statements`](Self::statements) of the expressions from the
+    /// `first`th on: what a document analyzed after a prelude (a library
+    /// component after the core it relies on) asserts of its own.
+    pub fn statements_from(&self, first: usize) -> Vec<PlannedStatement> {
         let mut out = Vec::new();
         // Pass 1: every non-rule claim's lowered statements, in
         // document order. A rule claim sets `effect = Some(_)` on
         // its analysis, so we skip those here.
-        for expression in &self.expressions {
+        for expression in self.expressions.iter().skip(first) {
             if let ExpressionAnalysis::Assertion(node) = &expression.analysis
                 && node.analysis.effect.is_none()
             {
@@ -171,7 +178,7 @@ impl DocumentAnalysis {
         }
         // Pass 2: rule installs come last so any concept facts the
         // rule body reads are already on the branch.
-        for expression in &self.expressions {
+        for expression in self.expressions.iter().skip(first) {
             if let ExpressionAnalysis::Assertion(node) = &expression.analysis
                 && node.analysis.effect.is_some()
             {

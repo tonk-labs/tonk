@@ -11,10 +11,10 @@
 //! looks inside them except through [`Document::merge`].
 
 use dialog_artifacts::Entity;
-use dialog_capability::{Capability, Fork, Provider, Subject};
+use dialog_capability::{Fork, Provider, Subject};
 use dialog_common::ConditionalSync;
 use dialog_effects::memory::prelude::*;
-use dialog_effects::memory::{Cell, MemoryError, Publish, Resolve, Version};
+use dialog_effects::memory::{MemoryError, Publish, Resolve, Version};
 use dialog_repository::{RemoteSite, SiteAddress};
 use thiserror::Error;
 
@@ -37,12 +37,8 @@ pub fn cell_id(entity: &Entity) -> String {
 }
 
 /// The capability naming a document's cell under `subject`.
-pub fn cell(subject: &Subject, entity: &Entity) -> Capability<Cell> {
-    subject
-        .clone()
-        .memory()
-        .space(space(entity))
-        .cell("automerge")
+pub fn cell(subject: &Subject, entity: &Entity) -> CellScope {
+    CellScope::new(subject.clone(), space(entity), "automerge")
 }
 
 /// Failures moving a document's bytes.
@@ -85,7 +81,7 @@ pub trait Transport {
 
 /// The cell in this replica's own storage.
 pub struct LocalCell<'a, Env> {
-    cell: Capability<Cell>,
+    cell: CellScope,
     env: &'a Env,
 }
 
@@ -103,11 +99,11 @@ impl<'a, Env> LocalCell<'a, Env> {
     /// `remote/<name>/branch/<branch>` convention.
     pub fn marker(subject: &Subject, remote: &str, entity: &Entity, env: &'a Env) -> Self {
         Self {
-            cell: subject
-                .clone()
-                .memory()
-                .space(format!("remote/{remote}/{}", space(entity)))
-                .cell("synced"),
+            cell: CellScope::new(
+                subject.clone(),
+                format!("remote/{remote}/{}", space(entity)),
+                "synced",
+            ),
             env,
         }
     }
@@ -136,7 +132,7 @@ where
 
 /// The cell at the repository's remote.
 pub struct RemoteCell<'a, Env> {
-    cell: Capability<Cell>,
+    cell: CellScope,
     address: SiteAddress,
     env: &'a Env,
 }

@@ -14,14 +14,14 @@
 //! No concept is named, so nothing seeded on the profile branch is consulted
 //! and the deleted `tonk:profile/name-view` is never referenced.
 //!
-//! Renders the same `<tonk-editable class="fab__name-input"
+//! Renders the same `<inline-editable class="fab__name-input"
 //! data-rename="tonk:profile">` the deleted view used to render — this
 //! element only owns reading the live name INTO that chip; committing an
 //! edit is still handled by `element.rs::attach_profile_name_commit`, a
 //! `change` listener delegated on the whole `<tonk-fab>` host (installed
 //! once, before this element's own subscription resolves — see that
 //! function's doc for why delegation, not a direct listener here, is
-//! required). This element renders a light-DOM `<tonk-editable>` child, so
+//! required). This element renders a light-DOM `<inline-editable>` child, so
 //! the bubbling `change` event still reaches that delegate unchanged.
 //!
 //! Absent until the user renames (the worker's `petname` fallback is
@@ -90,7 +90,7 @@ impl CustomElement for UiProfileNameElement {
         let Some(document) = window().and_then(|w| w.document()) else {
             return;
         };
-        let Ok(editable) = document.create_element("tonk-editable") else {
+        let Ok(editable) = document.create_element("inline-editable") else {
             return;
         };
         let _ = editable.set_attribute("class", "fab__name-input");
@@ -146,14 +146,14 @@ fn read_name_field(row: &JsValue) -> Option<String> {
         .and_then(|v| v.as_string())
 }
 
-/// Paint the live name into the chip's `<tonk-editable>` child.
+/// Paint the live name into the chip's `<inline-editable>` child.
 ///
 /// Skips the DOM write while the field is the active (focused) element — a
 /// live frame arriving mid-edit must not clobber in-progress typing,
 /// mirroring `<ui-space-name>`'s identical guard.
 fn paint(host: &HtmlElement, name: &str) {
     let _ = host.set_attribute("data-subscribed-name", name);
-    let Some(editable) = host.query_selector("tonk-editable").ok().flatten() else {
+    let Some(editable) = host.query_selector("inline-editable").ok().flatten() else {
         return;
     };
     let editing = window()

@@ -34,8 +34,10 @@ const CSS: &str = r#"
 :host([variant=primary]) .b{ background:var(--_ink); color:var(--_on); -webkit-backdrop-filter:none; backdrop-filter:none; }
 :host([variant=primary]) .b:focus-visible{
   background:linear-gradient(var(--_wash-on),var(--_wash-on)), var(--_ink); }
-:host([variant=primary]) .b:hover{ filter:brightness(.92); }
-:host([variant=primary]) .b:active{ filter:brightness(.86); }
+:host([variant=primary]) .b:hover{
+  background:linear-gradient(var(--_wash-on),var(--_wash-on)), var(--_ink); }
+:host([variant=primary]) .b:active{
+  background:linear-gradient(color-mix(in srgb, var(--_on) 28%, transparent),color-mix(in srgb, var(--_on) 28%, transparent)), var(--_ink); }
 :host([variant=quiet]) .b{ background:transparent; -webkit-backdrop-filter:none; backdrop-filter:none; box-shadow:none; }
 :host([variant=quiet]) .b:hover{ background:var(--_hover); }
 :host([variant=quiet]) .b:active{ background:var(--_press); }

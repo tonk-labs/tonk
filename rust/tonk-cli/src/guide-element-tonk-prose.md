@@ -13,7 +13,7 @@ and collapses when the caret leaves.
 With `subject`, the body is an **automerge document** named after the
 entity, not a claim: no command binding, no rule. Two people typing at once
 keep both edits, a branch shows its own version, and editing writes no body
-into branch history. This is what `rust/tonk-core/assets/library/prose.yaml`
+into branch history. This is what `rust/tonk-core/assets/library/prose-editor.yaml`
 uses. The entity needs `format: "automerge/text@1"`
 (`xyz.tonk.document/format`).
 
@@ -76,19 +76,27 @@ markup-safe, unlike an attribute) and fire a command on each idle edit:
 
 ```html
 <tonk-prose
-  onchange=prose/edit
-  data-subject={this}
+  on:prose-change=prose/edit
   placeholder="Write something…"
   auto-focus>{content}</tonk-prose>
 ```
+
+`on/prose-change` is the library's event declaration: it listens for
+`change` and fills `prose/edit`'s `subject` from `{this}` and its
+`content` from `.detail.content`, so the element needs no `data-subject`.
 
 The `change` event carries the new document on `event.detail.content` as
 a **versioned envelope** (markdown + HLC ETag). Store that verbatim and
 feed it back as the element's text: the element recognizes its own
 round-tripped echo by the version and drops it, so the caret is never
 disturbed. Seeding with a bare markdown string also works (no version →
-always adopted). This is the `prose` library module
-(`rust/tonk-core/assets/library/prose.yaml`).
+always adopted). The `prose-editor` library component
+(`rust/tonk-core/assets/library/prose-editor.yaml`) stores documents in
+this shape and renders them with `<prose-editor>`: this element ported to
+an `element!` in that file, carrying the same editor core, so installing
+the component needs nothing from the host. Its code blocks embed
+`<code-editor>` when the space has that component, and are plain
+monospace text otherwise.
 
 ## Attributes
 

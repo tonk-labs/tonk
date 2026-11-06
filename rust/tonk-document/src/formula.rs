@@ -269,7 +269,7 @@ async fn versions<Env: DocumentEnv>(
     let Some(revision) = branch.revision() else {
         return Ok(Vec::new());
     };
-    let history = branch.history(env).await;
+    let history = branch.history(env);
     // Walk until `limit` DOCUMENT versions, not `limit * N` unrelated
     // branch revisions. Reverse topological order matches dialog's log.
     let mut frontier = BinaryHeap::from([revision.version()]);
@@ -317,7 +317,7 @@ async fn versions<Env: DocumentEnv>(
                     continue;
                 };
                 ancestors.extend(parent.parents.iter().copied());
-                if !entries.contains_key(&at) {
+                if let std::collections::btree_map::Entry::Vacant(entry) = entries.entry(at) {
                     let mut claims = Vec::new();
                     let stream = history.select(at);
                     futures_util::pin_mut!(stream);
@@ -327,7 +327,7 @@ async fn versions<Env: DocumentEnv>(
                             claims.push(entry);
                         }
                     }
-                    entries.insert(at, claims);
+                    entry.insert(claims);
                 }
                 let claims = &entries[&at];
                 if at == version && root == version && claims.is_empty() && record.parents.len() < 2
@@ -398,7 +398,7 @@ async fn versions<Env: DocumentEnv>(
 mod tests {
     use super::*;
     use crate::engine::{Edit, Format, Stamp};
-    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use tonk_schema_query::formula_query;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -425,7 +425,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_reads_versions_content_diff_and_changes() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let doc: Entity = "id:prose/doc".parse().unwrap();
@@ -513,7 +513,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_refuses_a_formula_without_its_document() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let result = resolve(

@@ -6,7 +6,7 @@
 //! idiom). Source is a borrowed handle to a branch / txn that
 //! lives for the analyze call; env is a per-execution context.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use dialog_artifacts::Entity;
 use parking_lot::Mutex;
@@ -86,6 +86,10 @@ pub(crate) struct Scope {
     /// that pass reads it synchronously, the same way a concept body
     /// reads an in-document attribute.
     pub(crate) event_declarations: Mutex<HashMap<String, EventDescriptor>>,
+    /// Built-in type anchors (`text`, `integer`, ...) this document
+    /// declares an anchor of its own under. Within the document the
+    /// name means its declaration, not the type.
+    pub(crate) shadowed_builtins: Mutex<HashSet<String>>,
 }
 
 impl Scope {
@@ -102,6 +106,7 @@ impl Scope {
             resolved_rules: Mutex::new(HashMap::new()),
             resolved_concepts: Mutex::new(HashMap::new()),
             event_declarations: Mutex::new(HashMap::new()),
+            shadowed_builtins: Mutex::new(HashSet::new()),
         }
     }
 
@@ -234,7 +239,13 @@ impl Scope {
         if let Some(found) = self.in_doc_concepts.lock().get(name).cloned() {
             return Some(found);
         }
-        tonk_schema::builtin::lookup_concept(name)
+        if let Some(found) = tonk_schema::builtin::lookup_concept(name) {
+            return Some(found);
+        }
+        // An attribute is a concept with one field: where a concept is
+        // named, an attribute names the concept over it alone.
+        self.attribute(name)
+            .and_then(|attribute| attribute_concept(&attribute))
     }
 
     /// Record a branch-resolved concept into the in-doc tables so
@@ -318,7 +329,21 @@ impl Scope {
         if let Some(concept) = self.in_doc_concepts.lock().get(name) {
             return Some(concept.entity.clone());
         }
+        // A built-in anchor names its entity: a type (`text` is
+        // `text:`) or a pick (`all` is `all:`). A document that
+        // declares an anchor of the same name shadows it above; a name
+        // published on the branch does not, so one document's choice
+        // never changes another's types or picks.
+        if let Some(uri) = self.builtin(name) {
+            return uri.parse().ok();
+        }
         self.named_entities.lock().get(name).cloned()
+    }
+
+    /// The entity the built-in anchor `name` names, a type or a pick,
+    /// unless this document declares an anchor of its own under it.
+    pub(crate) fn builtin(&self, name: &str) -> Option<&'static str> {
+        tonk_notation::builtin(name).filter(|_| !self.shadowed_builtins.lock().contains(name))
     }
 
     /// Sync lookup of an installed rule resolved for a retract.
@@ -372,4 +397,19 @@ impl Scope {
     pub(crate) fn event_declaration(&self, name: &str) -> Option<EventDescriptor> {
         self.event_declarations.lock().get(name).cloned()
     }
+}
+
+/// The concept an attribute is on its own: one field, over that attribute,
+/// named after it (`subject` for `…/subject`). Dialog identifies a concept by
+/// its attributes, not its field names, so this is the same concept as any
+/// one-field `concept!` over the attribute. `None` for a collection, whose
+/// name is per entry.
+pub(crate) fn attribute_concept(attribute: &AttributeDefinition) -> Option<ConceptDefinition> {
+    let name = attribute.descriptor.name()?.to_owned();
+    let descriptor =
+        dialog_query::ConceptDescriptor::try_from([(name, attribute.descriptor.clone())]).ok()?;
+    Some(ConceptDefinition {
+        entity: descriptor.this(),
+        descriptor: tonk_core::claim::ConceptDescriptor::Durable(descriptor),
+    })
 }

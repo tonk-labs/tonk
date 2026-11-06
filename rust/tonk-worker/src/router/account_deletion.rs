@@ -6,26 +6,21 @@
 
 use std::collections::BTreeSet;
 
-use axum::{
-    Json,
-    extract::{Extension, State},
-};
-use axum_wasm_macros::wasm_compat;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use axum::extract::Extension;
+use axum::{Json, extract::State};
 use dialog_query::{Output as _, Query, Term};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 use tonk_schema::SpaceProvider;
 use tonk_schema::domain::space::Provider;
 use tonk_schema::prelude::DidExt as _;
-use tonk_worker_api::{
-    AccountDeletionPlan, AccountDeletionSpace, AccountSpaceDeletionRequest,
-    HostedSpaceDeletionResult,
-};
+use tonk_worker_api::{AccountDeletionPlan, AccountDeletionSpace};
 
 use super::AppState;
 use crate::TonkWorkerError;
-use crate::axum::RequestOrigin;
 use crate::worker::TonkState;
 
 /// The destructive scope, from the account db alone: the directory is
@@ -44,7 +39,7 @@ async fn load_plan(state: &TonkState) -> Result<AccountDeletionPlan, TonkWorkerE
     let main = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .acquire(&state.operator)
         .await
         .map_err(|error| {
@@ -95,46 +90,6 @@ pub async fn plan(
     Ok(Json(load_plan(&state).await?))
 }
 
-/// POST `/api/account/spaces/delete` deletes one reviewed owned hosted space
-/// while leaving the account and every other space intact. The worker
-/// signs the `/provider/remove` itself: deletion is the account ending
-/// its hosting relationship, and this linked device holds that
-/// authority.
-#[wasm_compat]
-pub async fn delete_space(
-    State(state): State<AppState>,
-    Extension(origin): Extension<RequestOrigin>,
-    Json(request): Json<AccountSpaceDeletionRequest>,
-) -> Result<Json<HostedSpaceDeletionResult>, TonkWorkerError> {
-    let current = {
-        let state = state.read().await;
-        load_plan(&state).await?
-    };
-    // The lookup is the ownership check: a space this account does not
-    // provide is not in its plan.
-    current
-        .spaces
-        .iter()
-        .find(|space| space.subject == request.subject)
-        .ok_or_else(|| TonkWorkerError::Forbidden("space is not owned by this account".into()))?;
-    let subject: dialog_varsig::Did = request.subject.parse().map_err(|error| {
-        TonkWorkerError::Internal(format!("reviewed space DID became invalid: {error:?}"))
-    })?;
-    {
-        let state = state.read().await;
-        super::customer::deprovision_consumer(&state, origin.url(), &subject).await?;
-    }
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    super::repository::remove_space_inner(&state, &subject).await?;
-    Ok(Json(HostedSpaceDeletionResult {
-        subject: request.subject,
-    }))
-}
-
-/// Run `tonk:delete-account`: check the reviewed plan's address, then
-/// ask the page for the passkey. The purge itself runs in [`purge`] once
-/// the handles arrive.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::DeleteAccount>
@@ -150,6 +105,20 @@ impl dialog_capability::Provider<tonk_schema::command::DeleteAccount>
         );
         {
             let tonk = self.state().read().await;
+            // The purge is signed by the root the custody cell opens, and
+            // the service keeps that cell closed until the emailed link is
+            // opened. Asking for the passkey now would only fail after it.
+            let registration = super::customer::registration(&tonk).await;
+            if let Some(reason) = not_deletable_yet(&registration) {
+                super::ceremony::report(
+                    &tonk,
+                    ceremony::DELETE_ACCOUNT,
+                    ceremony_state::REFUSED,
+                    &reason,
+                )
+                .await;
+                return;
+            }
             let plan = match load_plan(&tonk).await {
                 Ok(plan) => plan,
                 Err(error) => {
@@ -183,6 +152,48 @@ impl dialog_capability::Provider<tonk_schema::command::DeleteAccount>
     }
 }
 
+/// What to tell someone deleting an account that is still waiting on its
+/// emailed link to be opened.
+const AWAITING_ACTIVATION: &str = "this account is not confirmed yet. Open the link in your \
+     activation email, then delete it. If you already opened it, try again in a moment.";
+
+/// Why this account cannot be deleted yet, or `None` when it can.
+///
+/// Only an account awaiting activation is held back: its custody cell
+/// stays closed until the link is opened, so no passkey can sign the
+/// purge.
+fn not_deletable_yet(registration: &super::customer::Registration) -> Option<String> {
+    match registration {
+        super::customer::Registration::AwaitingActivation { .. } => {
+            Some(AWAITING_ACTIVATION.to_owned())
+        }
+        super::customer::Registration::Unregistered
+        | super::customer::Registration::Served { .. }
+        | super::customer::Registration::Suspended => None,
+    }
+}
+
+/// A purge failure as the settings page shows it.
+///
+/// A custody refusal travels as `code`, a unit separator, then the
+/// message, so the custody reply can carry the code. The status row is
+/// read by a person, so it carries the sentence and never the code.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+fn readable_failure(error: &str) -> String {
+    use tonk_identity::custody::CustodyDenial;
+
+    match error.split_once('\u{1f}') {
+        Some((code, message)) => match CustodyDenial::from_code(code, message) {
+            Some(CustodyDenial::AwaitingActivation) => AWAITING_ACTIVATION.to_owned(),
+            _ => message.to_owned(),
+        },
+        None => error.to_owned(),
+    }
+}
+
 /// Purge the account the passkey holds.
 ///
 /// One invocation: the root the custody cell opens signs
@@ -212,7 +223,7 @@ pub(crate) async fn purge(
                 &tonk,
                 ceremony::DELETE_ACCOUNT,
                 ceremony_state::FAILED,
-                error,
+                &readable_failure(error),
             )
             .await
         }
@@ -271,32 +282,150 @@ async fn purge_inner(
         super::customer::clear_customer(&tonk)
             .await
             .map_err(|error| error.to_string())?;
-        tonk.profile.did()
+        tonk.active_branch.clone()
     };
+    // Signing out moves the profile onto an empty branch and reloads the
+    // page onto it, which is also where a genuinely new account can be
+    // created. The deleted account's branch stays behind as data: with
+    // its account gone there is nothing to return to unless spaces were
+    // joined through it, so a branch holding none is forgotten rather
+    // than left listed as a ghost, and one that still holds joined
+    // spaces stays listed so they remain reachable.
     let _ = super::account::unlink(State(state.clone()), source.cloned().map(Extension))
         .await
         .map_err(|error| format!("the profile did not unlink: {error}"))?;
-    // Finish on a fresh profile so the released email can immediately
-    // create a genuinely new account.
-    let _ = super::profiles::add(State(state.clone()), source.cloned().map(Extension))
-        .await
-        .map_err(|error| format!("a fresh profile did not open: {error}"))?;
-    // Permanent deletion retires this account's profile rather than
-    // rebinding its retained joined spaces and delegations to another
-    // root. A retired profile that holds nothing is forgotten outright;
-    // one that still holds joined spaces stays listed as a local
-    // workspace so they remain reachable. After the rotation: moving
-    // profiles re-records the outgoing one so it stays reachable, which
-    // would undo a removal made before it.
     if current.joined_spaces == 0 {
         let tonk = state.read().await;
-        if let Err(error) = tonk
-            .registry
-            .remove_roster(&tonk.storage, &tonk.operator, &retired)
-            .await
-        {
-            log!("delete-account: the retired profile stays listed: {error}");
-        }
+        super::profile::forget_branch(&tonk, &retired).await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[dialog_common::test]
+    fn it_names_the_missing_activation_rather_than_its_code() {
+        let refused =
+            readable_failure("awaiting-activation\u{1f}the account is awaiting email confirmation");
+        assert_eq!(refused, AWAITING_ACTIVATION);
+        assert!(!refused.contains("awaiting-activation"));
+    }
+
+    #[dialog_common::test]
+    fn it_keeps_the_sentence_of_any_other_refusal() {
+        assert_eq!(
+            readable_failure("suspended\u{1f}the account is suspended: unpaid"),
+            "the account is suspended: unpaid"
+        );
+        assert_eq!(
+            readable_failure("this passkey belongs to a different account"),
+            "this passkey belongs to a different account"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_holds_back_only_an_account_awaiting_activation() {
+        use super::super::customer::Registration;
+
+        assert!(
+            not_deletable_yet(&Registration::AwaitingActivation {
+                email: "person@example.test".into(),
+            })
+            .is_some()
+        );
+        for registration in [
+            Registration::Unregistered,
+            Registration::Served {
+                provider: "https://example.test/ucan/".into(),
+            },
+            Registration::Suspended,
+        ] {
+            assert_eq!(not_deletable_yet(&registration), None, "{registration:?}");
+        }
+    }
+
+    /// A pending account is refused before the passkey is asked for,
+    /// with a sentence a person can act on.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn it_refuses_to_delete_an_account_awaiting_activation() {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_varsig::Principal as _;
+        use tonk_schema::{CeremonyStatus, ceremony, ceremony_state};
+
+        let state = crate::router::command::tests::native::test_state().await;
+        {
+            let tonk = state.read().await;
+            let root = Ed25519Signer::import(&[91; 32]).await.unwrap();
+            let grant = tonk_identity::delegation::mint_device_delegation(
+                root.clone(),
+                &tonk.profile.did(),
+            )
+            .await
+            .unwrap();
+            super::super::identity::persist_root(
+                &tonk,
+                tonk_worker_api::SaveRootRequest {
+                    credential_id: "pending-test".into(),
+                    delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+                    passkey: None,
+                    encryption_key: None,
+                },
+            )
+            .await
+            .unwrap();
+            tonk.reactor
+                .profile_repository()
+                .branch(&tonk.active_branch)
+                .transaction()
+                .assert(tonk_schema::AccountRegistered::new(
+                    root.did().this(),
+                    "pending@example.test".into(),
+                    "https://example.test/ucan/".into(),
+                    1,
+                ))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+        }
+
+        let env =
+            crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+        dialog_capability::Provider::<tonk_schema::command::DeleteAccount>::execute(
+            &env,
+            tonk_schema::command::DeleteAccount {
+                this: "cmd:delete-account".parse().expect("entity"),
+                email: tonk_schema::domain::command::delete_account::Email(
+                    "pending@example.test".into(),
+                ),
+            },
+        )
+        .await;
+
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let rows: Vec<CeremonyStatus> = session
+            .handle()
+            .query()
+            .select(Query::<CeremonyStatus>::default())
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row.ceremony.0 == ceremony::DELETE_ACCOUNT)
+            .expect("the refusal is reported");
+        assert_eq!(row.state.0, ceremony_state::REFUSED);
+        assert_eq!(row.detail.0, AWAITING_ACTIVATION);
+    }
 }

@@ -29,6 +29,7 @@ const GENERATION_PREFIX: &str = "TONK_GENERATION_";
 /// across two languages.
 static BUILD_ID: OnceLock<String> = OnceLock::new();
 static ASSET_PATHS: OnceLock<HashSet<String>> = OnceLock::new();
+static ASSET_ORIGIN: OnceLock<String> = OnceLock::new();
 
 /// Record the build id for cache naming. Called once, from the
 /// worker binary's `activate` export, before any cache use.
@@ -40,6 +41,21 @@ pub fn set_build_id(id: String) {
 /// Called once beside [`set_build_id`] before any cache policy is evaluated.
 pub fn set_asset_paths(paths: Vec<String>) {
     let _ = ASSET_PATHS.set(paths.into_iter().collect());
+}
+
+/// Record the origin this worker's served assets come from, for a worker
+/// that is not the origin's service worker: an inline view's peer, in a
+/// Web Worker on the host's origin, reads the provider's library.
+pub fn set_asset_origin(origin: String) {
+    let _ = ASSET_ORIGIN.set(origin.trim_end_matches('/').to_owned());
+}
+
+/// `path` on the origin this worker's assets come from.
+pub(crate) fn asset_url(path: &str) -> String {
+    match worker_origin() {
+        Some(origin) if path.starts_with('/') => format!("{origin}{path}"),
+        _ => path.to_owned(),
+    }
 }
 
 fn build_id() -> &'static str {
@@ -63,32 +79,82 @@ fn generation_cache() -> String {
     format!("{GENERATION_PREFIX}{}", build_id())
 }
 
-/// Read text from this worker's immutable asset generation.
+/// Read a `/library/` file through the service worker's verified download
+/// path (`self.tonkBundledAsset`): this worker's downloads first, checked
+/// against the asset manifest stamped into the shim, then the network. A
+/// worker restarted before its generation is adopted already holds what the
+/// first boot downloaded, so its next boot need not wait on the network.
 ///
-/// `None` is returned only for development and a first install that has not
-/// begun publishing a generation, where the running deployment is the only
-/// available source. Once a stamped generation marker exists, a missing asset
-/// fails closed so a retained worker cannot mix a newer deployment's bytes
-/// into its own library input.
-pub(crate) async fn immutable_asset_text(path: &str) -> Result<Option<String>, JsValue> {
+/// `None` when there is no such path: a development build (no stamped
+/// manifest), a Web Worker beside an inline view, or a response that is not
+/// a success (the shim's missing-asset 503). The caller then asks the
+/// network as before.
+pub(crate) async fn downloaded_library_bytes(path: &str) -> Option<Vec<u8>> {
+    if build_id() == "dev" || !path.starts_with("/library/") {
+        return None;
+    }
+    let bundled = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("tonkBundledAsset"))
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    let promise: js_sys::Promise = bundled
+        .call1(&JsValue::UNDEFINED, &JsValue::from_str(path))
+        .ok()?
+        .dyn_into()
+        .ok()?;
+    let response: Response = JsFuture::from(promise).await.ok()?.dyn_into().ok()?;
+    if !response.ok() {
+        return None;
+    }
+    let buffer = JsFuture::from(response.array_buffer().ok()?).await.ok()?;
+    Some(js_sys::Uint8Array::new(&buffer).to_vec())
+}
+
+/// Read bytes from this worker's immutable asset generation.
+///
+/// `None` is returned for development and for a generation that is not
+/// adopted yet (an install still copying its assets), where the running
+/// deployment is the only available source. Once the generation is adopted,
+/// a missing asset fails closed so a retained worker cannot mix a newer
+/// deployment's bytes into its own library input.
+pub(crate) async fn immutable_asset_bytes(path: &str) -> Result<Option<Vec<u8>>, JsValue> {
+    let Some(response) = immutable_asset(path).await? else {
+        return Ok(None);
+    };
+    let buffer = JsFuture::from(response.array_buffer()?).await?;
+    Ok(Some(js_sys::Uint8Array::new(&buffer).to_vec()))
+}
+
+async fn immutable_asset(path: &str) -> Result<Option<Response>, JsValue> {
     if build_id() == "dev" {
         return Ok(None);
     }
     let origin = worker_origin().ok_or_else(|| JsValue::from_str("worker origin unavailable"))?;
     let request = Request::new_with_str(&format!("{origin}{path}"))?;
     if let Some(response) = cache_match(&request).await? {
-        let text = JsFuture::from(response.text()?).await?;
-        return text
-            .as_string()
-            .map(Some)
-            .ok_or_else(|| JsValue::from_str("cached asset body is not text"));
+        return Ok(Some(response));
     }
     let marker_url = Request::new_with_str(&format!("{origin}/.tonk-generation-{}", build_id()))?;
     let options = CacheQueryOptions::new();
     options.set_cache_name(&generation_cache());
     let marker =
         JsFuture::from(caches()?.match_with_request_and_options(&marker_url, &options)).await?;
-    if !marker.is_null() && !marker.is_undefined() {
+    if marker.is_null() || marker.is_undefined() {
+        return Ok(None);
+    }
+    // The install writes the marker (`building`, then `publishing`) before
+    // it copies a single asset, and only marks the generation `adopted` once
+    // every asset is in place. Until then this build's generation is not
+    // retained yet and the running deployment is still its only source —
+    // failing closed here broke every library read during a first install
+    // (creating a space mid-install reported core.yaml missing).
+    let marker: Response = marker.dyn_into()?;
+    let text = JsFuture::from(marker.text()?).await?;
+    let adopted = text
+        .as_string()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some_and(|marker| marker["state"] == "adopted");
+    if adopted {
         return Err(JsValue::from_str(&format!(
             "asset {path} is missing from retained generation {}",
             build_id()
@@ -200,10 +266,27 @@ pub async fn immutable_cache_first(request: &Request) -> Result<JsValue, JsValue
 /// the worker reports no origin: caching foreign bytes is worse than a network
 /// fetch.
 fn worker_origin() -> Option<String> {
-    js_sys::global()
+    scope_origin().or_else(|| ASSET_ORIGIN.get().cloned())
+}
+
+/// The origin of the service worker this runs in, or `None` in any other
+/// scope.
+///
+/// Read without `web_sys`'s `location()`: a Cloudflare worker's global is
+/// a `ServiceWorkerGlobalScope` with no `location`, and the getter's
+/// `TypeError` would unwind through wasm and leave the async executor
+/// stuck, hanging every later request in the isolate.
+pub(crate) fn scope_origin() -> Option<String> {
+    let global = js_sys::global()
         .dyn_into::<ServiceWorkerGlobalScope>()
-        .ok()
-        .map(|global| global.location().origin())
+        .ok()?;
+    let location = js_sys::Reflect::get(&global, &JsValue::from_str("location")).ok()?;
+    if !location.is_object() {
+        return None;
+    }
+    js_sys::Reflect::get(&location, &JsValue::from_str("origin"))
+        .ok()?
+        .as_string()
         .filter(|origin| !origin.is_empty())
 }
 

@@ -16,6 +16,9 @@ pub enum AnalyticsEvent {
     SpaceCreated {
         /// Local routing key, hashed by the page before remote capture.
         space: String,
+        /// Validated catalog reference; hashed by the page before capture.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        template: Option<String>,
     },
     /// A new local replica completed an invite join.
     SpaceJoined {
@@ -55,9 +58,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn creation_messages_support_old_workers_and_template_attribution() {
+        let legacy = serde_json::json!({
+            "type": "tonk-analytics", "name": "space_created", "space": "abc"
+        });
+        let message: AnalyticsMessage = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            message.event,
+            AnalyticsEvent::SpaceCreated {
+                space: "abc".into(),
+                template: None,
+            }
+        );
+        let attributed = AnalyticsMessage::new(AnalyticsEvent::SpaceCreated {
+            space: "abc".into(),
+            template: Some("https://example.com/catalog.json#notes".into()),
+        });
+        let roundtrip: AnalyticsMessage =
+            serde_json::from_value(serde_json::to_value(&attributed).unwrap()).unwrap();
+        assert_eq!(roundtrip, attributed);
+    }
+
+    #[test]
     fn analytics_message_has_a_closed_wire_shape() {
         let message = AnalyticsMessage::new(AnalyticsEvent::SpaceCreated {
             space: "abc".to_owned(),
+            template: None,
         });
         assert_eq!(
             serde_json::to_value(&message).unwrap(),

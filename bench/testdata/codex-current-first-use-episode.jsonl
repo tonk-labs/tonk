@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"current-first-use"}
+{"type": "item.completed", "item": {"id": "item_0", "type": "command_execution", "command": "tonk --space bench space agents get", "aggregated_output": "No space-specific instructions; continue with the task.", "exit_code": 0, "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_1", "type": "command_execution", "command": "tonk --space bench show", "aggregated_output": "Space: bench\nConcepts (1)\n task done: boolean", "exit_code": 0, "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_2", "type": "command_execution", "command": "tonk --space bench query task --where 'title=Launch' --json", "aggregated_output": "[{\"this\":\"id:task\",\"title\":\"Launch\",\"done\":false}]", "exit_code": 0, "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_3", "type": "command_execution", "command": "tonk --space bench assert task id:task --done true --json", "aggregated_output": "{\"schemaVersion\":\"tonk.assert.v1\",\"committed\":true,\"verification\":{\"status\":\"verified\"}}", "exit_code": 0, "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_4", "type": "command_execution", "command": "tonk --space bench show task id:task --json", "aggregated_output": "{\"this\":\"id:task\",\"done\":true}", "exit_code": 0, "status": "completed"}}

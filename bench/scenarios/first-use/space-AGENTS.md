@@ -8,13 +8,13 @@ selects `bench`; changing directory does not select different Tonk data.
 
 Update an existing launch task without creating a duplicate:
 
-1. Read the current entities: `tonk query task --json`
+1. Read the current entities: `tonk query task --where 'title=Draft launch email' --json`
 2. Match the entity by `title`.
 3. Update only the intended field:
    `tonk assert task <ENTITY> --done true`
 
-`tonk assert` prints the entity's current state after the write. Use
-`tonk query task <ENTITY> --json` only when separate verification is useful.
+`tonk assert` reports whether the requested fields were verified locally. Use
+`tonk show task <ENTITY> --json` only when separate verification is useful.
 
 Create a new task only when that is the request:
 
@@ -30,5 +30,5 @@ Keep this section short. Add durable concepts, decisions, and recurring
 pitfalls you discover while working in this space. Do not record one-off task
 completion, transient status, credentials, invite links, or other secrets.
 
-To persist an update, edit the projection and run `tonk agents set AGENTS.md`.
-Inspect the current claim and revision with `tonk agents get --json`.
+To persist an update, edit the projection and run `tonk space agents set AGENTS.md`.
+Inspect the current claim and revision with `tonk space agents get --json`.

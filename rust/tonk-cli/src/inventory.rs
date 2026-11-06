@@ -296,14 +296,32 @@ async fn inspect_replica(
 ) -> Result<(LocalSpaceInventoryRow, Option<String>)> {
     let mut config = config.clone();
     config.require_account = false;
-    let site = crate::site::TonkSite::open_with(&entry.site, config)
-        .await
-        .with_context(|| format!("could not open {}", entry.site.display()))?;
-    // Every replica opens the same profile, so the first one to get this far
-    // answers for all of them.
-    let identity = match identity {
-        Some(identity) => &*identity,
-        slot => slot.insert(crate::site::Identity::of(&site).await?),
+    let binding = crate::connections::binding_at(&entry.site)?;
+    anyhow::ensure!(
+        entry
+            .connection
+            .as_ref()
+            .is_none_or(|expected| binding.as_ref() == Some(expected)),
+        "inventory connection binding mismatch"
+    );
+    let site = match binding {
+        Some(binding) => {
+            crate::connections::open_bound(&entry.site, &binding, config.account_store.clone())
+                .await?
+        }
+        None => crate::site::TonkSite::open_with(&entry.site, config)
+            .await
+            .with_context(|| format!("could not open {}", entry.site.display()))?,
+    };
+    let scoped_identity;
+    let identity = if site.is_scoped() {
+        scoped_identity = crate::site::Identity::of(&site).await?;
+        &scoped_identity
+    } else {
+        match identity {
+            Some(identity) => &*identity,
+            slot => slot.insert(crate::site::Identity::of(&site).await?),
+        }
     };
     let subject = site.repository.did().to_string();
     let (roster, note) = match read_roster(&site).await {

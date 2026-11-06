@@ -26,6 +26,10 @@ pub(crate) struct NavigateListener {
 /// Install a `navigator.serviceWorker` `message` listener that handles
 /// worker→page messages:
 /// - `{ type: "navigate", href }` — assigns `window.location`.
+/// - `{ type: "navigate", href, replace: true }` — loads `href` afresh in
+///   place of the current history entry.
+/// - `{ type: "navigate", href, replace: true, reload: false }` — re-routes
+///   to `href` in place of the current history entry, without a load.
 /// - `{ type: "sync" }` — dispatches `tonk:committed` on `window` so the
 ///   sync controller pushes immediately instead of waiting for the heartbeat.
 /// - `{ type: "profile-changed" }` — reloads the top-level document so it
@@ -46,7 +50,13 @@ pub(crate) fn install() -> Option<NavigateListener> {
 
 fn handle_worker_message(data: &JsValue) {
     if let Some(href) = navigate_href(data) {
-        navigate_to(&href);
+        if replaces(data) && reloads(data) {
+            replace_page(&href);
+        } else if replaces(data) {
+            replace_route(&href);
+        } else {
+            navigate_to(&href);
+        }
     } else if is_sync_message(data) {
         dispatch_committed();
     } else if is_profile_changed_message(data) {
@@ -70,6 +80,24 @@ fn navigate_href(data: &JsValue) -> Option<String> {
         return None;
     }
     Some(href)
+}
+
+/// Whether a navigate message asks for a fresh load replacing the current
+/// history entry (`replace: true`) rather than a client-side route change.
+fn replaces(data: &JsValue) -> bool {
+    js_sys::Reflect::get(data, &JsValue::from_str("replace"))
+        .ok()
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+/// Whether a replacing navigate message asks for a load (the default) or
+/// only a route change (`reload: false`).
+fn reloads(data: &JsValue) -> bool {
+    js_sys::Reflect::get(data, &JsValue::from_str("reload"))
+        .ok()
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true)
 }
 
 /// Return `true` for a `{ type: "sync" }` message.
@@ -118,6 +146,15 @@ fn dispatch_committed() {
 /// one argument for every effect.
 pub fn request_registration(payload: &str) {
     crate::page_effect::forward("register", payload);
+}
+
+/// Ask the trusted page to present or steer a typed contained FABB task.
+///
+/// The payload is a versioned portal task request JSON document.
+/// The portal validates its purpose and geometry at every frame boundary;
+/// arbitrary guest markup is never forwarded to the page.
+pub fn request_contained_task(payload: &str) {
+    crate::page_effect::forward("task", payload);
 }
 
 /// Navigate to `href` WITHOUT reloading: push it onto history and fire
@@ -174,17 +211,70 @@ pub fn navigate_to(href: &str) {
     }
 }
 
-/// Reload the top page, forwarding through every sealed guest boundary.
+/// Reload the top page.
 ///
 /// Unlike [`navigate_to`], this deliberately refreshes an unchanged route.
 /// Account-profile activation swaps the service worker's entire active state;
 /// rebuilding the page is what drops subscriptions owned by the old profile.
+///
+/// Only the page reloads itself, when the worker reports a profile change.
+/// The guest bridge has no `reload`, so in a guest [`page_effect::forward`]
+/// finds nothing to call and drops the reload: no guest, including content
+/// from a shared space, can reload the whole app.
+///
+/// [`page_effect::forward`]: crate::page_effect::forward
 pub fn reload_page() {
     if crate::page_effect::forward("reload", "") {
         return;
     }
     if let Some(win) = window() {
         let _ = win.location().reload();
+    }
+}
+
+/// Load `href` afresh in place of the current history entry.
+///
+/// For a worker command that switched this page's profile: the document
+/// has to load again to bind to the new one, and the address it was on
+/// (a sign-in callback, say) must not be reachable with Back.
+pub fn replace_page(href: &str) {
+    if crate::page_effect::forward("replace", href) {
+        return;
+    }
+    if let Some(win) = window() {
+        let _ = win.location().replace(href);
+    }
+}
+
+/// Re-route to `href` in place of the current history entry, without a load.
+///
+/// For a page whose views follow the change live and whose address must
+/// not stay reachable with Back: after a join from a ticket link, the page
+/// already shows the space, and only the address carrying the seed has to
+/// go. Like [`navigate_to`], it dispatches `popstate` so listeners
+/// re-route, and loads afresh only where history is unavailable.
+pub fn replace_route(href: &str) {
+    use wasm_bindgen::JsValue;
+    if crate::page_effect::forward("replaceRoute", href) {
+        return;
+    }
+    let Some(win) = window() else {
+        return;
+    };
+    let replaced = win
+        .history()
+        .ok()
+        .map(|h| {
+            h.replace_state_with_url(&JsValue::NULL, "", Some(href))
+                .is_ok()
+        })
+        .unwrap_or(false);
+    if replaced {
+        if let Ok(event) = web_sys::Event::new("popstate") {
+            let _ = win.dispatch_event(&event);
+        }
+    } else {
+        let _ = win.location().replace(href);
     }
 }
 
@@ -289,6 +379,23 @@ mod tests {
         assert_eq!(calls.get(0).as_string().as_deref(), Some(""));
     }
 
+    /// A navigate that asks to replace loads the page afresh in place of the
+    /// current entry; a plain navigate stays a route change and replaces
+    /// nothing.
+    #[dialog_common::test]
+    async fn it_replaces_the_page_only_when_a_navigate_asks_to() {
+        let calls = install_effect_stub("replace");
+
+        let replacing = message("navigate", "/");
+        let _ = Reflect::set(&replacing, &JsValue::from_str("replace"), &JsValue::TRUE);
+        handle_worker_message(&replacing);
+        handle_worker_message(&message("navigate", "/space/abc"));
+
+        clear_tonk();
+        assert_eq!(calls.length(), 1);
+        assert_eq!(calls.get(0).as_string().as_deref(), Some("/"));
+    }
+
     #[dialog_common::test]
     async fn it_ignores_unrelated_worker_messages() {
         let calls = install_effect_stub("reload");
@@ -365,16 +472,16 @@ mod tests {
         );
     }
 
-    /// A profile switch initiated inside a sealed Hub must reload the top
-    /// page, not the opaque guest document that requested it.
+    /// A guest cannot reload the app: its bridge has no `reload`, so the
+    /// request is dropped, neither performed on the guest nor passed up.
     #[dialog_common::test]
-    async fn it_forwards_a_reload_from_a_guest_instead_of_reloading_it() {
+    async fn it_drops_a_reload_from_a_guest() {
         let before = window()
             .expect("a window in the test harness")
             .location()
             .href()
             .expect("a location href");
-        let calls = install_effect_stub("reload");
+        let calls = install_effect_stub("navigate");
 
         reload_page();
 
@@ -385,8 +492,7 @@ mod tests {
             .expect("a location href");
         clear_tonk();
 
-        assert_eq!(calls.length(), 1, "the parent should be called once");
-        assert_eq!(calls.get(0).as_string().as_deref(), Some(""));
-        assert_eq!(before, after, "a forwarded reload must spare this guest");
+        assert_eq!(calls.length(), 0, "nothing should reach the parent");
+        assert_eq!(before, after, "a guest must not reload itself");
     }
 }

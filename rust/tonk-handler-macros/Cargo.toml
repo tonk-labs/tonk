@@ -1,0 +1,15 @@
+[package]
+name = "tonk-handler-macros"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "`wasm_compat`: makes an async axum handler's future Send in the browser, and cheap to prove Send natively."
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }

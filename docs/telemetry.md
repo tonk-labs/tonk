@@ -19,15 +19,29 @@ The distinct id is `tonk:<sha256(profile DID)>` — stable per profile,
 not reversible. `tonk identity --reset` rotates it. Commands run
 before a profile exists report as `tonk:anonymous`.
 
+Browser capture registers `metrics_version=2` and capture-time
+`identity_state=unresolved`, then `identity_state=profile` after PostHog accepts
+the profile hash. Identity lookup retries at most three times with a five-second
+bound per attempt, without blocking startup or completed signup. Anonymous
+arrival events are traffic, not active profiles or accounts. See the
+[metric definitions and authoritative account query](analytics/metrics.md).
+
 ## Events
 
 ### CLI
 
 | Event | Properties |
 |---|---|
-| `cli_command_run` | `command`, `subcommand`, `success`, `exit` (success / parse-error / analyze-error / commit-error / io-error), `duration_ms`, `version`, `os`, `arch`, `environment` (constant `"cli"`), ``$lib`` (constant `"tonk-analytics"`); eval adds `source` (inline / file / stdin), `format`, `dry_run`, `quiet` |
+| `cli_command_run` | `command`, `subcommand`, `success`, `exit` (success / parse-error / analyze-error / commit-error / io-error), `duration_ms`, `version`, `os`, `arch`, `environment` (constant `"cli"`), ``$lib`` (constant `"tonk-analytics"`); eval adds `source` (inline / file / stdin), `format`, `dry_run`, `quiet`; `unreported_runs` when earlier runs of the same command were dropped by the hourly budget |
 | `account_event` | The closed account journey schema below. Account commands emit this lifecycle in addition to one `cli_command_run`; never add the two event types together when counting account attempts. |
 | `product_event` | The closed product lifecycle below for every parsed non-account command family. It is paired with, and must not be added to, the `cli_command_run` summary. |
+
+A machine reports at most 30 runs of one command (and subcommand) in each
+UTC hour. Later runs in that hour send nothing at all, so a polling script or
+agent costs at most 30 batches an hour per command instead of one every few
+seconds. The next reported run of that command carries the dropped count in
+`unreported_runs`; count runs as `count() + sum(unreported_runs)`. The
+counts live in `telemetry-budget.json` beside `telemetry.json`.
 
 Every native batch item carries an RFC 3339 UTC occurrence timestamp recorded
 when it is queued. Starts and checkpoints therefore retain their real order
@@ -44,8 +58,9 @@ even though the CLI flushes the batch only when the command finishes.
 | `panic` | `type` (constant `wasm_panic`), repository-relative `location`, and a fingerprint derived only from those static values; the panic message stays in the local console |
 | `account_event` | The same closed account journey schema emitted by the CLI. |
 | `visit` | `schema_version=2`, `channel` (`warm_outreach` / `organic_reshare` / `clearnet_discovery`), `attribution_source` (`url_parameter` / `utm` / `referrer` / `inferred`), `source_platform` (the closed list below), `source_detection` (`url_parameter` / `utm` / `referrer` / `direct`), `entry_type` (`tonk_network` / `shared_space`), normalized `entry_route`, and optional hashed `entry_space_id` |
-| `account_created` | `schema_version`; fired after account creation, configured enrollment, and a best-effort refresh of the hashed profile identity, even though the account journey then waits for email activation |
-| `space_conversion` | `schema_version`, `conversion` (`created` / `joined`), hashed `space_id` |
+| `account_created` | `schema_version`; fired after account creation, configured enrollment, and a background refresh of the hashed profile identity, even though the account journey then waits for email activation |
+| `space_conversion` | `schema_version`, `conversion` (`created` / `joined`), hashed `space_id`, optional hashed `template_id` after successful catalog template installation |
+| `space_entered` | `schema_version`, hashed `space_id`; initial space routes and navigation between spaces, excluding internal route changes. See [Discover metric definitions](analytics/discover.md). |
 | `space_shared` | `schema_version`, hashed `space_id`; fired only after an invite is successfully minted |
 | `product_event` | Closed product interaction lifecycle for startup, active Settings/profile operations, invite resolution/retry, share-and-copy, sheet activation, and CLI operations. |
 
@@ -78,6 +93,24 @@ DID or name in the invite query or event. A visible `/space/{key}` route is
 hashed locally and wins over a query token. Short-link redirects forward only
 public campaign/source tags added to the `@/...` URL; they do not accept
 overrides for the stored invite capability or space token.
+
+### Desktop app
+
+| Event | Properties |
+|---|---|
+| `app_opened` | transport context only |
+| `product_event` | The closed product lifecycle below, for the desktop interactions in the [coverage ledger](analytics-contract.md#coverage-ledger) |
+
+Every desktop event carries `environment=desktop`, `$lib=tonk-desktop`,
+`version`, `os`, and `arch`, plus an RFC 3339 UTC occurrence timestamp recorded
+when queued. The distinct id is the same profile hash the CLI and web use,
+resolved from the signed-in runtime's `/api/identify`; before that, and after
+sign-out, it is `tonk:anonymous`. Events are queued in memory and sent to
+`/batch` at most every ten seconds and once at quit, best effort; failures are
+dropped, never retried. Nothing is sent against a local runtime.
+
+The space views inside the app are the web app: they report web events as
+above, under their own host's `environment`, with `shell=desktop` (below).
 
 ### Account journey schema
 
@@ -135,9 +168,18 @@ The account capture entry point accepts no arbitrary JSON properties.
 
 Every web event additionally carries an `environment` super property
 derived from the hostname: `production` (tonk.network), `staging`
-(staging.tonk.xyz), or `dev` (anything else). The marketing site's
+(staging.tonk.xyz or tonk.spot), or `dev` (anything else). The marketing site's
 own snippet registers `environment = "website"` in its repo, so all
 surfaces share one filterable dimension within the PostHog project.
+
+Every web event also carries a closed `shell` super property: `desktop` when
+the page runs inside the macOS desktop app, `browser` otherwise. The desktop
+app injects `window.__tonkShell = "desktop"` into its web views before page
+scripts run; any other value, or none, reports `browser`. No user agent string
+or raw flag is sent. `shell` leaves `environment` unchanged, so desktop space
+views on tonk.network still report `environment=production`; filter on
+`shell != 'desktop'` (treating a missing value as `browser`, since events before
+this property have none) to count browser use alone.
 
 Autocapture and session recording are disabled. PostHog runs
 cookieless (`persistence: "memory"`); no third-party script is loaded
@@ -168,6 +210,11 @@ pathnames, referrers, arbitrary UTM fields, click IDs, and SDK-generated initial
 URL fields from event and person-property blocks. Reviewed launch attribution
 is registered separately through the closed launch schema.
 
+## Dashboards
+
+Each interface (web, CLI, desktop) has its own PostHog dashboard, with one
+overview comparing them; see [interface dashboards](analytics/interfaces.md).
+
 ## Operational logs
 
 The access Worker writes failed account requests to Cloudflare Workers Logs,
@@ -186,6 +233,8 @@ infrastructure records deliberately have no stable join key to PostHog.
   effective state. The persisted choice lives at ``<platform data dir>/tonk/telemetry.json`` (``TONK_TELEMETRY_STATE`` overrides the directory).
 - Web: run `localStorage.setItem("tonk:telemetry", "off")` in the
   console and reload. (A settings toggle is a planned follow-up.)
+- Desktop: turn off "Share anonymous usage data" in Settings (Advanced),
+  or launch with `DO_NOT_TRACK=1` or `TONK_TELEMETRY=0`.
 - Builds without a `TONK_POSTHOG_KEY` baked in send nothing at all —
   this is the default for local builds, CI, and forks.
 
@@ -196,6 +245,11 @@ design) and optionally `TONK_POSTHOG_HOST` (default
 `https://eu.i.posthog.com`) in the environment of the release build.
 `TONK_POSTHOG_KEY`/`TONK_POSTHOG_HOST` are also read at runtime, and
 `TONK_POSTHOG_ENDPOINT` overrides the host for integration tests.
+
+Signed desktop builds bake the same key into the app's `Info.plist`
+(`TonkPostHogKey`, optionally `TonkPostHogHost`) through `build-app.sh`;
+the Desktop workflows set it, and a script test keeps it equal to the
+flake's. Local `build-app.sh` builds stay key-less.
 
 The nix packages (`tonk-cli`, `tonk-ui`, and therefore
 `tonk-cloudflare-artifacts`) bake the key in from the `posthogKey`

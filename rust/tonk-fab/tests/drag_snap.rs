@@ -12,9 +12,15 @@ use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::wasm_bindgen_test_configure;
-use web_sys::{CustomEvent, Event, HtmlElement, window};
+use web_sys::{
+    CustomEvent, Element, Event, HtmlElement, KeyboardEvent, KeyboardEventInit, ShadowRoot, window,
+};
 
 wasm_bindgen_test_configure!(run_in_browser);
+
+// In a subdirectory, so Cargo does not build it as a test suite of its own.
+#[path = "support/settle.rs"]
+mod settle;
 
 fn pointer_event(kind: &str, x: f64, y: f64, buttons: i32) -> Event {
     pointer_event_with_type(kind, x, y, buttons, "mouse")
@@ -59,6 +65,67 @@ async fn yield_for(ms: i32) {
         .expect("timeout resolves");
 }
 
+fn active_animations(element: &Element) -> u32 {
+    let get_animations = js_sys::Reflect::get(element, &"getAnimations".into())
+        .expect("getAnimations")
+        .dyn_into::<js_sys::Function>()
+        .expect("getAnimations is callable");
+    get_animations
+        .call0(element)
+        .expect("read animations")
+        .dyn_into::<js_sys::Array>()
+        .expect("animation list")
+        .length()
+}
+
+async fn wait_for_corner_settled(fab: &HtmlElement, root: &ShadowRoot, panel_open: bool) {
+    let open = || root.query_selector(".w.has-panel").unwrap().is_some();
+    // Opening lands at once; a close lands on the drawer's `transitionend`,
+    // which the FAB announces. A close with no width to give back has
+    // already landed by the time this looks.
+    if open() != panel_open {
+        let closed = settle::next_event(fab, "fabb-drawer-closed");
+        settle::finish_animations(fab);
+        if open() != panel_open {
+            settle::arrived(closed, "the drawer closes").await;
+        }
+    }
+    settle::finish_animations(fab);
+    assert_eq!(
+        open(),
+        panel_open,
+        "corner layout settles with panel_open={panel_open}"
+    );
+}
+
+/// The host's running CSS `left` transition: the edge glide.
+fn left_transition(fab: &HtmlElement) -> JsValue {
+    let _ = fab.get_bounding_client_rect();
+    js_sys::Reflect::get(fab, &"getAnimations".into())
+        .unwrap()
+        .unchecked_into::<js_sys::Function>()
+        .call0(fab)
+        .unwrap()
+        .unchecked_into::<js_sys::Array>()
+        .iter()
+        .find(|animation| {
+            js_sys::Reflect::get(animation, &"transitionProperty".into())
+                .ok()
+                .and_then(|value| value.as_string())
+                .as_deref()
+                == Some("left")
+        })
+        .expect("the edge glide is a CSS left transition")
+}
+
+fn animation_call(target: &JsValue, method: &str) -> JsValue {
+    js_sys::Reflect::get(target, &method.into())
+        .unwrap()
+        .unchecked_into::<js_sys::Function>()
+        .call0(target)
+        .unwrap()
+}
+
 fn px(style: &web_sys::CssStyleDeclaration, property: &str) -> f64 {
     style
         .get_property_value(property)
@@ -66,6 +133,179 @@ fn px(style: &web_sys::CssStyleDeclaration, property: &str) -> f64 {
         .trim_end_matches("px")
         .parse()
         .expect("pixel value")
+}
+
+#[dialog_common::test]
+async fn drawer_cycles_keep_the_header_at_each_corner() {
+    tonk_fab::register();
+    let document = window().unwrap().document().unwrap();
+    for (horizontal, vertical) in [
+        ("left", "top"),
+        ("right", "top"),
+        ("left", "bottom"),
+        ("right", "bottom"),
+    ] {
+        let fab = document
+            .create_element("tonk-fab")
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap();
+        fab.set_attribute("label", "Corner anchor").unwrap();
+        document.body().unwrap().append_child(&fab).unwrap();
+        yield_for(30).await;
+        fab.style().set_property(horizontal, "16px").unwrap();
+        fab.style()
+            .set_property(
+                if horizontal == "left" {
+                    "right"
+                } else {
+                    "left"
+                },
+                "auto",
+            )
+            .unwrap();
+        fab.style().set_property(vertical, "16px").unwrap();
+        fab.style()
+            .set_property(if vertical == "top" { "bottom" } else { "top" }, "auto")
+            .unwrap();
+        let root = fab.shadow_root().unwrap();
+        wait_for_corner_settled(&fab, &root, false).await;
+        root.query_selector(".space")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap()
+            .click();
+        wait_for_corner_settled(&fab, &root, false).await;
+        let header = root.query_selector(".header").unwrap().unwrap();
+        let initial = header.get_bounding_client_rect();
+        let (left, right, top, bottom) = (
+            initial.left(),
+            initial.right(),
+            initial.top(),
+            initial.bottom(),
+        );
+        let agent = root
+            .query_selector(".agent")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap();
+        let assert_header_seat = |stage: &str, anchored_edges_only: bool| {
+            let rect = header.get_bounding_client_rect();
+            for (edge, start, end) in [
+                ("left", left, rect.left()),
+                ("right", right, rect.right()),
+                ("top", top, rect.top()),
+                ("bottom", bottom, rect.bottom()),
+            ] {
+                if anchored_edges_only && edge != horizontal && edge != vertical {
+                    continue;
+                }
+                assert!(
+                    (start - end).abs() < 0.75,
+                    "{horizontal}/{vertical} {stage}: {edge} moved from {start} to {end}"
+                );
+            }
+        };
+        for cycle in 0..3 {
+            agent.click();
+            wait_for_corner_settled(&fab, &root, true).await;
+            assert_header_seat(&format!("cycle {cycle} opened"), true);
+            agent.click();
+            wait_for_corner_settled(&fab, &root, false).await;
+            assert_header_seat(&format!("cycle {cycle} closed"), false);
+        }
+        fab.remove();
+    }
+}
+
+#[dialog_common::test]
+async fn an_edge_docked_open_panel_stays_inside_the_viewport() {
+    tonk_fab::register();
+    let win = window().expect("window");
+    let document = win.document().expect("document");
+    let vw = win.inner_width().unwrap().as_f64().unwrap();
+    let vh = win.inner_height().unwrap().as_f64().unwrap();
+    for (x, y, bottom) in [(vw * 0.78, 40.0, false), (vw * 0.22, vh - 40.0, true)] {
+        let fab = document
+            .create_element("tonk-fab")
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap();
+        fab.set_attribute("label", "Viewport fit").unwrap();
+        document.body().unwrap().append_child(&fab).unwrap();
+        let root = fab.shadow_root().unwrap();
+        wait_for_corner_settled(&fab, &root, false).await;
+        let circle = root.query_selector(".fab").unwrap().unwrap();
+        let circle_rect = circle.get_bounding_client_rect();
+        circle
+            .dispatch_event(&pointer_event(
+                "pointerdown",
+                circle_rect.left() + circle_rect.width() / 2.0,
+                circle_rect.top() + circle_rect.height() / 2.0,
+                1,
+            ))
+            .unwrap();
+        win.dispatch_event(&pointer_event("pointermove", x, y, 1))
+            .unwrap();
+        win.dispatch_event(&pointer_event("pointerup", x, y, 0))
+            .unwrap();
+        wait_for_corner_settled(&fab, &root, false).await;
+        assert_eq!(fab.has_attribute("up"), bottom);
+        root.query_selector(".space")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap()
+            .click();
+        // Opening the menu can re-anchor the header. Let that position
+        // settle before the drawer measures its available viewport space.
+        wait_for_corner_settled(&fab, &root, false).await;
+        root.query_selector(".agent")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap()
+            .click();
+        wait_for_corner_settled(&fab, &root, true).await;
+        let outer = fab.get_bounding_client_rect();
+        let header = root
+            .query_selector(".header")
+            .unwrap()
+            .unwrap()
+            .get_bounding_client_rect();
+        let actions = root
+            .query_selector(".run")
+            .unwrap()
+            .unwrap()
+            .get_bounding_client_rect();
+        assert_eq!(fab.has_attribute("up"), bottom);
+        if bottom {
+            assert!(
+                actions.bottom() <= header.top() + 1.0,
+                "bottom seat must open upward"
+            );
+        } else {
+            assert!(
+                actions.top() >= header.bottom() - 1.0,
+                "top seat must open downward"
+            );
+        }
+        assert!(outer.left() >= 15.0, "left overflow: {}", outer.left());
+        assert!(
+            outer.right() <= vw - 15.0,
+            "right overflow: {}",
+            outer.right()
+        );
+        assert!(outer.top() >= 15.0, "top overflow: {}", outer.top());
+        assert!(
+            outer.bottom() <= vh - 15.0,
+            "bottom overflow: {}",
+            outer.bottom()
+        );
+        fab.remove();
+    }
 }
 
 #[dialog_common::test]
@@ -82,6 +322,16 @@ async fn release_glides_to_the_nearest_edge_without_losing_its_free_coordinate()
         .expect("body")
         .append_child(&fab)
         .expect("mount fab");
+
+    // Let the deferred persisted-seat restore finish before beginning a gesture.
+    wait_for_corner_settled(&fab, &fab.shadow_root().unwrap(), false).await;
+    // Start on the left so this test isolates release motion from the
+    // separate mid-drag bookend mirroring behavior.
+    fab.style().set_property("left", "16px").unwrap();
+    fab.style().set_property("right", "auto").unwrap();
+    fab.remove_attribute("flip").unwrap();
+    fab.class_list().remove_1("fab-mirror").unwrap();
+    wait_for_corner_settled(&fab, &fab.shadow_root().unwrap(), false).await;
 
     let snapped = Rc::new(RefCell::new(None));
     let sink = snapped.clone();
@@ -121,6 +371,7 @@ async fn release_glides_to_the_nearest_edge_without_losing_its_free_coordinate()
         .expect("window")
         .dispatch_event(&pointer_event("pointermove", 80.0, target_y, 1))
         .expect("pointer move");
+    let release_left = fab.get_bounding_client_rect().left();
     window()
         .expect("window")
         .dispatch_event(&pointer_event("pointerup", 80.0, target_y, 0))
@@ -129,11 +380,43 @@ async fn release_glides_to_the_nearest_edge_without_losing_its_free_coordinate()
     assert_eq!(snapped.borrow().as_deref(), Some("left"));
     assert_eq!(px(&fab.style(), "left"), 16.0);
     let top = px(&fab.style(), "top");
+    let half_height = fab.get_bounding_client_rect().height() / 2.0;
     assert!(
-        (top - (target_y - 18.0)).abs() < 1.0,
+        (top - (target_y - half_height)).abs() < 1.0,
         "the release must keep its free y coordinate: expected about {}, got {top}",
-        target_y - 18.0
+        target_y - half_height
     );
+
+    // Inline coordinates describe the destination, but the rendered surface
+    // must travel there instead of jumping on the release frame.
+    let start = fab.get_bounding_client_rect().left();
+    assert!(
+        (start - release_left).abs() < 2.0,
+        "release jumped: {release_left} -> {start}"
+    );
+    assert!(active_animations(&fab) > 0, "edge glide must be active");
+    // Sample the glide halfway along its own timeline: under a busy browser
+    // a timer says nothing about how far it has got.
+    let glide = left_transition(&fab);
+    animation_call(&glide, "pause");
+    let duration = js_sys::Reflect::get(
+        &animation_call(
+            &js_sys::Reflect::get(&glide, &"effect".into()).unwrap(),
+            "getComputedTiming",
+        ),
+        &"endTime".into(),
+    )
+    .unwrap()
+    .as_f64()
+    .unwrap();
+    js_sys::Reflect::set(&glide, &"currentTime".into(), &(duration / 2.0).into()).unwrap();
+    let intermediate = fab.get_bounding_client_rect().left();
+    assert!(
+        intermediate > 16.0 && intermediate < start,
+        "expected intermediate glide position, got {intermediate}"
+    );
+    animation_call(&glide, "finish");
+    assert!((fab.get_bounding_client_rect().left() - 16.0).abs() < 1.0);
 
     fab.remove();
     drop(on_snap);
@@ -232,4 +515,69 @@ async fn a_touch_tap_expands_but_a_nine_pixel_drag_preserves_the_collapsed_atom(
 
     parent.remove();
     drop(on_snap);
+}
+
+#[dialog_common::test]
+async fn shift_space_and_a_500ms_hold_dispatch_pause_without_toggling_collapse() {
+    tonk_fab::register();
+    let calls = Rc::new(RefCell::new(Vec::<String>::new()));
+    let sink = calls.clone();
+    let transact = Closure::<dyn FnMut(JsValue)>::new(move |request| {
+        sink.borrow_mut().push(
+            js_sys::JSON::stringify(&request)
+                .map(String::from)
+                .unwrap_or_default(),
+        );
+    });
+    let win = window().expect("window");
+    let tonk = js_sys::Object::new();
+    js_sys::Reflect::set(&tonk, &"transact".into(), transact.as_ref()).unwrap();
+    js_sys::Reflect::set(&win, &"tonk".into(), &tonk).unwrap();
+
+    let document = win.document().expect("document");
+    let fab = document
+        .create_element("tonk-fab")
+        .unwrap()
+        .dyn_into::<HtmlElement>()
+        .unwrap();
+    fab.set_attribute("space", "did:key:zPauseSpace").unwrap();
+    document.body().unwrap().append_child(&fab).unwrap();
+    let root = fab.shadow_root().unwrap();
+    let circle = root
+        .query_selector(".fab")
+        .unwrap()
+        .unwrap()
+        .unchecked_into::<HtmlElement>();
+    let wrapper = root.query_selector(".w").unwrap().unwrap();
+
+    let init = KeyboardEventInit::new();
+    init.set_key(" ");
+    init.set_shift_key(true);
+    circle
+        .dispatch_event(
+            &KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(calls.borrow().len(), 1);
+
+    let rect = circle.get_bounding_client_rect();
+    let x = rect.left() + rect.width() / 2.0;
+    let y = rect.top() + rect.height() / 2.0;
+    circle
+        .dispatch_event(&pointer_event_with_type("pointerdown", x, y, 1, "touch"))
+        .unwrap();
+    yield_for(550).await;
+    win.dispatch_event(&pointer_event_with_type("pointerup", x, y, 0, "touch"))
+        .unwrap();
+    circle.click();
+
+    assert_eq!(calls.borrow().len(), 2);
+    assert!(calls.borrow().iter().all(|request| {
+        request.contains("xyz.tonk.pause-sync/space") && request.contains("did:key:zPauseSpace")
+    }));
+    assert!(!wrapper.class_list().contains("collapsed"));
+
+    fab.remove();
+    let _ = js_sys::Reflect::delete_property(win.unchecked_ref::<js_sys::Object>(), &"tonk".into());
+    drop(transact);
 }

@@ -55,22 +55,15 @@
 //! from a closed set rather than anything an upstream response said.
 
 use ::axum::{Json, extract::State, http::StatusCode};
-use axum_wasm_macros::wasm_compat;
-use dialog_artifacts::{
-    ArtifactSelector, Attribute, Changes, Entity, Preload, Speculation, Statement as _, Value,
-};
+use dialog_artifacts::{ArtifactSelector, Changes, Entity, Relation, Statement as _, Value};
 use dialog_capability::access::{AuthorizeError, Prove, Retain};
-use dialog_capability::{Fork, Provider, Subject};
-use dialog_common::ConditionalSync;
-use dialog_credentials::{Credential, Ed25519Verifier};
-use dialog_effects::archive::{Get, Import, Put};
-use dialog_effects::authority::{Attest, Identify};
-use dialog_effects::memory::{Publish, Resolve};
-use dialog_effects::space::{Space, SpaceExt as _};
+use dialog_capability::{Fork, Provider};
+use dialog_credentials::Credential;
+use dialog_effects::archive::Get;
 use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{
-    Branch, Hydrate, PullError, RemoteSite, Repository, RepositoryExt as _, SiteAddress,
+    Branch, PullError, RemoteSite, Repository, RepositoryExt as _, ResolveEnv, SiteAddress,
 };
 use dialog_ucan::{Ucan, UcanDelegation};
 use dialog_ucan_core::DelegationChain;
@@ -81,7 +74,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
-use tonk_invite::{Invite, InviteAudience};
+use tonk_handler_macros::wasm_compat;
+use tonk_invite::{Invite, InviteAudience, Ticket};
 use tonk_schema::{
     Invitation, InvitationExecution, InvitedVia, MemberName, MemberRole, Membership, Replica,
     RepositoryName, SeedKind, prelude::DidExt as _,
@@ -96,10 +90,6 @@ use super::repository::{
     record_replica_local_meta,
 };
 use crate::{TonkWorkerError, worker::TonkState};
-
-/// The single branch the profile repository lives on (`main`; the
-/// profile has no content/meta split).
-const PROFILE_BRANCH: &str = "main";
 
 /// Default upstream branch wired up when the invite carries a
 /// `remote=` URL.
@@ -133,42 +123,15 @@ const CONCEPT_MARKER: &str = "db.meta/concept";
 /// generic over this bundle rather than over `TonkState`, so they can be
 /// exercised against any operator that provides it.
 pub(crate) trait BranchEnv:
-    Provider<Get>
-    + Provider<Put>
-    + Provider<Import>
-    + Provider<Resolve>
-    + Provider<Publish>
-    + Provider<Identify>
-    + Provider<Attest>
-    + Provider<Prove<Ucan>>
-    + Provider<Retain<Ucan>>
-    + Provider<Hydrate>
-    + Provider<Preload>
-    + Provider<Speculation>
-    + Provider<Fork<RemoteSite, Get>>
-    + Provider<Fork<RemoteSite, Resolve>>
-    + ConditionalSync
-    + 'static
+    ResolveEnv + Provider<Prove<Ucan>> + Provider<Retain<Ucan>> + Provider<Fork<RemoteSite, Get>>
 {
 }
 
 impl<T> BranchEnv for T where
-    T: Provider<Get>
-        + Provider<Put>
-        + Provider<Import>
-        + Provider<Resolve>
-        + Provider<Publish>
-        + Provider<Identify>
-        + Provider<Attest>
+    T: ResolveEnv
         + Provider<Prove<Ucan>>
         + Provider<Retain<Ucan>>
-        + Provider<Hydrate>
-        + Provider<Preload>
-        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
-        + Provider<Fork<RemoteSite, Resolve>>
-        + ConditionalSync
-        + 'static
 {
 }
 
@@ -273,6 +236,10 @@ impl JoinFailure {
     pub(crate) fn claim_failed(detail: impl Into<String>) -> Self {
         Self::new(JoinFailureKind::ClaimFailed, detail)
     }
+
+    fn private(detail: impl Into<String>) -> Self {
+        Self::new(JoinFailureKind::Private, detail)
+    }
 }
 
 impl From<JoinFailure> for TonkWorkerError {
@@ -298,6 +265,7 @@ impl From<JoinFailure> for TonkWorkerError {
                 message,
             },
             JoinFailureKind::ClaimFailed => TonkWorkerError::Internal(message),
+            JoinFailureKind::Private => TonkWorkerError::Forbidden(message),
         }
     }
 }
@@ -314,13 +282,14 @@ mod failure_vocabulary {
     use super::{AuthorizeError, JoinFailure, JoinFailureKind};
     use crate::TonkWorkerError;
 
-    const KINDS: [JoinFailureKind; 6] = [
+    const KINDS: [JoinFailureKind; 7] = [
         JoinFailureKind::Malformed,
         JoinFailureKind::AudienceMismatch,
         JoinFailureKind::Revoked,
         JoinFailureKind::Unavailable,
         JoinFailureKind::Refused,
         JoinFailureKind::ClaimFailed,
+        JoinFailureKind::Private,
     ];
 
     #[dialog_common::test]
@@ -335,6 +304,7 @@ mod failure_vocabulary {
                 "Tonk could not reach this space. Try again.",
                 "This space's host declined the invite. Its owner needs to check the space's plan.",
                 "Tonk could not join this space.",
+                "This space is private. Ask someone in it for an invite link.",
             ],
         );
     }
@@ -351,6 +321,7 @@ mod failure_vocabulary {
                 "unavailable",
                 "refused",
                 "claim-failed",
+                "private",
             ],
         );
     }
@@ -513,7 +484,10 @@ pub async fn join(
     State(state): State<AppState>,
     Json(body): Json<JoinRequest>,
 ) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
-    let tonk = state.write().await;
+    // A read guard, as the page's join command takes: the join is network
+    // bound (a pull, validation and roster reads against the remote), and
+    // a write guard held across it stalls every other request.
+    let tonk = state.read().await.clone();
     let outcome = join_invite(&tonk, &body.url).await?;
     log!(
         "POST /api/profile/join -> subject {} (key {})",
@@ -530,7 +504,7 @@ async fn joined_response(
 ) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
     let repository = tonk
         .profile
-        .repository(outcome.key.as_str())
+        .space(outcome.key.as_str())
         .load()
         .perform(&tonk.operator)
         .await
@@ -580,6 +554,17 @@ pub(crate) struct JoinOutcome {
 /// unreferenced content-addressed blocks, an unused candidate chain —
 /// is invisible, resumable, and reclaimed by pruning.
 pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutcome, JoinFailure> {
+    // Another host's link carried to this one (`/join/{link}`) joins as
+    // that link: claimed from its own host, recorded in this profile.
+    let carried = tonk_invite::join_address::carried(url);
+    let url = carried.as_deref().unwrap_or(url);
+    // A space's bare address names no invite: it opens the space for
+    // whoever can read it.
+    if let Some(public) = Ticket::public_for_url(url)
+        .map_err(|error| JoinFailure::malformed(format!("space address did not parse: {error}")))?
+    {
+        return open_space(tonk, public).await;
+    }
     // Per-phase wall clock, logged on success: the perform phase is the
     // network-bound one (pull + validation + roster reads against the
     // remote), so a slow join in the field can be attributed to the
@@ -596,18 +581,314 @@ pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutco
     Ok(outcome)
 }
 
+/// Open a space this device holds no replica of from its address,
+/// `/space/{did}` or any route under it: with access this profile already
+/// holds, or else with a ticket the space keeps, the account's own ahead
+/// of the public one (see [`claim_space_ticket`]).
+///
+/// Neither ticket makes its redeemer a member: nothing this does writes
+/// to the space, no roster claim, no retained hop, no custodied seed. The
+/// public ticket grants only `/use/get`; the account's grants whatever it
+/// was issued with. The ticket is saved in the profile, where it proves
+/// through the account's powerline, so the next open finds it here rather
+/// than claiming again.
+///
+/// [`JoinFailure::private`] when the space keeps neither ticket and the
+/// profile holds no access to it.
+async fn open_space(tonk: &TonkState, ticket: Ticket) -> Result<JoinOutcome, JoinFailure> {
+    let subject = ticket.subject().clone();
+    let key = subject.repo_key().to_owned();
+    let existing = find_replica_for_subject(tonk, &subject)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to look up the local replica: {error}"))
+        })?;
+    if existing {
+        return Ok(JoinOutcome {
+            key,
+            subject,
+            renewed: true,
+        });
+    }
+
+    let (account, device_grant) = crate::router::account::current_account(tonk)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to resolve the account: {error}"))
+        })?;
+    super::public_access::ensure_powerline(tonk, &account)
+        .await
+        .map_err(|error| JoinFailure::claim_failed(format!("public powerline: {error}")))?;
+    super::public_access::save(tonk, device_grant.clone())
+        .await
+        .map_err(|error| JoinFailure::claim_failed(format!("device grant: {error}")))?;
+
+    if !super::public_access::can_read(tonk, &subject).await {
+        let chain = claim_space_ticket(tonk, &ticket, &account, &device_grant).await?;
+        super::public_access::save(tonk, chain)
+            .await
+            .map_err(|error| JoinFailure::claim_failed(format!("space ticket: {error}")))?;
+    }
+
+    let remote_url = ticket.remote().to_string();
+    let repository = mount_replica(tonk, &subject, Some(&remote_url), None)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to prepare the local replica: {error}"))
+        })?;
+    let branch = repository
+        .branch(DEFAULT_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to open the content branch: {error}"))
+        })?;
+    pull_upstream(&branch, &tonk.operator).await?;
+    validate_content(&branch, &tonk.operator, &subject).await?;
+
+    tonk.reactor
+        .refresh_branch(subject.repo_key(), DEFAULT_BRANCH, &tonk.operator)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to adopt the opened branch: {error}"))
+        })?;
+    adopt_waiting_views(tonk, &key).await;
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    record_initialized_replica_in_profile(tonk, &subject)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to index the replica: {error}"))
+        })?;
+    log!("join: opened subject {subject} (key {key}) to read");
+    Ok(JoinOutcome {
+        key,
+        subject,
+        renewed: false,
+    })
+}
+
+/// Hand the space just installed under `key` to the views that subscribed
+/// to it while it was absent. A page opened at the space's address mounts
+/// them before the join, and they wait in the reactor until something
+/// acquires the branch: the join opened it through the repository, not the
+/// reactor, and `Reactor::refresh_branch` reconciles only a branch the
+/// reactor already holds. Acquiring it here adopts them and schedules their
+/// poll, which the join's drain delivers, so the page needs no reload.
+async fn adopt_waiting_views(tonk: &TonkState, key: &str) {
+    if let Err(error) = tonk
+        .reactor
+        .repository(key)
+        .branch(DEFAULT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        log!("join: views waiting on '{key}' were not handed the space: {error}");
+    }
+    crate::router::session::stamp_waiting_sites(tonk, key).await;
+}
+
+/// Claim the ticket the space keeps for `account` and its public ticket
+/// at once, and answer the account's when it has one: it carries what the
+/// account was granted, where the public one grants only reads. With no
+/// ticket for the account, the public ticket's answer stands, including
+/// [`JoinFailure::private`] when there is none.
+///
+/// The account's ticket is claimed by this profile, on the account's
+/// behalf: it signs as itself and presents `device_grant`, the account's
+/// powerline to it, as the service's claim allows a holder's delegates.
+/// No account key or passkey is needed.
+async fn claim_space_ticket(
+    tonk: &TonkState,
+    public: &Ticket,
+    account: &Did,
+    device_grant: &DelegationChain,
+) -> Result<DelegationChain, JoinFailure> {
+    let (own, open) = futures_util::future::join(
+        claim_account_ticket(tonk, public, account, device_grant),
+        claim_public_ticket(public),
+    )
+    .await;
+    match own {
+        Ok(Some(chain)) => {
+            log!("join: opened with the ticket kept for the account");
+            Ok(chain)
+        }
+        Ok(None) => open,
+        Err(failure) => {
+            log!(
+                "join: the account's ticket was not claimed ({}); using the public one",
+                failure.kind().as_str()
+            );
+            open
+        }
+    }
+}
+
+/// The ticket `public`'s space keeps for `account`, claimed by this
+/// profile with `device_grant` as its proof; `None` when it keeps none.
+async fn claim_account_ticket(
+    tonk: &TonkState,
+    public: &Ticket,
+    account: &Did,
+    device_grant: &DelegationChain,
+) -> Result<Option<DelegationChain>, JoinFailure> {
+    let profile = tonk.profile.credential().signer().clone();
+    let fetched = tonk_account::ticket::claim(
+        public.remote(),
+        profile,
+        account,
+        Some(device_grant),
+        public.subject(),
+    )
+    .await
+    .map_err(|error| match error {
+        tonk_account::ticket::ClaimError::Refused(reason) => classify_authorization(&reason),
+        _ => JoinFailure::unavailable("the account's ticket could not be fetched"),
+    })?;
+    let Some(bytes) = fetched else {
+        return Ok(None);
+    };
+    accept_account_ticket(&bytes, public.subject(), account).map(Some)
+}
+
+/// `bytes` as the ticket `space` keeps for `account`: a delegation chain
+/// on that space, made out to that account.
+fn accept_account_ticket(
+    bytes: &[u8],
+    space: &Did,
+    account: &Did,
+) -> Result<DelegationChain, JoinFailure> {
+    let chain = DelegationChain::try_from(bytes).map_err(|error| {
+        JoinFailure::malformed(format!("the account's ticket is not a chain: {error}"))
+    })?;
+    if chain.subject() != Some(space) {
+        return Err(JoinFailure::malformed(
+            "the account's ticket grants another space",
+        ));
+    }
+    if chain.audience() != account {
+        return Err(JoinFailure::malformed(
+            "the account's ticket was kept for another principal",
+        ));
+    }
+    Ok(chain)
+}
+
+/// Claim the ticket a space keeps for the public principal, signed as
+/// that principal, or [`JoinFailure::private`] when it keeps none.
+async fn claim_public_ticket(ticket: &Ticket) -> Result<DelegationChain, JoinFailure> {
+    let holder = ticket
+        .holder()
+        .await
+        .map_err(|error| JoinFailure::claim_failed(format!("public key: {error}")))?;
+    let holder_did = dialog_varsig::Principal::did(&holder);
+    let fetched =
+        tonk_account::ticket::claim(ticket.remote(), holder, &holder_did, None, ticket.subject())
+            .await
+            .map_err(|error| match error {
+                tonk_account::ticket::ClaimError::Refused(reason) => {
+                    classify_authorization(&reason)
+                }
+                _ => JoinFailure::unavailable("the space's public ticket could not be fetched"),
+            })?
+            .ok_or_else(|| JoinFailure::private("the space keeps no public ticket"))?;
+    ticket
+        .accept(&fetched)
+        .await
+        .map_err(|error| JoinFailure::malformed(format!("public ticket: {error}")))
+}
+
+/// Run the ordinary join pipeline for a browser-approved local-space link.
+/// The wrapper keeps the join's private diagnostic type inside this module.
+pub(crate) async fn join_for_local_space_link(
+    tonk: &TonkState,
+    url: &str,
+    approved_subject: &Did,
+) -> Result<JoinOutcome, TonkWorkerError> {
+    let invite = parse_invite(url).await?;
+    // Check consent before preparation can mint an account, and before the
+    // join can save authority, membership, or a replica. Use this same parsed
+    // invitation throughout so validation and mutation cannot name two spaces.
+    if invite.subject() != approved_subject {
+        return Err(TonkWorkerError::Forbidden(
+            "local-space link invite names another space".into(),
+        ));
+    }
+    let prepared = prepare_parsed_join(tonk, invite).await?;
+    perform_join(tonk, prepared).await.map_err(Into::into)
+}
+
+/// Replace a browser-approved local-space join's invite authority with its
+/// direct space-to-account prefix. The ordinary join needs the narrower invite
+/// while pulling; the direct prefix is the durable ownership authority.
+pub(crate) async fn save_local_space_root_authority(
+    tonk: &TonkState,
+    subject: &Did,
+    chain: DelegationChain,
+) -> Result<(), TonkWorkerError> {
+    save_authority(tonk, subject, chain)
+        .await
+        .map_err(Into::into)
+}
+
 /// Parse the invite, verify it is addressed to this identity, and build
 /// the candidate chain. Reads only, except that a device joining before
 /// it has any account mints its onboarding account here.
 async fn prepare_join(tonk: &TonkState, url: &str) -> Result<PreparedJoin, JoinFailure> {
-    let invite = Invite::parse_url(url)
-        .await
-        .map_err(|error| JoinFailure::malformed(format!("invite did not parse: {error}")))?;
+    prepare_parsed_join(tonk, parse_invite(url).await?).await
+}
 
+pub(crate) async fn parse_invite(url: &str) -> Result<Invite, JoinFailure> {
+    if let Some(ticket) = Ticket::parse_url(url)
+        .map_err(|error| JoinFailure::malformed(format!("invite did not parse: {error}")))?
+    {
+        return claim_ticket(ticket).await;
+    }
+    Invite::parse_url(url)
+        .await
+        .map_err(|error| JoinFailure::malformed(format!("invite did not parse: {error}")))
+}
+
+/// Fetch the ticket a ticket link's space keeps for the link's key, and
+/// read it as the open invite it is. From here a ticket link joins the
+/// way an `access=` link does.
+async fn claim_ticket(ticket: Ticket) -> Result<Invite, JoinFailure> {
+    let holder = ticket
+        .holder()
+        .await
+        .map_err(|error| JoinFailure::malformed(format!("ticket key: {error}")))?;
+    let holder_did = dialog_varsig::Principal::did(&holder);
+    let fetched =
+        tonk_account::ticket::claim(ticket.remote(), holder, &holder_did, None, ticket.subject())
+            .await
+            .map_err(|error| match error {
+                tonk_account::ticket::ClaimError::Refused(reason) => {
+                    classify_authorization(&reason)
+                }
+                _ => JoinFailure::unavailable("the space's ticket could not be fetched"),
+            })?;
+    // The space no longer keeps a ticket for this link's key: it was
+    // taken back, which withdraws the link as far as a newcomer goes.
+    let Some(fetched) = fetched else {
+        return Err(JoinFailure::revoked(
+            "the space no longer holds this link's ticket",
+        ));
+    };
+    ticket
+        .redeem(&fetched)
+        .await
+        .map_err(|error| JoinFailure::malformed(format!("ticket did not redeem: {error}")))
+}
+
+async fn prepare_parsed_join(
+    tonk: &TonkState,
+    invite: Invite,
+) -> Result<PreparedJoin, JoinFailure> {
     // Derived from the chain as parsed — a claim pushes a redelegation
     // and changes the leaf. Guaranteed `Some` by the `Invite` invariant
     // (the chain has a specific subject).
-    let invitation = Invitation::from_chain(&invite.chain)
+    let invitation = Invitation::from_chain(invite.invitation_chain())
         .expect("Invite invariant: chain has a specific subject");
 
     let open = matches!(&invite.audience, InviteAudience::Open { .. });
@@ -694,7 +975,7 @@ async fn perform_join(
         })?
     } else {
         tonk.profile
-            .repository(prepared.key.as_str())
+            .space(prepared.key.as_str())
             .load()
             .perform(&tonk.operator)
             .await
@@ -732,34 +1013,94 @@ async fn perform_join(
             JoinFailure::claim_failed(format!("failed to open the content branch: {error}"))
         })?;
 
+    // A renewal stops proving through the earlier invite chains it
+    // supersedes before the pull, so the pull exercises the new chain:
+    // the proof walk's candidate order is not fixed, and a revoked earlier
+    // chain it tried first would fail the renewal it was meant to repair.
+    let superseded = if prepared.existing && !prepared.is_self_claim() {
+        retract_superseded_hops(tonk, &prepared).await
+    } else {
+        Vec::new()
+    };
+
     if prepared.needs_remote_authorization() {
-        pull_upstream(&branch, &tonk.operator).await?;
-        validate_content(&branch, &tonk.operator, &prepared.subject).await?;
+        let authorized = async {
+            pull_upstream(&branch, &tonk.operator).await?;
+            validate_content(&branch, &tonk.operator, &prepared.subject).await
+        }
+        .await;
+        if let Err(failure) = authorized {
+            // The remote did not accept the new chain, so it supersedes
+            // nothing: the member keeps proving the way it did before.
+            restore_hops(tonk, superseded).await;
+            return Err(failure);
+        }
+    }
+
+    // The claim below commits into the content branch directly, not
+    // through the reactor: a branch an earlier release wrote (a renewal,
+    // or a head the pull just adopted) is moved to this release's format
+    // first, once per process, as every reactor commit is. A failure is
+    // logged; the commit reports the refusal.
+    if let Err(error) = tonk
+        .reactor
+        .repository(prepared.subject.repo_key())
+        .branch(DEFAULT_BRANCH)
+        .migrate_once(&tonk.operator)
+        .await
+    {
+        log!(
+            "join: migrating '{}' failed: {error}",
+            prepared.subject.repo_key()
+        );
     }
 
     // Every claim, including a renewal, lands its roster/provenance/name
-    // facts as an ordinary commit; the next sync tick pushes them.
-    let (changes, _already_claimed) = claim_changes(
-        tonk,
-        &branch,
-        &tonk.operator,
-        &prepared.invitation,
-        &prepared.invitation_execution,
-        &prepared.member,
-        &prepared.subject,
-    )
-    .await?;
-    if !changes.is_empty() {
-        branch
+    // facts as an ordinary commit; the next sync tick pushes them. Nothing
+    // holds other writers of this branch off meanwhile (a space's seeding
+    // commits into it in the background), so a commit that loses the
+    // head's race is computed again on the head that won.
+    const CLAIM_ATTEMPTS: usize = 4;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let (changes, _already_claimed) = claim_changes(
+            tonk,
+            &branch,
+            &tonk.operator,
+            &prepared.invitation,
+            &prepared.invitation_execution,
+            &prepared.member,
+            &prepared.subject,
+        )
+        .await?;
+        if changes.is_empty() {
+            break;
+        }
+        match branch
             .transaction()
             .assert(changes)
             .commit()
             .publish()
             .perform(&tonk.operator)
             .await
-            .map_err(|error| {
-                JoinFailure::claim_failed(format!("failed to commit the claim: {error}"))
-            })?;
+        {
+            Ok(_) => break,
+            Err(dialog_repository::CommitError::Publish(
+                dialog_repository::PublishError::VersionMismatch { .. },
+            )) if attempt < CLAIM_ATTEMPTS => {
+                branch.refresh(&tonk.operator).await.map_err(|error| {
+                    JoinFailure::claim_failed(format!(
+                        "failed to read the content branch again: {error}"
+                    ))
+                })?;
+            }
+            Err(error) => {
+                return Err(JoinFailure::claim_failed(format!(
+                    "failed to commit the claim: {error}"
+                )));
+            }
+        }
     }
 
     // The reactor may hold a handle from an earlier attempt at this key;
@@ -772,12 +1113,13 @@ async fn perform_join(
         .map_err(|error| {
             JoinFailure::claim_failed(format!("failed to adopt the joined branch: {error}"))
         })?;
+    adopt_waiting_views(tonk, &prepared.key).await;
     // Deliver the fresh snapshot the refresh scheduled for any
     // subscriptions the rebind carried over — a live view left waiting
     // for the next commit waits forever on a branch nothing edits.
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
-    save_authority(tonk, &prepared, prepared.chain.clone()).await?;
+    save_authority(tonk, &prepared.subject, prepared.chain.clone()).await?;
     retain_claim_authority(tonk, &prepared.key, &prepared.chain).await;
 
     if prepared.installs_replica() {
@@ -855,6 +1197,202 @@ async fn perform_join(
     })
 }
 
+/// Stop proving through the earlier invite chains a renewal replaces, and
+/// return the hops it retracted so a refused renewal can restore them.
+///
+/// A member whose invite link was revoked claims a fresh one to get back
+/// in, but still retains the revoked chain beside the new one. A refusal
+/// can only make a device drop a revoked hop when it carries the signed
+/// revocation, and revocations recorded before the access service kept
+/// those documents carry none. So the renewal drops the earlier chain
+/// itself rather than wait for a refusal that cannot prove it.
+///
+/// Only a hop that admits this member to this space is a candidate (its
+/// audience is one of the accounts this device acts for, its subject the
+/// space), and only the hop
+/// itself is retracted: the chain above it is the inviter's, shared with
+/// everything else that proves through the inviter. Retracting the hop
+/// that lands on the account is enough, because a proof walk from the
+/// device can no longer reach the revoked hop above it.
+///
+/// A candidate survives when dropping it could cost the member authority
+/// the new chain does not give back:
+///
+/// - it is part of the new chain;
+/// - the space itself issued it (the founder's root grant);
+/// - the chain through it is wider than the new chain, as an admin's `/`
+///   chain is: the chain's effective command is its narrowest, and an
+///   invite's claim hop is itself `/`, so the hop's own command alone
+///   cannot tell an invite from an admin grant;
+/// - nothing above it is retained here, so its reach is unknown.
+///
+/// A still-valid parallel invite chain at the same reach is dropped too.
+/// It cannot be told apart from one revoked without a document, and the
+/// new chain grants the same authority. A new chain that expires
+/// supersedes nothing: it would trade lasting access for bounded access.
+///
+/// Best-effort: a hop that is not retracted is the pre-existing state,
+/// which the proof walk may still resolve past.
+async fn retract_superseded_hops(
+    tonk: &TonkState,
+    prepared: &PreparedJoin,
+) -> Vec<DelegationChain> {
+    if prepared.chain.expiration().is_some() {
+        return Vec::new();
+    }
+    let Some(reach) = effective_command(prepared.chain.proofs().map(|hop| hop.command())) else {
+        return Vec::new();
+    };
+    // Read and retract through the operator's own access branch: the
+    // proof walk caches chains against that handle's head, so a
+    // retraction committed through any other handle leaves the cached
+    // chain through the revoked hop in place for the pull.
+    let branch = tonk.operator.state();
+    if let Err(error) = branch.refresh(&tonk.operator).await {
+        log!("join: earlier invite chains kept, the access branch did not refresh: {error}");
+        return Vec::new();
+    }
+    // The accounts this device acts for: the one the new chain lands on,
+    // and every account that granted this device. An earlier claim may
+    // have landed on another of them (the onboarding account, before the
+    // device was accredited to a passkey root), and the device still
+    // proves through it.
+    let mut accounts = vec![prepared.member.clone()];
+    match branch
+        .delegations()
+        .issued_to(prepared.device_grant.audience().clone())
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(grants) => {
+            for UcanDelegation(grant) in grants {
+                if !accounts.contains(grant.issuer()) {
+                    accounts.push(grant.issuer().clone());
+                }
+            }
+        }
+        Err(error) => {
+            log!("join: only the current account's invite chains considered: {error}");
+        }
+    }
+    let mut held = Vec::new();
+    for account in accounts {
+        match branch
+            .delegations()
+            .issued_to(account)
+            .perform(&tonk.operator)
+            .await
+        {
+            Ok(grants) => held.extend(grants),
+            Err(error) => {
+                log!("join: earlier invite chains kept, an account's grants did not read: {error}");
+                return Vec::new();
+            }
+        }
+    }
+
+    let subject = dialog_ucan_core::subject::Subject::Specific(prepared.subject.clone());
+    let mut superseded = Vec::new();
+    for UcanDelegation(hop) in held {
+        let (Some(cid), Some(certificate)) = (hop.proof_cids().first(), hop.proofs().next()) else {
+            continue;
+        };
+        if prepared.chain.proof_cids().contains(cid)
+            || *certificate.subject() != subject
+            || *certificate.issuer() == prepared.subject
+        {
+            continue;
+        }
+        // The widest grant into the hop's issuer bounds what the hop can
+        // carry; with none retained, its reach is unknown and it stays.
+        let above = branch
+            .delegations()
+            .issued_to(certificate.issuer().clone())
+            .perform(&tonk.operator)
+            .await
+            .unwrap_or_default();
+        let Some(widest) = above
+            .iter()
+            .filter_map(|UcanDelegation(parent)| parent.proofs().next())
+            .filter(|parent| *parent.subject() == subject)
+            .map(|parent| parent.command())
+            .min_by_key(|command| command.segments().len())
+        else {
+            continue;
+        };
+        if effective_command([widest, certificate.command()]) != Some(reach) {
+            continue;
+        }
+        match retract_hop(tonk, &hop).await {
+            Ok(()) => superseded.push(hop),
+            Err(error) => log!("join: an earlier invite hop was not retracted: {error}"),
+        }
+    }
+    if !superseded.is_empty() {
+        log!(
+            "join: renewal of {} retracted {} earlier invite hop(s)",
+            prepared.subject,
+            superseded.len()
+        );
+    }
+    superseded
+}
+
+/// Retract one hop from the operator's access branch, refreshing and
+/// retrying when another writer moved the head first, as the access
+/// branch's own retain does.
+async fn retract_hop(tonk: &TonkState, hop: &DelegationChain) -> Result<(), String> {
+    const RETRY_LIMIT: usize = 3;
+
+    let branch = tonk.operator.state();
+    let mut attempt = 0;
+    loop {
+        branch
+            .refresh(&tonk.operator)
+            .await
+            .map_err(|error| format!("refresh before retract: {error}"))?;
+        match branch
+            .delegations()
+            .retract(UcanDelegation(hop.clone()))
+            .perform(&tonk.operator)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(dialog_repository::CommitError::Publish(
+                dialog_repository::PublishError::VersionMismatch { .. },
+            )) if attempt < RETRY_LIMIT => attempt += 1,
+            Err(error) => return Err(format!("retract: {error}")),
+        }
+    }
+}
+
+/// The narrowest command along a chain: what the chain actually grants,
+/// since each hop can only attenuate the one above it.
+fn effective_command<'a>(
+    commands: impl IntoIterator<Item = &'a dialog_ucan_core::command::Command>,
+) -> Option<&'a dialog_ucan_core::command::Command> {
+    commands
+        .into_iter()
+        .max_by_key(|command| command.segments().len())
+}
+
+/// Retain again the hops a refused renewal retracted. Best-effort, like
+/// the retraction: a hop that is not restored was superseded by a chain
+/// the remote refused, and the next claim of a link retains a fresh one.
+async fn restore_hops(tonk: &TonkState, hops: Vec<DelegationChain>) {
+    for hop in hops {
+        if let Err(error) = tonk
+            .profile
+            .access()
+            .save(UcanDelegation(hop))
+            .perform(&tonk.operator)
+            .await
+        {
+            log!("join: an earlier invite hop was not restored: {error}");
+        }
+    }
+}
+
 /// Retain the claimed chain into the space's content branch, so the hop
 /// that admits this member is provable from the space itself.
 ///
@@ -902,7 +1440,7 @@ pub(super) async fn retain_claim_authority(tonk: &TonkState, key: &str, chain: &
 ///
 async fn save_authority(
     tonk: &TonkState,
-    prepared: &PreparedJoin,
+    subject: &Did,
     chain: DelegationChain,
 ) -> Result<(), JoinFailure> {
     let prefix_bytes = chain.to_bytes().map_err(|error| {
@@ -919,10 +1457,10 @@ async fn save_authority(
             JoinFailure::claim_failed(format!("failed to save the accepted authority: {error}"))
         })?;
     tonk.profile
-        .credential()
-        .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", prepared.subject))
+        .secrets()
+        .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
         .save(prefix_bytes)
-        .perform(&tonk.operator)
+        .perform(&tonk.profile)
         .await
         .map_err(|error| {
             JoinFailure::claim_failed(format!(
@@ -1045,7 +1583,7 @@ async fn first_value<Env: BranchEnv>(
     entity: Entity,
     attribute: &str,
 ) -> Result<Option<Value>, JoinFailure> {
-    let attribute: Attribute = attribute
+    let attribute: Relation = attribute
         .parse()
         .map_err(|error| JoinFailure::claim_failed(format!("bad validation attribute: {error}")))?;
     let claims = branch
@@ -1234,26 +1772,22 @@ pub(crate) async fn mount_replica(
     // identity). An earlier attempt may already have done this.
     let repository = match tonk
         .profile
-        .repository(key.as_str())
+        .space(key.as_str())
         .load()
         .perform(&tonk.operator)
         .await
     {
         Ok(repository) => repository,
         Err(_) => {
-            let verifier: Ed25519Verifier = subject.to_string().parse().map_err(|e| {
-                TonkWorkerError::Router(format!("subject is not a valid Ed25519 did:key: {e:?}"))
+            let space_credential = tonk_account::peer::mount_verifier(
+                tonk.profile.storage(),
+                tonk.registry.space_location(&key),
+                subject,
+            )
+            .await
+            .map_err(|e| {
+                TonkWorkerError::Internal(format!("failed to create local replica '{key}': {e}"))
             })?;
-            let space_capability = Subject::from(tonk.profile.did()).attenuate(Space::new(&key));
-            let space_credential = space_capability
-                .create(Credential::from(verifier))
-                .perform(&tonk.operator)
-                .await
-                .map_err(|e| {
-                    TonkWorkerError::Internal(format!(
-                        "failed to create local replica '{key}': {e}"
-                    ))
-                })?;
             Repository::from(space_credential)
         }
     };
@@ -1314,26 +1848,22 @@ pub(crate) async fn mount_replica_with_configuration(
     }
     let repository = match tonk
         .profile
-        .repository(key.as_str())
+        .space(key.as_str())
         .load()
         .perform(&tonk.operator)
         .await
     {
         Ok(repository) => repository,
         Err(_) => {
-            let verifier: Ed25519Verifier = subject.to_string().parse().map_err(|e| {
-                TonkWorkerError::Router(format!("subject is not a valid Ed25519 did:key: {e:?}"))
+            let space_credential = tonk_account::peer::mount_verifier(
+                tonk.profile.storage(),
+                tonk.registry.space_location(&key),
+                subject,
+            )
+            .await
+            .map_err(|e| {
+                TonkWorkerError::Internal(format!("failed to create local replica '{key}': {e}"))
             })?;
-            let space_capability = Subject::from(tonk.profile.did()).attenuate(Space::new(&key));
-            let space_credential = space_capability
-                .create(Credential::from(verifier))
-                .perform(&tonk.operator)
-                .await
-                .map_err(|e| {
-                    TonkWorkerError::Internal(format!(
-                        "failed to create local replica '{key}': {e}"
-                    ))
-                })?;
             Repository::from(space_credential)
         }
     };
@@ -1369,7 +1899,7 @@ pub(crate) async fn find_replica_for_subject(
     let profile_meta = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|e| {
@@ -1404,7 +1934,7 @@ const JOIN_STATUS_URI: &str = "tonk:join/status";
 
 /// Run the [`Join`] command.
 ///
-/// `<tonk-page onmount=tonk/join>` on the `/join` view fires the command
+/// `<page-mount onmount=tonk/join>` on the `/join` view fires the command
 /// with the full page URL in the event detail. This provider runs the same
 /// join operation the HTTP routes do and drives the overlay-only
 /// `tonk:join/status` (pending → failed, or retract + navigate on
@@ -1422,30 +1952,45 @@ impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::
         // view mounts — but a PASTED short link reaches the worker
         // verbatim, and without resolution it carries no `access=` and
         // would silently read as a bare visit. Mirrors the CLI's claim.
-        let mut command = command;
-        if tonk_invite::shortcut::is_shortcut(&command.url.0) {
-            match resolve_shortcut(&command.url.0).await {
-                Ok(resolved) => command.url.0 = resolved,
+        //
+        // A link from another host arrives carried, as `/join/{link}`
+        // (see `tonk_invite::join_address`): it is the link that joins,
+        // while the page it runs on is still this host's `/join`.
+        let page = command.url.0;
+        let carried = tonk_invite::join_address::carried(&page);
+        let mut link = carried.clone().unwrap_or_else(|| page.clone());
+        if tonk_invite::shortcut::is_shortcut(&link) {
+            match resolve_shortcut(&link).await {
+                Ok(resolved) => link = resolved,
                 Err(error) => log!("join: short link did not resolve: {error}"),
             }
         }
-        // There is no paste-link page: invite links open directly in the
-        // browser. Return bare /join visits home before requesting custody.
-        if !carries_invite(&command.url.0) {
-            crate::router::navigate::notify_navigate(self.client(), "/");
+        // The page decides where a join lands; without a carried link it is
+        // the link itself, resolved.
+        let page = if carried.is_some() {
+            page
+        } else {
+            link.clone()
+        };
+        // A bare /join is the page a link is pasted into, and a space's own
+        // page says the space is private: both stay where they are, without
+        // requesting custody. A space's page mounts the join where this
+        // device holds no replica of it: a ticket link opens where it
+        // points, and the bare address opens the space for whoever can read
+        // it. Anything under `/join/` is an attempt whatever it holds, so
+        // one that is no link fails with its reason rather than passing for
+        // an empty visit.
+        let attempt = carried.is_some()
+            || carries_link_path(&page)
+            || carries_invite(&link)
+            || is_bare_space_address(&link);
+        if !attempt {
+            if !is_space_address(&link) && !is_paste_page(&link) {
+                crate::router::navigate::notify_navigate(self.client(), "/");
+            }
             return;
         }
-        // The invite principal's seed is custodied under the account
-        // as part of the join. A linked device whose root record
-        // predates the encryption key asks the originating page for a
-        // passkey assertion here, before the state lock is taken.
-        if let Err(error) =
-            crate::router::custody::ensure_recipient(self.state(), self.client()).await
-        {
-            log!("join refused: {error}");
-            return;
-        }
-        run_join(self, command).await;
+        run_join(self, &page, link).await;
     }
 }
 
@@ -1457,7 +2002,7 @@ impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::
 /// landed; `redirected` distinguishes a real shortcut from a host that
 /// answered the probe with content.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
+pub(crate) async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
     use web_sys::Response;
@@ -1489,7 +2034,7 @@ async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
 /// Native resolution: fetch without following, read `Location`, resolve
 /// against the short link. Mirrors the CLI's `resolve_shortcut`.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
+pub(crate) async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -1513,19 +2058,92 @@ async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
     tonk_invite::shortcut::resolve_location(short_url, location).map_err(|error| error.to_string())
 }
 
-/// Whether a `/join` URL carries an invite at all.
+/// Whether a URL carries an invite at all.
 ///
-/// The delegation chain rides in `access`, so its presence is what
-/// separates "redeem this" from a bare /join visit that returns home.
-/// Deliberately a query test and not a parse: a malformed or truncated
-/// invite IS an attempt and must still fail loudly with its reason,
-/// rather than being silently treated as an empty visit.
+/// On `/join` the delegation chain rides in `access`, so its presence is
+/// what separates "redeem this" from a bare /join visit that returns
+/// home. Deliberately a query test and not a parse: a malformed or
+/// truncated invite IS an attempt and must still fail loudly with its
+/// reason, rather than being silently treated as an empty visit.
+///
+/// A ticket link is a space's address with a seed for a fragment (see
+/// [`Ticket`]); the same address without one is just the space.
 fn carries_invite(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|parsed| {
         parsed
             .query_pairs()
             .any(|(key, value)| key == "access" && !value.is_empty())
+    }) || matches!(Ticket::parse_url(url), Ok(Some(_)))
+}
+
+/// Whether a URL is the bare `/join` page, where a link is pasted.
+fn is_paste_page(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|parsed| matches!(parsed.path(), "/join" | "/join/"))
+}
+
+/// Whether a URL has anything after `/join/`: an attempt to carry a link,
+/// even one that does not read as a link (see `tonk_invite::join_address`).
+fn carries_link_path(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|parsed| {
+        parsed
+            .path()
+            .strip_prefix("/join/")
+            .is_some_and(|rest| !rest.is_empty())
     })
+}
+
+/// Whether a URL is a space's own page, `/space/...`: where a join is
+/// mounted to pick up a ticket link, and where finding none is no
+/// reason to leave.
+fn is_space_address(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|parsed| parsed.path().starts_with("/space/"))
+}
+
+/// Whether a URL is a space's address (its root or any route of it) with
+/// no ticket beside it: a visit,
+/// which opens the space if it is readable and otherwise leaves the page
+/// to say it is private.
+fn is_bare_space_address(url: &str) -> bool {
+    matches!(Ticket::public_for_url(url), Ok(Some(_)))
+}
+
+/// Whether `url` is a space's own address, bare or as a ticket link: the
+/// page a join from it runs on is already that space's page.
+fn opens_in_place(url: &str) -> bool {
+    matches!(Ticket::parse_url(url), Ok(Some(_))) || is_bare_space_address(url)
+}
+
+/// Where the page goes once a join from `page` succeeds into the space
+/// whose root is `space`.
+#[derive(Debug, PartialEq, Eq)]
+enum AfterJoin {
+    /// The page is already the space's: it stays on the route it shows.
+    Stay,
+    /// The page is the space's, but its address carries a ticket's seed:
+    /// the same route without it takes its place in the history.
+    ReplaceRoute(String),
+    /// The join ran elsewhere (`/join`, another host's link): go to the
+    /// space.
+    Navigate(String),
+}
+
+/// A space's own address (bare, a ticket link, or any route under
+/// either) is already the page the join ran on, whether the join
+/// installed the space (its views, mounted while it was absent, were
+/// handed it by `adopt_waiting_views`) or found it here. Either way the
+/// page keeps the route it was opened at: sending it to the space's root
+/// would drop a page someone linked to, such as `/space/{did}/notebook/…`.
+fn after_join(page: &str, space: &str) -> AfterJoin {
+    if !opens_in_place(page) {
+        return AfterJoin::Navigate(space.to_owned());
+    }
+    if !matches!(Ticket::parse_url(page), Ok(Some(_))) {
+        return AfterJoin::Stay;
+    }
+    match url::Url::parse(page) {
+        Ok(parsed) => AfterJoin::ReplaceRoute(parsed.path().to_owned()),
+        Err(_) => AfterJoin::ReplaceRoute(space.to_owned()),
+    }
 }
 
 /// Drop this join's own overlay facts, and only those (scoped clear).
@@ -1557,22 +2175,26 @@ fn retains_overlay_entity(
     overlaid != status
 }
 
-/// Run the join operation from the command's full URL and drive the
-/// overlay-only join status. Always leaves the overlay in a terminal state
-/// (status retracted on success, `failed` on error).
-async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command::Join) {
+/// Run the join operation for `link` from the page at `page`, and drive
+/// the overlay-only join status. Always leaves the overlay in a terminal
+/// state (status retracted on success, `failed` on error).
+///
+/// The two differ only when the page carries another host's link
+/// (`/join/{link}`): the link is what joins, and the page is where the
+/// recipient is, which decides whether success navigates.
+async fn run_join(env: &crate::router::CommandEnv, page: &str, link: String) {
     use std::sync::Arc;
     use tonk_schema::command::{JoinFailure as JoinFailureFact, JoinStatus};
     use tonk_schema::domain::join::{Kind, Reason, Status};
 
-    let tonk = env.state().read().await;
+    let tonk = env.state().read().await.clone();
 
     // Acquire the profile meta branch — the `/join` view reads
     // `tonk:join/status` from here; overlay writes + their poll target it.
     let session = match tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -1605,14 +2227,13 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
     tonk.reactor.schedule_poll(Arc::clone(&session.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
-    // Use the exact page URL carried by `<tonk-page>`. In particular, do not
+    // Use the exact link carried by `<page-mount>`. In particular, do not
     // round-trip the query through `URLSearchParams`: targeted invites may
     // contain empty or repeated fields whose byte-for-byte form matters.
-    let url = command.url.0;
-
+    //
     // The same operation the HTTP join runs, so the content behind the
     // redirect is proven before the redirect fires.
-    match join_invite(&tonk, &url).await {
+    match join_invite(&tonk, &link).await {
         Ok(outcome) => {
             // Success means the replica is installed, verified, and
             // indexed — its `tonk/space` model is already present, so the
@@ -1639,12 +2260,29 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
                     },
                 );
             }
-            crate::router::navigate::notify_navigate(env.client(), &href);
+            match after_join(page, &href) {
+                AfterJoin::Stay => {}
+                AfterJoin::ReplaceRoute(route) => {
+                    crate::router::navigate::notify_replace_route(env.client(), &route);
+                }
+                AfterJoin::Navigate(href) => {
+                    crate::router::navigate::notify_navigate(env.client(), &href);
+                }
+            }
             log!(
                 "join: succeeded (subject {}, key {})",
                 outcome.subject,
                 outcome.key
             );
+        }
+        // A visit to a space's address carried no link that could have
+        // expired, so it shows no failure: the page it is on already
+        // says the space is private and how to get in.
+        Err(failure) if is_bare_space_address(page) => {
+            clear_join_overlay(&session, &status_entity);
+            tonk.reactor.schedule_poll(Arc::clone(&session.state));
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            log!("join: the space did not open ({})", failure.kind().as_str());
         }
         Err(failure) => {
             // Failure: mark failed + record the fixed copy and its kind,
@@ -1763,6 +2401,126 @@ mod invite_presence_tests {
         ));
         assert!(!carries_invite("not a url"));
     }
+
+    /// A bare `/join` is the paste page, which stays put; anything under
+    /// `/join/` is an attempt to carry a link, even one that is no link.
+    #[test]
+    fn it_separates_the_paste_page_from_a_carried_link() {
+        use super::{carries_link_path, is_paste_page};
+
+        assert!(is_paste_page("https://tonk.space/join"));
+        assert!(is_paste_page("https://tonk.space/join/"));
+        assert!(is_paste_page("https://tonk.space/join#not-a-link"));
+        assert!(!is_paste_page("https://tonk.space/join/x"));
+        assert!(!is_paste_page("https://tonk.space/"));
+
+        assert!(carries_link_path(
+            "https://tonk.space/join/https://tonk.network/space/did:key:z6Mk#seed"
+        ));
+        assert!(carries_link_path("https://tonk.space/join/not-a-link"));
+        assert!(!carries_link_path("https://tonk.space/join/"));
+        assert!(!carries_link_path(
+            "https://tonk.space/join?access=abc#seed"
+        ));
+    }
+
+    /// A ticket link is the space's address with a key seed for its
+    /// fragment; the same address without one is the space, which a
+    /// visitor stays on rather than being sent home.
+    #[test]
+    fn it_reads_a_ticket_link_as_an_invite_and_the_bare_space_as_a_visit() {
+        use super::{is_bare_space_address, is_space_address};
+        let space = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let seed = bs58::encode([6u8; 32]).into_string();
+
+        assert!(carries_invite(&format!(
+            "https://tonk.space/space/{space}#{seed}"
+        )));
+        assert!(!carries_invite(&format!(
+            "https://tonk.space/space/{space}"
+        )));
+        assert!(is_space_address(&format!(
+            "https://tonk.space/space/{space}"
+        )));
+        assert!(!is_space_address("https://tonk.space/join"));
+
+        assert!(is_bare_space_address(&format!(
+            "https://tonk.space/space/{space}"
+        )));
+        assert!(!is_bare_space_address(&format!(
+            "https://tonk.space/space/{space}#{seed}"
+        )));
+        // A link into one of the space's pages is a visit to the space
+        // too: the page an absent space renders mounts the join on every
+        // route of it, and one that is not opened stays on its wall.
+        assert!(is_bare_space_address(&format!(
+            "https://tonk.space/space/{space}/inspector"
+        )));
+        assert!(is_bare_space_address(&format!(
+            "https://tonk.space/space/{}/notebook/notebook%3A5d314db6-4bea-4c04-bd8a-0ef2be8a0b5d",
+            space.replace(':', "%3A")
+        )));
+    }
+
+    /// A join from a space's own address, bare or as a ticket link, raw or
+    /// percent-encoded, runs on that space's page, so its success leaves
+    /// the page where it is; a join from anywhere else navigates to the
+    /// space.
+    #[test]
+    fn it_stays_in_place_after_a_join_from_the_spaces_own_address() {
+        use super::opens_in_place;
+        let space = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let encoded = space.replace(':', "%3A");
+        let seed = bs58::encode([6u8; 32]).into_string();
+
+        for address in [
+            format!("https://tonk.space/space/{space}"),
+            format!("https://tonk.space/space/{encoded}"),
+            format!("https://tonk.space/space/{space}#{seed}"),
+            format!("https://tonk.space/space/{encoded}#{seed}"),
+            format!("https://tonk.space/space/{space}/inspector"),
+            format!("https://tonk.space/space/{encoded}/notebook/notebook%3Ax"),
+        ] {
+            assert!(opens_in_place(&address), "{address}");
+        }
+        assert!(!opens_in_place("https://tonk.space/join?access=abc"));
+    }
+
+    /// A join that succeeds on a page of the space keeps that page,
+    /// whether it installed the space or found it already here: opening
+    /// `/space/{did}/seeded` on the device that created the space must
+    /// not land on the space's root. A ticket link only drops its seed.
+    #[test]
+    fn it_keeps_the_route_a_join_ran_on() {
+        use super::{AfterJoin, after_join};
+        let space = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let encoded = space.replace(':', "%3A");
+        let seed = bs58::encode([6u8; 32]).into_string();
+        let root = format!("/space/{space}");
+
+        for page in [
+            format!("https://tonk.space/space/{space}"),
+            format!("https://tonk.space/space/{space}/seeded"),
+            format!("https://tonk.space/space/{encoded}/notebook/notebook%3Ax"),
+        ] {
+            assert_eq!(after_join(&page, &root), AfterJoin::Stay, "{page}");
+        }
+        assert_eq!(
+            after_join(&format!("https://tonk.space/space/{space}#{seed}"), &root),
+            AfterJoin::ReplaceRoute(format!("/space/{space}"))
+        );
+        assert_eq!(
+            after_join(
+                &format!("https://tonk.space/space/{encoded}/notebook/notebook%3Ax#{seed}"),
+                &root
+            ),
+            AfterJoin::ReplaceRoute(format!("/space/{encoded}/notebook/notebook%3Ax"))
+        );
+        assert_eq!(
+            after_join("https://tonk.space/join?access=abc", &root),
+            AfterJoin::Navigate(root.clone())
+        );
+    }
 }
 
 /// The join's overlay clear must be SCOPED. The branch overlay is
@@ -1847,7 +2605,7 @@ mod invite_name_tests {
         let profile = tonk
             .reactor
             .profile_repository()
-            .branch("main")
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
@@ -1863,6 +2621,36 @@ mod invite_name_tests {
             .await
             .expect("space-name query");
         rows.into_iter().map(|row| row.name.0).collect()
+    }
+
+    #[dialog_common::test]
+    async fn local_space_link_rejects_another_subject_before_joining() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let (invite, key) = named_invite_url(60, 61, "Unapproved space").await;
+        let subject: Did = key.parse().unwrap();
+        let approved = Ed25519Signer::generate().await.unwrap().did();
+        let tonk = state.read().await;
+        let result = join_for_local_space_link(&tonk, &invite, &approved).await;
+        assert!(matches!(result, Err(TonkWorkerError::Forbidden(_))));
+        assert!(!find_replica_for_subject(&tonk, &subject).await.unwrap());
+        assert!(
+            tonk.profile
+                .access()
+                .prove(
+                    dialog_capability::Subject::from(subject.clone())
+                        .attenuate(dialog_effects::Use)
+                )
+                .audience(&tonk.operator)
+                .perform(&tonk.operator)
+                .await
+                .is_err()
+        );
+        join_for_local_space_link(&tonk, &invite, &subject)
+            .await
+            .expect("the approved invitation still joins normally");
+        assert!(find_replica_for_subject(&tonk, &subject).await.unwrap());
+        drop(tonk);
+        assert_eq!(directory_name(&state, &key).await, vec!["Unapproved space"]);
     }
 
     #[dialog_common::test]
@@ -1987,6 +2775,135 @@ mod invite_name_tests {
             vec!["Shortcut Space".to_string()],
             "a pasted short link resolves to the long form and joins, \
              seeding the invite's signed name"
+        );
+    }
+
+    /// An invite carried to this host's `/join` (`/join/{link}`) is
+    /// joined through the page's own command, not sent home as a bare
+    /// `/join` visit.
+    #[dialog_common::test]
+    async fn it_joins_a_link_carried_to_join() {
+        use dialog_artifacts::Statement as _;
+        use dialog_query::the;
+
+        let state = crate::router::command::tests::native::test_state().await;
+        let (link, key) = named_invite_url(0xD1, 0xD2, "Carried Space").await;
+        let page = tonk_invite::join_address::carrying(
+            &url::Url::parse("https://tonk.foundation/").unwrap(),
+            &link,
+        )
+        .unwrap();
+
+        let mut changes = dialog_artifacts::Changes::new();
+        the!("xyz.tonk.command.join/url")
+            .of("cmd:join".parse::<dialog_artifacts::Entity>().unwrap())
+            .is(page)
+            .assert(&mut changes);
+        crate::router::command::dispatch(
+            &state,
+            crate::router::command::CommandOrigin::default(),
+            changes,
+        )
+        .await;
+
+        assert_eq!(
+            directory_name(&state, &key).await,
+            vec!["Carried Space".to_string()],
+            "the carried invite joins as the invite it is"
+        );
+    }
+
+    /// A ticket link minted on the host serving a space, carried to
+    /// another host's `/join`, is claimed from the host that minted it,
+    /// and the space lands in the recipient's profile with that host as
+    /// its remote. The recipient holds no account at the serving host.
+    #[dialog_common::test]
+    async fn it_joins_another_hosts_ticket_link_carried_to_join() {
+        use axum::extract::{Extension, Path, State};
+
+        let (owner, _service, _root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        let owner: crate::router::AppState = std::sync::Arc::new(crate::StateLock::new(owner));
+        let key = super::super::repository::create_space_inner(&owner, "Elsewhere", None)
+            .await
+            .expect("the space creates");
+        super::super::repository::enable_sync_inner(&owner, &key, &remote)
+            .await
+            .expect("the remote attaches");
+        let subject: Did = key.parse().expect("the key is the space's DID");
+
+        let serving = url::Url::parse(&remote).expect("the fixture remote is a URL");
+        let Json(minted) = super::super::create_invite::create_invite(
+            State(owner.clone()),
+            Path(key.clone()),
+            Extension(crate::axum::RequestOrigin::parse(serving.as_str()).unwrap()),
+            axum::body::Bytes::new(),
+        )
+        .await
+        .expect("the owner mints an open invite");
+        let tonk_worker_api::CreateInviteResponse::Open { url: link } = minted else {
+            panic!("an invite with no recipient is open");
+        };
+        assert!(
+            matches!(Ticket::parse_url(link.as_str()), Ok(Some(_))),
+            "the serving host keeps the grant as a ticket"
+        );
+
+        // The recipient pulls what the owner pushed, as the host's sync
+        // loop would have published it.
+        {
+            let tonk = owner.read().await;
+            tonk.reactor
+                .repository(&key)
+                .branch(DEFAULT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .expect("content branch opens")
+                .handle()
+                .push()
+                .perform(&tonk.operator)
+                .await
+                .expect("content reaches the service");
+        }
+
+        let elsewhere = url::Url::parse("https://tonk.foundation/").unwrap();
+        let address = tonk_invite::join_address::carrying(&elsewhere, link.as_str())
+            .expect("the link is carried");
+        let recipient = crate::router::command::tests::native::test_state().await;
+        let recipient = recipient.read().await;
+        let joined = join_invite(&recipient, &address)
+            .await
+            .expect("the carried ticket link joins");
+        assert_eq!(joined.subject, subject);
+        assert!(!joined.renewed, "the first join installs a replica");
+        assert!(
+            find_replica_for_subject(&recipient, &subject)
+                .await
+                .expect("replica lookup"),
+            "the space is in the recipient's profile"
+        );
+
+        let repository = recipient
+            .profile
+            .space(key.as_str())
+            .load()
+            .perform(&recipient.operator)
+            .await
+            .expect("the joined replica loads");
+        let info = build_repository_info(&recipient, &key, &repository).await;
+        let address = info
+            .remote
+            .get(DEFAULT_REMOTE)
+            .map(|configured| serde_json::to_string(&configured.address).unwrap())
+            .expect("the joined space has a remote");
+        let host = serving.host_str().unwrap();
+        assert!(
+            address.contains(&format!("{host}:{}", serving.port().unwrap())),
+            "the remote is the host that minted the link: {address}"
+        );
+        assert!(
+            !address.contains("tonk.foundation"),
+            "not the host it was carried to: {address}"
         );
     }
 
@@ -2134,7 +3051,7 @@ pub(crate) mod tests {
             let profile = tonk
                 .reactor
                 .profile_repository()
-                .branch("main")
+                .branch(&tonk.active_branch)
                 .acquire(&tonk.operator)
                 .await
                 .expect("profile meta opens");
@@ -2313,10 +3230,10 @@ pub(crate) mod tests {
             let root = crate::router::identity::root_did(&tonk).await.unwrap();
             let bytes = tonk
                 .profile
-                .credential()
+                .secrets()
                 .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
                 .load::<Vec<u8>>()
-                .perform(&tonk.operator)
+                .perform(&tonk.profile)
                 .await
                 .unwrap();
             (root, bytes)
@@ -2415,7 +3332,7 @@ pub(crate) mod tests {
             use dialog_repository::RepositoryExt as _;
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -2649,7 +3566,7 @@ pub(crate) mod tests {
             use dialog_repository::RepositoryExt as _;
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -2666,6 +3583,24 @@ pub(crate) mod tests {
             root_did.to_string(),
             "self row resolves against the account root, not the device did",
         );
+    }
+
+    #[dialog_common::test]
+    async fn local_space_link_rejects_another_subject_before_joining() {
+        let (_, state, _lsp) = api_router_with_state(test_state().await);
+        let (invite, key) = handcrafted_invite_url(60, 61).await;
+        let approved = Ed25519Signer::generate().await.unwrap().did();
+        let before = snapshot(&state, &key).await;
+        let result =
+            super::join_for_local_space_link(&*state.read().await, &invite, &approved).await;
+        assert!(matches!(result, Err(crate::TonkWorkerError::Forbidden(_))));
+        assert_eq!(snapshot(&state, &key).await, before);
+
+        let subject = key.parse().unwrap();
+        super::join_for_local_space_link(&*state.read().await, &invite, &subject)
+            .await
+            .expect("the approved invitation still joins normally");
+        assert_ne!(snapshot(&state, &key).await, before);
     }
 
     // ----- a failed join leaves nothing behind -----
@@ -2790,6 +3725,8 @@ pub(crate) mod tests {
         let refusal = PullError::FetchRemoteBranch(FetchRemoteBranchError::Resolve(
             ResolveError::from(MemoryError::Authorization(AuthorizeError::Revoked {
                 subject: dialog_capability::did!("key:zSubject"),
+                certificate: None,
+                revocation: None,
             })),
         ));
 
@@ -2827,9 +3764,7 @@ pub(crate) mod tests {
         use dialog_repository::{FetchRemoteBranchError, PullError, ResolveError};
 
         let outage = PullError::FetchRemoteBranch(FetchRemoteBranchError::Resolve(
-            ResolveError::from(MemoryError::Rejected(Rejection::Unavailable {
-                reason: "unavailable".to_string(),
-            })),
+            ResolveError::from(MemoryError::Rejected(Rejection::unavailable("unavailable"))),
         ));
 
         assert_eq!(
@@ -2997,71 +3932,34 @@ pub(crate) mod tests {
             "the membership is keyed on the onboarding account",
         );
 
-        // The invite principal's seed is custodied on profile main, sealed
-        // to the onboarding account, which is what accreditation opens to
-        // re-root the membership.
-        use dialog_query::{Output as _, Query, Term};
+        // The invite principal's key is held for the account the peer acts
+        // for, which the sign-in handover re-issues to the passkey root
+        // from, and the device keeps a copy of its own.
         let tonk = state.read().await;
-        let branch = tonk
-            .reactor
-            .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
-            .acquire(&tonk.operator)
-            .await
-            .unwrap();
-        // The principal's entity IS the subject, so the invite principal
-        // is read from `this` rather than from a repeated field.
-        let principals: Vec<tonk_schema::SecretPrincipal> = branch
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::SecretPrincipal> {
-                this: Term::var("this"),
-                kind: Term::from(tonk_schema::SeedKind::Invite.kind()),
-                seed: Term::var("seed"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .unwrap();
-        assert_eq!(principals.len(), 1, "one sealed invite principal");
-        let principal: dialog_varsig::Did = principals[0].this.to_string().parse().unwrap();
-
-        let rows: Vec<tonk_schema::SecretMessage> = branch
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::SecretMessage> {
-                this: Term::from(principals[0].seed.0.clone()),
-                to: Term::var("to"),
-                message: Term::var("message"),
-                from: Term::var("from"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .unwrap();
-        assert_eq!(rows.len(), 1, "the principal names a real message");
-        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].message.0).unwrap();
-        let opened = crate::onboarding::account(&tonk)
-            .await
-            .unwrap()
-            .secret()
-            .reveal(&sealed, &principal)
-            .expect("the onboarding account opens its custodied seed");
-        let reissued = dialog_credentials::Ed25519Signer::import(&*opened)
-            .await
-            .unwrap();
-        assert_eq!(
-            reissued.did(),
-            principal,
-            "the seed derives the invite principal the membership hangs off",
+        let invites: Vec<_> = dialog_repository::secrets::held_by(
+            tonk.profile.state(),
+            &tonk.profile.authority().await.unwrap(),
+            &tonk.profile,
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|(_, held)| held.kind == tonk_schema::SeedKind::Invite.held())
+        .collect();
+        assert_eq!(invites.len(), 1, "one held invite principal");
+        assert!(
+            tonk.profile.holds_key(&invites[0].0).await.unwrap(),
+            "the device keeps its copy"
         );
     }
 
     /// Rebuild all worker state from durable storage after an onboarding
-    /// join. This fixture has no remote: it verifies local content and the
-    /// real storage proof, while network replication needs a served fixture.
+    /// join, as a reboot does: the membership reopens from what the profile
+    /// kept, proven under the newly issued in-memory session grant. This
+    /// fixture has no remote: it verifies local content and the real
+    /// storage proof, while network replication needs a served fixture.
     #[dialog_common::test]
-    async fn it_reopens_an_onboarding_membership_with_a_disposable_session() {
+    async fn it_reopens_an_onboarding_membership_after_a_reboot() {
         let (name, registry, profile_did, operator_did, account, key, before, revision) = {
             let fixture = test_state_without_root().await;
             let initial = crate::worker::boot_state(
@@ -3084,7 +3982,7 @@ pub(crate) mod tests {
             );
             let tonk = state.read().await;
             let account = crate::onboarding::did(&tonk).await.unwrap().unwrap();
-            let branch = dialog_repository::Repository::from(tonk.profile.signer().clone())
+            let branch = dialog_repository::Repository::from(tonk.profile.credential().clone())
                 .branch(dialog_repository::ACCESS_BRANCH)
                 .open()
                 .perform(&tonk.operator)
@@ -3101,16 +3999,14 @@ pub(crate) mod tests {
                 branch.revision(),
             )
         };
-        let storage =
-            dialog_storage::provider::storage::Storage::<crate::worker::DefaultSpace>::default();
-        let profile = dialog_operator::Profile::open(&name)
-            .perform(&storage)
-            .await
-            .unwrap();
+        let (_, profile) =
+            crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
+                .await
+                .unwrap();
         assert_eq!(profile.did(), profile_did);
         // Isolate session construction from boot's legitimate meta work.
-        let session = crate::session::open(&profile, &storage).await.unwrap();
-        let branch = dialog_repository::Repository::from(profile.signer().clone())
+        let session = crate::session::open(&profile).await.unwrap();
+        let branch = dialog_repository::Repository::from(profile.credential().clone())
             .branch(dialog_repository::ACCESS_BRANCH)
             .open()
             .perform(&session.operator)
@@ -3119,10 +4015,13 @@ pub(crate) mod tests {
         assert_eq!(branch.revision(), revision);
         drop(branch);
         drop(session);
-        let rebuilt = crate::worker::boot_state(storage, name, profile, registry)
+        let rebuilt = crate::worker::boot_state(profile.storage().clone(), name, profile, registry)
             .await
             .unwrap();
-        assert_ne!(rebuilt.operator.did(), operator_did);
+        // The operator key is derived from the profile and its access
+        // branch, so a reboot signs as the same operator; only the grant
+        // authorizing it is new, which the proof windows below check.
+        assert_eq!(rebuilt.operator.did(), operator_did);
         assert_eq!(
             crate::onboarding::did(&rebuilt).await.unwrap(),
             Some(account)
@@ -3235,7 +4134,7 @@ pub(crate) mod tests {
             let tonk = state.read().await;
             let repository: Repository = tonk
                 .profile
-                .repository(&repo)
+                .space(&repo)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -3269,7 +4168,7 @@ pub(crate) mod tests {
     subject:
       the: xyz.tonk.replica/subject
       as: entity
-      cardinality: one
+      cardinality: :one
       description: The space this canvas belongs to
 
 name!:
@@ -3292,7 +4191,7 @@ name!:
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(&repo)
+            .space(&repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -3307,5 +4206,239 @@ name!:
         super::validate_content(&content, &tonk.operator, &repository.did())
             .await
             .expect("content carrying a declared space model is joinable");
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod renewal_tests {
+    use axum::extract::{Path, State};
+    use axum::{Extension, Json};
+    use dialog_repository::RepositoryExt as _;
+    use dialog_ucan::UcanCertificate;
+    use dialog_ucan_core::DelegationChain;
+    use dialog_varsig::Did;
+    use ipld_core::cid::Cid;
+
+    use crate::router::AppState;
+
+    /// Pull the member's replica of `key` from the service, the way a sync
+    /// tick does.
+    async fn pull(member: &AppState, key: &str) -> Result<(), String> {
+        let member = member.read().await;
+        let branch = member
+            .profile
+            .space(key)
+            .load()
+            .perform(&member.operator)
+            .await
+            .expect("the member's replica loads")
+            .branch("main")
+            .open()
+            .perform(&member.operator)
+            .await
+            .expect("the member's branch opens");
+        branch
+            .pull()
+            .perform(&member.operator)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    /// The certificates the member's device proves `key` with now.
+    async fn proof(member: &AppState, key: &str) -> Vec<UcanCertificate> {
+        let member = member.read().await;
+        let subject: Did = key.parse().expect("the key is the subject");
+        member
+            .profile
+            .access()
+            .prove(dialog_capability::Subject::from(subject).attenuate(dialog_effects::Use))
+            .audience(&member.operator)
+            .perform(&member.operator)
+            .await
+            .expect("the member proves the space")
+            .proofs
+    }
+
+    fn cid(certificate: &UcanCertificate) -> Cid {
+        DelegationChain::new(certificate.0.clone()).proof_cids()[0]
+    }
+
+    /// Whether the member's device still retains the certificate `target`.
+    async fn retains(member: &AppState, target: Cid) -> bool {
+        let member = member.read().await;
+        member
+            .operator
+            .state()
+            .delegations()
+            .retained(target)
+            .perform(&member.operator)
+            .await
+            .expect("the retained certificates read")
+            .is_some()
+    }
+
+    /// A member whose link was revoked before the access service kept the
+    /// signed revocation is let back in by a fresh link, reliably. Such a
+    /// refusal carries no document, so nothing drops the revoked chain on
+    /// refusal; the renewal itself has to, or the member's device keeps
+    /// it beside the new chain and every proof that happens to try it
+    /// first is refused.
+    #[dialog_common::test]
+    async fn it_drops_a_chain_revoked_without_a_document_when_the_member_claims_a_new_link() {
+        // A service that records revocations bare, as every one did
+        // before it kept the signed document.
+        let (tonk, service, root, remote) =
+            crate::router::account_state::tests::ready_account_state_with(
+                None,
+                tonk_access_service::helpers::AccessServiceSettings {
+                    drop_revocation_documents: true,
+                    ..Default::default()
+                },
+            )
+            .await;
+        let grant =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &tonk.profile.did())
+                .await
+                .expect("the device grant mints");
+        crate::router::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "renewal-test".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().expect("the grant serializes")),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await
+        .expect("the root persists");
+        let state: AppState = std::sync::Arc::new(crate::StateLock::new(tonk));
+        let key = super::super::repository::create_space_inner(&state, "Renewed", None)
+            .await
+            .expect("the space creates");
+        super::super::repository::enable_sync_inner(&state, &key, &remote)
+            .await
+            .expect("the remote attaches");
+        {
+            let tonk = state.read().await;
+            tonk.reactor
+                .repository(&key)
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .expect("content branch opens")
+                .handle()
+                .push()
+                .perform(&tonk.operator)
+                .await
+                .expect("the content reaches the service");
+        }
+
+        let origin = crate::axum::RequestOrigin::parse("https://local.example/")
+            .unwrap_or_else(|_| panic!("the origin parses"));
+        let mint = || async {
+            let Json(response) = super::super::create_invite::create_invite(
+                State(state.clone()),
+                Path(key.clone()),
+                Extension(origin.clone()),
+                axum::body::Bytes::new(),
+            )
+            .await
+            .expect("the founder mints an invite");
+            response.url().to_string()
+        };
+
+        let member = crate::router::command::tests::native::test_state().await;
+        let first = mint().await;
+        {
+            let member = member.read().await;
+            let joined = super::join_invite(&member, &first)
+                .await
+                .expect("the member joins");
+            assert!(!joined.renewed, "the first join installs a replica");
+        }
+        pull(&member, &key)
+            .await
+            .expect("a member reads the space it joined");
+        let Json(rows) = super::super::revoke_invite::list(State(state.clone()), Path(key.clone()))
+            .await
+            .expect("the invitations list");
+        assert_eq!(rows.len(), 1, "one invitation is live: {rows:?}");
+        let target: Cid = rows[0].target_cid.parse().expect("the target is a CID");
+        // The member proves through the invite hop the founder will revoke,
+        // and the hop its claim added below it, from the invite's
+        // principal to the member's account.
+        let held = proof(&member, &key).await;
+        let invite = held
+            .iter()
+            .find(|certificate| cid(certificate) == target)
+            .expect("the member proves through the invite hop it claimed");
+        let claim = cid(held
+            .iter()
+            .find(|certificate| certificate.0.issuer() == invite.0.audience())
+            .expect("the member's claim hop sits below the invite hop"));
+        // This access service records a revocation without its signed
+        // document, as every one did before it kept them: the refusal
+        // names the hop but cannot prove it was revoked.
+        let Json(receipt) = super::super::revoke_invite::revoke(
+            State(state.clone()),
+            Path((key.clone(), target.to_string())),
+        )
+        .await
+        .expect("the founder revokes the link");
+        assert!(
+            receipt.recorded,
+            "the access service records the revocation"
+        );
+        assert!(
+            pull(&member, &key).await.is_err(),
+            "revoking the link cuts off the member who joined through it"
+        );
+        assert!(
+            retains(&member, claim).await,
+            "a refusal without the revocation document drops nothing"
+        );
+
+        let second = mint().await;
+        {
+            let member = member.read().await;
+            let rejoined = super::join_invite(&member, &second)
+                .await
+                .expect("the member claims the new link");
+            assert!(rejoined.renewed, "the replica is still here");
+        }
+        // Which retained chain a proof tries first is not fixed, so
+        // reading again alone could pass by luck. What makes it reliable
+        // is that the hop admitting the member through the revoked link is
+        // gone, so no proof can reach the revoked hop above it.
+        assert!(
+            !retains(&member, claim).await,
+            "the renewal retracts the hop the revoked link admitted the member through"
+        );
+        assert!(
+            !proof(&member, &key)
+                .await
+                .iter()
+                .map(cid)
+                .any(|hop| hop == target),
+            "the member no longer proves through the revoked hop"
+        );
+        pull(&member, &key)
+            .await
+            .expect("a member let back in reads the space again");
+
+        let account_key = {
+            let tonk = state.read().await;
+            crate::router::account_state::require_ready_account_state(&tonk)
+                .await
+                .expect("the linked account is ready")
+                .key
+                .clone()
+        };
+        let tonk = std::sync::Arc::try_unwrap(state)
+            .unwrap_or_else(|_| panic!("the state has no other holders"))
+            .into_inner();
+        crate::router::account_state::tests::discard(tonk, &account_key);
+        drop(service);
     }
 }

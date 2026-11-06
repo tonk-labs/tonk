@@ -38,6 +38,37 @@ pub fn show_template<'a>(conclusion: &'a Conclusion, facet: &str) -> Option<&'a 
     }
 }
 
+/// Read one embeddable style out of a folded view conclusion.
+///
+/// The same shape [`show_template`] reads, one dictionary over: a
+/// `style` field folded to `{name: content}`. `None` when the view
+/// declares no style by that name — the caller embeds nothing rather
+/// than embedding something wrong.
+pub fn style_content<'a>(conclusion: &'a Conclusion, name: &str) -> Option<&'a str> {
+    match conclusion.fields.get("style")? {
+        Ipld::Map(entries) => match entries.get(name)? {
+            Ipld::String(content) => Some(content),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Read one embeddable font out of a folded view conclusion.
+///
+/// Bytes rather than text: a font is written `!!binary` and stays
+/// bytes all the way to the `FontFace` that registers it, so nothing
+/// on the path has to know the transfer encoding.
+pub fn font_content<'a>(conclusion: &'a Conclusion, name: &str) -> Option<&'a [u8]> {
+    match conclusion.fields.get("font")? {
+        Ipld::Map(entries) => match entries.get(name)? {
+            Ipld::Bytes(content) => Some(content),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Group a flat conclusion frame by `this` and fold each group,
 /// yielding **one conclusion per distinct subject** with its
 /// cardinality-many fields collapsed to `Ipld::List`. Groups appear in
@@ -143,6 +174,56 @@ mod tests {
     /// a one-element frame.
     fn fold_one(rows: Vec<Conclusion>) -> Option<Conclusion> {
         select_rows(rows).into_iter().next()
+    }
+
+    /// A view's `style:` folds exactly as `show:` does — one row per
+    /// key, merged into one dictionary — so an embed reads its content
+    /// out of the same folded conclusion.
+    #[dialog_common::test]
+    fn it_reads_an_embeddable_style_from_a_folded_view() {
+        let rows = vec![
+            conclusion(
+                "tonk:demo",
+                &[("style", json!({"ui": "body { color: red }"}))],
+            ),
+            conclusion(
+                "tonk:demo",
+                &[("style", json!({"base": "p { margin: 0 }"}))],
+            ),
+        ];
+        let folded = fold_one(rows).expect("rows fold");
+        assert_eq!(style_content(&folded, "ui"), Some("body { color: red }"));
+        assert_eq!(style_content(&folded, "base"), Some("p { margin: 0 }"));
+        assert_eq!(
+            style_content(&folded, "missing"),
+            None,
+            "a name the view does not declare embeds nothing",
+        );
+    }
+
+    /// A font stays bytes all the way through: written `!!binary`,
+    /// folded as `Ipld::Bytes`, handed to a `FontFace` unchanged.
+    #[dialog_common::test]
+    fn it_reads_an_embeddable_font_as_bytes() {
+        let mut fonts = BTreeMap::new();
+        fonts.insert("gestalte".to_owned(), Ipld::Bytes(vec![0x00, 0x01, 0xff]));
+        let folded = Conclusion {
+            this: "tonk:demo".to_owned(),
+            fields: BTreeMap::from([("font".to_owned(), Ipld::Map(fonts))]),
+        };
+        assert_eq!(
+            font_content(&folded, "gestalte"),
+            Some(&[0x00u8, 0x01, 0xff][..])
+        );
+        assert_eq!(font_content(&folded, "missing"), None);
+    }
+
+    /// The dictionary a name lives in says how to read it, so a font
+    /// that arrived as text is not silently reinterpreted.
+    #[dialog_common::test]
+    fn a_font_that_is_not_bytes_reads_as_absent() {
+        let folded = conclusion("tonk:demo", &[("font", json!({"gestalte": "not bytes"}))]);
+        assert_eq!(font_content(&folded, "gestalte"), None);
     }
 
     /// A view frame folds to the model entity's `show` dictionary;

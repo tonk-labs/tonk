@@ -40,6 +40,16 @@ export function ph_sanitize(payload) {
     }
     return payload;
 }
+// The macOS desktop app injects `window.__tonkShell = "desktop"` into its
+// web views before page scripts run. Anything else is a plain browser; the
+// value is closed, so no user agent string or raw flag reaches PostHog.
+export function ph_shell() {
+    try {
+        return window.__tonkShell === "desktop" ? "desktop" : "browser";
+    } catch (e) {
+        return "browser";
+    }
+}
 export function ph_init(key, host, version) {
     try {
         if (!key || !window.posthog) return false;
@@ -70,15 +80,21 @@ export function ph_init(key, host, version) {
         // environment = "website" in its own repo) apart within the
         // shared PostHog project.
         // tonk.network is the production origin the CLI builds invite links
-        // against. Staging has only its staging.tonk.xyz origin.
+        // against. Staging answers on staging.tonk.xyz and on tonk.spot,
+        // which serves the same deployment.
         var host = location.hostname;
         var environment =
             host === "tonk.network" ? "production"
-            : host === "staging.tonk.xyz" ? "staging"
+            : (host === "staging.tonk.xyz" || host === "tonk.spot") ? "staging"
             : "dev";
+        // `shell` separates the desktop app's embedded web views from a
+        // browser without changing what `environment` means.
         window.posthog.register({
             environment: environment,
-            version: version
+            shell: ph_shell(),
+            version: version,
+            metrics_version: 2,
+            identity_state: "unresolved"
         });
         return true;
     } catch (e) {
@@ -92,7 +108,12 @@ export function ph_register(props_json) {
     try { window.posthog.register(JSON.parse(props_json)); } catch (e) {}
 }
 export function ph_identify(id) {
-    try { window.posthog.identify(id); } catch (e) {}
+    try {
+        window.posthog.identify(id);
+        if (window.posthog.get_distinct_id() === id) {
+            window.posthog.register({ identity_state: "profile" });
+        }
+    } catch (e) {}
 }
 "#)]
 extern "C" {
@@ -127,6 +148,7 @@ pub fn capture(name: &str, properties: &serde_json::Value) {
             | crate::event::ACCOUNT_CREATED
             | crate::event::SPACE_CONVERSION
             | crate::event::SPACE_SHARED
+            | crate::event::SPACE_ENTERED
             | crate::event::PRODUCT
     ) {
         return;
@@ -197,6 +219,21 @@ pub fn capture_space_conversion(conversion: crate::launch::SpaceConversion, spac
         crate::event::SPACE_CONVERSION,
         &crate::launch::space_conversion_properties(conversion, space_key),
     );
+}
+
+/// Capture a successful creation after all requested template definitions commit.
+pub fn capture_space_created(space_key: &str, template: Option<&str>) {
+    capture_unchecked(
+        crate::event::SPACE_CONVERSION,
+        &crate::discover::created_properties(space_key, template),
+    );
+}
+
+/// Capture a navigation boundary with locally hashed space attribution.
+pub fn capture_space_entry(entries: &mut crate::discover::SpaceEntries, path: &str) {
+    if let Some(properties) = entries.navigate(path) {
+        capture_unchecked(crate::event::SPACE_ENTERED, &properties);
+    }
 }
 
 /// Capture a worker-confirmed successful invite mint.
@@ -273,6 +310,63 @@ mod tests {
     }
 
     #[wasm_bindgen(inline_js = r#"
+let shellRegistration = {};
+export function install_shell_posthog_fixture(flag) {
+    shellRegistration = {};
+    if (flag === undefined) {
+        delete window.__tonkShell;
+    } else {
+        window.__tonkShell = flag;
+    }
+    window.posthog = {
+        init: () => {},
+        register: (properties) => { shellRegistration = { ...shellRegistration, ...properties }; },
+    };
+}
+export function read_shell_registration() {
+    delete window.__tonkShell;
+    return JSON.stringify(shellRegistration);
+}
+"#)]
+    extern "C" {
+        fn install_shell_posthog_fixture(flag: JsValue);
+        fn read_shell_registration() -> String;
+    }
+
+    fn registered_shell(flag: JsValue) -> serde_json::Value {
+        install_shell_posthog_fixture(flag);
+        assert!(ph_init("key", "https://posthog.invalid", "0.0.0"));
+        let registration: serde_json::Value =
+            serde_json::from_str(&read_shell_registration()).unwrap();
+        registration["shell"].clone()
+    }
+
+    #[dialog_common::test]
+    async fn it_registers_the_desktop_shell_only_for_the_desktop_flag() {
+        assert_eq!(registered_shell(JsValue::from_str("desktop")), "desktop");
+        assert_eq!(registered_shell(JsValue::UNDEFINED), "browser");
+        // Only the exact closed value counts; anything else stays a browser
+        // and never reaches PostHog verbatim.
+        for other in [
+            JsValue::TRUE,
+            JsValue::from_str("Desktop"),
+            JsValue::from_str("Mozilla/5.0 private-ua"),
+        ] {
+            assert_eq!(registered_shell(other), "browser");
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_environment_beside_shell() {
+        install_shell_posthog_fixture(JsValue::from_str("desktop"));
+        assert!(ph_init("key", "https://posthog.invalid", "0.0.0"));
+        let registration: serde_json::Value =
+            serde_json::from_str(&read_shell_registration()).unwrap();
+        assert_eq!(registration["environment"], "dev");
+        assert_eq!(registration["shell"], "desktop");
+    }
+
+    #[wasm_bindgen(inline_js = r#"
 let launchEvents = [];
 let launchRegistration = {};
 export function install_launch_posthog_fixture() {
@@ -309,8 +403,15 @@ export function read_launch_posthog_fixture() {
         register_attribution(&attribution);
         capture_visit(&attribution);
         capture_account_created();
-        capture_space_conversion(crate::launch::SpaceConversion::Created, raw_space);
+        let template = "https://private.example/catalog.json#PrivateTemplate";
+        capture_space_created(raw_space, Some(template));
         capture_space_shared(raw_space);
+        let mut entries = crate::discover::SpaceEntries::default();
+        capture_space_entry(&mut entries, &format!("/space/{raw_space}"));
+        capture_space_entry(
+            &mut entries,
+            &format!("/space/{raw_space}/view/PrivateWiki"),
+        );
 
         // Typed names cannot be forged through the generic bridge.
         capture(
@@ -321,7 +422,7 @@ export function read_launch_posthog_fixture() {
 
         let fixture: serde_json::Value =
             serde_json::from_str(&read_launch_posthog_fixture()).unwrap();
-        assert_eq!(fixture["events"].as_array().unwrap().len(), 4);
+        assert_eq!(fixture["events"].as_array().unwrap().len(), 5);
         assert_eq!(fixture["events"][0]["event"], crate::event::VISIT);
         assert_eq!(fixture["events"][1]["event"], crate::event::ACCOUNT_CREATED);
         assert_eq!(
@@ -334,6 +435,15 @@ export function read_launch_posthog_fixture() {
         assert_eq!(fixture["registration"]["source_platform"], "other");
         assert_eq!(fixture["registration"]["source_detection"], "referrer");
 
+        assert_eq!(
+            fixture["events"][2]["properties"]["template_id"],
+            crate::anonymize(template)
+        );
+        assert_eq!(fixture["events"][4]["event"], crate::event::SPACE_ENTERED);
+        assert_eq!(
+            fixture["events"][4]["properties"]["space_id"],
+            crate::anonymize(raw_space)
+        );
         let outbound = fixture.to_string();
         for sentinel in [raw_space, "PrivateWiki", "private.example", "tonk_channel"] {
             assert!(

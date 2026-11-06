@@ -20,6 +20,12 @@
 //! view (resolved by model) that bridges it to the element live in the
 //! standard library (`tonk-core/assets/library/core.yaml`), seeded by
 //! the service worker at repository creation.
+//!
+//! Set `hide-fab` on a `<tonk-site>` or `<tonk-portal>` before mounting to
+//! hide `<tonk-fab>` in its guest and nested guests. Native embedders can
+//! instead set `window.__tonkHideFab = true` before Tonk boots. This is a
+//! presentation setting only; it leaves the elements and bridge active.
+//! It is inherited at mount/reload time, not a live toggle.
 
 #![warn(missing_docs)]
 
@@ -29,7 +35,7 @@ mod bridge;
 /// The dialog lives in the shell, which depends on this crate, so the
 /// behaviour is supplied rather than named here.
 #[cfg(target_arch = "wasm32")]
-pub use bridge::{RegisterFocusReturn, on_register};
+pub use bridge::{ContainedTaskReturn, RegisterFocusReturn, on_register, on_task};
 #[cfg(target_arch = "wasm32")]
 mod element;
 #[cfg(target_arch = "wasm32")]
@@ -39,12 +45,8 @@ mod shared;
 #[cfg(target_arch = "wasm32")]
 mod site;
 mod site_content;
-#[cfg(target_arch = "wasm32")]
-mod title;
-
+pub mod task;
 #[cfg(target_arch = "wasm32")]
 pub use element::register;
 #[cfg(target_arch = "wasm32")]
 pub use site::register as register_site;
-#[cfg(target_arch = "wasm32")]
-pub use title::register as register_title;

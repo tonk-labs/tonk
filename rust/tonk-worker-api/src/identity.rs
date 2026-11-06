@@ -113,6 +113,59 @@ pub enum CustodyIntent {
     /// either can open it. Needs two ceremonies, so the handoff carries
     /// two sets of handles.
     AddPasskey(PasskeyAddition),
+    /// Make an agent for an app signing in over OAuth: sign its grants to
+    /// the chosen spaces with the account this passkey holds, and send
+    /// the page to the app's callback.
+    AuthorizeAgent(AgentAuthorization),
+    /// Withdraw what a share link gave one of the account's agents: open
+    /// the agent's key with the account this passkey holds, and have the
+    /// agent revoke, at the space's access service, every grant the link
+    /// issued it for the space.
+    RevokeAgent(AgentRevocation),
+}
+
+/// The removal [`CustodyIntent::RevokeAgent`] carries: public names only.
+/// No link, seed or signed grant travels with the passkey request.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRevocation {
+    /// The agent space's routing key.
+    pub agent: String,
+    /// The DID of the space whose grants are withdrawn.
+    pub space: String,
+}
+
+/// The approval [`CustodyIntent::AuthorizeAgent`] carries: what the
+/// approval page asked for, the pending OAuth request it answers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAuthorization {
+    /// The authorization server's handle for the pending request.
+    pub request: String,
+    /// The agent's name.
+    pub name: String,
+    /// The routing key of an existing agent space to connect again, when
+    /// the page chose one rather than a new agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Which LLM provider the requesting app belongs to (`claude`,
+    /// `chatgpt`), when it could be told; an agent is only ever offered
+    /// again to an app of the same provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The spaces the agent may reach.
+    pub spaces: Vec<AgentSpaceChoice>,
+}
+
+/// One space an agent may reach, and how: `read`, or `write` for read
+/// and write.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSpaceChoice {
+    /// The space's routing key.
+    pub key: String,
+    /// `read` or `write`.
+    pub access: String,
 }
 
 /// The purge [`CustodyIntent::PurgeAccount`] carries. Empty: the worker
@@ -130,7 +183,8 @@ pub struct AccountPurge {}
 pub struct DeviceAuthorization {
     /// The device DID the grant is addressed to.
     pub audience: String,
-    /// The loopback URL the waiting process listens on.
+    /// Where the grant goes: the loopback URL a waiting CLI listens on, or
+    /// the https page of a deployment signing a browser in through this one.
     pub callback: String,
     /// The name the waiting process gave itself.
     pub name: String,

@@ -1,0 +1,5 @@
+view!:
+  this: test:remote-demo
+  show:
+    ui: |
+      <p class="remote-copy">{title}</p>

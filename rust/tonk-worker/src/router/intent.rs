@@ -1,0 +1,1251 @@
+//! `intent/suggest` end to end: a space seeded with the core library,
+//! asked over the `/query` route exactly as the `<command-palette>` element
+//! asks (through the portal, which relays `window.tonk.query` there), and
+//! the reading it returns transacted.
+//!
+//! Native, on the same fixture as the other native router tests.
+
+use axum::Router;
+use axum::body::Body;
+use axum::http::Request;
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+use super::api_router_with_state;
+use super::repository::profile_library_tests::test_state;
+
+const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+const NOTEBOOK: &str = include_str!("../../../tonk-core/assets/library/notebook.yaml");
+const PROFILE: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
+
+/// The core library leaves the space's rename unsaid (the profile's says
+/// it); say it here, so a rule-handled command runs end to end: the
+/// command's name, the roles of its fields (re-declaring an attribute
+/// with a role is the same attribute), and a rule offering the space as
+/// what is renamed.
+const RENAME: &str = r#"
+attribute!: &rename-repository/subject
+  description: The repository being renamed.
+  the: xyz.tonk.rename-repository/subject
+  as: entity
+  role: :object
+
+attribute!: &rename-repository/name
+  description: The new name.
+  the: xyz.tonk.rename-repository/name
+  as: text
+  role: :goal
+
+intent/action!:
+  this: tonk/rename-repository
+  name: "rename"
+
+rule!:
+  description: The space is what a rename from its palette renames.
+  assert: rename-repository/subject
+  when:
+    - assert: intent
+      where: { this: ?this, command: tonk/rename-repository }
+    - assert: tonk/repository
+      where: { this: ?subject }
+"#;
+
+async fn send(app: &Router, method: &str, uri: &str, kind: &str, body: String) -> Value {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .method(method)
+                .header("content-type", kind)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(
+        status.is_success(),
+        "{method} {uri}: {status} {}",
+        String::from_utf8_lossy(&bytes)
+    );
+    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+}
+
+/// Ask `intent/suggest` what `input` could mean, as the element does.
+async fn suggest(app: &Router, key: &str, input: &str, this: &str) -> Vec<Value> {
+    let rows = send(
+        app,
+        "POST",
+        &format!("/api/repository/{key}/branch/main/query"),
+        "application/json",
+        json!({
+            "predicate": "intent/suggest",
+            "terms": { "input": input, "this": this, "now": 1.0 }
+        })
+        .to_string(),
+    )
+    .await;
+    rows.as_array().cloned().unwrap_or_default()
+}
+
+fn field<'a>(row: &'a Value, name: &str) -> &'a Value {
+    &row["fields"][name]
+}
+
+#[dialog_common::test]
+async fn it_suggests_from_a_seeded_space_and_runs_what_it_suggests() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let subject = created["subject"].as_str().unwrap().to_owned();
+    let evaluate = format!("/api/repository/{key}/branch/main/evaluate");
+    send(&app, "POST", &evaluate, "application/yaml", CORE.into()).await;
+    send(&app, "POST", &evaluate, "application/yaml", RENAME.into()).await;
+    send(
+        &app,
+        "POST",
+        &evaluate,
+        "application/yaml",
+        format!("tonk/repository!:\n  this: {subject}\n  name: \"Budget\"\n"),
+    )
+    .await;
+
+    // The palette interprets each line in a tab (its site), then reads the
+    // readings back.
+    let space = format!("/api/repository/{key}/branch/main");
+    let page = "site:0b6e9a7c-1d2f-4e3a-8b5c-6d7e8f9a0b1c";
+    let expression = "intent:test-suggest";
+    let read = |input: &'static str, time: f64| {
+        let (app, space, subject) = (&app, &space, &subject);
+        async move {
+            interpreted(app, space, expression, input, page, time).await;
+            readings(app, space, expression, subject).await
+        }
+    };
+
+    // "expel" means only expel: the members a rule offers for it are
+    // listed, and none runs as it stands. Which is meant is for the user
+    // to say, even of the space's only member.
+    let rows = read("expel", 1.0).await;
+    let expel = rows
+        .iter()
+        .find(|row| {
+            field(row, "command").is_string() && field(row, "nouns") == "{\"object\":\"member\"}"
+        })
+        .unwrap_or_else(|| panic!("expel is suggested: {rows:?}"));
+    assert_eq!(field(expel, "listed"), true, "{rows:?}");
+    assert_eq!(field(expel, "claim"), &Value::Null);
+    assert_eq!(field(expel, "rank"), 0);
+
+    // Typing a verb's start completes it, up to the first empty argument.
+    let rows = read("ren", 2.0).await;
+    assert_eq!(field(&rows[0], "completion"), "rename Budget to ");
+
+    // "this" is the space; the goal is typed text.
+    let rows = read("rename this to Q3", 3.0).await;
+    let top = &rows[0];
+    assert_eq!(field(top, "text"), "rename [Budget] to [Q3]");
+    let claim = field(top, "claim")
+        .as_str()
+        .expect("a complete reading runs");
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        claim.into(),
+    )
+    .await;
+
+    let renamed = send(
+        &app,
+        "POST",
+        &format!("{space}/query"),
+        "application/json",
+        json!({
+            "predicate": { "with": {
+                "name": { "the": "xyz.tonk.repo/name", "as": "Text", "cardinality": "one" }
+            } },
+            "terms": { "this": subject, "name": { "?": { "name": "name" } } }
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(
+        renamed[0]["fields"]["name"], "Q3",
+        "the rename rule applied the suggested claim: {renamed}"
+    );
+
+    // With nothing typed: what can be done without saying more. Rename
+    // wants a name and expel a member, so neither is offered.
+    let menu = read("", 4.0).await;
+    assert!(
+        menu.iter().all(|row| field(row, "claim").is_string()),
+        "the menu offers only what runs as it is: {menu:?}"
+    );
+}
+
+/// A command whose fields say their own role: the field's attribute
+/// carries `role: goal`, so typed text after "to" fills it.
+const RETITLE: &str = r#"
+command!: &test/retitle
+  description: "Retitle the test thing"
+  with:
+    title:
+      description: "The new title"
+      the: io.test.retitle/title
+      as: text
+      role: :goal
+
+intent/action!:
+  this: test/retitle
+  name: "retitle"
+"#;
+
+#[dialog_common::test]
+async fn it_fills_a_field_by_the_role_on_its_attribute() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let subject = created["subject"].as_str().unwrap().to_owned();
+    let evaluate = format!("/api/repository/{key}/branch/main/evaluate");
+    send(&app, "POST", &evaluate, "application/yaml", CORE.into()).await;
+    send(&app, "POST", &evaluate, "application/yaml", RETITLE.into()).await;
+
+    let rows = suggest(&app, &key, "retitle to Plans", &subject).await;
+    let top = rows
+        .iter()
+        .find(|row| field(row, "text") == "retitle to [Plans]")
+        .unwrap_or_else(|| panic!("retitle is read with its goal: {rows:?}"));
+    let claim: Value = serde_json::from_str(
+        field(top, "claim")
+            .as_str()
+            .expect("the only field is filled, so it runs"),
+    )
+    .unwrap();
+    assert!(
+        claim.to_string().contains("io.test.retitle/title") && claim.to_string().contains("Plans"),
+        "the claim sets the title: {claim}"
+    );
+    // With text selected in the page, the bare verb takes it as the title.
+    let site = "site:0b5c8e7a-6f0e-4b1d-8c2e-7d9a1f3e5b40";
+    send(
+        &app,
+        "POST",
+        &format!("/api/repository/{key}/branch/main/transact"),
+        "application/json",
+        select(site, "Roadmap", 1.0),
+    )
+    .await;
+    let space = format!("/api/repository/{key}/branch/main");
+    selection(&app, &space, site, Some("Roadmap")).await;
+    let rows = send(
+        &app,
+        "POST",
+        &format!("{space}/query"),
+        "application/json",
+        json!({
+            "predicate": "intent/suggest",
+            "terms": { "input": "retitle", "this": subject, "now": 1.0, "site": site }
+        })
+        .to_string(),
+    )
+    .await;
+    let rows = rows.as_array().cloned().unwrap_or_default();
+    assert!(
+        rows.iter()
+            .any(|row| field(row, "text") == "retitle to [Roadmap]"),
+        "the selection fills the title: {rows:?}"
+    );
+}
+
+/// A `site/select` report, as `bootstrap.js` sends it.
+fn select(site: &str, text: &str, time: f64) -> String {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Report what the page in a tab has selected.",
+                        "with": {
+                            "site": { "the": "xyz.tonk.command.site-select/site", "as": "Entity" },
+                            "text": { "the": "xyz.tonk.command.site-select/text", "as": "Text" },
+                            "time": { "the": "xyz.tonk.command.site-select/time", "as": "float:64" }
+                        }
+                    }
+                },
+                "parameters": { "site": site, "text": text, "time": time }
+            }
+        }]
+    })
+    .to_string()
+}
+
+/// The selection recorded on `site`, on the branch at `prefix`, once it
+/// is `expected` (the command runs after the transact returns).
+async fn selection(
+    app: &Router,
+    prefix: &str,
+    site: &str,
+    expected: Option<&str>,
+) -> Option<String> {
+    let mut seen = None;
+    for _ in 0..200 {
+        let rows = send(
+            app,
+            "POST",
+            &format!("{prefix}/query"),
+            "application/json",
+            json!({
+                "predicate": { "with": {
+                    "selection": { "the": "xyz.tonk.site/selection", "as": "Text", "cardinality": "one" }
+                } },
+                "terms": { "this": site, "selection": { "?": { "name": "selection" } } }
+            })
+            .to_string(),
+        )
+        .await;
+        seen = rows
+            .as_array()
+            .and_then(|rows| rows.first())
+            .and_then(|row| row["fields"]["selection"].as_str())
+            .map(str::to_owned);
+        if seen.as_deref() == expected {
+            return seen;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    seen
+}
+
+#[dialog_common::test]
+async fn it_records_a_pages_selection_on_its_site() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    let profile = "/api/repository/profile:tonk/branch/main";
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+    let site = "site:6d3c3f5e-0b0e-4f2a-9a55-3c1d2f0e9a11";
+
+    // Reported from the space: recorded on the space, and on the profile,
+    // whose commands the palette proposes too.
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        select(site, "Plans", 1.0),
+    )
+    .await;
+    assert_eq!(
+        selection(&app, &space, site, Some("Plans"))
+            .await
+            .as_deref(),
+        Some("Plans")
+    );
+    assert_eq!(
+        selection(&app, profile, site, Some("Plans"))
+            .await
+            .as_deref(),
+        Some("Plans")
+    );
+
+    // A new selection replaces the old one.
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        select(site, "Roadmap", 2.0),
+    )
+    .await;
+    assert_eq!(
+        selection(&app, &space, site, Some("Roadmap"))
+            .await
+            .as_deref(),
+        Some("Roadmap")
+    );
+
+    // An empty one clears it, on both.
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        select(site, "", 3.0),
+    )
+    .await;
+    assert_eq!(selection(&app, &space, site, None).await, None);
+    assert_eq!(selection(&app, profile, site, None).await, None);
+}
+
+/// An `intent/interpret`, as the palette sends it.
+fn interpret(expression: &str, input: &str, site: &str, time: f64) -> String {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Interpret what was typed in the command palette, where it was opened.",
+                        "with": {
+                            "expression": { "the": "tonk.dialog.intent.interpret/expression", "as": "Entity" },
+                            "input": { "the": "tonk.dialog.intent.interpret/input", "as": "Text" },
+                            "site": { "the": "tonk.dialog.intent.interpret/site", "as": "Entity" },
+                            "time": { "the": "tonk.dialog.intent.interpret/time", "as": "float:64" }
+                        }
+                    }
+                },
+                "parameters": { "expression": expression, "input": input, "site": site, "time": time }
+            }
+        }]
+    })
+    .to_string()
+}
+
+/// Send `input` for `expression` and wait until the handler recorded it.
+async fn interpreted(
+    app: &Router,
+    prefix: &str,
+    expression: &str,
+    input: &str,
+    site: &str,
+    time: f64,
+) {
+    send(
+        app,
+        "POST",
+        &format!("{prefix}/transact"),
+        "application/json",
+        interpret(expression, input, site, time),
+    )
+    .await;
+    for _ in 0..200 {
+        let rows = send(
+            app,
+            "POST",
+            &format!("{prefix}/query"),
+            "application/json",
+            json!({
+                "predicate": { "with": {
+                    "input": { "the": "tonk.dialog.intent.expression/input", "as": "Text", "cardinality": "one" }
+                } },
+                "terms": { "this": expression, "input": { "?": { "name": "input" } } }
+            })
+            .to_string(),
+        )
+        .await;
+        if rows
+            .as_array()
+            .and_then(|rows| rows.first())
+            .and_then(|row| row["fields"]["input"].as_str())
+            == Some(input)
+        {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("{input:?} was never interpreted for {expression}");
+}
+
+/// The readings of an interpreted expression.
+async fn readings(app: &Router, prefix: &str, expression: &str, this: &str) -> Vec<Value> {
+    let rows = send(
+        app,
+        "POST",
+        &format!("{prefix}/query"),
+        "application/json",
+        json!({
+            "predicate": "intent/suggest",
+            "terms": { "expression": expression, "this": this, "now": 1.0, "max": 8 }
+        })
+        .to_string(),
+    )
+    .await;
+    rows.as_array().cloned().unwrap_or_default()
+}
+
+/// A site on a notebook's page, as the route stamp would leave it.
+fn notebook_page(site: &str, key: &str, notebook: &str) -> String {
+    format!(
+        r#"
+site!:
+  this: {site}
+  path: "/notebook/{notebook}"
+  anchor: ""
+  space: "{key}"
+  branch: "main"
+  replica: replica:test
+  branch-entity: branch:test
+  profile-branch: "main"
+  route: route:notebook
+  concept: notebook/route
+
+notebook/route!:
+  this: {site}
+  entity: {notebook}
+  repo: "{key}"
+  branch: "main"
+"#
+    )
+}
+
+#[dialog_common::test]
+async fn it_renames_the_notebook_a_page_shows() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let subject = created["subject"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    let evaluate = format!("{space}/evaluate");
+    send(&app, "POST", &evaluate, "application/yaml", CORE.into()).await;
+    send(&app, "POST", &evaluate, "application/yaml", NOTEBOOK.into()).await;
+    let page = "site:4a1f0c9e-2b7d-4e8a-9c3f-5d6e7f8a9b0c";
+    let notebook = "notebook:plans";
+    send(
+        &app,
+        "POST",
+        &evaluate,
+        "application/yaml",
+        notebook_page(page, &key, notebook),
+    )
+    .await;
+
+    // "rename to Plans" on the notebook's page: the page's notebook is the
+    // subject, the typed text the title.
+    let expression = "intent:test-expression-1";
+    interpreted(&app, &space, expression, "rename to Plans", page, 1.0).await;
+    let rows = readings(&app, &space, expression, &subject).await;
+    let retitle = rows
+        .iter()
+        .find(|row| {
+            field(row, "text").as_str() == Some(format!("rename [{notebook}] to [Plans]").as_str())
+        })
+        .unwrap_or_else(|| panic!("the page's notebook is renamed: {rows:?}"));
+    let claim = field(retitle, "claim")
+        .as_str()
+        .expect("both fields are filled");
+    assert!(
+        claim.contains(notebook) && claim.contains("Plans"),
+        "{claim}"
+    );
+
+    // With "Roadmap" selected in the page, bare "rename" takes it as the
+    // title.
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        select(page, "Roadmap", 2.0),
+    )
+    .await;
+    selection(&app, &space, page, Some("Roadmap")).await;
+    interpreted(&app, &space, expression, "rename", page, 2.0).await;
+    let rows = readings(&app, &space, expression, &subject).await;
+    assert!(
+        rows.iter().any(|row| field(row, "text").as_str()
+            == Some(format!("rename [{notebook}] to [Roadmap]").as_str())
+            && field(row, "claim").is_string()),
+        "the selection is the title: {rows:?}"
+    );
+
+    // On a page that isn't a notebook's, nothing names a notebook, so the
+    // retitle can't run as it is.
+    let elsewhere = "site:7c2e1d0b-3a4f-4b5c-8d6e-9f0a1b2c3d4e";
+    let other = "intent:test-expression-2";
+    interpreted(&app, &space, other, "rename to Plans", elsewhere, 3.0).await;
+    let rows = readings(&app, &space, other, &subject).await;
+    assert!(
+        rows.iter().all(|row| !field(row, "claim")
+            .as_str()
+            .is_some_and(|claim| claim.contains("notebook.retitle"))),
+        "no notebook is renamed off a notebook's page: {rows:?}"
+    );
+}
+
+/// Send `body` as the tab `client` would: the service worker tags every
+/// request a page makes with its client id, which is how a command's
+/// handler knows which tab asked.
+async fn send_as(app: &Router, client: &str, uri: &str, body: String) -> Value {
+    let mut request = Request::builder()
+        .uri(uri)
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(super::ClientId(client.to_owned()));
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(
+        status.is_success(),
+        "POST {uri}: {status} {}",
+        String::from_utf8_lossy(&bytes)
+    );
+    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+}
+
+/// Every act in the bar's menu, said in the palette as the menu says it,
+/// runs as it is and asks the tab that said it to perform that act: the
+/// request the bar's `<ui-site-request>` presses the control for.
+#[dialog_common::test]
+async fn it_runs_every_menu_act_from_the_palette() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let branch = state.read().await.active_branch.clone();
+    let profile = format!("/api/repository/profile:tonk/branch/{branch}");
+    let client = "tab";
+    let site = format!("site:{client}");
+    for library in [CORE, PROFILE] {
+        send(
+            &app,
+            "POST",
+            &format!("{profile}/evaluate"),
+            "application/yaml",
+            library.into(),
+        )
+        .await;
+    }
+
+    for (said, request) in [
+        ("add an account", "account"),
+        ("copy share link", "share"),
+        ("view members", "members"),
+        ("copy agent link", "agent"),
+        ("connect this space", "connect"),
+        ("confirm your email", "connect"),
+    ] {
+        let rows = send(
+            &app,
+            "POST",
+            &format!("{profile}/query"),
+            "application/json",
+            json!({
+                "predicate": "intent/suggest",
+                "terms": { "input": said, "this": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH", "now": 1.0 }
+            })
+            .to_string(),
+        )
+        .await;
+        let rows = rows.as_array().cloned().unwrap_or_default();
+        let top = rows
+            .first()
+            .unwrap_or_else(|| panic!("{said:?} is suggested: {rows:?}"));
+        assert_eq!(field(top, "text"), said, "{rows:?}");
+        let claim = field(top, "claim")
+            .as_str()
+            .unwrap_or_else(|| panic!("{said:?} runs as it is: {top:?}"))
+            .to_owned();
+        send_as(&app, client, &format!("{profile}/transact"), claim).await;
+
+        // The handler runs after the transact returns.
+        let mut seen = Value::Null;
+        for _ in 0..200 {
+            let rows = send(
+                &app,
+                "POST",
+                &format!("{profile}/query"),
+                "application/json",
+                json!({
+                    "predicate": { "with": {
+                        "request": { "the": "xyz.tonk.site/request", "as": "Text", "cardinality": "one" }
+                    } },
+                    "terms": { "this": site, "request": { "?": { "name": "request" } } }
+                })
+                .to_string(),
+            )
+            .await;
+            seen = rows[0]["fields"]["request"].clone();
+            if seen == request {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(seen, request, "{said:?} asks the tab for {request:?}");
+    }
+}
+
+/// "make space public" and "make space private" are palette verbs on the
+/// profile, each taking the space it is said of as its object: the same
+/// `space/publish` and `space/unpublish` the bar's actions dispatch. Which
+/// space fills the object is the parser's (see `tonk-intent`'s tests).
+#[dialog_common::test]
+async fn it_says_publishing_in_the_palette() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let branch = state.read().await.active_branch.clone();
+    let profile = format!("/api/repository/profile:tonk/branch/{branch}");
+    for library in [CORE, PROFILE] {
+        send(
+            &app,
+            "POST",
+            &format!("{profile}/evaluate"),
+            "application/yaml",
+            library.into(),
+        )
+        .await;
+    }
+    for said in [
+        "make space public",
+        "publish space",
+        "make space private",
+        "unpublish space",
+    ] {
+        let rows = send(
+            &app,
+            "POST",
+            &format!("{profile}/query"),
+            "application/json",
+            json!({
+                "predicate": "intent/suggest",
+                "terms": { "input": said, "now": 1.0 }
+            })
+            .to_string(),
+        )
+        .await;
+        let rows = rows.as_array().cloned().unwrap_or_default();
+        let top = rows
+            .first()
+            .unwrap_or_else(|| panic!("{said:?} is suggested: {rows:?}"));
+        assert_eq!(
+            field(top, "text").as_str(),
+            Some(format!("{said} (space)").as_str()),
+            "{rows:?}"
+        );
+        assert_eq!(field(top, "nouns"), r#"{"object":"space"}"#, "{rows:?}");
+    }
+}
+
+/// "invite" on a space's page says either of two commands: naming one
+/// of the account's agents lets that agent in, anything else is taken
+/// as the address of an account to let in. Both are said of the space
+/// the page shows, and both run as they are.
+#[dialog_common::test]
+async fn it_says_inviting_an_agent_or_an_address_in_the_palette() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let branch = state.read().await.active_branch.clone();
+    let profile = format!("/api/repository/profile:tonk/branch/{branch}");
+    for library in [CORE, PROFILE] {
+        send(
+            &app,
+            "POST",
+            &format!("{profile}/evaluate"),
+            "application/yaml",
+            library.into(),
+        )
+        .await;
+    }
+    let space = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+    let agent = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH";
+    // A space with no upstream: local to this device.
+    let local = "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG";
+    send(
+        &app,
+        "POST",
+        &format!("{profile}/evaluate"),
+        "application/yaml",
+        format!(
+            "space!:\n  this: {space}\n  subject: {space}\n  kind: tonk:repository\n  name: \"little writer\"\n  home-address: \"https://sync.example.test/ucan/\"\n\n\
+             space!:\n  this: {local}\n  subject: {local}\n  kind: tonk:repository\n  name: \"scratch pad\"\n\n\
+             space!:\n  this: {agent}\n  subject: {agent}\n  kind: tonk:repository\n  name: \"Claude\"\n\n\
+             agent-space!:\n  this: {agent}\n  kind: case:agent\n"
+        ),
+    )
+    .await;
+
+    let site = "site:7d1e0c2a-4b5f-4e8a-9c3d-2f6a8b0e1d4c";
+    for (n, (said, text, nouns, value)) in [
+        (
+            "invite Claude",
+            "invite [Claude] to [little writer]",
+            r#"{"goal":"space","object":"agent"}"#,
+            agent,
+        ),
+        (
+            "invite bob@example.com",
+            "invite [bob@example.com] to [little writer]",
+            r#"{"goal":"space"}"#,
+            "bob@example.com",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let expression = format!("intent:test-invite-{n}");
+        interpreted(&app, &profile, &expression, said, site, 1.0 + n as f64).await;
+        let rows = readings(&app, &profile, &expression, space).await;
+        let top = rows
+            .first()
+            .unwrap_or_else(|| panic!("{said:?} is suggested: {rows:?}"));
+        assert_eq!(field(top, "text"), text, "{rows:?}");
+        assert_eq!(field(top, "nouns"), nouns, "{rows:?}");
+        let claim = field(top, "claim")
+            .as_str()
+            .unwrap_or_else(|| panic!("{said:?} runs as it is: {top:?}"));
+        assert!(claim.contains(value), "{said:?} carries {value}: {claim}");
+        assert!(
+            claim.contains(space),
+            "{said:?} is said of the space: {claim}"
+        );
+    }
+
+    // On the page of a space that does not sync, "invite" is not said of
+    // it: no reading takes it, as it is or listed, since nobody could
+    // reach it through an upstream it does not have.
+    for (n, said) in ["invite Claude", "invite bob@example.com"]
+        .into_iter()
+        .enumerate()
+    {
+        let expression = format!("intent:test-invite-local-{n}");
+        interpreted(&app, &profile, &expression, said, site, 10.0 + n as f64).await;
+        let rows = readings(&app, &profile, &expression, local).await;
+        assert!(
+            rows.iter().all(|row| {
+                !field(row, "entities").to_string().contains(local)
+                    && !field(row, "claim").to_string().contains(local)
+            }),
+            "{said:?} is never said of a space that does not sync: {rows:?}"
+        );
+    }
+}
+
+/// A space the palette offers is shown by its `label` facet, `{name}`,
+/// even when the directory row carries a description too: the space
+/// commands' object reads "little writer", not the space's blurb.
+#[dialog_common::test]
+async fn it_labels_a_space_by_its_name_not_its_description() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let branch = state.read().await.active_branch.clone();
+    let profile = format!("/api/repository/profile:tonk/branch/{branch}");
+    for library in [CORE, PROFILE] {
+        send(
+            &app,
+            "POST",
+            &format!("{profile}/evaluate"),
+            "application/yaml",
+            library.into(),
+        )
+        .await;
+    }
+    let subject = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+    send(
+        &app,
+        "POST",
+        &format!("{profile}/evaluate"),
+        "application/yaml",
+        format!(
+            "space!:\n  this: {subject}\n  subject: {subject}\n  kind: tonk:repository\n  name: \"little writer\"\n  description: \"A shared Markdown editor\"\n"
+        ),
+    )
+    .await;
+
+    let expression = "intent:test-space-label";
+    let site = "site:2f4c1b7e-9a3d-4e6f-8b1c-5d7e9f0a2b3c";
+    interpreted(&app, &profile, expression, "make space public", site, 1.0).await;
+    let rows = readings(&app, &profile, expression, subject).await;
+    let top = rows
+        .first()
+        .unwrap_or_else(|| panic!("make space public is suggested: {rows:?}"));
+    assert_eq!(
+        field(top, "text"),
+        "make space public [little writer]",
+        "{rows:?}"
+    );
+}
+
+/// How `intent/suggest` scales with a noun's rows, store reads included.
+/// Run with `cargo test --release -p tonk-worker --lib -- --ignored
+/// --nocapture intent::it_scales`.
+#[dialog_common::test]
+#[ignore = "timing, not a check"]
+async fn it_scales_with_candidates() {
+    for count in [10usize, 100, 1_000, 5_000] {
+        let (app, _state, _lsp) = api_router_with_state(test_state().await);
+        let created = send(
+            &app,
+            "PUT",
+            "/api/repository/scale",
+            "application/json",
+            "{}".into(),
+        )
+        .await;
+        let key = created["name"].as_str().unwrap().to_owned();
+        let subject = created["subject"].as_str().unwrap().to_owned();
+        let evaluate = format!("/api/repository/{key}/branch/main/evaluate");
+        send(&app, "POST", &evaluate, "application/yaml", CORE.into()).await;
+        send(&app, "POST", &evaluate, "application/yaml", RENAME.into()).await;
+        let seeded = std::time::Instant::now();
+        let mut yaml = String::new();
+        for n in 0..count {
+            yaml.push_str(&format!(
+                "tonk/repository!:\n  this: did:key:z6Mkscale{n}\n  name: \"Budget {n}\"\n\n"
+            ));
+        }
+        send(&app, "POST", &evaluate, "application/yaml", yaml).await;
+        let seeded = seeded.elapsed();
+        for input in ["ex", "rename budget 42 to Q3"] {
+            let runs = 3;
+            let start = std::time::Instant::now();
+            for _ in 0..runs {
+                std::hint::black_box(suggest(&app, &key, input, &subject).await);
+            }
+            println!(
+                "{count:>6} rows  {input:<24} {:>9.1} ms  (seeded in {:.1} s)",
+                start.elapsed().as_secs_f64() * 1000.0 / f64::from(runs),
+                seeded.as_secs_f64()
+            );
+        }
+    }
+}
+
+/// How one `/evaluate` of `count` rows scales. Run with `cargo test
+/// --release -p tonk-worker --lib -- --ignored --nocapture
+/// intent::it_evaluates`.
+#[dialog_common::test]
+#[ignore = "timing, not a check"]
+async fn it_evaluates_many_rows() {
+    let counts: Vec<usize> = std::env::var("ROWS")
+        .ok()
+        .map(|rows| rows.split(',').filter_map(|n| n.parse().ok()).collect())
+        .unwrap_or_else(|| vec![250, 500, 1_000, 2_000]);
+    for count in counts {
+        let (app, _state, _lsp) = api_router_with_state(test_state().await);
+        let created = send(
+            &app,
+            "PUT",
+            "/api/repository/scale",
+            "application/json",
+            "{}".into(),
+        )
+        .await;
+        let key = created["name"].as_str().unwrap().to_owned();
+        let evaluate = format!("/api/repository/{key}/branch/main/evaluate");
+        send(&app, "POST", &evaluate, "application/yaml", CORE.into()).await;
+        let mut yaml = String::new();
+        for n in 0..count {
+            yaml.push_str(&format!(
+                "tonk/repository!:\n  this: did:key:z6Mkscale{n}\n  name: \"Budget {n}\"\n\n"
+            ));
+        }
+        let start = std::time::Instant::now();
+        send(&app, "POST", &evaluate, "application/yaml", yaml).await;
+        let elapsed = start.elapsed().as_secs_f64();
+        println!(
+            "{count:>6} rows  {elapsed:>7.2} s  {:>6.2} ms/row",
+            elapsed * 1000.0 / count as f64
+        );
+    }
+}
+
+/// "install note" completes to the notebook component, and running the
+/// reading installs it beside the space's seed: the space records its
+/// install under the component's source.
+#[dialog_common::test]
+async fn it_installs_a_component_from_the_palette() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let subject = created["subject"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+
+    let page = "site:6f0d2c8e-4b1a-4c3d-9e2f-1a2b3c4d5e6f";
+    let expression = "intent:test-install";
+    interpreted(&app, &space, expression, "install note", page, 1.0).await;
+    let rows = readings(&app, &space, expression, &subject).await;
+    let top = rows
+        .first()
+        .unwrap_or_else(|| panic!("install is suggested: {rows:?}"));
+    assert_eq!(field(top, "text"), "install [notebook]", "{rows:?}");
+    let claim = field(top, "claim")
+        .as_str()
+        .unwrap_or_else(|| panic!("the reading runs as it is: {top:?}"))
+        .to_owned();
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        claim,
+    )
+    .await;
+
+    // The handler runs after the transact returns.
+    let mut sources = Value::Null;
+    for _ in 0..500 {
+        sources = send(
+            &app,
+            "POST",
+            &format!("{space}/query"),
+            "application/json",
+            json!({
+                "predicate": { "with": {
+                    "source": { "the": "xyz.tonk.seed/source", "as": "Text", "cardinality": "one" }
+                } },
+                "terms": {
+                    "this": { "?": { "name": "this" } },
+                    "source": { "?": { "name": "source" } }
+                }
+            })
+            .to_string(),
+        )
+        .await;
+        if sources.as_array().is_some_and(|rows| {
+            rows.iter()
+                .any(|row| row["fields"]["source"] == "/library/notebook.yaml")
+        }) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the notebook component was never installed: {sources}");
+}
+
+/// `<code-editor>` finds a language by any of its words, whichever
+/// component put the record there: one the editor ships (`dialog`), and
+/// one installed on its own (`py`). Installing the editor alone leaves
+/// other languages unanswered, and the editor offers the rest to the
+/// palette. The query is `code-editor/request.js`'s, as the element sends
+/// it over `tonk-query`.
+#[dialog_common::test]
+async fn it_answers_code_editor_language_requests_from_installed_components() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/languages",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+
+    // The element's request, field for field.
+    let request = include_str!("../../../tonk-core/assets/library/code-editor/request.js");
+    for needle in [
+        "'xyz.tonk.code-editor.language/word', as: 'Text', cardinality: 'many'",
+        "'xyz.tonk.code-editor.language/source', as: 'Text', cardinality: 'one'",
+    ] {
+        assert!(request.contains(needle), "request.js still asks {needle}");
+    }
+    let ask = |word: &str| {
+        json!({
+            "predicate": { "with": {
+                "word": { "the": "xyz.tonk.code-editor.language/word", "as": "Text", "cardinality": "many" },
+                "source": { "the": "xyz.tonk.code-editor.language/source", "as": "Text", "cardinality": "one" }
+            } },
+            "terms": {
+                "this": { "?": { "name": "this" } },
+                "word": word,
+                "source": { "?": { "name": "source" } }
+            }
+        })
+        .to_string()
+    };
+    let packs = |rows: &Value| -> Vec<(String, String)> {
+        rows.as_array()
+            .unwrap_or_else(|| panic!("rows: {rows}"))
+            .iter()
+            .map(|row| {
+                (
+                    row["this"]
+                        .as_str()
+                        .or_else(|| row["fields"]["this"].as_str())
+                        .unwrap_or_else(|| panic!("a row names its record: {row}"))
+                        .to_owned(),
+                    row["fields"]["source"]
+                        .as_str()
+                        .unwrap_or_else(|| panic!("a row carries its pack: {row}"))
+                        .to_owned(),
+                )
+            })
+            .collect()
+    };
+
+    {
+        let tonk = state.read().await;
+        super::repository::install_component(&tonk, &key, "main", "/library/code-editor.yaml")
+            .await
+            .expect("the editor installs");
+    }
+    let query = format!("{space}/query");
+    let dialog = send(&app, "POST", &query, "application/json", ask("dialog")).await;
+    let dialog = packs(&dialog);
+    assert_eq!(dialog.len(), 1, "{dialog:?}");
+    assert_eq!(dialog[0].0, "tonk:code-editor/language/dialog-yaml");
+    assert!(
+        dialog[0].1.starts_with("(shared) => {"),
+        "a pack is a function of the shared modules"
+    );
+    let python = send(&app, "POST", &query, "application/json", ask("py")).await;
+    assert_eq!(
+        packs(&python),
+        vec![],
+        "python is not installed with the editor"
+    );
+
+    {
+        let tonk = state.read().await;
+        super::repository::install_component(&tonk, &key, "main", "/library/language/python.yaml")
+            .await
+            .expect("a language installs");
+    }
+    let python = send(&app, "POST", &query, "application/json", ask("py")).await;
+    let python = packs(&python);
+    assert_eq!(python.len(), 1, "{python:?}");
+    assert_eq!(python[0].0, "tonk:code-editor/language/python");
+    let pack = include_str!("../../../tonk-core/assets/library/language/python.js");
+    assert!(
+        python[0].1.trim_end() == pack.trim_end(),
+        "the record carries the pack the component includes: {} bytes, {} on disk, from {:?}",
+        python[0].1.len(),
+        pack.len(),
+        &python[0].1[..python[0].1.len().min(120)],
+    );
+}
+
+/// "inst" means only install, so the palette lists the components it can
+/// install rather than waiting at "install (component)": each listed, none
+/// run as it stands, and the one picked before, as the profile remembers
+/// it, first.
+#[dialog_common::test]
+async fn it_lists_the_components_install_can_take() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let subject = created["subject"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+
+    let page = "site:2a4c6e8f-0b1d-4f3a-8c5e-7a9b1c3d5e7f";
+    let expression = "intent:test-list";
+    interpreted(&app, &space, expression, "inst", page, 1.0).await;
+    let rows = readings(&app, &space, expression, &subject).await;
+    assert!(rows.len() > 1, "several components are listed: {rows:?}");
+    for row in &rows {
+        assert_eq!(field(row, "listed"), true, "{row:?}");
+        assert!(field(row, "claim").is_null(), "{row:?}");
+        let text = field(row, "text").as_str().unwrap();
+        let label = text
+            .strip_prefix("install [")
+            .and_then(|rest| rest.strip_suffix(']'))
+            .unwrap_or_else(|| panic!("a component is listed: {text}"));
+        assert_eq!(
+            field(row, "completion"),
+            &json!(format!("install {label}")),
+            "{row:?}"
+        );
+    }
+
+    // The last one listed, picked before, comes first.
+    let last = rows.last().unwrap();
+    let entities: Vec<String> =
+        serde_json::from_str(field(last, "entities").as_str().unwrap()).unwrap();
+    let command = field(last, "command").as_str().unwrap();
+    let memory = json!({
+        "picks": [{
+            "this": "pick:0",
+            "fields": { "command": command, "value": entities[0], "time": 1.0 }
+        }]
+    });
+    let remembered = send(
+        &app,
+        "POST",
+        &format!("{space}/query"),
+        "application/json",
+        json!({
+            "predicate": "intent/suggest",
+            "terms": {
+                "expression": expression, "this": subject, "now": 1.0, "max": 8,
+                "memory": memory.to_string()
+            }
+        })
+        .to_string(),
+    )
+    .await;
+    let top = &remembered.as_array().unwrap()[0];
+    assert_eq!(field(top, "text"), field(last, "text"), "{remembered:?}");
+}

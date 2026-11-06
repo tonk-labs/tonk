@@ -32,6 +32,7 @@ use std::collections::BTreeMap;
 use ipld_core::ipld::Ipld;
 
 pub mod bindings;
+pub mod embed;
 pub mod event;
 pub mod fields;
 pub mod fold;

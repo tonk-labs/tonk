@@ -48,12 +48,12 @@ impl StoredRule {
         source: &Source<'_>,
         env: &Env,
     ) -> Result<Option<Rule>, StoredRuleError> {
-        let the: dialog_query::attribute::The = "dialog.rule/source"
+        let the: dialog_query::attribute::Relation = "dialog.rule/source"
             .parse()
             .expect("`dialog.rule/source` is a valid attribute URI");
         let source_claims: Vec<dialog_query::Claim> = source
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the)
+                Term::<dialog_query::attribute::Relation>::from(the)
                     .of(Term::<Entity>::from(self.entity.clone()))
                     .is(Term::<Vec<u8>>::var("__source")),
             ))
@@ -144,15 +144,15 @@ mod tests {
         dialog_artifacts::Statement::assert(&rule, &mut changes);
         let instructions = changes.into_instructions();
 
-        let source: dialog_artifacts::Attribute = "dialog.rule/source".parse().unwrap();
-        let induces: dialog_artifacts::Attribute = "dialog.rule/induces".parse().unwrap();
+        let source: dialog_artifacts::Relation = "dialog.rule/source".parse().unwrap();
+        let induces: dialog_artifacts::Relation = "dialog.rule/induces".parse().unwrap();
         assert!(instructions.iter().any(|i| matches!(
             i,
-            Instruction::Assert(a) if a.the == source && a.of == this
+            Instruction::Assert(a, dialog_artifacts::Pick::All) if a.the == source && a.of == this
         )));
         assert!(instructions.iter().any(|i| matches!(
             i,
-            Instruction::Assert(a) if a.the == induces && a.of == this
+            Instruction::Assert(a, dialog_artifacts::Pick::All) if a.the == induces && a.of == this
         )));
 
         let _ = Cardinality::One; // keep the shared import used across cfgs

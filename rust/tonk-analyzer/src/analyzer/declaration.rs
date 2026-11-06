@@ -49,12 +49,33 @@ pub(crate) struct DeclaredApplication {
 pub(crate) struct AttributeBody {
     pub descriptor: AttributeDescriptor,
     pub entity: Entity,
+    /// The intent role the attribute plays in its command (`role:`),
+    /// kept out of the descriptor so it never changes the attribute's
+    /// identity. Emitted as its own fact by [`role_application`].
+    pub role: Option<String>,
 }
+
+/// The roles an attribute can play when the palette fills a command:
+/// the grammar's roles, plus `now` for the nonce fields nothing typed
+/// fills.
+const ROLES: [&str; 10] = [
+    "object",
+    "goal",
+    "source",
+    "location",
+    "time",
+    "instrument",
+    "format",
+    "modifier",
+    "alias",
+    "now",
+];
 
 pub(crate) fn parse_attribute_body(
     assertion: &SyntaxApplication,
+    scope: &Scope,
 ) -> Result<AttributeBody, AnalyzeError> {
-    parse_attribute_fields(&assertion.fields)
+    parse_attribute_fields(&assertion.fields, scope)
 }
 
 /// Parse an attribute definition's fields into a descriptor.
@@ -65,12 +86,14 @@ pub(crate) fn parse_attribute_body(
 /// `cardinality`, and a *required* `description`.
 pub(crate) fn parse_attribute_fields(
     fields: &[tonk_notation::Field],
+    scope: &Scope,
 ) -> Result<AttributeBody, AnalyzeError> {
     let mut shape = serde_json::Map::new();
     // `as: {[position]: entity}` declares a keyed collection: the
     // bracketed key kind, and the type of each entry's value. `the:`
     // then names a domain rather than one attribute.
     let mut keyed: Option<&'static str> = None;
+    let mut role: Option<String> = None;
     for field in fields {
         // `this:` and `..:` are reserved meta-keys handled by the
         // outer assertion-binding flow; they don't contribute to
@@ -80,16 +103,55 @@ pub(crate) fn parse_attribute_fields(
         }
         // Per-field value-shape requirements:
         //
-        // - `as` accepts a Symbol (`text`), a string literal
-        //   (`"Text"`) or a URI-like form. Translates to
-        //   dialog's serde discriminant.
-        // - `cardinality` is the same.
+        // - `as` names a type by its built-in anchor (`text`), or by
+        //   the entity dialog names it by (`:text`, or the quoted
+        //   `"text:"`). Lowers to that entity.
+        // - `cardinality`, `pick` and `role` take a keyword
+        //   (`pick: :all`); a bare symbol there is a reference and is
+        //   refused.
         // - `the` accepts a URI (`xyz.tonk/foo`) or a literal
         //   string holding the same shape.
         // - `description` requires a quoted string literal —
         //   bare symbols are rejected to discourage one-word
         //   non-descriptions like `description: recipe`.
         match field.name.as_str() {
+            // `as:` names a type, a keyed collection type, or lists the
+            // values the attribute ranks among, best first: a list is a
+            // ranked choice and reads as `top` without saying so.
+            "as" if matches!(field.value, FieldValue::List(_)) => {
+                let FieldValue::List(items) = &field.value else {
+                    unreachable!("guarded");
+                };
+                let mut listed = Vec::with_capacity(items.len());
+                for item in items {
+                    let scalar = tonk_notation::Field {
+                        name: field.name.clone(),
+                        value: item.clone(),
+                        name_range: field.name_range,
+                        value_range: field.value_range,
+                    };
+                    // A listed value is a value: a bare symbol is a
+                    // reference and names what its anchor names, and
+                    // text is quoted.
+                    let value = match &scalar.value {
+                        FieldValue::Symbol(name) => scope
+                            .symbol(name)
+                            .map(|entity| entity.to_string())
+                            .ok_or_else(|| {
+                                AnalyzeError::at(
+                                    AnalyzeErrorKind::UnknownNameReference {
+                                        field: field.name.clone(),
+                                        name: name.clone(),
+                                    },
+                                    field.value_range,
+                                )
+                            })?,
+                        _ => stringify_simple_value(&scalar)?,
+                    };
+                    listed.push(serde_json::Value::String(value));
+                }
+                shape.insert("as".into(), serde_json::Value::Array(listed));
+            }
             "as" => {
                 let value_field = match &field.value {
                     FieldValue::Nested(inner) => {
@@ -119,41 +181,95 @@ pub(crate) fn parse_attribute_fields(
                     }
                     _ => field,
                 };
-                let value_str = stringify_simple_value(value_field)?;
-                let normalized = normalize_type_name(&value_str).ok_or_else(|| {
-                    AnalyzeErrorKind::InvalidAttributeBody {
-                        reason: format!(
-                            "unknown attribute type {value_str:?} — \
-                             expected one of: text, unsigned-integer, \
-                             signed-integer, float, boolean, entity, \
-                             bytes"
-                        ),
-                    }
-                })?;
-                shape.insert("as".into(), serde_json::Value::String(normalized.into()));
+                let kind = attribute_type(value_field, scope)?;
+                shape.insert("as".into(), serde_json::Value::String(kind));
             }
+            // The older spelling of a pick: `one` is `pick: last`, the
+            // default, and `many` is `pick: all`. Accepted so existing
+            // documents lower; a `pick:` beside it wins.
             "cardinality" => {
-                let value_str = stringify_simple_value(field)?;
+                let value_str = keyword_of(field, "many")?;
                 let normalized = normalize_cardinality_name(&value_str).ok_or_else(|| {
                     AnalyzeErrorKind::InvalidAttributeBody {
                         reason: format!(
                             "unknown cardinality {value_str:?} — \
-                             expected `one` or `many`"
+                             expected `:one` or `:many`; prefer `pick: :last` or `pick: :all`"
                         ),
                     }
                 })?;
-                shape.insert(
-                    "cardinality".into(),
-                    serde_json::Value::String(normalized.into()),
-                );
+                if normalized == "many" && !shape.contains_key("pick") {
+                    shape.insert(
+                        "pick".into(),
+                        serde_json::Value::String(tonk_notation::Pick::All.uri().into()),
+                    );
+                }
+            }
+            // `the:` names the relation, or lists relations best first:
+            // a ranked choice by relation, read as `top`.
+            "the" if matches!(field.value, FieldValue::List(_)) => {
+                let FieldValue::List(items) = &field.value else {
+                    unreachable!("guarded");
+                };
+                let mut listed = Vec::with_capacity(items.len());
+                for item in items {
+                    let scalar = tonk_notation::Field {
+                        name: field.name.clone(),
+                        value: item.clone(),
+                        name_range: field.name_range,
+                        value_range: field.value_range,
+                    };
+                    listed.push(serde_json::Value::String(stringify_simple_value(&scalar)?));
+                }
+                shape.insert("the".into(), serde_json::Value::Array(listed));
             }
             "the" => {
                 let value_str = stringify_simple_value(field)?;
                 shape.insert("the".into(), serde_json::Value::String(value_str));
             }
+            // Which of its relation's candidates a field reads (dialog's
+            // `Pick`): `last` (the default), `all`, `top` (what a listed
+            // `as:` or `the:` implies), `max`, `min`. Every pick keeps
+            // members of the candidate set; folds (sums, counts) belong
+            // to `reduce` in queries. Dialog checks the pick against the
+            // attribute when the concept is built.
+            "pick" => {
+                let keyword = keyword_of(field, "all")?;
+                let pick = tonk_notation::Pick::from_anchor(&keyword).ok_or_else(|| {
+                    AnalyzeErrorKind::InvalidAttributeBody {
+                        reason: format!(
+                            "unknown pick {keyword:?} — expected one of: {}",
+                            tonk_notation::Pick::ALL
+                                .iter()
+                                .map(|pick| format!(":{}", pick.anchor()))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    }
+                })?;
+                shape.insert("pick".into(), serde_json::Value::String(pick.uri().into()));
+            }
+            "select" => {
+                return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                    reason: "`select:` is now spelled `pick:`".into(),
+                }
+                .into());
+            }
             "description" => {
                 let value_str = require_string_description(field)?;
                 shape.insert("description".into(), serde_json::Value::String(value_str));
+            }
+            "role" => {
+                let value_str = keyword_of(field, "object")?;
+                if !ROLES.contains(&value_str.as_str()) {
+                    return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                        reason: format!(
+                            "unknown role {value_str:?} — expected one of: {}",
+                            ROLES.join(", ")
+                        ),
+                    }
+                    .into());
+                }
+                role = Some(value_str);
             }
             other => {
                 return Err(AnalyzeErrorKind::UnknownField {
@@ -172,6 +288,12 @@ pub(crate) fn parse_attribute_fields(
     }
     if let Some(keyed) = keyed {
         let the = shape["the"].as_str().unwrap_or_default().to_owned();
+        if the.is_empty() {
+            return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                reason: "a keyed collection reads one relation, not a ranked list".into(),
+            }
+            .into());
+        }
         if the.contains('/') {
             return Err(AnalyzeErrorKind::InvalidAttributeBody {
                 reason: format!(
@@ -211,7 +333,11 @@ pub(crate) fn parse_attribute_fields(
             .map_err(|e| AnalyzeErrorKind::InvalidAttributeBody {
                 reason: format!("descriptor URI did not parse as entity: {e:?}"),
             })?;
-    Ok(AttributeBody { descriptor, entity })
+    Ok(AttributeBody {
+        descriptor,
+        entity,
+        role,
+    })
 }
 
 /// A field the concept body asks to retract via `field: _`,
@@ -259,6 +385,10 @@ pub(crate) struct ConceptBody {
     /// and `db.meta/description` claims so the attribute is
     /// queryable via `attribute:` after the `concept!` commits.
     pub inline_attributes: Vec<AttributeBody>,
+    /// The command's names in the palette (`action:`, one name or a
+    /// list), each lowered to an `intent/action` fact on the concept by
+    /// [`action_application`].
+    pub action: Vec<String>,
 }
 
 pub(crate) fn parse_concept_body(
@@ -267,6 +397,7 @@ pub(crate) fn parse_concept_body(
 ) -> Result<ConceptBody, AnalyzeError> {
     let mut description: Option<String> = None;
     let mut transient: bool = false;
+    let mut action: Vec<String> = Vec::new();
     // Each entry: (field name, definition, optional). `with:` fields
     // are required; `maybe:` fields are optional.
     let mut fields: Vec<(String, AttributeDefinition, bool)> = Vec::new();
@@ -303,6 +434,46 @@ pub(crate) fn parse_concept_body(
             }
             "transient" => {
                 transient = parse_transient_tag(field)?;
+            }
+            // An action name is text the intent layer matches, so it is
+            // quoted: a bare word is a reference, and an action names
+            // no entity.
+            "action" => {
+                let bare = match &field.value {
+                    FieldValue::Symbol(name) => Some(name),
+                    FieldValue::List(items) => items.iter().find_map(|item| match item {
+                        FieldValue::Symbol(name) => Some(name),
+                        _ => None,
+                    }),
+                    _ => None,
+                };
+                if let Some(name) = bare {
+                    return Err(AnalyzeErrorKind::InvalidConceptBody {
+                        reason: format!(
+                            "`action:` takes the command's name as text; quote it: `\"{name}\"`"
+                        ),
+                    }
+                    .into());
+                }
+                let names = match &field.value {
+                    FieldValue::List(items) => items
+                        .iter()
+                        .map(|value| {
+                            stringify_simple_value(&tonk_notation::Field {
+                                value: value.clone(),
+                                ..field.clone()
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    _ => vec![stringify_simple_value(field)?],
+                };
+                if names.is_empty() || names.iter().any(|name| name.trim().is_empty()) {
+                    return Err(AnalyzeErrorKind::InvalidConceptBody {
+                        reason: "`action:` names the command; a name can't be empty".into(),
+                    }
+                    .into());
+                }
+                action = names;
             }
             "with" => {
                 parse_concept_field_block(
@@ -408,6 +579,7 @@ pub(crate) fn parse_concept_body(
         asserts_nothing,
         transient,
         inline_attributes,
+        action,
     })
 }
 
@@ -435,17 +607,15 @@ fn stub_attr() -> serde_json::Value {
 fn parse_concept_this(field: &tonk_notation::Field) -> Result<Option<Entity>, AnalyzeError> {
     match &field.value {
         FieldValue::Uri(uri) => {
-            let entity = uri
-                .parse()
-                .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                    AnalyzeError::at(
-                        AnalyzeErrorKind::InvalidSubjectUri {
-                            subject: uri.clone(),
-                            reason: e.to_string(),
-                        },
-                        field.value_range,
-                    )
-                })?;
+            let entity = uri.parse().map_err(|e: dialog_artifacts::IdentityError| {
+                AnalyzeError::at(
+                    AnalyzeErrorKind::InvalidSubjectUri {
+                        subject: uri.clone(),
+                        reason: e.to_string(),
+                    },
+                    field.value_range,
+                )
+            })?;
             Ok(Some(entity))
         }
         _ => Ok(None),
@@ -498,6 +668,25 @@ fn parse_concept_field_block(
                 sub.name_range,
             ));
         }
+        // An attribute body's own keys directly under `with:`/`maybe:`
+        // are an inline definition missing its field name: `the:` and
+        // `as:` are no concept field's name. Said so, rather than read
+        // as a field named `the` or `as` referring to an attribute,
+        // which fails on the relation not being an entity URI, or on
+        // the type entity not being an attribute.
+        if matches!(sub.name.as_str(), "the" | "as") {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::InvalidConceptBody {
+                    reason: format!(
+                        "`{name}:` directly under `{block}:` is an attribute body without a \
+                         field name — `{block}:` maps each field name to its attribute, so \
+                         nest the body under the field: `{block}:` / `<field>:` / `{name}: …`",
+                        name = sub.name
+                    ),
+                },
+                sub.name_range,
+            ));
+        }
         // Reject a field name declared twice (in one block or across
         // `with:`/`maybe:`) — a field is required or optional, never
         // both. Anchor the diagnostic at the second occurrence.
@@ -523,7 +712,7 @@ fn parse_concept_field_block(
             // Inline attribute definition. Parse it as an attribute
             // body and register it for emission as a separate
             // meta-head plan.
-            let plan = parse_attribute_fields(attr_fields)?;
+            let plan = parse_attribute_fields(attr_fields, scope)?;
             let resolved = AttributeDefinition {
                 entity: plan.entity.clone(),
                 descriptor: plan.descriptor.clone(),
@@ -559,14 +748,31 @@ fn resolve_concept_field(
             })
         }
         FieldValue::Uri(uri) => {
-            let entity: Entity =
-                uri.parse()
-                    .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                        AnalyzeErrorKind::InvalidSubjectUri {
-                            subject: uri.clone(),
-                            reason: e.to_string(),
-                        }
-                    })?;
+            // A field's value here is the attribute it reads, by its
+            // entity. A relation (`io.gozala.person/name`) is not one,
+            // and neither is a type (`:text`): both are keys of the
+            // attribute body the field would declare inline instead.
+            let Ok(entity) = uri.parse::<Entity>() else {
+                return Err(AnalyzeErrorKind::InvalidConceptBody {
+                    reason: format!(
+                        "field {field_name:?} refers to `{uri}`, which is a relation, not an \
+                         attribute entity — name a declared attribute (its `&anchor`), or \
+                         declare the attribute inline: `{field_name}:` / `the: {uri}` / \
+                         `as: …` / `description: …`"
+                    ),
+                }
+                .into());
+            };
+            if tonk_notation::type_uri(uri).is_some() {
+                return Err(AnalyzeErrorKind::InvalidConceptBody {
+                    reason: format!(
+                        "field {field_name:?} refers to `{uri}`, which is a type, not an \
+                         attribute — a field's type is declared in its attribute body: \
+                         `{field_name}:` / `the: <relation>` / `as: {uri}` / `description: …`"
+                    ),
+                }
+                .into());
+            }
             scope.attribute_by_entity(&entity).ok_or_else(|| {
                 AnalyzeErrorKind::UnknownNameReference {
                     field: field_name.into(),
@@ -610,24 +816,29 @@ pub(crate) fn attribute_application(
         "id".into(),
         Term::Constant(Value::String(descriptor.the().to_string())),
     );
-    let type_name = descriptor
+    // The value type, as the entity dialog names it (`text:`), when
+    // the attribute has one.
+    if let Some(kind) = descriptor
         .content_type()
-        .and_then(|ty| serde_json::to_value(ty).ok())
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default();
-    terms.insert("type".into(), Term::Constant(Value::String(type_name)));
-    let cardinality_name = serde_json::to_value(descriptor.cardinality())
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "one".into());
-    terms.insert(
-        "cardinality".into(),
-        Term::Constant(Value::String(cardinality_name)),
-    );
+        .and_then(|kind| kind.uri().parse::<Entity>().ok())
+    {
+        terms.insert("as".into(), Term::Constant(Value::Entity(kind)));
+    }
     terms.insert(
         "description".into(),
         Term::Constant(Value::String(descriptor.description().to_owned())),
     );
+    // The pick the attribute reads under, as the entity dialog names
+    // it (`all:`), and the values its `as:` lists as a JSON list, best
+    // first: a reader reconstructing the descriptor needs both.
+    if let Ok(pick) = descriptor.pick().uri().parse::<Entity>() {
+        terms.insert("pick".into(), Term::Constant(Value::Entity(pick)));
+    }
+    if !descriptor.among().is_empty()
+        && let Ok(among) = serde_json::to_string(descriptor.among())
+    {
+        terms.insert("among".into(), Term::Constant(Value::String(among)));
+    }
     Application::Concept {
         query: ConceptQuery {
             terms,
@@ -834,17 +1045,70 @@ fn concept_field_retraction(
 
 /// Build the `dialog.attribute` built-in schema descriptor. Its
 /// fields map to the 5 EAVs every named attribute writes.
-fn attribute_schema() -> ConceptDescriptor {
-    fn cardinality_one() -> serde_json::Value {
-        serde_json::Value::String("one".into())
+/// Build the `Application` asserting an attribute's intent role: one
+/// fact, `tonk.dialog.intent.attribute/role`, on the attribute entity.
+pub(crate) fn role_application(entity: &Entity, role: &str) -> Application {
+    let mut terms = Parameters::new();
+    terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
+    terms.insert(
+        "role".into(),
+        Term::Constant(Value::String(role.to_owned())),
+    );
+    Application::Concept {
+        query: ConceptQuery {
+            terms,
+            predicate: role_schema(),
+        },
+        join: Vec::new(),
+        this: ThisIntent::Uri(entity.clone()),
+        name: None,
     }
+}
+
+/// Build the `Application` asserting a command's palette name: one
+/// `tonk.dialog.intent.action/name` fact on the command's concept.
+pub(crate) fn action_application(entity: &Entity, name: &str) -> Application {
+    let mut terms = Parameters::new();
+    terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
+    terms.insert(
+        "name".into(),
+        Term::Constant(Value::String(name.to_owned())),
+    );
+    let predicate: ConceptDescriptor = serde_json::from_value(serde_json::json!({
+        "with": {
+            "name": { "the": "tonk.dialog.intent.action/name", "as": "Text", "cardinality": "many" },
+        }
+    }))
+    .expect("action schema is well-formed");
+    Application::Concept {
+        query: ConceptQuery { terms, predicate },
+        join: Vec::new(),
+        this: ThisIntent::Uri(entity.clone()),
+        name: None,
+    }
+}
+
+fn role_schema() -> ConceptDescriptor {
     let json = serde_json::json!({
         "with": {
-            "id":          { "the": "db.attribute/id",          "as": "Text", "cardinality": cardinality_one() },
-            "type":        { "the": "db.attribute/type",        "as": "Text", "cardinality": cardinality_one() },
-            "cardinality": { "the": "db.attribute/cardinality", "as": "Text", "cardinality": cardinality_one() },
-            "description": { "the": "db.meta/description",      "as": "Text", "cardinality": cardinality_one() },
-            "name":        { "the": "db.meta/name",             "as": "Text", "cardinality": cardinality_one() },
+            "role": { "the": "tonk.dialog.intent.attribute/role", "as": "Text", "cardinality": "one" },
+        }
+    });
+    serde_json::from_value(json).expect("role schema is well-formed")
+}
+
+fn attribute_schema() -> ConceptDescriptor {
+    let json = serde_json::json!({
+        "with": {
+            "id":          { "the": "db.attribute/id",          "as": "text:" },
+            "as":          { "the": "db.attribute/as",          "as": "entity:" },
+            "pick":        { "the": "db.attribute/pick",        "as": "entity:" },
+            "description": { "the": "db.meta/description",      "as": "text:" },
+            "name":        { "the": "db.meta/name",             "as": "text:" },
+            // The values an attribute's `as:` lists, a JSON list best
+            // first. Written only by an attribute that lists them;
+            // read back by `tonk_schema::concept::AttributeByEntity`.
+            "among":       { "the": "db.attribute/among",       "as": "text:" },
         }
     });
     serde_json::from_value(json).expect("attribute schema is well-formed")
@@ -915,35 +1179,50 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
         .expect("concept schema is well-formed")
 }
 
-/// Translate a user-facing attribute type name into dialog's
-/// serde discriminant.
-///
-/// The guide uses kebab-case-lowercase (`text`,
-/// `unsigned-integer`, `signed-integer`, `float`, `boolean`,
-/// `entity`, `bytes`); dialog's `Type` enum is PascalCase
-/// (`Text`, `UnsignedInteger`, …). The analyzer translates at
-/// the boundary so the user-facing surface is the only one
-/// anyone has to remember.
-///
-/// PascalCase is also accepted so internal callers and schemas
-/// authored before the guide rewrite work without
-/// double-translation.
-fn normalize_type_name(name: &str) -> Option<&'static str> {
-    match name {
-        "text" | "Text" => Some("Text"),
-        "unsigned-integer" | "UnsignedInteger" => Some("UnsignedInteger"),
-        "signed-integer" | "SignedInteger" => Some("SignedInteger"),
-        "float" | "Float" => Some("Float"),
-        "boolean" | "Boolean" => Some("Boolean"),
-        "entity" | "Entity" => Some("Entity"),
-        "bytes" | "Bytes" => Some("Bytes"),
-        // Dialog's type for "one struct, one fact" — a value whose
-        // bytes are a serialized record rather than an opaque blob.
-        // Spellable here because the built-in `view` declares one and
-        // an author's concept must be able to say the same thing.
-        "record" | "Record" => Some("Record"),
-        _ => None,
-    }
+/// The type an attribute's `as:` names, as the entity dialog names it
+/// by: a built-in type anchor (`text`, `integer`, `natural`, ... and
+/// the aliases `signed-integer` and `unsigned-integer`), a sized number
+/// type (`natural:64`, `float:32`), `number` (every number), or, quoted,
+/// the entity itself (`"text:"`) or the name an earlier release wrote
+/// (`"Text"`). An anchor the document declares under a type's name means
+/// the declaration, which is no type.
+fn attribute_type(field: &tonk_notation::Field, scope: &Scope) -> Result<String, AnalyzeError> {
+    use tonk_notation::{ValueType, type_uri};
+    let expected = || {
+        ValueType::ALL
+            .iter()
+            .map(|kind| kind.anchor())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let kind = match &field.value {
+        FieldValue::Symbol(name) => {
+            if scope.shadowed_builtins.lock().contains(name) {
+                return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                    reason: format!(
+                        "`{name}` names this document's own anchor `&{name}`, \
+                         not the built-in type; rename the anchor to use the type"
+                    ),
+                }
+                .into());
+            }
+            type_uri(name)
+        }
+        _ => type_uri(&stringify_simple_value(field)?),
+    };
+    kind.ok_or_else(|| {
+        AnalyzeErrorKind::InvalidAttributeBody {
+            reason: format!(
+                "unknown attribute type {:?} — expected one of: {}",
+                match &field.value {
+                    FieldValue::Symbol(name) => name.clone(),
+                    _ => stringify_simple_value(field).unwrap_or_default(),
+                },
+                expected()
+            ),
+        }
+        .into()
+    })
 }
 
 /// Validate a user-facing cardinality name. Dialog's serde
@@ -958,17 +1237,40 @@ fn normalize_cardinality_name(name: &str) -> Option<&'static str> {
     }
 }
 
-/// Coerce a "simple" attribute-body field into a string. Used
-/// for `the:`, `as:`, `cardinality:` — slots whose value is a
-/// short typed token (URI / type name / cardinality keyword).
-/// Symbols, URIs, and literals all flow through; variables,
-/// blanks, and nested mappings are rejected.
+/// Coerce a "simple" declaration field into a string. Used for
+/// `the:`, a quoted `as:` and `action:` — slots whose value is a URI
+/// or a literal. Bare symbols (references), variables, blanks, and
+/// nested mappings are rejected.
 fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, AnalyzeError> {
     Ok(match &field.value {
         FieldValue::Literal(Scalar::String(s)) => s.clone(),
         FieldValue::Literal(other) => scalar_to_string(other)?,
         FieldValue::Uri(s) => s.clone(),
-        FieldValue::Symbol(s) => s.clone(),
+        // A bare symbol is a reference to an anchor, never text: a
+        // relation is written as a URI (`xyz.tonk.task/title`) and a
+        // name as a quoted string.
+        FieldValue::Symbol(s) => {
+            return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                reason: format!(
+                    "`{field}: {s}` reads `{s}` as a reference to an anchor; \
+                     write a URI or a quoted string (`{field}: \"{s}\"`)",
+                    field = field.name
+                ),
+            }
+            .into());
+        }
+        FieldValue::Include(include) => {
+            return Err(
+                super::field::unexpanded_include(include, None).with_range(field.value_range)
+            );
+        }
+        FieldValue::List(_) => {
+            return Err(AnalyzeErrorKind::UnsupportedFieldValue {
+                field: field.name.clone(),
+                form: "a list (only an attribute's `the:` or `as:` and a command's `action:` take one)",
+            }
+            .into());
+        }
         FieldValue::Variable(_)
         | FieldValue::Blank
         | FieldValue::Nested(_)
@@ -982,6 +1284,35 @@ fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, Analyz
     })
 }
 
+/// The keyword a keyword-valued field holds: `pick: :all` is `all`.
+///
+/// A pick, a cardinality or a role is a fixed word, never an entity,
+/// so the field also reads the spellings earlier releases wrote, the
+/// bare word (`pick: all`) and the quoted word (`cardinality: "one"`):
+/// the templates and notebooks those releases published are written
+/// that way, and a release that still reads them cannot write the
+/// keyword. `example` is the keyword the message suggests when the
+/// value is none of these.
+fn keyword_of(field: &tonk_notation::Field, example: &str) -> Result<String, AnalyzeError> {
+    let name = &field.name;
+    match &field.value {
+        FieldValue::Uri(uri) => match uri.strip_suffix(':') {
+            Some(keyword) if !keyword.is_empty() && !keyword.contains(':') => {
+                Ok(keyword.to_owned())
+            }
+            _ => Err(AnalyzeErrorKind::InvalidAttributeBody {
+                reason: format!("`{name}:` takes a keyword such as `:{example}`, not {uri:?}"),
+            }
+            .into()),
+        },
+        FieldValue::Symbol(word) | FieldValue::Literal(Scalar::String(word)) => Ok(word.clone()),
+        _ => Err(AnalyzeErrorKind::InvalidAttributeBody {
+            reason: format!("`{name}:` takes a keyword such as `:{example}`"),
+        }
+        .into()),
+    }
+}
+
 /// Coerce a `description:` field into its string content. Only
 /// quoted string literals are accepted — bare symbols would
 /// match the symbol charset (lowercase, no spaces, no
@@ -992,6 +1323,8 @@ fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, Analyz
 fn require_string_description(field: &tonk_notation::Field) -> Result<String, AnalyzeError> {
     match &field.value {
         FieldValue::Literal(Scalar::String(s)) => Ok(s.clone()),
+        // Prose kept in its own file is still prose.
+        FieldValue::Literal(Scalar::Included(bytes)) => super::field::included_text(bytes),
         FieldValue::Symbol(s) => Err(AnalyzeErrorKind::InvalidAttributeBody {
             reason: format!(
                 "`description:` value {s:?} looks like a bare symbol — write a \

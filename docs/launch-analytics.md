@@ -1,12 +1,12 @@
 # Launch analytics runbook
 
-Launch onboarding is measured as PostHog events within one browser session.
-All insights should filter `environment` to the intended deployment before
-comparing channels.
+Launch onboarding uses production-only profile activity. Signup cohorts have
+a seven-day follow-up window across page loads. Client events measure observed
+profile activity, not authoritative account totals.
 
 The saved [Launch onboarding dashboard](https://eu.posthog.com/project/70116/dashboard/929973)
-contains the six funnel and trend insights below. They remain empty until a
-build carrying this event contract is deployed and receives traffic.
+contains the six production-only insights below. Definitions are versioned in
+`docs/analytics/metrics-dashboard.json`.
 
 ## Acquisition channels
 
@@ -46,45 +46,39 @@ does not disclose the space DID or name.
 
 ## Dashboard insights
 
-The saved launch dashboard already uses the first six definitions. After a
-build with the referral schema is deployed, add and save the last two:
+The saved launch dashboard contains:
 
-1. **Onboarding funnel**, ordered within one PostHog session:
-   - `visit`;
-   - `account_created`;
-   - `space_conversion`;
-   - `space_shared`.
-   Break down by `channel`, then `entry_type`.
-2. **Space acquisition funnel**: the same first two steps filtered to
-   `entry_type=shared_space`, followed by `space_conversion` where
-   `conversion=joined`.
-3. **Builder activation funnel**: `account_created`,
-   `space_conversion` where `conversion=created`, then `space_shared`.
-4. **Signup conversion by entry route**: `visit` followed by
-   `account_created`, broken down by `entry_route`. Filter to the reviewed
-   How to Tonk `entry_space_id` for its subpage report.
-5. **Space conversion mix**: `space_conversion` trends broken down by
-   `conversion` and `channel`.
-6. **Shared-space reach**: unique `space_id` on `space_shared`, broken down by
-   `channel`.
-7. **Traffic by platform**: `visit` trends broken down by `source_platform`,
-   with `source_detection` as a secondary breakdown or filter. Keep `direct`
-   visible: native apps commonly suppress browser referrers, so it is real
-   missing evidence rather than a platform claim.
-8. **Traffic by referring space**: `visit` trends filtered to
-   `entry_space_id is set`, broken down by `entry_space_id`, then
-   `source_platform`. Compare unique persons and sessions as well as raw events
-   before treating repeated opens as meaningful reach.
+1. **Signup → first space**: identified signup profiles, then successful creation
+   or joining, then sharing. Each stage must follow the previous stage and occur
+   within seven days of signup. Only signup cohorts with seven full days of
+   observation enter the denominator. Counts and percentages share that cohort.
+2. **Signup → create & share**: the same cohort/window, restricted to creating a
+   space before sharing.
+3. **Signup profiles by channel**: distinct identified profiles with a completed
+   signup in the last 90 days. Creation precedes email activation.
+4. **Joined profiles by channel**: distinct identified profiles with successful
+   joins, including people who already had an account. This is not a signup rate.
+5. **Spaces created / joined**: weekly successful operation counts.
+6. **Spaces shared**: weekly distinct hashed space IDs with an invite minted.
 
-Every event has PostHog's native timestamp. The existing hashed profile
-`distinct_id` is refreshed after account creation and supplies anonymous user
-correlation; no UCAN, delegation, account DID, or profile DID is sent.
-`space_id` and dynamic `entry_route` segments are short local hashes.
+All six queries explicitly filter production. The dashboard also carries that
+filter. The two conversion charts deduplicate by the stable profile hash and
+follow activity across page loads, rather than requiring the same in-memory
+PostHog session. Unresolved anonymous visits are not a conversion denominator.
+These are profile journeys; sharing need not refer to the same space as the
+earlier conversion. No account or person count is inferred from these profile counts. Cohorts and
+conversion rates omit unidentified or unobserved client events and cannot
+reconstruct cross-device account journeys.
 
-The browser project key and link parameters are public, so these insights are
-directional analytics rather than a payment ledger. Use them to identify and
-review creator-driven traffic. Automated compensation requires server-side
-signed attribution, deduplication, and fraud controls outside PostHog.
+Raw arrival counts and reviewed source-platform breakdowns remain available
+separately on the main dashboard. Avoid treating page opens as people, and do
+not splice them into the signup cohort denominator. High-cardinality hashed
+routes are intentionally absent from the overview; drill into a reviewed route
+when answering a specific acquisition question.
+
+See [population and retention definitions](analytics/metrics.md) for the exact
+limits and authoritative account query. No UCAN, delegation, account DID, or
+profile DID is sent. Space IDs and dynamic entry-route segments are hashes.
 
 ## How to Tonk
 
@@ -103,3 +97,8 @@ ingestion key baked into the web app is public and write-only; a personal API
 key capable of reading insights must never be shipped to a space or browser.
 The proxy should expose only the saved dashboard's aggregate results, not an
 arbitrary PostHog query surface.
+
+For population counts, use the [metric definitions](analytics/metrics.md).
+`account_created` precedes email activation; funnel persons are not unique
+accounts. Signup receipts, activation attempts, and CONTROL account totals
+remain separate.
