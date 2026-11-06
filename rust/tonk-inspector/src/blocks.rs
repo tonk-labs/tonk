@@ -454,6 +454,64 @@ pub struct Block {
     pub key: Option<String>,
 }
 
+/// Order blocks by key. Keys are positions that sort in byte order;
+/// blocks without one stay at the end, in the order they came.
+pub fn sort_by_key(blocks: &mut [Block]) {
+    blocks.sort_by(|a, b| match (&a.key, &b.key) {
+        (Some(a), Some(b)) => a.cmp(b),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+}
+
+/// Give each row that shows no entry the key its block had last time.
+///
+/// The rows are two renders the element reads side by side: the block
+/// rows and the notebook's order entries. They do not update together,
+/// so a block can show its source while its entry is momentarily
+/// missing. Reading that as "this block has no key" put the block at the
+/// end of the document, and the next commit PLACED it there, writing a
+/// second entry beside the one it already had. A block that was keyed
+/// before keeps that key until its entry renders again; only a block
+/// that never had one reads as unplaced.
+pub fn carry_keys(rows: &mut [Block], base: &[Block]) {
+    for row in rows.iter_mut().filter(|row| row.key.is_none()) {
+        row.key = base
+            .iter()
+            .find(|block| block.entity == row.entity)
+            .and_then(|block| block.key.clone());
+    }
+}
+
+/// The rows a commit's inserted blocks became, matched by source among
+/// the rows `base` does not hold, in the order of `inserts`.
+///
+/// An inserted block has landed once its row AND its entry show. Taking
+/// it on its row alone put it at the end (it had no key yet), and an edit
+/// typed meanwhile placed it there for good. `keyless` accepts a row with
+/// no entry: for when the wait is over and an insert whose position never
+/// derived should still show somewhere.
+pub fn landed_inserts<'a>(
+    rows: &'a [Block],
+    base: &[Block],
+    inserts: &[String],
+    keyless: bool,
+) -> Vec<&'a Block> {
+    let mut fresh: Vec<&Block> = rows
+        .iter()
+        .filter(|row| !base.iter().any(|block| block.entity == row.entity))
+        .filter(|row| keyless || row.key.is_some())
+        .collect();
+    let mut landed = Vec::new();
+    for source in inserts {
+        if let Some(at) = fresh.iter().position(|row| &row.source == source) {
+            landed.push(fresh.remove(at));
+        }
+    }
+    landed
+}
+
 /// Positions for the blocks of a document, in the order given. Each
 /// item is a block entity and its current key, `None` when it has
 /// none (a block just created, or one whose entry never landed).
@@ -1250,6 +1308,85 @@ mod tests {
                 "{seed} is a position"
             );
         }
+    }
+
+    fn keyed(entity: &str, source: &str, key: Option<&str>) -> Block {
+        Block {
+            entity: entity.to_owned(),
+            source: source.to_owned(),
+            key: key.map(str::to_owned),
+        }
+    }
+
+    /// A block whose entry is missing from one read keeps the key it had,
+    /// so it stays where it was instead of reading as unplaced.
+    #[dialog_common::test]
+    fn it_carries_a_key_across_a_missing_entry() {
+        let base = vec![
+            keyed("id:a", "A", Some("N1")),
+            keyed("id:b", "B", Some("N5")),
+            keyed("id:c", "C", Some("N9")),
+        ];
+        // `b`'s row rendered, its entry did not: `read_rows` puts it last.
+        let mut rows = vec![
+            keyed("id:a", "A", Some("N1")),
+            keyed("id:c", "C", Some("N9")),
+            keyed("id:b", "B", None),
+        ];
+        carry_keys(&mut rows, &base);
+        sort_by_key(&mut rows);
+        let order: Vec<&str> = rows.iter().map(|b| b.entity.as_str()).collect();
+        assert_eq!(order, ["id:a", "id:b", "id:c"]);
+        assert_eq!(rows[1].key.as_deref(), Some("N5"));
+
+        // Nothing for a commit to re-place: every key is where it was.
+        let order: Vec<(String, Option<String>)> = rows
+            .iter()
+            .map(|b| (b.entity.clone(), b.key.clone()))
+            .collect();
+        assert!(assign_keys(&order).is_empty());
+    }
+
+    /// A block that never had a key is still unplaced: carrying only
+    /// fills in what was known.
+    #[dialog_common::test]
+    fn it_leaves_a_never_keyed_block_unplaced() {
+        let base = vec![keyed("id:a", "A", Some("N1")), keyed("id:b", "B", None)];
+        let mut rows = vec![keyed("id:a", "A", Some("N1")), keyed("id:b", "B", None)];
+        carry_keys(&mut rows, &base);
+        assert_eq!(rows[1].key, None);
+    }
+
+    /// An entry that renders with a different key wins over the one
+    /// carried: carrying fills gaps, it never overrides what shows.
+    #[dialog_common::test]
+    fn it_takes_a_rendered_key_over_a_carried_one() {
+        let base = vec![keyed("id:a", "A", Some("N1"))];
+        let mut rows = vec![keyed("id:a", "A", Some("N7"))];
+        carry_keys(&mut rows, &base);
+        assert_eq!(rows[0].key.as_deref(), Some("N7"));
+    }
+
+    /// An inserted block counts as landed once its entry shows, not as
+    /// soon as its row does.
+    #[dialog_common::test]
+    fn it_waits_for_an_inserted_blocks_entry() {
+        let base = vec![keyed("id:a", "A", Some("N1"))];
+        let inserts = vec!["Hello world".to_owned()];
+        let rows = vec![
+            keyed("id:a", "A", Some("N1")),
+            keyed("id:new", "Hello world", None),
+        ];
+        assert!(landed_inserts(&rows, &base, &inserts, false).is_empty());
+        assert_eq!(landed_inserts(&rows, &base, &inserts, true).len(), 1);
+
+        let rows = vec![
+            keyed("id:a", "A", Some("N1")),
+            keyed("id:new", "Hello world", Some("N3")),
+        ];
+        let landed = landed_inserts(&rows, &base, &inserts, false);
+        assert_eq!(landed.len(), 1);
+        assert_eq!(landed[0].entity, "id:new");
     }
 
     fn sources(values: &[&str]) -> Vec<String> {
