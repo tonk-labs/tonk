@@ -133,6 +133,21 @@ final class SpaceAccessTests: XCTestCase {
     XCTAssertEqual(access.peopleSummary, "Your space · 2 people")
   }
 
+  func testPeopleSummaryCountsAgentMembersAsAccessGrants() {
+    let access = SpaceAccess(
+      members: [
+        SpaceMember(did: "did:key:zKai", name: "Kai", role: "tonk:founder", invitation: nil),
+        SpaceMember(
+          did: "did:key:zBot", name: "Standup Bot", role: "tonk:member", invitation: "tonk:i",
+          inviter: "did:key:zKai", kind: "tonk:agent"),
+      ],
+      agents: [AgentConnection(id: "a", subject: subject, expiresAt: 0)],
+      selfDid: "did:key:zKai")
+    XCTAssertTrue(access.members[1].isAgent)
+    XCTAssertFalse(access.members[0].isAgent)
+    XCTAssertEqual(access.peopleSummary, "Your space · 1 person, 2 access grants")
+  }
+
   func testRelativeTimes() {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(identifier: "UTC")!

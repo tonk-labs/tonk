@@ -95,16 +95,26 @@ public struct SpaceMember: Codable, Equatable, Sendable, Identifiable {
   public let name: String?
   public let role: String?
   public let invitation: String?
+  /// The account that issued the member's invite, when the roster records it.
+  public let inviter: String?
+  /// `tonk:agent` for an agent; absent for a person.
+  public let kind: String?
   public var id: String { did }
 
-  public init(did: String, name: String?, role: String?, invitation: String?) {
+  public init(
+    did: String, name: String?, role: String?, invitation: String?,
+    inviter: String? = nil, kind: String? = nil
+  ) {
     self.did = did
     self.name = name
     self.role = role
     self.invitation = invitation
+    self.inviter = inviter
+    self.kind = kind
   }
 
   public var isFounder: Bool { role == "tonk:founder" }
+  public var isAgent: Bool { kind == "tonk:agent" }
   public var displayName: String {
     let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     return trimmed.isEmpty ? "Member " + did.suffix(6) : trimmed
@@ -257,13 +267,15 @@ public struct SpaceAccess: Codable, Equatable, Sendable {
 
   public var liveAgents: [AgentConnection] { agents.filter(\.isLive) }
 
-  /// "Kai's space · 6 people, 3 agents".
+  /// "Kai's space · 6 people, 3 agents". Agents are the roster's agent members
+  /// plus live agent connections, which add no roster row of their own.
   public var peopleSummary: String {
     let founder = members.first(where: \.isFounder)
     let owner: String? =
       founder.map { $0.did == selfDid ? "Your space" : $0.displayName + "’s space" }
-    let people = members.count == 1 ? "1 person" : "\(members.count) people"
-    let agentCount = liveAgents.count
+    let personCount = members.filter { !$0.isAgent }.count
+    let people = personCount == 1 ? "1 person" : "\(personCount) people"
+    let agentCount = liveAgents.count + members.filter(\.isAgent).count
     let counts =
       agentCount == 0
       ? people : people + ", \(agentCount) access grant\(agentCount == 1 ? "" : "s")"
