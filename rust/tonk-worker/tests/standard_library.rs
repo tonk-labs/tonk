@@ -877,8 +877,18 @@ fn it_mints_an_invite_when_copying_a_hub_space_link() {
     );
     assert!(
         PROFILE_LIBRARY
-            .contains(r#"<tonk-share space={subject}><button type="button" role="menuitem">"#),
+            .contains(r#"<tonk-share space={subject}><button type="button" role="menuitem" aria-live="polite">"#),
         "the copy verb is a plain button inside the share, never a form submit"
+    );
+    assert!(
+        PROFILE_LIBRARY.contains(
+            r#"[data-share-state="blocked"]:is([data-share-blocked="needs-account"],[data-share-blocked="account-required"]) [data-share-copy-label="sign-in"]"#
+        ),
+        "a signed-out copy must say an account is needed, not fail silently"
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("self.watchShare(share);\n            return;"),
+        "clicking copy link must keep the card menu open until the share answers"
     );
     for (state, label) in [
         ("idle", "idle"),
