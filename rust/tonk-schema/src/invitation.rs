@@ -7,6 +7,7 @@
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 use dialog_ucan_core::DelegationChain;
+use dialog_varsig::Did;
 use serde::Serialize;
 
 use crate::domain::invitation::{Audience, Inviter, Subject};
@@ -106,6 +107,36 @@ impl Invitation {
     /// The invitation's entity.
     pub fn this(&self) -> &Entity {
         &self.this
+    }
+}
+
+/// The account that issued an invite: whoever signed the chain's leaf,
+/// lifted to the account behind it when the signer is a device.
+///
+/// A device acts for its account through a powerline grant
+/// (`account -> device`, any subject), so a leaf signed by a device whose
+/// grant is the hop before it is the account's invite. Otherwise the
+/// leaf's signer issued it directly.
+///
+/// Unlike [`Invitation::inviter`], which records the first hop's
+/// audience, this follows the chain to its end: a member who re-shares
+/// the space extends the chain past the founder, and the invite is the
+/// member's, not the founder's. Takes the chain as minted, before a
+/// claim redelegates it.
+pub fn inviting_account(chain: &DelegationChain) -> Did {
+    let hops: Vec<_> = chain.proofs().collect();
+    let leaf = hops
+        .last()
+        .expect("delegation chains are non-empty by construction");
+    let signer = leaf.issuer();
+    match hops.iter().rev().nth(1) {
+        Some(grant)
+            if grant.audience() == signer
+                && *grant.subject() == dialog_ucan_core::subject::Subject::Any =>
+        {
+            grant.issuer().clone()
+        }
+        _ => signer.clone(),
     }
 }
 
@@ -251,6 +282,103 @@ mod tests {
         let invitation = Invitation::from_chain(&chain).unwrap();
         assert_eq!(invitation.inviter.0.to_string(), root.did().as_str());
         assert_ne!(invitation.inviter.0.to_string(), device.did().as_str());
+    }
+
+    /// `issuer` grants `audience` over `subject`.
+    async fn hop(
+        issuer: &Ed25519Signer,
+        audience: &Did,
+        subject: UcanSubject,
+    ) -> dialog_ucan_core::Delegation<dialog_varsig::AnySignature> {
+        DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(issuer.clone()))
+            .audience(audience)
+            .subject(subject)
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap()
+    }
+
+    /// `space -> root -> device (any subject) -> ephemeral`: what an
+    /// account's device mints.
+    async fn device_minted(
+        space: &Ed25519Signer,
+        root: &Ed25519Signer,
+        device: &Ed25519Signer,
+        ephemeral: &Did,
+    ) -> DelegationChain {
+        let specific = UcanSubject::Specific(space.did());
+        DelegationChain::new(hop(space, &root.did(), specific.clone()).await)
+            .push(hop(root, &device.did(), UcanSubject::Any).await)
+            .unwrap()
+            .push(hop(device, ephemeral, specific).await)
+            .unwrap()
+    }
+
+    #[dialog_common::test]
+    async fn it_attributes_a_device_minted_invite_to_the_device_account() {
+        let space = signer(&SUBJECT_SEED).await;
+        let root = signer(&INVITER_SEED).await;
+        let device = signer(&CLAIMER_SEED).await;
+        let ephemeral = signer(&EPHEMERAL_SEED).await.did();
+        let chain = device_minted(&space, &root, &device, &ephemeral).await;
+
+        assert_eq!(inviting_account(&chain), root.did());
+    }
+
+    #[dialog_common::test]
+    async fn it_attributes_a_reshared_invite_to_the_member_who_reshared_it() {
+        // The founder's link, claimed by a member, who then mints their
+        // own: the chain runs through the founder and on to the member.
+        let space = signer(&SUBJECT_SEED).await;
+        let founder = signer(&INVITER_SEED).await;
+        let founder_device = signer(&[5u8; 32]).await;
+        let first_link = signer(&EPHEMERAL_SEED).await;
+        let member = signer(&[6u8; 32]).await;
+        let member_device = signer(&[7u8; 32]).await;
+        let second_link = signer(&[8u8; 32]).await.did();
+        let specific = UcanSubject::Specific(space.did());
+        let chain = device_minted(&space, &founder, &founder_device, &first_link.did())
+            .await
+            .push(hop(&first_link, &member.did(), specific.clone()).await)
+            .unwrap()
+            .push(hop(&member, &member_device.did(), UcanSubject::Any).await)
+            .unwrap()
+            .push(hop(&member_device, &second_link, specific).await)
+            .unwrap();
+
+        assert_eq!(inviting_account(&chain), member.did());
+        assert_eq!(
+            Invitation::from_chain(&chain)
+                .unwrap()
+                .inviter
+                .0
+                .to_string(),
+            founder.did().as_str(),
+            "the first-hop audience still names the founder"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_attributes_an_invite_signed_by_an_account_to_that_account() {
+        let space = signer(&SUBJECT_SEED).await;
+        let root = signer(&INVITER_SEED).await;
+        let ephemeral = signer(&EPHEMERAL_SEED).await.did();
+        let specific = UcanSubject::Specific(space.did());
+        let chain = DelegationChain::new(hop(&space, &root.did(), specific.clone()).await)
+            .push(hop(&root, &ephemeral, specific).await)
+            .unwrap();
+
+        assert_eq!(inviting_account(&chain), root.did());
+    }
+
+    #[dialog_common::test]
+    async fn it_attributes_a_one_hop_invite_to_its_signer() {
+        let subject = signer(&SUBJECT_SEED).await.did();
+        let inviter = signer(&INVITER_SEED).await.did();
+
+        assert_eq!(inviting_account(&minted_chain(&subject).await), inviter);
     }
 
     #[dialog_common::test]
