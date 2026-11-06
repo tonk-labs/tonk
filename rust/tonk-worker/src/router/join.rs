@@ -1778,7 +1778,11 @@ pub(crate) async fn mount_replica(
         .await
     {
         Ok(repository) => repository,
-        Err(_) => {
+        // Creating the replica is the answer to a replica that is not
+        // there. When one is there and failed to load, the create fails
+        // with "already exists", so the load's error is the one that says
+        // what went wrong: it is reported beside the create's.
+        Err(loaded) => {
             let space_credential = tonk_account::peer::mount_verifier(
                 tonk.profile.storage(),
                 tonk.registry.space_location(&key),
@@ -1786,7 +1790,10 @@ pub(crate) async fn mount_replica(
             )
             .await
             .map_err(|e| {
-                TonkWorkerError::Internal(format!("failed to create local replica '{key}': {e}"))
+                TonkWorkerError::Internal(format!(
+                    "failed to load local replica '{key}': {loaded}; \
+                     failed to create it: {e}"
+                ))
             })?;
             Repository::from(space_credential)
         }
@@ -1854,7 +1861,11 @@ pub(crate) async fn mount_replica_with_configuration(
         .await
     {
         Ok(repository) => repository,
-        Err(_) => {
+        // Creating the replica is the answer to a replica that is not
+        // there. When one is there and failed to load, the create fails
+        // with "already exists", so the load's error is the one that says
+        // what went wrong: it is reported beside the create's.
+        Err(loaded) => {
             let space_credential = tonk_account::peer::mount_verifier(
                 tonk.profile.storage(),
                 tonk.registry.space_location(&key),
@@ -1862,7 +1873,10 @@ pub(crate) async fn mount_replica_with_configuration(
             )
             .await
             .map_err(|e| {
-                TonkWorkerError::Internal(format!("failed to create local replica '{key}': {e}"))
+                TonkWorkerError::Internal(format!(
+                    "failed to load local replica '{key}': {loaded}; \
+                     failed to create it: {e}"
+                ))
             })?;
             Repository::from(space_credential)
         }
