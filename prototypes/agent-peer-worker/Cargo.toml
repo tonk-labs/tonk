@@ -19,9 +19,9 @@ base64 = "0.22"
 blake3 = "1.5"
 bytes = "1"
 console_error_panic_hook = "0.1"
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.7", version = "0.4.0-rc.7" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.7", version = "0.4.0-rc.7" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.7", version = "0.4.0-rc.7" }
 futures-util = "0.3"
 http = "1"
 http-body-util = "0.1"
