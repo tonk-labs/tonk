@@ -63,7 +63,7 @@ missing access blocks the audit. The empty App/custodian/cutover configuration i
 
 ## Keep the local example current
 
-`docs/try.md` is the source for https://tonk.xyz/try. It targets CLI v0.7.0-rc.1 on
+`docs/try.md` is the source for https://tonk.xyz/try. It targets CLI v0.7.0-rc.2 on
 Apple Silicon macOS. Linux is deferred for this example; a release alone does
 not add it. Analytics and update checks stay disabled.
 
