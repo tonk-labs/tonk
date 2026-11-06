@@ -28,6 +28,9 @@ jobs:
           - os: ubuntu-latest
             artifact-name: tonk-linux-x86_64
             identity: linux-cli
+          - os: ubuntu-24.04-arm
+            artifact-name: tonk-linux-arm64
+            identity: linux-arm64-cli
           - os: macos-latest
             artifact-name: tonk-macos-arm64
             identity: macos-cli

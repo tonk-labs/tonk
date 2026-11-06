@@ -25,10 +25,11 @@ def run(*args, **kwargs):
     return subprocess.run(args, check=True, text=True, capture_output=True, timeout=120, **kwargs).stdout.strip()
 
 
-def check_static(binary):
+def check_static(binary, target_platform):
     header = run("readelf", "-h", str(binary))
-    if "ELF64" not in header or "Advanced Micro Devices X86-64" not in header:
-        raise RuntimeError("expected an x86_64 ELF binary")
+    machine = {"linux-x64": "Advanced Micro Devices X86-64", "linux-arm64": "AArch64"}[target_platform]
+    if "ELF64" not in header or machine not in header:
+        raise RuntimeError(f"expected a {target_platform} ELF binary")
     program = run("readelf", "-lW", str(binary))
     dynamic = run("readelf", "-dW", str(binary))
     if "INTERP" in program or "(NEEDED)" in dynamic:
@@ -169,7 +170,7 @@ def check_tls(binary, temp, env):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
-    parser.add_argument("--platform", choices=("linux-x64", "darwin-arm64"), required=True)
+    parser.add_argument("--platform", choices=("linux-x64", "linux-arm64", "darwin-arm64"), required=True)
     parser.add_argument("--release-signed", action="store_true",
                         help="require Developer ID and notarization for a macOS release artifact")
     parser.add_argument("--expected-version", help="release tag version without the v prefix")
@@ -177,16 +178,17 @@ def main():
                         help="candidate checkout containing the npm launcher to test")
     args = parser.parse_args()
     native = (platform.system(), platform.machine())
-    expected = {"linux-x64": ("Linux", "x86_64"), "darwin-arm64": ("Darwin", "arm64")}
+    expected = {"linux-x64": ("Linux", "x86_64"), "linux-arm64": ("Linux", "aarch64"),
+                "darwin-arm64": ("Darwin", "arm64")}
     if native != expected[args.platform]:
         parser.error(f"{args.platform} requires a native runner, found {native}")
     if args.release_signed and args.platform != "darwin-arm64":
         parser.error("--release-signed is only applicable to macOS")
-    if args.platform == "linux-x64" and Path("/nix/store").exists():
+    if args.platform.startswith("linux-") and Path("/nix/store").exists():
         parser.error("run in a clean image without /nix/store")
     binary = args.binary.resolve()
-    if args.platform == "linux-x64":
-        check_static(binary)
+    if args.platform.startswith("linux-"):
+        check_static(binary, args.platform)
     else:
         check_macos(binary, args.release_signed)
     root = args.source_root.resolve() if args.source_root else Path(__file__).resolve().parent.parent
