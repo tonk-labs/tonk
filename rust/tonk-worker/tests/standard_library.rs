@@ -39,6 +39,7 @@ const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/note
 const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose-editor.yaml");
 const CODE_EDITOR_LIBRARY: &str = include_str!("../../tonk-core/assets/library/code-editor.yaml");
 const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
+const DOCUMENT_LIBRARY: &str = include_str!("../../tonk-core/assets/library/document.yaml");
 const META_LIBRARY: &str = include_str!("../../tonk-core/assets/library/meta.yaml");
 const VERSION_CONTROL_LIBRARY: &str =
     include_str!("../../tonk-core/assets/library/version-control.yaml");
@@ -1458,6 +1459,16 @@ async fn it_lowers_the_version_control_library() {
     .await;
 }
 
+#[dialog_common::test]
+async fn it_lowers_the_document_library() {
+    assert_component_library_lowers(
+        "document library (document.yaml)",
+        "document.yaml",
+        DOCUMENT_LIBRARY,
+    )
+    .await;
+}
+
 // The `on:` binding gates that used to live here — a dangling
 // `on:<name>`, a binding that cannot fill its command — scanned the
 // YAML with a second, indentation-sensitive parser that shipped two
@@ -1769,6 +1780,7 @@ fn every_handled_command_matches_attributes_its_declaration_carries() {
         TABLE_LIBRARY,
         NOTEBOOK_LIBRARY,
         PROSE_LIBRARY,
+        DOCUMENT_LIBRARY,
         ISSUE_LIBRARY,
     ] {
         for (name, attributes) in parse_command_attributes(document) {
@@ -1793,6 +1805,30 @@ fn every_handled_command_matches_attributes_its_declaration_carries() {
     // two unrelated things. The FAB's claim is pinned against the struct
     // in `fab_drift.rs` instead, which is where that pairing lives.
     let handled: Vec<(&str, Vec<String>)> = vec![
+        (
+            "document/replace",
+            tonk_schema::command::DocumentReplace::trigger_attributes(),
+        ),
+        (
+            "document/insert",
+            tonk_schema::command::DocumentInsert::trigger_attributes(),
+        ),
+        (
+            "document/splice",
+            tonk_schema::command::DocumentSplice::trigger_attributes(),
+        ),
+        (
+            "document/put",
+            tonk_schema::command::DocumentPut::trigger_attributes(),
+        ),
+        (
+            "document/remove",
+            tonk_schema::command::DocumentRemove::trigger_attributes(),
+        ),
+        (
+            "document/restore",
+            tonk_schema::command::DocumentRestore::trigger_attributes(),
+        ),
         (
             "space/create",
             tonk_schema::command::CreateSpace::trigger_attributes(),

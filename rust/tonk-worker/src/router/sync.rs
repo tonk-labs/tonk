@@ -768,6 +768,14 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
                 failed = true;
             }
         }
+        // The branch's documents, after the branch itself: a pull may
+        // have brought in heads claims whose bytes the document pass
+        // now fetches. Only dirty documents and documents an element
+        // asked for lately are touched, so an idle space costs nothing.
+        if let Err(e) = super::document::sync_documents(state, repo, &branch).await {
+            log!("{e}");
+            failed = true;
+        }
     }
 
     if failed {
@@ -1994,13 +2002,14 @@ pub async fn drain_sync(state: &AppState) {
 
     // Every currently-open repository — the pull population. Read the reactor's
     // cached repo map; a repo only appears once acquired, which every rendered
-    // space has done. A watched repo is left to its watch.
+    // space has done. A watched repo is left to its watch unless an active
+    // document needs bytes: branch watches only announce heads, not cells.
     let open: Vec<String> = {
         let tonk = state.read().await;
         tonk.reactor
             .spaces()
             .into_iter()
-            .filter(|repo| !tonk.sync_queue.is_watched(repo))
+            .filter(|repo| !tonk.sync_queue.is_watched(repo) || super::document::needs_sync(repo))
             .collect()
     };
 

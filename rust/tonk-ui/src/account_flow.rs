@@ -18,6 +18,8 @@ pub(crate) mod tests {
 
     use crate::helpers::{TestEnvironment, driver_with_prf, driver_with_prf_authenticator, goto};
 
+    include!("automerge_review_tests.rs");
+
     fn assert_prompt_command(prompt: &str, origin: &url::Url, invite: &str) -> Result<()> {
         let loopback = matches!(origin.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
         let origin = origin.origin().ascii_serialization();

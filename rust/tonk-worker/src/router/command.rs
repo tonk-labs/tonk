@@ -217,6 +217,14 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<super::repository::EnableSyncRequest>()
         .command::<tonk_schema::command::Load>()
         .command::<tonk_schema::command::PromoteMember>()
+        // Document edits from agents and pages. The behaviour is the
+        // host-neutral `tonk-document` crate; see `router/document.rs`.
+        .command::<tonk_schema::command::DocumentReplace>()
+        .command::<tonk_schema::command::DocumentInsert>()
+        .command::<tonk_schema::command::DocumentSplice>()
+        .command::<tonk_schema::command::DocumentPut>()
+        .command::<tonk_schema::command::DocumentRemove>()
+        .command::<tonk_schema::command::DocumentRestore>()
         .command::<tonk_schema::command::PublishSpace>()
         .command::<tonk_schema::command::UnpublishSpace>()
         .command::<tonk_schema::command::InviteAgent>()
@@ -273,6 +281,14 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
 /// of the three is here and nothing else is.
 fn space_commands() -> CommandRegistry<CommandEnv> {
     CommandRegistry::new()
+        // Document edits from agents and pages. The behaviour is the
+        // host-neutral `tonk-document` crate; see `router/document.rs`.
+        .command::<tonk_schema::command::DocumentReplace>()
+        .command::<tonk_schema::command::DocumentInsert>()
+        .command::<tonk_schema::command::DocumentSplice>()
+        .command::<tonk_schema::command::DocumentPut>()
+        .command::<tonk_schema::command::DocumentRemove>()
+        .command::<tonk_schema::command::DocumentRestore>()
         .command::<tonk_schema::command::Load>()
         // What the space's page has selected, recorded on the tab's site.
         .command::<tonk_schema::command::SiteSelect>()

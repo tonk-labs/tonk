@@ -252,6 +252,9 @@ pub async fn push(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
         )
         .await?;
     }
+    // Include document cells in explicit push as well as auto-sync, so a
+    // saved offline edit can be published without repeating the edit.
+    crate::document::sync_all(site).await;
     Ok(SyncOutcome {
         before: before.clone(),
         after: before,
@@ -290,6 +293,8 @@ pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
         )
         .await?;
     }
+    // The pulled heads may name document bytes this replica has not seen.
+    crate::document::sync_all(site).await;
     let after = branch.revision();
     Ok(SyncOutcome {
         before,

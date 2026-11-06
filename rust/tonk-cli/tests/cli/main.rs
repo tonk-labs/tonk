@@ -27,6 +27,7 @@ mod connection_compatibility;
 mod connections;
 mod context;
 mod data_verbs;
+mod document;
 mod eval_documents;
 mod handoff;
 mod include;
@@ -38,6 +39,7 @@ mod join_routing;
 mod live_migration;
 mod notation;
 mod render;
+mod review_document;
 #[cfg(feature = "integration-tests")]
 mod revoked_device;
 mod schema_read;

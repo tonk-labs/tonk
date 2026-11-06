@@ -185,6 +185,8 @@ class Grid implements TableGrid {
 
   /** Current sheet claims, in order (claims mode). */
   #sheetRows: SheetRow[] = [];
+  /** Cells holding concurrent values, as `<sheet id>!<A1>`. */
+  #conflicts: Set<string> = new Set();
   /** Cell claims by sheet entity → address (claims mode). */
   #cellIndex = new Map<string, Map<string, CellRow>>();
   /** Column/row sizing claims by sheet entity → letter / row number. */
@@ -510,6 +512,20 @@ class Grid implements TableGrid {
     }
 
     this.#refresh();
+  }
+
+  /** Mark the cells that hold concurrent values, as `<sheet id>!<A1>`.
+   *  They paint with the `conflict` part token, so a page can style
+   *  `::part(cell conflict)`. Document mode only: claims never conflict
+   *  this way. */
+  setConflicts(cells: readonly string[]): void {
+    const next = new Set(cells);
+    const same =
+      next.size === this.#conflicts.size &&
+      [...next].every((cell) => this.#conflicts.has(cell));
+    if (same) return;
+    this.#conflicts = next;
+    if (!this.#destroyed) this.#paintCells(this.#model.getSelectedSheet());
   }
 
   setReadOnly(readOnly: boolean): void {
@@ -1009,6 +1025,13 @@ class Grid implements TableGrid {
     if (this.#table.style.width !== tableWidth) {
       this.#table.style.width = tableWidth;
     }
+    // The entity id of the painted sheet, to look its conflicts up.
+    let sheetId: string | null = null;
+    if (this.#conflicts.size > 0) {
+      for (const [id, engineIndex] of this.#engineIndexByEntity) {
+        if (engineIndex === sheet) sheetId = id;
+      }
+    }
     for (let r = 1; r <= this.#rows; r++) {
       const tr = this.#tbody.rows[r - 1];
       const height = `${this.#model.getRowHeight(sheet, r)}px`;
@@ -1024,6 +1047,11 @@ class Grid implements TableGrid {
         // can target `::part(cell number)` etc.
         td.part.toggle("number", type === CELL_TYPE_NUMBER);
         td.part.toggle("error", type === CELL_TYPE_ERROR);
+        td.part.toggle(
+          "conflict",
+          sheetId !== null &&
+            this.#conflicts.has(`${sheetId}!${columnNameFromNumber(c)}${r}`),
+        );
       }
     }
     this.#paintFormula();
