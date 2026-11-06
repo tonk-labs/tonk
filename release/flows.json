@@ -5,6 +5,7 @@
   "manual_max_age_hours": 24,
   "artifacts": [
     "linux-cli",
+    "linux-arm64-cli",
     "macos-cli",
     "web"
   ],
