@@ -377,7 +377,7 @@ async fn enumerate_attributes(site: &TonkSite) -> Result<Vec<AttributeInfo>> {
 /// `id:<name>`; the *target* is the value. We invert that mapping
 /// here so callers can ask "what's this entity's display name?"
 /// in one lookup.
-async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String>> {
+pub(crate) async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String>> {
     let name_attr: dialog_artifacts::Relation = "db.name/referent"
         .parse()
         .context("db.name/referent should be a valid attribute URI")?;
@@ -618,7 +618,7 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
 
 /// A listed value as the notation writes it: an entity as its URI, text
 /// quoted, anything else as dialog spells it.
-fn value_to_notation(value: &dialog_artifacts::Value) -> String {
+pub(crate) fn value_to_notation(value: &dialog_artifacts::Value) -> String {
     match value {
         dialog_artifacts::Value::Entity(entity) => entity.to_string(),
         dialog_artifacts::Value::String(text) => quote_string(text),

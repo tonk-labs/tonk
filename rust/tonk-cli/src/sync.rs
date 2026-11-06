@@ -1,5 +1,5 @@
 //! `tonk push` / `tonk pull` — fast-forward sync between
-//! `main` and its configured upstream.
+//! the active branch and its configured upstream.
 //!
 //! Wraps dialog's `Branch::push()` / `Branch::pull()` with a
 //! tonk-flavored error type that surfaces the
@@ -217,7 +217,7 @@ fn authorization<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a
     None
 }
 
-/// Push the site's main branch to its upstream.
+/// Push the site's active branch to its upstream.
 ///
 /// `OK(outcome)` always means the operation completed; consult
 /// `outcome.advanced` to learn whether anything actually went
@@ -230,7 +230,7 @@ pub async fn push(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
     let branch = session.handle();
     let before = branch.revision();
     let upstream_after = run_remote(
-        "push main",
+        "push active branch",
         upstream_target(branch),
         branch.push().perform(&site.operator),
         map_push_error,
@@ -259,7 +259,7 @@ pub async fn push(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
     })
 }
 
-/// Pull from the site's upstream into the main branch.
+/// Pull from the site's upstream into the active branch.
 pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
     let session = site
         .branch()
@@ -268,7 +268,7 @@ pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
     let branch = session.handle();
     let before = branch.revision();
     let merged = run_remote(
-        "pull main",
+        "pull active branch",
         upstream_target(branch),
         branch.pull().perform(&site.operator),
         map_pull_error,
@@ -301,7 +301,7 @@ pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
     })
 }
 
-/// Classify the site's main branch against its upstream without
+/// Classify the site's active branch against its upstream without
 /// mutating local state.
 ///
 /// Reads the local head, fetches the upstream head read-only, and
@@ -592,9 +592,9 @@ mod tests {
         #[dialog_common::test]
         fn every_sync_phase_retains_its_exact_name_and_remote_uncertainty() {
             for operation in [
-                "push main",
+                "push active branch",
                 "push metadata",
-                "pull main",
+                "pull active branch",
                 "pull metadata",
                 "fetch status",
             ] {

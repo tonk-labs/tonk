@@ -36,8 +36,10 @@ mod invite_revocation;
 mod join_profile;
 mod join_routing;
 mod live_migration;
+mod log;
 mod notation;
 mod render;
+mod restore;
 #[cfg(feature = "integration-tests")]
 mod revoked_device;
 mod schema_read;
