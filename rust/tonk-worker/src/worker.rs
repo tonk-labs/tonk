@@ -2,10 +2,11 @@
 //!
 //! This module defines all JavaScript-visible bindings for the Tonk service worker.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
-};
+use std::sync::{Arc, atomic::AtomicU64};
+
+mod retirement;
+
+pub use retirement::Retirement;
 
 use crate::{
     LspHub,
@@ -469,7 +470,7 @@ pub struct TonkShared {
     /// Terminal lifecycle latch for this worker generation. Once a verified
     /// successor installs, no later query reconnect may recreate an SSE stream
     /// on the outgoing worker, even after `registration.waiting` clears.
-    pub(crate) retiring: Arc<AtomicBool>,
+    pub(crate) retiring: Arc<Retirement>,
     /// View-iframe bindings keyed by service-worker Client ID.
     /// Behind its own interior lock so binding registration /
     /// lookup doesn't contend with profile/operator access on
@@ -548,14 +549,17 @@ impl TonkState {
     }
 
     /// Enter the one-way retiring state and release every query stream.
+    /// The service worker retires through [`Retirement::release`] instead,
+    /// which needs no guard on the state.
+    #[cfg(any(not(target_arch = "wasm32"), feature = "volatile-storage", test))]
     pub(crate) fn retire(&self) {
-        self.retiring.store(true, Ordering::Release);
+        self.retiring.begin();
         self.reactor.shutdown();
     }
 
     /// Whether this worker generation has terminally begun retirement.
     pub(crate) fn is_retiring(&self) -> bool {
-        self.retiring.load(Ordering::Acquire)
+        self.retiring.is_retiring()
     }
 }
 
@@ -1964,7 +1968,7 @@ async fn open_state(
             admission: Default::default(),
             #[cfg(any(test, feature = "helpers"))]
             reject_admission_content_reads: Default::default(),
-            retiring: Arc::new(AtomicBool::new(false)),
+            retiring: Arc::default(),
             view_bindings: Default::default(),
             bridges: Default::default(),
             commands: crate::router::command_providers(),
@@ -1995,11 +1999,10 @@ pub struct TonkServiceWorker {
     /// (with optional path rewriting) or passed through to the
     /// network.
     state: AppState,
-    /// Lock-free twin of [`TonkState::retiring`]. The JavaScript-facing
-    /// `onupdatefound` callback sets it synchronously, before constructing the
-    /// async drain promise, so a state writer cannot delay the handoff
-    /// decision for a queued query/LSP reconnect.
-    retiring: Arc<AtomicBool>,
+    /// The same [`Retirement`] as [`TonkState::retiring`], held outside the
+    /// state lock so `onupdatefound` releases the streams without waiting
+    /// on whoever holds the state.
+    retiring: Arc<Retirement>,
     /// Handle to the language-server hub. Used by [`Self::onupdatefound`]
     /// to release in-flight SSE responses when a newer worker
     /// version begins installing — without this the active worker
@@ -2159,10 +2162,9 @@ impl TonkServiceWorker {
     #[wasm_bindgen(js_name = "onupdatefound")]
     pub fn on_update_found(&self) -> Promise {
         log!("Update found — releasing in-flight streams");
-        // This must precede every await, including acquisition of the shared
-        // state lock. A long-running state writer may delay the drain, but it
-        // must never let a later stream-open observe this generation as live.
-        self.retiring.store(true, Ordering::Release);
+        // This must precede every await, so no later stream-open observes
+        // this generation as live.
+        self.retiring.begin();
         // Stop all sync work FIRST. The spec keeps this worker alive until
         // every in-flight fetch and every `waitUntil` promise settles; a drain
         // scheduled on a fetch's `waitUntil`, or the self-scheduled loop's next
@@ -2174,20 +2176,18 @@ impl TonkServiceWorker {
             self.sync_loop.set(false);
         }
         let lsp = self.lsp.clone();
-        let state = self.state.clone();
+        // Release the query streams before the first await. If LSP shutdown
+        // ran first, the successor could activate and clear
+        // `registration.waiting` while query reconnects still saw this
+        // generation as live. The reactor gate makes the latch and every
+        // active/pending subscriber registration atomic. The overlay is
+        // exported first: shutdown drops the cached branches holding it.
+        //
+        // No state guard is taken. A writer queued behind a slow request
+        // would hold this release, and the successor's activation and every
+        // request the service worker holds for the release with it.
+        let overlays = self.retiring.release();
         future_to_promise(async move {
-            // Latch query retirement before the first independent await. If
-            // LSP shutdown ran first, the successor could activate and clear
-            // `registration.waiting` while query reconnects still saw this
-            // generation as live. The reactor gate makes the latch and every
-            // active/pending subscriber registration atomic. The overlay is
-            // exported first: shutdown drops the cached branches holding it.
-            let overlays = {
-                let tonk = state.read().await;
-                let overlays = tonk.reactor.export_overlays();
-                tonk.retire();
-                overlays
-            };
             lsp.shutdown().await;
             log!("Streams are released");
             // Written even when empty: the successor's activation waits for

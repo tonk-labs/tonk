@@ -745,7 +745,7 @@ pub(crate) mod tests {
                     reactor,
                     admission: Default::default(),
                     reject_admission_content_reads: Default::default(),
-                    retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    retiring: std::sync::Arc::default(),
                     view_bindings: Default::default(),
                     bridges: Default::default(),
                     sync_queue: Default::default(),
