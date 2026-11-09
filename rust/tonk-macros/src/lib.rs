@@ -126,8 +126,10 @@ fn build(lit: &LitStr) -> Result<TokenStream, String> {
 /// `Send` on `wasm32`. In a browser the handler's body runs as a local task
 /// whose result comes back over a channel. In a component on WASI there are
 /// no threads, so nothing can send the future anywhere: the body is wrapped
-/// in `crate::r#async::Unthreaded`, which says so. Natively the handler is
-/// left as it is.
+/// in `crate::r#async::Unthreaded`, which says so. Natively the body is
+/// boxed as a `dyn Future + Send`, so it is proven `Send` once, where it is
+/// boxed, instead of again for each trait query axum's routing makes of the
+/// handler's whole state machine.
 ///
 /// ```ignore
 /// #[tonk_macros::handler]
@@ -144,6 +146,10 @@ pub fn handler(_attribute: TokenStream, item: TokenStream) -> TokenStream {
         block,
     } = parse_macro_input!(item as syn::ItemFn);
     let statements = &block.stmts;
+    let output = match &sig.output {
+        syn::ReturnType::Default => quote! { () },
+        syn::ReturnType::Type(_, ty) => quote! { #ty },
+    };
     quote! {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         #(#attrs)* #vis #sig {
@@ -162,7 +168,12 @@ pub fn handler(_attribute: TokenStream, item: TokenStream) -> TokenStream {
 
         #[cfg(not(target_arch = "wasm32"))]
         #(#attrs)* #vis #sig {
-            #(#statements)*
+            let future: ::std::pin::Pin<
+                ::std::boxed::Box<
+                    dyn ::std::future::Future<Output = #output> + ::std::marker::Send,
+                >,
+            > = ::std::boxed::Box::pin(async move { #(#statements)* });
+            future.await
         }
     }
     .into()

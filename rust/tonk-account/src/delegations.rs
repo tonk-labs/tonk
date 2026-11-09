@@ -19,13 +19,15 @@
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_credentials::Signer;
+use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
+use dialog_effects::blob::Load as BlobLoad;
 use dialog_effects::blob::{Import as BlobImport, Read as BlobRead, Write as BlobWrite};
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_repository::{
-    Branch, CommitError, Hydrate, PullError, RemoteSite, ResolveEnv, Revision, SetUpstreamError,
-    Upstream, UpstreamBranch,
+    Branch, CommitError, PullError, RemoteSite, ResolveEnv, Revision, SetUpstreamError, Upstream,
+    UpstreamBranch,
 };
 use dialog_ucan::{Parameters, Scope, UcanDelegation};
 use dialog_ucan_core::command::Command;
@@ -56,7 +58,9 @@ where
         + Provider<BlobRead>
         + Provider<BlobWrite>
         + Provider<BlobImport>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<BlobLoad>
+        + dialog_common::Holds
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + Provider<Fork<RemoteSite, BlobRead>>
@@ -150,7 +154,9 @@ where
         + Provider<Attest>
         + Provider<BlobWrite>
         + Provider<BlobImport>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<BlobLoad>
+        + dialog_common::Holds
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync

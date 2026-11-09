@@ -1216,8 +1216,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-artifacts"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -1256,8 +1256,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-capability"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "async-trait",
  "base58",
@@ -1267,7 +1267,6 @@ dependencies = [
  "dialog-macros",
  "dialog-varsig",
  "ed25519-dalek 2.2.0",
- "rand 0.8.7",
  "rkyv",
  "serde",
  "serde-big-array",
@@ -1282,8 +1281,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-common"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1315,8 +1314,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-credentials"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1341,8 +1340,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-csv"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "async-trait",
  "base58",
@@ -1356,8 +1355,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-did-web"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "async-trait",
  "base58",
@@ -1379,8 +1378,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-effects"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "async-trait",
  "base58",
@@ -1394,8 +1393,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-identity"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1412,8 +1411,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-macros"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "blake3",
  "convert_case 0.6.0",
@@ -1424,8 +1423,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-network"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1441,16 +1440,16 @@ dependencies = [
 
 [[package]]
 name = "dialog-number"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "zmij",
 ]
 
 [[package]]
 name = "dialog-peer"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1490,8 +1489,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-peer-iroh"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "async-trait",
  "base58",
@@ -1514,8 +1513,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-query"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1568,8 +1567,10 @@ dependencies = [
  "serde",
  "serde_ipld_dagjson",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tonk-account",
  "tonk-evaluator",
  "tonk-intent",
  "tonk-lingo",
@@ -1581,8 +1582,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-remote-fs"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1598,8 +1599,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-remote-s3"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1637,8 +1638,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-remote-ucan"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1674,8 +1675,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-remote-ucan-s3"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1712,8 +1713,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-repository"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1756,8 +1757,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-search-tree"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1769,6 +1770,7 @@ dependencies = [
  "dashmap",
  "dialog-capability",
  "dialog-common",
+ "dialog-effects",
  "dialog-macros",
  "dialog-storage",
  "futures-core",
@@ -1788,8 +1790,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-storage"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1808,9 +1810,9 @@ dependencies = [
  "hyper",
  "hyper-util",
  "js-sys",
+ "libc",
  "parking_lot",
  "percent-encoding",
- "pidlock",
  "s3s",
  "serde",
  "serde_ipld_dagcbor",
@@ -1824,15 +1826,15 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams 0.5.0",
  "web-sys",
  "web-time",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "dialog-ucan"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "async-trait",
  "base58",
@@ -1852,8 +1854,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-ucan-core"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "base64",
  "dialog-common",
@@ -1881,8 +1883,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-varsig"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "dialog-common",
  "ed25519-dalek 2.2.0",
@@ -2008,6 +2010,12 @@ name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
+name = "dyn-clone"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "ecdsa"
@@ -3215,8 +3223,8 @@ dependencies = [
 
 [[package]]
 name = "merkle-reference"
-version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay#76677fd42207e633dd228727062ead78ecd7d03d"
+version = "0.4.0-rc.7"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fucan-relay-main#9fa15b51cfc13ec74b6b1ef132a744ab0879c450"
 dependencies = [
  "blake3",
 ]
@@ -3333,18 +3341,6 @@ name = "ndk-context"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
-
-[[package]]
-name = "nix"
-version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
-dependencies = [
- "bitflags 2.13.0",
- "cfg-if",
- "cfg_aliases",
- "libc",
-]
 
 [[package]]
 name = "nix"
@@ -3659,7 +3655,7 @@ checksum = "9cf20a545b305cf1da722b236b5155c9bb35f1d5ceb28c048bd96ca842f41b5b"
 dependencies = [
  "android_system_properties",
  "log",
- "nix 0.31.3",
+ "nix",
  "objc2",
  "objc2-foundation",
  "objc2-ui-kit",
@@ -3736,17 +3732,6 @@ checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
 dependencies = [
  "fixedbitset",
  "indexmap",
-]
-
-[[package]]
-name = "pidlock"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f837924d5368f9f35a1c404699de3c074311358035c77d7164f5948c08b31382"
-dependencies = [
- "nix 0.30.1",
- "thiserror 1.0.69",
- "windows",
 ]
 
 [[package]]
@@ -4150,6 +4135,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ref-cast"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e440fb4e4b4147295338efb76001ab9e4efc0e5839df2c47fc5ac2381d365c3"
+dependencies = [
+ "ref-cast-impl",
+]
+
+[[package]]
+name = "ref-cast-impl"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92ecd8964f8453721699a1ed72037b0db49ce2f5a5138486ee89bed6f67cdf3a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "regalloc2"
 version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4336,6 +4341,29 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "rmcp"
+version = "3.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d24a7e92f4bcaa36b97fa93c4fa7ca8f3e669eced949345b3462dba333c7f909"
+dependencies = [
+ "chrono",
+ "futures",
+ "indexmap",
+ "libc",
+ "pastey",
+ "pin-project-lite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -4568,6 +4596,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemars"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab508826f74a77ca9d5aba6ff19b522583ee3eaf28a19384ff3d0e5835fadf6e"
+dependencies = [
+ "chrono",
+ "dyn-clone",
+ "ref-cast",
+ "schemars_derive",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1c3a92094fa7d61aa124645844facb6b554dfc797136d0f5fd1f890e2bffc69"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4694,6 +4748,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "serde_derive_internals"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -5393,6 +5458,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 name = "tonk-access-service"
 version = "0.6.16-rc.1"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-trait",
  "base58",
@@ -5438,13 +5504,16 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tonk-account",
  "tonk-email",
  "tonk-identity",
  "tonk-invite",
+ "tonk-perf",
  "tonk-worker-api",
  "url",
  "urlencoding",
+ "wasm-bindgen",
  "worker",
  "worker-macros",
 ]
@@ -5459,6 +5528,7 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-credentials",
+ "dialog-did-web",
  "dialog-effects",
  "dialog-network",
  "dialog-peer",
@@ -5481,6 +5551,19 @@ dependencies = [
  "tonk-kernel-world",
  "url",
  "wasm-bindgen-test",
+]
+
+[[package]]
+name = "tonk-agent-peer"
+version = "0.6.16-rc.1"
+dependencies = [
+ "axum",
+ "dirs 5.0.1",
+ "rmcp",
+ "rustix",
+ "serde_json",
+ "tokio",
+ "tonk-worker",
 ]
 
 [[package]]
@@ -5522,6 +5605,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tonk-core",
+ "tonk-library",
  "tonk-notation",
  "tonk-schema",
  "tonk-template",
@@ -5544,6 +5628,7 @@ dependencies = [
  "dialog-common",
  "dialog-credentials",
  "dialog-csv",
+ "dialog-did-web",
  "dialog-effects",
  "dialog-peer",
  "dialog-query",
@@ -5614,6 +5699,8 @@ dependencies = [
  "dialog-common",
  "futures-util",
  "js-sys",
+ "serde",
+ "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -5661,6 +5748,7 @@ dependencies = [
  "serde_ipld_dagjson",
  "serde_json",
  "tokio",
+ "tonk-common",
  "tonk-host",
  "tonk-notation",
  "tonk-schema",
@@ -6038,6 +6126,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -6076,6 +6165,7 @@ dependencies = [
  "dialog-query",
  "html5gum",
  "ipld-core",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
@@ -6109,6 +6199,7 @@ dependencies = [
  "dialog-peer",
  "dialog-query",
  "dialog-repository",
+ "dialog-ucan",
  "dialog-ucan-core",
  "dialog-varsig",
  "futures-util",
@@ -6126,6 +6217,7 @@ dependencies = [
  "tonk-core",
  "tonk-evaluator",
  "tonk-identity",
+ "tonk-invite",
  "tonk-notation",
  "tonk-worker-api",
  "url",
@@ -6218,6 +6310,8 @@ dependencies = [
  "tonk-portal",
  "tonk-worker",
  "tonk-worker-api",
+ "tracing",
+ "tracing-subscriber",
  "url",
  "urlencoding",
  "wasm-bindgen",
@@ -6257,10 +6351,12 @@ dependencies = [
  "dialog-ucan-core",
  "dialog-varsig",
  "futures-util",
+ "getrandom 0.3.4",
  "getrandom 0.4.3",
  "hex",
  "http-body-util",
  "ipld-core",
+ "js-sys",
  "lsp-types",
  "parking_lot",
  "rand 0.9.5",
@@ -6269,6 +6365,7 @@ dependencies = [
  "serde",
  "serde_ipld_dagcbor",
  "serde_json",
+ "serde_yaml",
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",
@@ -6288,6 +6385,7 @@ dependencies = [
  "tonk-library",
  "tonk-macros",
  "tonk-notation",
+ "tonk-render",
  "tonk-router",
  "tonk-schema",
  "tonk-template",
@@ -6295,6 +6393,9 @@ dependencies = [
  "tower",
  "tower-service",
  "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "web-time",
  "wit-bindgen 0.61.1",
  "zeroize",
@@ -6307,6 +6408,8 @@ dependencies = [
  "dialog-artifacts",
  "dialog-capability",
  "dialog-common",
+ "dialog-effects",
+ "dialog-repository",
  "dialog-varsig",
  "indexmap",
  "ipld-core",
@@ -6566,6 +6669,7 @@ version = "1.23.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea5fab0d6c3c01ae70085a09cb03d4c7a1d6314e2b3e075392783396d724ca0a"
 dependencies = [
+ "getrandom 0.4.3",
  "js-sys",
  "wasm-bindgen",
 ]
@@ -7325,27 +7429,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
-name = "windows"
-version = "0.62.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "527fadee13e0c05939a6a05d5bd6eec6cd2e3dbd648b9f8e447c6518133d8580"
-dependencies = [
- "windows-collections",
- "windows-core",
- "windows-future",
- "windows-numerics",
-]
-
-[[package]]
-name = "windows-collections"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23b2d95af1a8a14a3c7367e1ed4fc9c20e0a26e79551b1454d72583c97cc6610"
-dependencies = [
- "windows-core",
-]
-
-[[package]]
 name = "windows-core"
 version = "0.62.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7356,17 +7439,6 @@ dependencies = [
  "windows-link",
  "windows-result",
  "windows-strings",
-]
-
-[[package]]
-name = "windows-future"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1d6f90251fe18a279739e78025bd6ddc52a7e22f921070ccdc67dde84c605cb"
-dependencies = [
- "windows-core",
- "windows-link",
- "windows-threading",
 ]
 
 [[package]]
@@ -7396,16 +7468,6 @@ name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
-
-[[package]]
-name = "windows-numerics"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e2e40844ac143cdb44aead537bbf727de9b044e107a0f1220392177d15b0f26"
-dependencies = [
- "windows-core",
- "windows-link",
-]
 
 [[package]]
 name = "windows-result"
@@ -7481,15 +7543,6 @@ dependencies = [
  "windows_x86_64_gnu 0.52.6",
  "windows_x86_64_gnullvm 0.52.6",
  "windows_x86_64_msvc 0.52.6",
-]
-
-[[package]]
-name = "windows-threading"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3949bd5b99cafdf1c7ca86b43ca564028dfe27d66958f2470940f73d86d75b37"
-dependencies = [
- "windows-link",
 ]
 
 [[package]]

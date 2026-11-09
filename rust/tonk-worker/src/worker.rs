@@ -20,13 +20,23 @@ use dialog_varsig::Did;
 #[cfg(feature = "persona")]
 use tokio::sync::Mutex;
 
+/// In-memory storage on WASM, for a hosted peer in an isolate that has
+/// neither IndexedDB nor OPFS (a Cloudflare Worker). Nothing survives the
+/// state it was opened for.
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    feature = "volatile-storage"
+))]
+pub type DefaultSpace = dialog_storage::provider::storage::VolatileSpace;
+
 /// Default storage type — filesystem on native.
 #[cfg(not(target_arch = "wasm32"))]
 pub type DefaultSpace = dialog_storage::provider::storage::NativeSpace;
 
 /// Default storage type on WASI: the layers and credentials of the kernel's
 /// host.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(feature = "volatile-storage")))]
 pub type DefaultSpace = tonk_kernel_world::space::KernelSpace;
 
 /// Concrete operator type for the default storage backend.
@@ -36,28 +46,79 @@ pub type DefaultOperator = Peer<DefaultSpace, Session>;
 pub type DefaultProfile = Peer<DefaultSpace>;
 
 /// Application state containing the profile and operator.
+///
+/// Cheap to clone: everything but the operator and its expiry sits
+/// behind one shared [`TonkShared`], which a `TonkState` derefs to. A
+/// request that waits on the network clones the state out of its guard
+/// rather than holding the guard across the round trip, so a writer
+/// (a profile switch, a session renewal, removing a space) never queues
+/// behind a slow remote, and no reader queues behind that writer.
+#[derive(Clone)]
 pub struct TonkState {
-    /// The user's persistent profile.
-    pub profile: DefaultProfile,
     /// The operator derived from the profile — the key that signs
     /// presign invocations. Rotated by
     /// [`session`](crate::session) before its delegation lapses, so it
     /// is not stable for the life of the worker.
     pub operator: DefaultOperator,
+    /// When the current operator's delegation stops being valid, unix
+    /// seconds. Consulted by the sync drain, which rotates the session
+    /// as this approaches.
+    pub session_expires_at: u64,
     /// The branch of the profile repository this state is on: the
     /// account's branch when signed in, an upstream-less one when not.
     /// Read from `meta` at boot; a switch records a new active branch
     /// there and rebuilds the state, so it is fixed for one state's life.
     pub active_branch: String,
+    shared: Arc<TonkShared>,
+}
+
+impl TonkState {
+    /// A state over `shared` on `active_branch`, acting as `operator`
+    /// until `session_expires_at`.
+    pub fn from_parts(
+        operator: DefaultOperator,
+        session_expires_at: u64,
+        active_branch: String,
+        shared: TonkShared,
+    ) -> Self {
+        Self {
+            operator,
+            session_expires_at,
+            active_branch,
+            shared: Arc::new(shared),
+        }
+    }
+
+    /// The shared part, to rewire a state no clone has been taken of
+    /// yet (one just built, before it is installed).
+    ///
+    /// # Panics
+    ///
+    /// If a clone of this state is alive.
+    pub fn shared_mut(&mut self) -> &mut TonkShared {
+        Arc::get_mut(&mut self.shared).expect("the state is not shared yet")
+    }
+}
+
+impl std::ops::Deref for TonkState {
+    type Target = TonkShared;
+
+    fn deref(&self) -> &TonkShared {
+        &self.shared
+    }
+}
+
+/// What a [`TonkState`] shares with its clones: everything but the
+/// operator, which a session renewal replaces, and the small values
+/// beside it.
+pub struct TonkShared {
+    /// The user's persistent profile.
+    pub profile: DefaultProfile,
     /// The storage pool every space is mounted in. Held so a rotated
     /// operator can be built over the *same* pool: a replacement with
     /// its own would leave the reactor's cached repository and branch
     /// handles talking to the retired one.
     pub storage: Storage<DefaultSpace>,
-    /// When the current operator's delegation stops being valid, unix
-    /// seconds. Consulted by the sync drain, which rotates the session
-    /// as this approaches.
-    pub session_expires_at: u64,
     /// Display name the profile was opened under. `Profile` does
     /// not retain this internally, so we carry it here for routes
     /// that report it back to the UI (e.g. `GET /api/profile`).
@@ -129,6 +190,9 @@ pub struct TonkState {
     /// Monotonic active-profile context. Browser clients bind to the value
     /// they first use and become stale when a profile promotion advances it.
     pub(crate) context_generation: Arc<AtomicU64>,
+    /// Shared across every profile's state, as the transition lock is:
+    /// raised as a swap begins, so syncs give up their guard on the state.
+    pub(crate) profile_swaps: crate::router::ProfileSwaps,
 }
 
 impl TonkState {
@@ -141,9 +205,8 @@ impl TonkState {
         self.site_origins.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// End a native host generation: enter the one-way retiring state and
+    /// End this worker generation: enter the one-way retiring state and
     /// release every query stream.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn shutdown(&self) {
         self.retiring.store(true, Ordering::Release);
         self.reactor.shutdown();
@@ -159,13 +222,10 @@ impl TonkState {
         let directory = directory
             .canonicalize()
             .map_err(|error| crate::TonkWorkerError::Internal(error.to_string()))?;
-        let registry = crate::device::Registry {
-            profile: "hosted".to_owned(),
-            directory: dialog_effects::storage::Directory::At(
-                directory.to_string_lossy().into_owned(),
-            ),
-            standing: Default::default(),
-        };
+        let registry = crate::device::Registry::new(
+            "hosted".to_owned(),
+            dialog_effects::storage::Directory::At(directory.to_string_lossy().into_owned()),
+        );
         let storage = registry.storage().await?;
         let profile = registry.open_profile(&storage, "hosted").await?;
         boot_state(storage, "hosted".to_owned(), profile, registry).await
@@ -430,6 +490,37 @@ pub(crate) async fn boot_state_with_profile_library(
     registry: crate::device::Registry,
     profile_library: crate::router::ProfileLibraryCache,
 ) -> Result<TonkState, crate::TonkWorkerError> {
+    let state = open_state(storage, profile_name, profile, registry, profile_library).await?;
+    bootstrap_profile(&state).await.map_err(|e| {
+        crate::TonkWorkerError::Internal(format!("failed to bootstrap profile meta: {e}"))
+    })?;
+    crate::router::identity::follow_signed_in_account(&state).await?;
+    Ok(state)
+}
+
+/// [`boot_state`] without the profile bootstrap: no meta commit, no
+/// profile library, no account overlays, no signed-in account to follow.
+///
+/// For a hosted peer, whose profile is a throwaway signing identity that
+/// is never synced or browsed: the bootstrap's commits and its
+/// `/library/profile.yaml` fetch cost every open and serve nothing.
+#[cfg(any(feature = "volatile-storage", test))]
+pub(crate) async fn boot_unbootstrapped_state(
+    storage: Storage<DefaultSpace>,
+    profile_name: String,
+    profile: DefaultProfile,
+    registry: crate::device::Registry,
+) -> Result<TonkState, crate::TonkWorkerError> {
+    open_state(storage, profile_name, profile, registry, Default::default()).await
+}
+
+async fn open_state(
+    storage: Storage<DefaultSpace>,
+    profile_name: String,
+    profile: DefaultProfile,
+    registry: crate::device::Registry,
+    profile_library: crate::router::ProfileLibraryCache,
+) -> Result<TonkState, crate::TonkWorkerError> {
     // A switch hands over the peer of the branch it leaves; the profile's
     // own branch is where every other branch's peer is derived from.
     let profile = if profile.state().name() == crate::router::repository::PROFILE_BRANCH {
@@ -479,40 +570,38 @@ pub(crate) async fn boot_state_with_profile_library(
         (branch, session)
     };
 
-    let state = TonkState {
-        profile,
-        operator: session.operator,
+    Ok(TonkState::from_parts(
+        session.operator,
+        session.expires_at,
         active_branch,
-        storage,
-        session_expires_at: session.expires_at,
-        profile_name,
-        reactor,
-        admission: Default::default(),
-        #[cfg(any(test, feature = "helpers"))]
-        reject_admission_content_reads: Default::default(),
-        retiring: Arc::new(AtomicBool::new(false)),
-        view_bindings: Default::default(),
-        commands: crate::router::command_providers(),
-        sync_queue: Default::default(),
-        clients: Default::default(),
-        seed_upgrades: Default::default(),
-        // Known before anything runs, the chores of starting included: they
-        // would mount spaces that are another worker's to hold.
-        site_origins: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-            crate::device::spaces_have_origins(),
-        )),
-        account_keys: Default::default(),
-        profile_library,
-        registry,
-        #[cfg(feature = "persona")]
-        profile_transition: Arc::new(Mutex::new(())),
-        context_generation: Arc::new(AtomicU64::new(0)),
-    };
-    bootstrap_profile(&state).await.map_err(|e| {
-        crate::TonkWorkerError::Internal(format!("failed to bootstrap profile meta: {e}"))
-    })?;
-    crate::router::identity::follow_signed_in_account(&state).await?;
-    Ok(state)
+        crate::worker::TonkShared {
+            profile,
+            storage,
+            profile_name,
+            reactor,
+            admission: Default::default(),
+            #[cfg(any(test, feature = "helpers"))]
+            reject_admission_content_reads: Default::default(),
+            retiring: Arc::new(AtomicBool::new(false)),
+            view_bindings: Default::default(),
+            commands: crate::router::command_providers(),
+            sync_queue: Default::default(),
+            clients: Default::default(),
+            seed_upgrades: Default::default(),
+            // Known before anything runs, the chores of starting included: they
+            // would mount spaces that are another worker's to hold.
+            site_origins: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                crate::device::spaces_have_origins(),
+            )),
+            account_keys: Default::default(),
+            profile_library,
+            registry,
+            #[cfg(feature = "persona")]
+            profile_transition: Arc::new(Mutex::new(())),
+            context_generation: Arc::new(AtomicU64::new(0)),
+            profile_swaps: Default::default(),
+        },
+    ))
 }
 
 /// Whether a page watches something this worker holds: a cached branch

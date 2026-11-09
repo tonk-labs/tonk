@@ -1,0 +1,13 @@
+{
+  "name": "tonk",
+  "owner": {
+    "name": "Tonk Labs"
+  },
+  "plugins": [
+    {
+      "name": "tonk",
+      "source": "./plugins/tonk",
+      "description": "Work in shared Tonk spaces through a local peer: join from a share link, read and write, and see things rendered by Tonk in the conversation."
+    }
+  ]
+}

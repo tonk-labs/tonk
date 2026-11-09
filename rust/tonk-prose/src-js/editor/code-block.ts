@@ -1,13 +1,15 @@
 // Code blocks as embedded code editors.
 //
-// When the `<tonk-code>` custom element is defined on the page, each
+// When the code element (`<tonk-code>` unless the host names another,
+// such as the library's `<code-editor>`) is defined on the page, each
 // code block mounts one as a node view — inheriting its CodeMirror
 // editing, its *lazily-loaded* per-language chunks (the `language`
 // attribute resolves to `tonk-code-lang-<id>.js` on demand), and its
 // theming. When `<tonk-code>` is not defined, the node view falls
 // back to a plain `<pre>` that ProseMirror edits natively, so the
 // block is always editable — the embedded editor is a progressive
-// enhancement, decided per node view at draw time.
+// enhancement, decided per node view at draw time, and the blocks are
+// redrawn as embedded editors if the element is defined later.
 //
 // Sync follows the official ProseMirror CodeMirror example: an
 // `updating` flag breaks echo loops, and CodeMirror→ProseMirror
@@ -95,12 +97,12 @@ class TonkCodeBlockView implements NodeView {
    *  once, so the next one removes the block. See `#maybeEscape`. */
   #armedForDelete = false;
 
-  constructor(node: Node, outer: EditorView, getPos: GetPos) {
+  constructor(node: Node, outer: EditorView, getPos: GetPos, tag: string) {
     this.#node = node;
     this.#outer = outer;
     this.#getPos = getPos;
 
-    this.#editor = document.createElement("tonk-code") as TonkCodeLike;
+    this.#editor = document.createElement(tag) as TonkCodeLike;
     this.#editor.setAttribute("value", node.textContent);
     const language = languageOf(node);
     if (language) this.#editor.setAttribute("language", language);
@@ -144,6 +146,17 @@ class TonkCodeBlockView implements NodeView {
   #maybeEscape(event: KeyboardEvent): void {
     const cm = this.#editor.view;
     if (!cm) return;
+    // While a completion list is open the arrows move through it.
+    // Escaping the block as well took the caret out of the cell, so a
+    // completion could not be picked with the keyboard at all. (Not
+    // `defaultPrevented`: CodeMirror's own line motion prevents the
+    // default too, and that is exactly the key that should escape.)
+    if (
+      (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+      this.#editor.shadowRoot?.querySelector(".cm-tooltip-autocomplete")
+    ) {
+      return;
+    }
     const { doc, selection } = cm.state;
     const main = selection.main;
     if (!main.empty) return;
@@ -276,7 +289,7 @@ class TonkCodeBlockView implements NodeView {
 }
 
 /** Fallback node view: a plain `<pre>` ProseMirror edits natively.
- *  Used when `<tonk-code>` isn't defined on the page. */
+ *  Used while the code element isn't defined on the page. */
 class PlainCodeBlockView implements NodeView {
   readonly dom: HTMLElement;
   readonly contentDOM: HTMLElement;
@@ -326,19 +339,20 @@ function arrowHandler(
   };
 }
 
-/** The code-block plugin bundle: node views + boundary keymap. */
-export function codeBlocks(): Plugin[] {
+/** The code-block plugin bundle: node views + boundary keymap. `tag`
+ *  names the code element to embed. */
+export function codeBlocks(tag: string): Plugin[] {
   return [
     new Plugin({
       props: {
         nodeViews: {
           code_block(node, view, getPos) {
             // Decided per node view, at draw time: pages that
-            // install <tonk-code> (its bundle lazy-loads language
+            // install the code element (its bundle lazy-loads language
             // chunks) get embedded editors; others keep a plain,
             // fully editable <pre>.
-            if (customElements.get("tonk-code")) {
-              return new TonkCodeBlockView(node, view, getPos);
+            if (customElements.get(tag)) {
+              return new TonkCodeBlockView(node, view, getPos, tag);
             }
             return new PlainCodeBlockView(node);
           },
@@ -352,4 +366,23 @@ export function codeBlocks(): Plugin[] {
       ArrowDown: arrowHandler("down"),
     }),
   ];
+}
+
+/** Redraw `view`'s code blocks as embedded editors once `tag` is
+ *  defined, when it is not yet. A node view is chosen at draw time, so
+ *  without this an element defined after the editor mounted (a library
+ *  component installed later, a bundle that arrived late) would never
+ *  reach the blocks already drawn. A direct `nodeViews` prop takes
+ *  precedence over the plugin's, and setting one redraws the document. */
+export function embedWhenDefined(view: EditorView, tag: string): void {
+  if (customElements.get(tag)) return;
+  void customElements.whenDefined(tag).then(() => {
+    if (view.isDestroyed) return;
+    view.setProps({
+      nodeViews: {
+        code_block: (node, outer, getPos) =>
+          new TonkCodeBlockView(node, outer, getPos, tag),
+      },
+    });
+  });
 }

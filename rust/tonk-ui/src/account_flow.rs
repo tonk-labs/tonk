@@ -918,6 +918,36 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Wait for `selector` to be displayed in the space's own view,
+    /// entering the view's frames afresh on every look. A frame that is
+    /// replaced meanwhile (a guest re-mounting, or the page loading again)
+    /// is detached, and searching it would never find what replaced it.
+    async fn wait_for_space_view_displayed(
+        driver: &WebDriver,
+        selector: &str,
+    ) -> Result<WebElement> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut last: String;
+        loop {
+            match enter_space_view(driver).await {
+                Ok(()) => match driver.find(By::Css(selector.to_string())).await {
+                    Ok(found) if found.is_displayed().await.unwrap_or(false) => return Ok(found),
+                    Ok(_) => last = "element was hidden".to_string(),
+                    Err(error) => last = error.to_string(),
+                },
+                Err(error) => last = error.to_string(),
+            }
+            if tokio::time::Instant::now() >= deadline {
+                driver.enter_default_frame().await.ok();
+                let state = page_diagnostic_state(driver).await;
+                return Err(anyhow!(
+                    "timed out waiting for `{selector}` in the space view; last={last}; page={state}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     async fn wait_for_displayed(driver: &WebDriver, selector: &str) -> Result<WebElement> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut last: String;
@@ -1624,6 +1654,101 @@ pub(crate) mod tests {
         }
     }
 
+    /// COLLAB-02: the actual emailed locator survives the passkey and activation
+    /// ceremony, then joins through the same command as the native sender.
+    #[dialog_common::test]
+    async fn it_joins_an_emailed_space_after_creating_and_confirming_an_account(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let sender = driver_with_prf(&env).await?;
+        sign_up(&sender, &env, "email-sender@example.com").await?;
+        let key = create_space_awaiting_remote(&sender, "Email invitation", true).await?;
+        sender.enter_default_frame().await?;
+        let pushed = post_json(
+            &sender,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("push invitation space", &pushed);
+        let root = get_json(&sender, "/api/identity/root").await?;
+        let root = successful_body("sending account", &root)["rootDid"].clone();
+        let info = get_json(&sender, &format!("/api/repository/{key}")).await?;
+        let subject = successful_body("shared space", &info)["subject"].clone();
+        let branch = active_branch(&sender).await?;
+        let id = "f2".repeat(32);
+        let request = "request:browser-email-send";
+        let field = |name: &str, kind: &str| serde_json::json!({"the":format!("xyz.tonk.send-email-invitation/{name}"),"as":kind,"cardinality":"one"});
+        let dispatched = post_json(&sender, &format!("/api/repository/profile:tonk/branch/{branch}/transact"), serde_json::json!({"claims":[{"op":"assert","application":{
+            "predicate":{"kind":"transient","concept":{"with":{
+                "id":field("id","Text"),"email":field("email","Text"),"space":field("space","Entity"),"account":field("account","Entity")
+            }}},"parameters":{"this":request,"id":id,"email":"email-recipient@example.com","space":subject,"account":root}
+        }}]})).await?;
+        successful_body("send email invitation", &dispatched);
+        let rows = await_subscription(&sender, &format!("/api/repository/profile:tonk/branch/{branch}/query"), serde_json::json!({
+            "predicate":{"with":{
+                "state":{"the":"xyz.tonk.email-invitation-status/state","as":"Text","cardinality":"one"},
+                "message":{"the":"xyz.tonk.email-invitation-status/message","as":"Text","cardinality":"one"}
+            }},"terms":{"this":request,"state":{"?":{"name":"state"}},"message":{"?":{"name":"message"}}}
+        }), "return (frame.conclusions || frame.asserted || []).some(row => row.fields?.state && row.fields.state !== 'pending');", 60000).await?;
+        let outcomes = rows["conclusions"]
+            .as_array()
+            .or_else(|| rows["asserted"].as_array())
+            .context("email outcome event has no rows")?;
+        anyhow::ensure!(
+            outcomes.iter().any(|row| row["fields"]["state"] == "sent"),
+            "email send outcome: {rows}"
+        );
+        let inbox: Vec<(String, String)> = reqwest::get(env.access_service.join("_test/emails")?)
+            .await?
+            .json()
+            .await?;
+        let locator = inbox
+            .iter()
+            .find(|(to, link)| {
+                to == "email-recipient@example.com" && link.contains("/email-invite#")
+            })
+            .context("invitation email missing")?
+            .1
+            .clone();
+        sender.quit().await?;
+        let recipient = driver_with_prf(&env).await?;
+        goto(&recipient, &locator).await?;
+        wait_for_displayed(&recipient, "#email-invite-account")
+            .await?
+            .click()
+            .await?;
+        run_cluster_ceremony(&recipient, "email-recipient@example.com").await?;
+        activate_in_another_tab(&recipient, &env, "email-recipient@example.com").await?;
+        wait_for_absent(&recipient, "#tonk-register").await?;
+        assert_eq!(recipient.current_url().await?.path(), "/email-invite");
+        assert_eq!(recipient.current_url().await?.fragment(), Some(id.as_str()));
+        // A page reload after signup must retain the locator and find the account.
+        recipient.refresh().await?;
+        wait_for_displayed(&recipient, "#email-invite-join")
+            .await?
+            .click()
+            .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        while !recipient.current_url().await?.path().starts_with("/space/") {
+            if tokio::time::Instant::now() >= deadline {
+                let message = element(&recipient, "#email-invite-status")
+                    .await?
+                    .text()
+                    .await?;
+                return Err(anyhow!("email invitation did not join: {message}"));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let joined = get_json(&recipient, &format!("/api/repository/{key}")).await?;
+        assert_eq!(
+            successful_body("joined emailed space", &joined)["subject"],
+            subject
+        );
+        recipient.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_finishes_signup_in_the_original_tab(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
@@ -2243,12 +2368,12 @@ pub(crate) mod tests {
         assert_eq!(desktop["hostDisplay"], "grid");
         assert_eq!(desktop["hostHeight"], desktop["viewportHeight"]);
         assert_eq!(desktop["page"], "rgb(232, 230, 228)");
-        assert_eq!(desktop["mainWidth"], 576);
+        assert_eq!(desktop["mainWidth"], 360);
         assert_eq!(desktop["mainCenter"], desktop["viewportCenter"]);
-        assert_eq!(desktop["ceremonyWidth"], 576);
+        assert_eq!(desktop["ceremonyWidth"], 360);
         assert_eq!(desktop["ceremonyTop"], 148);
         assert_eq!(desktop["logoWidth"], 132);
-        assert_eq!(desktop["actionHeight"], 36);
+        assert_eq!(desktop["actionHeight"], 48);
         assert_eq!(desktop["heading"], "activate your account");
         assert_eq!(desktop["overflow"], false);
 
@@ -2305,7 +2430,7 @@ pub(crate) mod tests {
             driver.quit().await?;
             return Ok(());
         }
-        let available = viewport - 32;
+        let available = (viewport - 32).min(360);
         assert_eq!(compact["mainWidth"], available);
         assert_eq!(compact["ceremonyWidth"], available);
         assert_eq!(compact["logoWidth"], 98);
@@ -2619,14 +2744,51 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A bare `/join` stays put and takes a pasted link from any host. The
+    /// paste joins in place: a link that is not one is refused on the
+    /// page, and one that does not redeem shows the join's failure, with
+    /// the seed never entering the address bar.
     #[dialog_common::test]
-    async fn it_returns_bare_join_visits_home(env: TestEnvironment) -> Result<()> {
+    async fn it_joins_a_link_pasted_on_a_bare_join_visit(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         wait_for_service_worker(&driver).await?;
 
         goto(&driver, env.tonk_web.join("join")?.as_str()).await?;
-        await_url_path(&driver, "/").await?;
-        enter_hub(&driver).await?;
+        // The page renders in the sealed guest frame.
+        enter_guest(&driver).await?;
+        let input = element(&driver, "join-paste input[name=link]").await?;
+
+        input.send_keys("not a link").await?;
+        element(&driver, "join-paste button[type=submit]")
+            .await?
+            .click()
+            .await?;
+        wait_for_text_containing(&driver, "[data-join-paste-error]", "not a link").await?;
+
+        // A ticket link on a host that does not exist: the claim cannot
+        // reach it, so the join fails where it was pasted.
+        let seed = bs58::encode([6u8; 32]).into_string();
+        let link = format!(
+            "https://sync.invalid.test/space/did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#{seed}"
+        );
+        let input = element(&driver, "join-paste input[name=link]").await?;
+        input.clear().await?;
+        input.send_keys(&link).await?;
+        element(&driver, "join-paste button[type=submit]")
+            .await?
+            .click()
+            .await?;
+        element(&driver, ".edge-wall--closed").await?;
+        element(&driver, "join-paste input[name=link]").await?;
+
+        // The address bar is the top page's, outside the guest.
+        driver.enter_default_frame().await?;
+        let here = driver.current_url().await?;
+        assert_eq!(here.path(), "/join", "a paste joins in place");
+        assert!(
+            !here.as_str().contains(&seed),
+            "the pasted seed never enters the address bar: {here}"
+        );
 
         driver.quit().await?;
         Ok(())
@@ -3325,6 +3487,90 @@ pub(crate) mod tests {
         assert_ne!(created[0], &source);
         assert!(after.contains(&source), "the original must remain");
         assert!(driver.current_url().await?.path().contains(created[0]));
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// SPACE-17: a URL naming a branch the space lacks offers to make it.
+    ///
+    /// `/space/{branch}@{did}` opens that branch. One the space does not
+    /// have shows the branch panel (not the "still arriving" panel a branch
+    /// with no library would otherwise fall into), and opening it makes
+    /// nothing. "branch off main" makes it from main: the panel goes and the
+    /// space's own view renders on the new branch.
+    #[dialog_common::test]
+    async fn it_makes_a_branch_a_url_names_from_the_panel(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        let key = create_space(&driver, "Branching").await?;
+        let did = if key.starts_with("did:key:") {
+            key.clone()
+        } else {
+            format!("did:key:{key}")
+        };
+        let name_on = |branch: &'static str| {
+            let driver = driver.clone();
+            let did = did.clone();
+            async move {
+                driver.enter_default_frame().await?;
+                let rows = post_json(
+                    &driver,
+                    &format!("/api/repository/{did}/branch/{branch}/query"),
+                    serde_json::json!({
+                        "predicate": { "with": { "name": {
+                            "the": "xyz.tonk.repo/name", "as": "Text", "cardinality": "one"
+                        } } },
+                        "terms": { "this": did, "name": { "?": { "name": "name" } } }
+                    }),
+                )
+                .await?;
+                Ok::<_, anyhow::Error>(
+                    rows["body"][0]["fields"]["name"]
+                        .as_str()
+                        .map(str::to_owned),
+                )
+            }
+        };
+
+        driver
+            .goto(env.tonk_web.join(&format!("space/draft@{did}"))?.as_str())
+            .await?;
+        enter_guest(&driver).await?;
+        wait_for_displayed(&driver, ".branch-missing").await?;
+        wait_for_text_containing(
+            &driver,
+            ".branch-missing .space-unknown-statement",
+            "no branch draft",
+        )
+        .await?;
+        let arriving = driver
+            .execute(
+                r#"return [...document.querySelectorAll('.space-unknown:not(.branch-missing)')]
+                       .some((panel) => panel.getBoundingClientRect().height > 0);"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            arriving.json().as_bool(),
+            Some(false),
+            "the space is here; only the branch is missing"
+        );
+        assert_eq!(
+            name_on("draft").await?,
+            None,
+            "opening the URL made nothing"
+        );
+
+        enter_guest(&driver).await?;
+        click(&driver, ".branch-missing button[value=\"main\"]").await?;
+        wait_for_absent(&driver, ".branch-missing").await?;
+        wait_for_space_view_displayed(&driver, ".blank-canvas").await?;
+        assert_eq!(
+            name_on("draft").await?.as_deref(),
+            Some("Branching"),
+            "the branch starts from main"
+        );
+
         driver.quit().await?;
         Ok(())
     }
@@ -9214,8 +9460,41 @@ pub(crate) mod tests {
 
         goto(&driver, url_line.trim()).await?;
         await_register_dialog(&driver).await?;
+        let presentation = driver
+            .execute(
+                r#"
+            const host = document.querySelector('#tonk-register');
+            const card = host.querySelector('.ocol');
+            return { task: host.hasAttribute('data-account-task'),
+                radius: getComputedStyle(card).borderRadius,
+                width: Math.round(card.getBoundingClientRect().width),
+                body: !!host.querySelector('.account-task-body') };
+        "#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(presentation.json()["task"], true, "{presentation:?}");
+        assert_eq!(presentation.json()["radius"], "25px", "{presentation:?}");
+        assert_eq!(presentation.json()["width"], 360, "{presentation:?}");
+        assert_eq!(presentation.json()["body"], true, "{presentation:?}");
         let email = "local-space-link-fresh-account@example.com";
         run_cluster_ceremony(&driver, email).await?;
+        wait_for_displayed(&driver, "#tonk-register-resend").await?;
+        enter_hub(&driver).await?;
+        let toast = driver
+            .execute(
+                r#"
+            return !!document.querySelector('.account-email-notice')?.getClientRects().length;
+        "#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            toast.json(),
+            &serde_json::json!(false),
+            "duplicate email reminder"
+        );
+        driver.enter_default_frame().await?;
         activate_in_another_tab(&driver, &env, email).await?;
 
         let continuation_deadline = tokio::time::Instant::now() + Duration::from_secs(45);
@@ -10111,6 +10390,24 @@ pub(crate) mod tests {
             .await?,
         );
 
+        // Revoking commits on the owner's branch, and the owner pushes
+        // it. The guest's watch, begun before the revocation, may still be
+        // told of that head, but the guest's pull reads a head's root
+        // before adopting it, and the service refuses that read: the
+        // guest's head stays on what it holds, so it can still commit.
+        // Pushed and waited on here rather than left to the owner's
+        // background push, which the guest's write below used to race.
+        successful_body(
+            "owner pushes its revocation",
+            &post_json(
+                &owner,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
         // Now the same sequence must NOT reach the owner. Asserted on
         // CONTENT, not on a status code: the guest's worker may report a
         // successful push for an upload the access service refused, so
@@ -10392,6 +10689,11 @@ pub(crate) mod tests {
         assert!(address.as_str().contains("did%3Akey%3A"), "{address}");
         let visitor = env.blank_driver().await?;
         goto(&visitor, address.as_str()).await?;
+        // Marks this document: a reload would replace it, and the mark
+        // with it.
+        visitor
+            .execute("window.__tonkVisitorDocument = true;", Vec::new())
+            .await?;
         let observed = await_space_page(&visitor, "the visitor sees the space", |state| {
             state["name"] == "Open Garden" && state["observing"] == true
         })
@@ -10402,11 +10704,21 @@ pub(crate) mod tests {
         );
         // And the space itself renders, not just the bar: its view mounted
         // while the space was absent, and once the join lands it has to
-        // load the space without the visitor reloading.
-        enter_space_view(&visitor).await?;
-        wait_for_displayed(&visitor, ".blank-canvas")
+        // load the space in the same document, without a reload. The view's
+        // frames are entered afresh while waiting, so a frame replaced
+        // meanwhile is not searched after it is gone.
+        wait_for_space_view_displayed(&visitor, ".blank-canvas")
             .await
-            .context("the visitor's page renders the space itself, without a reload")?;
+            .context("the visitor's page renders the space itself")?;
+        visitor.enter_default_frame().await?;
+        let same_document = visitor
+            .execute("return window.__tonkVisitorDocument === true;", Vec::new())
+            .await?;
+        assert_eq!(
+            same_document.json().as_bool(),
+            Some(true),
+            "the visitor's page rendered the space by loading again"
+        );
         visitor.enter_default_frame().await?;
         open_space_actions(&visitor).await?;
         // The menu is open (its home action shows), so what is missing from

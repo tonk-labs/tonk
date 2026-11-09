@@ -1,0 +1,47 @@
+import Foundation
+
+public struct TonkSpace: Identifiable, Codable, Equatable, Sendable {
+  public let subject: String
+  public let name: String?
+  /// The account's chosen sidebar symbol and tint, synced on the account directory.
+  public let icon: String?
+  public let color: String?
+  /// The account hosting the space on Tonk services, when one does.
+  public var provider: String? = nil
+  /// Whether this account created the space, rather than joining it.
+  public var founded: Bool? = nil
+  public var id: String { subject }
+  public var title: String {
+    let title = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return title.isEmpty ? "Untitled" : title
+  }
+  public var url: URL {
+    RuntimeLocation.home.appendingPathComponent("space").appendingPathComponent(subject)
+  }
+
+  /// Whether `url` is this space's home or one of its views.
+  public func contains(_ other: URL) -> Bool {
+    let home = url
+    guard other.scheme == home.scheme, other.host == home.host, other.port == home.port else {
+      return false
+    }
+    return other.path == home.path || other.path.hasPrefix(home.path + "/")
+  }
+
+  public static func decodeCatalog(_ data: Data) throws -> [Self] {
+    let spaces = try JSONDecoder().decode([Self].self, from: data)
+    var seen = Set<String>()
+    for space in spaces {
+      let key = space.subject.dropFirst("did:key:".count)
+      guard space.subject.hasPrefix("did:key:z"), !key.isEmpty,
+        key.allSatisfy({ "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".contains($0) }
+        ),
+        seen.insert(space.id).inserted
+      else { throw CallbackError("The space catalog contains an invalid or duplicate identity.") }
+    }
+    return spaces.sorted {
+      let order = $0.title.localizedStandardCompare($1.title)
+      return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
+    }
+  }
+}

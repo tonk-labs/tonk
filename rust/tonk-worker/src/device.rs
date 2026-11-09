@@ -13,6 +13,8 @@
 use dialog_effects::storage::{Directory, Location};
 #[cfg(feature = "persona")]
 use dialog_query::{Output as _, Query, Term};
+#[cfg(not(target_arch = "wasm32"))]
+use dialog_repository::HeldCaches;
 #[cfg(feature = "persona")]
 use dialog_repository::{Branch, Repository};
 use dialog_storage::provider::storage::Storage;
@@ -45,16 +47,21 @@ const ACTIVE_PROFILE_SITE: &str = "tonk-active-profile-v1";
 #[cfg(feature = "persona")]
 const SAVE_RETRY_LIMIT: usize = 4;
 
-/// Whether a save failed because the head moved between its read and its
-/// publish. Matched on the rendered error, as the reactor does for its
-/// own commits: the `VersionMismatch` leaf renders its text through the
-/// chain.
+/// Whether a save lost to another writer on the registry's branch: the
+/// head moved between its read and its publish, or another writer held
+/// the branch's publish lock when this one reached it. Matched on the
+/// rendered error, as the reactor does for its own commits: the
+/// `VersionMismatch` and lock leaves render their text through the chain.
+///
+/// The lock case is a writer this process does not share: the peers a
+/// [`Registry`] opens share their writers through its caches and take
+/// turns, but another process over the same storage meets this one at
+/// the storage's lock, which refuses at once rather than waiting and
+/// leaves the retry to the caller.
 #[cfg(feature = "persona")]
 fn is_head_moved(error: &impl std::fmt::Display) -> bool {
-    let error = error.to_string();
-    // A native store refuses a write at once while another holds the
-    // cell's lock, leaving the retry to the writer.
-    error.contains("Version mismatch") || error.contains("Concurrent write in progress")
+    let rendered = error.to_string();
+    rendered.contains("Version mismatch") || rendered.contains("Concurrent write in progress")
 }
 
 /// Branch of the registry profile's repository holding the roster of every
@@ -132,14 +139,89 @@ pub(crate) async fn open_profile_at(
     name: &str,
     directory: Directory,
 ) -> Result<(Storage<DefaultSpace>, DefaultProfile), TonkWorkerError> {
-    let registry = Registry {
-        profile: name.to_owned(),
-        directory,
-        standing: Standing::default(),
-    };
+    let registry = Registry::new(name.to_owned(), directory);
     let storage = registry.storage().await?;
     let profile = registry.open_profile(&storage, name).await?;
     Ok((storage, profile))
+}
+
+/// Open the system credential store of `directory`.
+///
+/// Persistent backends find the same keys however often a directory is
+/// opened. In-memory storage (`volatile-storage` on wasm, for a hosted
+/// peer in a Workers isolate) keeps nothing between opens, so the store a
+/// directory first opened is kept here and handed out again until
+/// [`forget_system`] drops it.
+#[cfg(any(not(target_arch = "wasm32"), feature = "volatile-storage"))]
+pub(crate) async fn open_system(
+    directory: Directory,
+) -> Result<
+    (
+        dialog_storage::provider::storage::CredentialStore<DefaultSpace>,
+        dialog_credentials::SignerCredential,
+    ),
+    dialog_peer::PeerError,
+> {
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        feature = "volatile-storage"
+    ))]
+    {
+        let key = format!("{directory:?}");
+        if let Some(opened) = VOLATILE_SYSTEMS.with(|systems| systems.borrow().get(&key).cloned()) {
+            return Ok(opened);
+        }
+        let opened = tonk_account::peer::open_system::<DefaultSpace>(directory).await?;
+        VOLATILE_SYSTEMS.with(|systems| systems.borrow_mut().insert(key, opened.clone()));
+        Ok(opened)
+    }
+    #[cfg(not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        feature = "volatile-storage"
+    )))]
+    {
+        tonk_account::peer::open_system::<DefaultSpace>(directory).await
+    }
+}
+
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    feature = "volatile-storage"
+))]
+type VolatileSystem = (
+    dialog_storage::provider::storage::CredentialStore<DefaultSpace>,
+    dialog_credentials::SignerCredential,
+);
+
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    feature = "volatile-storage"
+))]
+thread_local! {
+    static VOLATILE_SYSTEMS: std::cell::RefCell<std::collections::HashMap<String, VolatileSystem>> =
+        Default::default();
+}
+
+/// Drop the system credential store [`open_system`] kept for `directory`.
+/// A no-op unless storage is volatile.
+#[cfg(any(feature = "volatile-storage", test))]
+pub(crate) fn forget_system(directory: &Directory) {
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        feature = "volatile-storage"
+    ))]
+    VOLATILE_SYSTEMS.with(|systems| systems.borrow_mut().remove(&format!("{directory:?}")));
+    #[cfg(not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        feature = "volatile-storage"
+    )))]
+    let _ = directory;
 }
 
 /// Where the pointer lives: a profile name and the directory it is
@@ -151,11 +233,19 @@ pub(crate) async fn open_profile_at(
 /// active profile — so they work regardless of which profile is
 /// active. That is what lets an activation write the pointer for a
 /// profile it has not swapped in yet.
+///
+/// Every peer a registry opens holds the registry's caches, so the
+/// peers over its storage share their tree nodes and their branch
+/// writers: the registry profile's own commits and a profile switch
+/// recording the pointer take turns on the branch rather than meeting
+/// at the storage's publish lock. Clones share the caches.
 #[derive(Clone)]
 pub(crate) struct Registry {
     pub(crate) profile: String,
     pub(crate) directory: Directory,
     pub(crate) standing: Standing,
+    #[cfg(not(target_arch = "wasm32"))]
+    caches: HeldCaches,
 }
 
 /// Whose worker this is, which decides whether its profile has an account.
@@ -207,6 +297,28 @@ pub(crate) fn spaces_have_origins() -> bool {
 }
 
 impl Registry {
+    /// The registry of the profile `profile` in `directory`, with caches
+    /// of its own.
+    pub(crate) fn new(profile: String, directory: Directory) -> Self {
+        Self {
+            profile,
+            directory,
+            standing: Standing::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            caches: HeldCaches::new(),
+        }
+    }
+
+    /// The registry of the profile `profile` in `directory`, whose peers
+    /// hold `caches`: a hosted peer passes caches with a budget it chose.
+    #[cfg(any(feature = "volatile-storage", test))]
+    pub(crate) fn holding(profile: String, directory: Directory, caches: HeldCaches) -> Self {
+        Self {
+            caches,
+            ..Self::new(profile, directory)
+        }
+    }
+
     /// Explicit native registries keep content beside their profile, never in
     /// the hosting process's working directory. Browser storage is unchanged.
     pub(crate) fn space_location(&self, name: &str) -> Location {
@@ -228,9 +340,8 @@ impl Registry {
     /// The one this device actually uses.
     pub(crate) fn device() -> Self {
         Self {
-            profile: REGISTRY_PROFILE.to_string(),
-            directory: Directory::Profile,
             standing: STANDING.get().copied().unwrap_or_default(),
+            ..Self::new(REGISTRY_PROFILE.to_string(), Directory::Profile)
         }
     }
 
@@ -249,11 +360,9 @@ impl Registry {
     /// mounted in, owned by the system tonk runs as there.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn storage(&self) -> Result<Storage<DefaultSpace>, TonkWorkerError> {
-        let (_, system) = tonk_account::peer::open_system::<DefaultSpace>(self.directory.clone())
-            .await
-            .map_err(|error| {
-                TonkWorkerError::Internal(format!("failed to open the system key: {error}"))
-            })?;
+        let (_, system) = open_system(self.directory.clone()).await.map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to open the system key: {error}"))
+        })?;
         Ok(Storage::<DefaultSpace>::new().owned_by(system.did()))
     }
 
@@ -273,21 +382,23 @@ impl Registry {
         name: &str,
         create: bool,
     ) -> Result<DefaultProfile, dialog_peer::PeerError> {
-        let (credentials, system) =
-            tonk_account::peer::open_system::<DefaultSpace>(self.directory.clone()).await?;
+        let (credentials, system) = open_system(self.directory.clone()).await?;
         // Space names resolve against the directory the worker has always
         // kept its spaces in.
         let location = Location::new(self.directory.clone(), name);
         let base = self.space_location("").directory;
         let profile = match self.standing {
             Standing::Person => {
-                tonk_account::peer::open_peer(
+                tonk_account::peer::open_peer_holding(
                     location.clone(),
                     base,
                     storage.clone(),
                     &credentials,
                     &system,
                     create,
+                    dialog_repository::ACCESS_BRANCH,
+                    &self.caches,
+                    &dialog_reactor::ProfileUpgrade,
                 )
                 .await?
             }
@@ -340,13 +451,10 @@ impl Registry {
         name: &str,
         branch: &str,
     ) -> Result<DefaultProfile, TonkWorkerError> {
-        let (credentials, system) =
-            tonk_account::peer::open_system::<DefaultSpace>(self.directory.clone())
-                .await
-                .map_err(|error| {
-                    TonkWorkerError::Internal(format!("failed to open the system key: {error}"))
-                })?;
-        tonk_account::peer::open_peer_on(
+        let (credentials, system) = open_system(self.directory.clone()).await.map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to open the system key: {error}"))
+        })?;
+        tonk_account::peer::open_peer_holding(
             Location::new(self.directory.clone(), name),
             self.space_location("").directory,
             storage.clone(),
@@ -354,6 +462,8 @@ impl Registry {
             &system,
             false,
             branch,
+            &self.caches,
+            &dialog_reactor::ProfileUpgrade,
         )
         .await
         .map_err(|error| {
@@ -507,6 +617,20 @@ impl Registry {
         let mut attempt = 0;
         loop {
             let registry = self.open_self(storage).await?;
+            // A pointer that already names `name` is left alone. The
+            // registry's branch is the profile's `main`, which may follow
+            // an account and hold its history only by reference, and a
+            // commit can cascade into a node held that way. Sign-out
+            // re-promotes the same profile after withdrawing the grant
+            // that would fetch it, so an unneeded save there can fail.
+            let recorded = self
+                .read(&registry)
+                .await
+                .ok()
+                .map(|recorded| recorded.unwrap_or_else(|| self.profile.clone()));
+            if recorded.as_deref() == Some(name) {
+                return Ok(());
+            }
             match registry
                 .secrets()
                 .site(ACTIVE_PROFILE_SITE)
@@ -744,11 +868,7 @@ mod tests {
         );
         #[cfg(target_arch = "wasm32")]
         let directory = Directory::Temp;
-        Registry {
-            profile: name,
-            directory,
-            standing: Standing::default(),
-        }
+        Registry::new(name, directory)
     }
 
     #[dialog_common::test]
@@ -959,6 +1079,51 @@ mod tests {
         );
     }
 
+    /// Recording the profile the pointer already names writes nothing.
+    ///
+    /// The registry's branch is the profile's `main`, which follows the
+    /// account once one is adopted, and holds the account's history and
+    /// coverage regions by reference. Sign-out withdraws the grant that
+    /// would fetch them and then re-promotes the same profile; a save then
+    /// commits into that tree, and fails whenever the commit cascades into
+    /// a node still held remotely.
+    #[dialog_common::test]
+    async fn it_writes_nothing_when_the_pointer_already_names_the_profile() {
+        let registry = scratch();
+        let storage = registry.storage().await.unwrap();
+        let head = async || {
+            registry
+                .open_self(&storage)
+                .await
+                .unwrap()
+                .state()
+                .revision()
+        };
+
+        let initial = head().await;
+        registry
+            .set_active(&storage, &registry.profile)
+            .await
+            .unwrap();
+        assert_eq!(
+            head().await,
+            initial,
+            "an unrecorded pointer already names the initial profile"
+        );
+
+        let (name, _) = registry.create_profile(&storage).await.unwrap();
+        registry.set_active(&storage, &name).await.unwrap();
+        let recorded = head().await;
+        assert_ne!(recorded, initial, "a new name is recorded");
+
+        registry.set_active(&storage, &name).await.unwrap();
+        assert_eq!(
+            head().await,
+            recorded,
+            "the same name is not recorded again"
+        );
+    }
+
     /// Recording the active profile survives the registry's branch
     /// moving under it.
     ///
@@ -991,5 +1156,37 @@ mod tests {
                 .is_some_and(|active| names.contains(&active)),
             "the pointer names one of the recorded profiles, got {active:?}"
         );
+    }
+
+    /// Two peers the registry opens over its storage take turns on a
+    /// branch they both write.
+    ///
+    /// Each peer is an environment of its own. Without the registry's
+    /// caches each would keep its own writer for the branch, and two saves
+    /// at once would meet at the storage's publish lock, which refuses the
+    /// later one instead of waiting for it.
+    #[dialog_common::test]
+    async fn it_has_the_peers_it_opens_take_turns_on_a_branch() {
+        let registry = scratch();
+        let storage = registry.storage().await.unwrap();
+        let first = registry.open_self(&storage).await.unwrap();
+        let second = registry.open_self(&storage).await.unwrap();
+
+        let (one, two) = futures_util::future::join(
+            first
+                .secrets()
+                .site(ACTIVE_PROFILE_SITE)
+                .save(b"one".to_vec())
+                .perform(&first),
+            second
+                .secrets()
+                .site(ACTIVE_PROFILE_SITE)
+                .save(b"two".to_vec())
+                .perform(&second),
+        )
+        .await;
+
+        one.expect("the first save lands");
+        two.expect("the second save lands after it");
     }
 }

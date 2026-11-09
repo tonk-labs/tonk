@@ -72,9 +72,92 @@ fn write_field(out: &mut String, name: &str, value: &Ipld) {
         out.push(' ');
     }
     out.push_str(name);
-    out.push_str(": ");
-    write_value(out, value, FIELD_INDENT);
+    out.push(':');
+    write_after_key(out, value, FIELD_INDENT);
     out.push('\n');
+}
+
+/// Write what follows `key:` for a key at `indent`: a nested mapping or
+/// sequence as indented lines below it, anything else inline.
+fn write_after_key(out: &mut String, value: &Ipld, indent: usize) {
+    if is_block(value) {
+        write_block(out, value, indent);
+    } else {
+        out.push(' ');
+        write_value(out, value, indent);
+    }
+}
+
+/// A non-empty map or list: written as YAML block lines, one entry per
+/// line, rather than squeezed onto the key's line as JSON.
+fn is_block(value: &Ipld) -> bool {
+    match value {
+        Ipld::Map(entries) => !entries.is_empty(),
+        Ipld::List(items) => !items.is_empty(),
+        _ => false,
+    }
+}
+
+/// The lines of a block mapping or sequence under a key at `indent`, each
+/// starting on a new line one level deeper.
+fn write_block(out: &mut String, value: &Ipld, indent: usize) {
+    let inner = indent + 2;
+    match value {
+        Ipld::Map(entries) => {
+            for (key, value) in entries {
+                out.push('\n');
+                pad(out, inner);
+                write_key(out, key);
+                write_after_key(out, value, inner);
+            }
+        }
+        Ipld::List(items) => {
+            for item in items {
+                out.push('\n');
+                pad(out, inner);
+                out.push('-');
+                match item {
+                    // A mapping item opens on the dash's line, and its
+                    // other entries align under the first.
+                    Ipld::Map(entries) if !entries.is_empty() => {
+                        for (index, (key, value)) in entries.iter().enumerate() {
+                            if index == 0 {
+                                out.push(' ');
+                            } else {
+                                out.push('\n');
+                                pad(out, inner + 2);
+                            }
+                            write_key(out, key);
+                            write_after_key(out, value, inner + 2);
+                        }
+                    }
+                    other => write_after_key(out, other, inner),
+                }
+            }
+        }
+        _ => write_value(out, value, indent),
+    }
+}
+
+fn pad(out: &mut String, indent: usize) {
+    for _ in 0..indent {
+        out.push(' ');
+    }
+}
+
+/// A mapping key: bare when it reads as one, quoted otherwise.
+fn write_key(out: &mut String, key: &str) {
+    let bare = !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '?'))
+        && !key.starts_with(['-', '?']);
+    if bare {
+        out.push_str(key);
+    } else {
+        out.push_str(&serde_json::to_string(key).unwrap_or_default());
+    }
+    out.push(':');
 }
 
 /// Render `value` after the `name: ` of a field whose key sits at
@@ -97,26 +180,11 @@ fn write_value(out: &mut String, value: &Ipld, indent: usize) {
             // so the value is at least machine-decodable.
             out.push_str(&dag_json_string(value));
         }
-        Ipld::List(items) => {
-            // Notation has no inline list syntax; fall back to a
-            // bracketed form so the value is at least legible. Real
-            // list rendering would use repeated `field:` lines
-            // (cardinality > 1), but cardinality information isn't
-            // on the Conclusion.
-            out.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                write_value(out, item, indent);
-            }
-            out.push(']');
-        }
-        Ipld::Map(_) => {
-            // Same — no inline map syntax. Serialize as compact
-            // dag-json so the user at least sees the shape.
-            out.push_str(&dag_json_string(value));
-        }
+        // Only an EMPTY map or list reaches here inline; a non-empty one
+        // is written as block lines under its key (`write_block`).
+        Ipld::List(items) if items.is_empty() => out.push_str("[]"),
+        Ipld::Map(entries) if entries.is_empty() => out.push_str("{}"),
+        Ipld::List(_) | Ipld::Map(_) => write_block(out, value, indent),
     }
 }
 
@@ -244,6 +312,55 @@ mod tests {
             map.insert((*k).to_owned(), json_to_ipld(v));
         }
         map
+    }
+
+    /// A keyed collection reads as a block mapping, one entry per line,
+    /// the way it would be typed, not as JSON on the key's line.
+    #[test]
+    fn it_writes_a_map_as_a_block_mapping() {
+        let out = format(
+            "id:nb",
+            &fields(&[(
+                "block",
+                serde_json::json!({"N1": "id:nb/1", "N5": "id:nb/2"}),
+            )]),
+            "notebook",
+            None,
+        );
+        assert_eq!(
+            out,
+            "notebook!:\n  this: id:nb\n  block:\n    N1: id:nb/1\n    N5: id:nb/2\n"
+        );
+    }
+
+    /// Lists are block sequences; a mapping item opens on its dash.
+    #[test]
+    fn it_writes_a_list_as_a_block_sequence() {
+        let out = format(
+            "id:x",
+            &fields(&[(
+                "items",
+                serde_json::json!(["one", {"name": "two", "count": 2}]),
+            )]),
+            "thing",
+            None,
+        );
+        assert_eq!(
+            out,
+            "thing!:\n  this: id:x\n  items:\n    - \"one\"\n    - count: 2\n      name: \"two\"\n"
+        );
+    }
+
+    /// Empty collections stay inline, so the key is not left dangling.
+    #[test]
+    fn it_writes_empty_collections_inline() {
+        let out = format(
+            "id:x",
+            &fields(&[("a", serde_json::json!({})), ("b", serde_json::json!([]))]),
+            "thing",
+            None,
+        );
+        assert!(out.contains("  a: {}\n  b: []\n"), "{out}");
     }
 
     #[test]

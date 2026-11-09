@@ -91,7 +91,7 @@ mod navigate;
 mod page_effect;
 #[cfg(target_arch = "wasm32")]
 pub use navigate::{
-    handle_worker_message, navigate_to, reload_page, replace_to, request_contained_task,
+    handle_worker_message, navigate_to, reload_page, replace_route, request_contained_task,
     request_registration, traverse,
 };
 #[cfg(target_arch = "wasm32")]
@@ -120,6 +120,9 @@ mod registry;
 pub mod space_origin;
 #[cfg(target_arch = "wasm32")]
 pub mod sse;
+// Upstream subscription streams shared by identical subscriptions.
+#[cfg(target_arch = "wasm32")]
+mod stream;
 #[cfg(target_arch = "wasm32")]
 mod url;
 

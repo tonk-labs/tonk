@@ -12,6 +12,7 @@
 use std::cell::RefCell;
 
 use tonk_identity::custody::CustodyDenial;
+use tonk_worker_api::account::split_address;
 use tonk_worker_api::{AccountCreation, CustodyIntent, DeviceLink};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -403,20 +404,6 @@ enum Lookup {
     Suspended,
     Invalid,
     Unavailable,
-}
-
-/// Split an address into the `(domain, local)` pair the lookup path
-/// names, or `None` when it is not one.
-fn split_address(email: &str) -> Option<(String, String)> {
-    let trimmed = email.trim();
-    if trimmed.len() > 254 {
-        return None;
-    }
-    let (local, domain) = trimmed.rsplit_once('@')?;
-    if local.is_empty() || domain.is_empty() || domain.contains('@') || local.contains('/') {
-        return None;
-    }
-    Some((domain.to_ascii_lowercase(), local.to_ascii_lowercase()))
 }
 
 /// What the access service's lookup says of an address, by its status.

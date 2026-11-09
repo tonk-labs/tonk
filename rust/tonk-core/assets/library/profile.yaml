@@ -112,6 +112,47 @@ concept!: &space
         else's invite; hosted ownership is still decided by `provider`.
       the: xyz.tonk.space/founded-at
       as: natural:64
+    icon:
+      description: >
+        The symbol this account shows for the space in the desktop
+        sidebar, as an SF Symbol name from the desktop's own short list.
+        A personal label, not part of the space: it lives on the account
+        directory, so every device signed into the account shows the same
+        icon and nobody else sees it. Absent means the default icon.
+      the: xyz.tonk.space/icon
+      as: text
+    color:
+      description: >
+        The tint this account gives the space's sidebar icon, as a named
+        color token such as `blue` or `orange`. Like `icon`, it is the
+        account's own preference and syncs with the directory. Absent
+        means the sidebar's default tint.
+      the: xyz.tonk.space/color
+      as: text
+
+# The chat model this account last chose in the desktop. Only the choice
+# syncs: API keys stay in each Mac's Keychain, and executable paths and
+# base URLs stay on the Mac they describe, so a Mac without a key for the
+# chosen provider keeps its own.
+#
+# ENTITY: the account's root DID.
+concept!: &model-choice
+  this: tonk:model-choice
+  description: The desktop chat provider and model this account uses.
+  with:
+    provider:
+      description: >
+        The provider token the desktop understands, such as `claude`,
+        `chatGPT`, `anthropic` or `disabled`. A desktop that does not know
+        the token ignores it.
+      the: xyz.tonk.model-choice/provider
+      as: text
+  maybe:
+    model:
+      description: >
+        The provider's model ID. Absent means the provider's default.
+      the: xyz.tonk.model-choice/model
+      as: text
 
 # The Add Space command. The Hub's named creation dialogs submit this shape.
 # The worker records the replica, seeds the repository, and navigates the
@@ -236,13 +277,6 @@ command!: &space/remove
       description: The subject DID of the space to remove.
       the: xyz.tonk.command.remove-space/subject
       as: entity
-
-event!: &on/repository-rename-submit
-  type: "submit"
-  prevent-default: true
-  where:
-    space: ".currentTarget.dataset.space"
-    name: ".currentTarget.elements.name.value"
 
 #
 # Named field attributes, so the palette's arguments can point at them. The
@@ -519,6 +553,32 @@ view!:
       hub-discover .stack { padding:0; border:0; background:transparent; }
       hub-discover[collection="spaces"] .discover-collection,
       hub-discover[collection="discover"] > tonk-display { display:none; }
+      .collection-tabs button[hidden] { display:none; }
+      .collection-square--round { border-radius:50%; }
+      hub-discover:not([collection="contacts"]) .contacts-collection,
+      hub-discover[collection="contacts"] > tonk-display,
+      hub-discover[collection="contacts"] .discover-collection { display:none; }
+      .contact-list { display:grid; gap:16px; }
+      .contact-card { border:1px solid var(--ink); background:var(--card); }
+      .contact-head { display:flex; align-items:center; gap:14px; padding:16px 19px; }
+      .contact-mark { display:grid; place-items:center; flex:none; width:40px; height:40px;
+        border:1px solid var(--ink); font:500 16px/1 var(--cond); }
+      .contact-name { margin:0; letter-spacing:-.02em; overflow-wrap:anywhere;
+        font:300 27px/1.1 Gestalte,Georgia,serif; }
+      .contact-kind { margin:4px 0 0; color:var(--soft); font:12px/1.4 var(--cond); }
+      .contact-open { margin-left:auto; font:500 12px var(--cond); color:var(--ink); }
+      .contact-spaces { margin:0; padding:0; list-style:none; border-top:1px solid var(--sep); }
+      .contact-space { display:flex; align-items:center; gap:16px; min-height:49px;
+        padding:8px 19px; font:14px/1.4 var(--cond); }
+      .contact-space + .contact-space { border-top:1px solid var(--sep); }
+      .contact-space a { color:var(--ink); overflow-wrap:anywhere; }
+      .contact-access { margin-left:auto; color:var(--soft); white-space:nowrap; }
+      .contact-space button { min-height:32px; padding:4px 10px; font:500 12px var(--cond); }
+      .contact-none { padding:12px 19px; color:var(--soft); font:12px/1.4 var(--cond); }
+      @media (max-width:600px) {
+        .contact-space { flex-wrap:wrap; gap:4px 12px; }
+        .contact-access { margin-left:0; }
+      }
       .template-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:34px 26px; }
       .template-card.srow-wrap { display:block; min-width:0; }
       .template-preview { display:flex; flex-direction:column; width:100%; height:100%;
@@ -575,6 +635,7 @@ view!:
       .settings-back:hover { background:var(--wash); }
       .settings-back:active { background:var(--wash-2); }
       .hub-page:has(hub-bar[path="/account"]) :is(.settings-title,.settings-back) { display:none; }
+      .hub-page:has(account-settings[data-pane="agent"]) :is(.settings-title,.settings-back) { display:none; }
       .hub-page account-settings { display:block; }
       .hub-page account-settings .s-body { min-width:0; min-height:0; max-height:none;
         overflow:visible; padding:0; background:transparent; border:0; color:var(--ink); }
@@ -633,6 +694,15 @@ view!:
       .hub-page account-settings .settings-heading h2 { margin:0; }
       .hub-page account-settings .agent-access-panel { grid-column:1 / -1; }
       .hub-page account-settings .agent-access-panel .srowd h2 { margin:0; }
+      /* A plain bordered verb, sized by its word: the bare `.cta` here
+         picked up the panel's 44px square and its text spilled out. */
+      .hub-page account-settings .connection-refresh { flex:none; width:auto; height:auto;
+        min-width:0; min-height:36px; padding:8px 14px; border:1px solid var(--sep);
+        background:var(--card); color:var(--ink); white-space:nowrap; box-shadow:none;
+        font:600 14px/1.2 var(--cond); }
+      .hub-page account-settings .connection-refresh:hover:not(:disabled) { background:var(--wash); }
+      .hub-page account-settings .connection-refresh:disabled { opacity:.5; cursor:default; }
+      .hub-page account-settings .connection-refresh:focus-visible { outline:2px solid var(--ink); outline-offset:2px; }
       .hub-page account-settings .danger-panel p,
       .hub-page account-settings .signout-panel p { margin:0; font:400 15px/1.55 var(--sans); }
       .hub-page account-settings .danger-panel .panel-action { width:fit-content; }
@@ -809,7 +879,8 @@ view!:
         padding:16px 20px; background:var(--ink); color:var(--on-ink);
         font:400 17px/1.45 var(--cond); }
       .account-email-notice[data-account-status="case:registered"] { display:flex; }
-      .hub-page:has(hub-bar[path="/account"]) .account-email-notice { display:none; }
+      .hub-page:has(hub-bar[path="/account"]) .account-email-notice,
+      .hub-page:has(hub-bar[path="/settings/link"]) .account-email-notice { display:none; }
       .account-email-notice button { min-height:44px; padding:10px 12px; color:inherit;
         font:600 15px/1.15 var(--cond); text-decoration:underline;
         text-underline-offset:3px; white-space:nowrap; }
@@ -957,7 +1028,7 @@ view!:
               </space-create>
               <tonk-dialog appearance="hub" data-space-rename-dialog heading="Rename space">
                 <form id="rename-{subject}" class="space-create-form" data-space-rename-form
-                  data-space={subject} on:repository-rename-submit=tonk/rename-repository>
+                  data-space={subject}>
                   <label class="space-create-field"><span>space name</span><input name="name" type="text"
                     value={name} required maxlength="100" autocomplete="off" data-space-rename-input></label>
                   <p class="space-create-error" data-space-rename-error role="alert"></p>
@@ -1263,6 +1334,69 @@ command!: &space/unpublish
   with:
     space: unpublish/space
     time: unpublish/time
+
+# Letting someone into a space from the palette: `invite <agent>` or
+# `invite <email>`, said of the space the page shows ("to <space>"
+# anywhere else). Both make the invitee a writer, and neither hands
+# anyone a link.
+#
+# An agent's grant is kept in the agent's own space, where the hosted
+# agent lists the spaces it can reach, so it finds this one the next time
+# it looks. An address is resolved to the account registered under it,
+# the way signing in resolves one, and the grant is left in the space as
+# that account's ticket, the way publishing leaves the public one: any
+# device of that account opening the space's address claims it.
+attribute!: &invite-agent/agent
+  description: The agent to let in, by its agent space's DID.
+  the: xyz.tonk.invite-agent/agent
+  as: entity
+  role: :object
+
+attribute!: &invite-agent/space
+  description: The space to let it into.
+  the: xyz.tonk.invite-agent/space
+  as: entity
+  role: :goal
+
+attribute!: &invite-agent/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.invite-agent/time
+  as: float:64
+  role: :now
+
+command!: &space/invite-agent
+  description: Let one of your agents read and write a space.
+  action: ["invite", "invite agent"]
+  with:
+    agent: invite-agent/agent
+    space: invite-agent/space
+    time: invite-agent/time
+
+attribute!: &invite-email/email
+  description: The address of the account to let in.
+  the: xyz.tonk.invite-email/email
+  as: text
+  role: :object
+
+attribute!: &invite-email/space
+  description: The space to let it into.
+  the: xyz.tonk.invite-email/space
+  as: entity
+  role: :goal
+
+attribute!: &invite-email/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.invite-email/time
+  as: float:64
+  role: :now
+
+command!: &space/invite-email
+  description: Let the account registered under an email address read and write a space.
+  action: ["invite", "invite by email"]
+  with:
+    email: invite-email/email
+    space: invite-email/space
+    time: invite-email/time
 
 attribute!: &home/time
   description: The moment it was asked; makes each dispatch a distinct transient.
@@ -2489,6 +2623,165 @@ element!: &hub-discover
           </tonk-dialog>
         </space-create>`;
       }
+    # The account's agents: each one's own space and the spaces it can
+    # reach. The tab appears only once there is an agent, and agent
+    # spaces leave the spaces collection, since they are identities
+    # rather than places to work. A load that fails keeps what showed.
+    agents: |
+      async (self) => {
+        if (self.__agentsLoading) return;
+        self.__agentsLoading = true;
+        const status = self.querySelector('[data-contacts-status]');
+        try {
+          const origin = window.tonk?.context?.origin ?? window.location.origin;
+          const response = await fetch(`${origin}/api/agents`);
+          if (!response.ok) throw new Error(String(response.status));
+          const agents = await response.json();
+          if (!self.isConnected || !Array.isArray(agents)) return;
+          self.agentsRender(agents);
+        } catch (error) {
+          if (status && self.getAttribute('collection') === 'contacts') status.textContent = 'Couldn’t load your agents. Switch tabs to try again.';
+        } finally { self.__agentsLoading = false; }
+      }
+    agents-render: |
+      (self, agents) => {
+        const tab = self.querySelector('[data-contacts-tab]');
+        const list = self.querySelector('[data-contacts-list]');
+        const status = self.querySelector('[data-contacts-status]');
+        const hide = self.querySelector('style[data-agent-spaces]');
+        // A space card carries its routing key whole (a did:key now), so
+        // match it exactly, quoted for an attribute selector.
+        const key = text => String(text ?? '').replace(/["\\]/g, '\\$&');
+        if (hide) hide.textContent = agents.map(agent => `.space-card[data-space-subject="${key(agent.key)}"]`).join(',') + (agents.length ? '{display:none}' : '');
+        if (tab) tab.hidden = agents.length === 0;
+        if (!agents.length && self.getAttribute('collection') === 'contacts') {
+          self.querySelector('[data-collection="spaces"]')?.click();
+        }
+        if (status) status.textContent = '';
+        if (!list) return;
+        const el = (tag, className, text, parent) => {
+          const node = document.createElement(tag);
+          if (className) node.className = className;
+          if (text) node.textContent = text;
+          parent?.append(node);
+          return node;
+        };
+        const date = seconds => {
+          const at = new Date(seconds * 1000);
+          return Number.isFinite(at.getTime()) ? at.toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'}) : '';
+        };
+        list.textContent = '';
+        for (const agent of agents) {
+          const name = agent.name || 'Unnamed agent';
+          const card = el('article', 'contact-card', '', list);
+          card.dataset.agent = agent.did;
+          card.setAttribute('aria-label', name);
+          const head = el('div', 'contact-head', '', card);
+          el('span', 'contact-mark', name.trim().charAt(0).toUpperCase() || 'A', head).setAttribute('aria-hidden', 'true');
+          const who = el('div', '', '', head);
+          el('h3', 'contact-name', name, who);
+          el('p', 'contact-kind', `agent · ${agent.did}`, who);
+          const open = el('a', 'contact-open', 'open its space ↗', head);
+          open.href = `/space/${agent.did}`;
+          const spaces = el('ul', 'contact-spaces', '', card);
+          if (!agent.spaces?.length) el('li', 'contact-none', 'No access to your spaces.', spaces);
+          for (const space of agent.spaces ?? []) {
+            const row = el('li', 'contact-space', '', spaces);
+            const link = el('a', '', space.name || space.subject, row);
+            link.href = `/space/${space.subject}`;
+            const access = space.access === 'write' ? 'read and write' : 'read';
+            const via = space.viaLink ? ' · from a share link' : '';
+            el('span', 'contact-access', (space.expiresAt ? `${access} · until ${date(space.expiresAt)}` : access) + via, row);
+            // A removal under way or failed, as the worker reports it: the
+            // grant stays listed until the access service acknowledges it.
+            const state = space.removal?.state;
+            const label = state === 'pending' ? 'waiting for passkey…'
+              : state === 'working' ? 'revoking…'
+              : state === 'failed' ? 'retry revoke' : 'revoke';
+            const revoke = el('button', 'cta', label, row);
+            revoke.type = 'button';
+            // Waiting for the passkey stays pressable: a dismissed prompt
+            // is not reported back, and asking again is harmless.
+            revoke.disabled = state === 'working';
+            revoke.dataset.agentRevoke = agent.key;
+            revoke.dataset.agentSpace = space.subject;
+            if (space.viaLink) revoke.dataset.agentLink = 'true';
+            revoke.setAttribute('aria-label', `revoke ${name}’s access to ${space.name || space.subject}`);
+            if (state === 'failed' && status && !status.textContent)
+              status.textContent = `Removing ${name}’s access to ${space.name || 'a space'} did not finish, so it is still listed: ${space.removal.reason}`;
+          }
+        }
+      }
+    agents-revoke: |
+      async (self, button) => {
+        const status = self.querySelector('[data-contacts-status]');
+        const viaLink = button.dataset.agentLink === 'true';
+        if (button.dataset.confirming !== 'true') {
+          button.dataset.confirming = 'true';
+          button.textContent = 'confirm revoke';
+          // A share link's grant is revoked by the agent itself, whose key
+          // only the passkey opens. The link stays usable either way.
+          if (viaLink && status) status.textContent = 'Tonk will ask for your passkey. This revokes the agent’s access; it does not end the share link, which still works for whoever has it.';
+          return;
+        }
+        button.disabled = true;
+        button.textContent = 'revoking…';
+        const agent = button.dataset.agentRevoke;
+        const space = button.dataset.agentSpace;
+        try {
+          const origin = window.tonk?.context?.origin ?? window.location.origin;
+          const response = await fetch(`${origin}/api/agents/${encodeURIComponent(agent)}/revoke`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ space }),
+          });
+          if (!response.ok) { const error = new Error(await response.text()); error.status = response.status; throw error; }
+          const answer = await response.json().catch(() => null);
+          if (answer?.pending) {
+            button.textContent = 'waiting for passkey…';
+            if (status) status.textContent = 'Use your passkey to finish revoking the access.';
+            self.agentsWatch(agent, space, Date.now());
+            return;
+          }
+          if (status) status.textContent = 'Access revoked. Enforcement may take a moment; anything already read stays read.';
+          await self.agents();
+        } catch (error) {
+          button.disabled = false;
+          button.dataset.confirming = '';
+          button.textContent = 'retry revoke';
+          if (status) status.textContent = 'The revocation could not be confirmed. Try again.';
+        }
+      }
+    # After the passkey is asked for: the space leaves the list once the
+    # access service has acknowledged every revocation. Until then it
+    # stays, with the removal's state; a dismissed passkey leaves it there
+    # to try again.
+    agents-watch: |
+      async (self, agent, space, started) => {
+        const status = self.querySelector('[data-contacts-status]');
+        const again = () => setTimeout(() => self.agentsWatch(agent, space, started), 1500);
+        let agents;
+        try {
+          const origin = window.tonk?.context?.origin ?? window.location.origin;
+          const response = await fetch(`${origin}/api/agents`);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          agents = await response.json();
+        } catch { if (Date.now() - started < 4 * 60 * 1000) again(); return; }
+        if (!self.isConnected || !Array.isArray(agents)) return;
+        const held = agents.find((each) => each.key === agent)?.spaces?.find((each) => each.subject === space);
+        const state = held?.removal?.state;
+        if (status) status.textContent = '';
+        self.agentsRender(agents);
+        if (!held) {
+          if (status) status.textContent = 'Access revoked. The access service refuses the agent’s grants for that space; a session already open may keep reading for a few minutes. The share link still works for whoever has it.';
+        } else if (state === 'failed') {
+          // agentsRender has said why; the row offers to retry.
+        } else if ((state === 'pending' || state === 'working') && Date.now() - started < 4 * 60 * 1000) {
+          if (status) status.textContent = state === 'working' ? 'Revoking the agent’s access…' : 'Use your passkey to finish revoking the access. If you closed the prompt, press revoke again.';
+          again();
+        } else if (status) {
+          status.textContent = 'The revocation did not finish, so the access is still listed. Try again.';
+        }
+      }
     load: |
       async (self) => {
         if (self.__loading || self.__loaded) return;
@@ -2517,15 +2810,21 @@ element!: &hub-discover
       }
     connected: |
       (self) => {
+        self.agents();
         if (self.__wired) return;
         self.__wired = true;
+        // An agent approved in another tab shows on coming back here.
+        window.addEventListener('focus', () => { if (self.isConnected) self.agents(); });
         self.addEventListener('click', event => {
           if (event.target?.closest?.('[data-discover-retry]')) { self.load(); return; }
+          const revoke = event.target?.closest?.('[data-agent-revoke]');
+          if (revoke && self.contains(revoke)) { self.agentsRevoke(revoke); return; }
           const button = event.target?.closest?.('[data-collection]');
           if (!button || !self.contains(button)) return;
           const collection = button.getAttribute('data-collection');
           self.setAttribute('collection', collection);
           if (collection === 'discover') self.load();
+          self.agents();
           for (const tab of self.querySelectorAll('[data-collection]')) {
             tab.setAttribute('aria-pressed', String(tab === button));
           }
@@ -2870,6 +3169,7 @@ view!:
           <nav class="collection-tabs chrome" aria-label="space collections">
             <button type="button" data-collection="spaces" aria-pressed="true"><span class="collection-square" aria-hidden="true"></span>your spaces</button>
             <button type="button" data-collection="discover" aria-pressed="false"><svg class="collection-compass" viewBox="0 0 18 18" fill="none" aria-hidden="true"><circle cx="9" cy="9" r="6.5" stroke="currentColor" stroke-width="1.2"/><path d="m11.8 6.2-1.6 4-4 1.6 1.6-4z" fill="currentColor"/></svg>discover</button>
+            <button type="button" data-collection="contacts" aria-pressed="false" data-contacts-tab hidden><span class="collection-square collection-square--round" aria-hidden="true"></span>your agents</button>
           </nav>
           <!-- One page for `/` and `/settings`: the stack and the panel
                are both here, and the bar's `path` picks the one that
@@ -2883,6 +3183,13 @@ view!:
             <button type="button" class="cta" data-discover-retry hidden>try again</button>
             <hub-collection class="template-grid"></hub-collection>
           </section>
+          <!-- The agents this account approved, each with the spaces it
+               can reach. The tab shows only once there is one. -->
+          <section class="contacts-collection" aria-label="your agents">
+            <p class="space-create-help" data-contacts-status role="status" aria-live="polite"></p>
+            <div class="contact-list" data-contacts-list></div>
+          </section>
+          <style data-agent-spaces></style>
         </hub-discover>
         <section class="settings chrome" data-settings-view>
             <a class="settings-back" href="/" data-return-spaces>‹ back to spaces</a>
@@ -2893,14 +3200,14 @@ view!:
                   <div class="account-panels">
                     <tonk-display model="tonk:account/registered" view="settings"></tonk-display>
                     <section class="settings-panel agent-access-panel" data-agent-connections hidden aria-label="agent access">
-                      <div class="srowd"><h2>Agent access</h2><button class="cta" type="button" data-connections-refresh>refresh</button></div>
+                      <div class="settings-heading"><h2>Agent access</h2><button class="connection-refresh" type="button" data-connections-refresh>refresh</button></div>
                       <p class="expl">Completed connections created by this account.</p>
                       <p class="expl" data-connections-status role="status" aria-live="polite"></p>
                       <div data-connections-list></div>
                     </section>
                     <section class="settings-panel signout-panel">
                       <h2>Sign out</h2>
-                      <p>Disconnect this account. Keep local spaces on this device.</p>
+                      <p>Disconnect this account. Its spaces stay on this device for when you sign back in.</p>
                       <button class="cta panel-action" type="button" data-sign-out-open>sign out on this device <span aria-hidden="true">↗</span></button>
                     </section>
                     <section class="settings-panel danger-panel">
@@ -2962,6 +3269,51 @@ view!:
                   <span hidden data-via-return on:finish-sign-in-via=tonk:finish-sign-in-via></span>
                 </div>
                 <span hidden data-sign-in on:sign-in=tonk:sign-in></span>
+                <!-- An app's OAuth request, as the FABB task dialog the hub's
+                     sign-in uses: which agent, what it can reach, the passkey,
+                     then back to the app. One step shows at a time. -->
+                <div class="pane" data-pane="agent" hidden data-agent-approval data-agent-step="agent">
+                  <div class="agent-dlg" role="group" aria-labelledby="agent-title">
+                    <div class="agent-head"><span class="agent-disc" aria-hidden="true"></span><h2 class="agent-title" id="agent-title" data-agent-title>connect an app</h2></div>
+                    <div class="agent-step" data-agent-panel="agent">
+                      <div class="agent-row"><span class="k">app</span><span class="v" data-agent-client>…</span></div>
+                      <div class="agent-row"><span class="k">returns to</span><span class="v" data-agent-host>…</span></div>
+                      <p class="agent-exp" data-agent-warning hidden></p>
+                      <div class="agent-label" data-agent-choice hidden>which agent</div>
+                      <div class="agent-options" data-agent-options role="radiogroup" aria-label="which agent" hidden></div>
+                      <label class="agent-edit" data-agent-name-field><span class="k">agent name</span>
+                        <input class="agent-input" type="text" data-agent-name maxlength="80" autocomplete="off" aria-label="Agent name"></label>
+                      <p class="agent-exp" data-agent-intro>The agent gets a space of its own, where it can always read and write.</p>
+                      <div class="agent-foot"><button class="agent-btn" type="button" data-agent-deny>deny</button><button class="agent-btn go" type="button" data-agent-next disabled>continue</button></div>
+                    </div>
+                    <div class="agent-step" data-agent-panel="spaces" hidden>
+                      <div class="agent-spaces" data-agent-spaces role="group" aria-label="what it can reach"><p class="agent-exp">loading your spaces…</p></div>
+                      <p class="agent-exp">Access lasts 90 days. You can remove it any time under your agents.</p>
+                      <div class="agent-foot"><button class="agent-btn" type="button" data-agent-back>back</button><button class="agent-btn go" type="button" data-agent-approve>approve</button></div>
+                    </div>
+                    <div class="agent-step" data-agent-panel="passkey" hidden>
+                      <div data-agent-summary></div>
+                      <p class="agent-exp"><strong>Use your passkey to approve.</strong> Your browser will ask for it now.</p>
+                      <div class="agent-foot"><button class="agent-btn wide" type="button" data-agent-deny>cancel</button></div>
+                    </div>
+                    <div class="agent-step" data-agent-panel="working" hidden>
+                      <div class="agent-row agent-phase" data-agent-phase="passkey" data-state="done"><span class="k">passkey</span><span class="v">account opened</span></div>
+                      <div class="agent-row agent-phase" data-agent-phase="agent"><span class="k">agent</span><span class="v"></span></div>
+                      <div class="agent-row agent-phase" data-agent-phase="access"><span class="k">access</span><span class="v"></span></div>
+                      <div class="agent-row agent-phase" data-agent-phase="saving"><span class="k">saving</span><span class="v">to the agent's space</span></div>
+                      <div class="agent-row agent-phase" data-agent-phase="app"><span class="k">app</span><span class="v"></span></div>
+                      <p class="agent-exp" data-agent-wait role="status">This usually takes 10 to 30 seconds. Keep this page open.</p>
+                    </div>
+                    <div class="agent-step" data-agent-panel="done" hidden>
+                      <div data-agent-summary></div>
+                      <p class="agent-exp" data-agent-returning>Returning you to the app…</p>
+                    </div>
+                    <div class="agent-step" data-agent-panel="error" hidden>
+                      <p class="agent-exp" data-agent-error role="alert"></p>
+                      <div class="agent-foot"><button class="agent-btn wide" type="button" data-agent-close>close</button></div>
+                    </div>
+                  </div>
+                </div>
                 <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
                 <tonk-display model="state:ceremony" entity="state:ceremony" view="settings">
                   <span slot="no-entity" hidden></span>
@@ -2970,7 +3322,7 @@ view!:
               </div>
               <tonk-dialog data-sign-out-dialog heading="confirm sign out">
                 <div class="confirm-body">
-                  this disconnects the account from this browser. local spaces stay on this device, including spaces that have not been backed up or synced. you can sign into this or another account later.
+                  this disconnects the account from this browser. its spaces stay on this device, including spaces that have not been backed up or synced, but the hub lists them only while you are signed in. sign back into this account to see them again.
                 </div>
                 <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
                 <button class="m-go" slot="actions" type="button" data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>
@@ -3445,6 +3797,14 @@ element!: &account-activate
         }
       }
 
+# `/settings/agent` is the same page too: an app signing in over OAuth
+# (`/authorize` on this origin) sends the browser here with its pending
+# request, and the settings panel asks which spaces its agent may reach.
+route!: &route/settings/agent
+  this: id:tonk:route/settings/agent
+  path: "/settings/agent"
+  concept: tonk:hub
+
 # The /join route: redeem an invite. The shell's top-level `<tonk-site>`
 # routes every path against this table, so without an entry `/join` matched
 # nothing and the site rendered an empty `tonk:site` ("required attribute
@@ -3453,9 +3813,26 @@ element!: &account-activate
 # model="tonk:join/status">` directory. That directory's chrome carries the
 # `<page-mount on:join=tonk:join>` trigger, which reads the page location
 # (the SW can't see the `#fragment` seed) and fires `tonk:join`.
+#
+# A bare `/join` is where a link from another host is pasted: its
+# `<join-paste>` form fires `tonk:join` itself, with this host's
+# `/join/<link>` address, so the join runs here against the link's own
+# host and the seed never reaches the address bar.
 route!: &route/join
   this: id:tonk:route/join
   path: "/join"
+  concept: tonk:join/route
+
+# `/join/<link>` carries another host's link to this one, the way
+# `/seed/<url>` carries a definitions URL:
+# `/join/https://tonk.network/space/<did>#<seed>`. The link's query and
+# seed ride as the address's own, so the seed is still a fragment. The page
+# is the same `/join`; the worker unwraps the link from the location the
+# trigger reads (see `tonk_invite::join_address`). A `{*url}` span may not
+# capture nothing, so the bare form above is its own route.
+route!: &route/join-link
+  this: id:tonk:route/join-link
+  path: "/join/{*url}"
   concept: tonk:join/route
 
 concept!: &join/route
@@ -3488,7 +3865,7 @@ view!:
           <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
         </tonk-fab>
         <tab-title text="Tonk"></tab-title>
-        <main class="join-view">
+        <main class="join-view" data-path="{path}">
           <style>
             .join-view {
               --edge-page:#e8e6e4; --edge-ink:#38182a; --edge-on:#f7f6f5;
@@ -3527,8 +3904,17 @@ view!:
               text-decoration:none; text-transform:lowercase; cursor:pointer; }
             .ebtn.solid { color:var(--edge-on); background:var(--edge-ink); }
             .ebtn:active { scale:.96; }
-            .join-view:has(.join-status-slot[data-state="ready"]):not(:has(.edge-wall--closed))
+            .join-view:not([data-path="/join"]):has(.join-status-slot[data-state="ready"]):not(:has(.edge-wall--closed))
               .edge-mast { display:none; }
+            /* The paste form is the bare /join page's; a carried link's
+               page shows only the join's own surfaces. */
+            .join-paste { display:none; }
+            .join-view[data-path="/join"] .join-paste { display:block; margin-top:28px; }
+            .join-paste-input { width:100%; min-height:44px; box-sizing:border-box;
+              padding:10px 14px; border:0; border-radius:0; color:var(--edge-ink);
+              background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring);
+              font:400 13px/1.4 'IBM Plex Mono',ui-monospace,monospace; }
+            .join-paste-input:focus-visible { outline:2px solid var(--edge-ink); outline-offset:1px; }
             /* Match the destination-neutral boot shell: only the shared pulse
                is visible, centred over the whole route. Keep the status text
                in the live region for assistive technology. */
@@ -3553,13 +3939,26 @@ view!:
           </style>
           <a class="edge-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
           <page-mount on:join=tonk:join></page-mount>
-          <!-- Invite URLs are opened directly in the browser. Bare /join
-               visits return home through the join handler. -->
+          <!-- Invite URLs open directly in the browser, on this host or
+               carried to it as /join/<link>. A bare /join visit stays here
+               to take a pasted link. -->
           <tonk-display class="join-status-slot" model="tonk:join/status">
             <span slot="empty"></span>
             <span slot="loading"></span>
             <span slot="no-entity"></span>
           </tonk-display>
+          <join-paste class="join-paste" on:join=tonk:join>
+            <form class="edge-wall" data-join-paste-form aria-labelledby="join-paste-title" novalidate>
+              <h1 class="edge-statement" id="join-paste-title">join a space from a link</h1>
+              <label class="edge-narrator" for="join-paste-link">paste a share link from any tonk host. the space joins your account here.</label>
+              <input class="join-paste-input" id="join-paste-link" name="link" type="url" inputmode="url" required autocomplete="off" spellcheck="false" placeholder="https://tonk.network/space/…">
+              <p class="edge-narrator" data-join-paste-error role="alert" hidden></p>
+              <div class="edge-run">
+                <a class="ebtn" href="/">go to home</a>
+                <button class="ebtn solid" type="submit">join</button>
+              </div>
+            </form>
+          </join-paste>
         </main>
       </div>
 
@@ -3795,17 +4194,113 @@ view!:
     title: |
       <tab-title text="{name} — Tonk"></tab-title>
 
-# The space chrome model. `{id}` (the repository) and `{rest}` (the sub-path) are
-# captured from the path and stamped on the site; the view reads them. `rest` is
-# optional — the bare space route does not capture it, and the nested `<tonk-site>`
-# defaults its absent `path` to `/`.
+# A branch a page asks for that the space does not have yet.
+#
+# `/space/{branch}@{did}` names a branch as well as a space. When the space
+# is here but that branch has no head, the worker stamps `space-branch-state`
+# on the tab's site, and the chrome mounts this concept on the site: its view
+# is the panel that offers to make the branch. Opening the URL makes nothing
+# by itself. The state is a session fact on the profile site, like the rest of
+# the site, so it goes with the tab and clears when the branch is made.
+concept!: &space/missing-branch
+  this: tonk:space/missing-branch
+  description: A branch the tab asks for that its space does not have yet.
+  with:
+    state:
+      description: Why the branch cannot be shown; `missing` when it has no head.
+      the: xyz.tonk.site/space-branch-state
+      as: text
+    space-repo:
+      description: The repository the tab's space segment names.
+      the: xyz.tonk.site/space-repo
+      as: text
+    space-branch:
+      description: The branch the tab's space segment names.
+      the: xyz.tonk.site/space-branch
+      as: text
+
+# Make a branch the space does not have. The handler starts it from the
+# branch of the same name on the space's remote when there is one, so two
+# devices that make `test` share one line rather than forking it; otherwise
+# from `base`: `main` as it is now, or `empty` (the standard library alone).
+# With a remote, the branch tracks the remote branch of its name, so the sync
+# sweep pushes and pulls it like `main`. It does not track local `main`:
+# taking `main`'s later work, or bringing the branch's back, is a merge, a
+# separate act.
+command!: &space/create-branch
+  description: Give a space a branch it does not have yet.
+  with:
+    space:
+      description: The space (its subject DID) to make the branch in.
+      the: xyz.tonk.command.create-branch/space
+      as: entity
+    name:
+      description: The new branch's name.
+      the: xyz.tonk.command.create-branch/name
+      as: text
+    base:
+      description: "What the branch starts from without a remote one: `main` or `empty`."
+      the: xyz.tonk.command.create-branch/base
+      as: text
+    site:
+      description: The tab's site that asked, whose missing-branch state is cleared.
+      the: xyz.tonk.command.create-branch/site
+      as: entity
+
+# The panel's form: the space, the branch and the site ride the form's data
+# attributes, and the button pressed says which base.
+event!: &on/branch-create
+  type: "submit"
+  prevent-default: true
+  where:
+    space: ".currentTarget.dataset.space"
+    name: ".currentTarget.dataset.branch"
+    base: ".submitter.value"
+    site: ".currentTarget.dataset.site"
+
+view!:
+  this: tonk:space/missing-branch
+  show:
+    ui: |
+      <div class="space-unknown branch-missing">
+        <tab-title text="{space-branch} — Tonk"></tab-title>
+        <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+        <form class="space-unknown-wall" data-space={space-repo} data-branch={space-branch}
+          data-site={this} on:branch-create=space/create-branch>
+          <h1 class="space-unknown-statement">there is no branch {space-branch} here yet</h1>
+          <p class="branch-missing-narrator">Make it from main as it is now, or start it empty with only the standard library. If the space's remote already has a branch of this name, that one is used instead.</p>
+          <div class="space-unknown-run">
+            <button type="submit" name="base" value="main" class="space-unknown-home">branch off main<span aria-hidden="true">&#9656;</span></button>
+          </div>
+          <div class="space-unknown-run">
+            <button type="submit" name="base" value="empty" class="space-unknown-home">start empty<span aria-hidden="true">&#9656;</span></button>
+          </div>
+          <a class="space-unknown-back" href="/">go to home</a>
+        </form>
+      </div>
+
+# The space chrome model. `{id}` (the space segment) and `{rest}` (the
+# sub-path) are captured from the path and stamped on the site. `{id}` is the
+# segment as written, `[{branch}@][{label}:]{did}`, so the view reads the
+# repository and branch it names from `space-repo` and `space-branch`, which
+# the worker stamps by the same grammar it routes by. `rest` is optional — the
+# bare space route does not capture it, and the nested `<tonk-site>` defaults
+# its absent `path` to `/`.
 concept!: &space-chrome
   this: tonk:space/chrome
   description: The space chrome — repo portal with the FAB on top.
   with:
     id:
-      description: The space repository id, picked off the site entity.
+      description: The space segment of the path, as written.
       the: xyz.tonk.site/id
+      as: text
+    space-repo:
+      description: The repository the space segment names (its full `did:key`).
+      the: xyz.tonk.site/space-repo
+      as: text
+    space-branch:
+      description: The branch the space segment names; `main` when it names none.
+      the: xyz.tonk.site/space-branch
       as: text
     profile-branch:
       description: >
@@ -3854,14 +4349,15 @@ view!:
         :root.wa-dark .space-unknown-mast img { filter:invert(1); }
         .space-unknown-wall { width:min(576px, 100%); margin:0 auto;
           display:flex; flex-direction:column; gap:7px; }
-        .space-unknown-statement, .space-unknown-narrator { min-height:36px;
+        .space-unknown-statement, .space-unknown-narrator,
+        .branch-missing-narrator { min-height:36px;
           margin:0; background:var(--edge-card);
           box-shadow:0 0 0 1px var(--edge-ring); }
         .space-unknown-statement { padding:10px 14px; display:flex; align-items:flex-end;
           color:var(--edge-ink);
           font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
           font-weight:600; line-height:1.55; text-wrap:balance; }
-        .space-unknown-narrator { padding:10px 14px; color:var(--edge-soft);
+        .space-unknown-narrator, .branch-missing-narrator { padding:10px 14px; color:var(--edge-soft);
           font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
           font-weight:400; line-height:1.55; text-wrap:pretty; }
         .space-unknown-run { display:flex; }
@@ -3926,20 +4422,34 @@ view!:
            A space held on this device that declares no repository, one that
            runs a kernel with nothing installed into it yet, is not arriving:
            it is here, and shows itself. */
+        /* A branch the space lacks carries no library either, so the
+           repository display below lands in its absent-space panel and
+           says the space is still arriving. It is here; the branch is not.
+           The branch panel tells that, so it hides the other one. */
+        body:has(.branch-missing) .space-unknown:not(.branch-missing) { display: none; }
         tonk-view:has(> tonk-display[data-state="no-model"]):not(:has([data-presence="case:replicated"])) > tonk-site,
         tonk-view:has(> tonk-display[data-state="no-model"]):not(:has([data-presence="case:replicated"])) > tonk-fab { display: none; }
         .space-unknown:has([data-presence="case:replicated"]) { display: none; }
       </style>
-      <tonk-site data-space-preview with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
-      <tonk-fab with="{profile-branch}@profile:tonk" space={id}>
-        <command-palette slot="command" space={id} profile="{profile-branch}@profile:tonk"></command-palette>
+      <tonk-site data-space-preview with="{space-branch}@{space-repo}" allow="{space-branch}@{space-repo}" path={rest}></tonk-site>
+      <tonk-display with="{profile-branch}@profile:tonk" entity={this} model=tonk:space/missing-branch>
+        <!-- Only a tab on a branch the space lacks carries the state, so
+             every other tab resolves no entity here and shows nothing. -->
+        <span slot="no-entity" hidden></span>
+        <span slot="no-model" hidden></span>
+        <span slot="no-view" hidden></span>
+        <span slot="empty" hidden></span>
+        <span slot="loading" hidden></span>
+      </tonk-display>
+      <tonk-fab with="{profile-branch}@profile:tonk" space={space-repo}>
+        <command-palette slot="command" space={space-repo} branch={space-branch} profile="{profile-branch}@profile:tonk"></command-palette>
       </tonk-fab>
       <account-task>
         <tonk-display hidden model="tonk:sign-in/asked" view="flag" data-signing-in></tonk-display>
         <span hidden data-sign-in on:sign-in=tonk:sign-in></span>
         <tonk-display hidden model="state:account-link" view="label" data-account-link></tonk-display>
       </account-task>
-      <tonk-display with={id} entity={id} model=tonk:repository view=title>
+      <tonk-display with="{space-branch}@{space-repo}" entity={space-repo} model=tonk:repository view=title>
         <!-- `no-model` is now the absent-space panel below, which sets its
              own title; a second `no-model` child would render alongside it
              and fight over `document.title` (update_slot_children shows
@@ -3970,7 +4480,7 @@ view!:
         <!-- Light-DOM slots must be hidden in the template too: before the
              display initializes they otherwise paint as ordinary content. -->
         <div slot="no-model" hidden class="space-unknown">
-          <tonk-display with="{profile-branch}@profile:tonk" entity={id} model=space view=downloading>
+          <tonk-display with="{profile-branch}@profile:tonk" entity={space-repo} model=space view=downloading>
             <!-- The account has this space: it is arriving, not missing.
                  When it lands, the OUTER display's standing subscription
                  delivers a real frame and this whole panel is replaced. -->
@@ -5087,6 +5597,47 @@ element!: &page-mount
         self.__bound = null;
       }
 
+# The bare /join page's paste form. A link pasted here joins on this host:
+# it fires the same `mount` event `<page-mount>` does, with this host's
+# `/join/<link>` address as `detail.href`, so the view binds it to
+# `tonk:join` exactly as it binds the page's own location. The address bar
+# does not change, so the pasted seed never enters the history; a join
+# that succeeds navigates to the space, and one that fails shows the
+# join's failure above the form, which stays to take another link.
+element!: &join-paste
+  description: Joins a pasted share link by firing a `mount` event carrying it as `/join/<link>`.
+  method:
+    join: |
+      (self, form) => {
+        const input = form.querySelector('input[name="link"]');
+        const error = form.querySelector('[data-join-paste-error]');
+        let link = null;
+        try { link = new URL(input.value.trim()); } catch { link = null; }
+        if (!link || !['https:', 'http:'].includes(link.protocol)) {
+          error.textContent = 'that is not a link. paste the whole share link, starting with https://';
+          error.hidden = false;
+          input.focus();
+          return;
+        }
+        error.hidden = true;
+        const origin = window.tonk?.context?.origin ?? window.location.origin;
+        self.dispatchEvent(new CustomEvent('mount', {
+          bubbles: true,
+          detail: { href: `${origin}/join/${link.href}` },
+        }));
+      }
+    connected: |
+      (self) => {
+        if (self.__wired) return;
+        self.__wired = true;
+        self.addEventListener('submit', (event) => {
+          const form = event.target?.closest?.('[data-join-paste-form]');
+          if (!form || !self.contains(form)) return;
+          event.preventDefault();
+          self.join(form);
+        });
+      }
+
 # An inline-editable line of text, driven like a native input: its
 # `value` property is its text, a double-click makes it editable, Enter
 # commits — a blur, which fires `change` when the text changed — and
@@ -5160,10 +5711,66 @@ element!: &space-actions
           event.stopImmediatePropagation();
           return;
         }
+        event.preventDefault();
+        event.stopImmediatePropagation();
         if (error) error.textContent = '';
+        if (input.value === input.defaultValue.trim()) {
+          self.querySelector('[data-space-rename-dialog]')?.close?.();
+          return;
+        }
         self.setAttribute('busy', '');
         const submit = self.querySelector('[data-space-rename-submit]');
         if (submit) submit.disabled = true;
+        self.rename(form, input.value);
+      }
+    # Dispatch the rename under a fresh receipt and wait for the worker's
+    # answer on it: close on `renamed`, show the detail on `failed`.
+    rename: |
+      async (self, form, name) => {
+        let reader;
+        const error = self.querySelector('[data-space-rename-error]');
+        try {
+          await window.tonk.ready;
+          if (!self.isConnected) return;
+          const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+          reader = window.tonk.subscribe({
+            predicate: { with: {
+              status: { the: 'xyz.tonk.repository-rename/status', as: 'Text', cardinality: 'one' },
+              detail: { the: 'xyz.tonk.repository-rename/detail', as: 'Text', cardinality: 'one' },
+            } },
+            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+          }).getReader();
+          self.__renameReader = reader;
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              name: { the: 'xyz.tonk.command.rename-repository/name', as: 'Text' },
+              space: { the: 'xyz.tonk.rename-repository/space', as: 'Entity' },
+            } } },
+            parameters: { this: id, name, space: form.dataset.space },
+          } }] });
+          while (self.isConnected) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('Rename status stream ended');
+            const result = value.find(row => row.this === id)?.fields;
+            if (result?.status === 'failed') {
+              if (error) error.textContent = result.detail;
+              return;
+            }
+            if (result?.status === 'renamed') {
+              form.elements.name.defaultValue = name;
+              self.querySelector('[data-space-rename-dialog]')?.close?.();
+              return;
+            }
+          }
+        } catch (failure) {
+          if (error) error.textContent = "Couldn't confirm the rename. Check the space's name before trying again.";
+        } finally {
+          if (reader) await reader.cancel().catch(() => {});
+          if (self.__renameReader === reader) self.__renameReader = null;
+          self.removeAttribute('busy');
+          const submit = self.querySelector('[data-space-rename-submit]');
+          if (submit) submit.disabled = false;
+        }
       }
     connected: |
       (self) => {
@@ -5206,7 +5813,11 @@ element!: &space-actions
         document.addEventListener('pointerdown', self._outside, true);
       }
     disconnected: |
-      (self) => document.removeEventListener('pointerdown', self._outside, true)
+      (self) => {
+        document.removeEventListener('pointerdown', self._outside, true);
+        self.__renameReader?.cancel().catch(() => {});
+        self.__renameReader = null;
+      }
     released: |
       (self) => self.disconnected()
 
@@ -5931,7 +6542,7 @@ element!: &account-settings
           const approval = response?.approval;
           if (!approval) { self.status('The approval response was not readable.'); return; }
           self.localLinkReturn(described.callback, [['approve', approval], ['correlation', described.correlation]]);
-        }, (error) => self.status(`Could not approve this space: ${error.message}`));
+        }, (error) => self.localLinkFail('Could not approve this space', error));
       }
     local-link-decline: |
       (self) => {
@@ -5948,10 +6559,7 @@ element!: &account-settings
           const provisioned = response?.provisioned;
           if (!provisioned) { self.status('The provisioning receipt was not readable.'); return; }
           self.localLinkReturn(described.callback, [['provisioned', provisioned], ['correlation', described.correlation]]);
-        }, (error) => {
-          self.removeAttribute('data-local-link-finishing');
-          self.status(`Publication stopped: ${error.message}. Reload to retry.`);
-        });
+        }, (error) => self.localLinkFail('Publication stopped', error));
       }
     local-link-finish: |
       (self, request) => {
@@ -5962,10 +6570,23 @@ element!: &account-settings
           const completion = response?.completion;
           if (!completion) { self.status('The publication receipt was not readable. Reload to retry.'); return; }
           self.localLinkReturn(described.callback, [['complete', completion], ['correlation', described.correlation]]);
-        }, (error) => {
-          self.removeAttribute('data-local-link-finishing');
-          self.status(`Publication stopped: ${error.message}. Reload to retry.`);
-        });
+        }, (error) => self.localLinkFail('Publication stopped', error));
+      }
+    # A step of the link failed. One that may pass on a second try (the
+    # network, a 5xx, a timeout) leaves the terminal waiting and the page
+    # ready to retry on reload. A refusal (any other 4xx) will not pass
+    # again, so the terminal is told why and stops, rather than waiting
+    # out its timeout for an answer that never comes.
+    local-link-fail: |
+      (self, stage, error) => {
+        const reason = self.agentReason(error);
+        const status = Number(error?.status) || 0;
+        const refused = status >= 400 && status < 500 && status !== 408 && status !== 429;
+        self.removeAttribute('data-local-link-finishing');
+        if (!refused) { self.status(`${stage}: ${reason}. Reload to retry.`); return; }
+        self.status(`${stage}: ${reason}`);
+        const described = self.localLink;
+        if (described) self.localLinkReturn(described.callback, [['deny', `${stage.toLowerCase()}: ${reason}`], ['correlation', described.correlation]]);
       }
     # Keys are hyphenated: the runtime camelCases them onto the
     # prototype, so `self.linkRequest()` is how a sibling calls this.
@@ -6089,6 +6710,325 @@ element!: &account-settings
         const target = self.querySelector(selector);
         if (target && target.textContent !== value) target.textContent = value;
       }
+    # An app's OAuth request: `/authorize` recorded it and sent the browser
+    # here with its handle. The worker reads and answers it, since this
+    # frame cannot reach the authorization server with its cookie.
+    agent-request: |
+      (self) => {
+        const at = self.context();
+        if (at.path !== '/settings/agent') return null;
+        return new URLSearchParams(at.search).get('request') || null;
+      }
+    # The step the dialog shows, and its heading: the app's name once the
+    # request is read.
+    agent-step: |
+      (self, step) => {
+        const pane = self.querySelector('[data-agent-approval]');
+        if (!pane) return;
+        if (pane.dataset.agentStep !== step) pane.dataset.agentStep = step;
+        for (const panel of pane.querySelectorAll('[data-agent-panel]')) panel.hidden = panel.dataset.agentPanel !== step;
+        const client = self._agentClient ?? 'an app';
+        const title = {
+          agent: `connect ${client}`,
+          spaces: `what ${client} can reach`,
+          passkey: `approving ${client}`,
+          working: `connecting ${client}`,
+          done: `${client} connected`,
+          error: `connect ${client}`,
+        }[step];
+        if (title) self.text('[data-agent-title]', title);
+        if (step !== 'working') self.agentPhase(null);
+      }
+    # The approval's progress after the passkey, one row per phase the
+    # worker reports: what is done, what runs now with how long it has
+    # run, and what is left. A phase that runs past a minute says so; the
+    # approval still ends on its own, as done or with the reason it failed.
+    agent-phase: |
+      (self, phase, spaces = 0) => {
+        clearInterval(self._agentTick);
+        self._agentTick = null;
+        if (!phase) return;
+        const order = ['passkey', 'agent', 'access', 'saving', 'app'];
+        const at = order.indexOf(phase);
+        if (at < 0) return;
+        if (self._agentPhase !== phase) { self._agentPhase = phase; self._agentPhaseAt = Date.now(); }
+        const reusing = Boolean(self._agentReusing);
+        const client = self._agentClient ?? 'the app';
+        const reach = spaces ? `${spaces} space${spaces === 1 ? '' : 's'} signed` : 'its own space only';
+        const words = {
+          agent: [reusing ? 'reopening it' : 'making its space', reusing ? 'reopened' : 'its space made'],
+          access: ['signing', reach],
+          saving: ["to the agent's space", "to the agent's space"],
+          app: [`return to ${client}`, `return to ${client}`],
+        };
+        const rows = self.querySelectorAll('[data-agent-phase]');
+        const show = () => {
+          const seconds = Math.floor((Date.now() - self._agentPhaseAt) / 1000);
+          const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+          for (const row of rows) {
+            const index = order.indexOf(row.dataset.agentPhase);
+            const state = index < at ? 'done' : index === at ? 'now' : 'todo';
+            if (row.dataset.state !== state) row.dataset.state = state;
+            const said = words[row.dataset.agentPhase];
+            if (!said) continue;
+            const text = state === 'now' ? `${said[0]} · ${clock}` : state === 'done' ? said[1] : said[0];
+            const value = row.querySelector('.v');
+            if (value.textContent !== text) value.textContent = text;
+          }
+          const wait = self.querySelector('[data-agent-wait]');
+          const slow = seconds >= 60;
+          if (wait && wait.dataset.slow !== String(slow)) {
+            wait.dataset.slow = String(slow);
+            if (slow) {
+              const strong = document.createElement('strong');
+              strong.textContent = 'This is taking longer than usual.';
+              wait.replaceChildren(strong, ' Your connection to Tonk may be slow. It will finish on its own; if it fails, this page says why.');
+            } else {
+              wait.textContent = 'This usually takes 10 to 30 seconds. Keep this page open.';
+            }
+          }
+        };
+        show();
+        self._agentTick = setInterval(show, 1000);
+      }
+    # A refusal the page can still recover from shows on the step it came
+    # from; one that ends the request shows as its own step.
+    agent-error: |
+      (self, text) => {
+        self.text('[data-agent-error]', text);
+        if (text) self.agentStep('error');
+      }
+    # A worker error body's message, or the raw text.
+    agent-reason: |
+      (self, error) => {
+        try { return JSON.parse(error.message)?.error?.message ?? error.message; } catch { return error.message; }
+      }
+    # Show the pane; once this browser has an account, read the request
+    # and the spaces it could reach, once per request.
+    agent-show: |
+      (self) => {
+        const request = self.agentRequest();
+        if (!request) return false;
+        self.pane('agent');
+        if (!self.linked() || self.getAttribute('data-agent-shown') === request) return true;
+        self.setAttribute('data-agent-shown', request);
+        self.agentStep('agent');
+        self.api(`/api/agent/request/${encodeURIComponent(request)}`).then((described) => {
+          const client = described?.client_name || 'an app';
+          const host = described?.redirect_host || described?.redirect_uri || '';
+          self._agentClient = client;
+          self.agentStep('agent');
+          self.text('[data-agent-client]', client);
+          self.text('[data-agent-host]', host);
+          self.text('[data-agent-returning]', `Returning you to ${client}…`);
+          const name = self.querySelector('[data-agent-name]');
+          if (name && !name.value) name.value = client;
+          const loopback = host === 'localhost' || host === '[::1]' || /^127\./.test(host);
+          const warning = self.querySelector('[data-agent-warning]');
+          if (warning) {
+            warning.textContent = loopback ? `${host} is this computer. Approve only if you just started ${client} here yourself.` : '';
+            warning.hidden = !loopback;
+          }
+          self.agentChoices(described?.agents ?? [], client);
+          const next = self.querySelector('[data-agent-next]');
+          if (next) next.disabled = false;
+          self.agentSpaces(described?.spaces);
+        }, (error) => {
+          self.agentError(error.status === 404 || error.status === 410
+            ? 'This connection request expired. Nothing was granted. Start connecting again from your app.'
+            : `This request can't be answered: ${self.agentReason(error)}`);
+        });
+        return true;
+      }
+    # This account's agents the app may connect again: only ones made for
+    # the same provider's apps, so Claude and ChatGPT never share one. The
+    # first is chosen; a new agent is always on offer too.
+    agent-choices: |
+      (self, agents, client) => {
+        const label = self.querySelector('[data-agent-choice]');
+        const options = self.querySelector('[data-agent-options]');
+        if (!label || !options) return;
+        options.replaceChildren();
+        const choices = [...agents.map((agent) => ({ key: agent.key, text: agent.name || 'Unnamed agent' })), { key: '', text: `a new agent for ${client}` }];
+        for (const [index, choice] of choices.entries()) {
+          const option = document.createElement('button');
+          option.type = 'button';
+          option.className = 'agent-opt';
+          option.setAttribute('role', 'radio');
+          option.setAttribute('aria-checked', String(index === 0));
+          option.dataset.agentKey = choice.key;
+          const disc = document.createElement('span');
+          disc.className = 'agent-disc';
+          disc.setAttribute('aria-hidden', 'true');
+          option.append(disc, document.createTextNode(choice.text));
+          options.append(option);
+        }
+        label.hidden = options.hidden = agents.length === 0;
+        self.agentPick(options.firstElementChild);
+      }
+    agent-pick: |
+      (self, option) => {
+        if (!option) return;
+        for (const other of self.querySelectorAll('.agent-opt')) other.setAttribute('aria-checked', String(other === option));
+        const fresh = option.dataset.agentKey === '';
+        const field = self.querySelector('[data-agent-name-field]');
+        if (field) field.hidden = !fresh;
+        self.text('[data-agent-intro]', fresh
+          ? 'The agent gets a space of its own, where it can always read and write.'
+          : `Connecting ${self._agentClient ?? 'the app'} again keeps what its agent can already reach. ChatGPT and Claude never share an agent.`);
+      }
+    agent-chosen: |
+      (self) => {
+        const options = self.querySelector('[data-agent-options]');
+        if (!options || options.hidden) return '';
+        return options.querySelector('[aria-checked="true"]')?.dataset.agentKey ?? '';
+      }
+    agent-next: |
+      (self) => {
+        const field = self.querySelector('[data-agent-name]');
+        if (!self.agentChosen() && !(field?.value ?? '').trim()) { field?.focus(); return; }
+        self.agentStep('spaces');
+      }
+    # One row per space in the account's directory, a three-way choice per
+    # row; a space recorded local-only shows but cannot be chosen, since a
+    # hosted agent reaches a space through its sync remote. Right after
+    # signing in the account's directory is still arriving, so an empty
+    # list is read again for a while before it is shown as empty.
+    agent-spaces: |
+      async (self, listed, attempt = 0) => {
+        const list = self.querySelector('[data-agent-spaces]');
+        const request = self.agentRequest();
+        if (!list || !request) return;
+        if (!listed) {
+          try { listed = (await self.api(`/api/agent/request/${encodeURIComponent(request)}`))?.spaces; } catch { listed = null; }
+        }
+        const rows = (listed ?? []).map(({ key, name, synced }) => ({ key, label: name || key, synced: !!synced }));
+        if (!self.isConnected) return;
+        if (!rows.length && attempt < 60) {
+          setTimeout(() => self.agentSpaces(null, attempt + 1), 2000);
+          return;
+        }
+        rows.sort((a, b) => a.label.localeCompare(b.label));
+        const chosen = new Map([...list.querySelectorAll('.agent-space')].map((row) => [row.dataset.key, row.querySelector('[aria-checked="true"]')?.dataset.access]));
+        list.replaceChildren();
+        if (!rows.length) {
+          const empty = document.createElement('p');
+          empty.className = 'agent-exp';
+          empty.textContent = 'You have no spaces to share yet. The agent still gets its own.';
+          list.append(empty);
+        }
+        for (const row of rows) {
+          const line = document.createElement('div');
+          line.className = 'agent-space';
+          line.dataset.key = row.key;
+          line.dataset.testid = `space-access-${row.key}`;
+          if (!row.synced) line.classList.add('off');
+          const name = document.createElement('span');
+          name.className = 'agent-space-name';
+          name.textContent = row.label;
+          const group = document.createElement('div');
+          group.className = 'agent-seg';
+          group.setAttribute('role', 'radiogroup');
+          group.setAttribute('aria-label', row.label);
+          const current = chosen.get(row.key) ?? 'none';
+          for (const [access, text] of [['none', 'none'], ['read', 'read'], ['write', 'read & write']]) {
+            const option = document.createElement('button');
+            option.type = 'button';
+            option.setAttribute('role', 'radio');
+            option.setAttribute('aria-checked', String(access === current));
+            option.dataset.access = access;
+            option.textContent = text;
+            option.disabled = !row.synced;
+            group.append(option);
+          }
+          line.append(name, group);
+          if (!row.synced) {
+            const why = document.createElement('small');
+            why.className = 'agent-space-why';
+            why.textContent = 'Not synced. Sync it to share it with an agent.';
+            line.append(why);
+          }
+          list.append(line);
+        }
+      }
+    agent-access: |
+      (self, option) => {
+        for (const other of option.parentElement.children) other.setAttribute('aria-checked', String(other === option));
+      }
+    agent-approve: |
+      (self) => {
+        const request = self.agentRequest();
+        if (!request) return;
+        const name = (self.querySelector('[data-agent-name]')?.value ?? '').trim();
+        const agent = self.agentChosen();
+        const spaces = [...self.querySelectorAll('.agent-space')]
+          .map((row) => ({ key: row.dataset.key, access: row.querySelector('[aria-checked="true"]:not(:disabled)')?.dataset.access }))
+          .filter((space) => space.access === 'read' || space.access === 'write');
+        const summaries = self.querySelectorAll('[data-agent-summary]');
+        for (const summary of summaries) {
+          summary.replaceChildren();
+          const rows = spaces.length ? spaces : [{ none: true }];
+          for (const space of rows) {
+            const row = document.createElement('div');
+            row.className = 'agent-row';
+            const k = document.createElement('span');
+            k.className = 'k';
+            const v = document.createElement('span');
+            v.className = 'v';
+            if (space.none) { k.textContent = 'can reach'; v.textContent = 'its own space'; }
+            else {
+              k.textContent = self.querySelector(`.agent-space[data-key="${CSS.escape(space.key)}"] .agent-space-name`)?.textContent ?? space.key;
+              v.textContent = space.access === 'write' ? 'read & write' : 'read';
+            }
+            row.append(k, v);
+            summary.append(row);
+          }
+        }
+        self.agentStep('passkey');
+        self._agentAsked = request;
+        self._agentReusing = Boolean(agent);
+        self._agentSpaces = 0;
+        // The worker asks this page's top document for the passkey; the
+        // ceremony row reports how it goes, and the top page goes on to
+        // the app's callback when it is done.
+        const ask = agent ? { agent, spaces, request } : { name, spaces, request };
+        self.api('/api/agent/session', ask).catch((error) => self.agentError(self.agentReason(error)));
+      }
+    agent-deny: |
+      (self) => {
+        const request = self.agentRequest();
+        if (!request) return;
+        for (const button of self.querySelectorAll('[data-agent-approval] button')) button.disabled = true;
+        self.api('/api/agent/deny', { request }).then((response) => {
+          window.tonk?.navigate?.(response.redirect);
+        }).catch((error) => self.agentError(self.agentReason(error)));
+      }
+    # The ceremony row's word on the approval: a passkey refused goes back
+    # to the spaces, a failure ends the request, done waits for the app.
+    # The ceremony row is the account's, not this request's: it still
+    # says how an earlier approval ended. Only an approval this page asked
+    # for counts, and done only when it names this request.
+    agent-ceremony: |
+      (self, state, detail) => {
+        if (!self._agentAsked || self._agentAsked !== self.agentRequest()) return;
+        if (state === 'done' && detail !== self._agentAsked) return;
+        // Working names the request and the phase it is in.
+        if (state === 'working') {
+          let progress;
+          try { progress = JSON.parse(detail); } catch { return; }
+          if (progress?.request !== self._agentAsked) return;
+          if (progress.phase === 'saving') self._agentSpaces = progress.spaces ?? 0;
+          self.agentStep('working');
+          self.agentPhase(progress.phase, self._agentSpaces);
+        }
+        // Done waits here: the worker answers the top page's passkey
+        // handoff with the app's callback, and this page goes with it.
+        else if (state === 'done') self.agentStep('done');
+        else if (state === 'refused') self.agentStep('spaces');
+        else if (state === 'failed') self.agentError(/expired|another browser/i.test(detail)
+          ? 'This connection request expired. Nothing was granted. Start connecting again from your app.'
+          : `Connecting the agent did not finish: ${detail}`);
+      }
     pane: |
       (self, name) => {
         for (const pane of self.querySelectorAll('[data-pane]')) pane.hidden = pane.dataset.pane !== name;
@@ -6107,6 +7047,7 @@ element!: &account-settings
         }
         if (self.localLinkShow()) return;
         if (self.viaShow()) return;
+        if (self.agentShow()) return;
         const request = self.linkRequest();
         if (!request) {
           self.pane('account');
@@ -6346,12 +7287,14 @@ element!: &account-settings
           'authorize-device': 'Approving the connection',
           'add-passkey': 'Adding the passkey',
           'sign-in-via': 'Signing in',
+          'authorize-agent': 'Approving the agent',
         }[which];
         if (!subject) return;
         const done = {
           'delete-account': 'Account deleted.',
           'authorize-device': 'Approved. Completing the connection…',
           'sign-in-via': 'Signed in.',
+          'authorize-agent': 'Approved. Returning to the app…',
         }[which] ?? 'Done.';
         const text = {
           'pending-ceremony': `${subject}: waiting for passkey…`,
@@ -6369,6 +7312,8 @@ element!: &account-settings
             if (asking) self.setAttribute('data-passkey-requested', ''); else self.removeAttribute('data-passkey-requested');
           }
         }
+        // The agent dialog shows its own steps rather than the status line.
+        if (which === 'authorize-agent') { self.agentCeremony(state, detail); self.status(''); return; }
         self.status(text);
       }
     # Declining hands the requester a deny on its own callback. The same
@@ -6428,6 +7373,7 @@ element!: &account-settings
           return;
         }
         if (changed && linked === 'true' && path === '/settings') self.connectionsRefresh();
+        if (changed && linked === 'true' && path === '/settings/agent') self.agentShow();
         // Signing in through another deployment needs no passkey here, so
         // its page asks the host for no sign-in.
         if (account && self.unlinked() && !self.viaRequest() && !linking) self.signIn();
@@ -6511,6 +7457,20 @@ element!: &account-settings
             self.status('Waiting for passkey…');
           } else if (hit('[data-link-decline]')) {
             self.decline();
+          } else if (hit('[data-agent-approve]')) {
+            self.agentApprove();
+          } else if (hit('[data-agent-deny]')) {
+            self.agentDeny();
+          } else if (hit('[data-agent-next]')) {
+            self.agentNext();
+          } else if (hit('[data-agent-back]')) {
+            self.agentStep('agent');
+          } else if (hit('[data-agent-close]')) {
+            window.tonk?.navigate?.('/');
+          } else if (hit('.agent-opt')) {
+            self.agentPick(event.target.closest('.agent-opt'));
+          } else if (hit('.agent-seg [role="radio"]')) {
+            self.agentAccess(event.target.closest('[role="radio"]'));
           }
         });
         self.addEventListener('input', (event) => {
@@ -6601,6 +7561,22 @@ concept!: &intent/choice
     time:
       description: When it was run, so two runs are two choices.
       the: tonk.dialog.intent.choice/time
+      as: float
+
+concept!: &intent/pick
+  description: An entity a command run from the palette was given, for ranking the values the palette lists for that command.
+  with:
+    command:
+      description: The command that was run.
+      the: tonk.dialog.intent.pick/command
+      as: entity
+    value:
+      description: The entity one of its arguments was filled with.
+      the: tonk.dialog.intent.pick/value
+      as: entity
+    time:
+      description: When it was run, so two runs are two picks.
+      the: tonk.dialog.intent.pick/time
       as: float
 
 # The command palette's interpretation of what was typed, as session facts.
@@ -6704,6 +7680,98 @@ rule!:
     - assert: space
       where: { this: ?space }
 
+# A space that syncs: `home-address` is optional on `space`, absent for a
+# local-only space, so a rule binds it through this required field. Only a
+# space that syncs can be shared: an invitee reaches it through its
+# upstream, so "invite" is said only of these.
+concept!: &space/synced
+  this: tonk:space/synced
+  description: A space on this account whose main branch syncs through an upstream.
+  with:
+    home-address:
+      description: The sync endpoint the space is served from.
+      the: xyz.tonk.space/home-address
+      as: text
+
+rule!:
+  description: A space on this account that syncs is one "invite" from the palette can let an agent into.
+  assert: invite-agent/space
+  when:
+    - assert: intent
+      where: { this: ?this, command: space/invite-agent }
+    - assert: space
+      where: { this: ?space }
+    - assert: space/synced
+      where: { this: ?space }
+
+rule!:
+  description: A space on this account that syncs is one "invite" from the palette can let an account into.
+  assert: invite-email/space
+  when:
+    - assert: intent
+      where: { this: ?this, command: space/invite-email }
+    - assert: space
+      where: { this: ?space }
+    - assert: space/synced
+      where: { this: ?space }
+
+# The agent-space mark, as the profile holds it: the same fact the agent
+# space carries on its own content branch (`tonk/agent-space` in
+# core.yaml), written here too on the agent space's directory entity, so
+# what is on the profile can tell an agent from a space. The worker writes
+# it when it makes an agent, and again whenever it lists the account's
+# agents, which brings an agent made before this mark existed in.
+concept!: &agent-space
+  this: tonk:agent-space
+  description: A space on this account that is an agent's identity.
+  with:
+    kind:
+      description: >
+        What kind of space this is — `case:agent` for an agent space.
+      the: xyz.tonk.repo/kind
+      as: entity
+
+# An agent of this account, by its DID, named as its space is: what
+# "invite" can be said of. Derived on query from the mark and the
+# directory row, so nothing is stored and a renamed agent reads by its
+# new name.
+concept!: &agent
+  description: An agent of this account, by its DID.
+  with:
+    name:
+      description: The agent's name, its space's name.
+      the: xyz.tonk.agent/name
+      as: text
+
+rule!:
+  description: A marked space on this account is an agent, named by its space.
+  assert: agent
+  when:
+    - assert: agent-space
+      where: { this: ?this, kind: ?kind }
+    - assert: ==
+      where: { this: ?kind, is: case:agent }
+    - assert: space
+      where: { this: ?this, name: ?named }
+    # The hub's agents tab says the same of an agent with no name.
+    - assert: coalesce
+      where: { source: ?named, fallback: "Unnamed agent", is: ?name }
+
+view!:
+  this: agent
+  show:
+    label: |
+      {name}
+
+rule!:
+  description: An agent of this account is one "invite" from the palette can name.
+  assert: invite-agent/agent
+  when:
+    - assert: intent
+      where: { this: ?this, command: space/invite-agent }
+    - assert: agent
+      where: { this: ?agent }
+
 rule!:
   description: A space on this account is one "rename space" from the palette can name.
   assert: rename-space/space
@@ -6749,6 +7817,8 @@ element!: &command-palette
         if (self.__keys) return;
         self.build();
         self.__keys = (event) => {
+          // A chord something on the page already took is theirs.
+          if (event.defaultPrevented) return;
           const key = (event.key || '').toLowerCase();
           const chord = (event.metaKey || event.ctrlKey)
             && (key === 'k' || (event.shiftKey && key === 'p'));
@@ -6786,8 +7856,9 @@ element!: &command-palette
         const fab = self.closest('tonk-fab');
         if (fab) fab.removeAttribute('commanding');
         self.__asked = null;
-        // The next opening is a new expression.
+        // The next opening is a new expression, and reads memory afresh.
         self.__expression = null;
+        self.__memory = null;
         self.__typed = '';
         self.__input.value = '';
         self.__proposals = [];
@@ -6945,13 +8016,16 @@ element!: &command-palette
         const space = self.getAttribute('space') || null;
         const fab = self.closest('tonk-fab');
         if (!window.tonk || !(fab && fab.hasAttribute('commanding'))) return;
-        const branches = [space && `main@${space}`, self.getAttribute('profile')].filter(Boolean);
+        // The branch of the space the page shows: `main` unless the page
+        // is on another one.
+        const on = space && `${self.getAttribute('branch') || 'main'}@${space}`;
+        const branches = [on, self.getAttribute('profile')].filter(Boolean);
         if (!branches.length) return;
         // The site of the page being looked at: the space's, nested in the
         // bar's frame, else this frame's own. Its route and its selection
         // are the context every branch's rules and parser read; the page
         // reports its selection to both branches under it.
-        const page = space && document.querySelector(`tonk-site[data-site][with="main@${space}"]`);
+        const page = space && document.querySelector(`tonk-site[data-site][with="${on}"]`);
         const site = (page && page.getAttribute('data-site')) || (window.tonk.context || {}).site;
         const now = Date.now();
         const max = typed ? 5 : 12;
@@ -6989,10 +8063,42 @@ element!: &command-palette
           return false;
         };
         const subject = space ? { this: space } : {};
-        const ofExpression = { predicate: 'intent/suggest', terms: { expression, ...subject, now, max } };
+        // What was run from the palette is kept on the profile; the space
+        // ranks its own commands and their values by it too. Read once per
+        // opening.
+        const profile = self.getAttribute('profile');
+        if (space && profile && !self.__memory) {
+          const field = (name, as) => ({ the: name, as, cardinality: 'one' });
+          const recall = async (domain, extra) => {
+            const found = await self.post(profile, 'query', {
+              predicate: { with: {
+                command: field(`${domain}/command`, 'Entity'), time: field(`${domain}/time`, 'Float'), ...extra,
+              } },
+              terms: Object.fromEntries(['this', 'command', 'time', ...Object.keys(extra)]
+                .map((name) => [name, { '?': { name } }])),
+            });
+            const rows = Array.isArray(found) ? found : (found && found.rows) || [];
+            return rows.map((row) => ({ this: row.this, fields: row.fields || {} }));
+          };
+          self.__memory = Promise.all([
+            recall('tonk.dialog.intent.choice', { input: field('tonk.dialog.intent.choice/input', 'Text') }),
+            recall('tonk.dialog.intent.pick', { value: field('tonk.dialog.intent.pick/value', 'Entity') }),
+          ]).then(([choices, picks]) => JSON.stringify({ choices, picks }))
+            .catch((error) => {
+              console.warn('<command-palette> memory not read', error);
+              return null;
+            });
+        }
+        const memory = space && self.__memory ? await self.__memory : null;
+        if (self.__asked !== asked) return;
+        // Only to the space: the profile reads its own.
+        const remembered = (branch) => (memory && branch !== profile ? { memory } : {});
+        const ofExpression = (branch) => ({ predicate: 'intent/suggest',
+          terms: { expression, ...subject, now, max, ...remembered(branch) } });
         // No site to interpret against, or a branch that didn't interpret
         // the line: ask with the line itself.
-        const ofLine = { predicate: 'intent/suggest', terms: { input: typed, ...subject, now, max, site } };
+        const ofLine = (branch) => ({ predicate: 'intent/suggest',
+          terms: { input: typed, ...subject, now, max, site, ...remembered(branch) } });
         const read = (branch, row) => {
           const fields = row.fields || {};
           const json = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };
@@ -7006,6 +8112,8 @@ element!: &command-palette
             nouns: json(fields.nouns, {}),
             completion: fields.completion || null,
             claim: fields.claim ? json(fields.claim, null) : null,
+            listed: Boolean(fields.listed),
+            entities: json(fields.entities, []),
           };
         };
         const answers = await Promise.all(branches.map(async (branch) => {
@@ -7015,7 +8123,7 @@ element!: &command-palette
           }) : false;
           if (self.__asked !== asked) return [];
           timing[branch] = Math.round(performance.now() - started);
-          return self.post(branch, 'query', done ? ofExpression : ofLine)
+          return self.post(branch, 'query', done ? ofExpression(branch) : ofLine(branch))
             .then((found) => (Array.isArray(found) ? found : (found && found.rows) || [])
               .map((row) => read(branch, row)))
             .catch((error) => {
@@ -7034,7 +8142,20 @@ element!: &command-palette
           // own: best first, and nothing under half the best.
           readings.sort((a, b) => b.score - a.score);
           const best = readings.length ? readings[0].score : 0;
-          readings = readings.filter((reading) => reading.score >= best * 0.5).slice(0, 5);
+          readings = readings.filter((reading) => reading.score >= best * 0.5);
+          // A branch lists a command's values when the line means only that
+          // command there. If the other branch reads it as more commands,
+          // which one is meant comes first: keep each command's top value.
+          if (new Set(readings.map((reading) => reading.command)).size > 1) {
+            const kept = new Set();
+            readings = readings.filter((reading) => {
+              if (!reading.listed) return true;
+              if (kept.has(reading.command)) return false;
+              kept.add(reading.command);
+              return true;
+            });
+          }
+          readings = readings.slice(0, 5);
         }
         self.__proposals = readings;
         self.__note = '';
@@ -7102,20 +8223,34 @@ element!: &command-palette
       (self, proposal) => {
         const profile = self.getAttribute('profile');
         if (!profile) return;
-        const field = (name, as) => ({ the: `tonk.dialog.intent.choice/${name}`, as });
+        const field = (domain, name, as) => ({ the: `tonk.dialog.intent.${domain}/${name}`, as });
+        const time = Date.now();
+        // The command, and each entity it was given: what ranks the values
+        // listed for it next time.
+        const picks = (proposal.entities || []).map((value) => ({ op: 'assert', application: {
+          predicate: { kind: 'durable', concept: { with: {
+            command: field('pick', 'command', 'Entity'), value: field('pick', 'value', 'Entity'),
+            time: field('pick', 'time', 'Float'),
+          } } },
+          parameters: { command: proposal.command, value, time },
+        } }));
         self.post(profile, 'transact', { claims: [{ op: 'assert', application: {
           predicate: { kind: 'durable', concept: { with: {
-            command: field('command', 'Entity'), input: field('input', 'Text'), time: field('time', 'Float'),
+            command: field('choice', 'command', 'Entity'), input: field('choice', 'input', 'Text'),
+            time: field('choice', 'time', 'Float'),
           } } },
-          parameters: { command: proposal.command, input: proposal.input || '', time: Date.now() },
-        } }] }).catch((error) => console.warn('<command-palette> not remembered', error));
+          parameters: { command: proposal.command, input: proposal.input || '', time },
+        } }, ...picks] }).catch((error) => console.warn('<command-palette> not remembered', error));
       }
     run: |
       async (self) => {
         const proposal = (self.__proposals || [])[self.__index];
         if (!proposal) return;
         if (!proposal.claim) {
-          // Incomplete: take its completion and keep typing.
+          // Incomplete, or a listed value: take its completion and keep
+          // typing. A listed value is taken even after a deletion, since
+          // taking it is what choosing it means.
+          if (proposal.listed) self.__complete = true;
           self.suggest();
           self.accept();
           return;

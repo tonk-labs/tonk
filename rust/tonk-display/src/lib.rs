@@ -105,6 +105,9 @@ mod view;
 /// Idempotent.
 #[cfg(target_arch = "wasm32")]
 pub fn register() {
+    // Expose this realm's counters as `globalThis.__tonkDiagnostics`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    tonk_common::diagnostics::install_global();
     // Installed first: a tag announced while the other elements are
     // still registering is queued as a DOM mutation, not lost, but the
     // listener has to exist before the first sweep.

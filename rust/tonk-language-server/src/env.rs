@@ -100,8 +100,9 @@ pub enum NoOpened {}
 /// The never-constructed env [`NoOpened`] would carry.
 ///
 /// Uninhabited; the [`QueryEnv`] supertraits are satisfied via a
-/// blanket [`Provider`] impl over any [`Command`], plus
-/// [`ConditionalSync`] which is itself a blanket trait.
+/// blanket [`Provider`] impl over any [`Command`], an empty
+/// [`Holds`](dialog_common::Holds) impl, and [`ConditionalSync`],
+/// which is itself a blanket trait.
 pub enum NoQueryEnv {}
 
 // `Provider` is async-trait-generated; on native it boxes the
@@ -132,6 +133,7 @@ where
     }
 }
 
+// Holds nothing, as an uninhabited environment can hold nothing.
 impl Holds for NoQueryEnv {
     fn held(&self, _key: &str) -> Option<Held> {
         match *self {}

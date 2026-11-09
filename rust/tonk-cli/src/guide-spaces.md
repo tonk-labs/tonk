@@ -24,6 +24,10 @@ The space listing reports local roster facts only. Remote authority is checked
 when a sync operation uses it; removing or losing access keeps aliases,
 downloaded data and unsynced edits.
 
+In the browser a space's pages live under `/space/<space>/`: `/` is its
+home, `/<model>` a model's directory, and a path a `route!` claims renders
+that route's page (`tonk help routes`).
+
 Account management belongs in the Tonk UI. Existing replicas and credentials
 remain on disk; importing an invitation does not sign into an account, move
 ownership or transfer local edits into the newly connected replica. CLI-created

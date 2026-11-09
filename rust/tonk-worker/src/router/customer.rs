@@ -217,7 +217,10 @@ impl dialog_capability::Provider<tonk_schema::command::EnrollCustomer>
 /// the service, and re-enrolling to get a mail re-runs a passkey prompt
 /// the person waiting on their inbox never asked for. What came of it is
 /// said where the notice that offered it shows ([`RESEND_URI`]): that it is
-/// being sent, that it was, or that it could not be.
+/// being asked, that it was, or that it could not be. That it was asked
+/// does not promise a mail: the service rate limits sends and, so as not
+/// to say whether an account exists, answers a throttled request exactly
+/// like a sent one.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg(feature = "persona")]
@@ -226,12 +229,12 @@ impl dialog_capability::Provider<tonk_schema::command::ResendActivation>
 {
     async fn execute(&self, _command: tonk_schema::command::ResendActivation) {
         let branch = &self.origin().branch;
-        say_resent(self.state(), branch, "Sending…").await;
+        say_resent(self.state(), branch, "Requesting…").await;
         let said = match resend(self.state()).await {
-            Ok(()) => "Sent. Check your inbox.",
+            Ok(()) => "Another activation email was requested. Check your inbox and spam folder.",
             Err(error) => {
                 log!("resend-activation: {error}");
-                "It could not be sent. Try again in a moment."
+                "Couldn't request another activation email. Try again."
             }
         };
         say_resent(self.state(), branch, said).await;
@@ -245,7 +248,8 @@ const RESEND_URI: &str = "tonk:account/resend";
 /// Ask the service for another activation email.
 #[cfg(feature = "persona")]
 async fn resend(state: &AppState) -> Result<(), String> {
-    let state = state.read().await;
+    // A clone, not a guard: the request is a round trip to the service.
+    let state = state.read().await.clone();
     let account = super::identity::root_did(&state)
         .await
         .map_err(|error| format!("no account root: {error}"))?;
@@ -360,7 +364,8 @@ pub async fn get_state(
     State(state): State<AppState>,
     Extension(origin): Extension<RequestOrigin>,
 ) -> Result<Json<CustomerState>, TonkWorkerError> {
-    let state = state.read().await;
+    // A clone, not a guard: the probe is a round trip to the service.
+    let state = state.read().await.clone();
     let root = super::identity::root_did(&state).await?;
     let status = probe(&state, origin.url()).await?;
     let record = load_customer(&state).await?;
@@ -407,7 +412,7 @@ pub async fn provision_custody(
     State(state): State<AppState>,
     Json(request): Json<ProvisionCustodyRequest>,
 ) -> Result<Json<()>, TonkWorkerError> {
-    let state = state.read().await;
+    let state = state.read().await.clone();
     let custody: dialog_varsig::Did = request
         .custody
         .parse()
@@ -468,7 +473,7 @@ pub async fn queue_custody(
     State(state): State<AppState>,
     Json(request): Json<QueueCustodyRequest>,
 ) -> Result<Json<()>, TonkWorkerError> {
-    let state = state.read().await;
+    let state = state.read().await.clone();
     if let Some(consent_hex) = &request.consent_hex {
         // Reject malformed recovery material before it can poison the durable
         // queue. The access service still verifies its authority on replay.

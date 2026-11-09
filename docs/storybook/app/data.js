@@ -522,6 +522,14 @@ window.STORYBOOK_DATA = {
       "variants": "Unvisited/visited; unsupported view; cache miss/expiry; account switch; desktop/narrow."
     },
     {
+      "evidence": "Native worker tests for the missing check, a tab's load through /transact making nothing, starting from main, empty or the remote's branch, and the profile-only command; a whole-browser regression drives the panel and asserts the space view renders on the new branch.",
+      "gaps": "Remote-held branch and unreachable remote in a browser, the FABB on a non-main branch, refusals surfaced in the panel, branch listing and merge.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-17",
+      "title": "Open a branch of a space by URL (/space/{branch}@{did}), and make one the space lacks from the panel that offers \"branch off main\" or \"start empty\".",
+      "variants": "Existing branch; missing branch on a space that is here; space still arriving; remote holding the branch; remote unreachable; invalid name."
+    },
+    {
       "evidence": "Eight space_link tests, including signer recovery and post-invite retry, plus authority/browser happy paths.",
       "gaps": "Crash/retry at every ownership/hosting/listing/upstream stage, partial remote commit, concurrent link.",
       "group": "Spaces: account directory, sync, and collaboration",
@@ -554,8 +562,8 @@ window.STORYBOOK_DATA = {
       "variants": "No upstream/synced/ahead/behind/diverged/unreachable/revoked."
     },
     {
-      "evidence": "Broad sync and access tests.",
-      "gaps": "Lost response after commit, concurrent push, retry/idempotency, bounded timeout.",
+      "evidence": "Broad sync and access tests. Executed native worker/MCP regressions prove finite remote-write bursts settle after more than four refusals, same-artifact replicas converge, and sustained contention or an unknown publication outcome retains local state without repeating evaluation.",
+      "gaps": "Whole CLI/browser journeys under these failures, device restart, and in-flight I/O deadlines; the 30-second retry admission window is not a hard request timeout.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "SYNC-02",
       "title": "Push local main.",
@@ -570,8 +578,8 @@ window.STORYBOOK_DATA = {
       "variants": "R0–R6; dirty/ahead/diverged; remote changes during fetch."
     },
     {
-      "evidence": "Data verb and sync integration coverage.",
-      "gaps": "Whole command × all remote states, response loss, local commit succeeds/push fails recovery.",
+      "evidence": "Data verb and sync integration coverage. Native worker processes now verify one committing evaluation through publication retries, immediate stop on unavailable publication or a lost accepted response, and retained-state refusal of another write. A separate 30-operation native reliability workload verifies independently read fields and concurrent-writer convergence.",
+      "gaps": "Whole CLI/browser command × all remote states, device/process loss, and explicit retained-publication recovery; native evidence does not establish hosted runtime behavior.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "SYNC-04",
       "title": "Auto-pull/write/auto-push around a write.",
@@ -586,12 +594,12 @@ window.STORYBOOK_DATA = {
       "variants": "Zero/one/many remotes; service keeps tickets or not (falls back to the access= link); explicit --base-url on or off the remote's origin; shortening on/off/offline; upstream states."
     },
     {
-      "evidence": "Partial invite tests.",
-      "gaps": "Full claim boundary, wrong recipient, root rotation, URL leakage.",
+      "evidence": "Native production HTTP/worker email flow, four service tests and desktop retry/account isolation tests pass. Browser evidence is tracked in the email invitation plan.",
+      "gaps": "Production mail delivery, cross-device recovery, sender cancellation UI, and invitation-record retention policy.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "COLLAB-02",
-      "title": "Mint a recipient-root invite.",
-      "variants": "Valid/wrong DID; accountless/account recipient; remote variants."
+      "title": "Mint a recipient-root invite, or email an unregistered recipient through signup and confirmation.",
+      "variants": "Valid/wrong DID; absent/pending/active email; selected account and space; retry/restart/expiry."
     },
     {
       "evidence": "Join, profile, and authority tests; accountless claim terminates at the onboarding account and remains usable after account union.",
@@ -626,12 +634,12 @@ window.STORYBOOK_DATA = {
       "variants": "Founder/admin (offered) or member/reader (not offered); already public/private; account not hosting the space; service refuses; palette on the space's page or elsewhere (space named)."
     },
     {
-      "evidence": "Worker test: a fresh device claims the public ticket and replicates, a newcomer after unpublish gets Private, the earlier reader's pull is refused as Revoked. Access-service tests: the ticket's holder and its delegate claim it; any other principal is refused as InvalidAudience. Whole real-browser test: an encoded-address visitor sees the space itself rendered (not only the FABB) with the half-filled observer disc and no share link, without a reload; the next visitor after unpublish sees the private wall. The test fails on a build without the in-place reload, where the space view stayed on its loading state.",
+      "evidence": "Worker test: a fresh device claims the public ticket and replicates, from the bare address and from a percent-encoded notebook route; a newcomer after unpublish gets Private from either, the earlier reader's pull is refused as Revoked. Access-service tests: the ticket's holder and its delegate claim it; any other principal is refused as InvalidAudience. Whole real-browser test: an encoded-address visitor sees the space itself rendered (not only the FABB) with the half-filled observer disc and no share link, without a reload; the next visitor after unpublish sees the private wall. The test checks the space renders in the same document, with no reload; it fails on a build whose join leaves the waiting view on its loading state.",
       "gaps": "Readers can still write locally (never synced); a deployment pass on the preview; offline first visit; a reader later invited as a member.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "COLLAB-07",
-      "title": "Open a published space from its bare address as an observer, and meet the private wall once it is unpublished.",
-      "variants": "Fresh or returning visitor; no account or an account; raw or percent-encoded DID (a normalizing deployment redirects to the encoded form); already a member; space unpublished before or after the first visit."
+      "title": "Open a published space from its address, bare or a link into one of its pages, as an observer, and meet the private wall once it is unpublished.",
+      "variants": "Fresh or returning visitor; no account or an account; raw or percent-encoded DID (a normalizing deployment redirects to the encoded form); the bare address or a route of the space (/space/{did}/notebook/…); already a member; space unpublished before or after the first visit."
     },
     {
       "evidence": "Strong authoring/process coverage.",
@@ -896,7 +904,8 @@ window.STORYBOOK_DATA = {
         "SPACE-09",
         "DATA-02",
         "DATA-09",
-        "UI-04"
+        "UI-04",
+        "SPACE-17"
       ],
       "name": "Space home",
       "source_paths": [
@@ -2285,12 +2294,12 @@ window.STORYBOOK_DATA = {
       "result": "Partial (local real-browser, 3c83082, 2026-10-09): it_opens_a_published_space_to_a_visitor_as_an_observer publishes from the FABB and unpublishes from the palette. The member/reader not-offered half and a refused publish are unrun."
     },
     {
-      "claim": "A visitor with no access opens a published space from its bare address as an observer, without a reload, and meets the private wall once it is unpublished (Ticket links and public spaces decision).",
+      "claim": "A visitor with no access opens a published space from its bare address, or from a link into one of its pages, as an observer, without a reload, and meets the private wall once it is unpublished (Ticket links and public spaces decision).",
       "device": "fresh-browser + encoded address",
       "file": "verification/cli-spaces-ui.md",
       "id": "COLLAB-07",
       "priority": "P1",
-      "result": "Pass (local real-browser, 2026-10-09, on top of 3c83082 with the in-place reload): the stuck first load reported on the preview reproduced locally before the fix and passes after it. A deployment pass remains unrun from this environment."
+      "result": "Pass (local real-browser, 2026-10-09, on top of 3c83082 with the in-place reload): the stuck first load reported on the preview reproduced locally before the fix and passes after it. A deployment pass remains unrun from this environment. Deep link (BUG-220, 2026-11-03): a link into a page of the space (/space/did%3Akey%3A…/notebook/…) claimed nothing and left the page silently; the worker test now opens it from a notebook route and refuses it as Private after unpublish. The real-browser pass for a deep link is not yet run."
     },
     {
       "claim": "Concept and all view kinds round-trip through list/show/render (Inventory).",

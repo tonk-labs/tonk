@@ -1,0 +1,52 @@
+{
+  "fill": {
+    "solid": "srgb:0.66667,0.14902,0.34902,1.00000"
+  },
+  "groups": [
+    {
+      "name": "Yellow",
+      "layers": [
+        {
+          "image-name": "Yellow.svg",
+          "name": "Yellow circle",
+          "fill": "none",
+          "glass": true
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.15
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.12
+      },
+      "specular": true
+    },
+    {
+      "name": "Blue",
+      "layers": [
+        {
+          "image-name": "Blue.svg",
+          "name": "Blue circle",
+          "fill": "none",
+          "glass": true
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.15
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.12
+      },
+      "specular": true
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

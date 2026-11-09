@@ -23,12 +23,13 @@
 //!    renders the matched `{concept}`; a later path change is a new context
 //!    and a new claim, and the subscription re-renders.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
+use tonk_common::diagnostics::{self, names};
 use tonk_host::location::{Allow, Location};
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 
@@ -47,6 +48,37 @@ type StateCell = Rc<RefCell<Option<Rc<RefCell<PortalState>>>>>;
 #[derive(Default)]
 pub(crate) struct TonkSite {
     inner: StateCell,
+    /// Whether a resolve pass is already queued for this turn, and why.
+    /// The renderer writes `with`, `allow` and `path` one `setAttribute` at
+    /// a time; each fires a callback, and they all coalesce into the one
+    /// queued pass, which reads the attributes as they stand once the burst
+    /// is over.
+    scheduled: Rc<Cell<Option<Trigger>>>,
+    /// Whether this element has been connected before, so a later connect
+    /// is counted as a remount rather than a first mount.
+    connected_before: bool,
+}
+
+/// Why `<tonk-site>` is resolving its route, so a frame it builds is
+/// counted under the cause that made it build one.
+#[derive(Clone, Copy)]
+enum Trigger {
+    /// The element was connected for the first time.
+    Mount,
+    /// The element was connected again after being disconnected.
+    Remount,
+    /// `path`, `with` or `allow` changed on a connected element.
+    Navigation,
+}
+
+impl Trigger {
+    fn guest_boot(self) -> &'static str {
+        match self {
+            Trigger::Mount => names::SITE_GUEST_BOOT_MOUNT,
+            Trigger::Remount => names::SITE_GUEST_BOOT_REMOUNT,
+            Trigger::Navigation => names::SITE_GUEST_BOOT_NAVIGATION,
+        }
+    }
 }
 
 impl CustomElement for TonkSite {
@@ -61,7 +93,13 @@ impl CustomElement for TonkSite {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        resolve_and_render(this, self.inner.clone());
+        let trigger = if self.connected_before {
+            Trigger::Remount
+        } else {
+            Trigger::Mount
+        };
+        self.connected_before = true;
+        self.schedule(this, trigger);
         // Navigation is just a `path` attribute change, handled by
         // `attribute_changed_callback`. The element never reads `window.location`;
         // whoever mounts the top-level site (`ui.rs`) owns updating `path` on URL
@@ -93,8 +131,8 @@ impl CustomElement for TonkSite {
         // path is a routed state (`/`), so the empty → value transition IS a
         // navigation (the bare space route gaining a `{rest}` sub-path), not
         // mount noise. Pre-connect callbacks are already no-ops inside
-        // `resolve_and_render` (`is_connected` gate), and a mount-time double
-        // resolve is absorbed by the same-route iframe reuse.
+        // `resolve_and_render` (`is_connected` gate), and every callback in
+        // one turn coalesces into a single pass (`schedule`).
         let first_set = old.as_deref().is_none_or(str::is_empty);
         let re_route = match name.as_str() {
             "path" => old != new,
@@ -102,8 +140,46 @@ impl CustomElement for TonkSite {
             _ => false,
         };
         if re_route {
-            resolve_and_render(this, self.inner.clone());
+            self.schedule(this, Trigger::Navigation);
         }
+    }
+}
+
+impl TonkSite {
+    /// Queue one resolve pass for this turn, unless one is already queued.
+    ///
+    /// Deciding per callback was the bug this guards: a space-to-space
+    /// switch writes `with`, then `allow`, then `path`, and each callback
+    /// judged frame reuse against the state from before any of them had
+    /// run. None matched, so each built its own frame and the next tore it
+    /// down again: two or three loads for one navigation. One pass after
+    /// the burst sees the final attributes and builds (or reuses) once.
+    ///
+    /// Deferred off the callback: rendering tears down and rebuilds the
+    /// portal (touching the bridge), and doing that inside a custom-element
+    /// callback re-enters the lock the `custom_elements` runtime holds
+    /// ("cannot recursively acquire mutex"). A microtask still runs before
+    /// the browser paints, so the burst never shows half-applied.
+    fn schedule(&self, this: &HtmlElement, trigger: Trigger) {
+        // A connect in the burst names the pass: the attribute writes
+        // around it are part of mounting, not a navigation.
+        if let Some(queued) = self.scheduled.get() {
+            if matches!(queued, Trigger::Navigation) {
+                self.scheduled.set(Some(trigger));
+            }
+            return;
+        }
+        self.scheduled.set(Some(trigger));
+        let host = this.clone();
+        let cell = self.inner.clone();
+        let scheduled = self.scheduled.clone();
+        spawn_local(async move {
+            let _ =
+                wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::UNDEFINED))
+                    .await;
+            let trigger = scheduled.take().unwrap_or(Trigger::Navigation);
+            resolve_and_render(&host, cell, trigger);
+        });
     }
 }
 
@@ -188,7 +264,7 @@ fn render_site_error(host: &HtmlElement, message: &str) {
 /// bring up the frame rendering the matched route. A missing or
 /// malformed `with`/`allow` renders a visible error; a failed registration
 /// leaves the element empty rather than throwing.
-fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
+fn resolve_and_render(this: &HtmlElement, cell: StateCell, trigger: Trigger) {
     let host = this.clone();
 
     // Attribute callbacks fire on `setAttribute` even before the element is
@@ -253,13 +329,9 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
     // `bootstrap.js`), and claims it again whenever that worker has lost the
     // stamp.
     site_entity(&host);
-    // Defer the iframe bring-up off this turn. `resolve_and_render` runs
-    // synchronously inside `connected_callback` / `attribute_changed_callback`,
-    // and `render_in_iframe` tears down + rebuilds the portal (touching the
-    // bridge). Doing that synchronously inside a custom-element callback
-    // re-enters the single-threaded lock the `custom_elements` runtime holds
-    // across the callback → "cannot recursively acquire mutex". A `spawn_local`
-    // lets the callback return first, so the render happens on a clean stack.
+    // This runs from the pass `TonkSite::schedule` queued, already off the
+    // custom-element callback, so it can tear down and rebuild the portal
+    // directly.
     //
     // A pure path change re-routes IN PLACE: with a live iframe already
     // connected under the same `with`/`allow`, only the `tonk:load` re-claim
@@ -275,14 +347,13 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
             && s.iframe.as_ref().is_some_and(|f| f.is_connected())
             && s.same_route(&with, &allow)
     });
-    let host_for_task = host.clone();
-    spawn_local(async move {
-        if !reuse {
-            render_in_iframe(&host_for_task, &cell, with, allow);
-        } else if let Some(state) = cell.borrow().as_ref() {
-            crate::bridge::refresh_context(&host_for_task, state);
-        }
-    });
+    if !reuse {
+        diagnostics::count(trigger.guest_boot());
+        render_in_iframe(&host, &cell, with, allow);
+    } else if let Some(state) = cell.borrow().as_ref() {
+        diagnostics::count(names::SITE_REROUTE);
+        crate::bridge::refresh_context(&host, state);
+    }
 }
 
 /// Whether `host` has an origin to render `with` on: the deployment names
@@ -305,7 +376,6 @@ fn site_entity(host: &HtmlElement) -> String {
 /// A random uuid via `crypto.randomUUID()` (reflected so no extra web-sys
 /// feature). Falls back to a timestamp-derived id if unavailable.
 fn random_uuid() -> String {
-    use wasm_bindgen::JsValue;
     use web_sys::js_sys::{Function, Reflect};
     (|| {
         let win = window()?;
@@ -415,6 +485,7 @@ fn load_site(
 /// Load the site's frame again, at its current address: what "try again"
 /// does for a site that could not load.
 pub(crate) fn reload_site(host: &Element, state: &Rc<RefCell<PortalState>>) {
+    diagnostics::count(names::SITE_GUEST_BOOT_RETRY);
     bridge::disconnect_task(state);
     let (iframe, origin, pattern) = {
         let mut s = state.borrow_mut();

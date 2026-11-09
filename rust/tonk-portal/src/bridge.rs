@@ -17,7 +17,6 @@
 //!   preview(request)   -> Promise<value>,
 //!   delegate(request)  -> Promise<delegation>,
 //!   navigate(href)     -> void,
-//!   reload()           -> void,
 //!   setTitle(text)     -> void,
 //!   open(href)         -> void,
 //!   analytics(event)   -> void,
@@ -39,7 +38,7 @@
 //! On a match it binds the transferred port to that portal's
 //! [`PortalState`] and posts `ready { context }` back. The per-port
 //! dispatcher then answers each inbound envelope (`preview`,
-//! `navigate`, `reload`, `title`, `open`, `analytics`, `register`,
+//! `navigate`, `title`, `open`, `analytics`, `register`,
 //! `task`, `fetch`, `delegate`, `key`) on the trusted page.
 
 use std::cell::{Cell, RefCell};
@@ -1345,7 +1344,6 @@ fn make_dispatcher(
                 });
             }
             "navigate" => handle_navigate(&state, &data),
-            "reload" => tonk_host::reload_page(),
             "title" => handle_title(&data),
             "open" => handle_open(&state, &data),
             "analytics" => handle_analytics(&data),
@@ -1401,7 +1399,7 @@ fn handle_navigate(state: &Rc<RefCell<PortalState>>, data: &JsValue) {
     let href = real_href(state, &href);
     let replace = Reflect::get(data, &"replace".into()).is_ok_and(|replace| replace.is_truthy());
     if replace {
-        tonk_host::replace_to(&href);
+        tonk_host::replace_route(&href);
     } else {
         tonk_host::navigate_to(&href);
     }

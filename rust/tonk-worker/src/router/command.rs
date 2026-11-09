@@ -227,9 +227,13 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::PromoteMember>()
         .command::<tonk_schema::command::PublishSpace>()
         .command::<tonk_schema::command::UnpublishSpace>()
+        .command::<tonk_schema::command::InviteAgent>()
+        .command::<tonk_schema::command::InviteByEmail>()
         .command::<tonk_schema::command::EnrollCustomer>()
         .command::<tonk_schema::command::ResendActivation>()
         .command::<tonk_schema::command::DeleteAccount>()
+        .command::<tonk_schema::command::SendEmailInvitation>()
+        .command::<tonk_schema::command::ClaimEmailInvitation>()
         .command::<super::ceremony::AuthorizeDeviceRequest>()
         // Signing in through another deployment is new, so neither half
         // has a legacy shape to migrate.
@@ -265,6 +269,8 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::Inspect>()
         // What the page in a tab has selected, recorded on its site.
         .command::<tonk_schema::command::SiteSelect>()
+        // A branch a page asked for that its space does not have yet.
+        .command::<tonk_schema::command::CreateBranch>()
         // What was typed in the command palette, interpreted.
         .command::<tonk_schema::command::Interpret>()
         .command::<tonk_schema::command::ReplicateSpace>()
@@ -625,37 +631,37 @@ pub(crate) mod tests {
                 .unwrap();
             let session = crate::session::open(&profile).await.unwrap();
             let reactor = crate::Reactor::new(profile.credential().clone());
-            let state = TonkState {
-                profile,
-                operator: session.operator,
-                storage,
-                session_expires_at: session.expires_at,
-                profile_name: name.clone(),
-                active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
-                reactor,
-                admission: Default::default(),
-                reject_admission_content_reads: Default::default(),
-                retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                view_bindings: Default::default(),
-                sync_queue: Default::default(),
-                commands: crate::router::command_providers(),
-                clients: Default::default(),
-                seed_upgrades: Default::default(),
-                site_origins: Default::default(),
-                account_keys: Default::default(),
-                profile_library: Default::default(),
-                registry: crate::device::Registry {
-                    profile: name.clone(),
-                    directory,
-                    standing: Default::default(),
+            let state = TonkState::from_parts(
+                session.operator,
+                session.expires_at,
+                crate::router::repository::PROFILE_BRANCH.to_owned(),
+                crate::worker::TonkShared {
+                    profile,
+                    storage,
+                    profile_name: name.clone(),
+                    reactor,
+                    admission: Default::default(),
+                    reject_admission_content_reads: Default::default(),
+                    retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    view_bindings: Default::default(),
+                    sync_queue: Default::default(),
+                    commands: crate::router::command_providers(),
+                    clients: Default::default(),
+                    seed_upgrades: Default::default(),
+                    site_origins: Default::default(),
+                    account_keys: Default::default(),
+                    profile_library: Default::default(),
+                    registry: crate::device::Registry::new(name.clone(), directory),
+                    #[cfg(feature = "persona")]
+                    profile_transition: Default::default(),
+                    context_generation: Default::default(),
+                    profile_swaps: Default::default(),
                 },
-                profile_transition: Default::default(),
-                context_generation: Default::default(),
-            };
+            );
             crate::router::repository::bootstrap_profile(&state)
                 .await
                 .unwrap();
-            std::sync::Arc::new(tokio::sync::RwLock::new(state))
+            std::sync::Arc::new(crate::StateLock::new(state))
         }
 
         /// The subject DIDs of every user-space replica the profile

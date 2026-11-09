@@ -30,6 +30,8 @@ mod data_verbs;
 mod eval_documents;
 mod handoff;
 mod include;
+#[cfg(feature = "integration-tests")]
+mod invitation_attribution;
 mod invite_revocation;
 mod join_profile;
 mod join_routing;

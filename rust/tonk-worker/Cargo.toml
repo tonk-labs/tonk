@@ -10,6 +10,11 @@ name = "tonk-worker-host"
 path = "src/bin/hosted.rs"
 required-features = ["native-host"]
 
+[[bin]]
+name = "tonk-agent-worker"
+path = "src/bin/agent_worker.rs"
+required-features = ["native-host"]
+
 [features]
 default = ["persona"]
 # The person's own worker: their profile, their account, and what they do
@@ -27,9 +32,15 @@ web-integration-tests = []
 # way the service worker does. It is a dev-dependency for this crate's
 # own tests; downstream crates enabling `helpers` need it as a real one.
 helpers = ["dep:tower"]
+# Keep every space in memory instead of IndexedDB/OPFS on wasm, so the
+# worker runs where those do not exist (a Cloudflare Worker). No effect on
+# native builds. Exposes `hosted`.
+volatile-storage = []
 
 [dependencies]
 tonk-macros = { workspace = true }
+anyhow = { workspace = true }
+serde_yaml = { workspace = true }
 sha2_0_10 = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true, features = ["json", "macros", "query"] }
@@ -80,6 +91,7 @@ zeroize = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-language-server = { workspace = true }
 tonk-notation = { workspace = true }
+tonk-render = { workspace = true }
 tonk-router = { workspace = true }
 tonk-schema = { workspace = true }
 tonk-worker-api = { workspace = true }
@@ -97,9 +109,19 @@ reqwest = { workspace = true }
 # A kernel on WASI: the component's own async runtime, for work a handler
 # starts and does not wait on; the session a kernel acts as, and how the
 # person's profile hands a space's host the key of its session.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+[target.'cfg(all(target_arch = "wasm32", not(target_os = "unknown")))'.dependencies]
 wit-bindgen = { workspace = true }
 tonk-kernel-world = { workspace = true }
+
+# A worker in memory on a JavaScript host (`volatile-storage`, the hosted
+# agent's Cloudflare Worker): its tasks, clock and console are the host's.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }
+getrandom_0_3 = { workspace = true }
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = ["console"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 axum = { workspace = true, features = ["tokio", "http1"] }

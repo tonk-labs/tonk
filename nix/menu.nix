@@ -150,9 +150,14 @@ let
             export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=${pkgs.lib.escapeShellArg runner}
           ''}
 
-        nix build .#${package}
+        nix build --print-build-logs .#${package}
 
         TESTS_PATH=$(nix eval .#${package}.outPath --raw)
+        if [ -n "''${TONK_BUILD_TIMINGS_DIR:-}" ]; then
+          mkdir -p "$TONK_BUILD_TIMINGS_DIR/${package}"
+          cp -r "$TESTS_PATH/cargo-timings/." "$TONK_BUILD_TIMINGS_DIR/${package}/"
+          printf '%s\n' "$TESTS_PATH" > "$TONK_BUILD_TIMINGS_DIR/${package}/store-path.txt"
+        fi
 
       cargo nextest run \
         --workspace-remap ./ \

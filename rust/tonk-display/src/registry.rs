@@ -2846,4 +2846,319 @@ mod tests {
             "a refusal stays on screen after the cluster closes"
         );
     }
+
+    const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/notebook.yaml");
+
+    /// A `<notebook-save>` from the notebook library, wrapped around a
+    /// stand-in notebook whose `<tonk-prose>` editor shows `markdown`.
+    ///
+    /// The stand-in carries only what the element reads: a `<tonk-prose>`
+    /// inside a `<tonk-notebook>`, with the editor's live text as its
+    /// `value` property. Returns the element and the editor.
+    async fn notebook_save(markdown: &str) -> (Element, Element) {
+        define_from_library(NOTEBOOK_LIBRARY, "notebook-save");
+        let host = render("notebook-save").await;
+        settle_until(|| {
+            Reflect::get(&host, &"__keydown".into()).is_ok_and(|listener| listener.is_function())
+        })
+        .await;
+        assert!(
+            defined("notebook-save"),
+            "the library definition of <notebook-save> was never installed"
+        );
+        host.set_inner_html("<tonk-notebook><tonk-prose></tonk-prose></tonk-notebook>");
+        let prose = host
+            .query_selector("tonk-prose")
+            .expect("query")
+            .expect("the editor");
+        let _ = Reflect::set(&prose, &"value".into(), &markdown.into());
+        (host, prose)
+    }
+
+    /// Press S with a modifier on `target`, and say whether the press was
+    /// claimed (`defaultPrevented`). `platform` picks the platform's own
+    /// save modifier (Cmd on macOS, Ctrl elsewhere); `false` picks the
+    /// other one. `shift` adds Shift.
+    fn press_s(target: &Element, platform: bool, shift: bool) -> bool {
+        let press = js_sys::Function::new_with_args(
+            "target, platform, shift",
+            "const name = navigator.userAgentData?.platform || navigator.platform || '';
+             const mac = /mac|iphone|ipad|ipod/i.test(name);
+             const meta = platform === mac;
+             const event = new KeyboardEvent('keydown', {
+               key: 's', metaKey: meta, ctrlKey: !meta, shiftKey: shift,
+               bubbles: true, cancelable: true, composed: true,
+             });
+             target.dispatchEvent(event);
+             return event.defaultPrevented;",
+        );
+        press
+            .call3(&JsValue::NULL, target, &platform.into(), &shift.into())
+            .expect("press")
+            .is_truthy()
+    }
+
+    /// Replace `window.showSaveFilePicker` with a recorder that accepts
+    /// every save, and return the list of saves it has seen: each the
+    /// `suggestedName`, the accepted extensions, and the text written.
+    fn accept_picker() -> js_sys::Array {
+        js_sys::Function::new_no_args(
+            "const saves = [];
+             window.showSaveFilePicker = async (options) => {
+               const save = {
+                 name: options.suggestedName,
+                 accept: Object.values(options.types?.[0]?.accept ?? {}).flat().join(','),
+                 text: null,
+                 closed: false,
+               };
+               saves.push(save);
+               return {
+                 name: options.suggestedName,
+                 createWritable: async () => ({
+                   write: async (blob) => { save.text = await blob.text(); },
+                   close: async () => { save.closed = true; },
+                 }),
+               };
+             };
+             return saves;",
+        )
+        .call0(&JsValue::NULL)
+        .expect("install picker")
+        .unchecked_into()
+    }
+
+    /// Replace `window.showSaveFilePicker` with one that refuses with a
+    /// `DOMException` named `name`: `AbortError` is the person cancelling,
+    /// `SecurityError` a frame the picker is not allowed in. An empty name
+    /// removes the picker, as in a browser that has none.
+    fn refuse_picker(name: &str) {
+        js_sys::Function::new_with_args(
+            "name",
+            "window.showSaveFilePicker = name
+               ? async () => { throw new DOMException('refused', name); }
+               : undefined;",
+        )
+        .call1(&JsValue::NULL, &name.into())
+        .expect("install picker");
+    }
+
+    /// Catch every `<a download>` clicked from now on, before the browser
+    /// acts on it, and return the downloads: each the file name, the text
+    /// its Blob URL holds, and whether the link was in the document.
+    ///
+    /// The element clicks a DETACHED link (a guest relays clicks on links in
+    /// its document as navigation), so the click is caught on the anchor's
+    /// own `click`, not by a listener somewhere up a tree it is not in.
+    fn catch_downloads() -> js_sys::Array {
+        js_sys::Function::new_no_args(
+            "const downloads = [];
+             const native = HTMLAnchorElement.prototype.__nativeClick
+               ??= HTMLAnchorElement.prototype.click;
+             HTMLAnchorElement.prototype.click = function () {
+               if (!this.download) return native.call(this);
+               const download = { name: this.download, text: null, attached: this.isConnected };
+               downloads.push(download);
+               fetch(this.href).then((r) => r.text()).then((text) => { download.text = text; });
+             };
+             return downloads;",
+        )
+        .call0(&JsValue::NULL)
+        .expect("catch downloads")
+        .unchecked_into()
+    }
+
+    /// Whether the `index`th download was clicked from inside the document.
+    fn attached(list: &js_sys::Array, index: u32) -> bool {
+        Reflect::get(&list.get(index), &"attached".into()).is_ok_and(|value| value.is_truthy())
+    }
+
+    /// A string field of the `index`th entry of `list`.
+    fn entry(list: &js_sys::Array, index: u32, field: &str) -> Option<String> {
+        Reflect::get(&list.get(index), &field.into())
+            .ok()
+            .and_then(|value| value.as_string())
+    }
+
+    /// The element's `fileName` method applied to `markdown`.
+    fn file_name(host: &Element, markdown: &str) -> String {
+        let method: js_sys::Function = Reflect::get(host, &"fileName".into())
+            .expect("fileName")
+            .dyn_into()
+            .expect("fileName is a method");
+        method
+            .call1(host, &markdown.into())
+            .expect("call fileName")
+            .as_string()
+            .expect("a file name")
+    }
+
+    /// The suggested file name is the notebook's leading heading, made
+    /// safe to write on the common file systems, and `notebook.md` when
+    /// there is no usable heading.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_names_the_saved_file_from_the_notebook_heading_from_the_library() {
+        let (host, _) = notebook_save("").await;
+        let cases = [
+            ("# Plans for Q3\n\nThe body.", "Plans for Q3.md"),
+            ("\n\n  ## Closing hashes ##\nbody", "Closing hashes.md"),
+            ("###### Six is a heading", "Six is a heading.md"),
+            ("####### Seven is not", "notebook.md"),
+            ("A paragraph first\n# Late heading", "notebook.md"),
+            ("", "notebook.md"),
+            ("#", "notebook.md"),
+            ("# a/b: c*d?", "a b c d.md"),
+            (
+                "# <tag> \"quoted\" back\\slash|pipe",
+                "tag quoted back slash pipe.md",
+            ),
+            ("# tab\there", "tab here.md"),
+            ("# ..hidden..", "hidden.md"),
+            ("# ///", "notebook.md"),
+            ("# CON", "CON_.md"),
+            ("# com1", "com1_.md"),
+            ("# Café — notes", "Café — notes.md"),
+        ];
+        for (markdown, expected) in cases {
+            assert_eq!(file_name(&host, markdown), expected, "for {markdown:?}");
+        }
+        assert_eq!(
+            file_name(&host, &format!("# {}", "a".repeat(200))),
+            format!("{}.md", "a".repeat(120)),
+            "a long heading is cut to 120 characters"
+        );
+    }
+
+    /// The save chord writes the editor's live text, exactly as shown,
+    /// including an edit not yet committed, through the picker, under the
+    /// heading's name. Only the platform's own modifier saves.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_saves_the_editors_live_markdown_on_the_save_chord_from_the_library() {
+        let shown = "# Plans\n\nFirst paragraph.\n\n```dialog-yaml\nconcept:\n```\n";
+        let (_host, prose) = notebook_save(shown).await;
+        let saves = accept_picker();
+
+        assert!(press_s(&prose, true, false), "the save chord is claimed");
+        settle_until(|| entry(&saves, 0, "text").is_some()).await;
+        assert_eq!(saves.length(), 1, "one press, one save");
+        assert_eq!(entry(&saves, 0, "name").as_deref(), Some("Plans.md"));
+        assert_eq!(entry(&saves, 0, "accept").as_deref(), Some(".md"));
+        assert_eq!(
+            entry(&saves, 0, "text").as_deref(),
+            Some(shown),
+            "the file holds the editor's text exactly"
+        );
+        settle_until(|| Reflect::get(&saves.get(0), &"closed".into()).is_ok_and(|v| v.is_truthy()))
+            .await;
+        assert!(
+            Reflect::get(&saves.get(0), &"closed".into())
+                .expect("closed")
+                .is_truthy(),
+            "the file is closed, so the write lands"
+        );
+
+        // Typing that has not been committed is in the editor's `value`
+        // and nowhere else; the save reads it at the press.
+        let edited = "# Plans, revised\n\nTyped but not committed.";
+        let _ = Reflect::set(&prose, &"value".into(), &edited.into());
+        assert!(press_s(&prose, true, false));
+        settle_until(|| entry(&saves, 1, "text").is_some()).await;
+        assert_eq!(
+            entry(&saves, 1, "name").as_deref(),
+            Some("Plans, revised.md")
+        );
+        assert_eq!(entry(&saves, 1, "text").as_deref(), Some(edited));
+
+        assert!(
+            !press_s(&prose, false, false),
+            "the other platform's modifier is not the save chord"
+        );
+        assert!(
+            !press_s(&prose, true, true),
+            "Shift turns it into a different chord"
+        );
+        settle_briefly().await;
+        assert_eq!(saves.length(), 2, "neither of those saved");
+    }
+
+    /// Without a usable picker (none at all, or one the frame is refused,
+    /// as the sandboxed guest is) the save is a download of the same text
+    /// under the same name, from a link that is not in the document, where
+    /// the guest's link relay would take the click for navigation.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_downloads_the_markdown_when_the_picker_is_unavailable_from_the_library() {
+        let shown = "# Field notes\n\nStill typing";
+        let (host, prose) = notebook_save(shown).await;
+        let downloads = catch_downloads();
+
+        refuse_picker("");
+        assert!(press_s(&prose, true, false));
+        settle_until(|| entry(&downloads, 0, "text").is_some()).await;
+        assert_eq!(
+            entry(&downloads, 0, "name").as_deref(),
+            Some("Field notes.md")
+        );
+        assert_eq!(entry(&downloads, 0, "text").as_deref(), Some(shown));
+        assert!(!attached(&downloads, 0), "the link is clicked detached");
+
+        refuse_picker("SecurityError");
+        assert!(press_s(&prose, true, false));
+        settle_until(|| entry(&downloads, 1, "text").is_some()).await;
+        assert_eq!(
+            entry(&downloads, 1, "name").as_deref(),
+            Some("Field notes.md")
+        );
+        assert_eq!(entry(&downloads, 1, "text").as_deref(), Some(shown));
+        assert!(!attached(&downloads, 1));
+        assert!(
+            host.query_selector("a").expect("query").is_none(),
+            "no link is left in the notebook"
+        );
+    }
+
+    /// Cancelling the picker is the person's choice: nothing is saved and
+    /// no download follows.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_saves_nothing_when_the_picker_is_cancelled_from_the_library() {
+        let (_host, prose) = notebook_save("# Kept to myself").await;
+        let downloads = catch_downloads();
+        refuse_picker("AbortError");
+        assert!(press_s(&prose, true, false), "the chord is still claimed");
+        settle_briefly().await;
+        assert_eq!(downloads.length(), 0, "a cancel downloads nothing");
+    }
+
+    /// The chord is the notebook's only while the key reaches it: a press
+    /// elsewhere on the page keeps the browser's own behaviour, and a press
+    /// something inside already handled is left to that handler.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_leaves_the_save_chord_alone_outside_the_notebook_from_the_library() {
+        let (_host, prose) = notebook_save("# Mine").await;
+        let saves = accept_picker();
+
+        let outside = document().create_element("textarea").expect("textarea");
+        document()
+            .body()
+            .expect("body")
+            .append_child(&outside)
+            .expect("attach");
+        assert!(
+            !press_s(&outside, true, false),
+            "a press outside the notebook is not claimed"
+        );
+
+        let claim = Closure::<dyn FnMut(web_sys::Event)>::new(|event: web_sys::Event| {
+            event.prevent_default();
+        });
+        let _ = prose.add_event_listener_with_callback("keydown", claim.as_ref().unchecked_ref());
+        assert!(press_s(&prose, true, false), "the inner handler claimed it");
+        settle_briefly().await;
+        assert_eq!(
+            saves.length(),
+            0,
+            "neither press saved: one was outside, one was the editor's"
+        );
+        let _ =
+            prose.remove_event_listener_with_callback("keydown", claim.as_ref().unchecked_ref());
+        outside.remove();
+    }
 }

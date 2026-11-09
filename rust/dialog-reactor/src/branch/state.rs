@@ -294,8 +294,42 @@ impl BranchState {
             ordered.sort_by_key(|(level, _)| *level);
             ordered.into_iter().map(|(_, hash)| hash).collect()
         };
+        // A poll can await the network (a node still held remotely), and
+        // an overlay write re-evaluates every subscription on the branch,
+        // so a slow one is named with what it serves.
+        const SLOW: web_time::Duration = web_time::Duration::from_millis(500);
+        let started = web_time::Instant::now();
+        let count = hashes.len();
         for hash in hashes {
-            SubscriptionPoll { state: self, hash }.perform(env).await;
+            let polled = web_time::Instant::now();
+            let (level, subscribers) = {
+                let subs = self.subscriptions.lock();
+                subs.get(&hash)
+                    .map(|subscription| (subscription.level(), subscription.subscribers.len()))
+                    .unwrap_or_default()
+            };
+            SubscriptionPoll {
+                state: self,
+                hash: hash.clone(),
+            }
+            .perform(env)
+            .await;
+            let elapsed = polled.elapsed();
+            if elapsed >= SLOW {
+                dialog_common::log!(
+                    "[reactor] slow subscription poll: {hash:?} on {} level={level} subscribers={subscribers} elapsed_ms={}",
+                    self.branch.name(),
+                    elapsed.as_millis()
+                );
+            }
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= SLOW {
+            dialog_common::log!(
+                "[reactor] slow branch poll: {count} subscriptions on {} elapsed_ms={}",
+                self.branch.name(),
+                elapsed.as_millis()
+            );
         }
     }
 }

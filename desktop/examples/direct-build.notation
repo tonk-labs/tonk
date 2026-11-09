@@ -1,0 +1,46 @@
+concept!: &direct-build-task
+  description: Disposable local build-loop checklist
+  with:
+    title:
+      description: Checklist task label
+      the: tonk.direct-build/title
+      as: text
+      cardinality: one
+    status:
+      description: Local build verification status
+      the: tonk.direct-build/status
+      as: text
+      cardinality: one
+
+direct-build-task!:
+  this: id:direct-build-task
+  title: Verify the local build loop
+  status: Waiting for direct apply
+
+view!:
+  this: direct-build-task
+  show:
+    directory: |
+      <main style="max-width:560px;margin:48px auto;font:18px system-ui">
+        <h1>Local build checklist</h1>
+        <ul><li><strong>{title}</strong>: <span>{status}</span></li></ul>
+      </main>
+
+concept!: &direct-build-home
+  this: space:home
+  description: Local test home
+  with:
+    subject:
+      description: Repository identity for this space
+      the: dialog.replica/subject
+      as: entity
+
+view!:
+  this: space:home
+  show:
+    ui: |
+      <tonk-display model=direct-build-task />
+
+name!:
+  this: id:tonk/space
+  entity: space:home

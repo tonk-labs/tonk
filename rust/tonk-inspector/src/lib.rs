@@ -12,11 +12,10 @@
 
 pub mod debug;
 
-// `render` and `response` are pure logic (string building + serde) but their only
-// consumer is the wasm-gated `element`, so they are gated to match — otherwise a
-// native `-D warnings` build flags them as dead code. Public so the
-// result-rendering port can be exercised by the wasm integration tests.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+// `render` is pure logic (string building + serde). It builds everywhere
+// because `cell_output`, which does, draws schema rows with its notation
+// records. Public so the result-rendering port can be exercised by the wasm
+// integration tests.
 pub mod render;
 /// The engine-free mirror of the worker's `/evaluate` response. Pure serde
 /// types with no DOM, so they build everywhere — which is what lets the

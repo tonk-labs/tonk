@@ -52,7 +52,7 @@ jobs:
 
       - uses: ./.github/actions/resolve-release
 
-      - uses: wimpysworld/nothing-but-nix@main
+      - uses: wimpysworld/nothing-but-nix@baf7355748bb5651f08b839669d6bb39051b2874 # main before 153c2fb, whose /nix/tmp TMPDIR breaks the Nix installer
         if: runner.os == 'Linux'
 
       - uses: cachix/install-nix-action@v31
@@ -103,12 +103,16 @@ jobs:
 
     # `id-token: write` allows GitHub to mint the OIDC token that npm
     # exchanges for a short-lived publishing credential.
+    timeout-minutes: 200
     permissions:
+      actions: read
       contents: read
       id-token: write
 
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/require-tag-verification
+
 
       - uses: actions/setup-node@v4
         with:

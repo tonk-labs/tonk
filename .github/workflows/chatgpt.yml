@@ -1,0 +1,42 @@
+name: ChatGPT integration
+
+on:
+  workflow_call:
+    inputs:
+      source-sha:
+        type: string
+        required: true
+  pull_request:
+    paths: &chatgpt-paths
+      - 'mcp/**'
+      - 'rust/tonk-portal/src/bootstrap.js'
+      - '.github/workflows/chatgpt.yml'
+  push:
+    branches: [main]
+    paths: *chatgpt-paths
+  workflow_dispatch:
+
+concurrency:
+  group: chatgpt-${{ github.workflow }}-${{ inputs.source-sha != '' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: ChatGPT authorization, sessions and packaging
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: mcp/package-lock.json
+      - run: npm --prefix mcp ci --ignore-scripts
+      - run: npm --prefix mcp run check:format
+      - run: npm --prefix mcp test
+      - run: npm --prefix mcp run test:hosted
+      - run: npm --prefix mcp run test:apps

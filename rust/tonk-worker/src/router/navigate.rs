@@ -28,6 +28,17 @@ pub(crate) fn notify_replace(client: Option<&crate::router::ClientId>, href: &st
     tell_navigate(client, href, true);
 }
 
+/// [`notify_replace`] without the load: `href` takes the place of the
+/// page's current history entry, for a page whose views follow the change
+/// live but whose address must not stay reachable with Back: a ticket
+/// link's, which carries its seed. The embedder's navigate says only
+/// whether to replace, so the page loads `href` afresh, as
+/// [`notify_replace`] has it.
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
+pub(crate) fn notify_replace_route(client: Option<&crate::router::ClientId>, href: &str) {
+    tell_navigate(client, href, true);
+}
+
 #[cfg(all(target_arch = "wasm32", feature = "persona"))]
 fn tell_navigate(client: Option<&crate::router::ClientId>, href: &str, replace: bool) {
     let Some(client) = client else {
@@ -57,6 +68,12 @@ pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &s
 /// No page on this host either; see [`notify_navigate`].
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn notify_replace(client: Option<&crate::router::ClientId>, href: &str) {
+    notify_navigate(client, href);
+}
+
+/// No page on this host either; see [`notify_navigate`].
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn notify_replace_route(client: Option<&crate::router::ClientId>, href: &str) {
     notify_navigate(client, href);
 }
 

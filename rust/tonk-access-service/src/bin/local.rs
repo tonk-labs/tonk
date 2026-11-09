@@ -48,6 +48,9 @@ async fn main() -> anyhow::Result<()> {
         state_dir: std::env::var("ACCESS_STATE_DIR")
             .ok()
             .map(std::path::PathBuf::from),
+        // Behind a shaped link (`tonk-perf link`) the permits must name
+        // the link, so block reads and writes cross it too.
+        public_endpoint: std::env::var("ACCESS_PUBLIC_ENDPOINT").ok(),
         ..Default::default()
     })
     .await?;

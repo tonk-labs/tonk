@@ -37,6 +37,9 @@ pub enum Channel {
     Stable,
     /// The `tonk-staging` rolling pre-release, the newest prerelease `v*` tag.
     Staging,
+    /// The `tonk-dev` rolling build of the latest `main`. Every build shares
+    /// the workspace version, so it only moves by commit (see [`run`]).
+    Dev,
 }
 
 impl Channel {
@@ -45,6 +48,7 @@ impl Channel {
         match value {
             "stable" => Some(Channel::Stable),
             "staging" => Some(Channel::Staging),
+            "dev" => Some(Channel::Dev),
             _ => None,
         }
     }
@@ -54,17 +58,19 @@ impl Channel {
         match self {
             Channel::Stable => "stable",
             Channel::Staging => "staging",
+            Channel::Dev => "dev",
         }
     }
 
     /// Directory URL holding this channel's assets. Stable resolves
-    /// through GitHub's `/latest/` alias; staging names its tag —
-    /// the same two shapes `install.sh` builds.
+    /// through GitHub's `/latest/` alias; staging and dev name their
+    /// tags — the same shapes `install.sh` builds.
     pub fn base_url(self, endpoint: &str) -> String {
         let endpoint = endpoint.trim_end_matches('/');
         match self {
             Channel::Stable => format!("{endpoint}/latest/download"),
             Channel::Staging => format!("{endpoint}/download/tonk-staging"),
+            Channel::Dev => format!("{endpoint}/download/tonk-dev"),
         }
     }
 }
@@ -385,18 +391,24 @@ mod tests {
             Channel::Staging.base_url("https://example.test/releases"),
             "https://example.test/releases/download/tonk-staging"
         );
+        assert_eq!(
+            Channel::Dev.base_url("https://example.test/releases"),
+            "https://example.test/releases/download/tonk-dev"
+        );
     }
 
     #[dialog_common::test]
     fn it_names_channels() {
         assert_eq!(Channel::Stable.as_str(), "stable");
         assert_eq!(Channel::Staging.as_str(), "staging");
+        assert_eq!(Channel::Dev.as_str(), "dev");
     }
 
     #[dialog_common::test]
     fn it_parses_known_channels_exactly() {
         assert_eq!(Channel::parse("stable"), Some(Channel::Stable));
         assert_eq!(Channel::parse("staging"), Some(Channel::Staging));
+        assert_eq!(Channel::parse("dev"), Some(Channel::Dev));
         assert_eq!(Channel::parse("Stable"), None);
         assert_eq!(Channel::parse("nightly"), None);
     }
@@ -415,11 +427,13 @@ mod tests {
     fn it_resolves_the_channel_from_a_matching_receipt() {
         let stable = sample_receipt("stable", "/opt/tonk");
         let staging = sample_receipt("staging", "/opt/tonk");
+        let dev = sample_receipt("dev", "/opt/tonk");
         assert_eq!(resolve_channel(Some(&stable), "/opt/tonk"), Channel::Stable);
         assert_eq!(
             resolve_channel(Some(&staging), "/opt/tonk"),
             Channel::Staging
         );
+        assert_eq!(resolve_channel(Some(&dev), "/opt/tonk"), Channel::Dev);
     }
 
     #[dialog_common::test]

@@ -9,6 +9,9 @@ on:
       expected-version:
         type: string
         default: ''
+      source-sha:
+        type: string
+        default: ''
 
 jobs:
   linux:
@@ -21,6 +24,12 @@ jobs:
         image: ['node:24-bookworm-slim', 'node:24-alpine']
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        if: inputs.source-sha != ''
+        with:
+          ref: ${{ inputs.source-sha }}
+          path: candidate-source
+          persist-credentials: false
       - name: Test the portability guard
         run: python3 scripts/tests/test-cli.py
       - uses: actions/download-artifact@v4
@@ -33,15 +42,16 @@ jobs:
         env:
           IMAGE: ${{ matrix.image }}
           EXPECTED_VERSION: ${{ inputs.expected-version }}
+          SOURCE_ROOT: ${{ inputs.source-sha != '' && '/source/candidate-source' || '/source' }}
         run: |
-          docker run --rm -e EXPECTED_VERSION -v "$GITHUB_WORKSPACE:/source:ro" "$IMAGE" sh -ec '
+          docker run --rm -e EXPECTED_VERSION -e SOURCE_ROOT -v "$GITHUB_WORKSPACE:/source:ro" "$IMAGE" sh -ec '
             if command -v apk >/dev/null; then
               apk add --no-cache python3 binutils openssl ca-certificates
             else
               apt-get update
               apt-get install -y --no-install-recommends python3 binutils openssl ca-certificates
             fi
-            python3 /source/scripts/check-cli.py /source/artifacts/tonk --platform linux-x64 --expected-version "$EXPECTED_VERSION"
+            python3 /source/scripts/check-cli.py /source/artifacts/tonk --platform linux-x64 --expected-version "$EXPECTED_VERSION" --source-root "$SOURCE_ROOT"
           '
 
   macos:
@@ -50,6 +60,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        if: inputs.source-sha != ''
+        with:
+          ref: ${{ inputs.source-sha }}
+          path: candidate-source
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -74,8 +90,9 @@ jobs:
         env:
           RELEASE_SIGNED: ${{ inputs.release-signed }}
           EXPECTED_VERSION: ${{ inputs.expected-version }}
+          SOURCE_ROOT: ${{ inputs.source-sha != '' && 'candidate-source' || '.' }}
         run: |
           args=()
           if [[ "$RELEASE_SIGNED" == "true" ]]; then args+=(--release-signed); fi
           python3 scripts/check-cli.py artifacts/tonk --platform darwin-arm64 \
-            --expected-version "$EXPECTED_VERSION" "${args[@]}"
+            --expected-version "$EXPECTED_VERSION" --source-root "$SOURCE_ROOT" "${args[@]}"

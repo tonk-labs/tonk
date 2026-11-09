@@ -49,7 +49,7 @@ struct PublicGroup {
     issued_at: u64,
     chains: Vec<String>,
 }
-fn failure(error: impl std::fmt::Display) -> TonkWorkerError {
+pub(super) fn failure(error: impl std::fmt::Display) -> TonkWorkerError {
     TonkWorkerError::Internal(format!("agent connection: {error}"))
 }
 fn enabled() -> Result<(), TonkWorkerError> {
@@ -129,7 +129,7 @@ async fn issue(
 
 /// The browser delegates to a terminal's exact public key; it never receives or
 /// generates that terminal's private key. The same leaf builder serves Flow A.
-async fn issue_to_recipient(
+pub(super) async fn issue_to_recipient(
     recipient: &Did,
     signer: Signer,
     ancestors: Vec<DelegationChain>,
@@ -170,7 +170,7 @@ fn issuer_proof_failure(error: dialog_capability::access::AuthorizeError) -> Ton
         AuthorizeError::UnavailableProof { .. }
         | AuthorizeError::Unavailable { .. }
         | AuthorizeError::Malformed { .. }
-        // A fresh invocation, made now, is expected to succeed.
+        // Not a decision about the authority: a fresh invocation would do.
         | AuthorizeError::Stale { .. }
         | AuthorizeError::Replayed { .. }
         | AuthorizeError::Declined {
@@ -197,7 +197,7 @@ fn issuer_proof_failure(error: dialog_capability::access::AuthorizeError) -> Ton
     }
 }
 
-async fn issuer_ancestors(
+pub(super) async fn issuer_ancestors(
     tonk: &TonkState,
     scopes: &[Scope],
     now: Timestamp,
@@ -688,9 +688,9 @@ pub async fn list(
 // holding `/use` can withdraw their own issued leaf without gaining that right:
 // sign as its issuer, or delegate the account's withdrawal of its witnessed path.
 #[cfg(feature = "persona")]
-async fn publish_target(
+pub(super) async fn publish_target(
     tonk: &TonkState,
-    group: &PublicGroup,
+    remote: &url::Url,
     path: &DelegationChain,
     target: &ipld_core::cid::Cid,
 ) -> Result<tonk_account::customer::RevokeReceipt, TonkWorkerError> {
@@ -717,8 +717,7 @@ async fn publish_target(
     tonk_identity::revocation::verify(&artifact)
         .await
         .map_err(failure)?;
-    let response =
-        super::http::post_cbor(&group.remote.parse().map_err(failure)?, &artifact).await?;
+    let response = super::http::post_cbor(remote, &artifact).await?;
     let receipt: tonk_account::customer::RevokeReceipt =
         serde_json::from_slice(&response.body).map_err(failure)?;
     let expected = tonk_identity::revocation::verify(&artifact)
@@ -739,7 +738,7 @@ pub async fn revoke(
     Path(id): Path<String>,
 ) -> Result<Json<AgentConnectionSummary>, TonkWorkerError> {
     enabled()?;
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     let group = groups(&tonk)
         .await?
         .into_iter()
@@ -754,9 +753,12 @@ pub async fn revoke(
         return Err(failure("space routing changed"));
     }
     let result = revoke_group(&tonk, &group, |chain, cid| {
-        let tonk = &*tonk;
+        let tonk = &tonk;
         let group = &group;
-        async move { publish_target(tonk, group, &chain, &cid).await }
+        async move {
+            let remote = group.remote.parse().map_err(failure)?;
+            publish_target(tonk, &remote, &chain, &cid).await
+        }
     })
     .await?;
     Ok(Json(result))
@@ -870,11 +872,7 @@ mod tests {
         let location = Directory::At(directory.to_string_lossy().into_owned());
         let (storage, profile) =
             crate::device::open_profile_at("receipt-projection", location.clone()).await?;
-        let registry = crate::device::Registry {
-            profile: "receipt-projection".into(),
-            directory: location,
-            standing: Default::default(),
-        };
+        let registry = crate::device::Registry::new("receipt-projection".into(), location);
         let tonk =
             crate::worker::boot_state(storage, "receipt-projection".into(), profile, registry)
                 .await?;
@@ -1137,11 +1135,7 @@ mod tests {
         let location = Directory::At(directory.to_string_lossy().into_owned());
         let (storage, profile) =
             crate::device::open_profile_at("ledger-branch", location.clone()).await?;
-        let registry = crate::device::Registry {
-            profile: "ledger-branch".into(),
-            directory: location.clone(),
-            standing: Default::default(),
-        };
+        let registry = crate::device::Registry::new("ledger-branch".into(), location.clone());
         let first =
             crate::worker::boot_state(storage, "ledger-branch".into(), profile, registry).await?;
         // Onto a fresh branch, the way add-account lands, and booted the
@@ -1233,11 +1227,7 @@ mod tests {
         std::fs::create_dir_all(&directory)?;
         let location = Directory::At(directory.to_string_lossy().into_owned());
         let (storage, profile) = crate::device::open_profile_at("ledger", location.clone()).await?;
-        let registry = crate::device::Registry {
-            profile: "ledger".into(),
-            directory: location.clone(),
-            standing: Default::default(),
-        };
+        let registry = crate::device::Registry::new("ledger".into(), location.clone());
         let tonk = crate::worker::boot_state(storage, "ledger".into(), profile, registry).await?;
         let root = Ed25519Signer::import(&[52; 32]).await?;
         let grant =
@@ -1297,11 +1287,7 @@ mod tests {
             .await?;
         assert_eq!(groups(&tonk).await?.len(), 1);
         assert!(has_issued_for_subject(&tonk, invite.grants().subject()).await?);
-        let other_registry = crate::device::Registry {
-            profile: "other-account".into(),
-            directory: location.clone(),
-            standing: Default::default(),
-        };
+        let other_registry = crate::device::Registry::new("other-account".into(), location.clone());
         let other_profile = other_registry
             .open_profile(&tonk.storage, "other-account")
             .await?;
@@ -1384,11 +1370,7 @@ mod tests {
         );
         drop(tonk);
         let (storage, profile) = crate::device::open_profile_at("ledger", location.clone()).await?;
-        let registry = crate::device::Registry {
-            profile: "ledger".into(),
-            directory: location,
-            standing: Default::default(),
-        };
+        let registry = crate::device::Registry::new("ledger".into(), location);
         let reopened =
             crate::worker::boot_state(storage, "ledger".into(), profile, registry).await?;
         assert!(has_issued_for_subject(&reopened, invite.grants().subject()).await?);

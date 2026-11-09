@@ -6,7 +6,10 @@ export { TonkToolError } from './errors.mjs';
 import { instructions } from './authoring.mjs';
 import { registerAuthoringResources } from './authoring-resources.mjs';
 
-export function createTonkServer({ capabilities, call, spaceSelection }, { registerUI } = {}) {
+export function createTonkServer(
+  { capabilities, call, spaceSelection, agentLinkSelection },
+  { registerUI } = {},
+) {
   const server = new McpServer({ name: 'tonk', version: '0.1.0' }, { instructions });
   registerAuthoringResources(server);
   for (const tool of selectTools(capabilities)) {
@@ -14,12 +17,17 @@ export function createTonkServer({ capabilities, call, spaceSelection }, { regis
       tool.name,
       {
         description: tool.description,
-        inputSchema: z.fromJSONSchema(inputSchemaFor(tool, { spaceSelection })),
+        inputSchema: z.fromJSONSchema(inputSchemaFor(tool, { spaceSelection, agentLinkSelection })),
         annotations: tool.annotations,
       },
       async (args, context) => {
         try {
-          const result = await call(tool.name, args, context.signal);
+          // Propagate both protocol cancellation and HTTP disconnects. Other
+          // hosts use the SDK request signal without an HTTP dependency.
+          const signal = context.http?.req?.signal
+            ? AbortSignal.any([context.mcpReq.signal, context.http.req.signal])
+            : context.mcpReq.signal;
+          const result = await call(tool.name, args, signal);
           if (!result || typeof result !== 'object' || Array.isArray(result)) {
             throw new Error('Invalid runtime result.');
           }

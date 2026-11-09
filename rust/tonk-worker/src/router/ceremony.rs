@@ -71,6 +71,34 @@ pub(super) async fn report_authorization(
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
 
+/// Report that approval work started, without waiting for subscribers.
+///
+/// [`report_authorization`] re-evaluates every scheduled branch's
+/// subscriptions before it returns. On a page with many views that took
+/// over 30 seconds, all before the custody read. The status is written
+/// here and the refresh runs detached, so the page still hears it
+/// without another request.
+#[cfg(target_arch = "wasm32")]
+pub(super) async fn report_working(
+    state: &crate::router::AppState,
+    tonk: &TonkState,
+    authorization: &tonk_worker_api::DeviceAuthorization,
+) {
+    report_to(
+        tonk,
+        &authorization_entity(authorization),
+        ceremony::AUTHORIZE_DEVICE,
+        ceremony_state::WORKING,
+        "",
+    )
+    .await;
+    let state = state.clone();
+    crate::detach(async move {
+        let tonk = state.read().await;
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    });
+}
+
 /// Ask the page for the passkey, reporting the ask and its failure. On
 /// a host with no page the ask fails and the failure is reported — the
 /// ceremony refuses visibly rather than silently not existing.
@@ -294,7 +322,7 @@ pub(super) async fn approvable(
     root: &dialog_varsig::Did,
 ) -> Result<(), String> {
     let linked = {
-        let tonk = state.read().await;
+        let tonk = state.read().await.clone();
         super::identity::local_root(&tonk)
             .await
             .map_err(|error| format!("no account is signed in on this profile: {error}"))?
@@ -343,22 +371,19 @@ pub(super) async fn delivered(
     remote: &str,
 ) -> Result<String, String> {
     let origin = super::customer::service_origin().map_err(|error| error.to_string())?;
-    let registered = super::account_devices::register(
-        axum::extract::State(state.clone()),
-        axum::Json(super::account_devices::RegisterDeviceRequest {
+    // Only this browser, the side that mints the grant, knows the
+    // device's label, so it records the device row. The row is published
+    // behind the grant: the service checks the chain, not the row.
+    let attachment_id = super::account_devices::register_then_publish(
+        state,
+        super::account_devices::RegisterDeviceRequest {
             did: authorization.audience.clone(),
             name: authorization.name.clone(),
             delegation_hex: delegation_hex.to_owned(),
-        }),
+        },
     )
     .await
     .map_err(|error| format!("the device was not registered: {error}"))?;
-    let attachment_id = registered
-        .0
-        .get("attachmentId")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
     let payload = serde_json::json!({
         "delegationHex": delegation_hex,
         // The grant's signed meta is the authoritative address; this
@@ -387,6 +412,51 @@ mod authorization_tests {
 
     // WEB-10: progress from the custody message path must reach the page
     // without a later HTTP request, sync heartbeat, or visibility event.
+
+    // The approval path does not wait for the subscription refresh, but
+    // the page still hears that work started without another request.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn approval_work_reports_progress_without_waiting_for_subscribers() {
+        use dialog_query::{ConceptQuery, Query};
+        use tonk_schema::{CeremonyStatus, ceremony_state};
+
+        let state = std::sync::Arc::new(crate::StateLock::new(
+            crate::router::tests::test_state().await,
+        ));
+        let request = tonk_worker_api::DeviceAuthorization {
+            audience: "did:key:test".into(),
+            callback: "http://127.0.0.1:1234/".into(),
+            name: "test connection".into(),
+            expected_account: None,
+        };
+        let mut subscription = {
+            let tonk = state.read().await;
+            tonk.reactor
+                .profile_repository()
+                .branch(&tonk.active_branch)
+                .subscribe(ConceptQuery::from(Query::<CeremonyStatus>::default()))
+                .perform(&tonk.operator)
+                .await
+                .unwrap()
+        };
+        while subscription.receiver.try_recv().is_ok() {}
+        {
+            let tonk = state.read().await;
+            super::report_working(&state, &tonk, &request).await;
+        }
+        let frame = subscription
+            .receiver
+            .recv()
+            .await
+            .expect("the detached refresh broadcasts the progress");
+        let frame = String::from_utf8_lossy(&frame);
+        assert!(frame.contains(ceremony_state::WORKING), "{frame}");
+        assert!(
+            frame.contains(&super::authorization_entity(&request)),
+            "{frame}"
+        );
+    }
 
     #[test]
     fn approval_progress_is_scoped_to_the_request() {

@@ -28,7 +28,10 @@ use tonk_worker_api::{CustodyIntent, DeviceAuthorization, RootDelegation};
 use url::Url;
 
 use super::ClientId;
-use super::ceremony::{approvable, delivered, grant_remote, report, report_authorization};
+use super::account_deletion::readable_failure;
+use super::ceremony::{
+    approvable, delivered, grant_remote, report, report_authorization, report_working,
+};
 use crate::TonkWorkerError;
 use crate::router::AppState;
 
@@ -77,6 +80,10 @@ fn reason_for(intent: &CustodyIntent) -> String {
         CustodyIntent::PurgeAccount(_) => "to delete your account".to_owned(),
         CustodyIntent::Delegate(_) => "to share a space with a member as its admin".to_owned(),
         CustodyIntent::AddPasskey(_) => "to add a passkey to your account".to_owned(),
+        CustodyIntent::AuthorizeAgent(authorization) => {
+            format!("to let {} act in your spaces", authorization.name)
+        }
+        CustodyIntent::RevokeAgent(_) => "to remove an agent from a space".to_owned(),
         CustodyIntent::Enroll(_) | CustodyIntent::CreateAccount(_) | CustodyIntent::Login(_) => {
             "to act as your account".to_owned()
         }
@@ -110,7 +117,7 @@ pub async fn unauthorized(state: &AppState, message: &str) {
         "authorize: {} was not authorized: {message}",
         pending.ceremony
     );
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     match &pending.intent {
         CustodyIntent::AuthorizeDevice(authorization) => {
             report_authorization(&tonk, authorization, ceremony_state::FAILED, message).await;
@@ -176,7 +183,7 @@ async fn authorize_device(
     client: Option<&ClientId>,
 ) -> Result<(), String> {
     let outcome = device_grant(state, persona, authorization).await;
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     match &outcome {
         Ok(target) => {
             report_authorization(&tonk, authorization, ceremony_state::DONE, target).await;
@@ -198,8 +205,8 @@ async fn device_grant(
     authorization: &DeviceAuthorization,
 ) -> Result<String, String> {
     {
-        let tonk = state.read().await;
-        report_authorization(&tonk, authorization, ceremony_state::WORKING, "").await;
+        let tonk = state.read().await.clone();
+        report_working(state, &tonk, authorization).await;
     }
     let root: Did = persona
         .did()
@@ -272,7 +279,7 @@ async fn purge(
     client: Option<&ClientId>,
 ) -> Result<(), String> {
     let outcome = purge_inner(state, persona, client).await;
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     match &outcome {
         Ok(()) => {
             report(&tonk, ceremony::DELETE_ACCOUNT, ceremony_state::DONE, "/").await;
@@ -283,7 +290,7 @@ async fn purge(
                 &tonk,
                 ceremony::DELETE_ACCOUNT,
                 ceremony_state::FAILED,
-                error,
+                &readable_failure(error),
             )
             .await;
         }
@@ -297,7 +304,7 @@ async fn purge_inner(
     client: Option<&ClientId>,
 ) -> Result<(), String> {
     let (operator, device) = {
-        let tonk = state.read().await;
+        let tonk = state.read().await.clone();
         report(&tonk, ceremony::DELETE_ACCOUNT, ceremony_state::WORKING, "").await;
         (
             tonk.profile.credential().signer().clone(),

@@ -120,6 +120,29 @@ pub(crate) async fn describe(
     }))
 }
 
+/// Refuse to approve a link this account cannot finish.
+///
+/// Publishing the space provisions it under the account, and the access
+/// service refuses a customer it does not serve. Approving anyway let the
+/// terminal mint the space's authority and wire its upstream before the
+/// refusal arrived, leaving the space half-linked; refusing here leaves it
+/// untouched and says what to do instead.
+async fn servable(tonk: &crate::worker::TonkState) -> Result<(), TonkWorkerError> {
+    use super::customer::Registration;
+    match super::customer::registration(tonk).await {
+        Registration::Served { .. } => Ok(()),
+        Registration::AwaitingActivation { email } => Err(TonkWorkerError::Forbidden(format!(
+            "this account is not active yet; open the activation email sent to {email}, then link the space again"
+        ))),
+        Registration::Suspended => Err(TonkWorkerError::Forbidden(
+            "this account is suspended, so it cannot take on a space".into(),
+        )),
+        Registration::Unregistered => Err(TonkWorkerError::Forbidden(
+            "this account has no email yet; add one in settings, then link the space again".into(),
+        )),
+    }
+}
+
 #[handler]
 pub(crate) async fn approve(
     State(state): State<AppState>,
@@ -135,6 +158,7 @@ pub(crate) async fn approve(
     .await
     .map_err(invalid)?;
     let tonk = state.read().await;
+    servable(&tonk).await?;
     let root = super::identity::local_root(&tonk).await?;
     let device = tonk.profile.credential().signer().clone();
     let approval = local_space_link::LocalSpaceLinkApproval::issue_from_device(
@@ -165,7 +189,10 @@ pub(crate) async fn complete(
     .await
     .map_err(invalid)?;
 
-    let tonk = state.write().await;
+    // A read guard: what follows is round trips (the join's pull, the
+    // access service's provisioning), and a write guard held across them
+    // stalls every other request.
+    let tonk = state.read().await.clone();
     let root = super::identity::local_root(&tonk).await?;
     let approval = local_space_link::LocalSpaceLinkApproval::from_bytes(&decode(
         &body.approval,
@@ -190,9 +217,10 @@ pub(crate) async fn complete(
     }
     // Nothing is held across the join: where the space's own worker commits
     // the claim, it asks this worker for its delegation meanwhile.
+    let held = tonk.clone();
     drop(tonk);
     let outcome =
-        super::join::join_for_local_space_link(&state, &body.invite, &request.space).await?;
+        super::join::join_for_local_space_link(&held, &body.invite, &request.space).await?;
     let tonk = state.read().await;
     let device = tonk.profile.credential().signer().clone();
     let completion = local_space_link::LocalSpaceLinkCompletion::issue_from_device(
@@ -224,7 +252,10 @@ pub(crate) async fn provision(
     .await
     .map_err(invalid)?;
 
-    let tonk = state.write().await;
+    // A read guard: what follows is round trips (the join's pull, the
+    // access service's provisioning), and a write guard held across them
+    // stalls every other request.
+    let tonk = state.read().await.clone();
     let root = super::identity::local_root(&tonk).await?;
     let approval = local_space_link::LocalSpaceLinkApproval::from_bytes(&decode(
         &body.approval,

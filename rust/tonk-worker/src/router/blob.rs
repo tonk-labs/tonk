@@ -341,6 +341,9 @@ pub async fn upload(
         .and_then(|v| v.to_str().ok())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
+    // A read guard: the blob commit takes the branch's write lock and the
+    // metadata commit its transactor, so nothing here needs the state to
+    // itself, and a write guard would queue behind any sync in flight.
     let tonk = state.read().await;
 
     // Ingest bytes into the content-addressed store. Direct branch access
@@ -479,9 +482,7 @@ async fn import_blob(
     // Verify before writing anything, including the branch's blob index.
     // The hash is what is compared: an older space names its media as a
     // `blob:` and the store now names the same bytes an `asset:`.
-    let hash = expected.blob_hash();
-    if hash.as_ref().map(|hash| hash.as_slice()) != Some(blake3::hash(&bytes).as_bytes().as_slice())
-    {
+    if expected.blob_hash() != Some(*blake3::hash(&bytes).as_bytes()) {
         return Err(internal("bundled blob hash mismatch"));
     }
     let chunks = futures_util::stream::iter(vec![Ok::<_, dialog_effects::blob::BlobError>(bytes)]);
@@ -490,7 +491,9 @@ async fn import_blob(
         .perform(&tonk.operator)
         .await
         .map_err(internal)?;
-    if entity.blob_hash() != hash {
+    // Compared by hash: the import names what it stored `asset:<hash>`,
+    // while older Welcome spaces reference it as `blob:<hash>`.
+    if entity.blob_hash() != expected.blob_hash() {
         return Err(internal("bundled blob hash mismatch"));
     }
     Ok(())
@@ -502,11 +505,44 @@ async fn hydrate_media(
     branch_name: &str,
     entity: &dialog_artifacts::Entity,
 ) -> Result<(), TonkWorkerError> {
-    if !bundled_media()?.iter().any(|media| &media.entity == entity) {
+    // By hash: older Welcome spaces name their images `blob:<hash>`, and
+    // dialog now names content `asset:<hash>`.
+    let Some(media) = bundled_media()?.into_iter().find(|media| {
+        media.entity.blob_hash().is_some() && media.entity.blob_hash() == entity.blob_hash()
+    }) else {
+        return Ok(());
+    };
+    // Read guards only, never the write one. This runs on every request
+    // for a starter image, and a writer queues behind any sync holding its
+    // read guard across a round trip, then stalls every request that
+    // arrives after it. The import needs no exclusion of its own: the
+    // commit recording the asset takes the branch's write lock, and
+    // recording an asset the branch already records mints nothing.
+    {
+        let tonk = state.read().await;
+        let branch = media_branch(&tonk, key, branch_name).await?;
+        if has_media(&tonk, &branch, entity).await? {
+            return Ok(());
+        }
+    }
+    // No guard while the bytes are fetched: on a cache miss they come
+    // over the network.
+    let bytes = fetch_media(&media.url).await?;
+    let tonk = state.read().await;
+    let branch = media_branch(&tonk, key, branch_name).await?;
+    if has_media(&tonk, &branch, entity).await? {
         return Ok(());
     }
-    // Blob imports advance the branch index; serialize with other writer routes.
-    let tonk = state.write().await;
+    import_blob(&tonk, &branch, entity, bytes).await
+}
+
+/// The branch a starter image is hydrated into, moved to this release's
+/// storage format first (see [`migrate_once`]).
+async fn media_branch(
+    tonk: &TonkState,
+    key: &str,
+    branch_name: &str,
+) -> Result<dialog_repository::Branch, TonkWorkerError> {
     let repository = tonk
         .profile
         .space(key)
@@ -514,44 +550,35 @@ async fn hydrate_media(
         .perform(&tonk.operator)
         .await
         .map_err(internal)?;
-    migrate_once(&tonk, key, branch_name).await?;
-    let branch = repository
+    migrate_once(tonk, key, branch_name).await?;
+    repository
         .branch(branch_name)
         .open()
         .perform(&tonk.operator)
         .await
-        .map_err(internal)?;
-    ensure_media(&tonk, &branch, entity).await?;
-    Ok(())
+        .map_err(internal)
 }
 
-/// Only this immutable, compiled-in allowlist can fill a missing starter image.
-/// The caller has already resolved its authorized repository and branch. Bytes
-/// become ordinary branch blobs, so export/sync and later offline reads work.
-async fn ensure_media(
+/// Whether `branch` already holds the starter image `entity`. Only this
+/// immutable, compiled-in allowlist is ever filled in: the caller has
+/// resolved its authorized repository and branch, and the bytes become
+/// ordinary branch blobs, so export/sync and later offline reads work.
+async fn has_media(
     tonk: &TonkState,
     branch: &dialog_repository::Branch,
     entity: &dialog_artifacts::Entity,
 ) -> Result<bool, TonkWorkerError> {
-    let Some(media) = bundled_media()?
-        .into_iter()
-        .find(|media| &media.entity == entity)
-    else {
-        return Ok(false);
-    };
     match Blob::from(entity.clone())
         .read(branch.blobs())
         .perform(&tonk.operator)
         .await
     {
-        Ok(_) => return Ok(true),
+        Ok(_) => Ok(true),
         Err(dialog_repository::CommitError::Blob(dialog_effects::blob::BlobError::NotFound(_))) => {
+            Ok(false)
         }
-        Err(error) => return Err(internal(error)),
+        Err(error) => Err(internal(error)),
     }
-    let bytes = fetch_media(&media.url).await?;
-    import_blob(tonk, branch, entity, bytes).await?;
-    Ok(true)
 }
 
 /// A kernel reads the media where the deployment serves its library, as

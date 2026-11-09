@@ -15,6 +15,9 @@ pub use axum::*;
 mod router;
 pub use router::*;
 
+pub mod state_lock;
+pub use state_lock::StateLock;
+
 mod credential;
 
 mod onboarding;

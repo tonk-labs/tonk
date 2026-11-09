@@ -49,6 +49,13 @@ pub(crate) async fn can_read(tonk: &TonkState, subject: &Did) -> bool {
     proves(tonk, &tonk.profile.did(), subject, "/use/get").await
 }
 
+/// Whether this profile can already invoke `command` on `subject`, for a
+/// test that tells a read-only grant from one that writes.
+#[cfg(test)]
+pub(crate) async fn can(tonk: &TonkState, subject: &Did, command: &str) -> bool {
+    proves(tonk, &tonk.profile.did(), subject, command).await
+}
+
 /// Save `chain` in the profile, where every proof this device makes is
 /// searched for.
 ///

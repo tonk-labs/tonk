@@ -1,0 +1,25 @@
+{
+  "issuer": "https://mcp.tonk.example",
+  "clientId": "chatgpt-test",
+  "credentials": [
+    {
+      "value": {
+        "tenantId": "legacy-fixture",
+        "deviceDid": "did:key:fixture",
+        "rootDid": "did:key:account",
+        "connectionExpiresAt": 29800000
+      },
+      "accesses": [
+        "0f007385b6f9d4b7eeb2748605afe1a984a0a3bfa3f014d09e2a784ce9e5cd1a"
+      ],
+      "refreshes": [
+        "56d5fa7333f6d747db42c239407e5da4c32f4c79f35d092b134fd35a402d9c5c"
+      ],
+      "access": "0f007385b6f9d4b7eeb2748605afe1a984a0a3bfa3f014d09e2a784ce9e5cd1a",
+      "current": "56d5fa7333f6d747db42c239407e5da4c32f4c79f35d092b134fd35a402d9c5c",
+      "expiresAt": 1600000,
+      "until": 29800000
+    }
+  ],
+  "spent": []
+}
