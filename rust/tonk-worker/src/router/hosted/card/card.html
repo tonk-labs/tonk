@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tonk</title>
+    <!-- tonk:in-agent -->
+    <style>
+      /* What only this card draws; everything else is the in-agent
+         stylesheet spliced in above. */
+      html,
+      body {
+        margin: 0;
+        background: transparent;
+      }
+      .tonk-receipt:focus {
+        outline: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="card"></div>
+
+    <script>
+      (() => {
+        const root = document.getElementById('card'),
+          pending = new Map();
+        let rpcId = 0;
+
+        function rpc(method, params) {
+          return new Promise((resolve, reject) => {
+            const id = ++rpcId;
+            pending.set(id, { resolve, reject });
+            parent.postMessage({ jsonrpc: '2.0', id, method, params }, '*');
+          });
+        }
+        function notify(method, params) {
+          parent.postMessage({ jsonrpc: '2.0', method, params }, '*');
+        }
+        function size() {
+          notify('ui/notifications/size-changed', {
+            height: Math.ceil(document.documentElement.getBoundingClientRect().height),
+          });
+        }
+        new ResizeObserver(size).observe(document.body);
+
+        // The agent app's theme. An ask stays on ink in both: the
+        // stylesheet fixes its colours.
+        function theme(context) {
+          const value = context?.theme;
+          if (value === 'dark' || value === 'light') document.documentElement.dataset.theme = value;
+        }
+
+        function el(tag, className, text) {
+          const node = document.createElement(tag);
+          if (className) node.className = className;
+          if (text != null) node.textContent = text;
+          return node;
+        }
+        function bot() {
+          return el('span', 'tonk-bot', 'bot');
+        }
+        // The disc's three states, each named for screen readers.
+        const DISC = { filled: 'synced', hollow: 'local only', paused: 'paused' };
+        function disc(state = 'filled', label) {
+          const node = el('span', 'tonk-disc');
+          node.setAttribute('role', 'img');
+          setDisc(node, state, label);
+          return node;
+        }
+        function setDisc(node, state, label) {
+          if (state === 'filled') delete node.dataset.state;
+          else node.dataset.state = state;
+          node.setAttribute('aria-label', label || DISC[state] || DISC.filled);
+          node.title = label || DISC[state] || DISC.filled;
+        }
+        function place(space) {
+          const node = el('span', 'tonk-place');
+          node.append(el('span', 'tonk-space', space.name || 'this space'));
+          if (space.item) node.append(el('span', 'tonk-where', '› ' + space.item));
+          return node;
+        }
+        // The head every ask and tell opens with: the disc, the place,
+        // the role. Neither disc nor role where the person is not in the
+        // space.
+        function head(card) {
+          const node = el('header', 'tonk-head');
+          if (card.role) node.append(disc(card.disc));
+          if (card.space) node.append(place(card.space));
+          if (card.role) node.append(el('span', 'tonk-role', card.role));
+          return node;
+        }
+        function receiptText(card) {
+          const parts = [document.createTextNode(card.say)];
+          if (card.byAgent) parts.push(document.createTextNode(' · by you'), bot());
+          return parts;
+        }
+
+        function draw(card) {
+          if (card.kind === 'strip') return strip(card);
+          const section = el('section', 'tonk ' + (card.kind === 'ask' ? 'tonk--ask' : 'tonk--tell'));
+          section.setAttribute(
+            'aria-label',
+            card.kind === 'ask' ? 'Tonk asks: ' + card.say : 'Tonk: ' + (card.label || card.say),
+          );
+          section.append(head(card), el('p', 'tonk-say', card.say));
+          if (card.changes?.length) {
+            const list = el('ul', 'tonk-changes');
+            for (const change of card.changes) {
+              const item = el('li');
+              const mark = el('span', 'tonk-mark', change.mark);
+              mark.setAttribute('aria-hidden', 'true');
+              const words = { '+': 'adds', '−': 'removes', '-': 'removes', '~': 'changes' };
+              const name = el('span', null, change.name);
+              name.setAttribute('aria-label', (words[change.mark] || '') + ' ' + change.name);
+              item.append(mark, name);
+              if (change.kind) item.append(el('span', 'tonk-kind', change.kind));
+              list.append(item);
+            }
+            section.append(list);
+          }
+          if (card.lines) section.append(el('p', 'tonk-lines', card.lines));
+          if (card.ledger?.length) {
+            const ledger = el('dl', 'tonk-ledger');
+            for (const entry of card.ledger) {
+              const value = el('dd', null, entry.value);
+              if (entry.bot) value.append(bot());
+              ledger.append(el('dt', null, entry.term), value);
+            }
+            section.append(ledger);
+          }
+          if (card.fine) section.append(el('p', 'tonk-fine', card.fine));
+          if (card.answers?.length) {
+            const acts = el('div', 'tonk-acts');
+            // In the order the server gives them: the main answer first.
+            const LOOK = { main: 'tonk-btn', ring: 'tonk-btn tonk-btn--ring', link: 'tonk-link' };
+            for (const answer of card.answers) {
+              const button = el('button', LOOK[answer.kind] || LOOK.ring, answer.label);
+              button.type = 'button';
+              button.addEventListener('click', () => choose(card, section, answer));
+              acts.append(button);
+            }
+            section.append(acts);
+          }
+          root.replaceChildren(section);
+          return section;
+        }
+
+        // A strip: one line, the receipt in a live region. Focus moves to
+        // the receipt, since what was pressed has gone.
+        function strip(card, focus) {
+          const section = el('section', 'tonk tonk-strip');
+          section.setAttribute('aria-label', 'Tonk');
+          if (card.role) section.append(disc(card.disc));
+          const receipt = el('span', 'tonk-receipt');
+          receipt.setAttribute('role', 'status');
+          receipt.tabIndex = -1;
+          section.append(receipt);
+          root.replaceChildren(section);
+          // Filled after the region is in the document, so it is announced.
+          requestAnimationFrame(() => {
+            receipt.replaceChildren(...receiptText(card));
+            if (focus) receipt.focus({ preventScroll: true });
+          });
+          return section;
+        }
+
+        // Tell the model what the person decided, so the next turn knows.
+        async function tellModel(text) {
+          if (!text) return;
+          try {
+            await rpc('ui/update-model-context', { content: [{ type: 'text', text }] });
+          } catch {}
+        }
+
+        // A link out of the card opens in the person's browser, through
+        // the agent app, which may ask them first.
+        async function openLink(url) {
+          try {
+            await rpc('ui/open-link', { url });
+          } catch {
+            if (typeof window.openai?.openExternal === 'function') window.openai.openExternal({ href: url });
+          }
+        }
+
+        async function choose(card, section, answer) {
+          // An answer that opens Tonk leaves the card as it is.
+          if (answer.url) return openLink(answer.url);
+          for (const button of section.querySelectorAll('button')) button.disabled = true;
+          // An answer that calls nothing: its strip, and what the model is told.
+          if (!answer.tool) {
+            strip({ ...card, kind: 'strip', say: answer.receipt, byAgent: false }, true);
+            return tellModel(answer.context);
+          }
+          // Saving is a strip with a filled disc and the word, not a spinner.
+          strip({ kind: 'strip', role: card.role, disc: 'filled', say: 'saving' }, false);
+          let result;
+          try {
+            result = await rpc('tools/call', { name: answer.tool, arguments: answer.arguments });
+          } catch (error) {
+            result = {
+              isError: true,
+              content: [{ type: 'text', text: String(error?.message || error) }],
+            };
+          }
+          const text = result?.content?.find((part) => part.type === 'text')?.text;
+          const next = result?.structuredContent?.card;
+          if (next?.kind === 'strip') strip(next, true);
+          else {
+            const shown = draw(
+              next || {
+                kind: 'tell',
+                space: card.space,
+                role: card.role,
+                disc: card.disc,
+                label: 'not answered',
+                say: 'The space did not answer, so nothing changed. Ask me again.',
+              },
+            );
+            shown.tabIndex = -1;
+            shown.focus({ preventScroll: true });
+          }
+          await tellModel(text);
+        }
+
+        function present(params) {
+          const card = params?.structuredContent?.card;
+          if (card) return draw(card);
+          // A result with no card is one the model has to fix; its words
+          // are for the model, so the person is told only what stands.
+          draw({ kind: 'tell', label: 'nothing changed', say: 'Nothing changed.' });
+        }
+
+        addEventListener('message', (event) => {
+          const m = event.data;
+          if (event.source !== parent || m?.jsonrpc !== '2.0') return;
+          if (pending.has(m.id)) {
+            const p = pending.get(m.id);
+            pending.delete(m.id);
+            m.error ? p.reject(Error(m.error.message)) : p.resolve(m.result);
+          } else if (m.method === 'ui/notifications/tool-result') {
+            present(m.params);
+          } else if (m.method === 'ui/notifications/host-context-changed') {
+            theme(m.params);
+          }
+        });
+        rpc('ui/initialize', {
+          appInfo: { name: 'tonk-card', version: '0.1.0' },
+          appCapabilities: {},
+          protocolVersion: '2026-01-26',
+        })
+          .then((initialized) => {
+            theme(initialized?.hostContext);
+            notify('ui/notifications/initialized', {});
+          })
+          .catch(() =>
+            draw({ kind: 'tell', label: 'not started', say: 'This chat app could not start the card.' }),
+          );
+      })();
+    </script>
+  </body>
+</html>
