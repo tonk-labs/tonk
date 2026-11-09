@@ -142,13 +142,13 @@ web-sys = { workspace = true, features = [
     "WorkerNavigator",
 ] }
 web-time = { workspace = true }
+# The files library documents include, compiled in: a native worker, and
+# a hosted peer in a Durable Object, seed the library from compiled-in
+# copies, with no served `/library/` to fetch from.
+tonk-library = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 reqwest = { workspace = true }
-# The files library documents include, compiled in: a native worker seeds
-# the library from compiled-in copies, with no served `/library/` to
-# fetch from.
-tonk-library = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }

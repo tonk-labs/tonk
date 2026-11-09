@@ -144,8 +144,9 @@ pub struct CommandProviders {
     /// [`ExpelMember`](tonk_schema::command::ExpelMember), whose target
     /// is likewise the origin space, and installing a library component
     /// ([`InstallComponent`](tonk_schema::command::InstallComponent)) into
-    /// the origin space, which the profile has none of, and undoing one of
-    /// the origin branch's own changes
+    /// the origin space, which the profile has none of, uninstalling one
+    /// ([`UninstallComponent`](tonk_schema::command::UninstallComponent)),
+    /// and undoing one of the origin branch's own changes
     /// ([`UndoChange`](tonk_schema::command::UndoChange)).
     space: CommandRegistry<CommandEnv>,
 }
@@ -294,6 +295,8 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // A space installs a library component into itself; the profile
         // has no components to install.
         .command::<tonk_schema::command::InstallComponent>()
+        // And uninstalls one from itself, the inverse an undo asks for.
+        .command::<tonk_schema::command::UninstallComponent>()
         // A space undoes a change to itself: the change is named by a
         // revision of the origin branch, which is the target.
         .command::<tonk_schema::command::UndoChange>()

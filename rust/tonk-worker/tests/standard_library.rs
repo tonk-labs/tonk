@@ -107,6 +107,180 @@ async fn it_lowers_the_standard_library() {
     .await;
 }
 
+/// Each installable component, by name, with its library file.
+const COMPONENTS: [(&str, &str); 6] = [
+    ("issue", ISSUE_LIBRARY),
+    ("meta", META_LIBRARY),
+    ("notebook", NOTEBOOK_LIBRARY),
+    ("prose", PROSE_LIBRARY),
+    ("table", TABLE_LIBRARY),
+    ("version-control", VERSION_CONTROL_LIBRARY),
+];
+
+const PARTS_BEGIN: &str = "# BEGIN library manifest (generated)\n";
+const PARTS_END: &str = "# END library manifest (generated)\n";
+
+/// The text a field holds, when it is a name, URI or string.
+fn field_text(value: &tonk_notation::FieldValue) -> Option<String> {
+    use tonk_notation::{FieldValue, Scalar};
+    match value {
+        FieldValue::Symbol(text) | FieldValue::Uri(text) => Some(text.clone()),
+        FieldValue::Literal(Scalar::String(text)) => Some(text.clone()),
+        _ => None,
+    }
+}
+
+/// What a component file adds, as `(kind, name, slot)`: each concept and
+/// command it declares, by its `&name`, and each view, by the model it
+/// shows and the slot it fills, in document order.
+fn parts_of(document: &str) -> Vec<(String, String, Option<String>)> {
+    use tonk_notation::{Expression, FieldValue};
+    let syntax = tonk_notation::parse(document)
+        .syntax
+        .expect("a component file parses");
+    let mut parts = Vec::new();
+    for expression in &syntax.expressions {
+        let Expression::Claim(claim) = expression else {
+            continue;
+        };
+        let application = &claim.inner;
+        let this = application
+            .fields
+            .iter()
+            .find(|field| field.name == "this")
+            .and_then(|field| field_text(&field.value));
+        match application.predicate.source.as_str() {
+            kind @ ("concept" | "command") => {
+                let name = claim
+                    .anchor
+                    .as_ref()
+                    .map(|anchor| anchor.name.clone())
+                    .or(this)
+                    .expect("a concept or command names itself");
+                parts.push((kind.to_owned(), name, None));
+            }
+            "view" => {
+                let model = this.expect("a view names its model");
+                let slots = application
+                    .fields
+                    .iter()
+                    .find(|field| field.name == "show")
+                    .map(|show| match &show.value {
+                        FieldValue::Nested(slots) => {
+                            slots.iter().map(|slot| slot.name.clone()).collect()
+                        }
+                        _ => Vec::new(),
+                    })
+                    .unwrap_or_default();
+                for slot in slots {
+                    parts.push(("view".to_owned(), model.clone(), Some(slot)));
+                }
+            }
+            _ => {}
+        }
+    }
+    parts
+}
+
+/// The `library/manifest!:` facts core.yaml should carry, one per component.
+fn generated_parts() -> String {
+    let mut block = String::new();
+    for (component, document) in COMPONENTS {
+        let adds: Vec<String> = parts_of(document)
+            .into_iter()
+            .map(|(kind, name, slot)| match slot {
+                Some(slot) => format!("{kind} {name} {slot}"),
+                None => format!("{kind} {name}"),
+            })
+            .collect();
+        block.push_str(&format!(
+            "library/manifest!: {{ this: tonk:library/{component}, adds: \"{}\\n\" }}\n",
+            adds.join("\\n")
+        ));
+    }
+    block
+}
+
+/// The parts block as core.yaml has it, between its markers.
+fn recorded_parts(library: &str) -> (usize, usize) {
+    let begin = library
+        .find(PARTS_BEGIN)
+        .expect("core.yaml marks where the library manifest begin")
+        + PARTS_BEGIN.len();
+    let end = library
+        .find(PARTS_END)
+        .expect("core.yaml marks where the library manifest end");
+    (begin, end)
+}
+
+/// The catalog's list of what each component adds is the components' own
+/// declarations, not a second copy kept by hand. Run with
+/// `TONK_BLESS_LIBRARY=1` to rewrite the block after changing a component.
+#[dialog_common::test]
+fn it_lists_what_each_component_declares() {
+    let expected = generated_parts();
+    let (begin, end) = recorded_parts(STANDARD_LIBRARY);
+    if STANDARD_LIBRARY[begin..end] == expected {
+        return;
+    }
+    if std::env::var_os("TONK_BLESS_LIBRARY").is_some() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../tonk-core/assets/library/core.yaml"
+        );
+        let blessed = format!(
+            "{}{expected}{}",
+            &STANDARD_LIBRARY[..begin],
+            &STANDARD_LIBRARY[end..]
+        );
+        std::fs::write(path, blessed).expect("core.yaml is writable");
+        return;
+    }
+    panic!(
+        "core.yaml's library manifest is out of date; rerun with TONK_BLESS_LIBRARY=1, or paste:\n{expected}"
+    );
+}
+
+/// Every component the catalog lists has a version, a label and a file
+/// of its own, and every component file is in the catalog.
+#[dialog_common::test]
+fn it_catalogs_every_component_with_a_version() {
+    let syntax = tonk_notation::parse(STANDARD_LIBRARY)
+        .syntax
+        .expect("core.yaml parses");
+    let mut catalog = Vec::new();
+    for expression in &syntax.expressions {
+        let tonk_notation::Expression::Claim(claim) = expression else {
+            continue;
+        };
+        if claim.inner.predicate.source != "library/component" {
+            continue;
+        }
+        let field = |name: &str| {
+            claim
+                .inner
+                .fields
+                .iter()
+                .find(|field| field.name == name)
+                .and_then(|field| field_text(&field.value))
+        };
+        let name = field("name").expect("a component has a name");
+        assert_eq!(
+            field("this").as_deref(),
+            Some(format!("tonk:library/{name}").as_str())
+        );
+        for required in ["label", "version"] {
+            assert!(
+                field(required).is_some_and(|value| !value.trim().is_empty()),
+                "component {name} has no {required}"
+            );
+        }
+        catalog.push(name);
+    }
+    let files: Vec<&str> = COMPONENTS.iter().map(|(name, _)| *name).collect();
+    assert_eq!(catalog, files);
+}
+
 /// The meta library describes a real shape, not an aspirational one.
 ///
 /// It is documentation that has to stay true: every attribute it names

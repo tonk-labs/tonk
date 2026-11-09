@@ -94,7 +94,7 @@ pub use agent_link::AgentLinkWorker;
 #[cfg(feature = "volatile-storage")]
 pub use hosted::{
     HostedPeer, NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, card, join as agent_join,
-    mcp, propose, telemetry, view, writer_seed,
+    library as hosted_library, mcp, propose, telemetry, view, writer_seed,
 };
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 mod local_peer;

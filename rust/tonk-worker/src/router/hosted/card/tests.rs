@@ -66,6 +66,7 @@ fn it_draws_what_the_mocks_name_and_labels_each_kind() {
         "tonk-lines",
         "tonk-ledger",
         "tonk-fine",
+        "tonk-code",
         "tonk-acts",
         "tonk-bot",
         "tonk-where",

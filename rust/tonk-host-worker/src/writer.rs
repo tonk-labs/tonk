@@ -414,6 +414,23 @@ impl SpaceWriterObject {
                 Err(error) => failure(StatusCode::BAD_REQUEST, &error),
             };
         }
+        // A library install or uninstall, run and awaited by the writer.
+        if method == worker::Method::Post
+            && path == tonk_worker::hosted_library::ROUTE.trim_start_matches('/')
+        {
+            self.reach("library");
+            let body: serde_json::Value = match request.json().await {
+                Ok(body) => body,
+                Err(error) => return failure(StatusCode::BAD_REQUEST, &error.to_string()),
+            };
+            let Some(command) = tonk_worker::hosted_library::Command::from_body(&body) else {
+                return failure(StatusCode::BAD_REQUEST, "name the action and the component");
+            };
+            return match writer.library(&command).await {
+                Ok(answer) => worker::Response::from_json(&answer),
+                Err(error) => failure(StatusCode::BAD_GATEWAY, &error),
+            };
+        }
         if method == worker::Method::Post
             && path == tonk_worker::mcp::UNDO_ROUTE.trim_start_matches('/')
         {
