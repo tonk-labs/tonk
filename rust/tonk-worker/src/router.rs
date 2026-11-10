@@ -139,6 +139,7 @@ pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 pub(crate) mod agent_connections;
 #[cfg(feature = "persona")]
 mod agent_session;
+mod agent_space;
 #[cfg(feature = "persona")]
 mod agents;
 pub(crate) mod revoke_invite;
@@ -405,6 +406,12 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             post(revoke_invite::revoke),
         )
         .route("/api/repository/{repo}/invites", get(revoke_invite::list))
+        // An agent's own space, as the account that made the agent reads and
+        // changes it. See `router/agent_space.rs`.
+        .route(
+            "/api/repository/{repo}/agent",
+            get(agent_space::get).post(agent_space::post),
+        )
         // Opt-in remote attach — wires a remote (and branch upstream)
         // onto an existing repo, idempotently. See
         // `router/repository.rs::attach_remote`.

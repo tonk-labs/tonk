@@ -9,21 +9,24 @@ use axum::{
     extract::{Path, State},
 };
 use dialog_query::{Output as _, Query, Term};
-use dialog_repository::RepositoryExt as _;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::{DelegationChain, time::Timestamp};
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 use tonk_macros::handler;
 use tonk_schema::{
-    Replica, agent::AgentSpace, domain::replica::Profile as ProfileEntity, prelude::DidExt as _,
+    Replica,
+    agent::{AgentProvider, AgentSpace},
+    domain::replica::Profile as ProfileEntity,
+    prelude::DidExt as _,
 };
 
 use super::{
     AppState,
     agent_connections::{failure, publish_target},
+    agent_space::{self, AgentSpaceChange, AgentSpaceRecord},
     create_invite::{RemoteRequirement, resolve_remote_url},
-    repository::{CONTENT_BRANCH, repository_display_name},
+    repository::{CONTENT_BRANCH, repository_display_name, space_named},
 };
 use crate::{TonkState, TonkWorkerError};
 
@@ -100,8 +103,14 @@ pub(super) async fn spaces(tonk: &TonkState) -> Result<Vec<Did>, TonkWorkerError
         .collect())
 }
 
-/// Whether the space at `did` carries the agent-space mark.
+/// Whether the space at `did` carries the agent-space mark. Where the
+/// space has a worker of its own, the profile's mark of it says so.
 pub(super) async fn is_agent(tonk: &TonkState, did: &Did) -> bool {
+    if tonk.spaces_elsewhere() {
+        return profile_marks(tonk)
+            .await
+            .is_ok_and(|marked| marked.contains(did.as_str()));
+    }
     let Ok(session) = tonk
         .reactor
         .repository(did.repo_key())
@@ -138,41 +147,9 @@ pub(super) async fn find(tonk: &TonkState, key: &str) -> Result<Did, TonkWorkerE
     Ok(agent)
 }
 
-/// The name the agent space `agent` gives `space` in its directory.
-async fn directory_name(tonk: &TonkState, agent: &Did, space: &Did) -> Option<String> {
-    let session = tonk
-        .reactor
-        .repository(agent.repo_key())
-        .branch(CONTENT_BRANCH)
-        .acquire(&tonk.operator)
-        .await
-        .ok()?;
-    let rows: Vec<tonk_schema::SpaceName> = session
-        .handle()
-        .query()
-        .select(Query::<tonk_schema::SpaceName> {
-            this: Term::from(space.this()),
-            name: Term::var("name"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .ok()?;
-    rows.into_iter()
-        .next()
-        .map(|row| row.name.0)
-        .filter(|name| !name.trim().is_empty())
-}
-
 pub(super) async fn name(tonk: &TonkState, did: &Did) -> Option<String> {
     let key = did.repo_key();
-    let repository = tonk
-        .profile
-        .space(key)
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .ok()?;
+    let repository = space_named(tonk, key).await.ok()?;
     repository_display_name(tonk, &repository, key)
         .await
         .filter(|name| !name.trim().is_empty())
@@ -187,34 +164,24 @@ pub(super) enum Held {
     AgentSpace,
 }
 
-async fn retained(
-    tonk: &TonkState,
-    agent: &Did,
-    held: Held,
-) -> Result<Vec<UcanDelegation>, TonkWorkerError> {
-    let session = match held {
-        Held::Profile => tonk
-            .reactor
-            .profile_repository()
-            .branch(&tonk.active_branch)
-            .acquire(&tonk.operator)
-            .await
-            .map_err(failure)?,
-        Held::AgentSpace => tonk
-            .reactor
-            .repository(agent.repo_key())
-            .branch(CONTENT_BRANCH)
-            .acquire(&tonk.operator)
-            .await
-            .map_err(failure)?,
-    };
-    session
+/// The delegations to `agent` this profile retains.
+async fn retained(tonk: &TonkState, agent: &Did) -> Result<Vec<DelegationChain>, TonkWorkerError> {
+    Ok(tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(failure)?
         .handle()
         .delegations()
         .issued_to(agent.clone())
         .perform(&tonk.operator)
         .await
-        .map_err(failure)
+        .map_err(failure)?
+        .into_iter()
+        .map(|UcanDelegation(chain)| chain)
+        .collect())
 }
 
 /// Who issued a grant: this profile or its account root, which can
@@ -230,10 +197,12 @@ pub(super) enum Issued {
 
 /// The live grants to `agent`, each a one-certificate chain as retained,
 /// read from both places a grant may be held: those this profile issued,
-/// and those a share link issued into the agent space.
+/// and those a share link issued into the agent space, which `space`
+/// records.
 pub(super) async fn grants(
     tonk: &TonkState,
     agent: &Did,
+    space: &AgentSpaceRecord,
 ) -> Result<Vec<(DelegationChain, Held, Issued)>, TonkWorkerError> {
     let now = Timestamp::now().to_unix();
     // The approval page issues from the profile today; the agreed design
@@ -244,9 +213,16 @@ pub(super) async fn grants(
     }
     let mut seen = std::collections::BTreeSet::new();
     let mut found = Vec::new();
-    for held in [Held::AgentSpace, Held::Profile] {
-        for delegation in retained(tonk, agent, held).await? {
-            let chain = delegation.0;
+    let in_space = space
+        .grants
+        .iter()
+        .map(|grant| grant.chain())
+        .collect::<Result<Vec<_>, _>>()?;
+    for (held, chains) in [
+        (Held::AgentSpace, in_space),
+        (Held::Profile, retained(tonk, agent).await?),
+    ] {
+        for chain in chains {
             let issued = if issuers.contains(chain.issuer()) {
                 Issued::Here
             } else if held == Held::AgentSpace {
@@ -271,7 +247,9 @@ pub(super) async fn grants(
 pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<AgentSummary>>, TonkWorkerError> {
-    let tonk = state.read().await;
+    // A clone, not a guard: an agent's space may be asked of its own
+    // worker.
+    let tonk = state.read().await.clone();
     let mut agents = Vec::new();
     let mut marked = Vec::new();
     for did in spaces(&tonk).await? {
@@ -279,9 +257,10 @@ pub async fn list(
             continue;
         }
         marked.push(did.clone());
+        let record = agent_space::read(&tonk, did.repo_key()).await?;
         let mut by_space =
             std::collections::BTreeMap::<String, (Did, bool, Option<u64>, bool)>::new();
-        for (chain, _, issued) in grants(&tonk, &did).await? {
+        for (chain, _, issued) in grants(&tonk, &did, &record).await? {
             let subject = chain.subject().unwrap().clone();
             let write = chain.ability().starts_with("/use/put");
             let expires = chain.expiration().map(|at| at.to_unix());
@@ -302,7 +281,7 @@ pub async fn list(
             // the agent space's directory names it then.
             let name = match name(&tonk, &subject).await {
                 Some(name) => Some(name),
-                None => directory_name(&tonk, &did, &subject).await,
+                None => record.names.get(subject.as_str()).cloned(),
             };
             let removal = withdraw::status(&key, subject.as_str());
             spaces.push(AgentSpaceAccess {
@@ -324,23 +303,16 @@ pub async fn list(
     }
     // An agent made before the profile held the mark gets it now, so the
     // palette can name it. The listing stands whether or not it lands.
-    if let Err(error) = mark_on_profile(&tonk, &marked).await {
+    if let Err(error) = mark_on_profile(&tonk, &marked, None).await {
         tonk_common::log!("agents: the profile did not take the agent marks: {error}");
     }
     Ok(Json(agents))
 }
 
-/// Mark each of `agents` as an agent on the profile too, on its
-/// directory entity, as its own space marks it: what the profile's
-/// `agent` concept reads, and so what the palette's "invite" can name.
-/// Writes only the marks the profile does not hold yet.
-pub(super) async fn mark_on_profile(
+/// The agents the profile marks as agents, by DID.
+async fn profile_marks(
     tonk: &TonkState,
-    agents: &[Did],
-) -> Result<(), TonkWorkerError> {
-    if agents.is_empty() {
-        return Ok(());
-    }
+) -> Result<std::collections::BTreeSet<String>, TonkWorkerError> {
     let session = tonk
         .reactor
         .profile_repository()
@@ -348,7 +320,7 @@ pub(super) async fn mark_on_profile(
         .acquire(&tonk.operator)
         .await
         .map_err(failure)?;
-    let held: std::collections::BTreeSet<String> = session
+    Ok(session
         .handle()
         .query()
         .select(Query::<AgentSpace> {
@@ -361,12 +333,26 @@ pub(super) async fn mark_on_profile(
         .map_err(failure)?
         .into_iter()
         .map(|row| row.this.to_string())
-        .collect();
+        .collect())
+}
+
+/// Mark each of `agents` as an agent on the profile too, on its
+/// directory entity, as its own space marks it: what the profile's
+/// `agent` concept reads, and so what the palette's "invite" can name.
+/// With `provider`, note which provider's apps they are for, which an app
+/// is offered an agent again by. Writes only what the profile does not
+/// hold yet.
+pub(super) async fn mark_on_profile(
+    tonk: &TonkState,
+    agents: &[Did],
+    provider: Option<&str>,
+) -> Result<(), TonkWorkerError> {
+    let held = profile_marks(tonk).await?;
     let missing: Vec<&Did> = agents
         .iter()
         .filter(|agent| !held.contains(agent.as_str()))
         .collect();
-    if missing.is_empty() {
+    if missing.is_empty() && provider.is_none() {
         return Ok(());
     }
     let mut transaction = tonk
@@ -376,6 +362,11 @@ pub(super) async fn mark_on_profile(
         .transaction();
     for agent in missing {
         transaction = transaction.assert(AgentSpace::new(agent.this()));
+    }
+    if let Some(provider) = provider {
+        for agent in agents {
+            transaction = transaction.assert(AgentProvider::new(agent.this(), provider));
+        }
     }
     transaction
         .commit()
@@ -412,7 +403,8 @@ pub async fn revoke(
 ) -> Result<Json<RevokeAnswer>, TonkWorkerError> {
     let tonk = state.read().await.clone();
     let agent = find(&tonk, &key).await?;
-    let (leaves, links): (Vec<_>, Vec<_>) = grants(&tonk, &agent)
+    let record = agent_space::read(&tonk, &key).await?;
+    let (leaves, links): (Vec<_>, Vec<_>) = grants(&tonk, &agent, &record)
         .await?
         .into_iter()
         .filter(|(chain, _, _)| chain.subject() == Some(&request.space))
@@ -436,16 +428,13 @@ pub async fn revoke(
     };
     let space = request.space.to_string();
     withdraw::note(&key, &space, Some(withdraw::Removal::Pending));
-    let asked = super::navigate::request_webauthn_with(
+    let asked = super::agent_session::ask_for_passkey(
         &client,
-        tonk_worker_api::WebAuthnKind::Custody,
-        Some(tonk_worker_api::CustodyIntent::RevokeAgent(
-            tonk_worker_api::AgentRevocation {
-                agent: key.clone(),
-                space: space.clone(),
-            },
-        )),
-        None,
+        tonk_schema::ceremony::REVOKE_AGENT,
+        tonk_worker_api::CustodyIntent::RevokeAgent(tonk_worker_api::AgentRevocation {
+            agent: key.clone(),
+            space: space.clone(),
+        }),
     )
     .await;
     if let Err(error) = asked {
@@ -464,11 +453,7 @@ async fn revoke_issued(
     space: &Did,
     leaves: Vec<(DelegationChain, Held, Issued)>,
 ) -> Result<(), TonkWorkerError> {
-    let repository = tonk
-        .profile
-        .space(space.repo_key())
-        .load()
-        .perform(&tonk.operator)
+    let repository = space_named(tonk, space.repo_key())
         .await
         .map_err(|_| TonkWorkerError::NotFound(format!("no space {}", space)))?;
     let remote = match resolve_remote_url(tonk, &repository).await? {
@@ -480,7 +465,7 @@ async fn revoke_issued(
         }
     };
     let profile = tonk.profile.did();
-    let from_agent_space = leaves.iter().any(|(_, held, _)| *held == Held::AgentSpace);
+    let mut forget = AgentSpaceChange::default();
     for (leaf, held, _) in leaves {
         let target = *leaf
             .proof_cids()
@@ -492,33 +477,28 @@ async fn revoke_issued(
             .push(certificate)
             .map_err(failure)?;
         publish_target(tonk, &remote, &path, &target).await?;
-        let session = match held {
-            Held::Profile => tonk
-                .reactor
-                .profile_repository()
-                .branch(&tonk.active_branch)
-                .acquire(&tonk.operator)
-                .await
-                .map_err(failure)?,
-            Held::AgentSpace => tonk
-                .reactor
-                .repository(agent.repo_key())
-                .branch(CONTENT_BRANCH)
-                .acquire(&tonk.operator)
-                .await
-                .map_err(failure)?,
-        };
-        session
-            .handle()
-            .delegations()
-            .retract(UcanDelegation(leaf))
-            .perform(&tonk.operator)
-            .await
-            .map_err(failure)?;
+        match held {
+            Held::Profile => {
+                tonk.reactor
+                    .profile_repository()
+                    .branch(&tonk.active_branch)
+                    .acquire(&tonk.operator)
+                    .await
+                    .map_err(failure)?
+                    .handle()
+                    .delegations()
+                    .retract(UcanDelegation(leaf))
+                    .perform(&tonk.operator)
+                    .await
+                    .map_err(failure)?;
+            }
+            Held::AgentSpace => forget.forget.push(agent_space::encode(&leaf)?),
+        }
     }
     // The hosted agent lists its spaces from the agent space: send the
     // removal there too. The access service already refuses the grant.
-    if from_agent_space {
+    if !forget.forget.is_empty() {
+        agent_space::change(tonk, agent.repo_key(), &forget).await?;
         tonk.sync_queue
             .mark_dirty(agent.repo_key(), super::sync::now_millis());
     }
@@ -580,6 +560,7 @@ mod tests {
     use super::*;
     use dialog_credentials::Ed25519Signer;
     use dialog_effects::storage::Directory;
+    use dialog_repository::RepositoryExt as _;
     use dialog_varsig::Principal as _;
     use std::sync::Arc;
     use tonk_invite::connection::{AgentAccess, DEFAULT_GRANT_TTL_SECONDS};
@@ -671,7 +652,8 @@ mod tests {
         // with the grant on its end.
         let tonk = state.read().await;
         let profile = tonk.profile.did();
-        for (leaf, _, _) in grants(&tonk, &agent).await? {
+        let record = agent_space::read(&tonk, agent.repo_key()).await?;
+        for (leaf, _, _) in grants(&tonk, &agent, &record).await? {
             let subject = leaf.subject().unwrap().clone();
             let path = ancestor(&tonk, &profile, &subject, &leaf).await?;
             assert_eq!(path.audience(), leaf.issuer());

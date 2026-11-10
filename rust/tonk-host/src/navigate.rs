@@ -176,7 +176,9 @@ pub fn request_contained_task(payload: &str) {
 /// this too, so an in-guest navigation stays a client-side route change.
 pub fn navigate_to(href: &str) {
     use wasm_bindgen::JsValue;
-    if crate::page_effect::forward("navigate", href) {
+    if crate::page_effect::forward("navigate", href)
+        || crate::authorization::answer_authorization(href)
+    {
         return;
     }
     let Some(win) = window() else {
@@ -253,7 +255,9 @@ pub fn reload_page() {
 /// has to load again to bind to the new one, and the address it was on
 /// (a sign-in callback, say) must not be reachable with Back.
 pub fn replace_page(href: &str) {
-    if crate::page_effect::forward("replace", href) {
+    if crate::page_effect::forward("replace", href)
+        || crate::authorization::answer_authorization(href)
+    {
         return;
     }
     if let Some(win) = window() {
@@ -273,6 +277,9 @@ pub fn replace_page(href: &str) {
 /// which tells the page that frames it instead.
 pub fn replace_route(href: &str) {
     use wasm_bindgen::JsValue;
+    if crate::authorization::answer_authorization(href) {
+        return;
+    }
     let Some(win) = window() else {
         return;
     };

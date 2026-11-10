@@ -54,13 +54,7 @@ pub(crate) async fn invite_agent(
     super::adopt::mount_on_first_use(&tonk, agent.repo_key()).await;
     super::adopt::mount_on_first_use(&tonk, repo).await;
     let agent = super::agents::find(&tonk, agent.repo_key()).await?;
-    let repository = tonk
-        .profile
-        .space(repo)
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| TonkWorkerError::NotFound(format!("space '{repo}': {error}")))?;
+    let repository = super::repository::space_named(&tonk, repo).await?;
     let subject = repository.did();
     // An agent reaches other agents only as contacts, never as spaces.
     if subject == agent || super::agents::is_agent(&tonk, &subject).await {

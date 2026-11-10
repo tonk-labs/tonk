@@ -7,8 +7,9 @@
 //! The embedder asks the page for the passkey, opens the account with it,
 //! and lends its key for one call of `lifecycle.authorize` with that
 //! context. In that call this worker does what the browser's worker did with
-//! the key it opened: delegates the account to a waiting device, purges the
-//! account, or mints the delegation a page asked for.
+//! the key it opened: delegates the account to a waiting device or an agent,
+//! purges the account, mints the delegation a page asked for, or opens an
+//! agent's key to withdraw what a share link gave it.
 
 use std::sync::{Mutex, PoisonError};
 
@@ -29,6 +30,8 @@ use url::Url;
 
 use super::ClientId;
 use super::account_deletion::readable_failure;
+use super::agent_session;
+use super::agents::withdraw;
 use super::ceremony::{
     approvable, delivered, grant_remote, report, report_authorization, report_working,
 };
@@ -126,6 +129,16 @@ pub async fn unauthorized(state: &AppState, message: &str) {
             drop(tonk);
             let _ = application::delegated(Err(message)).await;
         }
+        CustodyIntent::RevokeAgent(request) => {
+            withdraw::note(
+                &request.agent,
+                &request.space,
+                Some(withdraw::Removal::Failed {
+                    reason: message.to_owned(),
+                }),
+            );
+            report(&tonk, &pending.ceremony, ceremony_state::FAILED, message).await;
+        }
         _ => report(&tonk, &pending.ceremony, ceremony_state::FAILED, message).await,
     }
 }
@@ -160,6 +173,10 @@ pub async fn authorized(
             }
             minted.map(|_| ())
         }
+        CustodyIntent::AuthorizeAgent(authorization) => {
+            agent_session::authorized(state, persona, authorization, client.as_ref()).await
+        }
+        CustodyIntent::RevokeAgent(request) => withdraw::authorized(state, persona, request).await,
         other => Err(format!("{} is not done on this host", reason_for(&other))),
     };
     done.map_err(TonkWorkerError::Router)

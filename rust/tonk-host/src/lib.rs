@@ -86,6 +86,8 @@ mod http;
 #[cfg(target_arch = "wasm32")]
 pub use http::{delete_json, get_json, post_json};
 #[cfg(target_arch = "wasm32")]
+mod authorization;
+#[cfg(target_arch = "wasm32")]
 mod navigate;
 #[cfg(target_arch = "wasm32")]
 mod page_effect;

@@ -53,6 +53,7 @@ const ROUTES: &[&str] = &[
     "/api/profiles/activate",
     "/api/profiles/add",
     "/api/repository/{repo}",
+    "/api/repository/{repo}/agent",
     "/api/repository/{repo}/branch/{branch}/blob",
     "/api/repository/{repo}/branch/{branch}/blob/{entity}",
     "/api/repository/{repo}/branch/{branch}/claim/assert/{entity}/{attr_ns}/{attr_name}",

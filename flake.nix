@@ -456,6 +456,10 @@
                 '      header_up Host {upstream_hostport}' \
                 '    }' \
                 '  }' \
+                '  @oauth path /authorize /authorize/* /register /token /.well-known/oauth-*' \
+                '  handle @oauth {' \
+                "    reverse_proxy $SOCKET_ORIGIN" \
+                '  }' \
                 '  handle {' \
                 "    reverse_proxy 127.0.0.1:$TRUNK_PORT" \
                 '  }' \
@@ -974,6 +978,12 @@
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT
                   }
                   handle /customer/* {
+                      reverse_proxy localhost:$ACCESS_SERVICE_PORT
+                  }
+                  # The authorization server an app signing in over OAuth
+                  # talks to, on the app's own origin as deployed.
+                  @oauth path /authorize /authorize/* /register /token /.well-known/oauth-*
+                  handle @oauth {
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT
                   }
                   handle {

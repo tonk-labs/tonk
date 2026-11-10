@@ -1263,8 +1263,7 @@ concept!: &writer-note
         fixture.stop().await;
     }
 
-    /// The person removes access a share link gave their agent, with the
-    /// passkey: the account opens the agent's sealed key and the agent
+    /// The person removes access a share link gave their agent: the agent
     /// revokes, as the grants' audience, every leaf the link issued to
     /// it. The agent joined straight from the link; the person never
     /// joined the space. The access service then refuses the grants
@@ -1452,15 +1451,9 @@ concept!: &writer-note
         let (status, body) = evaluate(&reader, fixture.note("agent")).await;
         assert!(status.is_success(), "the agent writes: {status}: {body}");
 
-        // Another account's passkey opens nothing and revokes nothing.
-        let other = Ed25519Signer::generate().await.unwrap();
-        let refused = withdraw::withdraw(&*state.read().await, &other, &key, &space.did())
-            .await
-            .unwrap_err();
-        assert!(refused.contains("different account"), "{refused}");
-
         // A publication that fails leaves every grant listed to retry.
-        let failed = withdraw::withdraw(&*state.read().await, &root, &key, &space.did())
+        let revoker = Signer::from(agent_signer.clone());
+        let failed = withdraw::withdraw(&*state.read().await, &agent, &revoker, &space.did())
             .await
             .unwrap();
         assert!(failed.revoked.is_empty(), "{failed:?}");
@@ -1503,7 +1496,7 @@ concept!: &writer-note
                 .await
                 .unwrap();
         }
-        let done = withdraw::withdraw(&*state.read().await, &root, &key, &space.did())
+        let done = withdraw::withdraw(&*state.read().await, &agent, &revoker, &space.did())
             .await
             .unwrap();
         assert_eq!(done.revoked.len(), chains.len(), "{done:?}");

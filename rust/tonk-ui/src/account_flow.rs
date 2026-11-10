@@ -10942,4 +10942,184 @@ pub(crate) mod tests {
         creator.quit().await?;
         Ok(())
     }
+
+    /// A loopback callback, as an app's on this computer: the query of the
+    /// first request to `/callback`.
+    async fn app_callback() -> Result<(
+        String,
+        tokio::sync::oneshot::Receiver<std::collections::HashMap<String, String>>,
+    )> {
+        use axum::extract::{Query, State};
+        use std::collections::HashMap;
+
+        type Answer = std::sync::Arc<
+            std::sync::Mutex<Option<tokio::sync::oneshot::Sender<HashMap<String, String>>>>,
+        >;
+        async fn callback(
+            State(answer): State<Answer>,
+            Query(query): Query<HashMap<String, String>>,
+        ) -> &'static str {
+            if let Ok(mut answer) = answer.lock()
+                && let Some(sender) = answer.take()
+            {
+                let _ = sender.send(query);
+            }
+            "You can close this window."
+        }
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+        let url = format!(
+            "http://127.0.0.1:{}/callback",
+            listener.local_addr()?.port()
+        );
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let answer: Answer = std::sync::Arc::new(std::sync::Mutex::new(Some(sender)));
+        let app = axum::Router::new()
+            .route("/callback", axum::routing::get(callback))
+            .with_state(answer);
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Ok((url, receiver))
+    }
+
+    /// An app signing in over OAuth asks for an agent. The person approves it
+    /// with their passkey: the account delegates a space to the agent, the
+    /// agent's key signs its session, and the app redeems its code for that
+    /// session. The agent then lists among the person's agents, with the
+    /// access it was given.
+    #[dialog_common::test]
+    async fn it_approves_an_agent_an_app_asks_for(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "agent-approval@example.com").await?;
+        let key = create_space_awaiting_remote(&driver, "Shared With An Agent", true).await?;
+        let (callback, answered) = app_callback().await?;
+
+        // The app registers and starts its request, as an MCP host does.
+        driver.enter_default_frame().await?;
+        let started = driver
+            .execute_async(
+                r#"
+                const [callback, done] = [arguments[0], arguments[arguments.length - 1]];
+                const encode = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes)))
+                  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+                (async () => {
+                  const registered = await fetch('/register', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({
+                      client_name: 'Claude Code',
+                      redirect_uris: [callback],
+                      grant_types: ['authorization_code'],
+                      response_types: ['code'],
+                      token_endpoint_auth_method: 'none',
+                    }),
+                  });
+                  const client = await registered.json();
+                  const verifier = encode(crypto.getRandomValues(new Uint8Array(32)));
+                  const challenge = encode(
+                    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+                  const authorize = new URL('/authorize', location.origin);
+                  for (const [name, value] of Object.entries({
+                    response_type: 'code',
+                    client_id: client.client_id,
+                    redirect_uri: callback,
+                    code_challenge: challenge,
+                    code_challenge_method: 'S256',
+                    state: 'e2e',
+                    resource: `${location.origin}/mcp`,
+                  })) authorize.searchParams.set(name, value);
+                  return { client: client.client_id, verifier, authorize: authorize.href };
+                })().then(done, (error) => done({ error: String(error) }));
+                "#,
+                vec![serde_json::json!(callback)],
+            )
+            .await?
+            .json()
+            .clone();
+        let client = started["client"]
+            .as_str()
+            .with_context(|| format!("the app was not registered: {started}"))?
+            .to_owned();
+        let verifier = started["verifier"].as_str().unwrap_or_default().to_owned();
+        goto(&driver, started["authorize"].as_str().unwrap_or_default()).await?;
+
+        // The approval page: name the agent, let it write the space, and
+        // approve, which asks for the passkey.
+        enter_guest(&driver).await?;
+        // The name starts as the app's; the person names the agent.
+        let name = wait_for_displayed(&driver, "[data-agent-name]").await?;
+        name.clear().await?;
+        name.send_keys("E2E agent").await?;
+        click(&driver, "[data-agent-next]:not([disabled])").await?;
+        click(
+            &driver,
+            &format!(".agent-space[data-key=\"{key}\"] [data-access=\"write\"]"),
+        )
+        .await?;
+        click(&driver, "[data-agent-approve]").await?;
+        driver.enter_default_frame().await?;
+
+        // The page goes back to the app with a code, and the app redeems it.
+        let query = tokio::time::timeout(Duration::from_secs(120), answered)
+            .await
+            .context("the page never went back to the app")??;
+        assert_eq!(query.get("state").map(String::as_str), Some("e2e"));
+        let code = query
+            .get("code")
+            .with_context(|| format!("the app was answered with no code: {query:?}"))?
+            .clone();
+        goto(&driver, env.tonk_web.as_str()).await?;
+        let redeemed = driver
+            .execute_async(
+                r#"
+                const [form, done] = [arguments[0], arguments[arguments.length - 1]];
+                form.resource = `${location.origin}/mcp`;
+                fetch('/token', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/x-www-form-urlencoded' },
+                  body: new URLSearchParams(form).toString(),
+                }).then(async (response) => done({ status: response.status, body: await response.json() }))
+                  .catch((error) => done({ error: String(error) }));
+                "#,
+                vec![serde_json::json!({
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "client_id": client,
+                    "redirect_uri": callback,
+                    "code_verifier": verifier,
+                })],
+            )
+            .await?
+            .json()
+            .clone();
+        let token = redeemed["body"]["access_token"]
+            .as_str()
+            .with_context(|| format!("the code did not redeem: {redeemed}"))?;
+        let session = tonk_identity::agent::decode_agent_session_token(token).await?;
+        let agent = session.agent().to_string();
+
+        let agents = get_json(&driver, "/api/agents").await?;
+        let listed = agents["body"]
+            .as_array()
+            .and_then(|agents| agents.iter().find(|listed| listed["did"] == agent))
+            .with_context(|| format!("the agent {agent} is not listed: {agents}"))?;
+        assert_eq!(listed["name"], "E2E agent");
+        let reached: Vec<_> = listed["spaces"]
+            .as_array()
+            .map(|spaces| {
+                spaces
+                    .iter()
+                    .map(|space| (space["key"].clone(), space["access"].clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            reached,
+            vec![(serde_json::json!(key), serde_json::json!("write"))],
+            "the agent reaches the space it was given, to write"
+        );
+        driver.quit().await?;
+        Ok(())
+    }
 }

@@ -26,6 +26,7 @@ use dialog_credentials::Ed25519Verifier;
 use dialog_credentials::ed25519::Extractable;
 use dialog_credentials::key::{ExtractableKey, KeyExport};
 use dialog_credentials::secret::{Context, SealedSecret, SecretExtractableDerive};
+use dialog_ucan::Parameters;
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::{DelegationBuilder, DelegationChain};
@@ -326,11 +327,6 @@ async fn delegation(key: &Key, audience: &str, access: &Access) -> Result<Vec<u8
 /// subject: whether `key` has authority over it is for the chain it extends
 /// to show.
 async fn delegated(key: &Key, audience: &str, access: &Access) -> Result<Vec<u8>, Error> {
-    if !access.arguments.is_empty() {
-        return Err(Error::Invalid(
-            "a delegation that constrains arguments is not made here yet".into(),
-        ));
-    }
     let audience: Did = audience
         .parse()
         .map_err(|_| Error::Invalid(format!("{audience} is not a DID")))?;
@@ -357,12 +353,24 @@ async fn delegated(key: &Key, audience: &str, access: &Access) -> Result<Vec<u8>
                 .map_err(|_| Error::Invalid(format!("the meta {} is no DAG-CBOR", entry.key)))
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
+    // Each argument the delegation must allow is held to the value it
+    // names, as a scope's parameters are.
+    let arguments = access
+        .arguments
+        .iter()
+        .map(|entry| {
+            serde_ipld_dagcbor::from_slice::<Ipld>(&entry.value)
+                .map(|value| (entry.key.clone(), value))
+                .map_err(|_| Error::Invalid(format!("the argument {} is no DAG-CBOR", entry.key)))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
     let signer = key.signer().await?;
     let mut builder = DelegationBuilder::new()
         .issuer(dialog_credentials::Signer::from(signer))
         .audience(&audience)
         .subject(subject)
         .command(command)
+        .policy(Parameters(arguments).policy())
         .meta(meta);
     if let Some(at) = access.not_before {
         builder = builder.not_before(timestamp(at)?);
@@ -1105,6 +1113,25 @@ mod tests {
             "the delegation holds until its expiration"
         );
         assert_eq!(delegation.not_before().map(|at| at.to_unix()), Some(1_000));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn it_holds_each_argument_to_the_value_it_names() {
+        let persona = Key::generated(Zeroizing::new([1; 32]));
+        let audience = Key::generated(Zeroizing::new([2; 32])).did();
+        let catalog = Ipld::String("index".to_owned());
+        let asked = Access {
+            arguments: vec![crate::bindings::sapling::kernel::credential::Argument {
+                key: "catalog".to_owned(),
+                value: serde_ipld_dagcbor::to_vec(&catalog).unwrap(),
+            }],
+            ..access(None)
+        };
+        let chain = delegated(&persona, &audience, &asked).await.unwrap();
+        let chain = DelegationChain::try_from(chain.as_slice()).unwrap();
+        let delegation = chain.proofs().next().unwrap();
+        let expected = Parameters([("catalog".to_owned(), catalog)].into()).policy();
+        assert_eq!(delegation.policy(), &expected);
     }
 
     #[tokio::test(flavor = "current_thread")]
