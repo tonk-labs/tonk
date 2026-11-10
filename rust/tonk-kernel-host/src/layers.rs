@@ -17,7 +17,13 @@ use dialog_effects::memory::prelude::{
     RetractCellExt as _, SpaceExt as _,
 };
 use dialog_effects::memory::{MemoryError, Version};
-use dialog_effects::storage::{Directory, Location};
+#[cfg(not(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "volatile")
+)))]
+use dialog_effects::storage::Directory;
+use dialog_effects::storage::Location;
 use dialog_effects::{MethodExt as _, UseExt as _, archive};
 use dialog_storage::resource::Resource as _;
 use tonk_kernel_world::naming;
@@ -64,13 +70,31 @@ impl Layers {
         let Some(root) = &self.under else {
             return location;
         };
-        let kept = match &location.directory {
-            Directory::Profile => "profile".to_owned(),
-            Directory::Current => "current".to_owned(),
-            Directory::Temp => "temp".to_owned(),
-            Directory::At(path) => format!("at/{}", path.trim_start_matches('/')),
-        };
-        Location::new(Directory::At(format!("{root}/{kept}")), location.name)
+        // A browser's `At` names a directory the person picked, which no
+        // layer is kept in: there, layers under a directory keep their own
+        // directory, each under a name of its own.
+        #[cfg(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            not(feature = "volatile")
+        ))]
+        {
+            Location::new(location.directory, format!("{root}~{}", location.name))
+        }
+        #[cfg(not(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            not(feature = "volatile")
+        )))]
+        {
+            let kept = match &location.directory {
+                Directory::Profile => "profile".to_owned(),
+                Directory::Current => "current".to_owned(),
+                Directory::Temp => "temp".to_owned(),
+                Directory::At(path) => format!("at/{}", path.trim_start_matches('/')),
+            };
+            Location::new(Directory::At(format!("{root}/{kept}")), location.name)
+        }
     }
 
     /// The subjects whose layers are kept: each a space's DID, which a

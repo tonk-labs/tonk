@@ -205,12 +205,7 @@ async fn run(
         .await
         .map_err(|error| JsError::new(&error))?
         .ok_or_else(|| JsError::new("the space pins no kernel"))?;
-    let mut timings = vec![("read".to_owned(), platform::now_millis() - started)];
-    let engine = Engine::with_backend(wcmp_wasm_core_web::Web::new())
-        .map_err(|error| JsError::new(&error.to_string()))?;
-    let mut kernel = Kernel::load(&engine, &bytes, layers)
-        .await
-        .map_err(|error| JsError::new(&error))?;
+    let read = platform::now_millis() - started;
     // The kernel serves this worker's origin.
     let location = Reflect::get(&js_sys::global(), &"location".into()).unwrap_or_default();
     let part = |name: &str| {
@@ -218,8 +213,59 @@ async fn run(
             .ok()
             .and_then(|value| value.as_string())
     };
-    if let (Some(protocol), Some(host)) = (part("protocol"), part("host")) {
-        kernel.serve_at(protocol.trim_end_matches(':'), &host);
+    let origin = match (part("protocol"), part("host")) {
+        (Some(protocol), Some(host)) => Some((protocol.trim_end_matches(':').to_owned(), host)),
+        _ => None,
+    };
+    let mut embedder = start(&bytes, layers, subject, origin, standing, message, persona).await?;
+    embedder.timings.insert(0, ("read".to_owned(), read));
+    Ok(embedder)
+}
+
+/// Boot the kernel `component` over the space `subject`, with its layers
+/// under `directory`, which nothing else may use, acting as `key` and
+/// holding `chain`, the delegation of the space to that key: a view's peer,
+/// which keeps the space in the browser of an MCP host, where no service
+/// worker of the space's origin runs. It serves the origin `origin`, as
+/// `(scheme, authority)`, which the view's requests name. Each message the
+/// kernel sends its embedder goes to `message`, as bytes.
+pub async fn boot_handed(
+    component: &[u8],
+    subject: String,
+    directory: String,
+    origin: (String, String),
+    key: Ed25519Signer,
+    chain: Vec<u8>,
+    message: Function,
+) -> Result<Embedder, JsError> {
+    start(
+        component,
+        Layers::under(directory),
+        subject,
+        Some(origin),
+        Standing::sealed(key, Some(chain)),
+        message,
+        None,
+    )
+    .await
+}
+
+async fn start(
+    bytes: &[u8],
+    layers: Layers,
+    subject: String,
+    origin: Option<(String, String)>,
+    standing: Standing,
+    message: Function,
+    persona: Option<(Function, Function)>,
+) -> Result<Embedder, JsError> {
+    let engine = Engine::with_backend(wcmp_wasm_core_web::Web::new())
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    let mut kernel = Kernel::load(&engine, bytes, layers)
+        .await
+        .map_err(|error| JsError::new(&error))?;
+    if let Some((scheme, authority)) = origin {
+        kernel.serve_at(&scheme, &authority);
     }
     let mut messages = kernel.messages();
     wasm_bindgen_futures::spawn_local(async move {
@@ -261,12 +307,11 @@ async fn run(
         .init(&subject, standing)
         .await
         .map_err(|error| JsError::new(&error))?;
-    timings.extend(
-        kernel
-            .timings
-            .iter()
-            .map(|(stage, millis)| ((*stage).to_owned(), *millis)),
-    );
+    let timings = kernel
+        .timings
+        .iter()
+        .map(|(stage, millis)| ((*stage).to_owned(), *millis))
+        .collect();
     let (kernel, driver) = kernel.serve();
     wasm_bindgen_futures::spawn_local(async move {
         if let Err(error) = driver.await {
@@ -371,6 +416,26 @@ fn access_to_js(access: Access) -> JsValue {
     let _ = Reflect::set(&object, &"expiration".into(), &seconds(access.expiration));
     let _ = Reflect::set(&object, &"reason".into(), &access.reason.into());
     object.into()
+}
+
+impl Embedder {
+    /// Hand the kernel the request `method` `path`, with `headers` and
+    /// `body`, and answer its status and body once it has written all of it.
+    pub async fn answer(
+        &self,
+        method: &str,
+        path: &str,
+        headers: Vec<(String, Vec<u8>)>,
+        body: &[u8],
+    ) -> Result<(u16, Vec<u8>), String> {
+        let head = self.kernel.request(method, path, headers, body).await?;
+        let mut answer = Vec::new();
+        let mut pieces = head.body;
+        while let Some(piece) = pieces.next().await {
+            answer.extend_from_slice(&piece);
+        }
+        Ok((head.status, answer))
+    }
 }
 
 #[wasm_bindgen]

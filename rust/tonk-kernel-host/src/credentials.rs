@@ -252,7 +252,16 @@ impl Standing {
     /// for the persona that key is, whose representative answers its first
     /// delegation with `handed`, and every one after it with none.
     pub fn handed(seed: [u8; 32], handed: Option<Vec<u8>>) -> Self {
-        let key = Key::generated(Zeroizing::new(seed));
+        Self::handed_to(Key::generated(Zeroizing::new(seed)), handed)
+    }
+
+    /// [`Standing::handed`], under `credential`, a key held as a signer, as
+    /// a view's peer holds a key the browser keeps.
+    pub fn sealed(credential: Ed25519Signer, handed: Option<Vec<u8>>) -> Self {
+        Self::handed_to(Key::Sealed(Box::new(credential)), handed)
+    }
+
+    fn handed_to(key: Key, handed: Option<Vec<u8>>) -> Self {
         let handed = Mutex::new(handed);
         let representative = Representation::remote(
             key.did(),
