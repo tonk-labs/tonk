@@ -123,6 +123,10 @@ pub(crate) mod space_worker;
 pub use join::{JoinRequest, JoinResponse};
 #[cfg(all(target_arch = "wasm32", feature = "persona"))]
 pub use merge::{failed, merged, refused};
+/// Spaces an earlier release kept in the app's origin, made again as
+/// copies, on a kernel.
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
+pub mod earlier_release;
 #[cfg(feature = "persona")]
 mod local_space_link;
 /// What a space's own worker asks of the persona, on a kernel.

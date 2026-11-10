@@ -80,6 +80,8 @@ watch = [
     "../tonk-prose/assets",
     "../tonk-table/assets",
     "../tonk-tree/src",
+    # What an earlier release kept, read for the page to bring over.
+    "../tonk-migrate/src",
     # The kernel a space runs, and the embedder that runs it: built by the
     # post-build hook into `_host/`.
     "../tonk-kernel",

@@ -893,19 +893,36 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     // reads.
     let remote = match remote {
         Some(remote) => Some(remote),
-        None => {
-            let tonk = env.state().read().await;
-            if super::customer::is_active(&tonk).await {
-                account_sync_remote(&tonk).await
-            } else {
-                None
-            }
-        }
+        None => account_default_remote(env.state()).await,
     };
     if let Some(remote) = remote
         && let Err(error) = enable_sync_inner(env.state(), &key, &remote).await
     {
         log!("CreateSpace '{}': remote attach failed: {}", key, error);
+    }
+}
+
+/// Where a space made without a remote of its own syncs: the account's own
+/// sync remote, while the account is active. Without one, the space stays
+/// local until it is shared, which is where provisioning belongs.
+#[cfg(feature = "persona")]
+async fn account_default_remote(state: &AppState) -> Option<String> {
+    let tonk = state.read().await.clone();
+    if super::customer::is_active(&tonk).await {
+        account_sync_remote(&tonk).await
+    } else {
+        None
+    }
+}
+
+/// Have `key` sync with the account's own remote, as a space created without
+/// one does, while the account is active.
+#[cfg(all(feature = "persona", any(test, target_arch = "wasm32")))]
+pub(super) async fn attach_account_remote(state: &AppState, key: &str) {
+    if let Some(remote) = account_default_remote(state).await
+        && let Err(error) = enable_sync_inner(state, key, &remote).await
+    {
+        log!("'{key}': remote attach failed: {error}");
     }
 }
 
@@ -959,6 +976,29 @@ async fn create_deferred_copy(
         seed.copy_from = Some(source.to_string())
     })
     .await?;
+    Ok(key)
+}
+
+/// Create a space that is to be a copy of `copy`, a space an earlier release
+/// kept, which the persona's host keeps until the new space's own worker asks
+/// for it in place of a space to copy.
+#[cfg(all(target_arch = "wasm32", feature = "persona"))]
+pub(super) async fn create_migrated_copy(
+    state: &AppState,
+    name: &str,
+    copy: &str,
+) -> Result<String, RepositoryError> {
+    let key = create_space_inner(state, name, None).await?;
+    let subject: Did = key
+        .parse()
+        .map_err(|e| RepositoryError::Internal(format!("'{key}' is not a space: {e:?}")))?;
+    let tonk = state.read().await.clone();
+    amend_seed(&tonk, &subject, |seed| {
+        seed.copy_from = Some(copy.to_owned())
+    })
+    .await?;
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    attach_account_remote(state, &key).await;
     Ok(key)
 }
 
@@ -10255,6 +10295,53 @@ mod invite_chain_tests {
             asked,
             [of_the_space("transact"), of_the_space("sync")],
             "the space's worker records the invite, then syncs"
+        );
+    }
+
+    /// A space an active account has made without a remote, as one brought
+    /// over from an earlier release is, syncs with the account's own remote,
+    /// as one created from the hub does.
+    #[dialog_common::test]
+    async fn it_attaches_the_account_remote_to_a_space_made_without_one() {
+        let (tonk, _service, _root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        // The account's emailed link was opened: the service serves it.
+        super::super::customer::record_customer_status(
+            &tonk,
+            tonk_account::customer::CustomerStatus::Active,
+            "person@example.com",
+            Some(remote.as_str()),
+        )
+        .await
+        .expect("the account is active");
+        let state: crate::router::AppState = std::sync::Arc::new(crate::StateLock::new(tonk));
+        let key = create_space_inner(&state, "Brought Over", None)
+            .await
+            .expect("the space creates");
+        let upstream = |state: crate::router::AppState, key: String| async move {
+            let tonk = state.read().await.clone();
+            let branch = tonk
+                .reactor
+                .repository(&key)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .expect("the content branch opens");
+            tonk_account::peer::upstream(branch.handle())
+        };
+        assert!(
+            upstream(state.clone(), key.clone()).await.is_none(),
+            "a space made without a remote starts local"
+        );
+
+        attach_account_remote(&state, &key).await;
+
+        assert!(
+            matches!(
+                upstream(state.clone(), key.clone()).await,
+                Some(dialog_repository::Upstream::Remote { .. })
+            ),
+            "the space syncs with the account's remote"
         );
     }
 

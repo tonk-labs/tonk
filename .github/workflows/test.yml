@@ -187,14 +187,19 @@ jobs:
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
       - name: Build and pack browser assets
         run: |
-          time nix build --accept-flake-config --no-link ".#$UI_PACKAGE"
+          time nix build --accept-flake-config --no-link ".#$UI_PACKAGE" .#tonk-ui-previous
           ui="$(nix eval --raw ".#$UI_PACKAGE.outPath")"
           time tar -czf e2e-browser.tar.gz -C "$ui" .
-          du -h e2e-browser.tar.gz
+          # The previous release, which a test serves before this one.
+          previous="$(nix eval --raw .#tonk-ui-previous.outPath)"
+          time tar -czf e2e-browser-previous.tar.gz -C "$previous" .
+          du -h e2e-browser.tar.gz e2e-browser-previous.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: e2e-browser
-          path: e2e-browser.tar.gz
+          path: |
+            e2e-browser.tar.gz
+            e2e-browser-previous.tar.gz
           compression-level: 0
           overwrite: true
           if-no-files-found: error
@@ -247,8 +252,11 @@ jobs:
           cat e2e-cli/paths.env >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/tonk-e2e-ui"
           tar -xzf e2e-browser/e2e-browser.tar.gz -C "$RUNNER_TEMP/tonk-e2e-ui"
+          mkdir -p "$RUNNER_TEMP/tonk-e2e-ui-previous"
+          tar -xzf e2e-browser/e2e-browser-previous.tar.gz -C "$RUNNER_TEMP/tonk-e2e-ui-previous"
           cat e2e-native/paths.env >> "$GITHUB_ENV"
           echo "TONK_UI_TEST_ARTIFACT=$RUNNER_TEMP/tonk-e2e-ui" >> "$GITHUB_ENV"
+          echo "TONK_UI_PREVIOUS_ARTIFACT=$RUNNER_TEMP/tonk-e2e-ui-previous" >> "$GITHUB_ENV"
       - name: 'Map tonk.network to loopback'
         # The harness serves the app at https://tonk.network:{port} and
         # maps the name inside Chrome via --host-resolver-rules. Native

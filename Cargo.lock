@@ -6096,6 +6096,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-migrate"
+version = "0.6.16-rc.1"
+dependencies = [
+ "axum",
+ "dialog-artifacts",
+ "dialog-capability",
+ "dialog-common",
+ "dialog-effects",
+ "dialog-peer",
+ "dialog-query",
+ "dialog-reactor",
+ "dialog-repository",
+ "dialog-storage",
+ "dialog-ucan-core",
+ "dialog-varsig",
+ "futures-util",
+ "getrandom 0.3.4",
+ "getrandom 0.4.3",
+ "js-sys",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tonk-account",
+ "tonk-schema",
+ "tonk-worker",
+ "tower",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "tonk-notation"
 version = "0.6.16-rc.1"
 dependencies = [

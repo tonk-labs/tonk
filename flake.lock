@@ -15,7 +15,39 @@
         "type": "github"
       }
     },
+    "crane_2": {
+      "locked": {
+        "lastModified": 1770419512,
+        "narHash": "sha256-o8Vcdz6B6bkiGUYkZqFwH3Pv1JwZyXht3dMtS7RchIo=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "2510f2cbc3ccd237f700bb213756a8f35c32d8d7",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
+        "type": "github"
+      }
+    },
     "dialog-db-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1787904139,
+        "narHash": "sha256-GCQRLeKw/HDO4ovlmMJqocPULH6yBPHjS8skv45vvLA=",
+        "owner": "dialog-db",
+        "repo": "dialog-db",
+        "rev": "2751e105d27bc3b82248da2ae8f4b7dec3d2a571",
+        "type": "github"
+      },
+      "original": {
+        "owner": "dialog-db",
+        "ref": "tonk-2026-08-28",
+        "repo": "dialog-db",
+        "type": "github"
+      }
+    },
+    "dialog-db-src_2": {
       "flake": false,
       "locked": {
         "lastModified": 1787904139,
@@ -50,7 +82,40 @@
         "type": "github"
       }
     },
+    "flake-utils_2": {
+      "inputs": {
+        "systems": "systems_2"
+      },
+      "locked": {
+        "lastModified": 1731533236,
+        "narHash": "sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=",
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "type": "github"
+      }
+    },
     "nix-filter": {
+      "locked": {
+        "lastModified": 1757882181,
+        "narHash": "sha256-+cCxYIh2UNalTz364p+QYmWHs0P+6wDhiWR4jDIKQIU=",
+        "owner": "numtide",
+        "repo": "nix-filter",
+        "rev": "59c44d1909c72441144b93cf0f054be7fe764de5",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "nix-filter",
+        "type": "github"
+      }
+    },
+    "nix-filter_2": {
       "locked": {
         "lastModified": 1757882181,
         "narHash": "sha256-+cCxYIh2UNalTz364p+QYmWHs0P+6wDhiWR4jDIKQIU=",
@@ -97,6 +162,38 @@
         "type": "github"
       }
     },
+    "nixpkgs-chromedriver_2": {
+      "locked": {
+        "lastModified": 1787930035,
+        "narHash": "sha256-PAiMlDmXJCbpPwkqAo2qSIunA5FrBPCpquLbrqYEYs4=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "40af305ea0ef20a0683718cfaf7635a8ac246246",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "master",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
+      "locked": {
+        "lastModified": 1783776592,
+        "narHash": "sha256-UgCQzxeWI75XM8G+hPrPh+MKzEPjG3SpAj7dtqSbksA=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "e7a3ca8092b61ff85b6a45bf863ea2b2d6a661b3",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "crane": "crane",
@@ -106,7 +203,8 @@
         "nixpkgs": "nixpkgs",
         "nixpkgs-chromedriver": "nixpkgs-chromedriver",
         "rust-overlay": "rust-overlay",
-        "wrangler-flake": "wrangler-flake"
+        "tonk-previous": "tonk-previous",
+        "wrangler-flake": "wrangler-flake_2"
       }
     },
     "rust-overlay": {
@@ -121,6 +219,27 @@
         "owner": "oxalica",
         "repo": "rust-overlay",
         "rev": "5f267b7f323a4d6df0b9c0e3eaa043cbe85386f2",
+        "type": "github"
+      },
+      "original": {
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "type": "github"
+      }
+    },
+    "rust-overlay_2": {
+      "inputs": {
+        "nixpkgs": [
+          "tonk-previous",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1770779462,
+        "narHash": "sha256-ykcXTKtV+dOaKlOidAj6dpewBHjni9/oy/6VKcqfzfY=",
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "rev": "8a53b3ade61914cdb10387db991b90a3a6f3c441",
         "type": "github"
       },
       "original": {
@@ -144,7 +263,69 @@
         "type": "github"
       }
     },
+    "systems_2": {
+      "locked": {
+        "lastModified": 1681028828,
+        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
+        "owner": "nix-systems",
+        "repo": "default",
+        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-systems",
+        "repo": "default",
+        "type": "github"
+      }
+    },
+    "tonk-previous": {
+      "inputs": {
+        "crane": "crane_2",
+        "dialog-db-src": "dialog-db-src_2",
+        "flake-utils": "flake-utils_2",
+        "nix-filter": "nix-filter_2",
+        "nixpkgs": "nixpkgs_2",
+        "nixpkgs-chromedriver": "nixpkgs-chromedriver_2",
+        "rust-overlay": "rust-overlay_2",
+        "wrangler-flake": "wrangler-flake"
+      },
+      "locked": {
+        "lastModified": 1793924268,
+        "narHash": "sha256-fNQjxmT1+sEWx/GkJq+XKeSVa7NGt62UaK8V0Kv+YcU=",
+        "ref": "refs/heads/main",
+        "rev": "bfb2d720d40bf4d5668eb29119ed75f81f5f8e9b",
+        "revCount": 718,
+        "type": "git",
+        "url": "https://github.com/tonk-labs/tonk"
+      },
+      "original": {
+        "rev": "bfb2d720d40bf4d5668eb29119ed75f81f5f8e9b",
+        "type": "git",
+        "url": "https://github.com/tonk-labs/tonk"
+      }
+    },
     "wrangler-flake": {
+      "inputs": {
+        "nixpkgs": [
+          "tonk-previous",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1788291525,
+        "narHash": "sha256-Od9X5EAWOKjy1+VgQPkwk/moqCI6kadEo7WtZJ54BTI=",
+        "owner": "emrldnix",
+        "repo": "wrangler",
+        "rev": "d95149fd0ce607837da05c2245df3fbdbc9d5dfd",
+        "type": "github"
+      },
+      "original": {
+        "owner": "emrldnix",
+        "repo": "wrangler",
+        "type": "github"
+      }
+    },
+    "wrangler-flake_2": {
       "inputs": {
         "nixpkgs": [
           "nixpkgs"

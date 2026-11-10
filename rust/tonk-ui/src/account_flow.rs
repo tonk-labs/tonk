@@ -71,6 +71,176 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// The deployment serves `generation`, a directory beside the one it
+    /// serves now, from now on: the browser keeps its profile, storage and
+    /// workers across the swap, as across a release.
+    #[cfg(unix)]
+    fn serve_generation(env: &TestEnvironment, generation: &str) -> Result<()> {
+        let next = env.deployment_root.join("current-next");
+        let current = env.deployment_root.join("current");
+        std::os::unix::fs::symlink(generation, &next)
+            .with_context(|| format!("link {}", next.display()))?;
+        std::fs::rename(&next, &current).with_context(|| format!("serve {generation}"))?;
+        Ok(())
+    }
+
+    /// Ask the app's page, as it is, for `script` run with `fetch` against
+    /// the app's own API, answering what it calls `done` with.
+    async fn in_app(driver: &WebDriver, script: &str) -> Result<serde_json::Value> {
+        driver.enter_default_frame().await?;
+        Ok(driver
+            .execute_async(script, Vec::new())
+            .await?
+            .json()
+            .clone())
+    }
+
+    /// A space the previous release kept on this device alone, in the app's
+    /// origin, which no origin of this release can read: once this release
+    /// is deployed, the app's page offers to bring it over, and on accepting
+    /// it is made again as a copy, listed in the profile and holding what
+    /// the earlier one held.
+    ///
+    /// The previous release is the one that shipped (`tonk-ui-previous`,
+    /// from `TONK_UI_PREVIOUS_ARTIFACT`), and the space is made through its
+    /// own API, as its own tests made spaces.
+    #[cfg(unix)]
+    #[dialog_common::test]
+    async fn it_brings_over_a_space_an_earlier_release_kept(env: TestEnvironment) -> Result<()> {
+        let previous = std::env::var("TONK_UI_PREVIOUS_ARTIFACT")
+            .context("TONK_UI_PREVIOUS_ARTIFACT names the previous release's web app")?;
+        std::os::unix::fs::symlink(&previous, env.deployment_root.join("generation-previous"))?;
+        serve_generation(&env, "generation-previous")?;
+
+        let driver = env.driver().await?;
+        // The previous release's worker serves its API on the app's origin.
+        let made = in_app(
+            &driver,
+            r#"const done = arguments[arguments.length - 1];
+               (async () => {
+                   const deadline = Date.now() + 60000;
+                   while (!navigator.serviceWorker.controller) {
+                       if (Date.now() > deadline) throw new Error("no worker took the page");
+                       await new Promise((resolve) => setTimeout(resolve, 250));
+                   }
+                   const call = async (method, path, body, type = "application/json") => {
+                       const response = await fetch(path, { method, headers: { "content-type": type }, body });
+                       const text = await response.text();
+                       if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${text}`);
+                       return text;
+                   };
+                   const created = JSON.parse(await call("PUT", "/api/repository/Old%20notes", "{}"));
+                   const key = created.name;
+                   const subject = key.startsWith("did:") ? key : `did:key:${key}`;
+                   const document = `concept!: &space-name
+  description: A space's name, as a space keeps it.
+  with:
+    name:
+      description: The name.
+      the: xyz.tonk.repo/name
+      as: text
+
+concept!: &note
+  description: A note.
+  with:
+    body:
+      description: What the note says.
+      the: xyz.tonk.test-note/body
+      as: text
+
+space-name!:
+  this: ${subject}
+  name: "Old notes"
+
+note!: &kept
+  body: "kept here"
+`;
+                   await call("POST", `/api/repository/${key}/branch/main/evaluate?transact=true`, document, "application/yaml");
+                   return key;
+               })().then((key) => done({ key }), (error) => done({ error: String(error) }));"#,
+        )
+        .await?;
+        let earlier = made["key"]
+            .as_str()
+            .with_context(|| format!("the previous release made no space: {made}"))?
+            .to_owned();
+
+        // This release is deployed; the page takes its worker on the next
+        // check for an update, and loads this release.
+        serve_generation(&env, "generation-a")?;
+        let updated = in_app(
+            &driver,
+            r#"const done = arguments[arguments.length - 1];
+               (async () => {
+                   const registration = await navigator.serviceWorker.getRegistration();
+                   const before = navigator.serviceWorker.controller;
+                   const changed = new Promise((resolve) =>
+                       navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true }));
+                   await registration.update();
+                   await Promise.race([changed, new Promise((resolve) => setTimeout(resolve, 30000))]);
+                   return navigator.serviceWorker.controller !== before;
+               })().then((changed) => done({ changed }), (error) => done({ error: String(error) }));"#,
+        )
+        .await?;
+        anyhow::ensure!(
+            updated["changed"] == true,
+            "this release's worker took the page: {updated}"
+        );
+        goto(&driver, env.tonk_web.as_str()).await?;
+        driver.enter_default_frame().await?;
+        let before = space_keys(&driver).await?;
+
+        wait_for_displayed(&driver, ".tonk-migration [data-bring]").await?;
+        click(&driver, ".tonk-migration [data-bring]").await?;
+        wait_for_text(
+            &driver,
+            ".tonk-migration [data-status]",
+            "Brought over 1 space. You'll find it in your hub.",
+        )
+        .await?;
+
+        let space = await_new_space(&driver, &before).await?;
+        anyhow::ensure!(
+            !earlier.ends_with(&space) && !space.ends_with(&earlier),
+            "the space brought over is a copy, not the earlier one ({earlier})"
+        );
+
+        // The space's own kernel is created from the copy the first time
+        // its origin loads.
+        goto(&driver, env.tonk_web.join(&format!("/{space}"))?.as_str()).await?;
+        let query = r#"concept!: &note
+  description: A note.
+  with:
+    body:
+      description: What the note says.
+      the: xyz.tonk.test-note/body
+      as: text
+
+note:
+"#;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let found = post_yaml(
+                &driver,
+                &format!("/api/repository/{space}/branch/main/evaluate?transact=false"),
+                query,
+            )
+            .await?;
+            let body = found["body"].as_str().unwrap_or_default().to_owned();
+            if body.contains("kept here") {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the copy does not hold the earlier space's note: {found}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// A space's DID as the app's address shows the space itself, framed by
     /// the app with no profile around it, reaching the person's persona
     /// through the profile's origin framed unseen beside it.

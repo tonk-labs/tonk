@@ -1,0 +1,51 @@
+[package]
+name = "tonk-migrate"
+description = "Reads the spaces an earlier release kept in the app's origin, for the kernel build to bring over as copies."
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "migrate"
+path = "src/bin/migrate.rs"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    "cfg(dialog_test_native_integration)",
+    "cfg(dialog_test_wasm_integration)",
+    'cfg(feature, values("web-integration-tests"))',
+] }
+
+[dependencies]
+dialog-capability = { workspace = true }
+dialog-common = { workspace = true }
+dialog-effects = { workspace = true }
+dialog-peer = { workspace = true }
+dialog-query = { workspace = true }
+dialog-reactor = { workspace = true }
+dialog-repository = { workspace = true }
+dialog-storage = { workspace = true }
+dialog-ucan-core = { workspace = true }
+dialog-varsig = { workspace = true }
+futures-util = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tonk-account = { workspace = true }
+tonk-schema = { workspace = true }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }
+getrandom_0_3 = { workspace = true }
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+axum = { workspace = true, features = ["tokio", "http1"] }
+dialog-artifacts = { workspace = true }
+dialog-common = { workspace = true, features = ["helpers"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+tonk-worker = { workspace = true, features = ["helpers"] }
+tower = { workspace = true }

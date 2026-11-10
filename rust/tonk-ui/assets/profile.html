@@ -52,8 +52,9 @@
                     // The app's page runs the passkey ceremonies, and tells
                     // the worker that holds the account, this origin's, what
                     // came of one by way of this frame: what a custody
-                    // ceremony derived, or that a ceremony was refused.
-                    var TO_WORKER = ["custody", "ceremony-refused"];
+                    // ceremony derived, or that a ceremony was refused. It
+                    // also hands over the spaces an earlier release kept.
+                    var TO_WORKER = ["custody", "ceremony-refused", "migrate"];
                     window.addEventListener(
                         "message",
                         function (e) {

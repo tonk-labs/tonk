@@ -1240,13 +1240,16 @@ function bindSpacePort(port, { repo }) {
                 if (reply.status !== 200) throw new Error(reply.text);
                 const fresh = reply.text === "null" ? null : reply.text;
                 // A space made as a copy starts from the space it copies, as
-                // that space's own kernel holds it now.
+                // that space's own kernel holds it now, or as an earlier
+                // release kept it, which this host keeps until the copy is.
                 const source = fresh ? JSON.parse(fresh).copy_from : null;
                 if (!source) {
                     port.postMessage({ id, fresh });
                     return;
                 }
-                const snapshot = await callSpace(source, { method: "GET", path: "/_kernel/snapshot", headers: [], body: null });
+                const snapshot = source.startsWith(MIGRATED)
+                    ? await migratedCopy(source, repo)
+                    : await callSpace(source, { method: "GET", path: "/_kernel/snapshot", headers: [], body: null });
                 if (snapshot.status !== 200) throw new Error(`the space to copy answered ${snapshot.status}`);
                 const revision64 = new Headers(snapshot.headers).get("x-tonk-revision");
                 const content = snapshot.body.buffer;
@@ -1256,6 +1259,7 @@ function bindSpacePort(port, { repo }) {
             if (data.seeded === true) {
                 const reply = await askPersona("POST", `/_kernel/seed/${repo}/settled`);
                 if (reply.status !== 200) throw new Error(reply.text);
+                await forgetMigrated(repo);
                 port.postMessage({ id, settled: true });
                 return;
             }
@@ -1280,6 +1284,58 @@ function bindSpacePort(port, { repo }) {
             port.postMessage({ id, error: String(error?.message ?? error) });
         }
     };
+}
+
+// A space an earlier release kept in the app's origin, which the app's page
+// read and handed over, is made again as a copy: this host keeps what it was
+// handed, under `migrated:{id}`, until the new space's kernel is created from
+// it.
+const MIGRATED = "migrated:";
+const MIGRATION_CACHE = "tonk-migration";
+const migratedPath = source => `/_host/migrated/${encodeURIComponent(source.slice(MIGRATED.length))}`;
+
+// Keep each space the app's page handed over, and have the persona make a
+// space as a copy of it. Answers the spaces made, and those that were not.
+async function bringOver({ spaces }, reply) {
+    const made = [];
+    const failed = [];
+    const cache = await caches.open(MIGRATION_CACHE);
+    log("bringing over", spaces?.length ?? 0, "space(s) an earlier release kept");
+    for (const { name, content, revision } of spaces ?? []) {
+        const copy = `${MIGRATED}${crypto.randomUUID()}`;
+        try {
+            const headers = { "x-tonk-revision": toBase64(new Uint8Array(revision)) };
+            await cache.put(migratedPath(copy), new Response(content, { headers }));
+            const answer = await askPersona("POST", "/_kernel/migrated", { name, copy });
+            if (answer.status !== 200) throw new Error(answer.text);
+            made.push({ name, space: JSON.parse(answer.text).space });
+            log("brought over", name, "as", made.at(-1).space);
+        } catch (error) {
+            log("could not bring over", name, String(error?.message ?? error));
+            await cache.delete(migratedPath(copy));
+            failed.push({ name, error: String(error?.message ?? error) });
+        }
+    }
+    reply?.postMessage({ made, failed });
+}
+
+// What the app's page handed over for `source`, as a space's snapshot
+// answers, for the space `repo` is created from.
+async function migratedCopy(source, repo) {
+    const kept = await caches.match(migratedPath(source), { cacheName: MIGRATION_CACHE });
+    if (!kept) return { status: 404, headers: [], body: new Uint8Array() };
+    migratedFor.set(repo, source);
+    return { status: 200, headers: [...kept.headers], body: new Uint8Array(await kept.arrayBuffer()) };
+}
+
+// Which handed-over copy a space was created from, until it settles.
+const migratedFor = new Map();
+
+async function forgetMigrated(repo) {
+    const source = migratedFor.get(repo);
+    if (!source) return;
+    migratedFor.delete(repo);
+    await (await caches.open(MIGRATION_CACHE)).delete(migratedPath(source));
 }
 
 // Ask the persona's kernel, as a page of this origin would: `{ status, text
@@ -1310,6 +1366,12 @@ self.addEventListener("message", event => {
     // person refused the ceremony.
     if (PROFILE && type === "custody") {
         event.waitUntil(custodyFrom(event.data, event.ports[0]));
+        return;
+    }
+    // Spaces an earlier release kept in the app's origin, which the app's
+    // page read, to be made again here.
+    if (PROFILE && type === "migrate") {
+        event.waitUntil(bringOver(event.data, event.ports[0]));
         return;
     }
     if (PROFILE && type === "ceremony-refused") {

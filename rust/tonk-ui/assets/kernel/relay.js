@@ -40,9 +40,10 @@
 
     // The app's page runs the passkey ceremonies, and tells the profile's
     // worker what came of one by way of this frame: what a custody ceremony
-    // derived, or that it was refused.
+    // derived, or that it was refused. It hands over the spaces an earlier
+    // release kept the same way.
     var profile = location.hostname.split(".")[0].indexOf("profile") === 0;
-    var TO_WORKER = ["custody", "ceremony-refused"];
+    var TO_WORKER = ["custody", "ceremony-refused", "migrate"];
     window.addEventListener(
         "message",
         function (e) {

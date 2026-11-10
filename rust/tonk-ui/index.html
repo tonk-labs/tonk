@@ -416,6 +416,27 @@
          copied as a file, named by its content in the guest manifest
          (`scripts/hash-guest.sh`), and linked by each site's own frame. -->
         <link data-trunk rel="copy-file" href="./styles.css" />
+        <!-- Spaces an earlier release kept in this origin, offered to bring
+         over (`assets/migration.mjs`). The bundle that reads them is built
+         as a `web` worker bundle, so it emits no <script> here: the page
+         imports `/migrate/migrate.js` only when that release left
+         something. -->
+        <link data-trunk rel="copy-file" href="./assets/migration.mjs" />
+        <link
+            data-trunk
+            rel="rust"
+            href="../tonk-migrate/Cargo.toml"
+            data-bin="migrate"
+            data-type="worker"
+            data-bindgen-target="web"
+            data-cargo-profile="wasm-release"
+            data-wasm-opt="z"
+            data-target-path="migrate"
+        />
+        <script type="module">
+            import { install } from "/migration.mjs";
+            install(window);
+        </script>
     </head>
 
     <body>

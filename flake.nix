@@ -19,6 +19,10 @@
       url = "github:emrldnix/wrangler";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # The last release whose worker kept every profile and space in the
+    # app's origin, built as it shipped, for the test that brings spaces
+    # over from it (`tonk-ui-previous`).
+    tonk-previous.url = "git+https://github.com/tonk-labs/tonk?rev=bfb2d720d40bf4d5668eb29119ed75f81f5f8e9b";
   };
 
   outputs =
@@ -32,6 +36,7 @@
       rust-overlay,
       nix-filter,
       wrangler-flake,
+      tonk-previous,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -507,17 +512,19 @@
               # CI supplies exact producer outputs, including on forks without
               # cache write credentials. Local runs build their inputs here.
               if [ -z "''${TONK_E2E_ARCHIVE:-}" ]; then
-                nix build .#tonk-cli .#tests-e2e .#tonk-ui-preview
+                nix build .#tonk-cli .#tests-e2e .#tonk-ui-preview .#tonk-ui-previous
                 TONK_BIN="$(nix eval .#tonk-cli.outPath --raw)/bin/tonk"
                 TONK_UI_TEST_ARTIFACT="$(nix eval .#tonk-ui-preview.outPath --raw)"
+                TONK_UI_PREVIOUS_ARTIFACT="$(nix eval .#tonk-ui-previous.outPath --raw)"
                 TONK_E2E_ARCHIVE="$(nix eval .#tests-e2e.outPath --raw)/tests-e2e.tar.zst"
               fi
-              export TONK_BIN TONK_UI_TEST_ARTIFACT
+              export TONK_BIN TONK_UI_TEST_ARTIFACT TONK_UI_PREVIOUS_ARTIFACT
               export TONK_UI_TEST_SERVER="${
                 self.packages.${system}.tonk-ui-test-server-runtime
               }/bin/tonk-ui-test-server"
               test -x "$TONK_BIN"
               test -f "$TONK_UI_TEST_ARTIFACT/index.html"
+              test -f "$TONK_UI_PREVIOUS_ARTIFACT/index.html"
               test -f "$TONK_E2E_ARCHIVE"
               export DO_NOT_TRACK=1
 
@@ -795,16 +802,16 @@
             (buildTrunkCrate {
               pname = "tonk-ui";
               trunkConfig = "./rust/tonk-ui/Trunk.toml";
-              # The builds Trunk runs for the three `rel="rust"` links in
+              # The builds Trunk runs for the `rel="rust"` links in
               # rust/tonk-ui/index.html, with the features `preBuild` adds.
               # Keep profiles, binaries and features in step with those links.
               depsBuildCommand = ''
                 cargo build --profile wasm-ui-release \
                   --manifest-path rust/tonk-ui/Cargo.toml --bin ui --features connection-invites
-                cargo build --profile wasm-worker-release \
-                  --manifest-path rust/tonk-ui/Cargo.toml --bin worker --features connection-invites
                 cargo build --profile wasm-release \
                   --manifest-path rust/tonk-guest/Cargo.toml --bin guest
+                cargo build --profile wasm-release \
+                  --manifest-path rust/tonk-migrate/Cargo.toml --bin migrate
               '';
               TONK_POSTHOG_KEY = posthogKey;
               postFixup = ''
@@ -826,6 +833,10 @@
           # same derivation. A renamed copy would hash differently and make
           # every deployment's Wrangler build compile the browser bundle again.
           tonk-ui-preview = tonk-ui;
+
+          # The previous release's web app, as it shipped, which an
+          # end-to-end test serves first and then replaces with this one.
+          tonk-ui-previous = tonk-previous.packages.${system}.tonk-ui;
 
           # Reduced browser optimization caused worker Wasm traps in account
           # flows. Share the established browser output between PR deployment

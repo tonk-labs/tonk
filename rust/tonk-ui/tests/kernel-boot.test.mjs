@@ -25,12 +25,15 @@ const ACCESS = { subject: SPACE, command: "/", arguments: [], reason: "serve the
 // of the kernel it pins.
 function space({
   pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, ships = null, origin = ORIGIN, boots = true, record = null,
+  answers = {},
 } = {}) {
   const listeners = {};
   const told = [];
   const booted = [];
   const handled = [];
   const sentHeaders = [];
+  // The body of each request the kernel was handed, as text.
+  const bodies = [];
   // What the host handed the kernel with `receive`.
   const received = [];
   const imported = [];
@@ -46,11 +49,14 @@ function space({
       void authorized.push({ handoff, remote, context: JSON.parse(new TextDecoder().decode(context)) }),
     stand: async (standing) => void stood.push(standing),
     receive: async (bytes) => void received.push(JSON.parse(new TextDecoder().decode(bytes))),
-    handle: async (method, path, headers = []) => {
+    handle: async (method, path, headers = [], body = new Uint8Array()) => {
       handled.push(`${method} ${path}`);
       sentHeaders.push(headers);
+      bodies.push(new TextDecoder().decode(body));
+      const answer = answers[`${method} ${path}`];
       const [status, text, type = "text/plain"] =
-        path === "/api/identify" ? [200, JSON.stringify({ did: "did:key:zKernel" })]
+        answer ? answer(JSON.parse(bodies.at(-1) || "null"))
+        : path === "/api/identify" ? [200, JSON.stringify({ did: "did:key:zKernel" })]
         : path === "/.kernel/adopt" ? [204, ""]
         : path === "/page" ? [200, '<!doctype html><html><head><title>A page</title></head><body>hi</body></html>', "text/html"]
         : path === "/early" ? [200, '<!-- made by hand -->\n<!DOCTYPE html><script>first()</script><html><head></head></html>', "text/html"]
@@ -113,6 +119,8 @@ function space({
     skipWaiting: async () => {},
     clients: { claim: async () => {}, matchAll: async () => pages, get: async (id) => (id === "page-1" ? pages[0] : undefined) },
   };
+  // The caches this worker keeps, as the test reads them.
+  let hostCaches;
   const context = vm.createContext({
     self,
     importScripts: (...urls) => void imported.push(...urls),
@@ -120,11 +128,11 @@ function space({
     fetch: network,
     performance,
     crypto,
-    URL, Request, Response, Headers, TextEncoder, TextDecoder, Uint8Array, Promise, ReadableStream, TransformStream,
+    URL, Request, Response, Headers, TextEncoder, TextDecoder, Uint8Array, Promise, ReadableStream, TransformStream, Blob,
     setTimeout, clearTimeout, queueMicrotask, btoa, atob,
     // The host's files this worker keeps; for a space that holds its
     // kernel, who it acts for, as its first start kept.
-    caches: (() => {
+    caches: (hostCaches = (() => {
       const kept = new Map([
         ...(holds
           ? [[new URL("/_host/standing.json", origin).href, Response.json({ representative: REPRESENTATIVE, persona: PERSONA })]]
@@ -136,9 +144,11 @@ function space({
       const cache = {
         match: async (request) => kept.get(key(request))?.clone(),
         put: async (request, response) => void kept.set(key(request), response),
+        delete: async (request) => kept.delete(key(request)),
+        keys: async () => [...kept.keys()],
       };
       return { open: async () => cache, match: async (request) => cache.match(request) };
-    })(),
+    })()),
     console: { log() {} },
   });
   vm.runInContext(SOURCE, context);
@@ -211,7 +221,7 @@ function space({
     new Promise((resolve) =>
       listeners.message({ data: { type: "booted" }, ports: [{ postMessage: resolve }], waitUntil() {} }),
     );
-  return { received, sentHeaders, listeners, imported, fetched, booted, handled, asked, told, kept, opened, authorized, stood, handPort, passDown, request, message, post, goOffline, started };
+  return { hostCaches, bodies, received, sentHeaders, listeners, imported, fetched, booted, handled, asked, told, kept, opened, authorized, stood, handPort, passDown, request, message, post, goOffline, started };
 }
 
 test("the bootloader loads the host's embedder", () => {
@@ -607,4 +617,64 @@ test("what the persona answered of a space ends once the space's kernel answers"
   answers = true;
   await profile.request(path, { method: "POST" });
   await assert.rejects(first, /answers now/, "the persona's answer ends");
+});
+
+// What the profile's host keeps of the spaces the app's page handed over. The
+// harness keeps every cache in one place, so the copies are told by path.
+const migrated = async (profile) =>
+  (await (await profile.hostCaches.open("tonk-migration")).keys()).filter((key) => key.startsWith("/_host/migrated/"));
+
+// A space an earlier release kept, as the app's page reads it: its content
+// and its revision's JSON.
+const KEPT = { name: "Old notes", content: new Uint8Array([1, 2, 3]).buffer, revision: new TextEncoder().encode('{"tree":"x"}').buffer };
+
+test("a space an earlier release kept is kept by the profile's host and made again by the persona", async () => {
+  const profile = space({
+    origin: "https://profile.tonk.test",
+    answers: { "POST /_kernel/migrated": () => [200, JSON.stringify({ space: SPACE })] },
+  });
+  const answer = await profile.post({ type: "migrate", spaces: [KEPT] });
+  assert.deepEqual(JSON.parse(JSON.stringify(answer)), { made: [{ name: "Old notes", space: SPACE }], failed: [] });
+  const asked = JSON.parse(profile.bodies[profile.handled.indexOf("POST /_kernel/migrated")]);
+  assert.equal(asked.name, "Old notes");
+  assert.match(asked.copy, /^migrated:/, "the persona names the copy as the host keeps it");
+  assert.equal((await migrated(profile)).length, 1, "the host keeps what it was handed");
+});
+
+test("a space the persona did not make leaves nothing kept, and says why", async () => {
+  const profile = space({
+    origin: "https://profile.tonk.test",
+    answers: { "POST /_kernel/migrated": () => [500, '"no space was made"'] },
+  });
+  const answer = await profile.post({ type: "migrate", spaces: [KEPT] });
+  assert.deepEqual(JSON.parse(JSON.stringify(answer)), { made: [], failed: [{ name: "Old notes", error: '"no space was made"' }] });
+  assert.deepEqual(await migrated(profile), []);
+});
+
+test("a space made as a copy of one an earlier release kept is created from what the host keeps", async () => {
+  let copy;
+  const profile = space({
+    origin: "https://profile.tonk.test",
+    answers: {
+      "POST /_kernel/migrated": (asked) => ((copy = asked.copy), [200, JSON.stringify({ space: SPACE })]),
+      [`GET /_kernel/seed/${SPACE}`]: () => [200, JSON.stringify({ name: "Old notes", copy_from: copy })],
+      [`POST /_kernel/seed/${SPACE}/settled`]: () => [200, "null"],
+    },
+  });
+  await profile.post({ type: "migrate", spaces: [KEPT] });
+  const host = { postMessage: (message) => host.answers.push(message), answers: [] };
+  profile.listeners.message({ data: { type: "space-port", repo: SPACE }, ports: [host], waitUntil() {} });
+  const until = async (id) => {
+    for (let i = 0; i < 100 && !host.answers.some((answer) => answer.id === id && !answer.ack); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    return host.answers.find((answer) => answer.id === id && !answer.ack);
+  };
+  await host.onmessage({ data: { id: 1, seed: true } });
+  const seeded = await until(1);
+  assert.deepEqual([...new Uint8Array(seeded.copy.content)], [1, 2, 3]);
+  assert.equal(atob(seeded.copy.revision64), '{"tree":"x"}');
+  await host.onmessage({ data: { id: 2, seeded: true } });
+  assert.equal((await until(2)).settled, true);
+  assert.deepEqual(await migrated(profile), [], "nothing is kept once the space is created");
 });

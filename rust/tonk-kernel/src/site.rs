@@ -7,7 +7,9 @@
 //! of the profile with the profile's page. A persona also
 //! answers its host, at `/_kernel/seed/{space}`, what a space it created is to
 //! be created from, and takes `POST /_kernel/seed/{space}/settled` once the
-//! space's own kernel did. A space's kernel answers `/_kernel/snapshot` with
+//! space's own kernel did, and makes a space as a copy of one an earlier
+//! release kept, which its host keeps, at `POST /_kernel/migrated`. A space's
+//! kernel answers `/_kernel/snapshot` with
 //! the space, for another to be made a copy of. A persona does for a space
 //! what its own kernel asks through their hosts and only the persona can:
 //! `POST /_kernel/space/{space}/invite`, `GET .../authority`,
@@ -52,6 +54,10 @@ pub enum Routed {
     /// The space, by its DID, was created from its seed.
     #[cfg(feature = "persona")]
     Settle(String),
+    /// Make a space as a copy of one an earlier release kept, which the
+    /// host keeps: the request names it and the space's name.
+    #[cfg(feature = "persona")]
+    Migrated(Request<Body>),
     /// The space, by its DID, for another to be made a copy of.
     Snapshot(String),
     /// What the kernel of the space, by its DID, asks the persona to do for
@@ -121,6 +127,10 @@ pub fn route(request: Request<Body>, site: &Site) -> Routed {
                     request,
                 };
             }
+        }
+        #[cfg(feature = "persona")]
+        if path == "/_kernel/migrated" && method == Method::POST {
+            return Routed::Migrated(request);
         }
         #[cfg(feature = "persona")]
         if let Some(rest) = path.strip_prefix("/_kernel/seed/") {

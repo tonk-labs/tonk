@@ -394,6 +394,8 @@ impl handler::Guest for Kernel {
             Routed::Seed(space) => seed_of(&space).await,
             #[cfg(feature = "persona")]
             Routed::Settle(space) => settle(&space).await,
+            #[cfg(feature = "persona")]
+            Routed::Migrated(request) => migrated(request).await,
             Routed::Snapshot(space) => snapshot(&space).await,
             #[cfg(feature = "persona")]
             Routed::SpaceAsk {
@@ -809,6 +811,35 @@ async fn settle(space: &str) -> axum::http::Response<axum::body::Body> {
     let settled = state.read().await.settle_seed(space).await;
     match settled {
         Ok(()) => site::answer(StatusCode::OK, &Value::Null),
+        Err(error) => site::answer(StatusCode::INTERNAL_SERVER_ERROR, &json!(error.to_string())),
+    }
+}
+
+/// Make a space as a copy of one an earlier release kept: the request names
+/// it, `copy`, as the host keeps it, and the space's `name`. Answers the new
+/// space's DID.
+#[cfg(feature = "persona")]
+async fn migrated(
+    request: axum::http::Request<axum::body::Body>,
+) -> axum::http::Response<axum::body::Body> {
+    let Some(state) = state() else {
+        return site::answer(StatusCode::SERVICE_UNAVAILABLE, &json!("booting"));
+    };
+    let body: Value = match request.into_body().collect().await {
+        Ok(collected) => serde_json::from_slice(&collected.to_bytes()).unwrap_or(Value::Null),
+        Err(error) => return site::answer(StatusCode::BAD_REQUEST, &json!(error.to_string())),
+    };
+    let (Some(name), Some(copy)) = (
+        body.get("name").and_then(Value::as_str),
+        body.get("copy").and_then(Value::as_str),
+    ) else {
+        return site::answer(
+            StatusCode::BAD_REQUEST,
+            &json!("a name and a copy are asked for"),
+        );
+    };
+    match tonk_worker::earlier_release::bring_over(&state, name, copy).await {
+        Ok(space) => site::answer(StatusCode::OK, &json!({ "space": space })),
         Err(error) => site::answer(StatusCode::INTERNAL_SERVER_ERROR, &json!(error.to_string())),
     }
 }

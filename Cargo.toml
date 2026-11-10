@@ -4,6 +4,7 @@ members = [
   "rust/dialog-reactor",
   "rust/tonk-access-service",
   "rust/tonk-account",
+  "rust/tonk-migrate",
   "rust/tonk-analytics",
   "rust/tonk-analyzer",
   "rust/tonk-cli",
