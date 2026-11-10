@@ -25,7 +25,10 @@ COMPONENT_FEATURES=""
 if grep -q 'data-bin="ui"[^>]*data-cargo-features="[^"]*connection-invites' "${TRUNK_HTML_FILE:-/dev/null}" 2>/dev/null; then
   COMPONENT_FEATURES="--features connection-invites"
 fi
-cargo run -q -p tonk-components $COMPONENT_FEATURES --bin write-components -- "$HOST_DIR"
+# The tool runs here, on the machine building, whatever target the build of
+# the app names (Nix names the browser's for the whole derivation).
+HOST_TARGET=$(rustc -vV | sed -n 's/^host: //p')
+cargo run -q -p tonk-components $COMPONENT_FEATURES --target "$HOST_TARGET" --bin write-components -- "$HOST_DIR"
 # A site keeps the kernel it pins, and a dist is built from nothing each
 # time. Where a store of kernels is named, the ones built here are kept in
 # it, the store is held to its newest few, and the dist serves every kernel
