@@ -705,6 +705,36 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         assert!(!error.contains("account login"), "{operation}: {error}");
         assert!(!String::from_utf8_lossy(&output.stdout).contains("Agent connection confirmed"));
     }
+    // Status still describes the stored grant, but no longer as if it
+    // worked: its live upstream fetch carries the service's refusal.
+    let mut command = cli(&home, &project);
+    command
+        .args(["--space", "agent", "status", "--json"])
+        .env("TONK_UNSAFE_ALLOW_DEVICE_ROOT", "1");
+    let output = run(command).await?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(status["accessKind"], "invite-backed");
+    assert!(
+        status["accessRejected"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("revoked")),
+        "{status}"
+    );
+    let mut command = cli(&home, &project);
+    command
+        .args(["--space", "agent", "status"])
+        .env("TONK_UNSAFE_ALLOW_DEVICE_ROOT", "1");
+    let output = run(command).await?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("access: invite-backed, rejected by the access service:"),
+        "{stdout}"
+    );
     let retained = tonk_cli::connections::open_bound(&entry.site, &binding, store.clone()).await?;
     assert_eq!(retained.profile.did(), recipient.did());
     assert_eq!(

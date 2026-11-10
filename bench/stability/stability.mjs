@@ -31,9 +31,11 @@ const config = JSON.parse(readFileSync(process.argv[2], "utf8"));
 const recording = process.argv.includes("--record");
 const LATENCY_MS = String(process.env.STABILITY_LATENCY_MS ?? 150);
 const only = process.env.STABILITY_SCENARIOS?.split(",");
+// How long a plain read may take while a sync stalls (write-while-sync-stalls).
+const READ_BUDGET_MS = 2_000;
 
-// The one place that talks to the network shaper. bench/trace/gate.mjs and
-// `tonk-perf link` both answer `GET /__gate?mode=...`.
+// The one place that talks to the network shaper: `tonk-perf link`'s
+// control server, in front of the page and the remote it syncs with.
 async function network(mode, extra = {}) {
   if (mode === "shaped") return network("latency", { ms: LATENCY_MS });
   const query = new URLSearchParams({ mode, ...extra });
@@ -57,6 +59,9 @@ const browser = await chromium.launch(
 );
 const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
 const page = await context.newPage();
+// A shaped network (slow3g, satellite) takes far longer than Playwright's
+// 30 s default to load a page; a timeout there is the harness's, not tonk's.
+page.setDefaultTimeout(Number(process.env.STABILITY_TIMEOUT_MS ?? 180_000));
 const cdp = await context.newCDPSession(page);
 await cdp.send("ServiceWorker.enable");
 let topLoads = 0;
@@ -163,6 +168,8 @@ async function scenario(name, body) {
   const unsettled = [observed.settled_ms].flat().some((ms) => ms === null);
   const values = {
     ...counters,
+    ...(observed.read ? { "harness.read_over_budget": observed.read.status !== 200 || observed.read.ms > READ_BUDGET_MS ? 1 : 0 } : {}),
+    ...(observed.pull_stalled !== undefined ? { "harness.sync_stalled": observed.pull_stalled ? 1 : 0 } : {}),
     "harness.top_loads": topLoads,
     "harness.started_settled": ready === null ? 0 : 1,
     "harness.unsettled": unsettled ? 1 : 0,
@@ -234,6 +241,58 @@ await scenario("restart-then-stall", async () => {
   await network("shaped");
   const settled_ms = await settled(60_000);
   return settled_ms === null ? { restarted_ms, settled_ms, unsettled: lastUnsettled } : { restarted_ms, settled_ms };
+});
+
+// A sync of space A hangs on a stalled remote while a writer arrives: the
+// page creates a space, which takes the worker's state for writing. The
+// state lock is write-preferring, so if the sync holds its guard across the
+// round trip, the writer queues behind it and every request after the
+// writer queues too. A local read of space B issued after the writer must
+// still answer within READ_BUDGET_MS (declared at the top). The read is a
+// claim select, which answers from the replica: `sync/status` fetches the
+// upstream head and would wait on the stalled remote whatever the lock does. Only the remote leg is stalled (`link=ucan`, which
+// `tonk-perf link` honours; bench/trace/gate.mjs stalls everything, and
+// cannot stall a sync that bypasses it, so there the scenario is vacuous).
+// bench/trace/gate.mjs has no `/stats`; only `tonk-perf link` can stall
+// the remote leg alone.
+const shapesRemote = await fetch(`${config.gate}/stats`)
+  .then((r) => (r.ok ? r.text() : "null"))
+  .then((body) => Array.isArray(JSON.parse(body)))
+  .catch(() => false);
+if (!shapesRemote) console.error("stability: write-while-sync-stalls skipped: the network cannot stall the remote alone");
+if (shapesRemote) await scenario("write-while-sync-stalls", async () => {
+  await network("stall", { link: "ucan" });
+  const timed = (label, init) =>
+    page.evaluate(
+      async ({ label, init }) => {
+        const t0 = performance.now();
+        const status = await fetch(label, init).then((r) => r.status, (e) => String(e));
+        return { status, ms: Math.round(performance.now() - t0) };
+      },
+      { label, init },
+    );
+  const pull = timed(`/api/repository/${spaceA}/branch/main/sync/pull`, { method: "POST" });
+  let pullDone = null;
+  pull.then(() => (pullDone = Date.now()));
+  const t0 = Date.now();
+  await page.waitForTimeout(2_000);
+  const pullStalled = pullDone === null;
+  const writer = timed(`/api/repository/stability-${Date.now()}`, { method: "PUT" });
+  await page.waitForTimeout(500);
+  const read = await timed(
+    `/api/repository/${spaceB}/branch/main/claim/select?the=${encodeURIComponent("tonk/repository/name")}`,
+    {},
+  );
+  await page.waitForTimeout(Math.max(0, Number(process.env.STABILITY_OUTAGE_MS ?? 20_000) - (Date.now() - t0)));
+  await network("shaped");
+  const [pulled, wrote] = await Promise.all([pull, writer]);
+  return {
+    pull: pulled,
+    writer: wrote,
+    read,
+    pull_stalled: pullStalled,
+    settled_ms: await settled(60_000),
+  };
 });
 
 await browser.close();

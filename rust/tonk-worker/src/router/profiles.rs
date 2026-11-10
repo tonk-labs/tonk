@@ -471,7 +471,7 @@ pub(crate) async fn sign_out(
 
     timing.next("state-lock");
     let (status, storage, name, profile, registry, profile_library) = {
-        let tonk = state.read().await;
+        let tonk = state.read().await.clone();
         // Clearing the provider writes into the account branch, so it
         // lands between the two halves of the withdrawal, while the
         // chain still proves this device may read what it writes into.
@@ -612,11 +612,11 @@ async fn promote(
             current.profile_swaps.clone(),
         )
     };
-    new_state.retiring = retiring;
-    new_state.profile_transition = profile_transition;
-    new_state.context_generation = context_generation;
-    new_state.clients = clients;
-    new_state.profile_swaps = profile_swaps.clone();
+    new_state.shared_mut().retiring = retiring;
+    new_state.shared_mut().profile_transition = profile_transition;
+    new_state.shared_mut().context_generation = context_generation;
+    new_state.shared_mut().clients = clients;
+    new_state.shared_mut().profile_swaps = profile_swaps.clone();
     if new_state.is_retiring() {
         new_state.reactor.shutdown();
     }
@@ -656,7 +656,7 @@ async fn promote(
     {
         let state = state.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let tonk = state.read().await;
+            let tonk = state.read().await.clone();
             super::account_state::ensure_account_state(&tonk).await;
         });
     }

@@ -133,24 +133,6 @@ async fn directory_agents(tonk: &TonkState) -> Result<Vec<Did>, TonkWorkerError>
         .collect())
 }
 
-/// Mark `agent` as an agent space in the account directory, which every
-/// device of the account reads.
-pub(super) async fn mark_in_directory(
-    tonk: &TonkState,
-    agent: &Did,
-) -> Result<(), TonkWorkerError> {
-    tonk.reactor
-        .profile_repository()
-        .branch(&tonk.active_branch)
-        .transaction()
-        .assert(AgentSpace::new(agent.to_string().parse().map_err(failure)?))
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(failure)?;
-    Ok(())
-}
-
 /// The account's agent spaces. An agent approved on another device is
 /// known here only by its directory mark, so it is mounted now. An agent
 /// space on this device without the directory mark gets it, so the other
@@ -169,15 +151,19 @@ async fn agent_spaces(tonk: &TonkState) -> Result<Vec<Did>, TonkWorkerError> {
         }
     }
     let mut agents = Vec::new();
+    let mut unmarked = Vec::new();
     for did in mounted {
         if marked.contains(&did) {
             agents.push(did);
         } else if is_agent(tonk, &did).await {
-            if let Err(error) = mark_in_directory(tonk, &did).await {
-                tonk_common::log!("agent {did} was not marked in the directory: {error}");
-            }
+            unmarked.push(did.clone());
             agents.push(did);
         }
+    }
+    // An agent made before the profile held the mark gets it now, so the
+    // other devices and the palette find it. The listing stands either way.
+    if let Err(error) = mark_on_profile(tonk, &unmarked).await {
+        tonk_common::log!("agents: the profile did not take the agent marks: {error}");
     }
     Ok(agents)
 }
@@ -349,7 +335,9 @@ pub(super) async fn grants(
 pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<AgentSummary>>, TonkWorkerError> {
-    let tonk = state.read().await;
+    // A clone, not a guard: an agent space another device approved is
+    // mounted here, which pulls it over the network.
+    let tonk = state.read().await.clone();
     let mut agents = Vec::new();
     for did in agent_spaces(&tonk).await? {
         let mut by_space =
@@ -398,6 +386,61 @@ pub async fn list(
     Ok(Json(agents))
 }
 
+/// Mark each of `agents` as an agent on the profile too, on its
+/// directory entity, as its own space marks it: what the profile's
+/// `agent` concept reads, and so what the palette's "invite" can name.
+/// Writes only the marks the profile does not hold yet.
+pub(super) async fn mark_on_profile(
+    tonk: &TonkState,
+    agents: &[Did],
+) -> Result<(), TonkWorkerError> {
+    if agents.is_empty() {
+        return Ok(());
+    }
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(failure)?;
+    let held: std::collections::BTreeSet<String> = session
+        .handle()
+        .query()
+        .select(Query::<AgentSpace> {
+            this: Term::var("this"),
+            kind: Term::from(tonk_schema::agent::agent_space_kind()),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(failure)?
+        .into_iter()
+        .map(|row| row.this.to_string())
+        .collect();
+    let missing: Vec<&Did> = agents
+        .iter()
+        .filter(|agent| !held.contains(agent.as_str()))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let mut transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .transaction();
+    for agent in missing {
+        transaction = transaction.assert(AgentSpace::new(agent.this()));
+    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(failure)?;
+    Ok(())
+}
+
 /// What [`revoke`] answers: whether a passkey removal is under way.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -423,7 +466,7 @@ pub async fn revoke(
     client: Option<axum::Extension<super::ClientId>>,
     Json(request): Json<RevokeRequest>,
 ) -> Result<Json<RevokeAnswer>, TonkWorkerError> {
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
     let agent = find(&tonk, &key).await?;
     let (leaves, links): (Vec<_>, Vec<_>) = grants(&tonk, &agent)
         .await?
@@ -818,7 +861,7 @@ mod tests {
                 Some("Claude"),
             )
             .await;
-            mark_in_directory(&tonk, &agent).await?;
+            mark_on_profile(&tonk, std::slice::from_ref(&agent)).await?;
             assert!(!super::super::join::find_replica_for_subject(&tonk, &agent).await?);
         }
 

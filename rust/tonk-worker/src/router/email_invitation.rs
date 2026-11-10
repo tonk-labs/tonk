@@ -14,7 +14,7 @@ fn unavailable() -> TonkWorkerError {
     TonkWorkerError::Conflict("Delivery could not be confirmed. Retry the same invitation.".into())
 }
 
-async fn origin(tonk: &crate::TonkState) -> Result<Url, TonkWorkerError> {
+pub(super) async fn origin(tonk: &crate::TonkState) -> Result<Url, TonkWorkerError> {
     // A browser link belongs to its own deployment; native workers use the
     // selected account's attached provider. Never accept an arbitrary mail URL.
     if let Some(origin) = super::repository::worker_origin() {
@@ -125,7 +125,7 @@ async fn send(env: &CommandEnv, command: &SendEmailInvitation) -> Result<(), Ton
         return Err(unavailable());
     }
     let root = account(env, &command.account.0.to_string()).await?;
-    let tonk = env.state().read().await;
+    let tonk = env.state().read().await.clone();
     let origin = origin(&tonk).await?;
     let mut args = BTreeMap::from([
         ("invitation".into(), Promised::String(id.clone())),
@@ -171,7 +171,7 @@ async fn send(env: &CommandEnv, command: &SendEmailInvitation) -> Result<(), Ton
     args.clear();
     args.insert("invitation".into(), Promised::String(id.clone()));
     args.insert("original".into(), Promised::String(original));
-    let tonk = env.state().read().await;
+    let tonk = env.state().read().await.clone();
     let answer = call(&tonk, &root, &origin, "send", args).await?;
     if answer["state"] != "sent" {
         return Err(unavailable());

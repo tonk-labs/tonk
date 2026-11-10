@@ -867,6 +867,57 @@ impl Command for UnpublishSpace {
     type Output = ();
 }
 
+/// Let one of this account's agents read and write a space.
+///
+/// Delegates the space to the agent space's DID and keeps the chains in
+/// the agent space, with a directory entry naming the space, which is
+/// where the hosted agent lists what it can reach. Nothing is handed to
+/// anyone: the agent finds the space the next time it lists its spaces.
+///
+/// Routeless like `space/publish`: the command names its `space`.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct InviteAgent {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The agent space's subject DID.
+    pub agent: crate::domain::command::invite_agent::Agent,
+    /// The space to let it into.
+    pub space: crate::domain::command::invite_agent::Space,
+    /// When it was asked.
+    pub time: crate::domain::command::invite_agent::Time,
+}
+
+impl Command for InviteAgent {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Let the account registered under an email address read and write a
+/// space.
+///
+/// Resolves the address to the account's DID at the access service, the
+/// way signing in does, delegates the space to that DID as a scoped
+/// invite, and leaves the chain in the space as that account's ticket.
+/// Opening the space's address on any device of that account claims it.
+///
+/// Routeless like `space/publish`: the command names its `space`.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct InviteByEmail {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The address the account is registered under.
+    pub email: crate::domain::command::invite_email::Email,
+    /// The space to let it into.
+    pub space: crate::domain::command::invite_email::Space,
+    /// When it was asked.
+    pub time: crate::domain::command::invite_email::Time,
+}
+
+impl Command for InviteByEmail {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Register this profile's account as a customer of the access service.
 ///
 /// A command rather than a request: the outcome is the `AccountCustomer`

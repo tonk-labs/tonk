@@ -293,7 +293,9 @@ pub async fn put_repository(
     //
     // The spawned task takes an owned `AppState` (the lock is released
     // when `tonk` drops at the end of this scope) and re-acquires it.
+    let created = (*tonk).clone();
     drop(tonk);
+    provision_created_space(&created, &subject).await;
     let branches: Vec<String> = configuration.branch.keys().cloned().collect();
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     spawn_seed(state, display_name, key, subject, branches);
@@ -737,7 +739,7 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
                     "A duplicate cannot also have a seed URL".into(),
                 ))
             } else {
-                let tonk = env.state().read().await;
+                let tonk = env.state().read().await.clone();
                 duplication::prepare(&tonk, source).await
             };
             match result {
@@ -948,6 +950,39 @@ async fn report_profile_rename(
         .await
     {
         log!("ProfileRename: failed to publish result: {error}");
+    }
+}
+
+/// The Hub's rename dialog waits on this receipt to close or show why not.
+async fn report_repository_rename(
+    state: &AppState,
+    receipt: &dialog_artifacts::Entity,
+    status: &str,
+    detail: &str,
+) {
+    let tonk = state.read().await;
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .overlay()
+        .assert(
+            dialog_query::the!("xyz.tonk.repository-rename/status")
+                .of(receipt.clone())
+                .is(status.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .assert(
+            dialog_query::the!("xyz.tonk.repository-rename/detail")
+                .of(receipt.clone())
+                .is(detail.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .write()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("RenameRepository: failed to publish result: {error}");
     }
 }
 
@@ -1967,7 +2002,7 @@ async fn run_invite(
     use tonk_schema::domain::credential::{Link, Seed};
     use tonk_schema::{Invitation, InvitationExecution};
 
-    let tonk = env.state().read().await;
+    let tonk = env.state().read().await.clone();
 
     let repository = tonk
         .profile
@@ -2664,10 +2699,27 @@ impl dialog_capability::Provider<tonk_schema::command::ProfileRename>
             Ok(()) => ("renamed", "Display name saved."),
             Err(error) => {
                 log!("ProfileRename for repo '{}' failed: {}", key, error);
-                ("failed", "Couldn't save your display name. Try again.")
+                ("failed", profile_rename_failure_detail(&error))
             }
         };
         report_profile_rename(self.state(), &command.this, status, detail).await;
+    }
+}
+
+/// What the name chip tells the user when a [`ProfileRename`] fails.
+///
+/// A linked account whose state is not ready yet (most often an email that
+/// has not been verified) refuses the rename; retrying cannot help, so say
+/// what will. Any other failure keeps the generic retry hint, since its
+/// message is a diagnostic rather than something to show.
+///
+/// [`ProfileRename`]: tonk_schema::command::ProfileRename
+pub(crate) fn profile_rename_failure_detail(error: &TonkWorkerError) -> &'static str {
+    match error {
+        TonkWorkerError::AccountStateUnavailable(_) => {
+            "Please verify your email using the verification link we sent before changing your display name."
+        }
+        _ => "Couldn't save your display name. Try again.",
     }
 }
 
@@ -2681,7 +2733,7 @@ async fn run_profile_rename(
     env: &crate::router::CommandEnv,
     name: &str,
 ) -> Result<(), TonkWorkerError> {
-    let tonk = env.state().read().await;
+    let tonk = env.state().read().await.clone();
     crate::router::account_state::rename_display_name(&tonk, name).await?;
 
     // Prompt an immediate push so peers see the new name without waiting for
@@ -2746,8 +2798,11 @@ impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
     async fn execute(&self, command: tonk_schema::command::RenameRepository) {
         use tonk_schema::prelude::DidExt as _;
 
+        const REFUSED: &str = "This space can't be renamed from here.";
+
         let Ok(did) = command.space.0.to_string().parse::<dialog_varsig::Did>() else {
             log!("RenameRepository: unparseable target space, skipping");
+            report_repository_rename(self.state(), &command.this, "failed", REFUSED).await;
             return;
         };
         // `repo_key()` is the FULL DID, not a suffix.
@@ -2758,6 +2813,7 @@ impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
                 self.origin().repo,
                 repo
             );
+            report_repository_rename(self.state(), &command.this, "failed", REFUSED).await;
             return;
         }
         {
@@ -2766,6 +2822,8 @@ impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
             let tonk = self.state().read().await;
             if let Err(error) = require_real_space(&tonk, &did).await {
                 log!("RenameRepository '{}' refused: {}", repo, error);
+                drop(tonk);
+                report_repository_rename(self.state(), &command.this, "failed", REFUSED).await;
                 return;
             }
         }
@@ -2773,13 +2831,18 @@ impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
 
         let result = run_rename_repository(self, &repo, &command.name.0).await;
         let failure_detail = result.as_ref().err().map(ToString::to_string);
-        if rename_outcome(result) == RenameOutcome::Failed {
-            log!(
-                "RenameRepository for repo '{}' failed: {}",
-                repo,
-                failure_detail.unwrap_or_default()
-            );
-        }
+        let (status, detail) = match rename_outcome(result) {
+            RenameOutcome::Renamed => ("renamed", "Space renamed."),
+            RenameOutcome::Failed => {
+                log!(
+                    "RenameRepository for repo '{}' failed: {}",
+                    repo,
+                    failure_detail.unwrap_or_default()
+                );
+                ("failed", "Couldn't rename this space. Try again.")
+            }
+        };
+        report_repository_rename(self.state(), &command.this, status, detail).await;
     }
 }
 
@@ -2912,7 +2975,7 @@ impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::r
         // device's own authority. The passkey belongs to deleting the
         // ACCOUNT, which is a different command.
         {
-            let tonk = self.state().read().await;
+            let tonk = self.state().read().await.clone();
             // The account's home service: a command has no request behind
             // it to carry one, and the space was provided where the
             // account syncs, which for a browser signed in through another
@@ -3006,6 +3069,13 @@ pub(crate) async fn remove_space_inner(
     state: &AppState,
     subject: &Did,
 ) -> Result<(), RepositoryError> {
+    // Syncs hold no guard over the state across their round trips, so the
+    // write guards below no longer wait for one of this space to finish.
+    // Its gate does: closing it waits out every pull, push and sync of the
+    // space in flight, and keeps a new one from starting until the space
+    // is gone. Only this space's syncs wait; nothing else does.
+    let gate = state.read().await.sync_queue.gate(subject.repo_key());
+    let _closed = gate.write().await;
     {
         let tonk = state.write().await;
         if let Err(error) = require_real_space(&tonk, subject).await
@@ -3574,6 +3644,7 @@ pub(super) async fn create_space_from_seed(
     let configuration =
         RepositoryConfiguration::default().branch("main", BranchConfiguration::default());
 
+    let provisioning;
     let (subject, key, branches) = {
         let tonk = state.write().await;
 
@@ -3583,8 +3654,10 @@ pub(super) async fn create_space_from_seed(
         let subject = repository.did();
         let key = subject.repo_key().to_owned();
         let branches: Vec<String> = configuration.branch.keys().cloned().collect();
+        provisioning = (*tonk).clone();
         (subject, key, branches)
     };
+    provision_created_space(&provisioning, &subject).await;
 
     // Seed + flip to initialized once the lock is released (seeding is
     // the slow part; holding the lock would stall the page).
@@ -3610,6 +3683,9 @@ pub(super) async fn create_unseeded_space_from_seed(
     let tonk = state.read().await;
     let repository = create_repository_from_seed(&tonk, name, &configuration, seed).await?;
     let subject = repository.did();
+    let created = (*tonk).clone();
+    drop(tonk);
+    provision_created_space(&created, &subject).await;
     Ok((subject.repo_key().to_owned(), subject))
 }
 
@@ -3640,11 +3716,11 @@ pub(super) async fn enable_sync_inner(
     key: &str,
     remote: &str,
 ) -> Result<(), RepositoryError> {
-    // A read guard, as the other callers of the lock-free core take: the
-    // attach provisions the space with the access service and records the
-    // mount in the account directory, both round trips, and a write guard
-    // held across them stalls every other request.
-    let tonk = state.read().await;
+    // A clone, not a guard: the attach provisions the space with the
+    // access service and records the mount in the account directory, both
+    // round trips, and a guard held across them keeps a queued writer, and
+    // every request behind it, waiting on the service.
+    let tonk = state.read().await.clone();
     enable_sync_for_repository(&tonk, key, remote, true).await
 }
 
@@ -3657,8 +3733,8 @@ pub(super) async fn attach_provisioned_remote(
     key: &str,
     remote: &str,
 ) -> Result<(), RepositoryError> {
-    // A read lock, as in `create_unseeded_space_from_seed`.
-    let tonk = state.read().await;
+    // A clone, not a guard: the attach is a round trip, as above.
+    let tonk = state.read().await.clone();
     let provisioned = super::customer::is_active(&tonk).await;
     enable_sync_for_repository(&tonk, key, remote, !provisioned).await
 }
@@ -5877,30 +5953,10 @@ pub(super) async fn create_repository_from_seed(
     // access by pulling the account rather than by fetching an artifact.
     super::account_state::retain_space_delegation(tonk, &prefix).await;
 
-    // The billing half of the same act: provision the new space as a
-    // consumer of the access service, depositing the powerline as its
-    // consent. Best effort for the same reason retain is — a space is
-    // usable the moment its delegations exist locally.
-    //
-    // Only for an ACTIVE customer. A device has an account from first
-    // boot (the onboarding account), so "an account exists" says nothing
-    // about whether the access service will serve this subject: until
-    // the user enrols an email and confirms it, `/provider/add` refuses
-    // and the space would be left wired to a remote that answers 403 on
-    // every presign. A space created in that window is local-only by
-    // design, and the share button provisions it on demand.
-    if super::customer::is_active(tonk).await {
-        if let Err(error) =
-            super::customer::provision_or_defer(tonk, &repository.did(), &prefix, None).await
-        {
-            log!("consumer provisioning skipped: {error}");
-        }
-    } else {
-        log!(
-            "space '{}' created local-only: no active customer to provision it under",
-            repository.did()
-        );
-    }
+    // The billing half of the same act, provisioning the space with the
+    // access service, is a round trip to that service, so it is not done
+    // here: a caller holds the state guard across this function. Each
+    // caller runs [`provision_created_space`] once it has let go.
 
     let prefix_bytes = prefix.to_bytes().map_err(|error| {
         RepositoryError::Internal(format!(
@@ -5933,6 +5989,37 @@ pub(super) async fn create_repository_from_seed(
     .await?;
 
     Ok(repository)
+}
+
+/// Provision a space [`create_repository`] just made as a consumer of the
+/// access service, depositing its root delegation as the consent.
+///
+/// A round trip to that service, so the caller passes a clone of the state
+/// rather than a guard over it: a create that held the guard here kept
+/// every other request waiting on the service, as long as its timeout.
+///
+/// Only for an ACTIVE customer. A device has an account from first boot
+/// (the onboarding account), so "an account exists" says nothing about
+/// whether the access service will serve this subject: until the user
+/// enrols an email and confirms it, `/provider/add` refuses and the space
+/// would be left wired to a remote that answers 403 on every presign. A
+/// space created in that window is local-only by design, and the share
+/// button provisions it on demand.
+///
+/// Best effort, as the rest of the create is not: a space is usable the
+/// moment its delegations exist locally, and a retryable refusal is queued.
+pub(crate) async fn provision_created_space(tonk: &TonkState, subject: &Did) {
+    if !super::customer::is_active(tonk).await {
+        log!("space '{subject}' created local-only: no active customer to provision it under");
+        return;
+    }
+    let prefix = match space_root_prefix(tonk, subject).await {
+        Ok(prefix) => prefix,
+        Err(error) => return log!("consumer provisioning skipped: {error}"),
+    };
+    if let Err(error) = super::customer::provision_or_defer(tonk, subject, &prefix, None).await {
+        log!("consumer provisioning skipped: {error}");
+    }
 }
 
 /// Provision owned `subject` under this profile's account, repairing a stale
@@ -7384,7 +7471,8 @@ pub async fn get_repository(
     }
     log!("GET /api/repository/{}", name);
 
-    let tonk = state.read().await;
+    // A clone, not a guard: a first-use mount can pull over the network.
+    let tonk = state.read().await.clone();
 
     // First use of a directory-listed space this device has not
     // replicated mounts it on demand — same lazy adoption the query
@@ -8260,7 +8348,7 @@ pub async fn attach_remote(
 
     // A read guard: provisioning is a round trip to the access service,
     // and the remote configuration commits serialize on their branch.
-    let tonk = state.read().await;
+    let tonk = state.read().await.clone();
 
     let repository = tonk
         .profile
@@ -9555,6 +9643,26 @@ mod rename_outcome_tests {
     fn it_maps_a_successful_rename_to_renamed() {
         assert_eq!(rename_outcome(Ok(())), RenameOutcome::Renamed);
     }
+
+    #[dialog_common::test]
+    fn it_asks_for_verification_when_a_display_name_rename_precedes_activation() {
+        let detail = super::profile_rename_failure_detail(
+            &crate::TonkWorkerError::AccountStateUnavailable("not ready".into()),
+        );
+        assert!(detail.contains("verify your email"), "{detail}");
+        assert!(
+            !detail.contains("not ready"),
+            "the diagnostic must not leak: {detail}"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_keeps_the_generic_retry_hint_for_other_display_name_failures() {
+        let detail = super::profile_rename_failure_detail(&crate::TonkWorkerError::Internal(
+            "failed to persist profile name override: boom".into(),
+        ));
+        assert_eq!(detail, "Couldn't save your display name. Try again.");
+    }
 }
 
 #[cfg(test)]
@@ -9804,30 +9912,32 @@ route!: &foreign-profile-route
         let session = crate::session::open(&profile)
             .await
             .expect("test session opens");
-        TonkState {
-            seed_upgrades: Default::default(),
-            profile: profile.clone(),
-            operator: session.operator,
-            storage,
-            session_expires_at: session.expires_at,
-            profile_name: name.clone(),
-            active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
-            reactor: crate::Reactor::new(profile.credential().clone()),
-            admission: Default::default(),
-            reject_admission_content_reads: Default::default(),
-            retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            view_bindings: Default::default(),
-            bridges: Default::default(),
-            sync_queue: Default::default(),
-            commands: crate::router::command_providers(),
-            clients: Default::default(),
-            account_keys: Default::default(),
-            profile_library: Default::default(),
-            registry: crate::device::Registry::new(name, directory),
-            profile_transition: Default::default(),
-            context_generation: Default::default(),
-            profile_swaps: Default::default(),
-        }
+        TonkState::from_parts(
+            session.operator,
+            session.expires_at,
+            crate::router::repository::PROFILE_BRANCH.to_owned(),
+            crate::worker::TonkShared {
+                seed_upgrades: Default::default(),
+                profile: profile.clone(),
+                storage,
+                profile_name: name.clone(),
+                reactor: crate::Reactor::new(profile.credential().clone()),
+                admission: Default::default(),
+                reject_admission_content_reads: Default::default(),
+                retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                view_bindings: Default::default(),
+                bridges: Default::default(),
+                sync_queue: Default::default(),
+                commands: crate::router::command_providers(),
+                clients: Default::default(),
+                account_keys: Default::default(),
+                profile_library: Default::default(),
+                registry: crate::device::Registry::new(name, directory),
+                profile_transition: Default::default(),
+                context_generation: Default::default(),
+                profile_swaps: Default::default(),
+            },
+        )
     }
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -10012,8 +10122,11 @@ route!: &foreign-profile-route
         let tonk = test_state().await;
         install_recorded(&tonk, PROFILE_LIBRARY_URL, CURRENT).await;
 
-        let wire = tonk_template::resolve::view_bindings_query("tonk:space")
-            .expect("bindings query builds");
+        // The Hub view binds sign-out declaratively; the
+        // space list's own forms all dispatch through receipt-aware
+        // elements, so it carries no bindings to read.
+        let wire =
+            tonk_template::resolve::view_bindings_query("tonk:hub").expect("bindings query builds");
         let query = wire
             .into_concept_query()
             .expect("bindings query is a concept query");
@@ -10028,7 +10141,7 @@ route!: &foreign-profile-route
         let rendered = serde_json::to_string(&rows).expect("rows serialize");
         assert!(
             !rows.is_empty(),
-            "the space view carries compiled bindings: {rendered}",
+            "the hub view carries compiled bindings: {rendered}",
         );
     }
 
@@ -10103,7 +10216,7 @@ route!: &foreign-profile-route
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
         while subscriber.receiver.try_recv().is_ok() {}
 
-        tonk.profile_library = Default::default();
+        tonk.shared_mut().profile_library = Default::default();
         let outcome = reconcile_profile_library(&tonk)
             .await
             .expect("profile library reconciles");
@@ -10263,7 +10376,7 @@ route!: &foreign-profile-route
             .await
             .expect("retained definition is damaged");
 
-        tonk.profile_library = Default::default();
+        tonk.shared_mut().profile_library = Default::default();
         let outcome = reconcile_profile_library(&tonk)
             .await
             .expect("damaged retained definition reconciles");
@@ -10400,7 +10513,7 @@ route!: &foreign-profile-route
         );
 
         let mut switched = test_state().await;
-        switched.profile_library = tonk.profile_library.clone();
+        switched.shared_mut().profile_library = tonk.profile_library.clone();
         reconcile_profile_library(&switched)
             .await
             .expect("a switched profile uses the running worker input");

@@ -407,7 +407,7 @@ impl dialog_capability::Provider<tonk_schema::command::PublishSpace> for crate::
             log!("space/publish: refused to target '{key}' from another space");
             return;
         }
-        let tonk = self.state().read().await;
+        let tonk = self.state().read().await.clone();
         if let Err(error) = publish(&tonk, &key).await {
             log!("space/publish '{key}' failed: {error}");
         }
@@ -432,7 +432,7 @@ impl dialog_capability::Provider<tonk_schema::command::UnpublishSpace>
             log!("space/unpublish: refused to target '{key}' from another space");
             return;
         }
-        let tonk = self.state().read().await;
+        let tonk = self.state().read().await.clone();
         if let Err(error) = unpublish(&tonk, &key).await {
             log!("space/unpublish '{key}' failed: {error}");
         }
@@ -783,6 +783,31 @@ mod tests {
                 assert!(again.renewed, "the second open finds it here");
             }
 
+            // A visitor who follows a link into one of the space's pages,
+            // percent-encoded as a normalizing deployment serves it, opens
+            // the same space: every route of it recovers access, not only
+            // its bare address.
+            let deep_link = format!(
+                "{}/space/{}/notebook/notebook%3A5d314db6-4bea-4c04-bd8a-0ef2be8a0b5d",
+                serving.origin().ascii_serialization(),
+                key.replace(':', "%3A")
+            );
+            let deep_reader = crate::router::command::tests::native::test_state().await;
+            {
+                let deep_reader = deep_reader.read().await;
+                let opened = crate::router::join::join_invite(&deep_reader, &deep_link)
+                    .await
+                    .expect("a visitor opens a published space from a route of it");
+                assert_eq!(opened.subject, space);
+                assert!(!opened.renewed, "the first open installs a replica");
+                assert!(
+                    crate::router::join::find_replica_for_subject(&deep_reader, &space)
+                        .await
+                        .expect("replica lookup"),
+                    "the deep link installed the space's replica"
+                );
+            }
+
             let tonk = state.read().await;
             unpublish(&tonk, &key)
                 .await
@@ -806,6 +831,19 @@ mod tests {
                         .await
                         .expect("replica lookup"),
                     "a refused visit installs no replica"
+                );
+                // From a route of the space it is refused the same way,
+                // with its reason, rather than leaving the page silently.
+                let refused = crate::router::join::join_invite(&newcomer, &deep_link)
+                    .await
+                    .err()
+                    .expect("an unpublished space does not open from a route of it");
+                assert_eq!(refused.kind(), tonk_worker_api::JoinFailureKind::Private);
+                assert!(
+                    !crate::router::join::find_replica_for_subject(&newcomer, &space)
+                        .await
+                        .expect("replica lookup"),
+                    "a refused deep link installs no replica"
                 );
             }
 
@@ -851,6 +889,192 @@ mod tests {
                     .expect("publications read")
                     .is_empty(),
                 "the record the bar reads goes with it"
+            );
+        }
+
+        let account_key = {
+            let tonk = state.read().await;
+            crate::router::account_state::require_ready_account_state(&tonk)
+                .await
+                .expect("the linked account is ready")
+                .key
+                .clone()
+        };
+        let tonk = std::sync::Arc::try_unwrap(state)
+            .unwrap_or_else(|_| panic!("the state has no other holders"))
+            .into_inner();
+        crate::router::account_state::tests::discard(tonk, &account_key);
+        drop(service);
+    }
+
+    /// Leave a `/use` grant on `space` for `account` as the ticket the
+    /// space keeps for it, as an invite to that account would.
+    async fn issue_account_ticket(
+        tonk: &crate::TonkState,
+        space: &dialog_varsig::Did,
+        account: &dialog_varsig::Did,
+        remote: &str,
+    ) {
+        let remote = url::Url::parse(remote).expect("the fixture remote is a URL");
+        let delegation: super::UcanDelegation = tonk
+            .profile
+            .access()
+            .claim(super::Subject::from(space.clone()).attenuate(super::Use))
+            .delegate(account.clone())
+            .meta(super::home_address_meta(&remote))
+            .perform(&tonk.operator)
+            .await
+            .expect("the founder delegates to the account");
+        tonk_account::ticket::issue(
+            super::SiteAddress::from(super::UcanAddress::new(remote.as_str())),
+            &delegation.into_chain(),
+            &tonk.operator,
+        )
+        .await
+        .expect("the space keeps the account's ticket");
+    }
+
+    /// A fresh visitor's account, the one its join claims for.
+    async fn visitor() -> (crate::router::AppState, dialog_varsig::Did) {
+        let state = crate::router::command::tests::native::test_state().await;
+        let (account, _) = crate::router::account::current_account(&*state.read().await)
+            .await
+            .expect("the visitor has an account");
+        (state, account)
+    }
+
+    /// Opening a space from its address claims the ticket the space keeps
+    /// for the visitor's account alongside its public one, and opens with
+    /// the account's when it has one:
+    ///
+    /// - neither: the space is private and nothing is installed;
+    /// - only the account's, on a private space: it opens, with the write
+    ///   the account was granted;
+    /// - only the public one: it opens to read, and only to read;
+    /// - both: it opens with the account's, so it can write.
+    ///
+    /// Each visitor is its own device, opening a link into one of the
+    /// space's pages.
+    #[dialog_common::test]
+    async fn it_opens_a_space_with_the_ticket_kept_for_the_visitors_account() {
+        use crate::router::public_access::{can, can_read};
+        let (tonk, service, root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        let recipient =
+            tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new([8u8; 32]))
+                .secret()
+                .did();
+        let grant =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &tonk.profile.did())
+                .await
+                .expect("the device grant mints");
+        crate::router::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "account-ticket-test".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().expect("the grant serializes")),
+                passkey: None,
+                encryption_key: Some(recipient.to_string()),
+            },
+        )
+        .await
+        .expect("the root persists");
+        let state: crate::router::AppState = std::sync::Arc::new(crate::StateLock::new(tonk));
+        let key = super::super::repository::create_space_inner(&state, "Shared", None)
+            .await
+            .expect("the space creates");
+        super::super::repository::enable_sync_inner(&state, &key, &remote)
+            .await
+            .expect("the remote attaches");
+        let space: dialog_varsig::Did = key.parse().expect("the key is the space's DID");
+        {
+            let tonk = state.read().await;
+            let branch = tonk
+                .reactor
+                .repository(&key)
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .expect("content branch opens");
+            branch
+                .handle()
+                .push()
+                .perform(&tonk.operator)
+                .await
+                .expect("the content reaches the service");
+        }
+        let serving = url::Url::parse(&remote).expect("the fixture remote is a URL");
+        let link = format!(
+            "{}/space/{}/notebook/notebook%3A5d314db6-4bea-4c04-bd8a-0ef2be8a0b5d",
+            serving.origin().ascii_serialization(),
+            key.replace(':', "%3A")
+        );
+
+        // Neither ticket: private, and nothing installed.
+        let (stranger, _) = visitor().await;
+        {
+            let stranger = stranger.read().await;
+            let refused = crate::router::join::join_invite(&stranger, &link)
+                .await
+                .err()
+                .expect("a space with no ticket for this visitor does not open");
+            assert_eq!(refused.kind(), tonk_worker_api::JoinFailureKind::Private);
+            assert!(
+                !crate::router::join::find_replica_for_subject(&stranger, &space)
+                    .await
+                    .expect("replica lookup"),
+                "a refused visit installs no replica"
+            );
+        }
+
+        // Only the account's ticket, on a private space: it opens, writing.
+        let (invited, invited_account) = visitor().await;
+        issue_account_ticket(&*state.read().await, &space, &invited_account, &remote).await;
+        {
+            let invited = invited.read().await;
+            let opened = crate::router::join::join_invite(&invited, &link)
+                .await
+                .expect("the account's ticket opens a private space");
+            assert_eq!(opened.subject, space);
+            assert!(!opened.renewed, "the first open installs a replica");
+            assert!(
+                can(&invited, &space, "/use/set").await,
+                "it opens with the write the account was granted"
+            );
+        }
+
+        {
+            let tonk = state.read().await;
+            super::publish(&tonk, &key)
+                .await
+                .expect("the founder publishes");
+        }
+
+        // Only the public ticket: it opens, to read only.
+        let (reader, _) = visitor().await;
+        {
+            let reader = reader.read().await;
+            crate::router::join::join_invite(&reader, &link)
+                .await
+                .expect("the public ticket opens a published space");
+            assert!(can_read(&reader, &space).await, "the reader reads");
+            assert!(
+                !can(&reader, &space, "/use/set").await,
+                "the public ticket grants no write"
+            );
+        }
+
+        // Both: the account's ticket wins, so it writes.
+        let (member, member_account) = visitor().await;
+        issue_account_ticket(&*state.read().await, &space, &member_account, &remote).await;
+        {
+            let member = member.read().await;
+            crate::router::join::join_invite(&member, &link)
+                .await
+                .expect("a published space opens");
+            assert!(
+                can(&member, &space, "/use/set").await,
+                "the account's ticket is preferred over the public one"
             );
         }
 
