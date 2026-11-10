@@ -14,9 +14,7 @@
 //!   each space classified by the grants in force;
 //! - `GET /api/repository/{agent}/agent/chains?space=`: [`space_chains`],
 //!   the grants in force for one space, which a writer of that space boots
-//!   its kernel with;
-//! - `POST /api/repository/{agent}/agent/grant`: [`retain_agent_grants`],
-//!   what joining a space from the chat keeps.
+//!   its kernel with.
 
 use std::collections::BTreeMap;
 
@@ -297,65 +295,6 @@ async fn own_name(
     rows.into_iter().next().map(|row| row.name.0)
 }
 
-/// One granted space's directory entry in the agent space.
-#[derive(Debug, Deserialize)]
-pub(crate) struct DirectoryEntry {
-    pub space: Did,
-    pub name: Option<String>,
-    pub address: Option<String>,
-}
-
-/// What the approval does to the agent space `agent` as `tonk` holds it:
-/// retain each of `chains` in its `main` with
-/// [`tonk_account::delegations::retain_space_delegation`], as an account
-/// retains `space -> account`, and record each entry of `directory` as
-/// [`tonk_schema::SpaceName`] and [`tonk_schema::SpaceHomeAddress`] on
-/// the space's entity. The caller pushes.
-pub(crate) async fn retain_agent_grants(
-    tonk: &TonkState,
-    agent: &Did,
-    chains: &[dialog_ucan_core::DelegationChain],
-    directory: &[DirectoryEntry],
-) -> Result<(), TonkWorkerError> {
-    let internal = |error: &dyn std::fmt::Display| TonkWorkerError::Internal(error.to_string());
-    let key = agent.to_string();
-    let session = tonk
-        .reactor
-        .repository(&key)
-        .branch(GRANTS_BRANCH)
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|error| internal(&error))?;
-    for chain in chains {
-        tonk_account::delegations::retain_space_delegation(session.handle(), chain, &tonk.operator)
-            .await
-            .map_err(|error| internal(&error))?;
-    }
-    if directory.is_empty() {
-        return Ok(());
-    }
-    let mut transaction = tonk
-        .reactor
-        .repository(&key)
-        .branch(GRANTS_BRANCH)
-        .transaction();
-    for entry in directory {
-        if let Some(name) = &entry.name {
-            transaction = transaction.assert(tonk_schema::SpaceName::new(&entry.space, name));
-        }
-        if let Some(address) = &entry.address {
-            transaction =
-                transaction.assert(tonk_schema::SpaceHomeAddress::new(&entry.space, address));
-        }
-    }
-    transaction
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| internal(&error))?;
-    Ok(())
-}
-
 /// `chain` as a base64url container.
 fn encode(chain: &DelegationChain) -> Result<String, TonkWorkerError> {
     let bytes = Container::from(chain)
@@ -403,40 +342,6 @@ pub async fn chains(
     let chains = space_chains(&tonk, &agent(&repo)?, &space).await?;
     let encoded = chains.iter().map(encode).collect::<Result<Vec<_>, _>>()?;
     Ok(Json(json!({ "chains": encoded })))
-}
-
-/// What `POST .../agent/grant` keeps: chains, each a base64url container
-/// the writer checked reaches the agent space, and the directory entries of
-/// the spaces they grant.
-#[derive(Debug, Deserialize)]
-pub struct GrantRequest {
-    chains: Vec<String>,
-    #[serde(default)]
-    directory: Vec<DirectoryEntry>,
-}
-
-/// `POST /api/repository/{repo}/agent/grant`: retain the grants and the
-/// directory entries a join from the chat gives the agent space `repo`.
-/// The caller pushes.
-#[handler]
-pub async fn grant(
-    State(state): State<AppState>,
-    Path(repo): Path<String>,
-    Json(request): Json<GrantRequest>,
-) -> Result<Json<Value>, TonkWorkerError> {
-    let chains = request
-        .chains
-        .iter()
-        .map(|encoded| {
-            Container::decode(encoded.as_bytes())
-                .ok()
-                .and_then(|container| DelegationChain::try_from(container).ok())
-                .ok_or_else(|| TonkWorkerError::Router("a grant is not a delegation chain".into()))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let tonk = state.read().await.clone();
-    retain_agent_grants(&tonk, &agent(&repo)?, &chains, &request.directory).await?;
-    Ok(Json(json!({})))
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

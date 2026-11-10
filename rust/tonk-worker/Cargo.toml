@@ -32,10 +32,6 @@ web-integration-tests = []
 # way the service worker does. It is a dev-dependency for this crate's
 # own tests; downstream crates enabling `helpers` need it as a real one.
 helpers = ["dep:tower"]
-# Keep every space in memory instead of IndexedDB/OPFS on wasm, so the
-# worker runs where those do not exist (a Cloudflare Worker). No effect on
-# native builds. Exposes `hosted`.
-volatile-storage = []
 
 [dependencies]
 tonk-macros = { workspace = true }
@@ -113,8 +109,8 @@ reqwest = { workspace = true }
 wit-bindgen = { workspace = true }
 tonk-kernel-world = { workspace = true }
 
-# A worker in memory on a JavaScript host (`volatile-storage`, the hosted
-# agent's Cloudflare Worker): its tasks, clock and console are the host's.
+# A worker on a JavaScript host: its tasks, clock and console are the
+# host's.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
 getrandom_0_3 = { workspace = true }
@@ -125,6 +121,9 @@ web-sys = { workspace = true, features = ["console"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 axum = { workspace = true, features = ["tokio", "http1"] }
+# The hosted agent's writer, whose kernels run on Wasmtime, which the
+# interplay tests drive against this crate's own grant handling.
+tonk-mcp = { workspace = true, features = ["integration-tests"] }
 
 [dev-dependencies]
 tonk-template = { workspace = true }

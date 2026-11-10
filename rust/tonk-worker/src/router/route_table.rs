@@ -56,7 +56,6 @@ const ROUTES: &[&str] = &[
     "/api/repository/{repo}/agent",
     "/api/repository/{repo}/agent/access",
     "/api/repository/{repo}/agent/chains",
-    "/api/repository/{repo}/agent/grant",
     "/api/repository/{repo}/branch/{branch}/blob",
     "/api/repository/{repo}/branch/{branch}/blob/{entity}",
     "/api/repository/{repo}/branch/{branch}/claim/assert/{entity}/{attr_ns}/{attr_name}",

@@ -1054,8 +1054,8 @@ impl<K: Kernels> SpaceWriter<K> {
 
     /// Grant the agent space, as the approval does: retain `chains` and
     /// record `directory` (each `{space, name, home}`), and push.
-    #[cfg(test)]
-    pub(crate) async fn approve(
+    #[cfg(any(test, feature = "integration-tests"))]
+    pub async fn approve(
         &self,
         chains: &[DelegationChain],
         directory: Value,

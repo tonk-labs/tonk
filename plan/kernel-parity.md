@@ -207,16 +207,24 @@ kernel build does not do yet, in the order it lands:
      names whom it acts for and where the space syncs), writes, pushes, and a
      fresh writer pulls what it pushed (`tonk-kernel-host`'s
      `hosted_writer.rs`, natively against a local access service).
-   - **Left to do:** the MCP front, with the token and the sessions, out of
-     `tonk-worker` into a crate of its own; the writer's operations
-     (`agent_access`, `space_chains`, `join_link`, `outline`) as routes of the
-     space kernel; the Durable Object in `tonk-host-worker` as the writer over
-     a `HostedKernel` (lock, pull, write, push, a fresh kernel when a push does
-     not land), with the chain `space -> agent -> session -> writer`; the
-     recorded modules bundled by `worker-build`; `tonk-view-peer` the same; an
-     MCP tool call end to end; then `hosted` and `volatile-storage` deleted
-     from `tonk-worker`. Until then `hosted` stays, and the Worker can only be
-     built from `main`.
+   - **Done.** The MCP front, the agent token and the sessions are their
+     own crate, `tonk-mcp`. The writer's operations are routes of the space
+     kernel (`/agent/access`, `/agent/chains`, `/outline`, `/delegations`).
+     The Durable Object is a `SpaceWriter` over a `HostedKernel` (lock, pull,
+     write, push, a fresh kernel when a push does not land), with the chain
+     `space -> agent -> session -> writer`. `scripts/bundle.sh` bundles the
+     recorded modules before `worker-build`. Under `wrangler dev --local` an
+     MCP tool call answers end to end (`scripts/smoke.mjs`): the first
+     `tonk_query` 575 ms (411 of it booting the kernel), a warm one 31 ms,
+     `tonk_evaluate` 76 ms. The upload is 26.2 MB, 8.4 MB gzipped. The view
+     peer is the space's kernel too, booted in the browser as the view's key
+     with the delegations `tonk_view_access` signs, whose last hop now names
+     `acts.for` and `home.address`. In Chrome it boots in 448 ms and pulls,
+     reads, writes and pushes. `hosted` and `volatile-storage` are deleted
+     from `tonk-worker`.
+   - **Left to do:** the hosted-agent e2e (`tests/e2e/hosted-agent`) on a
+     preview; the local stack does not serve `/view-peer/`. CPU per request
+     in a deployed Worker.
 3. **Migration.** A person with spaces from `main` is offered to bring them
    over. Only the app origin can read what `main` kept (one IndexedDB per
    space DID, its profile under its DID, keys in `dialog.credential`), so the

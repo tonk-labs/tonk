@@ -1122,9 +1122,7 @@ mod tests {
             &grants,
         )
         .await?;
-        let verified = super::super::hosted::mcp::verify(&issued.token)
-            .await
-            .map_err(anyhow::Error::msg)?;
+        let verified = tonk_identity::agent::decode_agent_session_token(&issued.token).await?;
         assert_eq!(verified.agent(), &agent.did());
         // What the agent space's writer classifies each space by: the
         // commands the chains to the agent space end in.

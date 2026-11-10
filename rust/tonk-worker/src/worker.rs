@@ -20,23 +20,13 @@ use dialog_varsig::Did;
 #[cfg(feature = "persona")]
 use tokio::sync::Mutex;
 
-/// In-memory storage on WASM, for a hosted peer in an isolate that has
-/// neither IndexedDB nor OPFS (a Cloudflare Worker). Nothing survives the
-/// state it was opened for.
-#[cfg(all(
-    target_arch = "wasm32",
-    target_os = "unknown",
-    feature = "volatile-storage"
-))]
-pub type DefaultSpace = dialog_storage::provider::storage::VolatileSpace;
-
 /// Default storage type — filesystem on native.
 #[cfg(not(target_arch = "wasm32"))]
 pub type DefaultSpace = dialog_storage::provider::storage::NativeSpace;
 
 /// Default storage type on WASI: the layers and credentials of the kernel's
 /// host.
-#[cfg(all(target_arch = "wasm32", not(feature = "volatile-storage")))]
+#[cfg(target_arch = "wasm32")]
 pub type DefaultSpace = tonk_kernel_world::space::KernelSpace;
 
 /// Concrete operator type for the default storage backend.
@@ -496,22 +486,6 @@ pub(crate) async fn boot_state_with_profile_library(
     })?;
     crate::router::identity::follow_signed_in_account(&state).await?;
     Ok(state)
-}
-
-/// [`boot_state`] without the profile bootstrap: no meta commit, no
-/// profile library, no account overlays, no signed-in account to follow.
-///
-/// For a hosted peer, whose profile is a throwaway signing identity that
-/// is never synced or browsed: the bootstrap's commits and its
-/// `/library/profile.yaml` fetch cost every open and serve nothing.
-#[cfg(any(feature = "volatile-storage", test))]
-pub(crate) async fn boot_unbootstrapped_state(
-    storage: Storage<DefaultSpace>,
-    profile_name: String,
-    profile: DefaultProfile,
-    registry: crate::device::Registry,
-) -> Result<TonkState, crate::TonkWorkerError> {
-    open_state(storage, profile_name, profile, registry, Default::default()).await
 }
 
 async fn open_state(

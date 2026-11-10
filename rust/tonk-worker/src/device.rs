@@ -146,13 +146,7 @@ pub(crate) async fn open_profile_at(
 }
 
 /// Open the system credential store of `directory`.
-///
-/// Persistent backends find the same keys however often a directory is
-/// opened. In-memory storage (`volatile-storage` on wasm, for a hosted
-/// peer in a Workers isolate) keeps nothing between opens, so the store a
-/// directory first opened is kept here and handed out again until
-/// [`forget_system`] drops it.
-#[cfg(any(not(target_arch = "wasm32"), feature = "volatile-storage"))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn open_system(
     directory: Directory,
 ) -> Result<
@@ -162,66 +156,7 @@ pub(crate) async fn open_system(
     ),
     dialog_peer::PeerError,
 > {
-    #[cfg(all(
-        target_arch = "wasm32",
-        target_os = "unknown",
-        feature = "volatile-storage"
-    ))]
-    {
-        let key = format!("{directory:?}");
-        if let Some(opened) = VOLATILE_SYSTEMS.with(|systems| systems.borrow().get(&key).cloned()) {
-            return Ok(opened);
-        }
-        let opened = tonk_account::peer::open_system::<DefaultSpace>(directory).await?;
-        VOLATILE_SYSTEMS.with(|systems| systems.borrow_mut().insert(key, opened.clone()));
-        Ok(opened)
-    }
-    #[cfg(not(all(
-        target_arch = "wasm32",
-        target_os = "unknown",
-        feature = "volatile-storage"
-    )))]
-    {
-        tonk_account::peer::open_system::<DefaultSpace>(directory).await
-    }
-}
-
-#[cfg(all(
-    target_arch = "wasm32",
-    target_os = "unknown",
-    feature = "volatile-storage"
-))]
-type VolatileSystem = (
-    dialog_storage::provider::storage::CredentialStore<DefaultSpace>,
-    dialog_credentials::SignerCredential,
-);
-
-#[cfg(all(
-    target_arch = "wasm32",
-    target_os = "unknown",
-    feature = "volatile-storage"
-))]
-thread_local! {
-    static VOLATILE_SYSTEMS: std::cell::RefCell<std::collections::HashMap<String, VolatileSystem>> =
-        Default::default();
-}
-
-/// Drop the system credential store [`open_system`] kept for `directory`.
-/// A no-op unless storage is volatile.
-#[cfg(any(feature = "volatile-storage", test))]
-pub(crate) fn forget_system(directory: &Directory) {
-    #[cfg(all(
-        target_arch = "wasm32",
-        target_os = "unknown",
-        feature = "volatile-storage"
-    ))]
-    VOLATILE_SYSTEMS.with(|systems| systems.borrow_mut().remove(&format!("{directory:?}")));
-    #[cfg(not(all(
-        target_arch = "wasm32",
-        target_os = "unknown",
-        feature = "volatile-storage"
-    )))]
-    let _ = directory;
+    tonk_account::peer::open_system::<DefaultSpace>(directory).await
 }
 
 /// Where the pointer lives: a profile name and the directory it is
@@ -306,16 +241,6 @@ impl Registry {
             standing: Standing::default(),
             #[cfg(not(target_arch = "wasm32"))]
             caches: HeldCaches::new(),
-        }
-    }
-
-    /// The registry of the profile `profile` in `directory`, whose peers
-    /// hold `caches`: a hosted peer passes caches with a budget it chose.
-    #[cfg(any(feature = "volatile-storage", test))]
-    pub(crate) fn holding(profile: String, directory: Directory, caches: HeldCaches) -> Self {
-        Self {
-            caches,
-            ..Self::new(profile, directory)
         }
     }
 

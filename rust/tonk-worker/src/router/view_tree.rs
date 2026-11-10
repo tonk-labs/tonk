@@ -5,23 +5,18 @@
 //! [`tonk_render`] against the space's `main` branch, which is the same
 //! model, view and entity resolution the browser runs.
 
-#[cfg(target_arch = "wasm32")]
 use axum::Json;
-#[cfg(target_arch = "wasm32")]
 use axum::extract::{Path, Query, State};
 use dialog_query::ConceptQuery;
 use dialog_varsig::Did;
-#[cfg(target_arch = "wasm32")]
 use serde::Deserialize;
 use serde_json::{Value, json};
-#[cfg(target_arch = "wasm32")]
 use tonk_macros::handler;
 use tonk_render::{QueryBackend, RenderError, RenderRoute};
 use tonk_schema::prelude::DidExt as _;
 
 use super::repository::CONTENT_BRANCH;
 use crate::AppState;
-#[cfg(target_arch = "wasm32")]
 use crate::TonkWorkerError;
 
 /// The model the space home mounts on this peer's replica.
@@ -90,13 +85,6 @@ pub(crate) async fn outline(
     Ok(json!({ "space": space.to_string(), "outline": outline }))
 }
 
-/// Whether `route` names the space home, which each peer mounts on its own
-/// replica, so a view shows it by path rather than by this entity.
-#[cfg(any(feature = "volatile-storage", test))]
-pub(crate) fn is_home(route: &RenderRoute) -> bool {
-    route.model == HOME_MODEL
-}
-
 /// Queries against one space's `main` branch.
 struct Space {
     state: AppState,
@@ -121,7 +109,6 @@ impl QueryBackend for Space {
 }
 
 /// The route `GET .../outline` asks for: empty for the space's home.
-#[cfg(target_arch = "wasm32")]
 #[derive(Debug, Deserialize)]
 pub struct OutlineQuery {
     #[serde(default)]
@@ -132,7 +119,6 @@ pub struct OutlineQuery {
 /// the route mounts (see [`outline`]). A space's kernel answers it: what
 /// renders a view headlessly is not `Send`, which a native host asks of a
 /// route.
-#[cfg(target_arch = "wasm32")]
 #[handler]
 pub async fn get(
     State(state): State<AppState>,

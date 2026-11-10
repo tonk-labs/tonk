@@ -6467,6 +6467,7 @@ dependencies = [
  "tonk-language-server",
  "tonk-library",
  "tonk-macros",
+ "tonk-mcp",
  "tonk-notation",
  "tonk-render",
  "tonk-router",

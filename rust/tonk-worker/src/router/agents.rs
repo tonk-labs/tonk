@@ -694,17 +694,19 @@ mod tests {
         .to_vec();
         {
             let tonk = state.read().await;
-            super::super::agent_access::retain_agent_grants(
-                &tonk,
-                &agent,
-                &chains,
-                &[super::super::agent_access::DirectoryEntry {
+            let change = AgentSpaceChange {
+                retain: chains
+                    .iter()
+                    .map(agent_space::encode)
+                    .collect::<Result<_, _>>()?,
+                directory: vec![agent_space::DirectoryEntry {
                     space: shared.did(),
                     name: Some("Family trip".into()),
-                    address: Some(remote.to_string()),
+                    home: remote.to_string(),
                 }],
-            )
-            .await?;
+                ..Default::default()
+            };
+            agent_space::change(&tonk, agent.repo_key(), &change).await?;
         }
         let Json(agents) = list(State(state.clone())).await?;
         let joined = agents[0]

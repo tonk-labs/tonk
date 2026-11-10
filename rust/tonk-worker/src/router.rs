@@ -83,11 +83,6 @@ mod agent_link;
 /// Acting as the account on a kernel, once the person lets it.
 #[cfg(all(target_arch = "wasm32", feature = "persona"))]
 mod authorize;
-// Built natively too, without the feature, for this crate's own tests:
-// the space writer is tested against a native access service.
-#[cfg(any(feature = "volatile-storage", test))]
-#[cfg_attr(not(feature = "volatile-storage"), allow(dead_code, unused_imports))]
-mod hosted;
 pub(crate) mod join;
 /// Signing in on a kernel: the provisional persona merges into the
 /// permanent one.
@@ -100,11 +95,6 @@ mod view_access;
 pub use agent_link::AgentLinkWorker;
 #[cfg(all(target_arch = "wasm32", feature = "persona"))]
 pub use authorize::{authorized, delegate_asked, unauthorized};
-#[cfg(feature = "volatile-storage")]
-pub use hosted::{
-    HostedPeer, NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, join as agent_join, mcp,
-    telemetry, view, writer_seed,
-};
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 mod local_peer;
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
@@ -218,8 +208,17 @@ pub use session::{ClientRegistry, ClientState, Saved, SiteResponse, Stamp};
 mod transact;
 pub use transact::{ProfileTransactPath, TransactPath, TransactResponse};
 
+/// The hosted agent's writer against what the person's own worker does to
+/// its grants, natively against an access service.
+#[cfg(all(
+    test,
+    feature = "integration-tests",
+    feature = "persona",
+    not(target_arch = "wasm32")
+))]
+mod agent_writer_tests;
 /// The views a space renders, outlined for an agent.
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(target_arch = "wasm32")]
 mod view_tree;
 
 mod transfer;
@@ -424,10 +423,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/agent/chains",
             get(agent_access::chains),
-        )
-        .route(
-            "/api/repository/{repo}/agent/grant",
-            post(agent_access::grant),
         );
     // A space's kernel outlines its views for an agent, and keeps the
     // grants its writer is handed.
