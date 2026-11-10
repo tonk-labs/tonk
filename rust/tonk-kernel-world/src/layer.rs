@@ -29,6 +29,14 @@ pub struct Edition {
 pub enum LayerError {
     /// The scope of the handle, or the chain, does not allow this.
     Denied(String),
+    /// The authority the chain proves through was revoked: of `subject`, at
+    /// the `certificate` it names, with the signed `revocation` of it, when
+    /// the peer that refused knows them.
+    Revoked {
+        subject: String,
+        certificate: Option<String>,
+        revocation: Option<String>,
+    },
     /// A compare and set lost a race. The cell has a new version.
     Conflict,
     /// The chain of the handle expired. Open the layer again.
@@ -50,6 +58,7 @@ impl fmt::Display for LayerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Denied(reason) => write!(f, "denied: {reason}"),
+            Self::Revoked { subject, .. } => write!(f, "revoked: the authority for {subject}"),
             Self::Conflict => f.write_str("conflict: the cell has a new version"),
             Self::Expired => f.write_str("expired: open the layer again"),
             Self::Invalid(reason) => write!(f, "invalid: {reason}"),

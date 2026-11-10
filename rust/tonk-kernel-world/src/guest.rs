@@ -71,6 +71,11 @@ fn forget(layer: u64) {
 pub(crate) fn layer_error(error: WorldError) -> LayerError {
     match error {
         WorldError::Denied(reason) => LayerError::Denied(reason),
+        WorldError::Revoked(revoked) => LayerError::Revoked {
+            subject: revoked.subject,
+            certificate: revoked.certificate,
+            revocation: revoked.revocation,
+        },
         WorldError::Conflict => LayerError::Conflict,
         WorldError::Expired => LayerError::Expired,
         WorldError::Invalid(reason) => LayerError::Invalid(reason),

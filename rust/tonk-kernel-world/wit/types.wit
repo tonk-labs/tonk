@@ -42,9 +42,22 @@ interface types {
     body: stream<u8>,
   }
 
+  /// The authority a chain proves through, withdrawn: of `subject`, at the
+  /// `certificate` it names (the text of its CID), with the signed
+  /// `revocation` of it (a UCAN container in its base64url tagged form), when
+  /// the peer that refused knows them.
+  record revocation {
+    subject: did,
+    certificate: option<string>,
+    revocation: option<string>,
+  }
+
   variant error {
     /// The scope of the handle, or the chain, does not allow this.
     denied(string),
+    /// The authority the chain proves through was revoked: trying again
+    /// presents the same authority, so a caller stops.
+    revoked(revocation),
     /// A compare and set lost a race. The cell has a new version.
     conflict,
     /// The chain of the handle expired. Open the layer again.

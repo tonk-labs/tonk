@@ -106,9 +106,25 @@ fn now() -> u64 {
         .unwrap_or_default()
 }
 
-/// The decision of Dialog DB for `denied` and `expired`, if `error` is one.
+/// The decision of Dialog DB for `denied`, `revoked` and `expired`, if
+/// `error` is one.
 fn decision(error: &LayerError) -> Option<AuthorizeError> {
     match error {
+        LayerError::Revoked {
+            subject,
+            certificate,
+            revocation,
+        } => Some(match subject.parse() {
+            Ok(subject) => AuthorizeError::Revoked {
+                subject,
+                certificate: certificate.clone(),
+                revocation: revocation.clone(),
+            },
+            Err(_) => AuthorizeError::Declined {
+                recourse: Recourse::None,
+                reason: format!("the authority for {subject} was revoked"),
+            },
+        }),
         LayerError::Denied(reason) => Some(AuthorizeError::Declined {
             recourse: Recourse::None,
             reason: reason.clone(),

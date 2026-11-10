@@ -9,7 +9,7 @@
 //! any other worker.
 
 use dialog_capability::access::{
-    Authorization as _, FromCapability, Proof as _, Protocol, TimeRange,
+    Authorization as _, AuthorizeError, FromCapability, Proof as _, Protocol, TimeRange,
 };
 use dialog_capability::{
     Ability, Capability, Constraint, Effect, ForkInvocation, Provider, Subject,
@@ -34,7 +34,7 @@ use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 
 use crate::bindings::sapling::kernel::storage::Edition;
-use crate::bindings::sapling::kernel::types::Error;
+use crate::bindings::sapling::kernel::types::{Error, Revocation};
 
 /// A replica of a subject on an access service.
 #[derive(Clone)]
@@ -223,21 +223,48 @@ fn hash(key: &[u8]) -> Result<Blake3Hash, Error> {
         .map_err(|_| Error::Invalid("a key is a 32-byte BLAKE3 hash".into()))
 }
 
-fn denied(error: dialog_capability::access::AuthorizeError) -> Error {
-    Error::Denied(error.to_string())
+fn denied(error: AuthorizeError) -> Error {
+    revoked(&error).unwrap_or_else(|| Error::Denied(error.to_string()))
+}
+
+/// `error`, the remote's refusal, as the world's: a revocation as one, so the
+/// guest kernel stops rather than tries again.
+fn revoked(error: &AuthorizeError) -> Option<Error> {
+    let AuthorizeError::Revoked {
+        subject,
+        certificate,
+        revocation,
+    } = error
+    else {
+        return None;
+    };
+    Some(Error::Revoked(Revocation {
+        subject: subject.to_string(),
+        certificate: certificate.clone(),
+        revocation: revocation.clone(),
+    }))
 }
 
 fn archived(error: archive::ArchiveError) -> Error {
-    Error::Unavailable(error.to_string())
+    match &error {
+        archive::ArchiveError::Authorization(refusal) => revoked(refusal),
+        _ => None,
+    }
+    .unwrap_or_else(|| Error::Unavailable(error.to_string()))
 }
 
 fn remembered(error: MemoryError) -> Error {
     match error {
         MemoryError::VersionMismatch { .. } => Error::Conflict,
+        MemoryError::Authorization(ref refusal) if let Some(revoked) = revoked(refusal) => revoked,
         other => Error::Unavailable(other.to_string()),
     }
 }
 
 fn blobbed(error: BlobError) -> Error {
-    Error::Unavailable(error.to_string())
+    match &error {
+        BlobError::Authorization(refusal) => revoked(refusal),
+        _ => None,
+    }
+    .unwrap_or_else(|| Error::Unavailable(error.to_string()))
 }
