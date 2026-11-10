@@ -3466,8 +3466,9 @@ view!:
           box-shadow: inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink);
       }
 
+      /* A standalone face of the current account task: one framed card. */
       .account {
-          width: min(576px, calc(100vw - 32px));
+          width: min(360px, calc(100vw - 32px));
       }
 
       .account__logo {
@@ -3486,58 +3487,61 @@ view!:
       .account__ceremony {
           width: 100%;
           margin-inline: auto;
+          border: 1.5px solid var(--ring);
+          border-radius: 25px;
+          background: var(--modal, var(--card));
+          overflow: hidden;
       }
 
       .account__stack {
           display: flex;
           flex-direction: column;
-          gap: 7px;
       }
 
       .account__ceremony-head {
           display: flex;
-          height: 36px;
+          min-height: 48px;
           margin: 0;
-          padding: 0 16px 9px;
-          align-items: flex-end;
-          background: var(--frost-solid);
-          box-shadow: 0 0 0 1px var(--ring);
+          padding: 14px 18px;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+          background: var(--wash);
           color: var(--ink);
-          font-family: var(--cond);
-          font-size: 13px;
-          font-weight: 600;
-          line-height: 1;
-          letter-spacing: 0.02em;
+          font: 600 17px/1.1 var(--cond);
+          text-align: right;
           text-transform: lowercase;
           text-wrap: balance;
       }
 
+      .account__ceremony-head::before {
+          content: "";
+          width: 18px;
+          height: 18px;
+          flex: 0 0 18px;
+          border-radius: 50%;
+          background: var(--ink);
+      }
+
       .account__run {
           display: flex;
-          min-height: 36px;
-          padding: 0 10px 9px 24px;
-          align-items: flex-end;
+          width: 100%;
+          min-height: 48px;
+          padding: 12px 18px;
+          align-items: center;
           justify-content: flex-end;
           background: var(--ink);
-          box-shadow: 0 0 0 1px var(--ink);
           color: var(--on-ink);
-          font-size: 13px;
-          font-weight: 600;
-          line-height: 1;
-          letter-spacing: 0.02em;
+          font: 600 17px/1.1 var(--cond);
           text-transform: lowercase;
           text-decoration: none;
-          transition-property: scale, opacity, background-color;
+          transition-property: opacity, background-color;
           transition-duration: 150ms;
           transition-timing-function: ease-out;
       }
 
       .account__run:hover:not(:disabled) {
           background: linear-gradient(var(--wash-p), var(--wash-p)), var(--ink);
-      }
-
-      .account__run:active:not(:disabled) {
-          scale: 0.96;
       }
 
       .account__run:disabled {
@@ -3549,22 +3553,13 @@ view!:
       .account__error,
       .account__working {
           width: 100%;
-          margin: 7px auto 0;
-          padding: 10px 16px 11px;
-          background: var(--frost-solid);
-          box-shadow: 0 0 0 1px var(--ring);
-          color: var(--soft);
-          font-family: var(--sans);
-          font-size: 13px;
-          line-height: 1.55;
+          margin: 0;
+          padding: 16px 18px 24px;
+          background: var(--wash);
+          color: var(--ink);
+          font: 400 18px/1.5 var(--cond);
           text-wrap: pretty;
           overflow-wrap: anywhere;
-      }
-
-      .account__narrator p,
-      .account__error,
-      .account__working {
-          margin-block: 7px 0;
       }
 
       .account__narrator p {
@@ -3582,10 +3577,6 @@ view!:
           outline-offset: 3px;
       }
 
-      .account__error {
-          color: var(--ink);
-      }
-
       .account__error:focus-visible {
           box-shadow: 0 0 0 1px var(--ring);
       }
@@ -3594,24 +3585,9 @@ view!:
           display: none;
       }
 
-      @media (max-width: 751px) {
-          .account {
-              width: min(576px, calc(100vw - 32px));
-          }
-      }
-
       @media (max-width: 463px) {
           account-activate {
               padding-top: max(24px, env(safe-area-inset-top));
-          }
-
-          .account__ceremony-head,
-          .account__run {
-              min-height: 44px;
-          }
-
-          .account__ceremony-head {
-              height: 44px;
           }
 
           .account__logo {
