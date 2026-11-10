@@ -5548,6 +5548,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tonk-invite",
  "tonk-kernel-world",
  "url",
  "wasm-bindgen-test",

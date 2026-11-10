@@ -872,46 +872,19 @@ async fn prepare_join(tonk: &TonkState, url: &str) -> Result<PreparedJoin, JoinF
 
 #[cfg(feature = "persona")]
 pub(crate) async fn parse_invite(url: &str) -> Result<Invite, JoinFailure> {
-    if let Some(ticket) = Ticket::parse_url(url)
-        .map_err(|error| JoinFailure::malformed(format!("invite did not parse: {error}")))?
-    {
-        return claim_ticket(ticket).await;
-    }
-    Invite::parse_url(url)
-        .await
-        .map_err(|error| JoinFailure::malformed(format!("invite did not parse: {error}")))
-}
-
-/// Fetch the ticket a ticket link's space keeps for the link's key, and
-/// read it as the open invite it is. From here a ticket link joins the
-/// way an `access=` link does.
-#[cfg(feature = "persona")]
-async fn claim_ticket(ticket: Ticket) -> Result<Invite, JoinFailure> {
-    let holder = ticket
-        .holder()
-        .await
-        .map_err(|error| JoinFailure::malformed(format!("ticket key: {error}")))?;
-    let holder_did = dialog_varsig::Principal::did(&holder);
-    let fetched =
-        tonk_account::ticket::claim(ticket.remote(), holder, &holder_did, None, ticket.subject())
-            .await
-            .map_err(|error| match error {
-                tonk_account::ticket::ClaimError::Refused(reason) => {
-                    classify_authorization(&reason)
-                }
-                _ => JoinFailure::unavailable("the space's ticket could not be fetched"),
-            })?;
-    // The space no longer keeps a ticket for this link's key: it was
-    // taken back, which withdraws the link as far as a newcomer goes.
-    let Some(fetched) = fetched else {
-        return Err(JoinFailure::revoked(
-            "the space no longer holds this link's ticket",
-        ));
-    };
-    ticket
-        .redeem(&fetched)
-        .await
-        .map_err(|error| JoinFailure::malformed(format!("ticket did not redeem: {error}")))
+    use tonk_account::ticket::{OpenInviteError, open_invite};
+    open_invite(url).await.map_err(|error| match error {
+        OpenInviteError::Malformed(reason) => {
+            JoinFailure::malformed(format!("invite did not parse: {reason}"))
+        }
+        OpenInviteError::Withdrawn => {
+            JoinFailure::revoked("the space no longer holds this link's ticket")
+        }
+        OpenInviteError::Unavailable(_) => {
+            JoinFailure::unavailable("the space's ticket could not be fetched")
+        }
+        OpenInviteError::Refused(reason) => classify_authorization(&reason),
+    })
 }
 
 #[cfg(feature = "persona")]

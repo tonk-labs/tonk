@@ -18,7 +18,7 @@ use dialog_query::{Output as _, Query, Term};
 use dialog_repository::RepositoryExt as _;
 use dialog_ucan::Scope;
 use dialog_ucan::{Ucan, UcanDelegation};
-use dialog_ucan_core::{DelegationBuilder, DelegationChain, time::Timestamp};
+use dialog_ucan_core::{DelegationChain, time::Timestamp};
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
 use tonk_invite::connection::{
@@ -140,25 +140,7 @@ pub(super) async fn issue_to_recipient(
 ) -> Result<SpaceGrantBundle, TonkWorkerError> {
     require_grant_deadline(&ancestors, expires)
         .map_err(|error| TonkWorkerError::Forbidden(error.to_string()))?;
-    if ancestors.len() != scopes.len() {
-        return Err(failure("issuer proof count mismatch"));
-    }
-    let mut chains = Vec::new();
-    for (chain, scope) in ancestors.into_iter().zip(scopes) {
-        let leaf = DelegationBuilder::new()
-            .issuer(signer.clone())
-            .audience(recipient)
-            .subject(scope.subject.clone())
-            .command(scope.command.0.clone())
-            .policy(scope.policy())
-            .expiration(expires)
-            .meta(tonk_invite::home_address_meta(remote))
-            .try_build()
-            .await
-            .map_err(failure)?;
-        chains.push(chain.push(leaf).map_err(failure)?);
-    }
-    SpaceGrantBundle::validate(chains, recipient, scopes, remote, now)
+    SpaceGrantBundle::issue(recipient, signer, ancestors, scopes, remote, now, expires)
         .await
         .map_err(failure)
 }
@@ -835,6 +817,7 @@ where
 mod tests {
     use super::*;
     use dialog_credentials::Ed25519Signer;
+    use dialog_ucan_core::DelegationBuilder;
 
     async fn fixture(seconds: u64) -> (Signer, Vec<DelegationChain>, Vec<Scope>, Timestamp) {
         let owner = Ed25519Signer::import(&[51; 32]).await.unwrap();

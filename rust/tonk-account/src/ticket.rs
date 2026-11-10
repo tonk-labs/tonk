@@ -35,8 +35,9 @@ use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::{
     Container, DelegationChain, Invocation, InvocationBuilder, InvocationChain,
 };
-use dialog_varsig::{AnySignature, Did};
+use dialog_varsig::{AnySignature, Did, Principal as _};
 use thiserror::Error;
+use tonk_invite::{Invite, Ticket};
 use url::Url;
 
 use crate::peer::{ConnectReplicaError, connect};
@@ -246,6 +247,53 @@ async fn deliver(remote: &url::Url, body: Vec<u8>) -> Result<(u16, Vec<u8>), Cla
     Ok((delivered.status, delivered.body))
 }
 
+/// Why an invite link did not open.
+#[derive(Debug, Error)]
+pub enum OpenInviteError {
+    /// The link is not an invite, or its ticket does not redeem.
+    #[error("the invite did not read: {0}")]
+    Malformed(String),
+    /// The space no longer keeps a ticket for the link's key: it was taken
+    /// back, which withdraws the link from a newcomer.
+    #[error("the space no longer holds this link's ticket")]
+    Withdrawn,
+    /// The space's ticket could not be fetched.
+    #[error("the space's ticket could not be fetched: {0}")]
+    Unavailable(String),
+    /// The space refused the claim of its ticket.
+    #[error("the claim was refused: {0}")]
+    Refused(AuthorizeError),
+}
+
+/// The invite `url` carries: for a ticket link, the ticket the space keeps
+/// for the link's key, claimed and redeemed; for an `access=` link, the
+/// invite it holds. A ticket link opens the way an `access=` link does.
+pub async fn open_invite(url: &str) -> Result<Invite, OpenInviteError> {
+    let Some(ticket) =
+        Ticket::parse_url(url).map_err(|error| OpenInviteError::Malformed(error.to_string()))?
+    else {
+        return Invite::parse_url(url)
+            .await
+            .map_err(|error| OpenInviteError::Malformed(error.to_string()));
+    };
+    let holder = ticket
+        .holder()
+        .await
+        .map_err(|error| OpenInviteError::Malformed(format!("ticket key: {error}")))?;
+    let holder_did = holder.did();
+    let fetched = claim(ticket.remote(), holder, &holder_did, None, ticket.subject())
+        .await
+        .map_err(|error| match error {
+            ClaimError::Refused(reason) => OpenInviteError::Refused(reason),
+            other => OpenInviteError::Unavailable(other.to_string()),
+        })?
+        .ok_or(OpenInviteError::Withdrawn)?;
+    ticket
+        .redeem(&fetched)
+        .await
+        .map_err(|error| OpenInviteError::Malformed(format!("ticket did not redeem: {error}")))
+}
+
 /// What a claim asks for: the holder whose ticket, kept by which space.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claim {
@@ -305,7 +353,6 @@ fn first_invocation(container: &[u8]) -> Option<Invocation<AnySignature>> {
 mod tests {
     use super::*;
     use dialog_credentials::Ed25519Signer;
-    use dialog_varsig::Principal as _;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
