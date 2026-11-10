@@ -3,28 +3,26 @@
 //!
 //! The worker makes the view's key ([`ViewKey::generate`], WebCrypto,
 //! non-extractable), the relay asks the host for `tonk_view_access` with
-//! its DID, and [`ViewPeer::open`] opens the ordinary router over that key
-//! and the delegations, with the space mounted as a replica of the
-//! provider. The guest's requests reach it through [`ViewPeer::fetch`],
-//! the same conversion the service worker's fetch handler uses.
-
-use std::cell::Cell;
-use std::rc::Rc;
+//! its DID, and [`ViewPeer::open`] boots the space's own kernel acting as
+//! that key, holding the delegations, with the space kept in this origin's
+//! IndexedDB. The guest's requests reach the kernel through
+//! [`ViewPeer::fetch`], as a space's service worker hands them to its
+//! kernel, and the kernel syncs the space while a view watches it.
 
 use dialog_credentials::Ed25519Signer;
-use dialog_effects::storage::Directory;
-use dialog_repository::HeldCaches;
 use dialog_ucan_core::{Container, DelegationChain};
-use dialog_varsig::{Did, Principal as _};
-use js_sys::Promise;
+use dialog_varsig::Principal as _;
+use js_sys::{Array, Function, Promise, Uint8Array};
+use serde_json::json;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::future_to_promise;
 
-use tonk_worker::axum::{RequestConversion, ResponseConversion};
-use tonk_worker::{ClientId, HostedPeer};
+use tonk_kernel_host::embedder::{Embedder, boot_handed};
 
-/// How often a watch of the space that ended is begun again.
-const REWATCH: web_time::Duration = web_time::Duration::from_secs(10);
+/// The origin a view's requests name, which the kernel serves.
+const ORIGIN: (&str, &str) = ("https", "view.invalid");
+
+/// The header a space's kernel learns the page a request came from by.
+const CLIENT_HEADER: &str = "x-tonk-client-id";
 
 /// A view's key: generated in this worker, non-extractable. It leaves the
 /// worker only as opaque `CryptoKey` handles, which the relay keeps in
@@ -73,124 +71,120 @@ impl ViewKey {
     }
 }
 
-/// A view's peer over one space.
+/// A view's peer over one space: the space's kernel.
 #[wasm_bindgen]
 pub struct ViewPeer {
-    peer: Rc<HostedPeer>,
-    /// The guest document a request names no other for, named as the
-    /// service worker names a client, so `/site` can bind it.
-    client: ClientId,
-    /// Set once the view is gone, which ends the peer's watches and loops.
-    stopped: Rc<Cell<bool>>,
+    kernel: Embedder,
     /// The space the peer shows.
-    space: Did,
+    space: String,
 }
 
 #[wasm_bindgen]
 impl ViewPeer {
-    /// Open a peer acting as `key` with `delegations` (base64url
-    /// containers, as `tonk_view_access` returns them), with `space`
-    /// mounted as a replica of `remote` (the provider's `/ucan/`), its
-    /// storage under `directory`, which nothing else may use.
+    /// Boot `kernel`, the space's kernel component, over `space`, acting as
+    /// `key` with `delegations` (base64url containers, as
+    /// `tonk_view_access` returns them), its storage under `directory`,
+    /// which nothing else may use. The kernel takes the first delegation up,
+    /// which says where the space syncs, and keeps the rest.
     pub async fn open(
         key: &ViewKey,
         delegations: Vec<String>,
         space: String,
-        remote: String,
+        kernel: Uint8Array,
         directory: String,
     ) -> Result<ViewPeer, JsError> {
         let error = |error: &dyn std::fmt::Display| JsError::new(&error.to_string());
-        let proofs = decode(&delegations)?;
-        let space: Did = space.parse().map_err(|e| error(&e))?;
-        let remote = url::Url::parse(&remote).map_err(|e| error(&e))?;
-        // The library the router installs and upgrades from is the
-        // provider's, not this worker's (a `blob:` on the host's origin).
-        tonk_worker::set_asset_origin(remote.origin().ascii_serialization());
-        let peer = HostedPeer::open_as(
-            Directory::At(directory.clone()),
+        let (first, rest) = delegations
+            .split_first()
+            .ok_or_else(|| JsError::new("the view holds no delegation"))?;
+        let chain = decode(first)?.to_bytes().map_err(|e| error(&e))?;
+        let kernel = boot_handed(
+            &kernel.to_vec(),
+            space.clone(),
+            directory,
+            (ORIGIN.0.to_owned(), ORIGIN.1.to_owned()),
             key.signer.clone(),
-            &proofs,
-            HeldCaches::new(),
+            chain,
+            Function::new_no_args(""),
         )
-        .await
-        .map_err(|e| error(&e))?;
-        peer.mount(&space, &remote).await.map_err(|e| error(&e))?;
-        Ok(Self {
-            peer: Rc::new(peer),
-            client: ClientId(directory),
-            stopped: Rc::new(Cell::new(false)),
-            space,
-        })
+        .await?;
+        let peer = Self { kernel, space };
+        peer.keep(rest).await?;
+        Ok(peer)
     }
 
-    /// Read the space's head again from the store and repaint its views:
-    /// another view's peer over the same store committed or pulled.
+    /// Pull the space: another view's peer over the same store committed or
+    /// pulled.
     pub async fn refresh(&self) -> Result<(), JsError> {
-        self.peer
-            .refresh(&self.space)
-            .await
-            .map_err(|error| JsError::new(&error.to_string()))
+        let path = format!("/api/repository/{}/branch/main/sync/pull", self.space);
+        self.ask("POST", &path, "text/plain", b"").await
     }
 
     /// Hold `delegations` too: a renewed one, or another view's.
     pub async fn grant(&self, delegations: Vec<String>) -> Result<(), JsError> {
-        let proofs = decode(&delegations)?;
-        self.peer
-            .grant(&proofs)
-            .await
-            .map_err(|error| JsError::new(&error.to_string()))
+        self.keep(&delegations).await
     }
 
-    /// Answer a request on the ordinary router, as the service worker
-    /// answers one, for the guest document `client` (each view of a peer
-    /// shared by several names its own). A subscription's response stays
-    /// a stream.
-    pub fn fetch(&self, request: web_sys::Request, client: Option<String>) -> Promise {
-        let peer = self.peer.clone();
-        let client = client.map(ClientId).unwrap_or_else(|| self.client.clone());
-        future_to_promise(async move {
-            let mut request = RequestConversion::from(request)
-                .into_axum_request()
-                .await
-                .map_err(JsValue::from)?;
-            request.extensions_mut().insert(client);
-            let method = request.method().clone();
-            let response = peer.call(request).await;
-            web_sys::Response::try_from(ResponseConversion::new(method, response))
-                .map(JsValue::from)
-                .map_err(JsValue::from)
-        })
-    }
-
-    /// Keep the space live from here on: follow it through the
-    /// provider's `live.rs`, pull what lands, repaint the views over it,
-    /// and push what the view commits. Called once the first pull has
-    /// opened the space, since only an open space is watched.
-    pub fn follow(&self) {
-        let stopped = self.stopped.clone();
-        self.peer.follow(REWATCH, Rc::new(move || stopped.get()));
-    }
-
-    /// Stop following the space and release the peer.
-    pub async fn close(&self) {
-        self.stopped.set(true);
-        self.peer.shut_down().await;
-    }
-
-    /// The DID the peer acts as.
-    pub async fn did(&self) -> String {
-        self.peer.did().await.to_string()
+    /// Hand the kernel a request of the guest document `client` (each view
+    /// of a peer shared by several names its own): `method` `path`, with
+    /// `headers` as `[name, value]` pairs and `body`. Answers `{ status,
+    /// headers, body }` once the kernel has its status, with the body read
+    /// piece by piece as the kernel writes it, so a subscription stays a
+    /// stream.
+    pub fn fetch(
+        &self,
+        method: String,
+        path: String,
+        headers: Array,
+        body: Uint8Array,
+        client: Option<String>,
+    ) -> Promise {
+        if let Some(client) = client {
+            headers.push(&Array::of2(&CLIENT_HEADER.into(), &client.into()));
+        }
+        self.kernel.handle(method, path, headers, body)
     }
 }
 
-/// Delegations as `tonk_view_access` returns them: base64url containers.
-fn decode(delegations: &[String]) -> Result<Vec<DelegationChain>, JsError> {
+impl ViewPeer {
+    /// Have the kernel keep each of `delegations`, checked as a take-up
+    /// checks its own.
+    async fn keep(&self, delegations: &[String]) -> Result<(), JsError> {
+        if delegations.is_empty() {
+            return Ok(());
+        }
+        let path = format!("/api/repository/{}/delegations", self.space);
+        let body = json!({ "chains": delegations }).to_string();
+        self.ask("POST", &path, "application/json", body.as_bytes())
+            .await
+    }
+
+    async fn ask(
+        &self,
+        method: &str,
+        path: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> Result<(), JsError> {
+        let headers = vec![("content-type".to_owned(), content_type.as_bytes().to_vec())];
+        let (status, answer) = self
+            .kernel
+            .answer(method, path, headers, body)
+            .await
+            .map_err(|error| JsError::new(&error))?;
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        Err(JsError::new(&format!(
+            "{method} {path} answered {status}: {}",
+            String::from_utf8_lossy(&answer)
+        )))
+    }
+}
+
+/// A delegation as `tonk_view_access` returns one: a base64url container.
+fn decode(encoded: &str) -> Result<DelegationChain, JsError> {
     let error = |error: &dyn std::fmt::Display| JsError::new(&error.to_string());
-    delegations
-        .iter()
-        .map(|encoded| {
-            let container = Container::decode(encoded.trim().as_bytes()).map_err(|e| error(&e))?;
-            DelegationChain::try_from(container).map_err(|e| error(&e))
-        })
-        .collect()
+    let container = Container::decode(encoded.trim().as_bytes()).map_err(|e| error(&e))?;
+    DelegationChain::try_from(container).map_err(|e| error(&e))
 }

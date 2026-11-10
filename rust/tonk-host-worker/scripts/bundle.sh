@@ -15,7 +15,7 @@ target="${CARGO_TARGET_DIR:-$root/target}"
 # at run time, records what a Worker cannot compile.
 cargo build --manifest-path "$root/Cargo.toml" -p tonk-kernel-host \
   --features volatile --target wasm32-unknown-unknown --release
-wasm-bindgen --target web --out-dir "$work/embedder" \
+"${WASM_BINDGEN_BIN:-wasm-bindgen}" --target web --out-dir "$work/embedder" \
   "$target/wasm32-unknown-unknown/release/tonk_kernel_host.wasm"
 
 bundle() {

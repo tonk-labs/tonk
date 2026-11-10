@@ -192,7 +192,7 @@
       // syncs in the background and repaints each view from one store. A
       // host without SharedWorker gives each view a worker of its own.
       const peerSource = `
-        let peer, key, module, claim, started, opened, following;
+        let peer, key, module, kernel, claim, started, opened;
         function kept(mode, act) {
           return new Promise((resolve, reject) => {
             const opened = indexedDB.open('tonk-view-keys', 1);
@@ -245,9 +245,17 @@
         }
         async function start(claimed, data) {
           at('importing the runtime');
+          // The space's kernel loads beside the peer's own wasm.
+          const component = fetch(data.kernel, { credentials: 'omit' }).then((response) => {
+            if (!response.ok) throw Error('the kernel did not load (' + response.status + ')');
+            return response.arrayBuffer();
+          });
+          component.catch(() => {});
           module = await import(data.glue);
           at('starting the wasm');
           await module.default({ module_or_path: data.wasm });
+          at('loading the kernel');
+          kernel = new Uint8Array(await component);
           // Each step under the key lock is bounded: a step that never
           // settles (seen on iOS) would hold the lock, and so stall every
           // later view of the space, for as long as this peer lives.
@@ -375,7 +383,7 @@
           const streams = new Map();
           let client;
           const end = () => {
-            for (const reader of streams.values()) reader.cancel().catch(() => {});
+            for (const body of streams.values()) body.cancel();
             streams.clear();
           };
           port.onmessage = async ({ data }) => {
@@ -424,7 +432,7 @@
                 // The first view opens the peer; every later one, and a
                 // renewal, hands it the delegations it was given.
                 const first = !opened;
-                opened ??= module.ViewPeer.open(key, data.delegations, data.space, data.remote, data.directory);
+                opened ??= module.ViewPeer.open(key, data.delegations, data.space, kernel, data.directory);
                 peer = await opened.catch((error) => {
                   opened = undefined;
                   throw error;
@@ -432,22 +440,19 @@
                 if (!first) await peer.grant(data.delegations);
                 listen(data.space);
                 port.postMessage({ id });
-              } else if (op === 'follow') {
-                if (!following) peer.follow();
-                following = true;
-                port.postMessage({ id });
               } else if (op === 'fetch') {
-                const response = await peer.fetch(new Request('https://view.invalid' + data.path, data.init), client);
+                const request = new Request('https://view.invalid' + data.path, data.init);
+                const url = new URL(request.url);
+                const body = new Uint8Array(await request.arrayBuffer());
+                const answer = await peer.fetch(request.method, url.pathname + url.search, [...request.headers], body, client);
                 // What changes the store tells the other peers over it.
-                if ((data.init?.method ?? 'GET').toUpperCase() !== 'GET') changes?.postMessage(1);
-                port.postMessage({ id, status: response.status, statusText: response.statusText, headers: [...response.headers] });
-                if (!response.body) return port.postMessage({ id, done: true });
-                const reader = response.body.getReader();
-                streams.set(id, reader);
+                if (request.method !== 'GET') changes?.postMessage(1);
+                port.postMessage({ id, status: answer.status, statusText: '', headers: answer.headers });
+                streams.set(id, answer.body);
                 for (;;) {
-                  const { done, value } = await reader.read();
-                  if (done) break;
-                  port.postMessage({ id, chunk: value }, [value.buffer]);
+                  const chunk = await answer.body.next();
+                  if (!chunk) break;
+                  port.postMessage({ id, chunk }, [chunk.buffer]);
                 }
                 streams.delete(id);
                 port.postMessage({ id, done: true });
@@ -633,6 +638,7 @@
         const runtime = {
           glue: origin + '/view-peer/tonk_view_peer.js',
           wasm: origin + '/view-peer/tonk_view_peer_bg.wasm',
+          kernel: origin + '/view-peer/kernel.component',
         };
         let started;
         try {
@@ -655,7 +661,6 @@
         await ask('open', {
           delegations: access.delegations,
           space: route.subject,
-          remote: route.remote,
           directory: started.directory,
         });
         // A kept store pulls only what changed since it last pulled. It
@@ -669,7 +674,6 @@
           body: '',
         });
         if (!pulled.ok) throw Error('Could not read the space (' + pulled.status + ').');
-        await ask('follow', {});
         reached('loading the Tonk runtime');
         await packed;
         reached('rendering the page');
