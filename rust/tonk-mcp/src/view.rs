@@ -21,6 +21,7 @@ use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::time::{Duration, UNIX_EPOCH};
 use dialog_ucan_core::{Container, DelegationBuilder, DelegationChain, Tag};
 use dialog_varsig::Did;
+use ipld_core::ipld::Ipld;
 use serde_json::{Value, json};
 
 use axum::body::Body;
@@ -31,6 +32,7 @@ use crate::mcp::{
     ACCESS_ROUTE, ADDRESS_HEADER, AgentAccess, GRANTS_HEADER, SpaceAccess, Verified, Writers,
     mount_address,
 };
+use crate::writer::ACTS_FOR;
 use tonk_worker_api::agent::reaches;
 
 /// The model a space's home mounts: a view route of it is the space's
@@ -452,17 +454,12 @@ pub async fn call<W: Writers>(
         }
     };
     let expires = Timestamp::now().to_unix() + ACCESS_LIFETIME;
-    match delegate(
-        verified,
-        &space,
-        access.agent,
-        &grants,
-        &audience,
-        edit,
-        expires,
-    )
-    .await
-    {
+    let Ok(home) = url::Url::parse(&remote) else {
+        return Some(error(&format!(
+            "This space's address, {remote}, is not a URL."
+        )));
+    };
+    match delegate(verified, &space, &home, &grants, &audience, edit, expires).await {
         Ok(chains) => Some(json!({
             "content": [{ "type": "text", "text": "Delegated." }],
             "structuredContent": {
@@ -515,11 +512,13 @@ async fn answer<T: serde::de::DeserializeOwned>(response: Response<Body>) -> Res
 /// do, extended by the powerline and a last hop from the session to the
 /// audience. For the agent space: the powerline and that hop. The last
 /// hop names the space and, for a read-only view, narrows the command to
-/// `/use/get`, so the view can sync and read and never publish.
+/// `/use/get`, so the view can sync and read and never publish. It says
+/// whom the view acts for, the agent space, and where the space syncs,
+/// `remote`, which the view's kernel takes the delegation up with.
 async fn delegate(
     verified: &Verified,
     space: &Did,
-    agent: bool,
+    remote: &url::Url,
     grants: &[DelegationChain],
     audience: &Did,
     edit: bool,
@@ -531,7 +530,7 @@ async fn delegate(
         .map_err(|error| format!("bad session key: {error}"))?;
     let powerline = token.powerline();
     let mut bases = Vec::new();
-    if agent {
+    if space == verified.agent() {
         let command = if edit { vec!["use".into()] } else { read() };
         bases.push((command, powerline.clone()));
     } else {
@@ -555,6 +554,11 @@ async fn delegate(
     if bases.is_empty() {
         return Err("No grant in force lets a view read that space.".into());
     }
+    let mut meta = tonk_invite::home_address_meta(remote);
+    meta.insert(
+        ACTS_FOR.to_owned(),
+        Ipld::String(powerline.issuer().to_string()),
+    );
     let mut chains = Vec::new();
     for (command, base) in bases {
         let leaf = DelegationBuilder::new()
@@ -562,6 +566,7 @@ async fn delegate(
             .audience(audience)
             .subject(UcanSubject::Specific(space.clone()))
             .command(command)
+            .meta(meta.clone())
             .expiration(
                 Timestamp::new(UNIX_EPOCH + Duration::from_secs(expires))
                     .map_err(|error| error.to_string())?,

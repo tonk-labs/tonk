@@ -488,3 +488,388 @@ fn the_relay_is_filled_with_the_origin_it_was_reached_on() {
     assert_eq!(resources()[0]["uri"], RELAY_URI);
     assert!(read_resource("ui://tonk/other.html", ORIGIN).is_none());
 }
+
+#[cfg(all(feature = "integration-tests", not(target_arch = "wasm32")))]
+mod against_a_service {
+    //! A view's peer, the space's kernel acting as the view's own key with
+    //! the delegations `tonk_view_access` signs, against the native access
+    //! service.
+
+    use axum::http::{StatusCode, header};
+    use dialog_common::helpers::{Provisionable as _, Service};
+    use tonk_access_service::helpers::{AccessServer, AccessServiceAddress};
+
+    use super::*;
+    use crate::native::{NativeKernel, NativeKernels};
+    use crate::{SpaceKernel, SpaceWriter};
+
+    const NOTE: &str = "attribute!: &view-note-title
+  description: Title
+  the: view.note/title
+  as: text
+concept!: &view-note
+  description: A note
+  with:
+    title: view-note-title
+";
+
+    fn request(method: Method, uri: &str, body: impl Into<Body>) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(body.into())
+            .unwrap()
+    }
+
+    async fn json(response: Response<Body>) -> (StatusCode, Value) {
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let value = serde_json::from_slice(&body)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&body).into_owned()));
+        (status, value)
+    }
+
+    fn scratch() -> String {
+        std::env::temp_dir()
+            .join(format!("view-test-{}", rand::random::<u64>()))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// A view's peer: the space's kernel, and its branch's routes.
+    struct View {
+        kernel: NativeKernel,
+        base: String,
+    }
+
+    impl View {
+        async fn ask(&self, method: Method, route: &str, body: &str) -> (StatusCode, Value) {
+            let uri = format!("{}/{route}", self.base);
+            json(
+                self.kernel
+                    .call(request(method, &uri, body.to_owned()))
+                    .await,
+            )
+            .await
+        }
+
+        async fn pull(&self) -> (StatusCode, Value) {
+            self.ask(Method::POST, "sync/pull", "").await
+        }
+
+        async fn notes(&self) -> (StatusCode, Value) {
+            self.ask(
+                Method::POST,
+                "evaluate?transact=false",
+                "view.note:\n  this: ?n\n  title: ?t\n",
+            )
+            .await
+        }
+    }
+
+    /// An agent space served by a fresh access service, holding one note
+    /// its session wrote, and the token's verified session.
+    struct Fixture {
+        service: Service<AccessServiceAddress, AccessServer>,
+        kernels: NativeKernels,
+        agent: Ed25519Signer,
+        remote: url::Url,
+        /// The origin the service answers on, which the front serves.
+        origin: String,
+        verified: (Verified, AgentWriter),
+    }
+
+    impl Fixture {
+        async fn start() -> Self {
+            let service = AccessServiceAddress::start(Default::default())
+                .await
+                .unwrap();
+            let agent = Ed25519Signer::generate().await.unwrap();
+            service
+                .address
+                .provision_subject(agent.did().as_ref())
+                .await
+                .unwrap();
+            let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+            let origin = remote.origin().ascii_serialization();
+            let token = issue_agent_session_with_grants(agent.clone(), &remote, &[])
+                .await
+                .unwrap()
+                .token;
+            let verified = super::super::super::mcp::verify(&token).await.unwrap();
+            let kernels = NativeKernels::default();
+            let writer = SpaceWriter::open(
+                kernels.clone(),
+                &verified.writer_session("agent"),
+                &agent.did(),
+                &remote,
+                &[],
+            )
+            .await
+            .unwrap();
+            let document =
+                format!("{NOTE}view-note!:\n  this: urn:view:note\n  title: \"from the agent\"\n");
+            let (status, body) = json(
+                writer
+                    .write(request(Method::POST, "/evaluate?transact=true", document))
+                    .await,
+            )
+            .await;
+            assert!(status.is_success(), "seed: {status}: {body}");
+            let writer = AgentWriter {
+                space: agent.did(),
+                grants: Vec::new(),
+                address: None,
+            };
+            Self {
+                service,
+                kernels,
+                agent,
+                remote,
+                origin,
+                verified: (verified, writer),
+            }
+        }
+
+        /// A view of the agent space over the delegations its key was
+        /// given.
+        async fn view(&self) -> View {
+            let (verified, writer) = &self.verified;
+            let seed = rand::random::<[u8; 32]>();
+            self.view_in(verified, writer, &self.agent.did(), &seed, scratch())
+                .await
+        }
+
+        /// A view of `space` as the key `seed`, over the store at
+        /// `directory`, which an earlier view of it may have left, its
+        /// delegations signed by the session `verified` from what
+        /// `writers` answers.
+        async fn view_in(
+            &self,
+            verified: &Verified,
+            writers: &impl Writers,
+            space: &Did,
+            seed: &[u8; 32],
+            directory: String,
+        ) -> View {
+            let key = Ed25519Signer::import(seed).await.unwrap();
+            let result = call(
+                ACCESS,
+                &json!({ "space": space.to_string(), "audience": key.did().to_string() }),
+                verified,
+                writers,
+                "",
+                "session",
+                &self.origin,
+                &TicketKey::derive("secret"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result["isError"], false, "{result}");
+            let delegations = result["structuredContent"]["delegations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|encoded| encoded.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            let chains = chains(&result);
+            let kernel = self
+                .kernels
+                .boot_in(directory, space, seed, &chains[0])
+                .await
+                .unwrap();
+            if delegations.len() > 1 {
+                let kept = Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/repository/{space}/delegations"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "chains": &delegations[1..] }).to_string(),
+                    ))
+                    .unwrap();
+                let (status, body) = json(kernel.call(kept).await).await;
+                assert!(status.is_success(), "keep: {status}: {body}");
+            }
+            View {
+                kernel,
+                base: format!("/api/repository/{space}/branch/main"),
+            }
+        }
+    }
+
+    /// The agent space's own writer, answering the front's access routes
+    /// as the Host Worker's does.
+    struct Served(SpaceWriter<NativeKernels>);
+
+    impl Writers for Served {
+        async fn call(
+            &self,
+            _verified: &Verified,
+            _bearer: &str,
+            _mcp_session: &str,
+            _space: &Did,
+            request: Request<Body>,
+        ) -> Response<Body> {
+            let answer = match request.uri().path() {
+                ACCESS_ROUTE => serde_json::to_value(self.0.agent_access().await.unwrap()).unwrap(),
+                CHAINS_ROUTE => {
+                    let query = request.uri().query().unwrap_or_default();
+                    let space = query.strip_prefix("space=").unwrap().parse().unwrap();
+                    chains_answer(&self.0.space_chains(&space).await.unwrap()).unwrap()
+                }
+                other => panic!("no agent writer route {other}"),
+            };
+            Response::new(Body::from(answer.to_string()))
+        }
+    }
+
+    #[dialog_common::test]
+    async fn a_view_reads_a_granted_space_through_the_grants_the_agent_space_holds() {
+        let fixture = Fixture::start().await;
+        let agent = fixture.agent.did();
+        let garden = Ed25519Signer::generate().await.unwrap();
+        fixture
+            .service
+            .address
+            .provision_subject(garden.did().as_ref())
+            .await
+            .unwrap();
+        // The garden's owner writes a note there.
+        let owner = issue_agent_session_with_grants(garden.clone(), &fixture.remote, &[])
+            .await
+            .unwrap()
+            .token;
+        let owner = super::super::super::mcp::verify(&owner).await.unwrap();
+        let owner = SpaceWriter::open(
+            fixture.kernels.clone(),
+            &owner.writer_session("owner"),
+            &garden.did(),
+            &fixture.remote,
+            &[],
+        )
+        .await
+        .unwrap();
+        let document =
+            format!("{NOTE}view-note!:\n  this: urn:view:garden\n  title: \"in the garden\"\n");
+        let (status, body) = json(
+            owner
+                .write(request(Method::POST, "/evaluate?transact=true", document))
+                .await,
+        )
+        .await;
+        assert!(status.is_success(), "seed: {status}: {body}");
+        // The approval retains a read grant of it in the agent space.
+        let (verified, _) = &fixture.verified;
+        let own = SpaceWriter::open(
+            fixture.kernels.clone(),
+            &verified.writer_session("agent"),
+            &agent,
+            &fixture.remote,
+            &[],
+        )
+        .await
+        .unwrap();
+        own.approve(
+            &grants(&garden, &agent, &["get"]).await,
+            json!([{ "space": garden.did(), "home": fixture.remote.as_str() }]),
+        )
+        .await
+        .unwrap();
+        let served = Served(own);
+
+        let seed = rand::random::<[u8; 32]>();
+        let view = fixture
+            .view_in(verified, &served, &garden.did(), &seed, scratch())
+            .await;
+        let (status, body) = view.pull().await;
+        assert!(status.is_success(), "pull: {status}: {body}");
+        let (status, body) = view.notes().await;
+        assert!(status.is_success(), "query: {status}: {body}");
+        assert!(body.to_string().contains("in the garden"), "{body}");
+
+        // A view of a space granted only to read commits locally, and
+        // the remote refuses its push.
+        let (status, body) = view
+            .ask(
+                Method::POST,
+                "evaluate?transact=true",
+                "view-note!:\n  this: urn:view:other\n  title: \"from the view\"\n",
+            )
+            .await;
+        assert!(status.is_success(), "local commit: {status}: {body}");
+        let (status, body) = view.ask(Method::POST, "sync/push", "").await;
+        assert!(
+            !status.is_success(),
+            "a read-only view's push lands: {body}"
+        );
+        fixture.service.stop().await.unwrap();
+    }
+
+    #[dialog_common::test]
+    async fn a_view_reads_its_space_as_its_own_key() {
+        let fixture = Fixture::start().await;
+        let view = fixture.view().await;
+        let (status, body) = view.pull().await;
+        assert!(status.is_success(), "pull: {status}: {body}");
+        let (status, body) = view.notes().await;
+        assert!(status.is_success(), "query: {status}: {body}");
+        assert!(body.to_string().contains("from the agent"), "{body}");
+        fixture.service.stop().await.unwrap();
+    }
+
+    /// A view reopened as the same key over the store an earlier view of
+    /// the space left reads what that view read before pulling anything.
+    #[dialog_common::test]
+    async fn a_reopened_view_reads_its_store_before_it_pulls() {
+        let fixture = Fixture::start().await;
+        let (verified, writer) = &fixture.verified;
+        let space = fixture.agent.did();
+        let seed = rand::random::<[u8; 32]>();
+        let directory = scratch();
+        let view = fixture
+            .view_in(verified, writer, &space, &seed, directory.clone())
+            .await;
+        let (status, body) = view.pull().await;
+        assert!(status.is_success(), "pull: {status}: {body}");
+        // A pull brings the head; the blocks a read needs come as it reads.
+        let (status, body) = view.notes().await;
+        assert!(status.is_success(), "query: {status}: {body}");
+        drop(view);
+
+        let view = fixture
+            .view_in(verified, writer, &space, &seed, directory)
+            .await;
+        // With the service gone, what the view reads is what its store kept.
+        fixture.service.stop().await.unwrap();
+        let (status, body) = view.notes().await;
+        assert!(status.is_success(), "query: {status}: {body}");
+        assert!(body.to_string().contains("from the agent"), "{body}");
+    }
+
+    #[dialog_common::test]
+    async fn an_editing_view_publishes_as_its_own_key() {
+        let fixture = Fixture::start().await;
+        let view = fixture.view().await;
+        let (status, _) = view.pull().await;
+        assert!(status.is_success());
+        let (status, body) = view
+            .ask(
+                Method::POST,
+                "evaluate?transact=true",
+                "view-note!:\n  this: urn:view:edit\n  title: \"from the view\"\n",
+            )
+            .await;
+        assert!(status.is_success(), "commit: {status}: {body}");
+        let (status, body) = view.ask(Method::POST, "sync/push", "").await;
+        assert!(status.is_success(), "push: {status}: {body}");
+        // Another view of the space reads what this one published.
+        let other = fixture.view().await;
+        let (status, body) = other.pull().await;
+        assert!(status.is_success(), "pull: {status}: {body}");
+        let (status, body) = other.notes().await;
+        assert!(status.is_success(), "query: {status}: {body}");
+        assert!(body.to_string().contains("from the view"), "{body}");
+        fixture.service.stop().await.unwrap();
+    }
+}

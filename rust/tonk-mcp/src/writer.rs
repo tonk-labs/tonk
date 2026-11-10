@@ -59,7 +59,7 @@ const WRITER_KEY_CONTEXT: &str = "tonk 2026-10-29 hosted agent space writer key 
 const BRANCH: &str = "main";
 
 /// The delegation meta naming whom a space's worker acts for.
-const ACTS_FOR: &str = "acts.for";
+pub(crate) const ACTS_FOR: &str = "acts.for";
 
 /// The header that tells a space's kernel its caller syncs the space, so it
 /// follows a request with no sync of its own: a write answered as failed

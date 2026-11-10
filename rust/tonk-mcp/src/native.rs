@@ -37,11 +37,12 @@ impl Default for NativeKernels {
     }
 }
 
-impl Kernels for NativeKernels {
-    type Kernel = NativeKernel;
-
-    async fn boot(
+impl NativeKernels {
+    /// [`Kernels::boot`], with the kernel's layers under `layers`, which a
+    /// kernel booted before may have left.
+    pub async fn boot_in(
         &self,
+        layers: String,
         space: &Did,
         seed: &[u8; 32],
         chain: &DelegationChain,
@@ -55,7 +56,7 @@ impl Kernels for NativeKernels {
                 .build()
                 .expect("a runtime");
             tokio::task::LocalSet::new().block_on(&runtime, async move {
-                match serve(&engine, &space, seed, chain).await {
+                match serve(&engine, layers, &space, seed, chain).await {
                     Ok((kernel, driver)) => {
                         let _ = served.send(Ok(kernel));
                         if let Err(error) = driver.await {
@@ -75,19 +76,34 @@ impl Kernels for NativeKernels {
     }
 }
 
-/// The kernel of `space`, booted over layers of its own and acting as the
-/// key `seed` is, served, with what drives it.
+impl Kernels for NativeKernels {
+    type Kernel = NativeKernel;
+
+    async fn boot(
+        &self,
+        space: &Did,
+        seed: &[u8; 32],
+        chain: &DelegationChain,
+    ) -> Result<NativeKernel, String> {
+        let layers = std::env::temp_dir().join(format!("tonk-mcp-{}", rand::random::<u64>()));
+        self.boot_in(layers.to_string_lossy().into_owned(), space, seed, chain)
+            .await
+    }
+}
+
+/// The kernel of `space`, booted over the layers under `layers` and acting
+/// as the key `seed` is, served, with what drives it.
 async fn serve(
     engine: &Engine,
+    layers: String,
     space: &str,
     seed: [u8; 32],
     chain: Vec<u8>,
 ) -> Result<(Served, impl Future<Output = Result<(), String>>), String> {
-    let layers = std::env::temp_dir().join(format!("tonk-mcp-{}", rand::random::<u64>()));
     let mut kernel = Kernel::load(
         engine,
         tonk_components::TONK_KERNEL_BYTES,
-        Layers::under(layers.to_string_lossy().into_owned()),
+        Layers::under(layers),
     )
     .await?;
     kernel.serve_at("https", "space-writer.invalid");
