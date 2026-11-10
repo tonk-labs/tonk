@@ -3412,10 +3412,11 @@ view!:
   this: activate/route
   style:
     activate: |
-      /* The activation page's surface. No tokens of its own: it reads `--page`,
+      /* The surface of the activation page, and of the emailed invitation's
+         page, which links this sheet. No tokens of its own: it reads `--page`,
          `--ink` and the rest straight from `:root` (the app's stylesheet), where
          they alias the Web Awesome theme. */
-      account-activate {
+      :is(account-activate, email-invite) {
           display: grid;
           min-height: 100dvh;
           padding: 48px 16px 80px;
@@ -3428,18 +3429,18 @@ view!:
           -moz-osx-font-smoothing: grayscale;
       }
 
-      account-activate *,
-      account-activate *::before,
-      account-activate *::after {
+      :is(account-activate, email-invite) *,
+      :is(account-activate, email-invite) *::before,
+      :is(account-activate, email-invite) *::after {
           box-sizing: border-box;
       }
 
-      account-activate ::selection {
+      :is(account-activate, email-invite) ::selection {
           background: var(--ink);
           color: var(--on-ink);
       }
 
-      account-activate :where(button) {
+      :is(account-activate, email-invite) :where(button) {
           margin: 0;
           border-radius: 0;
           font: inherit;
@@ -3454,11 +3455,11 @@ view!:
           cursor: pointer;
       }
 
-      account-activate :where(a) {
+      :is(account-activate, email-invite) :where(a) {
           color: inherit;
       }
 
-      account-activate :focus-visible {
+      :is(account-activate, email-invite) :focus-visible {
           outline: 0;
           box-shadow: inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink);
       }
@@ -3583,7 +3584,7 @@ view!:
       }
 
       @media (max-width: 463px) {
-          account-activate {
+          :is(account-activate, email-invite) {
               padding-top: max(24px, env(safe-area-inset-top));
           }
 
@@ -3767,6 +3768,194 @@ element!: &account-activate
           clearTimeout(patience);
           abort.abort();
           if (self.__abort === abort) self.__abort = null;
+        }
+      }
+
+# The /email-invite page: where an emailed invitation's link lands. The
+# link's fragment is the invitation's id, 64 hex digits, which only the
+# account of the address it was sent to can claim. The page offers to sign
+# in or up, and then to join: joining asserts `email-invite/claim` with the
+# id and the account, and the profile's worker claims the invitation at the
+# service, joins the space it grants and opens it. How the claim went is
+# recorded on the command's own entity, which the page watches.
+route!: &route/email-invite
+  this: id:tonk:route/email-invite
+  path: "/email-invite"
+  concept: tonk:email-invite/route
+
+concept!: &email-invite/route
+  this: tonk:email-invite/route
+  description: The /email-invite page, where an emailed invitation's link lands.
+  with:
+    # A route model declares at least one field; the page reads the
+    # invitation's id off the location itself.
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      as: text
+
+command!: &email-invite/claim
+  this: tonk:claim-email-invitation
+  description: Claim an emailed invitation for this account, and join the space it grants.
+  with:
+    id:
+      description: The invitation's id, the 64 hex digits of the link's fragment.
+      the: xyz.tonk.claim-email-invitation/id
+      as: text
+    account:
+      description: The account claiming it, which must be the one the invitation was sent to.
+      the: xyz.tonk.claim-email-invitation/account
+      as: entity
+
+# How sending or claiming an emailed invitation went, on the command's own
+# entity, in the profile's session overlay: nothing of it is stored or synced.
+concept!: &email-invite/status
+  this: tonk:email-invite/status
+  description: How sending or claiming an emailed invitation went, for the page that asked.
+  with:
+    state:
+      description: >
+        `pending` while the worker asks the service, then `sent` or
+        `joined` when it went, or `failed`.
+      the: xyz.tonk.email-invitation-status/state
+      as: text
+    message:
+      description: What to tell the person about it.
+      the: xyz.tonk.email-invitation-status/message
+      as: text
+
+view!:
+  this: email-invite/route
+  show:
+    ui: |
+      <link rel="stylesheet" with:src="activate@activate/route">
+      <tab-title text="Tonk"></tab-title>
+      <email-invite>
+        <main class="account">
+          <div class="account__logo" role="img" aria-label="tonk"></div>
+
+          <div class="account__ceremony">
+            <section class="account__activation-state" aria-labelledby="email-invite-title">
+              <div class="account__stack">
+                <h1 id="email-invite-title" class="account__ceremony-head">you’re invited to a space</h1>
+                <button id="email-invite-account" class="account__run" type="button" on:ask-sign-in=tonk:sign-in>Create Account or Sign In</button>
+                <button id="email-invite-join" class="account__run" type="button">Join Space</button>
+              </div>
+              <div class="account__narrator">
+                <p>Create an account or sign in using the email that received this invitation. Confirm your email, then return here to join the shared space.</p>
+                <p>This invitation lasts seven days and only works for that email’s account.</p>
+              </div>
+            </section>
+
+            <p id="email-invite-status" class="account__working" role="status" aria-live="polite"></p>
+          </div>
+        </main>
+      </email-invite>
+
+element!: &email-invite
+  description: Offers an emailed invitation's sign-in and join, and says how joining went.
+  method:
+    connected: |
+      (self) => {
+        if (self.__wired) return;
+        self.__wired = true;
+        self.querySelector('#email-invite-join')?.addEventListener('click', () => self.join());
+        window.tonk.ready.then(() => {
+          if (!self.isConnected) return;
+          // The page's address is the host's to know; this frame's own
+          // is its shell's.
+          const id = ((window.tonk.context || {}).hash || '').replace(/^#/, '');
+          self.__id = /^[0-9a-f]{64}$/.test(id) ? id : null;
+          if (!self.__id) {
+            self.status('This invitation link is incomplete. Open the exact link from your email.');
+            for (const button of self.querySelectorAll('button')) button.disabled = true;
+          }
+        });
+      }
+    disconnected: |
+      (self) => {
+        self.__abort?.abort();
+        self.__abort = null;
+      }
+    status: |
+      (self, text) => {
+        const status = self.querySelector('#email-invite-status');
+        if (status) status.textContent = text;
+      }
+    join: |
+      async (self) => {
+        const button = self.querySelector('#email-invite-join');
+        if (!self.__id || self.__abort) return;
+        if (button) button.disabled = true;
+        self.status('Checking your invitation…');
+        const abort = new AbortController();
+        self.__abort = abort;
+        // Joining fetches the space, which may take a while; an answer
+        // that has not come in this long is not coming.
+        const patience = setTimeout(() => abort.abort('late'), 90000);
+        try {
+          const root = await fetch('/api/identity/root', { signal: abort.signal });
+          const account = root.ok ? await root.json() : null;
+          if (account?.status !== 'ready' || !account.rootDid) {
+            self.status('Create an account or sign in using the email that received this invitation, then select Join Space.');
+            return;
+          }
+          const branch = (window.tonk.context || {}).branch || 'main';
+          const at = (operation) => `/api/repository/profile:tonk/branch/${branch}/${operation}`;
+          const post = (operation, body, accept) => fetch(at(operation), {
+            method: 'POST',
+            signal: abort.signal,
+            headers: { 'content-type': 'application/json', ...(accept ? { accept } : {}) },
+            body: JSON.stringify(body),
+          });
+          const id = 'urn:uuid:' + crypto.randomUUID();
+          const field = (name) => ({ the: `xyz.tonk.email-invitation-status/${name}`, as: 'Text', cardinality: 'one' });
+          // Watching before asking: the answer must find the stream open.
+          const watching = post('query', {
+            predicate: { with: { state: field('state'), message: field('message') } },
+            terms: { this: id, state: { '?': { name: 'state' } }, message: { '?': { name: 'message' } } },
+          }, 'text/event-stream');
+          const asked = await post('transact', { claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              id: { the: 'xyz.tonk.claim-email-invitation/id', as: 'Text' },
+              account: { the: 'xyz.tonk.claim-email-invitation/account', as: 'Entity' },
+            } } },
+            parameters: { this: id, id: self.__id, account: account.rootDid },
+          } }] });
+          if (!asked.ok) throw new Error(`HTTP ${asked.status}`);
+          const stream = await watching;
+          if (!stream.ok) throw new Error(`HTTP ${stream.status}`);
+          const reader = stream.body.pipeThrough(new TextDecoderStream()).getReader();
+          let text = '';
+          let outcome = null;
+          while (!outcome) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('the outcome never arrived');
+            text += value;
+            for (let end; (end = text.indexOf('\n\n')) >= 0; text = text.slice(end + 2)) {
+              const frame = text.slice(0, end);
+              if (!frame.startsWith('data:')) continue;
+              const said = JSON.parse(frame.slice(5));
+              const rows = Array.isArray(said) ? said : said.conclusions || said.asserted || [];
+              const row = rows.find((row) => row.this === id)?.fields;
+              if (row && row.state !== 'pending') outcome = row;
+            }
+          }
+          // Joined, the worker opens the space; failed, the claim is safe
+          // to ask again.
+          if (self.isConnected) self.status(outcome.message || 'Couldn’t join this space.');
+        } catch (failure) {
+          if (!self.isConnected) return;
+          if (abort.signal.reason === 'late') {
+            self.status('Joining is taking longer than expected. Select Join Space to retry safely.');
+          } else if (!abort.signal.aborted) {
+            self.status('Couldn’t start joining. Your invitation is safe to retry.');
+          }
+        } finally {
+          clearTimeout(patience);
+          abort.abort();
+          if (self.__abort === abort) self.__abort = null;
+          if (button) button.disabled = false;
         }
       }
 

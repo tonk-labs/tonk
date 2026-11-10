@@ -1886,6 +1886,8 @@ note:
         sender.quit().await?;
         let recipient = driver_with_prf(&env).await?;
         goto(&recipient, &locator).await?;
+        // The page is a profile view, as the activation page is.
+        enter_guest(&recipient).await?;
         wait_for_displayed(&recipient, "#email-invite-account")
             .await?
             .click()
@@ -1897,6 +1899,7 @@ note:
         assert_eq!(recipient.current_url().await?.fragment(), Some(id.as_str()));
         // A page reload after signup must retain the locator and find the account.
         recipient.refresh().await?;
+        enter_guest(&recipient).await?;
         wait_for_displayed(&recipient, "#email-invite-join")
             .await?
             .click()
