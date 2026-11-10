@@ -11223,6 +11223,7 @@ note:
         // approve, which asks for the passkey.
         enter_guest(&driver).await?;
         // The name starts as the app's; the person names the agent.
+        wait_for_value(&driver, "[data-agent-name]", "Claude Code").await?;
         let name = wait_for_displayed(&driver, "[data-agent-name]").await?;
         name.clear().await?;
         name.send_keys("E2E agent").await?;
