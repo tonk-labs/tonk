@@ -61,7 +61,7 @@ jobs:
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
 
-      - uses: wimpysworld/nothing-but-nix@main
+      - uses: wimpysworld/nothing-but-nix@baf7355748bb5651f08b839669d6bb39051b2874 # main before 153c2fb, whose /nix/tmp TMPDIR breaks the Nix installer
       - uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
@@ -744,7 +744,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - uses: wimpysworld/nothing-but-nix@main
+      - uses: wimpysworld/nothing-but-nix@baf7355748bb5651f08b839669d6bb39051b2874 # main before 153c2fb, whose /nix/tmp TMPDIR breaks the Nix installer
       - uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable

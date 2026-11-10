@@ -580,6 +580,33 @@ impl Command for Interpret {
     type Output = ();
 }
 
+/// `space/create-branch`: give a space a branch it does not have yet.
+///
+/// Fired from the panel the space chrome shows when a page asks for a
+/// branch the space lacks (`/space/{branch}@{did}`). The worker's handler
+/// starts the branch from the same-named branch on the space's remote when
+/// there is one, else from `base` (`main` as it is now, or the standard
+/// library alone), and has it track that remote branch when the space has a
+/// remote. Only the profile branch may fire it.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CreateBranch {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The space to make the branch in.
+    pub space: crate::domain::command::current::create_branch::Space,
+    /// The new branch's name.
+    pub name: crate::domain::command::current::create_branch::Name,
+    /// What the branch starts from, when the remote has no such branch.
+    pub base: crate::domain::command::current::create_branch::Base,
+    /// The tab's site that asked.
+    pub site: crate::domain::command::current::create_branch::Site,
+}
+
+impl Command for CreateBranch {
+    type Input = Self;
+    type Output = ();
+}
+
 /// `site/select`: what the page in a tab has selected, reported by the
 /// page as it changes. The handler records it on the tab's site as
 /// `xyz.tonk.site/selection`, in the session overlay of the branch it came

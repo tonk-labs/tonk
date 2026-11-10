@@ -494,7 +494,8 @@ where
         + dialog_capability::Provider<dialog_effects::memory::Publish>
         + dialog_capability::Provider<dialog_effects::authority::Identify>
         + dialog_capability::Provider<dialog_effects::authority::Attest>
-        + dialog_capability::Provider<dialog_repository::Hydrate>
+        + dialog_capability::Provider<dialog_effects::archive::Load>
+        + dialog_capability::Provider<dialog_effects::blob::Load>
         + dialog_capability::Provider<dialog_artifacts::Preload>
         + dialog_capability::Provider<dialog_artifacts::Speculation>
         + dialog_capability::Provider<
@@ -594,7 +595,8 @@ where
         + dialog_capability::Provider<dialog_effects::memory::Publish>
         + dialog_capability::Provider<dialog_effects::authority::Identify>
         + dialog_capability::Provider<dialog_effects::authority::Attest>
-        + dialog_capability::Provider<dialog_repository::Hydrate>
+        + dialog_capability::Provider<dialog_effects::archive::Load>
+        + dialog_capability::Provider<dialog_effects::blob::Load>
         + dialog_capability::Provider<dialog_artifacts::Preload>
         + dialog_capability::Provider<dialog_artifacts::Speculation>
         + dialog_capability::Provider<

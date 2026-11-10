@@ -12,11 +12,13 @@
 use dialog_artifacts::{Entity, Preload, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
+use dialog_effects::blob::Load as BlobLoad;
 use dialog_effects::memory::Resolve;
 use dialog_query::{Concept, EvaluationError, Output as _, Query, Term};
-use dialog_repository::{Branch, Hydrate, RemoteSite};
+use dialog_repository::{Branch, RemoteSite};
 
 use crate::device_link::delegation_audience;
 use crate::domain::agent_session::{CreatedAt, Reason, Title};
@@ -137,7 +139,8 @@ where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<BlobLoad>
         + Provider<Preload>
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>

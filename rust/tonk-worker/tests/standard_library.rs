@@ -36,7 +36,8 @@ const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profi
 /// `table.yaml` reached the seed before anything complained.
 const TABLE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/table.yaml");
 const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/notebook.yaml");
-const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose.yaml");
+const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose-editor.yaml");
+const CODE_EDITOR_LIBRARY: &str = include_str!("../../tonk-core/assets/library/code-editor.yaml");
 const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
 const META_LIBRARY: &str = include_str!("../../tonk-core/assets/library/meta.yaml");
 const VERSION_CONTROL_LIBRARY: &str =
@@ -399,7 +400,7 @@ const FORM_CONTROL_PREFIX: &str = "dom.event.current-target.elements.";
 /// "open this space" over a repository that loaded.
 #[dialog_common::test]
 fn it_declares_the_repository_concept_the_space_chrome_resolves() {
-    let chrome = "<tonk-display with={id} entity={id} model=tonk:repository view=title>";
+    let chrome = "<tonk-display with=\"{space-branch}@{space-repo}\" entity={space-repo} model=tonk:repository view=title>";
     assert!(
         PROFILE_LIBRARY.contains(chrome),
         "the space chrome decides a space is here by resolving `tonk:repository`"
@@ -466,11 +467,11 @@ fn it_reads_form_controls_at_properties_they_have() {
 #[dialog_common::test]
 fn it_leaves_network_bearing_space_bindings_unquoted() {
     assert!(
-        PROFILE_LIBRARY.contains("space={id}"),
+        PROFILE_LIBRARY.contains("space={space-repo}"),
         "the FAB space binding must be resolved by the renderer"
     );
     assert!(
-        !PROFILE_LIBRARY.contains("space=\"{id}\""),
+        !PROFILE_LIBRARY.contains("space=\"{space-repo}\""),
         "a quoted binding can reach membership fetches unresolved"
     );
 }
@@ -590,7 +591,7 @@ fn display_body<'a>(source: &'a str, opening: &str) -> Option<&'a str> {
 fn it_hides_space_absence_slots_before_display_initialization() {
     let chrome = display_body(
         PROFILE_LIBRARY,
-        "<tonk-display with={id} entity={id} model=tonk:repository view=title>",
+        "<tonk-display with=\"{space-branch}@{space-repo}\" entity={space-repo} model=tonk:repository view=title>",
     )
     .expect("space chrome must contain its repository title display");
     for slot in ["no-model", "no-entity", "no-view"] {
@@ -611,7 +612,7 @@ fn it_hides_space_absence_slots_before_display_initialization() {
 fn it_recovers_from_every_absent_space_directory_state() {
     let directory_probe = display_body(
         PROFILE_LIBRARY,
-        "<tonk-display with=\"{profile-branch}@profile:tonk\" entity={id} model=space view=downloading>",
+        "<tonk-display with=\"{profile-branch}@profile:tonk\" entity={space-repo} model=space view=downloading>",
     )
     .expect("absent-space chrome must consult the profile directory");
 
@@ -1397,9 +1398,48 @@ async fn it_lowers_the_notebook_library() {
 }
 
 #[dialog_common::test]
-async fn it_lowers_the_prose_library() {
-    assert_component_library_lowers("prose library (prose.yaml)", "prose.yaml", PROSE_LIBRARY)
-        .await;
+async fn it_lowers_the_code_editor_library() {
+    assert_component_library_lowers(
+        "code-editor library (code-editor.yaml)",
+        "code-editor.yaml",
+        CODE_EDITOR_LIBRARY,
+    )
+    .await;
+}
+
+/// A language is a component of its own, installable without the editor,
+/// so it lowers on the standard library alone. One of each shape the
+/// build generates: a Lezer grammar, a legacy stream mode, a SQL dialect.
+#[dialog_common::test]
+async fn it_lowers_language_components() {
+    for (file, document) in [
+        (
+            "language/python.yaml",
+            include_str!("../../tonk-core/assets/library/language/python.yaml"),
+        ),
+        (
+            "language/clojure.yaml",
+            include_str!("../../tonk-core/assets/library/language/clojure.yaml"),
+        ),
+        (
+            "language/postgresql.yaml",
+            include_str!("../../tonk-core/assets/library/language/postgresql.yaml"),
+        ),
+    ] {
+        // Parsed at the library directory, as seeding parses every library
+        // document, so its include (`./language/<id>.js`) resolves there.
+        assert_component_library_lowers(file, "language.yaml", document).await;
+    }
+}
+
+#[dialog_common::test]
+async fn it_lowers_the_prose_editor_library() {
+    assert_component_library_lowers(
+        "prose-editor library (prose-editor.yaml)",
+        "prose-editor.yaml",
+        PROSE_LIBRARY,
+    )
+    .await;
 }
 
 #[dialog_common::test]

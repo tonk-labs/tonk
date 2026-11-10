@@ -19,8 +19,9 @@ use serde::Deserialize;
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_handler_macros::wasm_compat;
-use tonk_schema::{SyncState, classify};
+use tonk_schema::SyncState;
 use tonk_worker_api::SyncDisposition;
+use tonk_worker_api::compare_heads;
 pub use tonk_worker_api::{SyncResponse, SyncStatusResponse};
 
 use super::{AppState, BranchConfiguration};
@@ -284,7 +285,7 @@ async fn publish_settled_status(
         },
     };
 
-    let state = SyncState::from(classify(local.as_ref(), remote.as_ref()));
+    let state = SyncState::from(compare(handle, local.as_ref(), remote.as_ref(), tonk).await);
     // Re-check pause: it could have landed during the (awaiting) fetch.
     if is_sync_enabled(tonk, repo, branch).await {
         publish_sync_status(tonk, repo, branch, state).await;
@@ -515,7 +516,49 @@ fn classified_service_failure(
     })
 }
 
+/// [`compare_heads`] for a status: a head whose context cannot be read
+/// (its tree unreachable, its ancestry not local) is reported as
+/// `Diverged`, the classifier's own answer for a head it cannot order,
+/// rather than failing the status.
+async fn compare(
+    branch: &dialog_repository::Branch,
+    local: Option<&Revision>,
+    remote: Option<&Revision>,
+    tonk: &crate::worker::TonkState,
+) -> tonk_worker_api::Comparison {
+    match compare_heads(branch, local, remote, &tonk.operator).await {
+        Ok(comparison) => comparison,
+        Err(e) => {
+            log!("sync status: cannot resolve a head's context, reporting diverged: {e}");
+            tonk_worker_api::Comparison::Diverged
+        }
+    }
+}
+
+/// Whether `error` is a pull or push refused because the upstream holds a
+/// rival head: another replica writing with this branch's key built on
+/// the same head and minted the same version over another tree
+/// (dialog-db/dialog-db#705). Neither side can merge the other without
+/// dropping a write, and dialog wrote nothing, so no pull-and-retry
+/// recovers it: one key's writers must write one at a time.
+fn is_rival_writer(error: &crate::reactor::ReactorError) -> bool {
+    matches!(
+        error,
+        crate::reactor::ReactorError::Push(dialog_repository::PushError::WriterRacedItself { .. })
+            | crate::reactor::ReactorError::Pull(PullError::WriterRacedItself { .. })
+    )
+}
+
 fn sync_failure(error: &crate::reactor::ReactorError) -> TonkWorkerError {
+    if is_rival_writer(error) {
+        return TonkWorkerError::Upstream {
+            status: 409,
+            code: Some("SYNC_RIVAL_WRITER".to_string()),
+            message: "another replica writing as this one minted the same version over \
+                      another tree; one key must not write from two replicas at once"
+                .to_string(),
+        };
+    }
     if is_head_moved(error) || is_upstream_moved(error) {
         return TonkWorkerError::Upstream {
             status: 409,
@@ -1214,7 +1257,8 @@ pub async fn sync_status(
         }
     };
 
-    let sync_state = SyncState::from(classify(local.as_ref(), remote.as_ref()));
+    let sync_state =
+        SyncState::from(compare(handle, local.as_ref(), remote.as_ref(), &tonk_state).await);
     // Publish the live status to the replica's `tonk/sync` overlay so the
     // chip's subscription reflects it — the same path the HTTP response
     // carries, now also a fact the UI can subscribe to.
