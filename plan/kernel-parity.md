@@ -161,3 +161,36 @@ Approving with the account's key, done the same way:
 4. Delete the browser-only paths of `tonk-worker`, and the old workers. Done:
    the deployment ships only the kernel, and `tonk-worker` builds natively and
    for `wasm32-wasip3` only. What comes next is `plan/site-essentials.md`.
+
+## Replacing main
+
+`main` merged in (2026-11-09) with its 141 commits. What `main` does that the
+kernel build does not do yet, in the order it lands:
+
+1. **Agents.** Approving an agent (`/settings/agent`, the palette's invite)
+   and removing one. On `main` the worker opened the account's key and the
+   agent's key itself. Here the grants come from the lent persona's
+   `delegate`, as a device's do; the agent's space is made by its own
+   kernel, with a key its host holds; and the host holding the agent's key
+   signs the session token. `authorize.rs` refuses both intents until then.
+2. **The hosted agent** (`tonk-host-worker`, `tonk-view-peer`). On `main` the
+   old service worker's code ran inside a Cloudflare Worker. Here the Worker
+   hosts the space kernel, through the component model polyfill, with a
+   storage host of its own: Cloudflare is one more host.
+3. **Migration.** A person with spaces from `main` is offered to bring them
+   over. Only the app origin can read what `main` kept (one IndexedDB per
+   space DID, its profile under its DID, keys in `dialog.credential`), so the
+   app's page reads it and hands each space to its own origin: the profile's
+   key and records to the persona, a local-only space's blocks and branch
+   cells to its kernel under the same DID. A synced space needs only its
+   record; its kernel pulls the rest.
+4. **A space with no renderer** (made before the renderer was kept per
+   space) is given one when it opens.
+5. **What the profile does on `main` that the kernel does not:** joining an
+   emailed invite (`/email-invite`, now a profile route), the wait for the
+   activation mail after sign-up, a link pasted on a bare `/join`, opening a
+   branch by URL (#1300) through the space's kernel, stamping `space-repo` and
+   `space-branch` on a site, resolving a short link, and pushing each commit
+   as it lands with an upstream watched over a socket (#1046).
+6. **Production.** `tonk.network` has no `SITE_HOST`, so no origins for
+   sites; it needs one, with the routes staging and dev have.
