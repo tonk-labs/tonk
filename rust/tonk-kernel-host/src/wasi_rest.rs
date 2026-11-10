@@ -34,13 +34,13 @@ impl system_clock::Host for KernelHost {
 impl random::Host for KernelHost {
     fn get_random_bytes(&mut self, max_len: u64) -> Vec<u8> {
         let mut bytes = vec![0; max_len.min(1 << 16) as usize];
-        getrandom::getrandom(&mut bytes).expect("the platform has randomness");
+        getrandom_0_2::getrandom(&mut bytes).expect("the platform has randomness");
         bytes
     }
 
     fn get_random_u64(&mut self) -> u64 {
         let mut bytes = [0; 8];
-        getrandom::getrandom(&mut bytes).expect("the platform has randomness");
+        getrandom_0_2::getrandom(&mut bytes).expect("the platform has randomness");
         u64::from_le_bytes(bytes)
     }
 }

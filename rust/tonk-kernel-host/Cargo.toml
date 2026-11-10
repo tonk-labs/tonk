@@ -15,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 volatile = []
 
 [dependencies]
-blake3 = "1"
+blake3.workspace = true
 dialog-capability.workspace = true
 dialog-common.workspace = true
 dialog-credentials.workspace = true
@@ -28,14 +28,13 @@ dialog-ucan-core.workspace = true
 dialog-remote-ucan.workspace = true
 dialog-ucan.workspace = true
 dialog-varsig.workspace = true
-ipld-core = "0.4"
-serde_ipld_dagcbor = "0.6"
-zeroize = "1"
-bs58 = "0.5"
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-futures = "0.3"
-getrandom = "0.2"
-tracing = "0.1"
+ipld-core.workspace = true
+serde_ipld_dagcbor.workspace = true
+zeroize.workspace = true
+bs58.workspace = true
+ed25519-dalek.workspace = true
+futures.workspace = true
+getrandom_0_2.workspace = true
 wcmp.workspace = true
 tonk-kernel-world = { workspace = true }
 
@@ -43,7 +42,6 @@ tonk-kernel-world = { workspace = true }
 tokio = { version = "1", features = ["time", "macros", "rt"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { version = "0.2", features = ["js"] }
 # The session's key, kept in Dialog DB's credential store.
 dialog-identity.workspace = true
 # Signing a person in: the account a passkey holds, and its enrollment.

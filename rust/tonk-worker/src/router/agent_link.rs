@@ -248,7 +248,7 @@ pub(super) async fn request_detailed(
     document: &str,
     method: &str,
 ) -> Result<Value, String> {
-    let response = router
+    let Ok(response) = router
         .call(
             Request::builder()
                 .method(method)
@@ -257,8 +257,7 @@ pub(super) async fn request_detailed(
                 .body(Body::from(document.to_owned()))
                 .map_err(|error| error.to_string())?,
         )
-        .await
-        .map_err(|error| error.to_string())?;
+        .await;
     let status = response.status();
     let body = axum::body::to_bytes(response.into_body(), 2_000_000)
         .await

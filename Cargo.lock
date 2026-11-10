@@ -6013,7 +6013,6 @@ dependencies = [
  "tonk-invite",
  "tonk-kernel-world",
  "tonk-worker",
- "tracing",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",

@@ -633,7 +633,8 @@ async fn seed_of(signer: &Ed25519Signer<Extractable>) -> Result<Zeroizing<[u8; 3
 
 fn fresh_seed() -> Result<Zeroizing<[u8; 32]>, Error> {
     let mut seed = Zeroizing::new([0u8; 32]);
-    getrandom::getrandom(seed.as_mut()).map_err(|error| Error::Unavailable(error.to_string()))?;
+    getrandom_0_2::getrandom(seed.as_mut())
+        .map_err(|error| Error::Unavailable(error.to_string()))?;
     Ok(seed)
 }
 
