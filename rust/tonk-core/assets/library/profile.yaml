@@ -5699,6 +5699,50 @@ element!: &space-actions
         if (submit) submit.disabled = true;
         self.rename(form, input.value);
       }
+    watch: |
+      (self, query) => {
+        // A subscription is the profile branch's `/query` answered as an
+        // event stream: what holds now, then what each change asserts.
+        const abort = new AbortController();
+        const branch = (window.tonk.context || {}).branch || 'main';
+        // Asked now, not at the first read: the caller claims next, and
+        // the answer to that claim must find the stream already open.
+        const opened = fetch(`/api/repository/profile:tonk/branch/${branch}/query`, {
+          method: 'POST',
+          signal: abort.signal,
+          headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+          body: JSON.stringify(query),
+        });
+        opened.catch(() => {});
+        const frames = (async function* () {
+          const response = await opened;
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+          let text = '';
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) return;
+            text += value;
+            for (let end; (end = text.indexOf('\n\n')) >= 0; text = text.slice(end + 2)) {
+              const frame = text.slice(0, end);
+              if (!frame.startsWith('data:')) continue;
+              const said = JSON.parse(frame.slice(5));
+              yield Array.isArray(said) ? said : said.conclusions || said.asserted || [];
+            }
+          }
+        })();
+        return { read: () => frames.next(), cancel: async () => abort.abort() };
+      }
+    claim: |
+      async (self, request) => {
+        const branch = (window.tonk.context || {}).branch || 'main';
+        const response = await fetch(`/api/repository/profile:tonk/branch/${branch}/transact`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(request),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+      }
     # Dispatch the rename under a fresh receipt and wait for the worker's
     # answer on it: close on `renamed`, show the detail on `failed`.
     rename: |
@@ -5709,15 +5753,15 @@ element!: &space-actions
           await window.tonk.ready;
           if (!self.isConnected) return;
           const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
-          reader = window.tonk.subscribe({
+          reader = self.watch({
             predicate: { with: {
               status: { the: 'xyz.tonk.repository-rename/status', as: 'Text', cardinality: 'one' },
               detail: { the: 'xyz.tonk.repository-rename/detail', as: 'Text', cardinality: 'one' },
             } },
             terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
-          }).getReader();
+          });
           self.__renameReader = reader;
-          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+          await self.claim({ claims: [{ op: 'assert', application: {
             predicate: { kind: 'transient', concept: { with: {
               name: { the: 'xyz.tonk.command.rename-repository/name', as: 'Text' },
               space: { the: 'xyz.tonk.rename-repository/space', as: 'Entity' },
