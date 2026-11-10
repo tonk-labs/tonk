@@ -165,11 +165,11 @@ async fn it_answers_while_a_subscription_is_open() {
     }
 }
 
-/// A kernel answers a page load of its site: with its page, where its routes
-/// keep nothing, which renders the site's view; with an asset, opened as a
-/// page; and with a page saying what it answered, for an address it cannot
-/// answer with either. A request that is not a page load is answered as
-/// before.
+/// A kernel answers a page load of its site: with a page that loads again,
+/// while the space holds no content and so no page of its own; with an
+/// asset, opened as a page; and with a page saying what it answered, for an
+/// address it cannot answer with either. A request that is not a page load
+/// is answered as before.
 #[tokio::test(flavor = "current_thread")]
 async fn it_answers_page_loads_with_its_page() {
     let engine = engine();
@@ -206,12 +206,14 @@ async fn it_answers_page_loads_with_its_page() {
             }
         };
 
+        // A space keeps the renderer its page loads, and one that holds no
+        // content yet answers a page that loads again until it does.
         let (status, kind, body) = load("/notes", page.clone()).await;
-        assert_eq!(status, 200, "{body}");
+        assert_eq!(status, 503, "{body}");
         assert_eq!(kind.as_deref(), Some("text/html; charset=utf-8"));
         assert!(
-            body.contains("tonk-display"),
-            "the page renders the view: {body}"
+            body.contains(r#"<meta http-equiv="refresh""#),
+            "the page loads again: {body}"
         );
 
         let stored = served
@@ -334,7 +336,10 @@ async fn it_sends_a_whole_tab_to_the_app() {
             .request("GET", "/notes", tab("iframe"), b"")
             .await
             .unwrap();
-        assert_eq!(framed.status, 200, "a frame's load is the site's page");
+        assert_eq!(
+            framed.status, 503,
+            "a frame's load is answered in place, by a space that holds nothing yet"
+        );
         let asset = space_served
             .request("GET", "/asset:3mJr7AoUXx2Wqd", tab("document"), b"")
             .await

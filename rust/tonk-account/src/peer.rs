@@ -9,7 +9,6 @@ use dialog_capability::{Provider, Subject, did};
 use dialog_common::ConditionalSync;
 use dialog_credentials::{Credential, SignerCredential};
 use dialog_did_web::Discover;
-use dialog_effects::authority::{Identify, OperatorExt as _};
 use dialog_effects::credential::{self as credential_fx, CredentialError, prelude::*};
 use dialog_effects::peer::RemoveAddress;
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt as _};
@@ -28,9 +27,7 @@ use dialog_storage::resource::Resource;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Principal as _;
-use std::collections::BTreeSet;
 use std::fmt::Display;
-use std::sync::Mutex;
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 use tonk_kernel_world::replica::KernelRelay;
 
@@ -786,7 +783,11 @@ pub async fn connect<Env: ConnectEnv>(
 ) -> Result<ConnectedReplica, ConnectReplicaError> {
     let name = service_name(&address)?;
     let did = service_did(&address)?;
-    if first_in_process(env, &name).await {
+    // A kernel on WASI reaches a service only through its embedder's relay,
+    // which follows no socket, and has no fetch of its own to read a
+    // document with: it records the service at its endpoint.
+    #[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+    if discovered::first_in_process(env, &name).await {
         // Best effort: the document is where the socket comes from, and a
         // service is reached without one when it cannot be read.
         let _ = contact(&did)
@@ -825,24 +826,37 @@ pub trait ConnectEnv: PeersEnv + Provider<Discover> + Provider<RemoveAddress> {}
 
 impl<T> ConnectEnv for T where T: PeersEnv + Provider<Discover> + Provider<RemoveAddress> {}
 
-/// The services discovered in this process, by the host that recorded them
-/// and the service's name: each host follows a service's document once per
-/// process, so a document that changed is followed after a reload.
-static DISCOVERED: Mutex<BTreeSet<(String, String)>> = Mutex::new(BTreeSet::new());
+/// Which services this process has discovered. A kernel on WASI discovers
+/// none (see [`connect`]).
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+mod discovered {
+    use std::collections::BTreeSet;
+    use std::sync::{Mutex, PoisonError};
 
-/// Whether the host `env` acts for has not yet discovered the service
-/// `name` in this process, marking it discovered.
-async fn first_in_process<Env: Provider<Identify> + ConditionalSync>(
-    env: &Env,
-    name: &str,
-) -> bool {
-    let Ok(host) = Identify.perform(env).await else {
-        return true;
-    };
-    DISCOVERED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert((host.profile().to_string(), name.to_string()))
+    use dialog_capability::Provider;
+    use dialog_common::ConditionalSync;
+    use dialog_effects::authority::{Identify, OperatorExt as _};
+
+    /// The services discovered in this process, by the host that recorded
+    /// them and the service's name: each host follows a service's document
+    /// once per process, so a document that changed is followed after a
+    /// reload.
+    static DISCOVERED: Mutex<BTreeSet<(String, String)>> = Mutex::new(BTreeSet::new());
+
+    /// Whether the host `env` acts for has not yet discovered the service
+    /// `name` in this process, marking it discovered.
+    pub(super) async fn first_in_process<Env: Provider<Identify> + ConditionalSync>(
+        env: &Env,
+        name: &str,
+    ) -> bool {
+        let Ok(host) = Identify.perform(env).await else {
+            return true;
+        };
+        DISCOVERED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert((host.profile().to_string(), name.to_string()))
+    }
 }
 
 /// `address` at its endpoint alone, without a socket: what a host records

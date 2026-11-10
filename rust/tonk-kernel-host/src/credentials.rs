@@ -20,7 +20,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 
-use dialog_common::ConditionalSync;
+use dialog_common::{ConditionalSend, ConditionalSync};
 use dialog_credentials::Ed25519Signer;
 use dialog_credentials::Ed25519Verifier;
 use dialog_credentials::ed25519::Extractable;
@@ -123,11 +123,11 @@ pub type Answer = LocalBoxFuture<'static, Result<Vec<u8>, Error>>;
 
 /// What answers `representative.delegate`: the representative's key, where
 /// the host holds it, or the host of the person's persona, which it asks.
-pub trait Delegator: ConditionalSync {
+pub trait Delegator: ConditionalSend + ConditionalSync {
     fn delegate(&self, audience: String, access: Access) -> Answer;
 }
 
-impl<F: Fn(String, Access) -> Answer + ConditionalSync> Delegator for F {
+impl<F: Fn(String, Access) -> Answer + ConditionalSend + ConditionalSync> Delegator for F {
     fn delegate(&self, audience: String, access: Access) -> Answer {
         self(audience, access)
     }

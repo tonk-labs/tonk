@@ -298,7 +298,14 @@ fn mint_instance() -> String {
         let low = (js_sys::Math::random() * f64::from(u32::MAX)) as u32;
         format!("{high:08x}{low:08x}")
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    // A component on WASI has no process id: its random keys alone tell
+    // one instance from another.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    {
+        use std::hash::{BuildHasher, RandomState};
+        format!("{:016x}", RandomState::new().hash_one(()))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     {
         use std::hash::{BuildHasher, RandomState};
         format!("{:016x}", RandomState::new().hash_one(std::process::id()))
