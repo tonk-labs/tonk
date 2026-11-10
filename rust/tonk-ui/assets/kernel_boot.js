@@ -1415,9 +1415,16 @@ self.addEventListener("message", event => {
     if (type === "protocol") event.ports[0]?.postMessage({ protocol: PROTOCOL });
     else if (type === "claim") event.waitUntil(self.clients.claim());
     // The shell that installed this worker waits for the kernel to boot, and
-    // so take up its space, before it goes to the space's address.
+    // so take up its space, before it goes to the space's address. One that
+    // did not boot boots again: what it lacked, such as the person's profile
+    // holding its space, may have come since. The shell asks again in a
+    // while, so it paces this.
     else if (type === "booted") {
         const reply = event.ports[0];
+        if (bootFailed) {
+            log("the kernel did not boot; booting it again for the shell");
+            run();
+        }
         event.waitUntil(
             booting.then(() => created).then(
                 () => reply?.postMessage({ booted: true }),

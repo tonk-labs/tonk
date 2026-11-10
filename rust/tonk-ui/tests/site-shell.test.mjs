@@ -35,6 +35,9 @@ const settle = async () => { for (let i = 0; i < 20; i++) await turn(); };
 // - `runs`: the kernel the worker in control was registered for: by default,
 //   the one the record pins.
 // - `host`: the hostname the shell is served on: by default, the site's own.
+// - `unstarted`: how many times the worker answers that its kernel did not
+//   boot before it says it did.
+// - `wait`: what the shell waits a while with, in place of the clock's.
 function boot(
   name,
   {
@@ -42,6 +45,7 @@ function boot(
     answers = {}, marked = false, active = false,
     record = name === "space" ? { v: 2, kernel: "bafkr4ispace" } : null, runs = record?.kernel ?? null,
     host = name === "profile" ? "profile.tonk.test" : "bspace.tonk.test",
+    unstarted = 0, wait = setTimeout,
   } = {},
 ) {
   const origin = `https://${host}`;
@@ -73,7 +77,10 @@ function boot(
       toWorker.push(message);
       if (message.type === "protocol") transfer[0].postMessage({ protocol: 2 });
       if (message.type === "content") transfer[0].postMessage({ admitted: true });
-      if (message.type === "booted") transfer[0].postMessage({ booted: true });
+      if (message.type === "booted") {
+        transfer[0].postMessage(unstarted > 0 ? { error: "the person has no such space" } : { booted: true });
+        unstarted -= 1;
+      }
     },
   };
   const container = {
@@ -174,7 +181,7 @@ function boot(
     Response,
     URL, encodeURIComponent,
     MessageChannel: Channel,
-    setTimeout, clearTimeout, setInterval: () => 0, Promise, Number, Date, String,
+    setTimeout: wait, clearTimeout, setInterval: () => 0, Promise, Number, Date, String,
     decodeURIComponent, Error,
   });
   vm.runInContext(SHELLS[name], context);
@@ -527,6 +534,16 @@ test("a space that pins no kernel runs the one its deployment ships, and pins it
     assert.equal(site.container.registered[0][0], "/kernel_boot.js?kernel=bafkr4ikernel");
     assert.deepEqual(site.booted.record, { v: 2, kernel: "bafkr4ikernel" });
   }
+});
+
+test("a space the person does not hold yet starts once they do, asked again in a while", async () => {
+  const site = boot("space", { served: false, unstarted: 2, wait: (resume) => setTimeout(resume, 1) });
+  for (let i = 0; i < 5; i++) await settle();
+
+  assert.equal(site.toWorker.filter((message) => message.type === "booted").length, 3);
+  assert.ok(site.said.includes("waiting for the space"), "it says what it waits on");
+  assert.equal(site.failed.length, 1, "what went wrong is told once");
+  assert.deepEqual(site.went, [["replace", "/"]], "it goes to the space once it started");
 });
 
 test("a space with no kernel to run starts no worker and says why", async () => {

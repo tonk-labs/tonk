@@ -79,6 +79,10 @@ function space({
   // serves, and the kernel each space pins.
   const kept = { pins: new Map(holds ? [[SPACE, holds]] : []) };
   const opened = [];
+  // Whether the space's kernel boots: the person's profile came to hold the
+  // space once `letBoot` is called.
+  let canBoot = boots;
+  const letBoot = () => void (canBoot = true);
   const bindgen = Object.assign(async () => {}, {
     openSession: async (name) => (opened.push(name), { did: SESSION }),
     heldSpace: async () => kept.pins.keys().next().value,
@@ -91,7 +95,7 @@ function space({
     pinned: async (subject) => kept.pins.get(subject),
     // A kernel creates a space it takes up for the first time, and says so.
     bootSpace: async (subject, session, representative, persona, delegate, sent) => {
-      if (!boots) throw new Error("the person has no such space");
+      if (!canBoot) throw new Error("the person has no such space");
       booted.push({ subject, session: session.did, representative, persona, delegate, sent });
       if (!holds) queueMicrotask(() => sent(new TextEncoder().encode(JSON.stringify({ ask: 1, seeded: true }))));
       return embedder;
@@ -221,7 +225,7 @@ function space({
     new Promise((resolve) =>
       listeners.message({ data: { type: "booted" }, ports: [{ postMessage: resolve }], waitUntil() {} }),
     );
-  return { hostCaches, bodies, received, sentHeaders, listeners, imported, fetched, booted, handled, asked, told, kept, opened, authorized, stood, handPort, passDown, request, message, post, goOffline, started };
+  return { hostCaches, bodies, received, sentHeaders, listeners, imported, fetched, booted, handled, asked, told, kept, opened, authorized, stood, handPort, passDown, request, message, post, goOffline, started, letBoot };
 }
 
 test("the bootloader loads the host's embedder", () => {
@@ -570,6 +574,16 @@ test("a page load while the kernel did not boot gets the host's page, which trie
   assert.equal(response.status, 502);
   const page = await response.text();
   assert.match(page, /location\.reload\(\)/, "the page loads again in a while");
+});
+
+test("a shell asking again for a kernel that did not boot has it boot again", async () => {
+  const site = space({ holds: KERNEL, boots: false });
+  site.handPort();
+  assert.match((await site.started()).error, /no such space/);
+
+  site.letBoot();
+  assert.equal((await site.started()).booted, true, "what it lacked has come");
+  assert.equal(site.booted.length, 1);
 });
 
 test("what a page asks of a space whose kernel does not answer, the persona answers", async () => {

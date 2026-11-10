@@ -425,6 +425,22 @@
                 // The path this shell is kept at. It is not a place in the site.
                 var SHELL = "/space.html";
 
+                // How long a shell whose space did not start waits before it
+                // asks again.
+                var RETRY_START_MS = 3000;
+
+                // Wait for the worker's kernel to boot and take up its space.
+                function started() {
+                    return new Promise(function (resolve, reject) {
+                        var channel = new MessageChannel();
+                        channel.port1.onmessage = function (event) {
+                            if (event.data && event.data.booted) resolve();
+                            else reject(new Error((event.data && event.data.error) || "the space did not start"));
+                        };
+                        navigator.serviceWorker.controller.postMessage({ type: "booted" }, [channel.port2]);
+                    });
+                }
+
                 // The site runs in this document, so the shell brings it up
                 // only once the document is one the worker served, with the
                 // site's policy on it. With no worker the site does not render.
@@ -446,14 +462,24 @@
                         // space it is, over the port this shell hands it.
                         broker();
                         say("starting the space");
-                        await new Promise(function (resolve, reject) {
-                            var channel = new MessageChannel();
-                            channel.port1.onmessage = function (event) {
-                                if (event.data && event.data.booted) resolve();
-                                else reject(new Error((event.data && event.data.error) || "the space did not start"));
-                            };
-                            navigator.serviceWorker.controller.postMessage({ type: "booted" }, [channel.port2]);
-                        });
+                        // A space the person's profile does not hold yet,
+                        // such as one a visitor is still joining, starts
+                        // once it does: until then this asks again in a
+                        // while, as the host's page does, and says so.
+                        var told = false;
+                        for (;;) {
+                            try {
+                                await started();
+                                break;
+                            } catch (error) {
+                                if (!told) report(error);
+                                told = true;
+                                say("waiting for the space");
+                                await new Promise(function (resolve) {
+                                    setTimeout(resolve, RETRY_START_MS);
+                                });
+                            }
+                        }
                         location.replace(booting !== null ? booting : "/");
                         return;
                     }
