@@ -1,10 +1,23 @@
 name = "tonk-mcp-worker-local"
-main = "build/worker/shim.mjs"
+main = "entry.mjs"
 compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Built with `worker-build --release` beforehand (see the crate docs);
-# wrangler serves `build/` as it is.
+# Built with `scripts/bundle.sh` and `worker-build --release` beforehand
+# (see README.md): the entry puts the space's kernel, bundled ahead of time,
+# where the Rust module finds it, and loads what worker-build made.
+
+# The kernel's modules, compiled ahead of time: a Worker compiles none at run
+# time. The component itself is bytes, which the polyfill reads.
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = true
+
+[[rules]]
+type = "Data"
+globs = ["**/*.component"]
+fallthrough = true
 
 # One space writer per space and MCP session: the only place revisions for
 # that pair are signed. The object keeps nothing durable; its peer and

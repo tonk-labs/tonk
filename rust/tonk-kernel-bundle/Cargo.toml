@@ -10,8 +10,14 @@ publish = false
 # which it builds before `worker-build`.
 [workspace]
 
+[features]
+# The components as the deployment builds them (see `tonk-components`).
+connection-invites = ["tonk-components/connection-invites"]
+
 [dependencies]
 sha2 = "0.10"
+# The space's kernel the deployment ships, which the Worker is bundled with.
+tonk-components = { path = "../tonk-components" }
 wasmparser = { version = "0.262", default-features = false, features = ["std", "validate", "component-model"] }
 
 [dev-dependencies]

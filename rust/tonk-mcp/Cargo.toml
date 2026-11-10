@@ -1,0 +1,78 @@
+[package]
+name = "tonk-mcp"
+description = "The hosted agent: an MCP endpoint over the spaces an agent reaches, each written by a space writer that drives the space's own kernel."
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[features]
+# Space kernels booted on Wasmtime, as the Host Worker boots them in an
+# isolate: what tests and fixtures drive writers over.
+native-kernels = [
+    "dep:tokio",
+    "dep:tonk-components",
+    "dep:tonk-kernel-host",
+    "dep:wcmp",
+    "dep:wcmp-wasm-core-wasmtime",
+]
+# The writers' tests against a native access service.
+integration-tests = ["native-kernels"]
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+base64 = { workspace = true }
+blake3 = { workspace = true }
+bs58 = { workspace = true }
+dialog-credentials = { workspace = true }
+dialog-repository = { workspace = true }
+dialog-ucan-core = { workspace = true }
+dialog-varsig = { workspace = true }
+futures-util = { workspace = true }
+http-body-util = { workspace = true }
+ipld-core = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+# A tool's answer, written as notation, as the CLI writes it.
+tonk-evaluator = { workspace = true }
+tonk-notation = { workspace = true }
+tonk-account = { workspace = true }
+tonk-common = { workspace = true }
+tonk-identity = { workspace = true }
+tonk-invite = { workspace = true }
+tonk-render = { workspace = true }
+tonk-worker-api = { workspace = true }
+url = { workspace = true }
+zeroize = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync"], optional = true }
+tonk-components = { workspace = true, optional = true }
+tonk-kernel-host = { workspace = true, optional = true }
+wcmp = { workspace = true, optional = true }
+wcmp-wasm-core-wasmtime = { workspace = true, optional = true }
+
+# A Workers isolate: its fetch.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }
+getrandom_0_3 = { workspace = true }
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = ["Request", "RequestInit", "Response"] }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+tonk-access-service = { workspace = true, features = ["helpers"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }

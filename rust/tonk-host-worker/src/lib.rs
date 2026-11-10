@@ -5,10 +5,11 @@
 //!
 //! Every write to a space goes through the space writer of that space and
 //! the caller's MCP session ([`SpaceWriterObject`]), a Durable Object that
-//! keeps a warm [`tonk_worker::SpaceWriter`] and is the only place that
-//! signs revisions for the pair.
+//! keeps a warm [`tonk_mcp::SpaceWriter`] over the space's own kernel,
+//! booted in the isolate, and is the only place that signs revisions for
+//! the pair.
 //!
-//! The front ([`tonk_worker::mcp`]) decodes the agent session token,
+//! The front ([`tonk_mcp::mcp`]) decodes the agent session token,
 //! verifies it, mints and checks `Mcp-Session-Id`, and answers MCP
 //! JSON-RPC. Tool calls on a space go to the writer named by the space
 //! and the session's writer DID.
@@ -28,10 +29,11 @@ use axum::body::Body;
 use dialog_credentials::Ed25519Signer;
 use dialog_varsig::{Did, Principal as _};
 use http::{Response, StatusCode, header};
-use tonk_worker::mcp::{McpEndpoint, SessionKey, Verified, Writers};
-use tonk_worker::view::TicketKey;
+use tonk_mcp::mcp::{McpEndpoint, SessionKey, Verified, Writers};
+use tonk_mcp::view::TicketKey;
 use worker::{Context, Env, HttpRequest, event};
 
+mod kernel;
 mod writer;
 pub use writer::SpaceWriterObject;
 
@@ -81,7 +83,7 @@ async fn fetch(
         key: &key,
         tickets: &tickets,
         writers: &writers,
-        events: &tonk_worker::telemetry::log,
+        events: &tonk_mcp::telemetry::log,
     };
     let (parts, body) = request.into_parts();
     let request = http::Request::from_parts(parts, Body::new(body));
@@ -113,7 +115,7 @@ impl Writers for DurableWriters<'_> {
         // The object is named by the writer it holds, not by the MCP
         // session id alone: two OAuth sessions that happen to send one id
         // are two writers.
-        let writer = match Ed25519Signer::import(&*tonk_worker::writer_seed(
+        let writer = match Ed25519Signer::import(&*tonk_mcp::writer_seed(
             verified.token().seed(),
             mcp_session,
         ))
@@ -131,9 +133,9 @@ impl Writers for DurableWriters<'_> {
         // the configured access service's origin; that service otherwise.
         let named = request
             .headers()
-            .get(tonk_worker::mcp::ADDRESS_HEADER)
+            .get(tonk_mcp::mcp::ADDRESS_HEADER)
             .and_then(|address| address.to_str().ok());
-        let remote = tonk_worker::mcp::mount_address(named, &self.remote);
+        let remote = tonk_mcp::mcp::mount_address(named, &self.remote);
         let identity = writer::Identity {
             writer,
             token: bearer.to_owned(),

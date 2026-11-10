@@ -1,6 +1,7 @@
 //! The space writer's Durable Object: one per space and MCP session (named
 //! by the space and the session's writer DID), holding the [`SpaceWriter`]
-//! that signs every revision for the pair.
+//! that signs every revision for the pair, over the space's own kernel,
+//! booted in this isolate ([`WorkerKernels`]).
 //!
 //! The object keeps nothing durable. Its writer opens on the first request
 //! with the session the front hands in, and lives as long as the object
@@ -24,10 +25,12 @@ use futures_util::future::{Either, select};
 use futures_util::lock::Mutex;
 use http::{Method, Request, StatusCode, header};
 use js_sys::{Function, Reflect};
-use tonk_worker::telemetry::{SERVER_TIMING, Steps, TRACE_HEADER};
-use tonk_worker::{SpaceWriter, writer_seed};
+use tonk_mcp::telemetry::{SERVER_TIMING, Steps, TRACE_HEADER};
+use tonk_mcp::{SpaceWriter, WriterError, writer_seed};
 use wasm_bindgen::{JsCast as _, JsValue};
 use worker::{DurableObject, Env, State, durable_object};
+
+use crate::kernel::WorkerKernels;
 use zeroize::Zeroizing;
 
 /// The binding the front reaches the space writers through.
@@ -144,7 +147,7 @@ fn memory() -> usize {
 }
 
 /// An opened writer, and the seed of its key.
-type Opened = (Zeroizing<[u8; 32]>, Rc<SpaceWriter>);
+type Opened = (Zeroizing<[u8; 32]>, Rc<SpaceWriter<WorkerKernels>>);
 
 /// One space and MCP session's writer.
 #[durable_object]
@@ -322,7 +325,7 @@ impl SpaceWriterObject {
             };
         }
         if method == worker::Method::Get
-            && path == tonk_worker::view::CHAINS_ROUTE.trim_start_matches('/')
+            && path == tonk_mcp::view::CHAINS_ROUTE.trim_start_matches('/')
         {
             let space = url
                 .query_pairs()
@@ -332,7 +335,7 @@ impl SpaceWriterObject {
                 return failure(StatusCode::BAD_REQUEST, "name the space");
             };
             return match writer.space_chains(&space).await {
-                Ok(chains) => match tonk_worker::view::chains_answer(&chains) {
+                Ok(chains) => match tonk_mcp::view::chains_answer(&chains) {
                     Ok(answer) => worker::Response::from_json(&answer),
                     Err(error) => failure(StatusCode::INTERNAL_SERVER_ERROR, &error),
                 },
@@ -340,10 +343,10 @@ impl SpaceWriterObject {
             };
         }
         if method == worker::Method::Post
-            && path == tonk_worker::agent_join::LINK_ROUTE.trim_start_matches('/')
+            && path == tonk_mcp::join::LINK_ROUTE.trim_start_matches('/')
         {
             self.reach("link");
-            let body: tonk_worker::agent_join::LinkRequest = match request.json().await {
+            let body: tonk_mcp::join::LinkRequest = match request.json().await {
                 Ok(body) => body,
                 Err(error) => return failure(StatusCode::BAD_REQUEST, &error.to_string()),
             };
@@ -353,20 +356,9 @@ impl SpaceWriterObject {
             };
         }
         // The grants the front found for this space: one new to the
-        // writer makes it pull the agent space's grants again.
-        let grants: Vec<String> = request
-            .headers()
-            .get(tonk_worker::mcp::GRANTS_HEADER)?
-            .map(|grants| {
-                grants
-                    .split(',')
-                    .filter(|grant| !grant.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
+        // writer is handed to its kernel.
         self.reach("admit");
-        let admitted = writer.admit(&grants).await;
+        let admitted = writer.admit(&grants(&request)).await;
         steps.lap("admit");
         if let Err(error) = admitted {
             return failure(StatusCode::BAD_GATEWAY, &error.to_string());
@@ -439,7 +431,7 @@ impl SpaceWriterObject {
     async fn writer(
         &self,
         request: &worker::Request,
-    ) -> Result<(Rc<SpaceWriter>, bool), (StatusCode, String)> {
+    ) -> Result<(Rc<SpaceWriter<WorkerKernels>>, bool), (StatusCode, String)> {
         let header = |name: &str| {
             request
                 .headers()
@@ -454,7 +446,7 @@ impl SpaceWriterObject {
             .parse()
             .map_err(|_| (StatusCode::BAD_REQUEST, "malformed space".to_owned()))?;
         self.reach("verify");
-        let verified = tonk_worker::mcp::verify(&token)
+        let verified = tonk_mcp::mcp::verify(&token)
             .await
             .map_err(|error| (StatusCode::UNAUTHORIZED, error))?;
         let session = verified.writer_session(&mcp_session);
@@ -473,14 +465,8 @@ impl SpaceWriterObject {
         }
         let remote = url::Url::parse(&header(REMOTE)?)
             .map_err(|_| (StatusCode::BAD_REQUEST, "malformed remote".to_owned()))?;
-        // In-memory storage, so the directory only has to be one no other
-        // peer in this isolate uses.
-        let root = format!(
-            "/space-writer/{:016x}",
-            (js_sys::Math::random() * 1e16) as u64
-        );
         self.reach("writer open");
-        let writer = SpaceWriter::open(&root, &session, &space, &remote)
+        let writer = SpaceWriter::open(WorkerKernels, &session, &space, &remote, &grants(request))
             .await
             .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
         let writer = Rc::new(writer);
@@ -489,6 +475,24 @@ impl SpaceWriterObject {
         *opened = Some((key, writer.clone()));
         Ok((writer, true))
     }
+}
+
+/// The grants (each a chain `space -> ... -> agent space`, a base64url
+/// container) the front found for the request's space.
+fn grants(request: &worker::Request) -> Vec<String> {
+    request
+        .headers()
+        .get(tonk_mcp::mcp::GRANTS_HEADER)
+        .ok()
+        .flatten()
+        .map(|grants| {
+            grants
+                .split(',')
+                .filter(|grant| !grant.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// A request to `path` on the writer's branch.
@@ -503,8 +507,8 @@ fn branch(method: Method, path: &str, content_type: &str, body: Body) -> Request
 /// `error` as an answer: an upstream refusal (a revoked grant) keeps its
 /// status and code, so the front can tell it from a failure; anything
 /// else is `502`.
-fn upstream_failure(error: &tonk_worker::TonkWorkerError) -> worker::Result<worker::Response> {
-    let tonk_worker::TonkWorkerError::Upstream {
+fn upstream_failure(error: &WriterError) -> worker::Result<worker::Response> {
+    let WriterError::Upstream {
         status,
         code: Some(code),
         message,

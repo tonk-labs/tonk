@@ -4,7 +4,35 @@ The hosted agent's `/mcp`. The access service forwards `/mcp` to this worker
 over the `MCP_WORKER` service binding, so the endpoint lives on the provider's
 origin, which is the OAuth resource the authorization server issues tokens for.
 Writes go through one space writer Durable Object per space and MCP session (see
-`src/lib.rs` and `tonk_worker::mcp`).
+`src/lib.rs` and `tonk_mcp`), which drives the space's own kernel, booted in
+the isolate.
+
+## Building
+
+A Worker compiles no WebAssembly at run time, so it is deployed with the
+space's kernel bundled ahead of time, in `kernel/`: the component, its core
+modules left as skeletons (every body `unreachable`), and every module the
+component model polyfill makes, compiled, by the SHA-256 of its bytes.
+`scripts/bundle.sh` writes it: it boots the kernel in Node, which does
+compile, recording each module the polyfill makes, and files the core modules
+under their skeletons' keys (`rust/tonk-kernel-bundle`). Then
+`worker-build --release` builds the Worker; `entry.mjs` puts the kernel on the
+global object before the Rust module loads.
+
+```sh
+./scripts/bundle.sh
+worker-build --release
+```
+
+`scripts/smoke.mjs` is an MCP tool call end to end under `wrangler dev
+--local`: a native access service holding an agent space with a note
+(`cargo run -p tonk-mcp --features native-kernels --example
+hosted_fixture`), queried, written and read back through `/mcp`.
+
+```sh
+cargo build -p tonk-mcp --features native-kernels --example hosted_fixture
+node scripts/smoke.mjs ../../target/debug/examples/hosted_fixture
+```
 
 Every pull request deploys `tonk-mcp-worker-pr-<N>` and binds it into
 `tonk-access-service-pr-<N>` (`.github/workflows/publish.yml`). The
@@ -85,16 +113,16 @@ To start over: `claude mcp remove tonk-preview`, then add it again.
 
 ## Local
 
-Start `tonk-access-local` (see the `run-app` skill), build with
-`worker-build --release` here, and serve with:
+Start `tonk-access-local` (see the `run-app` skill), build as above, and
+serve with:
 
 ```sh
 wrangler dev --var ACCESS_SERVICE_URL:<access url> --var MCP_SESSION_SECRET:dev
 ```
 
 The automated equivalent of the manual test, natively against a local access
-service, is `cargo test -p tonk-worker --features integration-tests --lib
-hosted::mcp`.
+service with the space's kernels booted on Wasmtime, is `cargo test -p
+tonk-mcp --features integration-tests`.
 
 ## Not done yet
 
