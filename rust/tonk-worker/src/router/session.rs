@@ -669,6 +669,9 @@ const MISSING_BRANCH: &str = "missing";
 /// missing a branch, it is missing altogether, which the chrome already
 /// tells apart from the directory row. Reads storage only: no branch is
 /// opened through the reactor, so asking does not cache an empty session.
+///
+/// Where the space's content is held by a worker of its own, that worker
+/// is asked: this one holds none of it.
 pub(super) async fn branch_missing(
     tonk: &crate::worker::TonkState,
     repo: &str,
@@ -678,6 +681,9 @@ pub(super) async fn branch_missing(
 
     if branch == super::DEFAULT_BRANCH {
         return false;
+    }
+    if tonk.spaces_elsewhere() {
+        return branch_missing_elsewhere(repo, branch).await;
     }
     let Ok(repository) = tonk
         .profile
@@ -693,6 +699,28 @@ pub(super) async fn branch_missing(
         async move { reference.load().perform(&tonk.operator).await.is_ok() }
     };
     has_head(super::DEFAULT_BRANCH).await && !has_head(branch).await
+}
+
+/// [`branch_missing`], asked of the worker on `repo`'s own origin: its
+/// default branch has a head, and it answers that it has no `branch`, or
+/// none with a head. A space whose worker cannot be asked is not missing a
+/// branch: nothing is known of it.
+async fn branch_missing_elsewhere(repo: &str, branch: &str) -> bool {
+    let head = |name: &str| {
+        let path = format!("/api/inspect/repository/{repo}/branch/{name}");
+        async move {
+            super::space_reach::ask(repo, "GET", &path, None)
+                .await
+                .map(|status| !status["revision"].is_null())
+        }
+    };
+    if !matches!(head(super::DEFAULT_BRANCH).await, Ok(true)) {
+        return false;
+    }
+    matches!(
+        head(branch).await,
+        Ok(false) | Err(TonkWorkerError::NotFound(_))
+    )
 }
 
 /// Drop the missing-branch state from `site` on the profile branch

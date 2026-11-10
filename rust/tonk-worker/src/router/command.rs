@@ -312,6 +312,10 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // What the person's profile hands a space's own worker to make the
         // space private again: the records and revocations are the space's.
         .command::<tonk_schema::command::UnpublishSpace>()
+        // What the person's profile hands a space's own worker to make a
+        // branch of the space its panel was asked for. It names no other
+        // space.
+        .command::<tonk_schema::command::MakeBranch>()
         // What the person's profile hands a space's own worker when a
         // signed-in account takes over the one its roster entry is under.
         .command::<tonk_schema::command::MoveMembership>()

@@ -290,6 +290,31 @@ impl dialog_capability::Provider<tonk_schema::command::CreateBranch> for crate::
         let site = command.site.0;
         log!("command CreateBranch space={repo} name={name} base={base}");
 
+        // Where the space's content is held by a worker of its own, the
+        // branch is that worker's to make: the profile hands it
+        // [`MakeBranch`](tonk_schema::command::MakeBranch) on the space's
+        // own branch, and it restamps the site that waits on the branch
+        // there. The panel's state is this profile's, on the tab's site here.
+        if self.state().read().await.spaces_elsewhere() {
+            let claim = super::space_reach::command(
+                &[
+                    ("name", "xyz.tonk.command.make-branch/name", "Text"),
+                    ("base", "xyz.tonk.command.make-branch/base", "Text"),
+                ],
+                serde_json::json!({ "name": name, "base": base }),
+            );
+            let peer = super::space_reach::peer(&repo);
+            let asked = async { super::space_reach::run(peer, peer.content(), claim?).await };
+            match asked.await {
+                Ok(()) => {
+                    let tonk = self.state().read().await;
+                    super::session::clear_missing_branch(&tonk, &self.origin().branch, &site).await;
+                }
+                Err(error) => log!("CreateBranch '{repo}' '{name}' was not handed on: {error}"),
+            }
+            return;
+        }
+
         match create_branch(self.state(), &repo, &name, &base).await {
             Ok(created) => {
                 log!("CreateBranch '{repo}' '{name}': {created:?}");
@@ -298,6 +323,31 @@ impl dialog_capability::Provider<tonk_schema::command::CreateBranch> for crate::
                 super::session::stamp_waiting_sites(&tonk, &repo).await;
             }
             Err(refusal) => log!("CreateBranch '{repo}' '{name}' refused: {refusal}"),
+        }
+    }
+}
+
+/// Run [`MakeBranch`](tonk_schema::command::MakeBranch): what the person's
+/// profile hands a space's own worker when its panel asked for a branch.
+/// It is a space branch's command only, fired on the space's own branch, and
+/// makes a branch of that space, then restamps the sites here that wait on
+/// it.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::MakeBranch> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::MakeBranch) {
+        let repo = self.origin().repo.clone();
+        let name = command.name.0.trim().to_owned();
+        let base = command.base.0.trim().to_owned();
+        log!("command MakeBranch space={repo} name={name} base={base}");
+
+        match create_branch(self.state(), &repo, &name, &base).await {
+            Ok(created) => {
+                log!("MakeBranch '{repo}' '{name}': {created:?}");
+                let tonk = self.state().read().await;
+                super::session::stamp_waiting_sites(&tonk, &repo).await;
+            }
+            Err(refusal) => log!("MakeBranch '{repo}' '{name}' refused: {refusal}"),
         }
     }
 }
@@ -582,6 +632,36 @@ mod tests {
         );
     }
 
+    /// What the profile hands a space's own worker: fired on the space's
+    /// own branch, it makes the branch of that space.
+    #[dialog_common::test]
+    async fn it_makes_the_branch_a_space_is_handed_on_its_own_branch() {
+        use tonk_schema::domain::command::current::make_branch as field;
+
+        let (_app, state, repo) = space("handed-branch").await;
+        let main_head = head(&state, &repo, "main").await;
+
+        <CommandEnv as dialog_capability::Provider<tonk_schema::command::MakeBranch>>::execute(
+            &CommandEnv::new(
+                state.clone(),
+                CommandOrigin {
+                    repo: repo.clone(),
+                    branch: "main".to_owned(),
+                    client: None,
+                },
+            ),
+            tonk_schema::command::MakeBranch {
+                this: "id:make-branch".parse().unwrap(),
+                name: field::Name("test".to_owned()),
+                base: field::Base("main".to_owned()),
+            },
+        )
+        .await;
+
+        assert!(!missing(&state, &repo, "test").await);
+        assert_eq!(head(&state, &repo, "test").await, main_head);
+    }
+
     const PROFILE_LIBRARY: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
 
     /// The `xyz.tonk.site/{field}` text the profile branch holds for `site`.
@@ -820,5 +900,129 @@ mod tests {
                 (remote_name.as_str(), name)
             );
         }
+    }
+}
+
+/// Where a space's content is held by a worker of its own, the profile asks
+/// that worker about the space's branches, and has it make one.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod forwarding_tests {
+    use std::sync::atomic::Ordering;
+
+    use serde_json::json;
+
+    use crate::TonkWorkerError;
+    use crate::router::AppState;
+    use crate::router::space_reach::stand_in;
+
+    const SPACE: &str = "did:key:z6MkkAKBuUTy2r88au4Ehu6uUwdRRpDYnKd1euvreZi3YG7M";
+
+    async fn elsewhere() -> AppState {
+        let state = crate::router::command::tests::native::test_state().await;
+        state
+            .read()
+            .await
+            .site_origins
+            .store(true, Ordering::Relaxed);
+        state
+    }
+
+    async fn missing(state: &AppState, branch: &str) -> bool {
+        let tonk = state.read().await;
+        crate::router::session::branch_missing(&tonk, SPACE, branch).await
+    }
+
+    /// The space's worker answers the inspection of a branch it has with
+    /// the branch's head, and of one it does not have with nothing found.
+    fn answering(main: serde_json::Value) {
+        stand_in::answer_with(move |(_, _, path)| {
+            if path.ends_with("/branch/main") {
+                Ok(json!({ "revision": main.clone() }))
+            } else {
+                Err(TonkWorkerError::NotFound("no such branch".to_owned()))
+            }
+        });
+    }
+
+    #[dialog_common::test]
+    async fn it_asks_the_spaces_own_worker_whether_it_lacks_a_branch() {
+        let state = elsewhere().await;
+        answering(json!({ "tree": "bafyhead" }));
+
+        let lacks = missing(&state, "draft").await;
+
+        assert!(lacks, "the space's worker has main and no draft");
+        assert_eq!(
+            stand_in::asked(),
+            [
+                (
+                    SPACE.to_owned(),
+                    "GET".to_owned(),
+                    format!("/api/inspect/repository/{SPACE}/branch/main"),
+                ),
+                (
+                    SPACE.to_owned(),
+                    "GET".to_owned(),
+                    format!("/api/inspect/repository/{SPACE}/branch/draft"),
+                ),
+            ]
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_finds_no_branch_missing_from_a_space_still_arriving() {
+        let state = elsewhere().await;
+        answering(serde_json::Value::Null);
+
+        assert!(!missing(&state, "draft").await, "main has no head yet");
+        stand_in::asked();
+
+        stand_in::answer_with(|_| {
+            Err(TonkWorkerError::Internal(
+                "the space's worker did not answer".to_owned(),
+            ))
+        });
+        assert!(
+            !missing(&state, "draft").await,
+            "nothing is known of a space whose worker cannot be asked"
+        );
+        stand_in::asked();
+    }
+
+    /// The panel's command runs on the profile, naming the space. Where the
+    /// space is held by a worker of its own, the profile hands that worker
+    /// the branch to make, on the space's own branch.
+    #[dialog_common::test]
+    async fn it_has_the_spaces_own_worker_make_the_branch() {
+        use dialog_capability::Provider;
+        use tonk_schema::command::CreateBranch;
+        use tonk_schema::domain::command::current::create_branch::{Base, Name, Site, Space};
+
+        use crate::router::{CommandEnv, CommandOrigin};
+
+        let state = elsewhere().await;
+        stand_in::answer_with(|_| Ok(json!({})));
+
+        let env = CommandEnv::new(state.clone(), CommandOrigin::default());
+        <CommandEnv as Provider<CreateBranch>>::execute(
+            &env,
+            CreateBranch {
+                this: "cmd:create-draft".parse().unwrap(),
+                space: Space(SPACE.parse().unwrap()),
+                name: Name("draft".to_owned()),
+                base: Base("main".to_owned()),
+                site: Site("site:tab".parse().unwrap()),
+            },
+        )
+        .await;
+
+        assert_eq!(
+            stand_in::asked(),
+            [(
+                SPACE.to_owned(),
+                "POST".to_owned(),
+                format!("/api/repository/{SPACE}/branch/main/transact"),
+            )]
+        );
     }
 }

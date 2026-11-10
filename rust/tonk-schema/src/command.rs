@@ -438,6 +438,25 @@ impl Command for RecordPublication {
     type Output = ();
 }
 
+/// Make, in a space, the branch the person's profile was asked for with
+/// [`CreateBranch`]: where the space's own worker holds its content, the
+/// branch is that worker's to make. It fires on the space's own branch and
+/// makes a branch of that space only.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MakeBranch {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The new branch's name.
+    pub name: crate::domain::command::current::make_branch::Name,
+    /// What the branch starts from, when the remote has no such branch.
+    pub base: crate::domain::command::current::make_branch::Base,
+}
+
+impl Command for MakeBranch {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Keep, in a space, the record of an invitation the person's profile
 /// issued: the roster's invitation, and the delegation retained so the
 /// invitation can be found again and revoked.

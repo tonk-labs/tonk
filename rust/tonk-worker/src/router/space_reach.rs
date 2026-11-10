@@ -24,7 +24,8 @@ use crate::reactor::{
 /// done by the space's worker. The profile's worker reaches it over a port
 /// its page opens, through the `tonkAskSpace` hook its script defines.
 /// Answers with the response's body, and fails for a response that is not a
-/// success, and where there is no such hook: on a host with one database.
+/// success, with [`TonkWorkerError::NotFound`] where the worker has nothing
+/// at `path`, and where there is no such hook: on a host with one database.
 pub(crate) async fn ask(
     space: &str,
     method: &str,
@@ -41,6 +42,12 @@ pub(crate) async fn ask(
         let answer = tonk_kernel_world::application::ask(space, method, path, body.as_deref())
             .await
             .map_err(|error| unreachable(format!("{error:?}")))?;
+        if answer.status == 404 {
+            return Err(TonkWorkerError::NotFound(format!(
+                "{space} has nothing at {path}: {}",
+                answer.body
+            )));
+        }
         if !(200..300).contains(&answer.status) {
             return Err(unreachable(format!(
                 "it answered {}: {}",

@@ -1626,6 +1626,23 @@ pub mod command {
             pub struct Proof(pub String);
         }
 
+        /// `tonk/make-branch` — a space's own worker makes a branch of the
+        /// space that the person's profile was asked for.
+        pub mod make_branch {
+            use dialog_query::Attribute;
+
+            /// The new branch's name.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.make-branch")]
+            pub struct Name(pub String);
+
+            /// What the branch starts from when the remote has no branch of
+            /// its name: `main` or `empty`, as for `space/create-branch`.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.make-branch")]
+            pub struct Base(pub String);
+        }
+
         /// `tonk/retain-invite` — a space's own worker keeps the record of
         /// an invitation the person's profile issued to a named audience.
         pub mod retain_invite {

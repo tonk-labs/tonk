@@ -74,13 +74,14 @@ pub async fn inspect_branch(
             TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
         })?;
 
+    // Inspecting a branch makes none: one that does not exist is not found.
     let branch = repo
         .branch(params.branch.as_str())
-        .open()
+        .load()
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
+            TonkWorkerError::NotFound(format!("Branch '{}' not found: {}", params.branch, e))
         })?;
 
     let names = crate::router::remotes::list(&repo, &tonk_state.operator).await?;
