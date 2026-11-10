@@ -41,7 +41,9 @@ pub(crate) mod tests {
 
     /// The notice of an account waiting on its activation email asks for
     /// another, and says how that went. Whether a mail goes out is the
-    /// service's to decide: one so soon after the last sends nothing.
+    /// service's to decide: one so soon after the last sends nothing, and the
+    /// service answers it as it answers one it sent, so the notice says one
+    /// was requested.
     #[dialog_common::test]
     async fn it_says_how_a_resent_activation_email_went(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
@@ -57,7 +59,7 @@ pub(crate) mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let text = said.text().await?;
-            if text.contains("Sent") {
+            if text.contains("Another activation email was requested") {
                 break;
             }
             anyhow::ensure!(
