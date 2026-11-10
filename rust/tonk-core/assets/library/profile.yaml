@@ -2633,8 +2633,7 @@ element!: &hub-discover
         self.__agentsLoading = true;
         const status = self.querySelector('[data-contacts-status]');
         try {
-          const origin = window.tonk?.context?.origin ?? window.location.origin;
-          const response = await fetch(`${origin}/api/agents`);
+          const response = await fetch('/api/agents');
           if (!response.ok) throw new Error(String(response.status));
           const agents = await response.json();
           if (!self.isConnected || !Array.isArray(agents)) return;
@@ -2729,8 +2728,7 @@ element!: &hub-discover
         const agent = button.dataset.agentRevoke;
         const space = button.dataset.agentSpace;
         try {
-          const origin = window.tonk?.context?.origin ?? window.location.origin;
-          const response = await fetch(`${origin}/api/agents/${encodeURIComponent(agent)}/revoke`, {
+          const response = await fetch(`/api/agents/${encodeURIComponent(agent)}/revoke`, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ space }),
           });
@@ -2761,8 +2759,7 @@ element!: &hub-discover
         const again = () => setTimeout(() => self.agentsWatch(agent, space, started), 1500);
         let agents;
         try {
-          const origin = window.tonk?.context?.origin ?? window.location.origin;
-          const response = await fetch(`${origin}/api/agents`);
+          const response = await fetch('/api/agents');
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           agents = await response.json();
         } catch { if (Date.now() - started < 4 * 60 * 1000) again(); return; }

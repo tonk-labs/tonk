@@ -11291,6 +11291,20 @@ note:
             vec![(serde_json::json!(key), serde_json::json!("write"))],
             "the agent reaches the space it was given, to write"
         );
+
+        // The Hub lists it among the account's agents.
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_displayed(&driver, "[data-contacts-tab]")
+            .await?
+            .click()
+            .await?;
+        wait_for_text(
+            &driver,
+            &format!(".contact-card[data-agent='{agent}'] .contact-name"),
+            "E2E agent",
+        )
+        .await?;
         driver.quit().await?;
         Ok(())
     }
