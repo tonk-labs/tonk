@@ -365,6 +365,14 @@ impl handler::Guest for Kernel {
         }
         let request = incoming(request).await?;
         let method = request.method().clone();
+        // A caller that syncs the space itself, as the hosted agent's writer
+        // does from its pull before a write through its push after it, says
+        // so: a sync of the kernel's own would publish a write it answers as
+        // failed.
+        let syncs_itself = request
+            .headers()
+            .get(SYNC_HEADER)
+            .is_some_and(|value| value == SYNCED_BY_CALLER);
         let answer = match site::route(request, &site) {
             Routed::Answer(answer) => answer,
             Routed::Away(address) => away(&address),
@@ -407,7 +415,8 @@ impl handler::Guest for Kernel {
         // A write, or a page's poke, is followed by a sync with the remote,
         // as the browser's worker drains its queue after each request: once
         // the write is done, so the sync does not move the branch under it.
-        if method != axum::http::Method::GET && method != axum::http::Method::HEAD {
+        if method != axum::http::Method::GET && method != axum::http::Method::HEAD && !syncs_itself
+        {
             drain_soon();
         }
         let (parts, mut body) = answer.into_parts();
@@ -496,6 +505,12 @@ fn drain_soon() {
         }
     });
 }
+
+/// The header a request names who syncs the space by, and the value that
+/// says its caller does: the kernel then follows the request with no sync
+/// of its own.
+const SYNC_HEADER: &str = "x-tonk-sync";
+const SYNCED_BY_CALLER: &str = "caller";
 
 /// How long a sync waits after the write that asks for it.
 const DRAIN_AFTER_MS: u64 = 500;
