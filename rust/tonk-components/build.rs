@@ -15,6 +15,10 @@ use std::process::Command;
 /// The target each component builds for: the world's WASI.
 const TARGET: &str = "wasm32-wasip3";
 
+/// The variable that holds the flags of the components' build, encoded as
+/// `CARGO_ENCODED_RUSTFLAGS` is.
+const COMPONENT_RUSTFLAGS: &str = "TONK_COMPONENT_RUSTFLAGS";
+
 /// The components: the crate each is built from, the features it is built
 /// with, and the constant that names it. The persona is the same crate as the
 /// kernel, built for the world `sapling:kernel/persona`.
@@ -64,6 +68,8 @@ fn main() {
         );
     }
 
+    println!("cargo::rerun-if-env-changed={COMPONENT_RUSTFLAGS}");
+
     let target_dir = out_dir.join("target");
     let mut generated = String::new();
     // One build after another, in the same target directory: the components
@@ -96,6 +102,12 @@ fn main() {
             // Debug info only: the polyfill reads the section of features a
             // module was built with, so that it can skip a scan of every body.
             .env("CARGO_PROFILE_RELEASE_STRIP", "debuginfo");
+        // Flags for the component alone, such as Nix's, which maps the store
+        // path of the crates it vendors away: it rewrites that path wherever
+        // its build put one, which would change a component after it was named.
+        if let Some(flags) = env::var_os(COMPONENT_RUSTFLAGS) {
+            command.env("CARGO_ENCODED_RUSTFLAGS", flags);
+        }
         let mut features = features.to_vec();
         if env::var_os("CARGO_FEATURE_CONNECTION_INVITES").is_some() {
             features.push("connection-invites");

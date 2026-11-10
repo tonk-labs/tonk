@@ -238,7 +238,12 @@ let
       wasmAttributes
       // {
         inherit cargoArtifacts;
+        # Crane rewrites the store paths of the vendored crates and of the
+        # toolchain wherever the build put one, after the build: in a kernel
+        # that would change the bytes `write-components` named. Its build maps
+        # the paths away, as two flags apart by the unit separator.
         preBuild = ''
+          export TONK_COMPONENT_RUSTFLAGS="--remap-path-prefix=$cargoVendorDir=/cargo-vendor"$'\x1f'"--remap-path-prefix=$(rustc --print sysroot)=/rust-sysroot"
           cd ${crateRoot}
         '';
         inherit wasm-bindgen-cli;
