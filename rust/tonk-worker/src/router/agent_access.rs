@@ -26,10 +26,12 @@ use axum::extract::{Path, Query as RouteQuery, State};
 use dialog_capability::access::TimeRange;
 use dialog_query::{Output as _, Query, Term};
 use dialog_ucan::{Parameters, Scope};
+use dialog_ucan_core::command::Command;
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::{Container, DelegationChain, Tag};
 use dialog_varsig::Did;
+use tonk_invite::connection::candidate_build_scopes;
 use tonk_schema::prelude::DidExt as _;
 use tonk_worker_api::agent::{AgentAccess, SpaceAccess, reaches};
 
@@ -95,14 +97,9 @@ pub async fn read_agent_access(
         let command = delegation.command().clone();
         let in_window = chain.expiration().is_none_or(|at| at.to_unix() > now)
             && chain.not_before().is_none_or(|at| at.to_unix() <= now);
-        let scope = Scope {
-            subject: UcanSubject::Specific(subject.clone()),
-            command: command.clone(),
-            parameters: Parameters::default(),
-        };
         let proof = branch
             .delegations()
-            .prove(agent.clone(), scope)
+            .prove(agent.clone(), scope(&subject, &command))
             .during(at_now)
             .perform(&tonk.operator)
             .await;
@@ -231,14 +228,9 @@ async fn rooted(
     let mut links = if &issuer == space {
         Vec::new()
     } else {
-        let scope = Scope {
-            subject: UcanSubject::Specific(space.clone()),
-            command: delegation.command().clone(),
-            parameters: Parameters::default(),
-        };
         let proof = branch
             .delegations()
-            .prove(issuer, scope)
+            .prove(issuer, scope(space, delegation.command()))
             .during(at)
             .perform(&tonk.operator)
             .await
@@ -251,6 +243,20 @@ async fn rooted(
     };
     links.push(delegation.clone());
     DelegationChain::try_from(links).ok()
+}
+
+/// What `command` on `subject` asks, with the arguments Tonk's grants of
+/// it are narrowed to ([`candidate_build_scopes`]): a grant narrowed to
+/// them proves only an ask that carries them.
+fn scope(subject: &Did, command: &Command) -> Scope {
+    candidate_build_scopes(subject)
+        .into_iter()
+        .find(|scope| &scope.command == command)
+        .unwrap_or_else(|| Scope {
+            subject: UcanSubject::Specific(subject.clone()),
+            command: command.clone(),
+            parameters: Parameters::default(),
+        })
 }
 
 /// The name the agent space's directory gives `space`.
