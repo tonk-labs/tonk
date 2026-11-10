@@ -1,5 +1,6 @@
 //! Join-route wire DTOs.
 
+use dialog_capability::access::AuthorizeError;
 use serde::{Deserialize, Serialize};
 
 use crate::RepositoryInfo;
@@ -56,6 +57,29 @@ impl JoinFailureKind {
             }
             Self::ClaimFailed => "Tonk could not join this space.",
             Self::Private => "This space is private. Ask someone in it for an invite link.",
+        }
+    }
+
+    /// What a remote's refusal of an invite's authority is.
+    pub fn of_refusal(refusal: &AuthorizeError) -> Self {
+        match refusal {
+            AuthorizeError::Revoked { .. } => Self::Revoked,
+            AuthorizeError::InvalidAudience { .. } | AuthorizeError::UnprovenSubject { .. } => {
+                Self::AudienceMismatch
+            }
+            AuthorizeError::Unavailable { .. } | AuthorizeError::UnavailableProof { .. } => {
+                Self::Unavailable
+            }
+            // The chain proved out and the remote evaluated it; either a
+            // policy predicate on the delegation said no, or the remote
+            // declined to serve the subject at all. Nothing on this device
+            // is wrong, so `claim-failed`, which says the local claim broke
+            // and reads as "Tonk could not join this space", would point the
+            // person at the wrong thing entirely.
+            AuthorizeError::PolicyViolation { .. } | AuthorizeError::Declined { .. } => {
+                Self::Refused
+            }
+            _ => Self::ClaimFailed,
         }
     }
 

@@ -224,20 +224,18 @@ impl JoinFailure {
         Self::new(JoinFailureKind::Malformed, detail)
     }
 
+    #[cfg(any(feature = "persona", test))]
     fn audience_mismatch(detail: impl Into<String>) -> Self {
         Self::new(JoinFailureKind::AudienceMismatch, detail)
     }
 
+    #[cfg(any(feature = "persona", test))]
     fn revoked(detail: impl Into<String>) -> Self {
         Self::new(JoinFailureKind::Revoked, detail)
     }
 
     fn unavailable(detail: impl Into<String>) -> Self {
         Self::new(JoinFailureKind::Unavailable, detail)
-    }
-
-    fn refused(detail: impl Into<String>) -> Self {
-        Self::new(JoinFailureKind::Refused, detail)
     }
 
     pub(crate) fn claim_failed(detail: impl Into<String>) -> Self {
@@ -1951,25 +1949,10 @@ fn classify_pull(error: &PullError) -> JoinFailure {
 /// and one arm landing in the wrong bucket is invisible until someone
 /// reads a log.
 fn classify_authorization(authorization: &AuthorizeError) -> JoinFailure {
-    match authorization {
-        AuthorizeError::Revoked { .. } => JoinFailure::revoked("remote access has been revoked"),
-        AuthorizeError::InvalidAudience { .. } | AuthorizeError::UnprovenSubject { .. } => {
-            JoinFailure::audience_mismatch(format!("remote refused: {authorization}"))
-        }
-        AuthorizeError::Unavailable { .. } | AuthorizeError::UnavailableProof { .. } => {
-            JoinFailure::unavailable(format!("remote answered: {authorization}"))
-        }
-        // The chain proved out and the remote evaluated it; either a
-        // policy predicate on the delegation said no, or the remote
-        // declined to serve the subject at all. Nothing on this device
-        // is wrong, so `claim-failed` — which says the local claim
-        // broke, and reads as "Tonk could not join this space" — pointed
-        // the user at the wrong thing entirely.
-        AuthorizeError::PolicyViolation { .. } | AuthorizeError::Declined { .. } => {
-            JoinFailure::refused(format!("remote refused: {authorization}"))
-        }
-        _ => JoinFailure::claim_failed(format!("remote refused: {authorization}")),
-    }
+    JoinFailure::new(
+        JoinFailureKind::of_refusal(authorization),
+        format!("remote refused: {authorization}"),
+    )
 }
 
 /// Check that a branch carries what navigating into the space needs: the

@@ -15,6 +15,8 @@
 //! The space worker stores it and publishes that revision ([`seed`]), so the
 //! replica holds the same history the host did, and syncs on from there.
 
+use axum::Json;
+use axum::extract::{Path, State};
 #[cfg(target_arch = "wasm32")]
 use dialog_artifacts::Asset;
 #[cfg(feature = "persona")]
@@ -26,24 +28,28 @@ use dialog_effects::{Use, method};
 use dialog_repository::{RepositoryExt as _, Upstream, codec};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::{
-    Delegation, DelegationChain,
+    Container, Delegation, DelegationChain,
     time::{TimeRange, Timestamp},
 };
 use dialog_varsig::Did;
 use dialog_varsig::signature::AnySignature;
 use ipld_core::ipld::Ipld;
+use serde::Deserialize;
+use serde_json::{Value, json};
 #[cfg(feature = "persona")]
 use std::collections::BTreeMap;
 use tonk_common::log;
 use tonk_invite::HOME_ADDRESS;
 #[cfg(feature = "persona")]
 use tonk_invite::home_address_meta;
+use tonk_macros::handler;
 #[cfg(target_arch = "wasm32")]
 use tonk_schema::SpaceKernel;
 use tonk_schema::prelude::DidExt as _;
 #[cfg(feature = "persona")]
 use url::Url;
 
+use super::AppState;
 #[cfg(feature = "persona")]
 use super::account::member_did;
 use super::account::{act_for, acts_for};
@@ -302,6 +308,43 @@ async fn verified<'a>(
         .proofs()
         .last()
         .ok_or_else(|| TonkWorkerError::Forbidden("delegation is empty".into()))
+}
+
+/// More of a space's chains down to this worker, each a base64url container:
+/// a grant per scope, where its take-up held one.
+#[derive(Debug, Deserialize)]
+pub struct Delegations {
+    chains: Vec<String>,
+}
+
+/// `POST /api/repository/{repo}/delegations`: keep each chain, checked as a
+/// take-up checks its own ([`verified`]), in this worker's profile, where
+/// every proof is looked up. A chain to this worker adds no authority beyond
+/// what the space granted down it.
+#[handler]
+pub async fn keep_delegations(
+    State(state): State<AppState>,
+    Path(repo): Path<String>,
+    Json(delegations): Json<Delegations>,
+) -> Result<Json<Value>, TonkWorkerError> {
+    let space: Did = repo
+        .parse()
+        .map_err(|_| TonkWorkerError::Router(format!("'{repo}' names no space")))?;
+    let tonk = state.read().await.clone();
+    for encoded in &delegations.chains {
+        let chain = Container::decode(encoded.as_bytes())
+            .ok()
+            .and_then(|container| DelegationChain::try_from(container).ok())
+            .ok_or_else(|| TonkWorkerError::Router("a chain is not a delegation chain".into()))?;
+        verified(&tonk, &space, &chain).await?;
+        tonk.profile
+            .access()
+            .save(UcanDelegation(chain))
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| TonkWorkerError::Internal(format!("failed to save delegation: {e}")))?;
+    }
+    Ok(Json(json!({})))
 }
 
 /// Take up a delegation for `space`: save its chain to this worker's profile,

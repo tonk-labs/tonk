@@ -429,9 +429,16 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/agent/grant",
             post(agent_access::grant),
         );
-    // A space's kernel outlines its views for an agent.
+    // A space's kernel outlines its views for an agent, and keeps the
+    // grants its writer is handed.
     #[cfg(target_arch = "wasm32")]
-    let router = router.route("/api/repository/{repo}/outline", get(view_tree::get));
+    let router = router
+        .route("/api/repository/{repo}/outline", get(view_tree::get))
+        // A space's kernel keeps more of the space's chains down to it.
+        .route(
+            "/api/repository/{repo}/delegations",
+            post(space_worker::keep_delegations),
+        );
     let router = router
         // Opt-in remote attach — wires a remote (and branch upstream)
         // onto an existing repo, idempotently. See

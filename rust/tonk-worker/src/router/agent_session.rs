@@ -767,7 +767,7 @@ pub(super) async fn record_grants(
         }
         change.directory.push(DirectoryEntry {
             space: space.subject.clone(),
-            name: space.name.clone(),
+            name: Some(space.name.clone()),
             home: space.home.to_string(),
         });
     }

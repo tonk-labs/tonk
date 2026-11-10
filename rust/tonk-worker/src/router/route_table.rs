@@ -76,6 +76,7 @@ const ROUTES: &[&str] = &[
     "/api/repository/{repo}/branch/{branch}/sync/push",
     "/api/repository/{repo}/branch/{branch}/sync/status",
     "/api/repository/{repo}/branch/{branch}/transact",
+    "/api/repository/{repo}/delegations",
     "/api/repository/{repo}/invite",
     "/api/repository/{repo}/invites",
     "/api/repository/{repo}/invites/{target_cid}/revoke",

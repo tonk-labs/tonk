@@ -99,12 +99,14 @@ pub(crate) struct AgentSpaceChange {
     pub(crate) mark: Option<Mark>,
 }
 
-/// A space in an agent's directory.
+/// A space in an agent's directory: its name, unless the space did not say
+/// it (a link joined from the chat may not), and where it syncs.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DirectoryEntry {
     pub(crate) space: Did,
-    pub(crate) name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) name: Option<String>,
     pub(crate) home: String,
 }
 
@@ -318,9 +320,10 @@ async fn make(
         .branch(CONTENT_BRANCH)
         .transaction();
     for entry in &change.directory {
-        transaction = transaction
-            .assert(SpaceName::new(&entry.space, &entry.name))
-            .assert(SpaceHomeAddress::new(&entry.space, &entry.home));
+        if let Some(name) = &entry.name {
+            transaction = transaction.assert(SpaceName::new(&entry.space, name));
+        }
+        transaction = transaction.assert(SpaceHomeAddress::new(&entry.space, &entry.home));
     }
     if let Some(mark) = &change.mark {
         transaction = transaction.assert(AgentSpace::new(agent.this()));

@@ -114,7 +114,7 @@ pub async fn read_agent_access(
                 if let Some(at) = proof.duration.expiration {
                     access.expires = Some(access.expires.map_or(at, |held| held.min(at)));
                 }
-                access.grants.push(delegation.to_cid().to_string());
+                access.grants.push(encode(chain)?);
                 // Signed by whoever granted the space, so the agent, which
                 // can write its own space's directory, cannot redirect it.
                 if access.address.is_none() {
@@ -336,6 +336,14 @@ pub(crate) async fn retain_agent_grants(
     Ok(())
 }
 
+/// `chain` as a base64url container.
+fn encode(chain: &DelegationChain) -> Result<String, TonkWorkerError> {
+    let bytes = Container::from(chain)
+        .encode(Tag::Base64Url)
+        .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+    String::from_utf8(bytes).map_err(|error| TonkWorkerError::Internal(error.to_string()))
+}
+
 /// The agent space a route names by its DID.
 fn agent(repo: &str) -> Result<Did, TonkWorkerError> {
     repo.parse()
@@ -373,15 +381,7 @@ pub async fn chains(
         .parse()
         .map_err(|_| TonkWorkerError::Router(format!("'{}' names no space", query.space)))?;
     let chains = space_chains(&tonk, &agent(&repo)?, &space).await?;
-    let encoded = chains
-        .iter()
-        .map(|chain| {
-            let bytes = Container::from(chain)
-                .encode(Tag::Base64Url)
-                .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
-            String::from_utf8(bytes).map_err(|error| TonkWorkerError::Internal(error.to_string()))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let encoded = chains.iter().map(encode).collect::<Result<Vec<_>, _>>()?;
     Ok(Json(json!({ "chains": encoded })))
 }
 

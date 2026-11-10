@@ -31,8 +31,8 @@ pub struct SpaceAccess {
     /// in its signed meta, as a space's grants carry it for every peer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
-    /// The CIDs of the delegations to the agent space that are in force,
-    /// so a writer can tell a grant it has not pulled yet.
+    /// The grants in force, each a chain `space -> ... -> agent space` as a
+    /// base64url container: what a writer of the space acts through.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub grants: Vec<String>,
 }
