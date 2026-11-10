@@ -34,13 +34,12 @@ thread_local! {
 }
 
 /// The engine of this isolate.
-fn engine() -> Result<Engine, JsError> {
+fn engine() -> Result<Engine, String> {
     ENGINE.with(|engine| {
         if let Some(engine) = engine.borrow().as_ref() {
             return Ok(engine.clone());
         }
-        let made =
-            Engine::with_backend(Web::new()).map_err(|error| JsError::new(&error.to_string()))?;
+        let made = Engine::with_backend(Web::new()).map_err(|error| error.to_string())?;
         *engine.borrow_mut() = Some(made.clone());
         Ok(made)
     })
@@ -74,6 +73,77 @@ pub struct HostedKernel {
     timings: Vec<(String, f64)>,
 }
 
+/// An answer of a space's kernel, whole: its status, headers and body.
+pub struct Answered {
+    pub status: u16,
+    pub headers: Vec<(String, Vec<u8>)>,
+    pub body: Vec<u8>,
+}
+
+impl HostedKernel {
+    /// Boot the kernel `component` over the space `subject`, serving the
+    /// origin of `scheme` and `authority`, acting as the key whose seed is
+    /// `seed`, holding `chain`, the delegation of the space to that key, if
+    /// there is one.
+    pub async fn start(
+        component: &[u8],
+        subject: &str,
+        (scheme, authority): (&str, &str),
+        seed: [u8; 32],
+        chain: Option<Vec<u8>>,
+    ) -> Result<Self, String> {
+        let booted = BOOTED.with(|booted| {
+            booted.set(booted.get() + 1);
+            booted.get()
+        });
+        let started = platform::now_millis();
+        let mut kernel = Kernel::load(
+            &engine()?,
+            component,
+            Layers::under(format!("/hosted/{booted}")),
+        )
+        .await?;
+        let mut timings = vec![("load".to_owned(), platform::now_millis() - started)];
+        kernel.serve_at(scheme, authority);
+        kernel.init(subject, Standing::handed(seed, chain)).await?;
+        timings.extend(
+            kernel
+                .timings
+                .iter()
+                .map(|(stage, millis)| ((*stage).to_owned(), *millis)),
+        );
+        let (kernel, driver) = kernel.serve();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(error) = driver.await {
+                platform::log("kernel", &format!("the kernel stopped: {error}"), true);
+            }
+        });
+        Ok(Self { kernel, timings })
+    }
+
+    /// Hand the kernel the request `method` `path`, with `headers` and
+    /// `body`, and answer once it has written all of its answer.
+    pub async fn answer(
+        &self,
+        method: &str,
+        path: &str,
+        headers: Vec<(String, Vec<u8>)>,
+        body: &[u8],
+    ) -> Result<Answered, String> {
+        let head = self.kernel.request(method, path, headers, body).await?;
+        let mut answer = Vec::new();
+        let mut pieces = head.body;
+        while let Some(piece) = pieces.next().await {
+            answer.extend_from_slice(&piece);
+        }
+        Ok(Answered {
+            status: head.status,
+            headers: head.headers,
+            body: answer,
+        })
+    }
+}
+
 #[wasm_bindgen]
 impl HostedKernel {
     /// Boot the kernel `component` over the space `subject`, serving the
@@ -92,41 +162,15 @@ impl HostedKernel {
             .to_vec()
             .try_into()
             .map_err(|_| JsError::new("a seed is 32 bytes"))?;
-        let booted = BOOTED.with(|booted| {
-            booted.set(booted.get() + 1);
-            booted.get()
-        });
-        let started = platform::now_millis();
-        let engine = engine()?;
-        let mut kernel = Kernel::load(
-            &engine,
+        Self::start(
             &component.to_vec(),
-            Layers::under(format!("/hosted/{booted}")),
+            &subject,
+            (&scheme, &authority),
+            seed,
+            chain.map(|chain| chain.to_vec()),
         )
         .await
-        .map_err(|error| JsError::new(&error))?;
-        let mut timings = vec![("load".to_owned(), platform::now_millis() - started)];
-        kernel.serve_at(&scheme, &authority);
-        kernel
-            .init(
-                &subject,
-                Standing::handed(seed, chain.map(|chain| chain.to_vec())),
-            )
-            .await
-            .map_err(|error| JsError::new(&error))?;
-        timings.extend(
-            kernel
-                .timings
-                .iter()
-                .map(|(stage, millis)| ((*stage).to_owned(), *millis)),
-        );
-        let (kernel, driver) = kernel.serve();
-        wasm_bindgen_futures::spawn_local(async move {
-            if let Err(error) = driver.await {
-                platform::log("kernel", &format!("the kernel stopped: {error}"), true);
-            }
-        });
-        Ok(HostedKernel { kernel, timings })
+        .map_err(|error| JsError::new(&error))
     }
 
     /// How long each stage of the boot took: `[stage, milliseconds]` pairs.
@@ -159,17 +203,11 @@ impl HostedKernel {
                 ))
             })
             .collect();
-        let head = self
-            .kernel
-            .request(&method, &path, headers, &body.to_vec())
+        let answered = self
+            .answer(&method, &path, headers, &body.to_vec())
             .await
             .map_err(|error| JsError::new(&error))?;
-        let mut answer = Vec::new();
-        let mut pieces = head.body;
-        while let Some(piece) = pieces.next().await {
-            answer.extend_from_slice(&piece);
-        }
-        let headers: Array = head
+        let headers: Array = answered
             .headers
             .iter()
             .map(|(name, value)| {
@@ -181,9 +219,9 @@ impl HostedKernel {
             .collect();
         let response = Object::new();
         for (key, value) in [
-            ("status", JsValue::from(head.status)),
+            ("status", JsValue::from(answered.status)),
             ("headers", headers.into()),
-            ("body", Uint8Array::from(answer.as_slice()).into()),
+            ("body", Uint8Array::from(answered.body.as_slice()).into()),
         ] {
             Reflect::set(&response, &key.into(), &value)
                 .map_err(|_| JsError::new("an answer could not be written"))?;
