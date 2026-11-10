@@ -430,7 +430,9 @@ impl SpaceWriter {
     ///
     /// Only the agent space's own writer answers: it already holds the
     /// agent space warm, so the front asks it rather than opening a peer.
-    pub async fn agent_access(&self) -> Result<super::access::AgentAccess, TonkWorkerError> {
+    pub async fn agent_access(
+        &self,
+    ) -> Result<tonk_worker_api::agent::AgentAccess, TonkWorkerError> {
         if self.space != self.agent {
             return Err(TonkWorkerError::Forbidden(
                 "only the agent space's writer reads its grants".into(),
@@ -856,13 +858,13 @@ impl SpaceWriter {
     /// Grant the agent space a space, as the approval does: retain
     /// `chains` and record `directory` in this writer's space (the agent
     /// space), under the lock, and push. See
-    /// [`super::access::retain_agent_grants`].
+    /// [`super::super::agent_access::retain_agent_grants`].
     ///
     /// Only the agent space's own writer keeps grants.
     pub(crate) async fn retain_grants(
         &self,
         chains: &[DelegationChain],
-        directory: &[super::access::DirectoryEntry],
+        directory: &[super::super::agent_access::DirectoryEntry],
     ) -> Result<(), String> {
         if self.space != self.agent {
             return Err("only the agent space's writer keeps its grants".into());
@@ -872,7 +874,7 @@ impl SpaceWriter {
         self.sync(&peer, "pull").await?;
         {
             let state = peer.state.read().await;
-            super::access::retain_agent_grants(&state, &self.space, chains, directory)
+            super::super::agent_access::retain_agent_grants(&state, &self.space, chains, directory)
                 .await
                 .map_err(|error| error.to_string())?;
         }
@@ -897,7 +899,7 @@ impl SpaceWriter {
     pub(crate) async fn approve(
         &self,
         chains: &[DelegationChain],
-        directory: &[super::access::DirectoryEntry],
+        directory: &[super::super::agent_access::DirectoryEntry],
     ) -> Result<(), String> {
         self.retain_grants(chains, directory).await
     }

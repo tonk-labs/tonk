@@ -694,11 +694,11 @@ mod tests {
         .to_vec();
         {
             let tonk = state.read().await;
-            super::super::hosted::access::retain_agent_grants(
+            super::super::agent_access::retain_agent_grants(
                 &tonk,
                 &agent,
                 &chains,
-                &[super::super::hosted::access::DirectoryEntry {
+                &[super::super::agent_access::DirectoryEntry {
                     space: shared.did(),
                     name: Some("Family trip".into()),
                     address: Some(remote.to_string()),

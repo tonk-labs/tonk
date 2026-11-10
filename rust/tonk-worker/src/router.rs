@@ -139,6 +139,8 @@ pub(crate) mod account_devices;
 mod create_invite;
 pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
+/// What an agent space reaches, as its kernel answers the hosted agent.
+pub(crate) mod agent_access;
 #[cfg(any(feature = "persona", feature = "connection-invites"))]
 pub(crate) mod agent_connections;
 #[cfg(feature = "persona")]
@@ -216,9 +218,8 @@ pub use session::{ClientRegistry, ClientState, Saved, SiteResponse, Stamp};
 mod transact;
 pub use transact::{ProfileTransactPath, TransactPath, TransactResponse};
 
-// The views a hosted peer outlines for an agent; built where `hosted` is.
-#[cfg(any(feature = "volatile-storage", test))]
-#[cfg_attr(not(feature = "volatile-storage"), allow(dead_code))]
+/// The views a space renders, outlined for an agent.
+#[cfg(any(target_arch = "wasm32", test))]
 mod view_tree;
 
 mod transfer;
@@ -416,6 +417,22 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/agent",
             get(agent_space::get).post(agent_space::post),
         )
+        .route(
+            "/api/repository/{repo}/agent/access",
+            get(agent_access::access),
+        )
+        .route(
+            "/api/repository/{repo}/agent/chains",
+            get(agent_access::chains),
+        )
+        .route(
+            "/api/repository/{repo}/agent/grant",
+            post(agent_access::grant),
+        );
+    // A space's kernel outlines its views for an agent.
+    #[cfg(target_arch = "wasm32")]
+    let router = router.route("/api/repository/{repo}/outline", get(view_tree::get));
+    let router = router
         // Opt-in remote attach — wires a remote (and branch upstream)
         // onto an existing repo, idempotently. See
         // `router/repository.rs::attach_remote`.

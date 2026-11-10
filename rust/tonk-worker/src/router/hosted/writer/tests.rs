@@ -729,7 +729,7 @@ concept!: &writer-note
         approval
             .approve(
                 &chains,
-                &[super::super::super::access::DirectoryEntry {
+                &[crate::router::agent_access::DirectoryEntry {
                     space: granted.did(),
                     name: Some("Garden".into()),
                     address: Some("https://elsewhere.example/ucan/".into()),
@@ -1126,7 +1126,7 @@ concept!: &writer-note
             .unwrap();
         own.approve(
             &chains,
-            &[super::super::super::access::DirectoryEntry {
+            &[crate::router::agent_access::DirectoryEntry {
                 space: fixture.space.did(),
                 name: Some("Target".into()),
                 address: Some(fixture.remote.to_string()),
@@ -1393,7 +1393,7 @@ concept!: &writer-note
             .unwrap();
         own.approve(
             &chains,
-            &[super::super::super::access::DirectoryEntry {
+            &[crate::router::agent_access::DirectoryEntry {
                 space: space.did(),
                 name: Some("Shared".into()),
                 address: Some(fixture.remote.to_string()),
@@ -1736,7 +1736,7 @@ concept!: &writer-note
         let own = fixture.writer_for(&session).await;
         own.approve(
             &chains,
-            &[super::super::super::access::DirectoryEntry {
+            &[crate::router::agent_access::DirectoryEntry {
                 space: space.did(),
                 name: Some("Shared".into()),
                 address: Some(fixture.remote.to_string()),

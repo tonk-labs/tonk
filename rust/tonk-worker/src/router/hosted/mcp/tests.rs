@@ -682,9 +682,9 @@ mod against_a_service {
     use dialog_common::helpers::Provisionable as _;
     use tonk_access_service::helpers::AccessServiceAddress;
 
-    use super::super::super::access::DirectoryEntry;
     use super::super::super::{SpaceWriter, WriterSession};
     use super::*;
+    use crate::router::agent_access::DirectoryEntry;
 
     /// An address on another origin than the configured service.
     const FOREIGN: &str = "https://elsewhere.example/ucan/";

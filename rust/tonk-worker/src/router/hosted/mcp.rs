@@ -20,7 +20,7 @@
 //! - the agent space itself, through the powerline: read and write;
 //! - each space the agent space holds a grant for: the approval retains
 //!   each chain `space -> ... -> agent space` in the agent space, with a
-//!   directory entry naming the space (see [`super::access`]). The front
+//!   directory entry naming the space (see `router/agent_access.rs`). The front
 //!   asks the agent space's own writer, which stays warm, to classify
 //!   them: readable when a chain in force reaches `/use/get/...`,
 //!   writable when one also reaches `/use/put/...`. `tonk_evaluate` is
@@ -54,9 +54,9 @@ use serde_json::{Value, json};
 use tonk_identity::agent::{AgentSessionToken, decode_agent_session_token};
 
 use super::WriterSession;
-pub use super::access::{AgentAccess, SpaceAccess};
 use super::telemetry::{self, Outcome, Steps, ToolEvent};
 pub use super::telemetry::{SERVER_TIMING, TRACE_HEADER};
+pub use tonk_worker_api::agent::{AgentAccess, SpaceAccess};
 
 #[path = "../../../../tonk-cli/src/output.rs"]
 #[allow(dead_code)]
@@ -837,7 +837,7 @@ fn list_spaces(access: &AgentAccess) -> Vec<Value> {
                 entry["name"] = json!(name);
             }
             if let Some(expires) = access.expires {
-                entry["expires"] = json!(super::access::rfc3339(expires));
+                entry["expires"] = json!(tonk_worker_api::agent::rfc3339(expires));
             }
             if access.agent {
                 entry["home"] = json!(true);

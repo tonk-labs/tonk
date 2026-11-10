@@ -26,8 +26,9 @@ use serde_json::{Value, json};
 use tonk_invite::connection::{AgentAccess as Level, DEFAULT_GRANT_TTL_SECONDS};
 use tonk_invite::{Invite, InviteAudience};
 
-use super::access::{DirectoryEntry, reaches};
+use super::super::agent_access::DirectoryEntry;
 use super::mcp::{ACCESS_ROUTE, AgentAccess, Verified, Writers};
+use tonk_worker_api::agent::reaches;
 
 /// The model-visible tool that reads an invite link and shows the card.
 pub const JOIN: &str = "tonk_join_space";

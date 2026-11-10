@@ -1133,7 +1133,7 @@ mod tests {
                 chain.subject() == Some(subject)
                     && chain.audience() == &agent.did()
                     && chain.proofs().last().is_some_and(|leaf| {
-                        super::super::hosted::access::reaches(&leaf.command().0, verb)
+                        tonk_worker_api::agent::reaches(&leaf.command().0, verb)
                     })
             })
         };
@@ -1267,7 +1267,7 @@ mod tests {
 
         // What the hosted front reads back from it: the access each grant
         // was given, the name, the home address and the grant's expiry.
-        let access = super::super::hosted::access::read_agent_access(&tonk, &agent).await?;
+        let access = super::super::agent_access::read_agent_access(&tonk, &agent).await?;
         for (space, (read, write)) in granted.iter().zip([(true, false), (true, true)]) {
             let entry = access
                 .get(&space.subject)
@@ -1285,7 +1285,7 @@ mod tests {
         // from the space to the agent space, as the approval signed it.
         for space in &granted {
             let chains =
-                super::super::hosted::access::space_chains(&tonk, &agent, &space.subject).await?;
+                super::super::agent_access::space_chains(&tonk, &agent, &space.subject).await?;
             assert_eq!(chains.len(), space.chains.len(), "{}", space.name);
             for chain in &chains {
                 assert_eq!(chain.issuer(), &space.subject, "rooted at {}", space.name);

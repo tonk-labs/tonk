@@ -27,11 +27,11 @@ use axum::body::Body;
 use axum::http::{Method, Request, Response};
 use http_body_util::BodyExt as _;
 
-use super::access::reaches;
 use super::mcp::{
     ACCESS_ROUTE, ADDRESS_HEADER, AgentAccess, GRANTS_HEADER, SpaceAccess, Verified, Writers,
     mount_address,
 };
+use tonk_worker_api::agent::reaches;
 
 /// The key view tickets are bound under, derived from the host's secret
 /// under its own context, apart from the session id MAC. Unused by the

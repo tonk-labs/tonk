@@ -13,6 +13,7 @@
 //! unchanged.
 
 pub mod account;
+pub mod agent;
 mod agent_connections;
 pub use agent_connections::*;
 mod analytics;

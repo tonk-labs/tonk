@@ -13,7 +13,8 @@ use axum::{Router, body::Body, http::Request, response::Response};
 use dialog_capability::{Subject, did};
 use dialog_credentials::{Credential, Ed25519Signer, SignerCredential};
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt};
-use dialog_repository::HeldCaches;
+use dialog_remote_ucan::UcanAddress;
+use dialog_repository::{HeldCaches, Repository, SiteAddress};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::{Did, Principal as _};
@@ -21,8 +22,8 @@ use tower_service::Service;
 
 use super::{AppState, LspHub};
 use crate::TonkWorkerError;
+use crate::worker::TonkState;
 
-pub mod access;
 pub mod join;
 pub mod mcp;
 pub mod telemetry;
@@ -193,28 +194,31 @@ impl HostedPeer {
 
     /// Point this peer's access branch at the agent space `agent`, served
     /// at `home`, and pull it: the grants retained there become proofs
-    /// this peer's operator finds. See [`access::adopt_agent_access`].
+    /// this peer's operator finds. See [`adopt_agent_access`].
     pub async fn adopt_access(&self, agent: &Did, home: &url::Url) -> Result<(), TonkWorkerError> {
         let state = self.state.read().await;
-        access::adopt_agent_access(&state, agent, home).await
+        adopt_agent_access(&state, agent, home).await
     }
 
     /// The spaces the agent space `agent` reaches, read from its replica
-    /// here as it is now. See [`access::read_agent_access`].
-    pub async fn agent_access(&self, agent: &Did) -> Result<access::AgentAccess, TonkWorkerError> {
+    /// here as it is now. See [`super::agent_access::read_agent_access`].
+    pub async fn agent_access(
+        &self,
+        agent: &Did,
+    ) -> Result<tonk_worker_api::agent::AgentAccess, TonkWorkerError> {
         let state = self.state.read().await;
-        access::read_agent_access(&state, agent).await
+        super::agent_access::read_agent_access(&state, agent).await
     }
 
     /// The grants in force the agent space `agent` holds for `space`,
-    /// read from its replica here. See [`access::space_chains`].
+    /// read from its replica here. See [`super::agent_access::space_chains`].
     pub async fn space_chains(
         &self,
         agent: &Did,
         space: &Did,
     ) -> Result<Vec<DelegationChain>, TonkWorkerError> {
         let state = self.state.read().await;
-        access::space_chains(&state, agent, space).await
+        super::agent_access::space_chains(&state, agent, space).await
     }
 
     /// The tree of `<tonk-display>` elements `route` mounts in the mounted
@@ -258,4 +262,42 @@ impl HostedPeer {
         self.hub.shutdown().await;
         crate::device::forget_system(&self.directory);
     }
+}
+
+/// Point the access branch of `tonk`'s profile at the agent space
+/// `agent`, served at `home`, and pull it.
+///
+/// [`tonk_account::delegations::adopt_account_upstream`] does the work,
+/// as it does for a device and its account: the profile must already
+/// hold `agent -> ... -> profile` (the writer chain), which authorizes
+/// the pull. Called again, it pulls again.
+async fn adopt_agent_access(
+    tonk: &TonkState,
+    agent: &Did,
+    home: &url::Url,
+) -> Result<(), TonkWorkerError> {
+    let internal = |error: &dyn std::fmt::Display| TonkWorkerError::Internal(error.to_string());
+    let address = SiteAddress::from(UcanAddress::new(home.as_str()));
+    let remote = tonk_account::peer::connect(address, agent.clone(), &tonk.operator)
+        .await
+        .map_err(|error| internal(&error))?;
+    let upstream = remote
+        .branch(dialog_repository::ACCESS_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| internal(&error))?;
+    // Opened after connecting: connecting records the agent space's
+    // service in the profile, which moves the branch's head, and a
+    // handle opened before it would merge onto a stale head.
+    let access = Repository::from(tonk.profile.did())
+        .branch(tonk.active_branch.as_str())
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| internal(&error))?;
+    tonk_account::delegations::adopt_account_upstream(&access, upstream, &tonk.operator)
+        .await
+        .map_err(|error| internal(&format!("pull the agent space's grants: {error}")))?;
+    Ok(())
 }
