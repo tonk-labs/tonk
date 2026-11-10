@@ -174,9 +174,49 @@ kernel build does not do yet, in the order it lands:
    kernel, with a key its host holds; and the host holding the agent's key
    signs the session token. `authorize.rs` refuses both intents until then.
 2. **The hosted agent** (`tonk-host-worker`, `tonk-view-peer`). On `main` the
-   old service worker's code ran inside a Cloudflare Worker. Here the Worker
-   hosts the space kernel, through the component model polyfill, with a
-   storage host of its own: Cloudflare is one more host.
+   old service worker's code ran inside a Cloudflare Worker: the MCP front
+   (`hosted/mcp.rs`: the agent token, `Mcp-Session-Id`, JSON-RPC) and one
+   space writer per space and MCP session (`hosted/writer.rs`), a Durable
+   Object holding an in-memory peer. Here the Worker hosts the space kernel
+   through the polyfill: Cloudflare is one more host.
+   - **workerd compiles no Wasm at run time** (`WebAssembly.compile` and
+     `new WebAssembly.Module` throw "Wasm code generation disallowed by
+     embedder"; JSPI is there). The polyfill takes every module it makes from
+     a hook, `Precompiled`, by the SHA-256 of its bytes: the component's core
+     modules and every module it generates as it links
+     (`dialog-db/wasm-component-model-polyfill`, branch
+     `feat/precompiled-modules`, local only). A run in Node with recording on
+     writes them out: 27 for the space kernel, and workerd needed no other.
+   - **The bundle.** The Worker's component is a skeleton
+     (`rust/tonk-kernel-bundle`): each core module's bodies are
+     `unreachable` and its data segments empty, so it validates and links as
+     it did, and the module compiled ahead of time is filed under the
+     skeleton's key. The kernel goes from 19.0 MB (6.4 MB gzipped) to 145 KB.
+   - **The embedder** is `tonk-kernel-host`'s `hosted` module (feature
+     `volatile`): layers in memory, the writer key held by the host from its
+     seed (`Standing::handed`), the chain down to it handed in, the access
+     service through the host as in the browser.
+   - **Measured** under `wrangler dev --local` (wrangler 4.128): upload
+     25.3 MB, 8.05 MB gzipped (of 10 MB); boot 229 ms (load 83, compile 55,
+     instantiate 26, init 143); `/api/identify` 15 ms cold, `/api/profile`
+     10 ms warm; the embedder's memory 6.2 MB after boot. In Node the guest's
+     memory is 13.0 MB after boot and 13.4 MB after 20 requests. CPU per
+     request is not measured: `wrangler dev` reports none.
+   - **Authority.** A space's kernel booted as an agent's writer, with the
+     agent's powerline and the session's delegation to the writer (which
+     names whom it acts for and where the space syncs), writes, pushes, and a
+     fresh writer pulls what it pushed (`tonk-kernel-host`'s
+     `hosted_writer.rs`, natively against a local access service).
+   - **Left to do:** the MCP front, with the token and the sessions, out of
+     `tonk-worker` into a crate of its own; the writer's operations
+     (`agent_access`, `space_chains`, `join_link`, `outline`) as routes of the
+     space kernel; the Durable Object in `tonk-host-worker` as the writer over
+     a `HostedKernel` (lock, pull, write, push, a fresh kernel when a push does
+     not land), with the chain `space -> agent -> session -> writer`; the
+     recorded modules bundled by `worker-build`; `tonk-view-peer` the same; an
+     MCP tool call end to end; then `hosted` and `volatile-storage` deleted
+     from `tonk-worker`. Until then `hosted` stays, and the Worker can only be
+     built from `main`.
 3. **Migration.** A person with spaces from `main` is offered to bring them
    over. Only the app origin can read what `main` kept (one IndexedDB per
    space DID, its profile under its DID, keys in `dialog.credential`), so the

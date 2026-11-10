@@ -1,0 +1,18 @@
+[package]
+name = "tonk-kernel-bundle"
+description = "Bundles a kernel for a host that compiles no WebAssembly: the component with the bodies of its core modules left out, and each module the polyfill makes, compiled ahead of time, by the key it is looked up by."
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Not a workspace member, like `tonk-host-worker`: a build tool of the Worker,
+# which it builds before `worker-build`.
+[workspace]
+
+[dependencies]
+sha2 = "0.10"
+wasmparser = { version = "0.262", default-features = false, features = ["std", "validate", "component-model"] }
+
+[dev-dependencies]
+wat = "1"

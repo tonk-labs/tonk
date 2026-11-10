@@ -6001,15 +6001,19 @@ dependencies = [
  "hex",
  "ipld-core",
  "js-sys",
+ "rand 0.9.5",
  "serde_ipld_dagcbor",
  "serde_json",
  "tokio",
+ "tonk-access-service",
  "tonk-common",
  "tonk-components",
  "tonk-identity",
+ "tonk-invite",
  "tonk-kernel-world",
  "tonk-worker",
  "tracing",
+ "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasmparser 0.258.3",
@@ -7283,8 +7287,7 @@ dependencies = [
 [[package]]
 name = "wcmp"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c71ed82dda0c33117b244683a37a688fd2d784ab152110d78d68fbc5feb9010a"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill.git?branch=feat%2Fprecompiled-modules#df8997d606aba83a4e0d96035bcbd18816923755"
 dependencies = [
  "anyhow",
  "js-sys",
@@ -7303,8 +7306,7 @@ dependencies = [
 [[package]]
 name = "wcmp-bindgen"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b255989c584fcfd931b1b78353fe05e71ce8edd16bd48f8aa5a80a6d309adab1"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill.git?branch=feat%2Fprecompiled-modules#df8997d606aba83a4e0d96035bcbd18816923755"
 dependencies = [
  "anyhow",
  "heck",
@@ -7317,8 +7319,7 @@ dependencies = [
 [[package]]
 name = "wcmp-macros"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45edd4024a1ba3dc9349da36adcf8c68e772fa306469b42b33f7db217d3e0636"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill.git?branch=feat%2Fprecompiled-modules#df8997d606aba83a4e0d96035bcbd18816923755"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7329,8 +7330,7 @@ dependencies = [
 [[package]]
 name = "wcmp-wasm-core"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6172c53bd3226a7dd83f246fdd2220cfd1377f16f89709b82132909a555ed0c8"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill.git?branch=feat%2Fprecompiled-modules#df8997d606aba83a4e0d96035bcbd18816923755"
 dependencies = [
  "anyhow",
  "thiserror 2.0.18",
@@ -7341,8 +7341,7 @@ dependencies = [
 [[package]]
 name = "wcmp-wasm-core-wasmtime"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a5c531eba32d38df2996d25575d9ed2f327d816162f079f0768dca3f33fb142"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill.git?branch=feat%2Fprecompiled-modules#df8997d606aba83a4e0d96035bcbd18816923755"
 dependencies = [
  "anyhow",
  "tracing",
@@ -7353,11 +7352,11 @@ dependencies = [
 [[package]]
 name = "wcmp-wasm-core-web"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9078205c38bdc474b3fc32cc54cf1bd4303dbf67583e1d368b2683437e4fbde"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill.git?branch=feat%2Fprecompiled-modules#df8997d606aba83a4e0d96035bcbd18816923755"
 dependencies = [
  "anyhow",
  "js-sys",
+ "sha2 0.10.9",
  "tracing",
  "wasm-bindgen",
  "wasm-encoder 0.261.0",

@@ -4,15 +4,17 @@
 pub mod boot;
 pub mod chain;
 pub mod credentials;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(feature = "volatile")))]
 pub mod embedder;
+#[cfg(all(target_arch = "wasm32", feature = "volatile"))]
+pub mod hosted;
 pub mod http_types;
 pub mod kernel;
 pub mod layers;
 pub mod platform;
 pub mod remote;
 pub mod sapling;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(feature = "volatile")))]
 pub mod signing;
 pub mod wasi;
 pub mod wasi_rest;

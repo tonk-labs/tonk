@@ -25,11 +25,21 @@ use tonk_kernel_world::naming;
 use crate::bindings::sapling::kernel::storage::Edition;
 use crate::bindings::sapling::kernel::types::Error;
 
-/// The space of Dialog DB a layer is: IndexedDB, with blobs in the origin's
-/// file system, in a browser; the file system everywhere else.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+/// The space of Dialog DB a layer is: memory, for a host that keeps nothing
+/// between runs; IndexedDB, with blobs in the origin's file system, in a
+/// browser; the file system everywhere else.
+#[cfg(feature = "volatile")]
+pub type LayerSpace = dialog_storage::provider::storage::VolatileSpace;
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "volatile")
+))]
 pub type LayerSpace = dialog_storage::provider::storage::WebSpace;
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(any(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    feature = "volatile"
+)))]
 pub type LayerSpace = dialog_storage::provider::storage::NativeSpace;
 
 /// Where layers are kept: where Dialog DB keeps each location, or, for a
@@ -73,9 +83,20 @@ impl Layers {
             .collect())
     }
 
+    /// The name of each store kept: none in memory, which keeps nothing
+    /// before this run.
+    #[cfg(feature = "volatile")]
+    async fn kept(&self) -> Result<Vec<String>, Error> {
+        Ok(Vec::new())
+    }
+
     /// The name of each store kept: in a browser, each IndexedDB database of
     /// the origin.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        not(feature = "volatile")
+    ))]
     async fn kept(&self) -> Result<Vec<String>, Error> {
         use js_sys::{Array, Function, Promise, Reflect};
         use wasm_bindgen::{JsCast as _, JsValue};
@@ -102,7 +123,10 @@ impl Layers {
 
     /// The name of each store kept under the current directory, where a
     /// space's layer is.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(not(any(
+        all(target_arch = "wasm32", target_os = "unknown"),
+        feature = "volatile"
+    )))]
     async fn kept(&self) -> Result<Vec<String>, Error> {
         let Some(root) = &self.under else {
             return Ok(Vec::new());

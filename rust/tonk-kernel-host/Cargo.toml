@@ -9,6 +9,11 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Layers kept in memory, by a host that keeps nothing between runs: a
+# Durable Object of a Cloudflare Worker, which serves the hosted agent.
+volatile = []
+
 [dependencies]
 blake3 = "1"
 dialog-capability.workspace = true
@@ -58,6 +63,14 @@ web-sys = { version = "0.3", features = ["console", "Window", "WorkerGlobalScope
 tonk-components = { workspace = true }
 # The wire form of a query, as the worker's own tests derive it.
 tonk-worker = { workspace = true, features = ["helpers"] }
+# A space's kernel acting for an agent, as the hosted agent's Worker boots
+# it, syncing with an access service of the test's own.
+dialog-common = { workspace = true, features = ["helpers"] }
+tonk-access-service = { workspace = true, features = ["helpers"] }
+tonk-identity.workspace = true
+tonk-invite.workspace = true
+rand.workspace = true
+url.workspace = true
 serde_json = "1"
 wasmparser = { version = "0.258", default-features = false, features = ["std", "component-model"] }
 wcmp-wasm-core-wasmtime.workspace = true

@@ -270,7 +270,10 @@ async fn verified<'a>(
     space: &Did,
     chain: &'a DelegationChain,
 ) -> Result<&'a Delegation<AnySignature>, TonkWorkerError> {
-    if chain.subject() != Some(space) {
+    // A chain of any subject is the space's when the space issued it, as an
+    // agent space delegates itself to its session: that it starts at the
+    // space is checked below.
+    if chain.subject().is_some_and(|subject| subject != space) {
         return Err(TonkWorkerError::Forbidden(format!(
             "delegation is not for {space}"
         )));
