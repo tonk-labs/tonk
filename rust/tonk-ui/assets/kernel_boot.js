@@ -1319,6 +1319,34 @@ async function bringOver({ spaces }, reply) {
     reply?.postMessage({ made, failed });
 }
 
+// Ask for another activation email as the hub's notice does, with the
+// persona's `account/resend-activation`, and answer `{ said }`: what the
+// persona said of it, once it ran.
+async function resendActivation(reply) {
+    try {
+        const profiles = await askPersona("GET", "/api/profiles");
+        if (profiles.status !== 200) throw new Error(profiles.text);
+        const at = `/api/repository/profile:tonk/branch/${JSON.parse(profiles.text).active}`;
+        const asked = await askPersona("POST", `${at}/transact`, { claims: [{ op: "assert", application: {
+            predicate: { kind: "transient", concept: { with: {
+                at: { the: "xyz.tonk.resend-activation/at", as: "Float" },
+            } } },
+            parameters: { this: `urn:uuid:${crypto.randomUUID()}`, at: Date.now() },
+        } }] });
+        if (asked.status !== 200) throw new Error(asked.text);
+        const answer = await askPersona("POST", `${at}/query`, {
+            predicate: { with: { said: { the: "xyz.tonk.account-resend/said", as: "Text", cardinality: "one" } } },
+            terms: { this: "tonk:account/resend", said: { "?": { name: "said" } } },
+        });
+        if (answer.status !== 200) throw new Error(answer.text);
+        const rows = JSON.parse(answer.text);
+        reply?.postMessage({ said: (Array.isArray(rows) ? rows : rows.conclusions ?? [])[0]?.fields?.said ?? null });
+    } catch (error) {
+        log("could not ask for another activation email", String(error?.message ?? error));
+        reply?.postMessage({ said: null });
+    }
+}
+
 // What the app's page handed over for `source`, as a space's snapshot
 // answers, for the space `repo` is created from.
 async function migratedCopy(source, repo) {
@@ -1372,6 +1400,12 @@ self.addEventListener("message", event => {
     // page read, to be made again here.
     if (PROFILE && type === "migrate") {
         event.waitUntil(bringOver(event.data, event.ports[0]));
+        return;
+    }
+    // The app's page asks for another activation email, for the account
+    // its panel waits on.
+    if (PROFILE && type === "resend") {
+        event.waitUntil(resendActivation(event.ports[0]));
         return;
     }
     if (PROFILE && type === "ceremony-refused") {

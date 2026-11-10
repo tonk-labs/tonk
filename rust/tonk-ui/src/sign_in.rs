@@ -164,6 +164,9 @@ fn create() -> Result<HtmlElement, ()> {
     let _ = root.set_attribute("role", "dialog");
     let _ = root.set_attribute("aria-modal", "true");
     let _ = root.set_attribute("aria-label", "sign in");
+    if account_task() {
+        let _ = root.set_attribute("data-account-task", "");
+    }
     hear(&root, "click", clicked);
     hear(&root, "submit", submitted);
     hear(&root, "input", typed);
@@ -181,6 +184,46 @@ fn create() -> Result<HtmlElement, ()> {
         .append_child(&root)
         .map_err(|_| ())?;
     Ok(root)
+}
+
+/// Whether this page is a link's approval, which asks for the account as a
+/// task of its own: an app's request for an agent, or a device's or a local
+/// space's for a link.
+fn account_task() -> bool {
+    let Some(location) = web_sys::window().map(|window| window.location()) else {
+        return false;
+    };
+    let path = location.pathname().unwrap_or_default();
+    let Ok(query) = web_sys::UrlSearchParams::new_with_str(&location.search().unwrap_or_default())
+    else {
+        return false;
+    };
+    let named = |name: &str| query.get(name).is_some_and(|value| !value.is_empty());
+    match path.as_str() {
+        "/settings/agent" => named("request"),
+        "/settings/link" => {
+            query.get("intent").as_deref() == Some("local-space-link") && named("request")
+                || named("audience") && named("callback")
+        }
+        _ => false,
+    }
+}
+
+/// Hold a task's records and narrator in one body that scrolls, so its
+/// head and its actions stay in reach in a short window.
+fn hold_task_body(root: &HtmlElement) -> Option<()> {
+    let document = root.owner_document()?;
+    let column = root.query_selector(".ocol").ok()??;
+    let stack = column.query_selector(".ostack").ok()??;
+    let head = stack.query_selector(".m-head").ok()??;
+    let narrator = column.query_selector(".oexp").ok()??;
+    let body = document.create_element("div").ok()?;
+    body.set_class_name("account-task-body");
+    column.insert_before(&head, Some(&stack)).ok()?;
+    column.insert_before(&body, Some(&stack)).ok()?;
+    body.append_child(&stack).ok()?;
+    body.append_child(&narrator).ok()?;
+    Some(())
 }
 
 fn hear(root: &HtmlElement, kind: &str, handler: fn(&Event)) {
@@ -210,6 +253,9 @@ fn render() {
     let _ = root.set_attribute("data-registration", stage.name());
     let _ = root.set_attribute("data-kind", kind);
     root.set_inner_html(&markup(&stage));
+    if root.has_attribute("data-account-task") {
+        hold_task_body(&root);
+    }
     if let Ok(Some(field)) = root.query_selector("input:not([readonly])")
         && let Ok(field) = field.dyn_into::<HtmlInputElement>()
     {
@@ -252,7 +298,7 @@ fn markup(stage: &Stage) -> String {
             r#"<div class="ocol"><div class="ostack">{HEAD}</div><div class="oexp mblk"><p aria-live="polite">Waiting for your passkey…</p></div>{CANCEL}<button class="obtn wait" id="tonk-register-action" type="button" disabled aria-busy="true">waiting for device</button></div>"#
         ),
         Stage::Confirming { .. } => format!(
-            r#"<div class="ocol"><div class="ostack">{HEAD}<div class="orow mblk"><span class="k">email</span><span class="v">awaiting confirmation</span></div></div><div class="oexp mblk"><p aria-live="polite">Open the confirmation link we emailed you to finish. You can leave this page open.</p></div><button class="ghost" type="button" data-act="close">close</button><button class="obtn" id="tonk-register-action" type="button" hidden></button></div>"#
+            r#"<div class="ocol"><div class="ostack">{HEAD}<div class="orow mblk"><span class="k">email</span><span class="v">awaiting confirmation</span></div></div><div class="oexp mblk"><p aria-live="polite">Open the confirmation link we emailed you to finish. You can leave this page open.</p><button id="tonk-register-resend" type="button" data-act="resend">resend activation email</button></div><button class="ghost" type="button" data-act="close">close</button><button class="obtn" id="tonk-register-action" type="button" hidden></button></div>"#
         ),
         Stage::Failed { message } => format!(
             r#"<div class="ocol"><div class="ostack">{HEAD}</div><div class="oexp mblk"><p aria-live="polite">{message}</p></div>{CANCEL}<button class="obtn" id="tonk-register-action" type="button" data-act="retry">try again</button></div>"#,
@@ -318,6 +364,7 @@ fn clicked(event: &Event) {
             says: None,
         }),
         "via" => show(Stage::Via),
+        "resend" => resend(),
         "log-in" => {
             let email = PANEL.with_borrow(|panel| match panel.as_ref().map(|panel| &panel.stage) {
                 Some(Stage::LogIn { email }) => email.clone(),
@@ -585,6 +632,37 @@ fn confirm(email: String) {
             }
         }
     });
+}
+
+/// Ask for another activation email, and say on the panel what came of it.
+fn resend() {
+    let Some(root) = PANEL.with_borrow(|panel| panel.as_ref().map(|panel| panel.root.clone()))
+    else {
+        return;
+    };
+    let button = root.query_selector("#tonk-register-resend").ok().flatten();
+    if let Some(button) = &button {
+        let _ = button.set_attribute("disabled", "");
+    }
+    say(&root, "Requesting…");
+    wasm_bindgen_futures::spawn_local(async move {
+        let said = custody_relay::resend_activation().await;
+        say(
+            &root,
+            said.as_deref()
+                .unwrap_or("Couldn't request another activation email. Try again."),
+        );
+        if let Some(button) = button {
+            let _ = button.remove_attribute("disabled");
+        }
+    });
+}
+
+/// Put `text` in the panel's narrator.
+fn say(root: &HtmlElement, text: &str) {
+    if let Ok(Some(said)) = root.query_selector(".oexp p") {
+        said.set_text_content(Some(text));
+    }
 }
 
 /// The persona merged: whoever waits on the sign-in hears so.

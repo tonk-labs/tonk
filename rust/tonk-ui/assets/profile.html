@@ -53,8 +53,9 @@
                     // the worker that holds the account, this origin's, what
                     // came of one by way of this frame: what a custody
                     // ceremony derived, or that a ceremony was refused. It
-                    // also hands over the spaces an earlier release kept.
-                    var TO_WORKER = ["custody", "ceremony-refused", "migrate"];
+                    // also hands over the spaces an earlier release kept, and
+                    // asks for another activation email.
+                    var TO_WORKER = ["custody", "ceremony-refused", "migrate", "resend"];
                     window.addEventListener(
                         "message",
                         function (e) {

@@ -207,6 +207,27 @@ body:has(#tonk-register:not([hidden])) {
 @keyframes tonk-register-wait { 0%, 100% { opacity: 1 } 50% { opacity: .72 } }
 .tonk-ceremony .ocol:has(.obtn[hidden]) .ghost { flex-basis: 100%; }
 
+/* A link's approval asks for the account as a task of its own: only its
+   records and narrator scroll, below the head and above the actions. */
+#tonk-register[data-account-task] .account-task-body {
+  flex: 0 0 100%; min-height: 0;
+  display: flex; flex-flow: row wrap; align-content: flex-start;
+  overflow-y: auto; overscroll-behavior: contain;
+}
+
+/* While the emailed link is unopened, another can be asked for. */
+#tonk-register #tonk-register-resend {
+  display: block; min-height: 44px; margin-top: 16px; padding: 10px 0;
+  border: 0; background: transparent; color: var(--ink);
+  font: 600 17px/1.1 var(--cond); text-align: left; text-transform: lowercase;
+  text-decoration: underline; text-underline-offset: 4px;
+  cursor: pointer;
+}
+#tonk-register #tonk-register-resend[disabled] { cursor: default; opacity: .55; }
+#tonk-register #tonk-register-resend:focus-visible {
+  outline: 2px solid var(--ink); outline-offset: 2px;
+}
+
 @media (max-width: 600px) {
   .tonk-ceremony .ocol {
     top: auto; right: 16px; bottom: calc(82px + env(safe-area-inset-bottom, 0px));

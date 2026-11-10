@@ -20,9 +20,9 @@
 use std::cell::{Cell, RefCell};
 
 use tonk_worker_api::{WEBAUTHN, WebAuthnKind, WebAuthnRequest};
-use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
-use web_sys::{Element, MessageEvent};
+use wasm_bindgen::{JsCast, JsValue};
+use web_sys::{Element, MessageChannel, MessageEvent};
 
 use crate::user_error::{self, AccountAction};
 
@@ -303,6 +303,38 @@ pub(crate) fn tell_refused(kind: &str, name: &str) {
     {
         let _ = worker.post_message(&message);
     }
+}
+
+/// Ask the worker that holds the account for another activation email, and
+/// what it says came of that. `None` when it could not be asked.
+pub(crate) async fn resend_activation() -> Option<String> {
+    let channel = MessageChannel::new().ok()?;
+    let message = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&message, &"type".into(), &"resend".into());
+    let transfer = js_sys::Array::of1(&channel.port2());
+    let answered = js_sys::Promise::new(&mut |resolve, _| {
+        let resolve = Closure::once_into_js(move |event: MessageEvent| {
+            let _ = resolve.call1(&JsValue::NULL, &event.data());
+        });
+        channel.port1().set_onmessage(Some(resolve.unchecked_ref()));
+    });
+    let global = js_sys::global();
+    if let Ok(relay) = js_sys::Reflect::get(&global, &"tonkProfileWorker".into())
+        .and_then(|relay| relay.dyn_into::<js_sys::Function>())
+    {
+        relay.call2(&global, &message, &transfer).ok()?;
+    } else {
+        web_sys::window()?
+            .navigator()
+            .service_worker()
+            .controller()?
+            .post_message_with_transferable(&message, &transfer)
+            .ok()?;
+    }
+    let answer = wasm_bindgen_futures::JsFuture::from(answered).await.ok()?;
+    js_sys::Reflect::get(&answer, &"said".into())
+        .ok()?
+        .as_string()
 }
 
 /// Whether this document holds a live user activation. A click in a guest
@@ -640,8 +672,6 @@ pub(crate) fn begin_with(
     intent: tonk_worker_api::CustodyIntent,
     credential_id: Option<String>,
 ) -> Result<Mediation, CeremonyError> {
-    use wasm_bindgen::{JsCast, JsValue};
-
     let identity = web_sys::window()
         .and_then(|window| js_sys::Reflect::get(&window, &"tonkIdentity".into()).ok())
         .filter(|value| !value.is_undefined())
