@@ -108,13 +108,16 @@ pub async fn read_agent_access(
             .await;
         match proof {
             Ok(proof) if in_window => {
+                let rooted = rooted(tonk, branch, &subject, delegation, at_now).await;
                 let access = spaces.entry(subject).or_default();
                 access.read |= reaches(&command.0, "get");
                 access.write |= reaches(&command.0, "put");
                 if let Some(at) = proof.duration.expiration {
                     access.expires = Some(access.expires.map_or(at, |held| held.min(at)));
                 }
-                access.grants.push(encode(chain)?);
+                if let Some(rooted) = rooted {
+                    access.grants.push(encode(&rooted)?);
+                }
                 // Signed by whoever granted the space, so the agent, which
                 // can write its own space's directory, cannot redirect it.
                 if access.address.is_none() {
@@ -203,40 +206,51 @@ pub async fn space_chains(
         if !in_window {
             continue;
         }
+        if let Some(proved) = rooted(tonk, branch, space, delegation, at_now).await {
+            chains.push(proved);
+        }
+    }
+    Ok(chains)
+}
+
+/// The chain `space -> ... -> agent space` that ends in `delegation`, a leaf
+/// the agent space retains, proved in force `at`.
+///
+/// The store keeps each delegation apart, so the leaf names only its last
+/// hop. What reaches its issuer is proved from there, rather than from the
+/// agent space, so the walk cannot set off through another of the agent
+/// space's leaves and miss this one.
+async fn rooted(
+    tonk: &TonkState,
+    branch: &dialog_repository::Branch,
+    space: &Did,
+    delegation: &dialog_ucan_core::Delegation<dialog_varsig::AnySignature>,
+    at: TimeRange,
+) -> Option<DelegationChain> {
+    let issuer = delegation.issuer().clone();
+    let mut links = if &issuer == space {
+        Vec::new()
+    } else {
         let scope = Scope {
             subject: UcanSubject::Specific(space.clone()),
             command: delegation.command().clone(),
             parameters: Parameters::default(),
         };
-        // The store keeps each delegation apart, so the leaf names only its
-        // last hop. What reaches its issuer is proved from there, rather
-        // than from the agent space, so the walk cannot set off through
-        // another of the agent space's leaves and miss this one.
-        let issuer = delegation.issuer().clone();
-        let mut links = if &issuer == space {
-            Vec::new()
-        } else {
-            let proved = branch
-                .delegations()
-                .prove(issuer.clone(), scope)
-                .during(at_now)
-                .perform(&tonk.operator)
-                .await;
-            let Ok(proof) = proved else {
-                continue;
-            };
-            let mut links: Vec<_> = proof.proofs.into_iter().map(|link| link.0).collect();
-            if links.first().is_some_and(|root| root.issuer() != space) {
-                links.reverse();
-            }
-            links
-        };
-        links.push(delegation.clone());
-        if let Ok(proved) = dialog_ucan_core::DelegationChain::try_from(links) {
-            chains.push(proved);
+        let proof = branch
+            .delegations()
+            .prove(issuer, scope)
+            .during(at)
+            .perform(&tonk.operator)
+            .await
+            .ok()?;
+        let mut links: Vec<_> = proof.proofs.into_iter().map(|link| link.0).collect();
+        if links.first().is_some_and(|root| root.issuer() != space) {
+            links.reverse();
         }
-    }
-    Ok(chains)
+        links
+    };
+    links.push(delegation.clone());
+    DelegationChain::try_from(links).ok()
 }
 
 /// The name the agent space's directory gives `space`.
