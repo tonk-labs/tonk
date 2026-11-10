@@ -336,15 +336,105 @@ struct GuestManifest {
     wa_css: String,
 }
 
-/// Build the runtime-inject envelope by fetching the served guest bundle +
-/// app stylesheet. Returns `(payload, transfer)` for
-/// `post_message_with_transfer`: the payload carries the glue/css/snippets as
-/// strings plus the wasm + WA bundle as ArrayBuffers, and `transfer` lists
-/// those buffers so they hand off by ownership instead of being copied.
+/// What a guest's runtime payload is assembled from: the current build's
+/// immutable guest assets, as fetched. A document that brings up a second
+/// guest (the profile chrome, on every space it opens) assembles the same
+/// payload again, so the sources are kept for as long as the guest
+/// manifest names the same build, and each payload is made from them.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+struct RuntimeSources {
+    /// The manifest these were fetched under, verbatim: it names every
+    /// hashed asset below, so an equal manifest is the same build.
+    manifest: String,
+    glue: String,
+    snippets: Vec<(String, String)>,
+    prose: Vec<(String, String)>,
+    table: Vec<(String, String)>,
+    wasm: js_sys::ArrayBuffer,
+    css: String,
+    wa: Option<js_sys::ArrayBuffer>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+thread_local! {
+    /// The sources of the last payload this document assembled in full.
+    static RUNTIME_SOURCES: RefCell<Option<Rc<RuntimeSources>>> = const { RefCell::new(None) };
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl RuntimeSources {
+    /// One guest's `(payload, transfer)` for `post_message_with_transfer`.
+    /// The payload carries the glue/css/snippets as strings plus the wasm +
+    /// WA bundle as ArrayBuffers, and `transfer` lists those buffers so they
+    /// hand off by ownership instead of being structured-clone-copied. A
+    /// transferred buffer is detached here, so each payload is given copies
+    /// of its own and the kept ones are never posted.
+    fn payload(&self) -> (JsValue, JsValue) {
+        let snippets = js_sys::Array::new();
+        for (stmt, src) in &self.snippets {
+            let entry = Object::new();
+            let _ = Reflect::set(&entry, &"stmt".into(), &JsValue::from_str(stmt));
+            let _ = Reflect::set(&entry, &"src".into(), &JsValue::from_str(src));
+            snippets.push(&entry);
+        }
+        let wasm: JsValue = self.wasm.slice(0).into();
+        let wa: JsValue = match &self.wa {
+            Some(wa) => wa.slice(0).into(),
+            None => JsValue::UNDEFINED,
+        };
+
+        let payload = Object::new();
+        let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject".into());
+        let _ = Reflect::set(&payload, &"glue".into(), &JsValue::from_str(&self.glue));
+        let _ = Reflect::set(&payload, &"snippets".into(), &snippets);
+        let _ = Reflect::set(
+            &payload,
+            &"prose".into(),
+            &bundle_graph_entries(self.prose.clone()),
+        );
+        let _ = Reflect::set(
+            &payload,
+            &"table".into(),
+            &bundle_graph_entries(self.table.clone()),
+        );
+        let _ = Reflect::set(&payload, &"wasm".into(), &wasm);
+        let _ = Reflect::set(&payload, &"css".into(), &JsValue::from_str(&self.css));
+        let _ = Reflect::set(&payload, &"wa".into(), &wa);
+        // Mirror the outer document's root classes (the WA theme/palette/dark
+        // classes) so the guest themes identically — recomputing from
+        // matchMedia inside the guest can disagree with the parent. Read for
+        // every payload: the theme can change between two guests.
+        let root_class = window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.document_element())
+            .map(|e| e.class_name())
+            .unwrap_or_default();
+        let _ = Reflect::set(
+            &payload,
+            &"rootClass".into(),
+            &JsValue::from_str(&root_class),
+        );
+
+        let transfer = js_sys::Array::new();
+        transfer.push(&wasm);
+        if !wa.is_undefined() {
+            transfer.push(&wa);
+        }
+        (payload.into(), transfer.into())
+    }
+}
+
+/// Build the runtime-inject envelope from the served guest bundle + app
+/// stylesheet. Returns `(payload, transfer)` for
+/// `post_message_with_transfer` (see [`RuntimeSources::payload`]).
+///
+/// The manifest is read for every guest, since it is what says which build
+/// is current. Under a manifest this document has already assembled a
+/// payload for, nothing else is fetched. Otherwise the assets it names are
+/// fetched together: none of them needs another's bytes except the snippets
+/// (named by the glue) and the fonts (named by the CSS).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
-    use wasm_bindgen::JsValue;
-
     // The manifest names the current build's hashed assets. It rides the
     // SW's stale-while-revalidate cache like everything else, so a sealed
     // `/space` works OFFLINE — never `no-store`, which the SW refuses to
@@ -353,50 +443,59 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
     // assets, which are still cached (immutable, never evicted within a cache
     // version), so the guest loads fully; SWR refreshes the manifest in the
     // background and the next load picks up the new build.
-    let manifest: GuestManifest = {
-        let text = fetch_text("/guest/manifest.json").await?;
-        serde_json::from_str(&text).map_err(|e| format!("guest manifest: {e}"))?
-    };
+    let manifest_text = fetch_text("/guest/manifest.json").await?;
+    let kept = RUNTIME_SOURCES.with(|kept| kept.borrow().clone());
+    if let Some(sources) = kept
+        && sources.manifest == manifest_text
+    {
+        return Ok(sources.payload());
+    }
+    let manifest: GuestManifest =
+        serde_json::from_str(&manifest_text).map_err(|e| format!("guest manifest: {e}"))?;
 
-    let glue = fetch_text(&format!("/guest/{}", manifest.js)).await?;
-    let wasm = fetch_array_buffer(&format!("/guest/{}", manifest.wasm)).await?;
+    let glue_url = format!("/guest/{}", manifest.js);
+    let wasm_url = format!("/guest/{}", manifest.wasm);
+    let wa_css_url = format!("/guest/{}", manifest.wa_css);
+    let wa_url = format!("/guest/{}", manifest.wa_js);
+
+    // The glue, then every `import … from '…/snippets/…'` statement in it,
+    // so the guest can rewrite them to blob URLs.
+    let glue_and_snippets = async {
+        let glue = fetch_text(&glue_url).await?;
+        let imports = find_snippet_imports(&glue);
+        let fetched = futures::future::join_all(imports.iter().map(|(_, spec)| {
+            let path = format!("/guest/{}", spec.trim_start_matches("./"));
+            async move { fetch_text(&path).await }
+        }))
+        .await;
+        let mut snippets = Vec::with_capacity(imports.len());
+        for ((stmt, _), src) in imports.into_iter().zip(fetched) {
+            snippets.push((stmt, src?));
+        }
+        Ok::<_, String>((glue, snippets))
+    };
     // App stylesheet — its hashed filename is discovered from the parent
     // document's own `<link rel=stylesheet href=/styles-*.css>`. The Web
     // Awesome CSS + the self-contained WA component bundle ride along so
     // `<wa-*>` elements style + upgrade inside the sealed guest with no
     // network of its own.
-    let mut css = fetch_text(&format!("/guest/{}", manifest.wa_css))
-        .await
-        .unwrap_or_default();
-    if let Some(app_css) = app_stylesheet_css().await {
-        css.push('\n');
-        css.push_str(&app_css);
-    }
+    //
     // Inline `@font-face url("/fonts/*")` as `data:` URLs: a null-origin guest
     // can't fetch the fonts (CORS-blocked), so the host (same-origin) fetches
     // each face and base64-embeds it. Handles woff2/woff/otf/ttf — the launcher
     // ships Gestalte as `.otf`, so limiting this to woff2 left it unstyled.
-    css = inline_fonts(&css).await;
-    // The bundled Web Awesome components (esbuild, no dynamic/relative
-    // imports), imported by the guest before its content upgrades. Fetched as
-    // an ArrayBuffer (not text): the guest never manipulates it as a string,
-    // it just blobs + imports it, so we transfer the bytes (ownership moved,
-    // no structured-clone copy) and the guest wraps them in a Blob zero-copy.
-    let wa = fetch_array_buffer(&format!("/guest/{}", manifest.wa_js))
-        .await
-        .unwrap_or(JsValue::UNDEFINED);
-
-    // Find every `import … from '…/snippets/…'` statement in the glue and
-    // fetch each snippet file, so the guest can rewrite them to blob URLs.
-    let snippets = js_sys::Array::new();
-    for (stmt, spec) in find_snippet_imports(&glue) {
-        let path = format!("/guest/{}", spec.trim_start_matches("./"));
-        let src = fetch_text(&path).await?;
-        let entry = Object::new();
-        let _ = Reflect::set(&entry, &"stmt".into(), &JsValue::from_str(&stmt));
-        let _ = Reflect::set(&entry, &"src".into(), &JsValue::from_str(&src));
-        snippets.push(&entry);
-    }
+    let styles = async {
+        let (wa_css, app_css) =
+            futures::future::join(fetch_text(&wa_css_url), app_stylesheet_css()).await;
+        let whole = wa_css.is_ok();
+        let mut css = wa_css.unwrap_or_default();
+        if let Some(app_css) = app_css {
+            css.push('\n');
+            css.push_str(&app_css);
+        }
+        let (css, inlined) = inline_fonts(&css).await;
+        (css, whole && inlined)
+    };
 
     // The `<tonk-code>` editor bundle is NOT in the boot payload — not even a
     // shell, because `tonk-code.js` is itself the element definition and there
@@ -406,57 +505,58 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
     // guest's DOM (see the observer in `BOOTSTRAP_JS` and `inject_code_core`).
     // Most guests — the Hub, settings, join, a space page — never mount an
     // editor, and now never pay for one.
-
+    //
     // The `<tonk-prose>` markdown editor SHELL only (~4 kB): enough to
     // register the element so guest markup upgrades. The editor core stays
     // out of the boot payload — the guest requests it over `need-prose` the
     // first time an element actually connects (see the listener in
     // `install_message_listener`), so guests that never render an editor
-    // never pay for one. Its code blocks embed the `<tonk-code>` element
-    // injected above.
-    let prose = bundle_graph_entries(fetch_tonk_prose_shell().await);
-
+    // never pay for one. Its code blocks embed the `<tonk-code>` element.
+    //
     // The `<tonk-table>` spreadsheet SHELL only: same lazy contract as
     // tonk-prose above — the grid core and the multi-megabyte IronCalc
     // engine bytes stay out of the boot payload; the guest requests them
     // over `need-table` the first time an element actually connects.
-    let table = bundle_graph_entries(fetch_tonk_table_shell().await);
-
-    let payload = Object::new();
-    let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject".into());
-    let _ = Reflect::set(&payload, &"glue".into(), &JsValue::from_str(&glue));
-    let _ = Reflect::set(&payload, &"snippets".into(), &snippets);
-    let _ = Reflect::set(&payload, &"prose".into(), &prose);
-    let _ = Reflect::set(&payload, &"table".into(), &table);
-    let _ = Reflect::set(&payload, &"wasm".into(), &wasm);
-    let _ = Reflect::set(&payload, &"css".into(), &JsValue::from_str(&css));
-    let _ = Reflect::set(&payload, &"wa".into(), &wa);
-    // Mirror the outer document's root classes (the WA theme/palette/dark
-    // classes) so the guest themes identically — recomputing from
-    // matchMedia inside the guest can disagree with the parent.
-    let root_class = window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.document_element())
-        .map(|e| e.class_name())
-        .unwrap_or_default();
-    let _ = Reflect::set(
-        &payload,
-        &"rootClass".into(),
-        &JsValue::from_str(&root_class),
+    //
+    // The bundled Web Awesome components (esbuild, no dynamic/relative
+    // imports), imported by the guest before its content upgrades. Fetched as
+    // an ArrayBuffer (not text): the guest never manipulates it as a string,
+    // it just blobs + imports it, so we transfer the bytes (ownership moved,
+    // no structured-clone copy) and the guest wraps them in a Blob zero-copy.
+    let (glue_and_snippets, wasm, (css, styled), wa, prose, table) = futures::join!(
+        glue_and_snippets,
+        fetch_array_buffer(&wasm_url),
+        styles,
+        fetch_array_buffer(&wa_url),
+        fetch_tonk_prose_shell(),
+        fetch_tonk_table_shell(),
     );
+    let (glue, snippets) = glue_and_snippets?;
+    let wasm = wasm?
+        .dyn_into::<js_sys::ArrayBuffer>()
+        .map_err(|_| format!("fetch {wasm_url}: not an ArrayBuffer"))?;
+    let wa = wa
+        .ok()
+        .and_then(|wa| wa.dyn_into::<js_sys::ArrayBuffer>().ok());
 
-    // Transfer the two large binary payloads (the guest wasm + the WA bundle)
-    // by OWNERSHIP rather than letting `postMessage` structured-clone-copy
-    // them across the window boundary. `glue`/`css`/snippets stay as strings:
-    // the guest manipulates them as text, so there's nothing to transfer.
-    let transfer = js_sys::Array::new();
-    if !wasm.is_undefined() {
-        transfer.push(&wasm);
+    // A payload missing something it only degrades without (a stylesheet, a
+    // font, the WA bundle, an editor shell) is posted as it is and not kept:
+    // the next guest asks for the missing piece again.
+    let whole = styled && wa.is_some() && !prose.is_empty() && !table.is_empty();
+    let sources = Rc::new(RuntimeSources {
+        manifest: manifest_text,
+        glue,
+        snippets,
+        prose,
+        table,
+        wasm,
+        css,
+        wa,
+    });
+    if whole {
+        RUNTIME_SOURCES.with(|kept| *kept.borrow_mut() = Some(sources.clone()));
     }
-    if !wa.is_undefined() {
-        transfer.push(&wa);
-    }
-    Ok((payload.into(), transfer.into()))
+    Ok(sources.payload())
 }
 
 /// Map a `/fonts/*` file extension to its `data:` MIME type. Any file under
@@ -510,25 +610,35 @@ fn find_font_paths(css: &str) -> Vec<String> {
 /// `url("data:<mime>;base64,…")` so the sealed guest needs no font fetch.
 /// Inlines ANY file under `/fonts/`, not a fixed set of extensions. Fonts
 /// whose fetch/encode fails are left as-is (degrade to a fallback face).
+/// The faces are fetched together. Returns the CSS and whether every face
+/// it names was inlined.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn inline_fonts(css: &str) -> String {
+async fn inline_fonts(css: &str) -> (String, bool) {
     let mut paths = find_font_paths(css);
     // Substitute longest-first so a path that is a prefix of another
     // (`a.woff` next to `a.woff2`) isn't corrupted by the shorter one's
     // replacement landing inside it.
     paths.sort_by_key(|p| std::cmp::Reverse(p.len()));
 
+    let faces = futures::future::join_all(paths.iter().map(|path| async move {
+        let buffer = fetch_array_buffer(path).await.ok()?;
+        array_buffer_to_base64(&buffer)
+    }))
+    .await;
+
     let mut out = css.to_owned();
-    for path in paths {
-        if let Ok(buffer) = fetch_array_buffer(&path).await
-            && let Some(b64) = array_buffer_to_base64(&buffer)
-        {
-            let data_url = format!("data:{};base64,{b64}", font_mime(&path));
-            // Replace the path wherever it appears as a url argument.
-            out = out.replace(&path, &data_url);
+    let mut whole = true;
+    for (path, face) in paths.iter().zip(faces) {
+        match face {
+            Some(b64) => {
+                let data_url = format!("data:{};base64,{b64}", font_mime(path));
+                // Replace the path wherever it appears as a url argument.
+                out = out.replace(path, &data_url);
+            }
+            None => whole = false,
         }
     }
-    out
+    (out, whole)
 }
 
 /// Base64-encode an `ArrayBuffer` via `btoa` over a binary string. Returns

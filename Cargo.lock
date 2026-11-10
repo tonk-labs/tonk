@@ -5551,6 +5551,7 @@ dependencies = [
  "dialog-credentials",
  "dialog-ucan-core",
  "dialog-varsig",
+ "futures",
  "indexmap",
  "ipld-core",
  "js-sys",
