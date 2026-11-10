@@ -4,14 +4,13 @@
 
 use dialog_artifacts::DialogArtifactsError;
 use dialog_capability::Provider;
-use dialog_common::{Blake3Hash, ConditionalSync, Holds};
-use dialog_effects::archive::{Get, Load};
-use dialog_repository::{Branch, PullError, Revision, TreeReference};
+use dialog_common::{Blake3Hash, ConditionalSync};
+use dialog_effects::archive::Load;
+use dialog_repository::{Branch, PullError, Revision};
 
 use super::BranchReference;
 use super::env::{BranchOpenProvider, LoadProvider, PullProvider, SelectProvider};
 use super::error::ReactorError;
-use super::hydrate::hydrate_divergence;
 
 /// Pull-from-upstream effect.
 pub struct Pull<'a> {
@@ -179,26 +178,6 @@ impl<'a> Pull<'a> {
             hold_root(cached.handle(), revision, env).await?;
         }
 
-        // Hold every node the advance adds over the head this replica
-        // stands on before adopting it. A fast-forward adopts by reference,
-        // so a head that moved first leaves what it changed remote: a page
-        // this replica rendered from its own store a moment ago then waits
-        // on the network to render again, and does not render at all
-        // offline. Fetched first, the reads stay on the head held until
-        // the new one is as readable as it was, and a fetch that fails
-        // leaves the head where it was. The reads follow the size of the
-        // change: what the two heads share is not read, and stays held or
-        // remote as it was. A download above already holds more than
-        // this; a first pull has no head to compare against and adopts by
-        // reference as before.
-        if !download
-            && let Some(held) = &before
-            && let Some(revision) = prepared.revision()
-            && held != &revision.tree
-        {
-            hold_novelty(cached.handle(), held, revision, env).await?;
-        }
-
         // Advance the cells under the transactor lock, so this serializes with
         // commits on the same branch instead of racing the head CAS.
         let revision = {
@@ -265,30 +244,4 @@ where
             reason: error.to_string(),
         }),
     }
-}
-
-/// Read into `branch`'s archive every tree node `revision` holds that the
-/// tree at `held` does not, each a local hit when it is already there,
-/// else a fetch from the upstream the pull prepared from.
-async fn hold_novelty<Env>(
-    branch: &Branch,
-    held: &TreeReference,
-    revision: &Revision,
-    env: &Env,
-) -> Result<(), ReactorError>
-where
-    Env: Provider<Load> + Provider<Get> + Holds + ConditionalSync,
-{
-    hydrate_divergence(
-        &branch.archive().index(),
-        &Blake3Hash::from(*held.hash()),
-        &Blake3Hash::from(*revision.tree.hash()),
-        env,
-    )
-    .await
-    .map_err(|error| ReactorError::UnreadableHead {
-        branch: branch.name().to_string(),
-        root: Blake3Hash::from(*revision.tree.hash()).to_string(),
-        reason: format!("a node it adds could not be read: {error}"),
-    })
 }

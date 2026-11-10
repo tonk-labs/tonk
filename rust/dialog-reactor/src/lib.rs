@@ -29,7 +29,6 @@ mod env;
 mod error;
 mod export;
 mod formula;
-mod hydrate;
 mod import;
 mod intent;
 pub use intent::{Interpretation, interpret};
