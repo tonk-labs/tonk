@@ -63,6 +63,10 @@ pub mod names {
     /// `<tonk-display>` removed rendered content because its subscription
     /// restarted (a changed attribute, a reconnect).
     pub const DISPLAY_REMOVED_RESTART: &str = "display.removed.restart";
+    /// `<tonk-display>` was pointed at another entity of the same model
+    /// and kept what it showed until that entity's first frame rendered
+    /// into it: a restart that removed nothing.
+    pub const DISPLAY_KEPT_RESTART: &str = "display.kept.restart";
     /// `<tonk-display>` removed rendered content to show an error.
     pub const DISPLAY_REMOVED_ERROR: &str = "display.removed.error";
     /// `<tonk-display>` removed rendered content because a model frame
