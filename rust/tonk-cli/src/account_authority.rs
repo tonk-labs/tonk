@@ -333,6 +333,8 @@ forward!(dialog_effects::peer::RemoveAddress);
 forward!(dialog_effects::peer::RemoveName);
 forward!(dialog_did_web::Discover);
 forward!(dialog_repository::Hydrate);
+forward!(dialog_effects::archive::Load);
+forward!(dialog_effects::blob::Load);
 forward!(dialog_artifacts::Preload);
 forward!(dialog_artifacts::Speculation);
 forward!(dialog_effects::space::Load);

@@ -15,11 +15,11 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.3", version = "0.4.0-rc.3" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.7", version = "0.4.0-rc.7" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.7", version = "0.4.0-rc.7" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.7", version = "0.4.0-rc.7" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.7", version = "0.4.0-rc.7" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.7", version = "0.4.0-rc.7" }
 js-sys = "0.3"
 tonk-worker = { path = "../tonk-worker", features = ["volatile-storage"] }
 url = "2"

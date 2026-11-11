@@ -102,6 +102,7 @@ mod local_peer;
 pub use local_peer::{LocalPeer, try_lock as try_lock_peer};
 pub(crate) mod public_access;
 mod publication;
+mod space_invite;
 pub use join::{JoinRequest, JoinResponse};
 mod local_space_link;
 
@@ -117,6 +118,9 @@ mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
 mod members;
+
+/// Making a branch a space does not have yet, as a command.
+mod branch;
 
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};

@@ -3485,6 +3485,90 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// SPACE-17: a URL naming a branch the space lacks offers to make it.
+    ///
+    /// `/space/{branch}@{did}` opens that branch. One the space does not
+    /// have shows the branch panel (not the "still arriving" panel a branch
+    /// with no library would otherwise fall into), and opening it makes
+    /// nothing. "branch off main" makes it from main: the panel goes and the
+    /// space's own view renders on the new branch.
+    #[dialog_common::test]
+    async fn it_makes_a_branch_a_url_names_from_the_panel(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        let key = create_space(&driver, "Branching").await?;
+        let did = if key.starts_with("did:key:") {
+            key.clone()
+        } else {
+            format!("did:key:{key}")
+        };
+        let name_on = |branch: &'static str| {
+            let driver = driver.clone();
+            let did = did.clone();
+            async move {
+                driver.enter_default_frame().await?;
+                let rows = post_json(
+                    &driver,
+                    &format!("/api/repository/{did}/branch/{branch}/query"),
+                    serde_json::json!({
+                        "predicate": { "with": { "name": {
+                            "the": "xyz.tonk.repo/name", "as": "Text", "cardinality": "one"
+                        } } },
+                        "terms": { "this": did, "name": { "?": { "name": "name" } } }
+                    }),
+                )
+                .await?;
+                Ok::<_, anyhow::Error>(
+                    rows["body"][0]["fields"]["name"]
+                        .as_str()
+                        .map(str::to_owned),
+                )
+            }
+        };
+
+        driver
+            .goto(env.tonk_web.join(&format!("space/draft@{did}"))?.as_str())
+            .await?;
+        enter_guest(&driver).await?;
+        wait_for_displayed(&driver, ".branch-missing").await?;
+        wait_for_text_containing(
+            &driver,
+            ".branch-missing .space-unknown-statement",
+            "no branch draft",
+        )
+        .await?;
+        let arriving = driver
+            .execute(
+                r#"return [...document.querySelectorAll('.space-unknown:not(.branch-missing)')]
+                       .some((panel) => panel.getBoundingClientRect().height > 0);"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            arriving.json().as_bool(),
+            Some(false),
+            "the space is here; only the branch is missing"
+        );
+        assert_eq!(
+            name_on("draft").await?,
+            None,
+            "opening the URL made nothing"
+        );
+
+        enter_guest(&driver).await?;
+        click(&driver, ".branch-missing button[value=\"main\"]").await?;
+        wait_for_absent(&driver, ".branch-missing").await?;
+        wait_for_space_view_displayed(&driver, ".blank-canvas").await?;
+        assert_eq!(
+            name_on("draft").await?.as_deref(),
+            Some("Branching"),
+            "the branch starts from main"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// SPACE-15: Discover copies a bundled template in place, using the same receipt
     /// lifecycle as duplication. Cancellation and a failed seed allocate nothing.
     #[dialog_common::test]

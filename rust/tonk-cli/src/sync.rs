@@ -13,7 +13,8 @@ use dialog_repository::{
     Branch, FetchError, PullError, PushError, Revision, TreeReference, Upstream,
 };
 use thiserror::Error;
-use tonk_schema::{SyncState, classify};
+use tonk_schema::SyncState;
+use tonk_worker_api::compare_heads;
 
 use crate::ExitCode;
 use crate::site::TonkSite;
@@ -64,6 +65,21 @@ pub enum SyncError {
          sync; run `tonk pull` and try again"
     )]
     NonFastForward,
+    /// A pull or push met a rival head on the upstream: another replica
+    /// writing with this branch's key built on the same head and minted
+    /// the same version over another tree (dialog-db/dialog-db#705).
+    /// Neither side can merge the other without dropping a write, and
+    /// nothing was written. Pulling does not recover it.
+    #[error(
+        "branch '{branch}' has a rival head on the upstream: another replica writing as this \
+         one minted the same version over another tree; one key must not write from two \
+         replicas at once. To recover, pull the upstream into a replica that has not written \
+         and write again there"
+    )]
+    RivalWriter {
+        /// Name of the local branch whose sync was refused.
+        branch: String,
+    },
     /// The access service refused the authority this device presented.
     ///
     /// This is the only place enforcement is real: possession of a replica
@@ -121,7 +137,7 @@ impl crate::Coded for SyncError {
             | SyncError::Io(_)
             | SyncError::Rejected { .. }
             | SyncError::Timeout { .. } => ExitCode::IoError,
-            SyncError::NonFastForward => ExitCode::CommitError,
+            SyncError::NonFastForward | SyncError::RivalWriter { .. } => ExitCode::CommitError,
         }
     }
 }
@@ -318,16 +334,15 @@ pub async fn status_with_hash(site: &TonkSite) -> Result<SyncStatus, SyncError> 
         map_fetch_error,
     )
     .await?;
+    let remote = remote
+        .into_iter()
+        .next()
+        .and_then(|fetched| fetched.revision);
+    let comparison = compare_heads(branch, local.as_ref(), remote.as_ref(), &site.operator)
+        .await
+        .map_err(|e| SyncError::Io(format!("resolve the heads' contexts: {e}")))?;
     Ok(SyncStatus {
-        state: classify(
-            local.as_ref(),
-            remote
-                .into_iter()
-                .next()
-                .and_then(|fetched| fetched.revision)
-                .as_ref(),
-        )
-        .into(),
+        state: comparison.into(),
         hash,
     })
 }
@@ -472,6 +487,7 @@ fn map_push_error(error: PushError) -> SyncError {
         | PushError::Publish(dialog_repository::PublishError::VersionMismatch { .. }) => {
             SyncError::NonFastForward
         }
+        PushError::WriterRacedItself { branch, .. } => SyncError::RivalWriter { branch },
         other => classify_failure(&other),
     }
 }
@@ -479,6 +495,7 @@ fn map_push_error(error: PushError) -> SyncError {
 fn map_pull_error(error: PullError) -> SyncError {
     match error {
         PullError::BranchHasNoUpstream { branch } => SyncError::UpstreamNotConfigured { branch },
+        PullError::WriterRacedItself { branch, .. } => SyncError::RivalWriter { branch },
         other => classify_failure(&other),
     }
 }

@@ -234,7 +234,7 @@ where
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl<P, C> Provider<blob::Read> for Cached<P, C>
 where
-    P: Provider<blob::Read> + Clone + ConditionalSync + 'static,
+    P: Provider<blob::Read> + Clone + ConditionalSend + ConditionalSync + 'static,
     C: ObjectCache,
 {
     async fn execute(&self, capability: Capability<blob::Read>) -> Result<BlobReader, BlobError> {

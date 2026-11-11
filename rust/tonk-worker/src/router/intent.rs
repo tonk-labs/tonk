@@ -762,6 +762,99 @@ async fn it_says_publishing_in_the_palette() {
     }
 }
 
+/// "invite" on a space's page says either of two commands: naming one
+/// of the account's agents lets that agent in, anything else is taken
+/// as the address of an account to let in. Both are said of the space
+/// the page shows, and both run as they are.
+#[dialog_common::test]
+async fn it_says_inviting_an_agent_or_an_address_in_the_palette() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let branch = state.read().await.active_branch.clone();
+    let profile = format!("/api/repository/profile:tonk/branch/{branch}");
+    for library in [CORE, PROFILE] {
+        send(
+            &app,
+            "POST",
+            &format!("{profile}/evaluate"),
+            "application/yaml",
+            library.into(),
+        )
+        .await;
+    }
+    let space = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+    let agent = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH";
+    // A space with no upstream: local to this device.
+    let local = "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG";
+    send(
+        &app,
+        "POST",
+        &format!("{profile}/evaluate"),
+        "application/yaml",
+        format!(
+            "space!:\n  this: {space}\n  subject: {space}\n  kind: tonk:repository\n  name: \"little writer\"\n  home-address: \"https://sync.example.test/ucan/\"\n\n\
+             space!:\n  this: {local}\n  subject: {local}\n  kind: tonk:repository\n  name: \"scratch pad\"\n\n\
+             space!:\n  this: {agent}\n  subject: {agent}\n  kind: tonk:repository\n  name: \"Claude\"\n\n\
+             agent-space!:\n  this: {agent}\n  kind: case:agent\n"
+        ),
+    )
+    .await;
+
+    let site = "site:7d1e0c2a-4b5f-4e8a-9c3d-2f6a8b0e1d4c";
+    for (n, (said, text, nouns, value)) in [
+        (
+            "invite Claude",
+            "invite [Claude] to [little writer]",
+            r#"{"goal":"space","object":"agent"}"#,
+            agent,
+        ),
+        (
+            "invite bob@example.com",
+            "invite [bob@example.com] to [little writer]",
+            r#"{"goal":"space"}"#,
+            "bob@example.com",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let expression = format!("intent:test-invite-{n}");
+        interpreted(&app, &profile, &expression, said, site, 1.0 + n as f64).await;
+        let rows = readings(&app, &profile, &expression, space).await;
+        let top = rows
+            .first()
+            .unwrap_or_else(|| panic!("{said:?} is suggested: {rows:?}"));
+        assert_eq!(field(top, "text"), text, "{rows:?}");
+        assert_eq!(field(top, "nouns"), nouns, "{rows:?}");
+        let claim = field(top, "claim")
+            .as_str()
+            .unwrap_or_else(|| panic!("{said:?} runs as it is: {top:?}"));
+        assert!(claim.contains(value), "{said:?} carries {value}: {claim}");
+        assert!(
+            claim.contains(space),
+            "{said:?} is said of the space: {claim}"
+        );
+    }
+
+    // On the page of a space that does not sync, "invite" is not said of
+    // it: no reading takes it, as it is or listed, since nobody could
+    // reach it through an upstream it does not have.
+    for (n, said) in ["invite Claude", "invite bob@example.com"]
+        .into_iter()
+        .enumerate()
+    {
+        let expression = format!("intent:test-invite-local-{n}");
+        interpreted(&app, &profile, &expression, said, site, 10.0 + n as f64).await;
+        let rows = readings(&app, &profile, &expression, local).await;
+        assert!(
+            rows.iter().all(|row| {
+                !field(row, "entities").to_string().contains(local)
+                    && !field(row, "claim").to_string().contains(local)
+            }),
+            "{said:?} is never said of a space that does not sync: {rows:?}"
+        );
+    }
+}
+
 /// A space the palette offers is shown by its `label` facet, `{name}`,
 /// even when the directory row carries a description too: the space
 /// commands' object reads "little writer", not the space's blurb.
@@ -966,6 +1059,118 @@ async fn it_installs_a_component_from_the_palette() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     panic!("the notebook component was never installed: {sources}");
+}
+
+/// `<code-editor>` finds a language by any of its words, whichever
+/// component put the record there: one the editor ships (`dialog`), and
+/// one installed on its own (`py`). Installing the editor alone leaves
+/// other languages unanswered, and the editor offers the rest to the
+/// palette. The query is `code-editor/request.js`'s, as the element sends
+/// it over `tonk-query`.
+#[dialog_common::test]
+async fn it_answers_code_editor_language_requests_from_installed_components() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/languages",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+
+    // The element's request, field for field.
+    let request = include_str!("../../../tonk-core/assets/library/code-editor/request.js");
+    for needle in [
+        "'xyz.tonk.code-editor.language/word', as: 'Text', cardinality: 'many'",
+        "'xyz.tonk.code-editor.language/source', as: 'Text', cardinality: 'one'",
+    ] {
+        assert!(request.contains(needle), "request.js still asks {needle}");
+    }
+    let ask = |word: &str| {
+        json!({
+            "predicate": { "with": {
+                "word": { "the": "xyz.tonk.code-editor.language/word", "as": "Text", "cardinality": "many" },
+                "source": { "the": "xyz.tonk.code-editor.language/source", "as": "Text", "cardinality": "one" }
+            } },
+            "terms": {
+                "this": { "?": { "name": "this" } },
+                "word": word,
+                "source": { "?": { "name": "source" } }
+            }
+        })
+        .to_string()
+    };
+    let packs = |rows: &Value| -> Vec<(String, String)> {
+        rows.as_array()
+            .unwrap_or_else(|| panic!("rows: {rows}"))
+            .iter()
+            .map(|row| {
+                (
+                    row["this"]
+                        .as_str()
+                        .or_else(|| row["fields"]["this"].as_str())
+                        .unwrap_or_else(|| panic!("a row names its record: {row}"))
+                        .to_owned(),
+                    row["fields"]["source"]
+                        .as_str()
+                        .unwrap_or_else(|| panic!("a row carries its pack: {row}"))
+                        .to_owned(),
+                )
+            })
+            .collect()
+    };
+
+    {
+        let tonk = state.read().await;
+        super::repository::install_component(&tonk, &key, "main", "/library/code-editor.yaml")
+            .await
+            .expect("the editor installs");
+    }
+    let query = format!("{space}/query");
+    let dialog = send(&app, "POST", &query, "application/json", ask("dialog")).await;
+    let dialog = packs(&dialog);
+    assert_eq!(dialog.len(), 1, "{dialog:?}");
+    assert_eq!(dialog[0].0, "tonk:code-editor/language/dialog-yaml");
+    assert!(
+        dialog[0].1.starts_with("(shared) => {"),
+        "a pack is a function of the shared modules"
+    );
+    let python = send(&app, "POST", &query, "application/json", ask("py")).await;
+    assert_eq!(
+        packs(&python),
+        vec![],
+        "python is not installed with the editor"
+    );
+
+    {
+        let tonk = state.read().await;
+        super::repository::install_component(&tonk, &key, "main", "/library/language/python.yaml")
+            .await
+            .expect("a language installs");
+    }
+    let python = send(&app, "POST", &query, "application/json", ask("py")).await;
+    let python = packs(&python);
+    assert_eq!(python.len(), 1, "{python:?}");
+    assert_eq!(python[0].0, "tonk:code-editor/language/python");
+    let pack = include_str!("../../../tonk-core/assets/library/language/python.js");
+    assert!(
+        python[0].1.trim_end() == pack.trim_end(),
+        "the record carries the pack the component includes: {} bytes, {} on disk, from {:?}",
+        python[0].1.len(),
+        pack.len(),
+        &python[0].1[..python[0].1.len().min(120)],
+    );
 }
 
 /// "inst" means only install, so the palette lists the components it can

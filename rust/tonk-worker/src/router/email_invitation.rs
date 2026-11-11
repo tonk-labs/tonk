@@ -14,7 +14,7 @@ fn unavailable() -> TonkWorkerError {
     TonkWorkerError::Conflict("Delivery could not be confirmed. Retry the same invitation.".into())
 }
 
-async fn origin(tonk: &crate::TonkState) -> Result<Url, TonkWorkerError> {
+pub(super) async fn origin(tonk: &crate::TonkState) -> Result<Url, TonkWorkerError> {
     // A browser link belongs to its own deployment; native workers use the
     // selected account's attached provider. Never accept an arbitrary mail URL.
     if let Some(origin) = super::repository::worker_origin() {

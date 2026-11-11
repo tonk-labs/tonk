@@ -92,6 +92,14 @@ pub struct WaitingSite {
     anchor: String,
 }
 
+impl WaitingSite {
+    /// Whether this site waits on branch `branch` of `repo`.
+    #[cfg(test)]
+    pub(crate) fn waits_on(&self, repo: &str, branch: &str) -> bool {
+        self.repo == repo && self.branch == branch
+    }
+}
+
 /// Stamp the sites waiting on `repo`, now that the device holds it.
 ///
 /// A stamp that still finds no replica waits again.
@@ -396,6 +404,14 @@ async fn stamp_site_on(
             return;
         }
     };
+    // A branch with no head has not been made yet (a tab at
+    // `/space/{branch}@{did}` before `space/create-branch`): nothing on it
+    // routes. Wait for it, so the command that makes it restamps this site.
+    if !profile && state.handle().revision().is_none() {
+        tonk_common::log!("[stamp] {site} WAITING: branch {branch_name} of {repo} has no head");
+        wait_for_space(tonk, &client, profile, waiting).await;
+        return;
+    }
 
     let Some(replica) = origin_entity(tonk, &state).await else {
         tonk_common::log!(
@@ -479,6 +495,31 @@ async fn stamp_site_on(
         match site_param_claim(&entity, name, value) {
             Some(claim) => overlay = overlay.assert(claim),
             None => tonk_common::log!("register_site: bad site {name} attribute"),
+        }
+    }
+    // A profile page at `/space/{segment}/…` shows a space it does not route
+    // into itself: the chrome nests a site for it. Stamp which repository and
+    // branch the segment names, read by the same Level 0 grammar the service
+    // worker routes by, so the chrome never re-parses `{branch}@{label}:{id}`
+    // out of the raw `{id}` capture (which carries all three).
+    if profile && let Some((space_repo, space_branch)) = space_target(&percent_decode(path)) {
+        // A branch the space lacks is reported, not made: the chrome offers
+        // to make it (`space/create-branch`). The state rides the same
+        // replace-on-restamp as the rest of the site, so a restamp after the
+        // branch exists drops it.
+        let missing = branch_missing(tonk, &space_repo, &space_branch).await;
+        let mut fields = vec![
+            ("space-repo", space_repo.as_str()),
+            ("space-branch", space_branch.as_str()),
+        ];
+        if missing {
+            fields.push((SPACE_BRANCH_STATE, MISSING_BRANCH));
+        }
+        for (name, value) in fields {
+            match site_param_claim(&entity, name, value) {
+                Some(claim) => overlay = overlay.assert(claim),
+                None => tonk_common::log!("register_site: bad site {name} attribute"),
+            }
         }
     }
     if let Err(e) = overlay.write().perform(&tonk.operator).await {
@@ -573,6 +614,81 @@ fn percent_decode(value: &str) -> String {
         }
     }
     String::from_utf8(out).unwrap_or_else(|_| value.to_owned())
+}
+
+/// The site field saying why the branch a tab's space segment names cannot be
+/// shown (`tonk:space/missing-branch` in `profile.yaml`).
+pub(super) const SPACE_BRANCH_STATE: &str = "space-branch-state";
+
+/// [`SPACE_BRANCH_STATE`] for a branch the space does not have.
+const MISSING_BRANCH: &str = "missing";
+
+/// Whether `branch` is one `repo` lacks: the space is on this device, its
+/// default branch has a head, and `branch` has none.
+///
+/// A space still arriving (no head on its default branch either) is not
+/// missing a branch, it is missing altogether, which the chrome already
+/// tells apart from the directory row. Reads storage only: no branch is
+/// opened through the reactor, so asking does not cache an empty session.
+pub(super) async fn branch_missing(
+    tonk: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+) -> bool {
+    use dialog_repository::RepositoryExt as _;
+
+    if branch == super::DEFAULT_BRANCH {
+        return false;
+    }
+    let Ok(repository) = tonk
+        .profile
+        .space(repo)
+        .load()
+        .perform(&tonk.operator)
+        .await
+    else {
+        return false;
+    };
+    let has_head = |name: &str| {
+        let reference = repository.branch(name);
+        async move { reference.load().perform(&tonk.operator).await.is_ok() }
+    };
+    has_head(super::DEFAULT_BRANCH).await && !has_head(branch).await
+}
+
+/// Drop the missing-branch state from `site` on the profile branch
+/// `profile_branch`, once the branch it named exists: the chrome's panel
+/// goes, and the nested site, restamped by [`stamp_waiting_sites`], shows
+/// the branch.
+pub(super) async fn clear_missing_branch(
+    tonk: &crate::worker::TonkState,
+    profile_branch: &str,
+    site: &dialog_artifacts::Entity,
+) {
+    let Some(claim) = site_param_claim(site, SPACE_BRANCH_STATE, MISSING_BRANCH) else {
+        return;
+    };
+    let write = tonk
+        .reactor
+        .profile_repository()
+        .branch(profile_branch)
+        .overlay()
+        .retract(claim)
+        .write()
+        .perform(&tonk.operator)
+        .await;
+    if let Err(error) = write {
+        tonk_common::log!("clear_missing_branch: overlay write failed for {site}: {error}");
+    }
+}
+
+/// The repository and branch a `/space/{segment}/…` path addresses, by the
+/// Level 0 grammar ([`tonk_schema::resolve_path`]); `None` for any other path.
+pub(super) fn space_target(path: &str) -> Option<(String, String)> {
+    match tonk_schema::resolve_path(path)? {
+        tonk_schema::RouteTarget::Space { space, .. } => Some((space.name, space.branch)),
+        tonk_schema::RouteTarget::Profile => None,
+    }
 }
 
 fn site_param_claim(

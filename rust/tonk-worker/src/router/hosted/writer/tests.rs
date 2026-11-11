@@ -565,14 +565,14 @@ concept!: &writer-note
     }
 
     /// dialog-db/dialog-db#705, as the design meets it: two peers signing
-    /// as one DID that commit on the same head both mint the same version,
-    /// both pushes succeed, and one write is gone. One writer per MCP
-    /// session, with its own DID, is what keeps this from happening.
-    ///
-    /// When dialog detects the duplicate version, the second push fails
-    /// instead and this test should be turned around to assert that.
+    /// as one DID that commit on the same head both mint the same version
+    /// over different trees. Since dialog-db/dialog-db#707 the second push
+    /// meets its rival on the upstream and is refused as such, writing
+    /// nothing, so the first write stands and the second never lands. One
+    /// writer per MCP session, with its own DID, is what keeps this from
+    /// happening at all.
     #[dialog_common::test]
-    async fn writers_sharing_a_did_lose_a_write() {
+    async fn writers_sharing_a_did_are_refused_the_rival_push() {
         let fixture = Fixture::start().await;
         let session = session(&fixture.space, "mcp-shared", &fixture.remote).await;
         let key = WriterKey::derive(&session).await.unwrap();
@@ -628,7 +628,15 @@ concept!: &writer-note
         assert!(status.is_success(), "{status}: {b}");
         let (status, body) =
             json(call(&second, format!("{base}/sync/push"), String::new()).await).await;
-        assert!(status.is_success(), "second push: {status}: {body}");
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "second push: {status}: {body}"
+        );
+        assert_eq!(
+            body["error"]["code"], "SYNC_RIVAL_WRITER",
+            "the rival head is named as such: {body}"
+        );
 
         assert_eq!(
             a["revision_after"]["issuer"], b["revision_after"]["issuer"],
@@ -639,7 +647,11 @@ concept!: &writer-note
             "one version, minted twice"
         );
         let landed = fixture.notes().await;
-        assert_eq!(landed.len(), 1, "one of the two writes is lost: {landed:?}");
+        assert_eq!(
+            landed.len(),
+            1,
+            "the first write stands and the refused one never lands: {landed:?}"
+        );
         first.close().await;
         second.close().await;
         fixture.stop().await;

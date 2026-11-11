@@ -2,11 +2,11 @@
 //! subscriptions re-poll once remote artifacts have been
 //! merged into the branch.
 
+use dialog_artifacts::DialogArtifactsError;
 use dialog_capability::Provider;
 use dialog_common::{Blake3Hash, ConditionalSync};
-use dialog_effects::archive::Get;
-use dialog_repository::{Branch, Hydrate, NetworkedIndex, RemoteFallback, Revision, Upstream};
-use dialog_search_tree::LoadBlock;
+use dialog_effects::archive::Load;
+use dialog_repository::{Branch, PullError, Revision};
 
 use super::BranchReference;
 use super::env::{BranchOpenProvider, LoadProvider, PullProvider, SelectProvider};
@@ -127,7 +127,23 @@ impl<'a> Pull<'a> {
         } else {
             pull.assuming_upstream()
         };
-        let prepared = pull.prepare(env).await?;
+        let prepared = match pull.prepare(env).await {
+            Ok(prepared) => prepared,
+            // Since dialog 0.4.0-rc.4 preparing a pull reads the upstream
+            // head's tree through the env (its context region, to order
+            // the two heads), so a head whose blocks this replica can no
+            // longer fetch fails here, before `hold_root` would refuse it.
+            // It is the same refusal: nothing was adopted and the head
+            // stays where it was.
+            Err(PullError::Artifact(error)) => {
+                return Err(ReactorError::UnreadableHead {
+                    branch: self.branch.name.to_string(),
+                    root: unreadable_block(&error),
+                    reason: error.to_string(),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
 
         // Materialize what the advance would adopt before it is adopted: a
         // head that moved first, with its blocks still remote, is a branch
@@ -185,6 +201,18 @@ impl<'a> Pull<'a> {
     }
 }
 
+/// The block an artifact read named as unreadable, from the message a
+/// hydration failure carries (`block <hash> is not in the local archive
+/// ...`), or `unknown` when the error names none.
+fn unreadable_block(error: &DialogArtifactsError) -> String {
+    let text = error.to_string();
+    text.split_whitespace()
+        .skip_while(|word| *word != "block")
+        .nth(1)
+        .map(|hash| hash.trim_end_matches(':').to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 /// Read the root block of `revision`'s tree into `branch`'s archive: a
 /// local hit when it is already held, else a fetch from the upstream the
 /// pull prepared from, which is the first the branch pulls from (see
@@ -195,19 +223,15 @@ impl<'a> Pull<'a> {
 /// branch reads first.
 async fn hold_root<Env>(branch: &Branch, revision: &Revision, env: &Env) -> Result<(), ReactorError>
 where
-    Env: Provider<Get> + Provider<Hydrate> + ConditionalSync,
+    Env: Provider<Load> + ConditionalSync,
 {
-    let fallback = match branch.pulls().iter().next() {
-        Some(Upstream::Remote { remote, .. }) => RemoteFallback::Remote(remote.clone()),
-        Some(Upstream::Unreachable { target, reason, .. }) => RemoteFallback::Unavailable {
-            remote: target.to_string(),
-            reason: reason.clone(),
-        },
-        Some(Upstream::Local { .. }) | None => RemoteFallback::None,
-    };
+    // The load hydrates a miss from the remotes the branch registered as
+    // it opened (its pulls first), and fails naming one it cannot reach.
     let root = Blake3Hash::from(*revision.tree.hash());
-    let index = NetworkedIndex::new(env, branch.archive().index(), fallback);
-    match LoadBlock::new(root.clone()).perform(&index).await {
+    match Load::new(branch.archive().index(), root.clone())
+        .perform(env)
+        .await
+    {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(ReactorError::UnreadableHead {
             branch: branch.name().to_string(),

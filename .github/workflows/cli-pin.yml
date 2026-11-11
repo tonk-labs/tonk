@@ -55,7 +55,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: .ci
-      - uses: wimpysworld/nothing-but-nix@main
+      - uses: wimpysworld/nothing-but-nix@baf7355748bb5651f08b839669d6bb39051b2874 # main before 153c2fb, whose /nix/tmp TMPDIR breaks the Nix installer
         if: runner.os == 'Linux'
       - uses: cachix/install-nix-action@v31
         with:

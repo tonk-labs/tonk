@@ -7,8 +7,15 @@
 //! `SyncState` and even classify without linking the engine.
 //! `tonk-schema` re-exports them for the native CLI and the worker.
 
-use dialog_artifacts::Revision;
+use dialog_artifacts::history::{Context, context_in};
+use dialog_artifacts::{DialogArtifactsError, Revision};
+use dialog_capability::Provider;
+use dialog_common::{ConditionalSync, Holds};
+use dialog_effects::archive::Load as ArchiveLoad;
+use dialog_effects::blob::Load as BlobLoad;
+use dialog_repository::{Branch, Index};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// How a branch's local head relates to its upstream head.
 ///
@@ -67,10 +74,14 @@ impl From<Comparison> for SyncState {
     }
 }
 
-/// Classify `local` against `remote` from the two heads alone.
+/// Classify `local` against `remote` from the two heads and their causal
+/// contexts.
 ///
-/// This is the cheap variant: one [`Revision`] from each side, no history
-/// walk. It only reports a direction it can *prove*:
+/// A head carries no context of its own since dialog 0.4.0-rc.4: the
+/// caller resolves each through the branch
+/// (`dialog_repository::Branch::head_context`), which reads it from the
+/// branch's memo or the head's tree. It only reports a direction it can
+/// *prove*:
 ///
 /// - identical trees (including both heads absent) → [`Comparison::Synced`];
 /// - one side absent and the other present → the present side leads;
@@ -87,9 +98,9 @@ impl From<Comparison> for SyncState {
 ///
 /// Two cases still fall back to `Diverged`:
 ///
-/// - **No published context.** [`Revision::context`] is `None` on heads
-///   minted before the history index existed. Without it the direction
-///   cannot be proven from the head alone, so such a pairing reads as
+/// - **No context.** A head whose context the caller could not resolve
+///   (one minted before the history index existed, with no local
+///   ancestry to walk) cannot be ordered, so such a pairing reads as
 ///   `Diverged` (a pull-then-push still reconciles it; only the label is
 ///   conservative).
 /// - **Genuinely concurrent.** Neither context includes the other — the two
@@ -97,7 +108,12 @@ impl From<Comparison> for SyncState {
 ///
 /// Reporting `Diverged` in these cases keeps the invariant that we never
 /// claim a direction we can't back up from the heads alone.
-pub fn classify(local: Option<&Revision>, remote: Option<&Revision>) -> Comparison {
+pub fn classify(
+    local: Option<&Revision>,
+    local_context: Option<&Context>,
+    remote: Option<&Revision>,
+    remote_context: Option<&Context>,
+) -> Comparison {
     match (local, remote) {
         (None, None) => Comparison::Synced,
         (Some(_), None) => Comparison::Ahead,
@@ -106,9 +122,9 @@ pub fn classify(local: Option<&Revision>, remote: Option<&Revision>) -> Comparis
             if local.tree == remote.tree {
                 return Comparison::Synced;
             }
-            let (Some(local_ctx), Some(remote_ctx)) = (&local.context, &remote.context) else {
-                // A head minted before the history index carries no context,
-                // so the direction can't be proven from the heads alone.
+            let (Some(local_ctx), Some(remote_ctx)) = (local_context, remote_context) else {
+                // A head whose context could not be resolved cannot be
+                // ordered against the other.
                 return Comparison::Diverged;
             };
             let local_leads = local_ctx.includes(remote_ctx);
@@ -123,6 +139,71 @@ pub fn classify(local: Option<&Revision>, remote: Option<&Revision>) -> Comparis
             }
         }
     }
+}
+
+/// [`classify`] over `local` and `remote` with their contexts resolved
+/// through `branch` ([`head_context`]). Two heads over one tree, or a
+/// side with no head, need no context and read nothing.
+pub async fn compare_heads<Env>(
+    branch: &Branch,
+    local: Option<&Revision>,
+    remote: Option<&Revision>,
+    env: &Env,
+) -> Result<Comparison, DialogArtifactsError>
+where
+    Env: Provider<ArchiveLoad> + Provider<BlobLoad> + Holds + ConditionalSync,
+{
+    let (Some(ours), Some(theirs)) = (local, remote) else {
+        return Ok(classify(local, None, remote, None));
+    };
+    if ours.tree == theirs.tree {
+        return Ok(Comparison::Synced);
+    }
+    let local_context = head_context(branch, ours, env).await?;
+    let remote_context = head_context(branch, theirs, env).await?;
+    Ok(classify(
+        local,
+        Some(&local_context),
+        remote,
+        Some(&remote_context),
+    ))
+}
+
+/// The full causal context of `head`, resolved as dialog's pull resolves
+/// it: from the branch's memo when it holds it, else from the head when it
+/// carries its context inline (a head minted before the context region),
+/// else from the context region of the head's tree, read through `env`,
+/// which hydrates a tree the upstream holds. A head minted before the
+/// region with nothing inline is walked by ancestry, which has to be
+/// local. Whatever is resolved is remembered under the head's version.
+///
+/// A head itself carries no context since dialog 0.4.0-rc.4
+/// (dialog-db/dialog-db#625), so this is how a local head is ordered
+/// against the one its upstream reports.
+pub async fn head_context<Env>(
+    branch: &Branch,
+    head: &Revision,
+    env: &Env,
+) -> Result<Arc<Context>, DialogArtifactsError>
+where
+    Env: Provider<ArchiveLoad> + Provider<BlobLoad> + Holds + ConditionalSync,
+{
+    let contexts = branch.contexts();
+    let version = head.version();
+    if let Some(context) = contexts.cached(&version).await {
+        return Ok(context);
+    }
+    let context = match head.inline_context() {
+        Some(context) => Arc::new(context.clone()),
+        None if head.region => {
+            let tree = Index::at(branch.archive().index(), (*head.tree.hash()).into());
+            let region = context_in(&tree, &env).await?;
+            Arc::new(head.context_from_region(region)?)
+        }
+        None => contexts.context_of(&version, &branch.history(env)).await?,
+    };
+    contexts.insert(version, context.clone());
+    Ok(context)
 }
 
 /// Why a successful sync operation returned.
@@ -211,11 +292,20 @@ mod tests {
         "did:key:test".parse().unwrap()
     }
 
-    /// A revision with the given head tree and causal context.
-    fn rev(head: TreeReference, context: Context) -> Revision {
-        let mut revision = Revision::new(head, branch(), "did:key:test".parse().unwrap());
-        revision.context = Some(context);
-        revision
+    /// A revision with the given head tree, beside its causal context.
+    fn rev(head: TreeReference, context: Context) -> (Revision, Context) {
+        let revision = Revision::new(head, branch(), "did:key:test".parse().unwrap());
+        (revision, context)
+    }
+
+    /// `classify` over two heads with contexts.
+    fn compare(local: &(Revision, Context), remote: &(Revision, Context)) -> Comparison {
+        classify(
+            Some(&local.0),
+            Some(&local.1),
+            Some(&remote.0),
+            Some(&remote.1),
+        )
     }
 
     /// A revision minted before the history index existed: no context.
@@ -227,24 +317,30 @@ mod tests {
     fn it_is_synced_when_heads_match() {
         let local = rev(tree(1), context(&[(origin(0), 1)]));
         let remote = rev(tree(1), context(&[(origin(0), 1)]));
-        assert_eq!(classify(Some(&local), Some(&remote)), Comparison::Synced);
+        assert_eq!(compare(&local, &remote), Comparison::Synced);
     }
 
     #[dialog_common::test]
     fn it_is_synced_when_both_heads_are_absent() {
-        assert_eq!(classify(None, None), Comparison::Synced);
+        assert_eq!(classify(None, None, None, None), Comparison::Synced);
     }
 
     #[dialog_common::test]
     fn it_is_ahead_when_remote_is_absent() {
         let local = rev(tree(1), context(&[(origin(0), 1)]));
-        assert_eq!(classify(Some(&local), None), Comparison::Ahead);
+        assert_eq!(
+            classify(Some(&local.0), Some(&local.1), None, None),
+            Comparison::Ahead
+        );
     }
 
     #[dialog_common::test]
     fn it_is_behind_when_local_is_absent() {
         let remote = rev(tree(1), context(&[(origin(0), 1)]));
-        assert_eq!(classify(None, Some(&remote)), Comparison::Behind);
+        assert_eq!(
+            classify(None, None, Some(&remote.0), Some(&remote.1)),
+            Comparison::Behind
+        );
     }
 
     #[dialog_common::test]
@@ -253,14 +349,14 @@ mod tests {
         // everything remote has, and more.
         let remote = rev(tree(1), context(&[(origin(0), 1)]));
         let local = rev(tree(2), context(&[(origin(0), 2)]));
-        assert_eq!(classify(Some(&local), Some(&remote)), Comparison::Ahead);
+        assert_eq!(compare(&local, &remote), Comparison::Ahead);
     }
 
     #[dialog_common::test]
     fn it_is_behind_when_remote_context_includes_local() {
         let local = rev(tree(1), context(&[(origin(0), 1)]));
         let remote = rev(tree(2), context(&[(origin(0), 2)]));
-        assert_eq!(classify(Some(&local), Some(&remote)), Comparison::Behind);
+        assert_eq!(compare(&local, &remote), Comparison::Behind);
     }
 
     #[dialog_common::test]
@@ -269,7 +365,7 @@ mod tests {
         // neither context includes the other.
         let local = rev(tree(1), context(&[(origin(1), 1)]));
         let remote = rev(tree(2), context(&[(origin(2), 1)]));
-        assert_eq!(classify(Some(&local), Some(&remote)), Comparison::Diverged);
+        assert_eq!(compare(&local, &remote), Comparison::Diverged);
     }
 
     #[dialog_common::test]
@@ -279,7 +375,7 @@ mod tests {
         // conservatively as Diverged the way the old parent-set check did.
         let remote = rev(tree(1), context(&[(origin(0), 1)]));
         let local = rev(tree(3), context(&[(origin(0), 5)]));
-        assert_eq!(classify(Some(&local), Some(&remote)), Comparison::Ahead);
+        assert_eq!(compare(&local, &remote), Comparison::Ahead);
     }
 
     #[dialog_common::test]
@@ -287,7 +383,10 @@ mod tests {
         // A pre-history-index head can't be ordered from the head alone.
         let remote = contextless(tree(1));
         let local = rev(tree(2), context(&[(origin(0), 2)]));
-        assert_eq!(classify(Some(&local), Some(&remote)), Comparison::Diverged);
+        assert_eq!(
+            classify(Some(&local.0), Some(&local.1), Some(&remote), None),
+            Comparison::Diverged
+        );
     }
 
     #[dialog_common::test]

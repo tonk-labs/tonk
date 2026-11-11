@@ -1202,6 +1202,52 @@ pub mod command {
         pub struct Time(pub f64);
     }
 
+    /// Attributes of the `space/invite-agent` command.
+    pub mod invite_agent {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The agent to let into the space: its agent space's subject DID.
+        /// Derived attribute: `xyz.tonk.invite-agent/agent`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.invite-agent")]
+        pub struct Agent(pub Entity);
+
+        /// The space to let it into. Derived attribute:
+        /// `xyz.tonk.invite-agent/space`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.invite-agent")]
+        pub struct Space(pub Entity);
+
+        /// When it was asked, so asking again is a new command.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.invite-agent")]
+        pub struct Time(pub f64);
+    }
+
+    /// Attributes of the `space/invite-email` command.
+    pub mod invite_email {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The address of the account to let in, as typed. Derived
+        /// attribute: `xyz.tonk.invite-email/email`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.invite-email")]
+        pub struct Email(pub String);
+
+        /// The space to let it into. Derived attribute:
+        /// `xyz.tonk.invite-email/space`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.invite-email")]
+        pub struct Space(pub Entity);
+
+        /// When it was asked, so asking again is a new command.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.invite-email")]
+        pub struct Time(pub f64);
+    }
+
     /// Attributes of the `member/expel` command.
     pub mod expel {
         use super::super::Entity;
@@ -1274,6 +1320,36 @@ pub mod command {
             #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
             #[domain("xyz.tonk.command.create-space")]
             pub struct Name(pub String);
+        }
+
+        /// `space/create-branch` — give a space a branch it does not have.
+        pub mod create_branch {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The space (its subject DID) to make the branch in.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.create-branch")]
+            pub struct Space(pub Entity);
+
+            /// The new branch's name.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.create-branch")]
+            pub struct Name(pub String);
+
+            /// What the branch starts from: `main` (the space's default
+            /// branch as it is now) or `empty` (the standard library and
+            /// nothing else). A branch of the same name on the space's
+            /// remote takes precedence over either.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.create-branch")]
+            pub struct Base(pub String);
+
+            /// The tab's site that asked, whose missing-branch state the
+            /// handler clears once the branch exists.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.create-branch")]
+            pub struct Site(pub Entity);
         }
 
         /// `space/remove` — drop a space from this device.
