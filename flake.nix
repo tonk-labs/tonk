@@ -4,7 +4,7 @@
   inputs = {
     crane.url = "github:ipetkov/crane";
     dialog-db-src = {
-      url = "github:dialog-db/dialog-db/tonk-2026-08-28";
+      url = "github:dialog-db/dialog-db/v0.4.0-rc.7";
       flake = false;
     };
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

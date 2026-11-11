@@ -37,10 +37,10 @@ let
     }
   );
 
+  # The one change to wbg-pool that the pinned dialog does not have yet.
+  # dialog carries it from dialog-db/dialog-db#774 on; when `dialog-db-src`
+  # moves to a release with that, this patch and the directory go.
   patches = [
-    ./patches/wbg-pool-live-daemon.patch
-    ./patches/wbg-pool-close-http-connections.patch
-    ./patches/wbg-pool-preserve-report-fetch.patch
     ./patches/wbg-pool-focus-tabs.patch
   ];
 
