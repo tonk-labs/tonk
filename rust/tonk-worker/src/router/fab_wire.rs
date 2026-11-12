@@ -44,7 +44,8 @@ pub(crate) fn wire(tag: &str) -> Value {
         .strip_prefix("() => (")
         .and_then(|rest| rest.strip_suffix(')'))
         .unwrap_or_else(|| panic!("<{tag}>'s wire is not `() => (<json>)`"));
-    serde_json::from_str(table).unwrap_or_else(|error| panic!("<{tag}>'s wire is not JSON: {error}"))
+    serde_json::from_str(table)
+        .unwrap_or_else(|error| panic!("<{tag}>'s wire is not JSON: {error}"))
 }
 
 /// Query `name` of `tag`'s wire as the element sends it, with `this` bound
@@ -60,7 +61,6 @@ pub(crate) fn query(tag: &str, name: &str, subject: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use dialog_query::Attribute as _;
     use dialog_reactor::Decode;
     use tonk_schema::command::{
         AgentHandoff, EnableSync, ForgetInvite, Invite, PauseSync, PublishSpace, UnpublishSpace,
@@ -88,7 +88,10 @@ mod tests {
     /// the failure this design has to rule out.
     fn assert_carries<C: Decode>(tag: &str, name: &str) {
         let triggers = C::trigger_attributes();
-        assert!(!triggers.is_empty(), "the command must declare trigger attributes");
+        assert!(
+            !triggers.is_empty(),
+            "the command must declare trigger attributes"
+        );
         let declared = declared(tag, name);
         for attribute in &triggers {
             assert!(

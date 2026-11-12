@@ -14362,6 +14362,7 @@ route!: &probe/dropped
 #[cfg(all(test, feature = "connection-invites", not(target_arch = "wasm32")))]
 mod connection_invite_overlay_tests {
     use super::*;
+    use crate::router::fab_wire;
 
     async fn space_did(state: &AppState, repo: &str) -> Did {
         let tonk = state.read().await;
@@ -14503,7 +14504,7 @@ mod connection_invite_overlay_tests {
         )
         .await
         .unwrap();
-        let body = tonk_fab::logic::agent_handoff_query_body(subject.as_str()).unwrap();
+        let body = fab_wire::query("tonk-agent-panel", "handoff", Some(subject.as_str()));
         let rows = fab_query(&tonk, &repo, &body).await;
         assert_eq!(rows.as_array().unwrap().len(), 1);
         assert_eq!(
@@ -14525,7 +14526,7 @@ mod connection_invite_overlay_tests {
 
         // Exercise the FAB's actual receipt query against the same durable
         // acknowledgement the CLI writes, without depending on seeded views.
-        let receipt_body = tonk_fab::logic::agent_receipts_query_body();
+        let receipt_body = fab_wire::query("tonk-agent-panel", "receipts", None);
         assert!(
             fab_query(&tonk, &repo, &receipt_body)
                 .await
