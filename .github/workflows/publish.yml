@@ -9,8 +9,14 @@ on:
     types: [closed]
   # Run by hand to delete the KV namespaces of every closed pull request
   # (`scripts/preview-kv.sh sweep`): previews from before their cleanup
-  # deleted them still fill the account's quota.
+  # deleted them still fill the account's quota. A dry run, the default,
+  # only lists what it would delete.
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List the namespaces a sweep would delete, delete none
+        type: boolean
+        default: true
   # `main` deploys dev on tonk.foundation. A `v*` tag is a release: a
   # prerelease tag (`v0.7.0-rc.1`) deploys staging and a final tag (`v0.7.0`)
   # deploys production. `release.yml` explains how to cut one.
@@ -795,5 +801,6 @@ jobs:
         run: scripts/preview-kv.sh sweep
         env:
           GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
