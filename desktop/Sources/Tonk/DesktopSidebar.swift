@@ -47,7 +47,7 @@ struct DesktopSidebar: View {
         }
         .badge(
           AddressBookEntry.entries(
-            contacts: access.contacts, grants: access.connections
+            contacts: access.contacts, grants: access.connections, hosted: access.hostedAgents
           ).count
         )
         .tag(DesktopPage.addressBook)

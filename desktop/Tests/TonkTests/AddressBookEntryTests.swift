@@ -58,6 +58,29 @@ final class AddressBookEntryTests: XCTestCase {
     XCTAssertFalse(entry.matches("mira"))
   }
 
+  func testHostedAgentsJoinTheirKeyOrStandAlone() {
+    let space = HostedAgentSpace(subject: "did:key:zSpace", key: "zSpace", access: "write")
+    let entries = AddressBookEntry.entries(
+      contacts: [DesktopContact(id: "did:key:zSaved", name: "My ChatGPT", labels: [])],
+      grants: [grant("g", recipient: "did:key:zLinked", label: "Old label")],
+      hosted: [
+        HostedAgent(did: "did:key:zSaved", key: "zSaved", name: "ChatGPT", spaces: [space]),
+        HostedAgent(did: "did:key:zLinked", key: "zLinked", name: "Claude", spaces: [space]),
+        HostedAgent(did: "did:key:zNew", key: "zNew", name: nil, spaces: [space]),
+      ])
+
+    XCTAssertEqual(entries.map(\.name), ["Claude", "Connected agent", "My ChatGPT"])
+    XCTAssertEqual(entries.map(\.kind), [.agent, .agent, .agent])
+    XCTAssertEqual(entries.map(\.did), ["did:key:zLinked", "did:key:zNew", "did:key:zSaved"])
+    // A saved contact keeps its own name and gains the agent's spaces.
+    XCTAssertEqual(entries[2].hosted?.key, "zSaved")
+    // An agent that also holds a grant is one row with both.
+    XCTAssertEqual(entries[0].grants.map(\.id), ["g"])
+    XCTAssertEqual(entries[0].hosted?.key, "zLinked")
+    XCTAssertEqual(entries[1].hosted?.spaces, [space])
+    XCTAssertTrue(entries[1].matches("zNew"))
+  }
+
   func testSearchMatchesAKnownEmail() {
     let contact = DesktopContact(
       id: "did:key:zAsimov", name: "asimov", labels: [],

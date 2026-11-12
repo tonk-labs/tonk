@@ -414,6 +414,37 @@ final class AccessActionsTests: XCTestCase {
     XCTAssertTrue(access.journal.revokedTargets.isEmpty)
   }
 
+  func testRevokingAHostedAgentsSpaceCallsItsRouteAndRereads() async throws {
+    let runtime = AccessRuntimeStub()
+    runtime.hostedAgents = [
+      [
+        "did": "did:key:zAgent", "key": "zAgent", "name": "ChatGPT",
+        "spaces": [
+          ["subject": "did:key:zTeam", "key": "zTeam", "name": "Team", "access": "write"],
+          ["subject": "did:key:zNotes", "key": "zNotes", "access": "read"],
+        ],
+      ]
+    ]
+    let access = AccessModel(vault: LinkStoreStub(), copyToPasteboard: { _ in true })
+    access.runtime = runtime
+    await access.refreshAccount()
+    let agent = try XCTUnwrap(access.hostedAgents.first)
+    XCTAssertEqual(agent.spaces.map(\.subject), ["did:key:zTeam", "did:key:zNotes"])
+
+    await access.revoke(agent.spaces[0], from: agent)
+    XCTAssertEqual(runtime.hostedRevoked, ["zAgent did:key:zTeam"])
+    XCTAssertEqual(access.notice, "Access revoked")
+    XCTAssertEqual(access.hostedAgents.first?.spaces.map(\.subject), ["did:key:zNotes"])
+    XCTAssertTrue(access.working.isEmpty)
+
+    runtime.revokeFails = true
+    await access.revoke(agent.spaces[1], from: agent)
+    XCTAssertTrue(access.notice?.hasPrefix("Couldn’t revoke the access") == true)
+    XCTAssertEqual(access.hostedAgents.first?.spaces.count, 1, "a failure stays listed")
+    access.reset()
+    XCTAssertTrue(access.hostedAgents.isEmpty)
+  }
+
   func testAccountRefreshClearsRecoveredError() async {
     let access = AccessModel(vault: LinkStoreStub())
     let runtime = AccessRuntimeStub()
@@ -558,6 +589,9 @@ private final class AccessRuntimeStub: SpaceAccessRuntime {
   var recipients: [String] = []
   var expelled: [String] = []
   var expelConfirmed = true
+  /// `GET /api/agents` rows; a revoke removes the space it names.
+  var hostedAgents: [[String: Any]] = []
+  var hostedRevoked: [String] = []
   /// The audience the worker reports for a scoped mint; `nil` echoes the request.
   var scopedEcho: String?
   func createCLILink(_ space: TonkSpace) async throws -> String {
@@ -570,12 +604,27 @@ private final class AccessRuntimeStub: SpaceAccessRuntime {
       await accountRead?()
       if accountFails { throw HarnessError.message("Offline") }
       return accountDetails.merging([
-        "connections": [], "name": "Verifier", "root": "did:key:zVerifier", "passkey": passkey,
+        "connections": [], "agents": hostedAgents, "name": "Verifier", "root": "did:key:zVerifier",
+        "passkey": passkey,
       ]) { _, value in value }
     }
     if script == AccessModel.spaceScript {
       spaceReads += 1
       return ["invites": invites, "members": [], "warnings": spaceWarnings]
+    }
+    if script == AccessModel.hostedRevokeScript {
+      let agent = arguments["agent"] as! String
+      let space = arguments["space"] as! String
+      if revokeFails { throw HarnessError.message("Offline") }
+      hostedRevoked.append(agent + " " + space)
+      hostedAgents = hostedAgents.map { row in
+        var row = row
+        row["spaces"] = (row["spaces"] as? [[String: Any]] ?? []).filter {
+          $0["subject"] as? String != space
+        }
+        return row
+      }
+      return ["done": true]
     }
     if script == AccessModel.expelScript {
       expelled.append(arguments["member"] as! String)

@@ -23,8 +23,10 @@ struct AddressBookView: View {
   @State private var adding = false
 
   private var entries: [AddressBookEntry] {
-    AddressBookEntry.entries(contacts: access.contacts, grants: access.connections)
-      .filter { $0.matches(search) }
+    AddressBookEntry.entries(
+      contacts: access.contacts, grants: access.connections, hosted: access.hostedAgents
+    )
+    .filter { $0.matches(search) }
   }
 
   var body: some View {
@@ -239,7 +241,8 @@ private struct AddressBookDetail: View {
     switch entry.kind {
     case .agent:
       if entry.grants.contains(where: \.isTerminalAuthorization) { return "Agent · Tonk CLI" }
-      return entry.grants.isEmpty ? "Agent" : "Agent · connected with access you gave"
+      return entry.grants.isEmpty && entry.hosted == nil
+        ? "Agent" : "Agent · connected with access you gave"
     case .person:
       return isSelf ? "You" : "Person"
     }
@@ -268,7 +271,8 @@ private struct AddressBookDetail: View {
     VStack(alignment: .leading, spacing: 8) {
       Text("Spaces").font(.caption).foregroundStyle(.secondary)
       let members = memberSpaces
-      if members.isEmpty && entry.grants.isEmpty {
+      let hostedSpaces = entry.hosted?.spaces ?? []
+      if members.isEmpty && entry.grants.isEmpty && hostedSpaces.isEmpty {
         Text(
           isSelf
             ? "You’re not in any listed space."
@@ -287,6 +291,18 @@ private struct AddressBookDetail: View {
             if !members.isEmpty || grant.id != entry.grants.first?.id { Divider() }
             GrantRow(
               grant: grant, space: spaces.first { $0.subject == grant.subject }, access: access)
+          }
+          if let agent = entry.hosted {
+            ForEach(hostedSpaces, id: \.subject) { space in
+              if !members.isEmpty || !entry.grants.isEmpty
+                || space.subject != hostedSpaces.first?.subject
+              {
+                Divider()
+              }
+              HostedSpaceRow(
+                agent: agent, name: entry.name, space: space,
+                listed: spaces.first { $0.subject == space.subject }, access: access)
+            }
           }
         }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
       }
@@ -418,6 +434,44 @@ private struct GrantRow: View {
         Text(
           "Every client using it loses access to \(space?.title ?? "the space"). Other access stays as it is."
         )
+      }
+  }
+}
+
+/// A space a ChatGPT or Claude agent can reach, with the way to revoke it.
+private struct HostedSpaceRow: View {
+  let agent: HostedAgent
+  let name: String
+  let space: HostedAgentSpace
+  let listed: TonkSpace?
+  @ObservedObject var access: AccessModel
+  @State private var confirming = false
+
+  private var title: String { listed?.title ?? space.name ?? "A space you no longer list" }
+
+  var body: some View {
+    HStack(spacing: 12) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text(title)
+        Text(
+          [
+            space.canWrite ? "Read and write" : "Read",
+            AccessLink.expiry(
+              space.expiresAt.map(Date.init(timeIntervalSince1970:)), status: "active",
+              now: Date()),
+          ].joined(separator: " · ")
+        ).font(.system(size: 12)).foregroundStyle(.secondary)
+      }
+      Spacer(minLength: 8)
+      Button("Revoke…") { confirming = true }
+        .disabled(access.working.contains(AccessModel.workingKey(space, of: agent)))
+    }.padding(.horizontal, 14).padding(.vertical, 10)
+      .confirmationDialog("Revoke this access?", isPresented: $confirming) {
+        Button("Revoke Access", role: .destructive) {
+          Task { await access.revoke(space, from: agent) }
+        }
+      } message: {
+        Text("\(name) loses access to \(title). Other access stays as it is.")
       }
   }
 }
