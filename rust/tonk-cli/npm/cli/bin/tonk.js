@@ -23,7 +23,7 @@ const bin = resolveBinary();
 if (bin === null) {
   console.error(
     `@tonk/cli: no prebuilt tonk binary for ${process.platform}-${process.arch} yet.\n` +
-      "Supported today: darwin-arm64 and linux-x64. More platforms coming soon.",
+      "Supported today: darwin-arm64, linux-x64 and linux-arm64. More platforms coming soon.",
   );
   process.exit(1);
 }

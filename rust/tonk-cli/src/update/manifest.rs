@@ -26,6 +26,7 @@ pub fn platform() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => Some("macos-arm64"),
         ("linux", "x86_64") => Some("linux-x86_64"),
+        ("linux", "aarch64") => Some("linux-arm64"),
         _ => None,
     }
 }
