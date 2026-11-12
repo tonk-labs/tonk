@@ -97,7 +97,7 @@ function boot(
     scriptURL: `${origin}/kernel_boot.js${runs ? `?kernel=${encodeURIComponent(runs)}` : ""}`,
     postMessage(message, transfer) {
       toWorker.push(message);
-      if (message.type === "protocol") transfer[0].postMessage({ protocol: 2 });
+      if (message.type === "protocol") transfer[0].postMessage({ protocol: 3 });
       if (message.type === "content") transfer[0].postMessage({ admitted: true });
       if (message.type === "booted") {
         transfer[0].postMessage(unstarted > 0 ? { error: "the person has no such space" } : { booted: true });

@@ -48,7 +48,7 @@ const PINNED = new URL(self.location.href).searchParams.get("kernel");
 // only a persona does waits for the boot.
 let personaKernel = false;
 // The contract between this worker and its shell, as for a release.
-const PROTOCOL = 2;
+const PROTOCOL = 3;
 const RELAY_PATH = "/kernel/relay.js";
 // What this origin serves from the deployment, never from the kernel.
 const HOST_FILES = new Set(["/site.html", "/kernel_boot.js", RELAY_PATH]);
@@ -1449,6 +1449,12 @@ self.addEventListener("message", event => {
                 error => reply?.postMessage({ error: String(error?.message ?? error) }),
             ),
         );
+    }
+    // A page asks what this site can do: whether its kernel hosts the
+    // person's spaces, as a persona does. Answered once it booted.
+    else if (type === "abilities") {
+        const reply = event.ports[0];
+        event.waitUntil(booting.then(() => true, () => false).then(() => reply?.postMessage({ hostsSpaces: personaKernel })));
     }
     else if (type === "port" && event.ports[0]) {
         adopt(event.ports[0]);

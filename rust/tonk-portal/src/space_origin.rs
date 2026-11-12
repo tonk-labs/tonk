@@ -38,13 +38,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::str::FromStr;
 
-use js_sys::{Array, Function, JSON, Object, Reflect};
+use js_sys::{Array, Function, JSON, Object, Promise, Reflect};
 use tonk_host::bridge::{context_field, context_origin};
 use tonk_host::location::Location;
 use tonk_host::space_origin::{encode_label, site_hostname};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use wasm_bindgen_futures::spawn_local;
+use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{
     AddEventListenerOptions, Element, HtmlElement, HtmlIFrameElement, MessageChannel, MessageEvent,
     MessagePort, Url, window,
@@ -351,14 +351,46 @@ pub(crate) fn clear_unreachable(iframe: &HtmlIFrameElement) {
     frame.set_hidden(false);
 }
 
-/// Whether this document is on a profile's origin: its hostname's first label
-/// starts with the profile's. Its worker is the one that holds the person's
-/// profile, and so the one a space's worker asks for its delegation.
-fn on_profile_origin() -> bool {
-    window()
-        .and_then(|window| window.location().hostname().ok())
-        .and_then(|hostname| hostname.split('.').next().map(str::to_owned))
-        .is_some_and(|label| label.starts_with(PROFILE_LABEL))
+thread_local! {
+    /// What this page's worker said its site can do, once it said.
+    static HOSTS_SPACES: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Whether this document's site hosts the person's spaces, as its worker
+/// says: a persona's does, and so its worker is the one a space's worker
+/// asks for its delegation. Asked once in a page's life: the kernel a site
+/// runs does not change under it. A page no worker answers hosts none.
+async fn hosts_spaces() -> bool {
+    if let Some(known) = HOSTS_SPACES.get() {
+        return known;
+    }
+    let Some(controller) =
+        window().and_then(|window| window.navigator().service_worker().controller())
+    else {
+        return false;
+    };
+    let Ok(channel) = MessageChannel::new() else {
+        return false;
+    };
+    let reply = channel.port1();
+    let answered = Promise::new(&mut |resolve, _| reply.set_onmessage(Some(&resolve)));
+    let ask = Object::new();
+    let _ = Reflect::set(&ask, &"type".into(), &"abilities".into());
+    if controller
+        .post_message_with_transferable(&ask, &Array::of1(&channel.port2()))
+        .is_err()
+    {
+        return false;
+    }
+    let hosts = JsFuture::from(answered)
+        .await
+        .ok()
+        .and_then(|event| Reflect::get(&event, &"data".into()).ok())
+        .and_then(|data| Reflect::get(&data, &"hostsSpaces".into()).ok())
+        .and_then(|hosts| hosts.as_bool())
+        .unwrap_or(false);
+    HOSTS_SPACES.set(Some(hosts));
+    hosts
 }
 
 /// Whether this document is the tab's own, framed by nothing.
@@ -373,21 +405,12 @@ pub(crate) fn on_top() -> bool {
 }
 
 /// Get the frame at `origin` a port to the profile's worker for `with`. The
-/// document on the profile's origin mints it; the app's page, showing a
-/// space itself, has the profile's origin mint it in a frame of its own;
-/// any other asks its parent, which answers with a `relay-port` that
-/// [`relay_port`] passes down.
+/// app's page, showing a space itself, has the profile's origin mint it in a
+/// frame of its own; a document whose site hosts the person's spaces mints
+/// it with its own worker; any other asks its parent, which answers with a
+/// `relay-port` that [`relay_port`] passes down.
 pub(crate) fn broker_port(iframe: &HtmlIFrameElement, origin: &str, with: &Location) {
-    let Some(space) = with.space() else {
-        return;
-    };
-    let Some(window) = window() else {
-        return;
-    };
-    if on_profile_origin() {
-        if let Some(port) = mint_port(with) {
-            post_port(iframe, origin, "port", with, port);
-        }
+    if with.space().is_none() {
         return;
     }
     if on_top() {
@@ -400,6 +423,27 @@ pub(crate) fn broker_port(iframe: &HtmlIFrameElement, origin: &str, with: &Locat
         });
         return;
     }
+    let (iframe, origin, with) = (iframe.clone(), origin.to_owned(), with.clone());
+    spawn_local(async move {
+        if hosts_spaces().await {
+            if let Some(port) = mint_port(&with) {
+                post_port(&iframe, &origin, "port", &with, port);
+            }
+            return;
+        }
+        ask_parent_for_port(&with);
+    });
+}
+
+/// Ask the page around this one for a port for `with`, as a frame nested in
+/// it would.
+fn ask_parent_for_port(with: &Location) {
+    let Some(space) = with.space() else {
+        return;
+    };
+    let Some(window) = window() else {
+        return;
+    };
     let (Some(parent), Some(host)) = (window.parent().ok().flatten(), context_origin()) else {
         return;
     };
@@ -654,16 +698,19 @@ thread_local! {
     static REACHING: Cell<bool> = const { Cell::new(false) };
 }
 
-/// On a profile's origin, reach the workers of spaces that are not on screen.
+/// Reach the workers of spaces that are not on screen, when this page's
+/// worker asks.
 ///
-/// The profile's worker holds none of a space's content and passes what it
-/// is asked about one to the space's own worker, over a port only a page can
-/// open. Around a space on screen its `<tonk-site>` opens it. For any other
-/// the worker asks this page, which frames the space's origin unseen and
-/// opens one through that frame, and drops the frame when the worker lets
-/// the space go. Idempotent, and nothing on any other origin.
+/// A site that hosts the person's spaces, the profile, holds none of a
+/// space's content and passes what it is asked about one to the space's own
+/// worker, over a port only a page can open. Around a space on screen its
+/// `<tonk-site>` opens it. For any other the worker asks this page
+/// (`need-space-port`), which frames the space's origin unseen and opens one
+/// through that frame, and drops the frame when the worker lets the space
+/// go. Only such a worker asks, so on any other site this waits for what
+/// never comes. Idempotent.
 pub(crate) fn install_reach() {
-    if !on_profile_origin() || REACHING.replace(true) {
+    if REACHING.replace(true) {
         return;
     }
     let Some(window) = window() else {

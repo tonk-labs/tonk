@@ -391,7 +391,7 @@ test("the host's own files come from the network, and are kept for when it does 
 });
 
 test("the worker speaks the shell's protocol", () => {
-  assert.equal(space().message({ type: "protocol" })?.protocol, 2);
+  assert.equal(space().message({ type: "protocol" })?.protocol, 3);
 });
 
 test("a request the profile passes down is answered by the kernel", async () => {
@@ -756,4 +756,13 @@ test("a new site its framer hands no host takes the deployment's kernel, and ask
   await profile.started();
   assert.ok(profile.fetched.includes(`/_host/kernel/${KERNEL}.wasm`), "the deployment's copy");
   assert.deepEqual(profile.asked, [], "no host is asked");
+});
+
+test("a page asks the worker what its site can do: a persona's hosts spaces, a space's does not", async () => {
+  const ask = (site) => site.post({ type: "abilities" });
+  const profile = space({ persona: true });
+  assert.equal((await ask(profile)).hostsSpaces, true);
+  const site = space({ holds: KERNEL });
+  site.handPort();
+  assert.equal((await ask(site)).hostsSpaces, false);
 });
