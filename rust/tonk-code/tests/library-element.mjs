@@ -4,7 +4,8 @@
 // (`rust/tonk-display/assets/element-runtime.js`), and its languages
 // answered by a stand-in host from records shaped like the space's.
 // Then <prose-editor> embeds it in a fenced code block, and an edit
-// there reaches the markdown.
+// there reaches the markdown. Last, an editor with a `source` talks to a
+// stand-in language server behind `fetch`.
 //
 // Run it (after `npm run build` here):
 //
@@ -223,6 +224,148 @@ await late.evaluate(() => new Promise((r) => setTimeout(r, 100)));
 const upgraded = await late.evaluate(() => !!document.querySelector("prose-editor").shadowRoot.querySelector("code-editor")?.view);
 check("<prose-editor> asks for code-editor and stays plain until it is defined", asked.tags.includes("code-editor") && asked.plain, JSON.stringify(asked));
 check("its blocks become editors once code-editor is defined", upgraded);
+
+// 6. The language server: an editor with a `source` opens it on the
+// server and hears its verdicts as `diagnostics`. The server is a stand-in
+// behind `fetch`, speaking the HTTP + SSE transport the worker does, which
+// finds one error in any document containing `bad`.
+const lsp = await browser.newPage();
+lsp.on("console", (m) => { if (m.type() === "error") problems.push(m.text()); });
+lsp.on("pageerror", (e) => problems.push(String(e)));
+await lsp.setContent("<!doctype html><html><head></head><body></body></html>");
+await lsp.evaluate(() => {
+  const encoder = new TextEncoder();
+  const sent = (globalThis.__sent = []);
+  const streams = new Set();
+  const push = (message) => {
+    for (const controller of streams) controller.enqueue(encoder.encode(`data: ${JSON.stringify(message)}\n\n`));
+  };
+  const verdict = (uri, version, text) => push({
+    jsonrpc: "2.0",
+    method: "textDocument/publishDiagnostics",
+    params: {
+      uri, version,
+      diagnostics: text.includes("bad")
+        ? [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, severity: 1, message: "bad" }]
+        : [],
+    },
+  });
+  window.fetch = async (url, init = {}) => {
+    if (url !== "/api/language-server") return new Response("", { status: 404 });
+    if (init.method !== "POST") {
+      return new Response(new ReadableStream({ start: (controller) => streams.add(controller) }), {
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    const message = JSON.parse(init.body);
+    sent.push(message);
+    if (message.method === "initialize") {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { capabilities: { textDocumentSync: 1 } } }));
+    }
+    if (message.method === "textDocument/didOpen") {
+      const { uri, version, text } = message.params.textDocument;
+      setTimeout(() => verdict(uri, version, text), 0);
+    }
+    if (message.method === "textDocument/didChange") {
+      const { uri, version } = message.params.textDocument;
+      setTimeout(() => verdict(uri, version, message.params.contentChanges.at(-1).text), 0);
+    }
+    return new Response("");
+  };
+});
+await lsp.addScriptTag({ content: RUNTIME });
+await lsp.addScriptTag({ type: "module", content: module("code-editor", definition("code-editor.yaml", "code-editor")) });
+await lsp.waitForFunction(() => customElements.get("code-editor"));
+
+const opened = await lsp.evaluate(async () => {
+  const frames = [];
+  const announced = [];
+  document.addEventListener("code-editor-connect", (e) => announced.push(e.detail));
+  const el = document.createElement("code-editor");
+  el.setAttribute("language", "dialog-yaml");
+  el.setAttribute("source", "tonk-buffer:///did:key:zSpace/main/scratch-0");
+  el.setAttribute("value", "bad: 1");
+  el.addEventListener("diagnostics", (e) => frames.push({ count: e.detail.count, errorCount: e.detail.errorCount, value: e.detail.value }));
+  document.body.append(el);
+  // The session waits up to 2s for a service worker this page never gets.
+  for (let i = 0; i < 80 && frames.length === 0; i++) await new Promise((r) => setTimeout(r, 50));
+  const open = globalThis.__sent.find((m) => m.method === "textDocument/didOpen")?.params.textDocument;
+  return { frames, announced, open, errorCount: el.errorCount };
+});
+check("an editor with a source announces it",
+  opened.announced.length === 1 && opened.announced[0].source === "tonk-buffer:///did:key:zSpace/main/scratch-0"
+    && opened.announced[0].language === "dialog-yaml" && opened.announced[0].url === "/api/language-server",
+  JSON.stringify(opened.announced));
+check("it opens its source on the language server under its language",
+  opened.open?.uri === "tonk-buffer:///did:key:zSpace/main/scratch-0" && opened.open?.languageId === "dialog-yaml",
+  JSON.stringify(opened.open));
+check("a frame from the server fires diagnostics with its errors",
+  opened.frames.length === 1 && opened.frames[0].errorCount === 1 && opened.frames[0].value === "bad: 1",
+  JSON.stringify(opened.frames));
+check("errorCount reads the latest frame", opened.errorCount === 1, JSON.stringify(opened));
+
+const fixed = await lsp.evaluate(async () => {
+  const el = document.querySelector("code-editor");
+  const frames = [];
+  el.addEventListener("diagnostics", (e) => frames.push(e.detail.errorCount));
+  el.view.dispatch({ changes: { from: 0, to: el.view.state.doc.length, insert: "good: 1" }, userEvent: "input" });
+  for (let i = 0; i < 80 && frames.length === 0; i++) await new Promise((r) => setTimeout(r, 50));
+  return { frames, errorCount: el.errorCount };
+});
+check("an edit the server clears fires a clean frame", fixed.frames.at(-1) === 0 && fixed.errorCount === 0, JSON.stringify(fixed));
+
+const shared = await lsp.evaluate(async () => {
+  const el = document.createElement("code-editor");
+  el.setAttribute("source", "tonk-buffer:///did:key:zSpace/main/scratch-1");
+  el.setAttribute("value", "bad");
+  let frame = null;
+  el.addEventListener("diagnostics", (e) => { frame = e.detail.errorCount; });
+  document.body.append(el);
+  for (let i = 0; i < 80 && frame === null; i++) await new Promise((r) => setTimeout(r, 50));
+  return {
+    frame,
+    initialized: globalThis.__sent.filter((m) => m.method === "initialize").length,
+    language: globalThis.__sent.filter((m) => m.method === "textDocument/didOpen").at(-1)?.params.textDocument.languageId,
+  };
+});
+check("editors share one session", shared.frame === 1 && shared.initialized === 1, JSON.stringify(shared));
+check("an editor with no language opens as plaintext", shared.language === "plaintext", JSON.stringify(shared));
+
+const closed = await lsp.evaluate(async () => {
+  const el = document.querySelector("code-editor");
+  const withdrawn = [];
+  el.addEventListener("code-editor-disconnect", (e) => withdrawn.push(e.detail.source));
+  el.remove();
+  await new Promise((r) => setTimeout(r, 100));
+  return {
+    withdrawn,
+    closed: globalThis.__sent.filter((m) => m.method === "textDocument/didClose").map((m) => m.params.textDocument.uri),
+  };
+});
+check("removing an editor closes its document",
+  closed.withdrawn[0] === "tonk-buffer:///did:key:zSpace/main/scratch-0"
+    && closed.closed.includes("tonk-buffer:///did:key:zSpace/main/scratch-0"),
+  JSON.stringify(closed));
+
+const claimed = await lsp.evaluate(async () => {
+  const opens = () => globalThis.__sent.filter((m) => m.method === "textDocument/didOpen").length;
+  const before = opens();
+  const holder = document.createElement("div");
+  holder.addEventListener("code-editor-connect", (e) => e.preventDefault());
+  const el = document.createElement("code-editor");
+  el.setAttribute("source", "tonk-buffer:///did:key:zSpace/main/claimed");
+  holder.append(el);
+  document.body.append(holder);
+  await new Promise((r) => setTimeout(r, 200));
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...args) => warned.push(String(args[0]));
+  el.connect({ plugin: () => [] });
+  console.warn = warn;
+  return { opened: opens() - before, warned };
+});
+check("an ancestor that claims the announcement keeps the editor off the session", claimed.opened === 0, JSON.stringify(claimed));
+check("a client from another core is refused", claimed.warned.some((w) => w.includes("its own core")), JSON.stringify(claimed));
 
 check("no errors on the page", problems.length === 0, problems.join("\n"));
 await browser.close();

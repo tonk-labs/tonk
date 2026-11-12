@@ -11,6 +11,10 @@
       // The language asked for (lower-cased), the pack it is drawn
       // with, and the subscription that hears it installed or changed.
       wanted: null, source: null, watch: null,
+      // The language server: the source announced, the session that
+      // took it (null when an ancestor supplied the client), the client
+      // attached and what it opened, and the latest frame's errors.
+      announced: null, server: null, client: null, attachment: null, errors: 0,
     };
     // Delegated focus lands on CodeMirror's scroller, which is focusable,
     // not on its contenteditable; send it on, however the host got it.

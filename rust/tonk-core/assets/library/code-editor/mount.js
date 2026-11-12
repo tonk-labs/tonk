@@ -20,9 +20,28 @@
       const doc = state.editor?.view.state.doc;
       if (doc) self.emit('run', { value: doc.toString(), doc });
     },
+    // A transaction carrying diagnostics is a fresh frame from the
+    // language server, for the version it was sent: the verdict on the
+    // text as typed. Remapped ranges on an edit are not one.
+    onUpdate: (update) => {
+      const lint = core.shared['@codemirror/lint'];
+      const fresh = update.transactions.some((tr) => tr.effects.some((effect) => effect.is(lint.setDiagnosticsEffect)));
+      if (!fresh) return;
+      let count = 0;
+      let errors = 0;
+      lint.forEachDiagnostic(update.state, (diagnostic) => {
+        count += 1;
+        if (diagnostic.severity === 'error') errors += 1;
+      });
+      state.errors = errors;
+      self.emit('diagnostics', { value: update.state.doc.toString(), doc: update.state.doc, count, errorCount: errors });
+    },
   });
   state.editor = editor;
   self.language(self.getAttribute('language'));
+  // Before `ready`: attaching reconfigures the editor, which can take
+  // focus from whoever handles `ready`.
+  self.announce();
   self.emit('ready', { view: editor.view });
 
   if (!self.hasAttribute('readonly') && self.hasAttribute('auto-focus')) {
