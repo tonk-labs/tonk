@@ -61,6 +61,34 @@ Its policy audit can require elevated read access unavailable to GITHUB_TOKEN;
 missing access blocks the audit. The empty App/custodian/cutover configuration in
 `release/github/policy.json` intentionally prevents readiness for cutover.
 
+## Keep the local example current
+
+`docs/try.md` is the source for https://tonk.xyz/try. It targets CLI v0.7.0-rc.2 on
+Apple Silicon macOS. Linux is deferred for this example; a release alone does
+not add it. Analytics and update checks stay disabled.
+
+Before publishing the page or changing its version pin:
+
+- Confirm the exact version is available on npm. Keep the explicit version pin;
+  do not substitute the moving `latest` or `next` tags. The current prerelease
+  is limited to the isolated local example, not production tool links.
+- Run **Try Tonk locally** (`try-page.yml`) on the branch containing the page.
+  Both Node 18 and Node 24 jobs must pass using the published package. The
+  macOS CLI artifact smoke job also checks the candidate's local data and view
+  commands independently of the page.
+- Copy `docs/try.md` byte for byte to `tonk-site/public/try.txt`, deploy `/try`,
+  then check `curl -fsSL https://tonk.xyz/try | diff - docs/try.md`.
+- Try the live page in a fresh agent session outside this repository, and
+  complete a person-run check with a chosen word. Require a real pass line
+  with that word; record refusals honestly. Check that a wrong word is rejected.
+- Add home-page and agent-discovery pointers only after the live page checks
+  pass. Recheck version and platform claims in the README and the site's four
+  `llms` files when updating them; the example proves local storage and
+  rendering, not sync, sharing or MCP.
+- Merge the loading-page hint and `/agent/` pointer only after `/try` is live.
+  The hint carries URLs and facts, with no install command. It reaches production
+  with the next production deployment, independently of the example's CLI pin.
+
 ## Maintaining the contract
 
 `release/flows.json` maps required flow groups to exact nextest test IDs and

@@ -18,6 +18,23 @@ smoke = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(smoke)
 
 
+class LocalDataTests(unittest.TestCase):
+    def test_silent_cli_is_rejected(self):
+        self.reject_cli("#!/bin/sh\nexit 0\n", "query did not return JSON")
+
+    def test_cli_without_rows_is_rejected(self):
+        self.reject_cli("#!/bin/sh\nprintf '[]\\n'\n", "did not return the saved task")
+
+    def reject_cli(self, source, message):
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            binary = temp / "tonk"
+            binary.write_text(source)
+            binary.chmod(0o755)
+            with self.assertRaisesRegex(RuntimeError, message):
+                smoke.check_data(binary, temp, os.environ.copy())
+
+
 class ArtifactTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

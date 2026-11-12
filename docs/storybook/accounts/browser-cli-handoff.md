@@ -402,9 +402,17 @@ New tool links resolve to a passive `/agent/` page with CLI connection and
 recovery instructions readable without JavaScript. The agent passes the original
 complete URL, including its secret fragment, to `join`; fetching the page does
 not connect or redeem anything. Root and legacy join HTML advertise the guide
-through metadata without adding text to the human loading screen. Successful
+through metadata and a hint hidden from people. The hint also points readers
+without a link to the local example at `https://tonk.xyz/try`, as does a visible
+note on `/agent/`. The initial failure heading is empty; terminal boot failures
+set their headings at runtime. Successful
 joins print commands for status, space agent instructions, schemas, and the
 tutorial.
+
+This discovery change is based on `v0.7.0-rc.1` (`ec61ff836`). The
+`boot-terminal.test.mjs` contract covers the hidden hint, empty initial heading,
+and terminal failure headings; it does not establish a successful packaged-app
+boot or a completed CLI connection. Publish `/try` before deploying the pointers.
 
 The attached **connect agent** panel offers **copy link** and **copy prompt**.
 Completing its account gate resumes invitation generation in place, including

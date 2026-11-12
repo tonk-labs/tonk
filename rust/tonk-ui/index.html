@@ -141,6 +141,9 @@
                 animation: tonk-pulse 2s cubic-bezier(0.4, 0, 0.6, 1)
                     infinite;
             }
+            .tonk-boot-hint {
+                display: none;
+            }
             .tonk-boot-title {
                 display: none;
                 max-width: 36rem;
@@ -1166,11 +1169,18 @@
          critical CSS in <head>; hidden purely by CSS
          (`body:has(tonk-site)`) — the wasm never has to know it exists. -->
         <div id="tonk-boot" aria-live="polite">
+            <p class="tonk-boot-hint">
+                Tonk is a browser app, so a page reader sees only this static text,
+                which says nothing about whether the service is up.
+                <a href="/.well-known/tonk">/.well-known/tonk</a> on this host returns JSON when it is.
+                To work in a space you need a tool link from "copy agent link":
+                see <a href="/agent/">/agent/</a> on this host.
+                With no link, try Tonk locally on Apple Silicon macOS with no account:
+                <a href="https://tonk.xyz/try">https://tonk.xyz/try</a>.
+            </p>
             <div class="tonk-boot-center">
                 <span class="tonk-pulse" aria-hidden="true"></span>
-                <h1 class="tonk-boot-title" data-boot-title>
-                    Tonk couldn’t start
-                </h1>
+                <h1 class="tonk-boot-title" data-boot-title></h1>
                 <p class="tonk-boot-status" data-boot-status>loading…</p>
             </div>
         </div>
