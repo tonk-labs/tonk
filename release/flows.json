@@ -35,7 +35,7 @@
       "tests": [
         "tonk-ui::account_flow::tests::it_finishes_signup_in_the_original_tab",
         "tonk-ui::account_flow::tests::it_begins_only_one_registration_action_per_offered_step",
-        "tonk-ui::account_flow::tests::it_retries_the_committed_address_after_a_failed_passkey_ceremony"
+        "tonk-ui::account_flow::tests::it_offers_to_try_again_after_a_refused_passkey_ceremony"
       ],
       "checks": [
         "tests",

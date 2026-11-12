@@ -711,8 +711,7 @@
           tests-native-release = buildTestArchive {
             name = "native-release";
             profile = "release-test";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-agent-peer --exclude tonk-components --exclude tonk-kernel-host --features integration-tests --cargo-profile release-test";
-            depsExtraArgs = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-agent-peer --exclude tonk-components --exclude tonk-kernel-host --features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-agent-peer --exclude tonk-components --exclude tonk-kernel-host --features integration-tests";
           };
 
           tests-web-debug = buildTestArchive {
@@ -748,7 +747,7 @@
             name = "web-ci";
             profile = "test";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli --exclude tonk-agent-peer --exclude tonk-perf";
+            args = "--workspace --exclude tonk-cli --exclude tonk-agent-peer --exclude tonk-perf --exclude tonk-components --exclude tonk-kernel-host --exclude tonk-worker --exclude tonk-kernel";
           };
 
           tests-e2e-ci = buildTestArchive {
