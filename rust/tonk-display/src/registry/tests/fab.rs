@@ -222,6 +222,11 @@ async fn it_renders_the_v017_rail_from_the_library_with_its_children_bound_to_th
             "<{child}> is addressed to the bar's space",
         );
     }
+    // A view binds `space={…}` as a property when the element has one by
+    // that name, which would leave the attribute everything reads unset.
+    assert!(truthy(
+        "return ['tonk-fab', 'tonk-share', 'tonk-agent-panel'].every((tag) => !('space' in document.querySelector(tag)))"
+    ));
     // A bar that has not heard from the account offers to add one.
     assert!(bar.has_attribute("data-account-required"));
     assert!(truthy(&format!("return !{}.hidden", part(".login"))));

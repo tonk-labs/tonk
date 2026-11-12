@@ -7429,7 +7429,7 @@ element!: &tonk-fab
         list?.removeAttribute('data-zoom');
         list?.removeAttribute('data-fit');
         self.renderRoster();
-        const space = self.space();
+        const space = self.boundSpace();
         if (!space || self.hasAttribute('latent')) return;
         // The children addressed to the space read it off their own attribute.
         for (const child of self.querySelectorAll(':scope > tonk-share, :scope > tonk-agent-panel')) {
@@ -7482,6 +7482,16 @@ element!: &tonk-fab
         });
         self.resolveViewer();
         self.probePresence();
+      }
+    bound-space: |
+      (self) => {
+        // The space this bar is for, once its binding is resolved: blank, or an
+        // unsubstituted `{…}` placeholder from a first projection, is no space.
+        // Not named `space`: a view binds `space={…}`, and a template writes a
+        // binding as a property when the element has one by that name, which
+        // would replace this method and leave the attribute unset.
+        const space = (self.getAttribute('space') ?? '').trim();
+        return space && !space.includes('{') && !space.includes('}') ? space : null;
       }
     build: |
       (self) => {
@@ -8421,7 +8431,7 @@ element!: &tonk-fab
         // Toggle sync for this space. Dispatched without a route, so it lands on
         // the profile, where `tonk:pause-sync` is defined and its handler reads
         // the space out of the command: nothing space-side is required.
-        const space = self.space();
+        const space = self.boundSpace();
         if (!space) return;
         self.transact(self.command('pause-sync', { time: performance.now(), space }));
       }
@@ -8550,7 +8560,7 @@ element!: &tonk-fab
         // Ask the worker whether this device holds the space. The bar stays up
         // for one it does not, since its way home is the way out, but leaves
         // out what would act on the absent replica.
-        const space = self.space();
+        const space = self.boundSpace();
         if (!space || self.hasAttribute('latent')) return;
         let response;
         try {
@@ -8558,7 +8568,7 @@ element!: &tonk-fab
         } catch {
           return;
         }
-        if (self.space() !== space) return;
+        if (self.boundSpace() !== space) return;
         if (response.status === 404) self.setAttribute('data-unknown-space', '');
         else if (response.ok) self.removeAttribute('data-unknown-space');
       }
@@ -8791,7 +8801,7 @@ element!: &tonk-fab
         // this device's profile. A space with members none of whom is you is a
         // published space you are reading, not one you are in (`data-observer`);
         // a space whose roster has not arrived is neither.
-        const space = self.space();
+        const space = self.boundSpace();
         if (!space || self.hasAttribute('latent')) return;
         const roster = self.__fab.roster;
         roster.request += 1;
@@ -8808,7 +8818,7 @@ element!: &tonk-fab
           console.warn('<tonk-fab> repository lookup failed', error);
           return;
         }
-        if (self.__fab.roster !== roster || roster.request !== request || !self.isConnected || self.space() !== space) {
+        if (self.__fab.roster !== roster || roster.request !== request || !self.isConnected || self.boundSpace() !== space) {
           return;
         }
         const members = Array.isArray(info?.members) ? info.members : [];
@@ -9059,13 +9069,6 @@ element!: &tonk-fab
       .w.vispause *, .w.vispause *::before, .w.vispause *::after{ animation-play-state:paused !important; }
       @media (prefers-reduced-motion: reduce){ .disc.alert{ animation:none !important; } .cur{ animation:none; } }
       `
-    space: |
-      (self) => {
-        // The space this bar is for, once its binding is resolved: blank, or an
-        // unsubstituted `{…}` placeholder from a first projection, is no space.
-        const space = (self.getAttribute('space') ?? '').trim();
-        return space && !space.includes('{') && !space.includes('}') ? space : null;
-      }
     stylesheet: |
       (self) => {
         // Slotted content is styled by the document, and document styles beat
@@ -9487,7 +9490,7 @@ element!: &tonk-fab
         self.listen(self.find('[data-action=home]'), 'click', () => window.tonk?.navigate?.('/'));
         for (const [action, publish] of [['publish', true], ['unpublish', false]]) {
           self.listen(self.find(`[data-action=${action}]`), 'click', () => {
-            const space = self.space();
+            const space = self.boundSpace();
             if (space) self.transact(self.command(publish ? 'publish' : 'unpublish', { space, time: Date.now() }));
             self.close();
           });
