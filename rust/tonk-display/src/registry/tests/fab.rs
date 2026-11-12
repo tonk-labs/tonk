@@ -13,7 +13,7 @@ use web_sys::Element;
 
 use super::{
     PROFILE_LIBRARY, define_from_library, defined, document, install, install_fake_host,
-    settle_briefly, settle_until,
+    settle_briefly,
 };
 
 /// Every tag of the bar's family.
@@ -115,6 +115,18 @@ fn truthy(body: &str) -> bool {
     js(body).is_truthy()
 }
 
+/// Wait up to ten seconds for `done`, and fail naming `what` if it never
+/// holds. Under a loaded machine the registry can take a while to answer.
+async fn until(what: &str, done: impl Fn() -> bool) {
+    for _ in 0..1000 {
+        if done() {
+            return;
+        }
+        let _ = js_await("return new Promise((resolve) => setTimeout(resolve, 10));").await;
+    }
+    panic!("never happened: {what}");
+}
+
 /// Register the bar's family from the library, install the bridge, and
 /// mount `<tonk-fab>` with `attributes`, waiting until it and its
 /// children have upgraded.
@@ -136,15 +148,17 @@ async fn mount(attributes: &str) -> Element {
         .append_child(&holder)
         .expect("attach");
     let bar = holder.first_element_child().expect("the bar");
-    settle_until(|| defined("tonk-fab") && bar.shadow_root().is_some()).await;
+    until("the bar upgrades", || {
+        defined("tonk-fab") && bar.shadow_root().is_some()
+    })
+    .await;
     assert!(bar.shadow_root().is_some(), "the library bar must upgrade");
     if !bar.has_attribute("latent") {
-        settle_until(|| {
+        until("its children upgrade", || {
             defined("tonk-share")
                 && defined("tonk-agent-panel")
                 && truthy("return typeof document.querySelector('tonk-agent-panel')?.__tonkReset === 'function'")
-        })
-        .await;
+        }).await;
     }
     bar
 }
@@ -162,14 +176,18 @@ fn part(selector: &str) -> String {
 
 /// Give the account a registration, so the bar offers what an account can do.
 async fn register_account() {
-    settle_until(|| truthy("return window.__fab.live('xyz.tonk.account/customer-email').length > 0"))
-        .await;
+    until("the account subscription opens", || {
+        truthy("return window.__fab.live('xyz.tonk.account/customer-email').length > 0")
+    })
+    .await;
     js(r#"window.__fab.push('xyz.tonk.account/customer-email',
         [{ this: 'did:key:zAccount', fields: { email: 'ada@example.com', registered_at: 1 } }]);"#);
     js(r#"window.__fab.push('xyz.tonk.account/activated-at',
         [{ this: 'did:key:zAccount', fields: { activated_at: 2 } }]);"#);
-    settle_until(|| truthy("return !document.querySelector('tonk-fab').hasAttribute('data-account-required')"))
-        .await;
+    until("the account is ready", || {
+        truthy("return !document.querySelector('tonk-fab').hasAttribute('data-account-required')")
+    })
+    .await;
 }
 
 #[dialog_common::test]
@@ -188,7 +206,10 @@ async fn it_renders_the_v017_rail_from_the_library_with_its_children_bound_to_th
         "#members-panel",
         ".request-layer",
     ] {
-        assert!(truthy(&format!("return !!{}", part(selector))), "the rail carries {selector}");
+        assert!(
+            truthy(&format!("return !!{}", part(selector))),
+            "the rail carries {selector}"
+        );
     }
     for child in ["tonk-share", "tonk-agent-panel"] {
         assert_eq!(
@@ -206,10 +227,14 @@ async fn it_renders_the_v017_rail_from_the_library_with_its_children_bound_to_th
     assert!(truthy(&format!("return !{}.hidden", part(".login"))));
     // It is a floating, fixed-position box seated in a corner.
     assert_eq!(
-        js("return document.querySelector('tonk-fab').style.position").as_string().as_deref(),
+        js("return document.querySelector('tonk-fab').style.position")
+            .as_string()
+            .as_deref(),
         Some("fixed")
     );
-    assert!(bar.class_list().contains("fab-dock-top") && bar.class_list().contains("fab-dock-right"));
+    assert!(
+        bar.class_list().contains("fab-dock-top") && bar.class_list().contains("fab-dock-right")
+    );
     unmount(&bar);
 }
 
@@ -218,9 +243,14 @@ async fn it_authors_nothing_addressed_to_a_space_on_a_latent_bar() {
     let bar = mount("latent").await;
     assert!(bar.query_selector("tonk-share").unwrap().is_none());
     assert!(bar.query_selector("tonk-agent-panel").unwrap().is_none());
-    settle_until(|| truthy("return window.__fab.live('xyz.tonk.site/request').length > 0")).await;
+    until("the site request subscription opens", || {
+        truthy("return window.__fab.live('xyz.tonk.site/request').length > 0")
+    })
+    .await;
     assert!(
-        !truthy("return window.__fab.subscriptions.some((entry) => !entry.cancelled && entry.context?.with)"),
+        !truthy(
+            "return window.__fab.subscriptions.some((entry) => !entry.cancelled && entry.context?.with)"
+        ),
         "a latent bar opens nothing on a space's branch"
     );
     unmount(&bar);
@@ -229,24 +259,49 @@ async fn it_authors_nothing_addressed_to_a_space_on_a_latent_bar() {
 #[dialog_common::test]
 async fn it_paints_the_space_name_and_sync_status_from_the_space_branch() {
     let bar = mount(&format!("space=\"{SPACE}\"")).await;
-    settle_until(|| truthy("return window.__fab.live('xyz.tonk.repo/name').length > 0")).await;
+    until("the name subscription opens", || {
+        truthy("return window.__fab.live('xyz.tonk.repo/name').length > 0")
+    })
+    .await;
     assert!(truthy(&format!(
         "return window.__fab.live('xyz.tonk.repo/name')[0].context.with === 'main@{SPACE}'"
     )));
     js(&format!(
         "window.__fab.push('xyz.tonk.repo/name', [{{ this: '{SPACE}', fields: {{ name: 'Garden' }} }}]);"
     ));
-    js(r#"window.__fab.push('xyz.tonk.sync/status', [{ this: 'state:here', fields: { status: 'sync:revoked' } }]);"#);
-    settle_until(|| bar.get_attribute("label").as_deref() == Some("Garden")).await;
-    settle_until(|| truthy(&format!("return {}.textContent === 'Garden'", part(".space .n")))).await;
+    js(
+        r#"window.__fab.push('xyz.tonk.sync/status', [{ this: 'state:here', fields: { status: 'sync:revoked' } }]);"#,
+    );
+    until("the label lands", || {
+        bar.get_attribute("label").as_deref() == Some("Garden")
+    })
+    .await;
+    until("the name paints", || {
+        truthy(&format!(
+            "return {}.textContent === 'Garden'",
+            part(".space .n")
+        ))
+    })
+    .await;
     assert_eq!(bar.get_attribute("state").as_deref(), Some("offline"));
-    assert_eq!(bar.get_attribute("data-sync-status").as_deref(), Some("sync:revoked"));
+    assert_eq!(
+        bar.get_attribute("data-sync-status").as_deref(),
+        Some("sync:revoked")
+    );
     // The disc draws a hollow ring for every not-syncing state; the
     // accessible name keeps the precise one.
     register_account().await;
-    settle_until(|| truthy(&format!("return {}.getAttribute('aria-label').includes('revoked')", part(".fab"))))
-        .await;
-    assert!(truthy(&format!("return {}.classList.contains('offline')", part(".fab .disc"))));
+    until("the precise status reaches the accessible name", || {
+        truthy(&format!(
+            "return {}.getAttribute('aria-label').includes('revoked')",
+            part(".fab")
+        ))
+    })
+    .await;
+    assert!(truthy(&format!(
+        "return {}.classList.contains('offline')",
+        part(".fab .disc")
+    )));
     unmount(&bar);
 }
 
@@ -254,7 +309,10 @@ async fn it_paints_the_space_name_and_sync_status_from_the_space_branch() {
 async fn it_folds_from_the_circle_pauses_on_alt_and_remembers_the_fold() {
     let bar = mount(&format!("space=\"{SPACE}\"")).await;
     js(&format!("{}.click();", part(".fab")));
-    assert!(truthy(&format!("return {}.classList.contains('collapsed')", part(".w"))));
+    assert!(truthy(&format!(
+        "return {}.classList.contains('collapsed')",
+        part(".w")
+    )));
     assert!(truthy(
         "return window.__fab.claimed('xyz.tonk.fab/collapsed').at(-1)?.claim.claims[0].application.parameters.collapsed === true"
     ));
@@ -265,13 +323,22 @@ async fn it_folds_from_the_circle_pauses_on_alt_and_remembers_the_fold() {
     let pause = js("return JSON.stringify(window.__fab.claimed('xyz.tonk.pause-sync/space').at(-1)?.claim ?? null)")
         .as_string()
         .unwrap_or_default();
-    assert!(pause.contains(SPACE), "alt-click pauses this space: {pause}");
     assert!(
-        truthy(&format!("return {}.classList.contains('collapsed')", part(".w"))),
+        pause.contains(SPACE),
+        "alt-click pauses this space: {pause}"
+    );
+    assert!(
+        truthy(&format!(
+            "return {}.classList.contains('collapsed')",
+            part(".w")
+        )),
         "a pause does not also unfold"
     );
     js(&format!("{}.click();", part(".fab")));
-    assert!(!truthy(&format!("return {}.classList.contains('collapsed')", part(".w"))));
+    assert!(!truthy(&format!(
+        "return {}.classList.contains('collapsed')",
+        part(".w")
+    )));
     unmount(&bar);
 }
 
@@ -279,21 +346,42 @@ async fn it_folds_from_the_circle_pauses_on_alt_and_remembers_the_fold() {
 async fn it_opens_a_drawer_beside_the_actions_and_a_second_press_returns_to_them() {
     let bar = mount(&format!("space=\"{SPACE}\"")).await;
     js(&format!("{}.click();", part("[data-cell=space]")));
-    assert!(!truthy(&format!("return {}.hidden", part(".run"))), "the space cell shows the actions");
+    assert!(
+        !truthy(&format!("return {}.hidden", part(".run"))),
+        "the space cell shows the actions"
+    );
     js(&format!("{}.click();", part("[data-panel=members]")));
-    assert!(!truthy(&format!("return {}.hidden", part("#members-panel"))));
-    assert!(truthy(&format!("return {}.classList.contains('has-panel')", part(".w"))));
+    assert!(!truthy(&format!(
+        "return {}.hidden",
+        part("#members-panel")
+    )));
+    assert!(truthy(&format!(
+        "return {}.classList.contains('has-panel')",
+        part(".w")
+    )));
     assert_eq!(
-        js(&format!("return {}.getAttribute('aria-expanded')", part("[data-panel=members]")))
-            .as_string()
-            .as_deref(),
+        js(&format!(
+            "return {}.getAttribute('aria-expanded')",
+            part("[data-panel=members]")
+        ))
+        .as_string()
+        .as_deref(),
         Some("true")
     );
     js(&format!("{}.click();", part("[data-panel=members]")));
-    settle_until(|| truthy(&format!("return {}.hidden", part("#members-panel")))).await;
-    assert!(!truthy(&format!("return {}.hidden", part(".run"))), "the actions stay open");
+    until("the drawer collapses", || {
+        truthy(&format!("return {}.hidden", part("#members-panel")))
+    })
+    .await;
+    assert!(
+        !truthy(&format!("return {}.hidden", part(".run"))),
+        "the actions stay open"
+    );
     js("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));");
-    assert!(truthy(&format!("return {}.hidden", part(".run"))), "Escape closes the bar");
+    assert!(
+        truthy(&format!("return {}.hidden", part(".run"))),
+        "Escape closes the bar"
+    );
     unmount(&bar);
 }
 
@@ -302,7 +390,10 @@ async fn it_draws_the_roster_marks_you_and_offers_publication_to_whoever_runs_th
     let bar = mount(&format!("space=\"{SPACE}\"")).await;
     js("window.__fab.repository = { members: [{ did: 'did:key:zOwner', is_self: true }] };");
     register_account().await;
-    settle_until(|| truthy("return window.__fab.live('xyz.tonk.membership/member').length > 0")).await;
+    until("the roster subscription opens", || {
+        truthy("return window.__fab.live('xyz.tonk.membership/member').length > 0")
+    })
+    .await;
     js(r#"
         window.__fab.push('xyz.tonk.membership/member', [
           { this: 'm:owner', fields: { member: 'did:key:zOwner', role: 'tonk:founder', name: 'Owner' } },
@@ -310,32 +401,57 @@ async fn it_draws_the_roster_marks_you_and_offers_publication_to_whoever_runs_th
         ]);
         window.__fab.push('xyz.tonk.invitation/inviter', [{ this: 'i:1', fields: { inviter: 'did:key:zOwner' } }]);
     "#);
-    settle_until(|| truthy(&format!("return {}?.textContent === 'Owner'", part(".mem-self")))).await;
+    until("the viewer is marked", || {
+        truthy(&format!(
+            "return {}?.textContent === 'Owner'",
+            part(".mem-self")
+        ))
+    })
+    .await;
     assert_eq!(
-        js(&format!("return {}.textContent", part(".member-count"))).as_string().as_deref(),
+        js(&format!("return {}.textContent", part(".member-count")))
+            .as_string()
+            .as_deref(),
         Some("2")
     );
-    assert!(truthy(&format!(
-        "return [...{}.querySelectorAll('.mem-name')].some((name) => name.textContent === '<Guest>')",
-        part(".members-list")
-    )), "names stay plain text");
-    assert!(truthy(&format!(
-        "return !!{}.querySelector('line[data-from=\"did:key:zOwner\"][data-to=\"did:key:zGuest\"]')",
-        part(".members-list")
-    )), "the guest is drawn as invited by the owner");
-    settle_until(|| bar.has_attribute("data-manages")).await;
+    assert!(
+        truthy(&format!(
+            "return [...{}.querySelectorAll('.mem-name')].some((name) => name.textContent === '<Guest>')",
+            part(".members-list")
+        )),
+        "names stay plain text"
+    );
+    assert!(
+        truthy(&format!(
+            "return !!{}.querySelector('line[data-from=\"did:key:zOwner\"][data-to=\"did:key:zGuest\"]')",
+            part(".members-list")
+        )),
+        "the guest is drawn as invited by the owner"
+    );
+    until("data-manages", || bar.has_attribute("data-manages")).await;
     assert!(!bar.has_attribute("data-observer"));
     // Publishing is offered to whoever runs the space, one way at a time.
     js(&format!("{}.click();", part("[data-cell=space]")));
-    assert!(truthy(&format!("return getComputedStyle({}).display !== 'none'", part(".publish"))));
-    assert!(truthy(&format!("return getComputedStyle({}).display === 'none'", part(".unpublish"))));
+    assert!(truthy(&format!(
+        "return getComputedStyle({}).display !== 'none'",
+        part(".publish")
+    )));
+    assert!(truthy(&format!(
+        "return getComputedStyle({}).display === 'none'",
+        part(".unpublish")
+    )));
     js(&format!("{}.click();", part(".publish")));
     assert!(truthy(&format!(
         "return JSON.stringify(window.__fab.claimed('xyz.tonk.publish/space').at(-1)?.claim).includes('{SPACE}')"
     )));
-    js("window.__fab.push('xyz.tonk.invitation-execution/kind', [{ this: 'i:public', fields: { kind: 'public' } }]);");
-    settle_until(|| bar.has_attribute("data-published")).await;
-    assert!(truthy(&format!("return getComputedStyle({}).display === 'none'", part(".publish"))));
+    js(
+        "window.__fab.push('xyz.tonk.invitation-execution/kind', [{ this: 'i:public', fields: { kind: 'public' } }]);",
+    );
+    until("data-published", || bar.has_attribute("data-published")).await;
+    assert!(truthy(&format!(
+        "return getComputedStyle({}).display === 'none'",
+        part(".publish")
+    )));
     unmount(&bar);
 }
 
@@ -343,11 +459,17 @@ async fn it_draws_the_roster_marks_you_and_offers_publication_to_whoever_runs_th
 async fn it_reads_a_reader_of_a_published_space_as_an_observer() {
     let bar = mount(&format!("space=\"{SPACE}\"")).await;
     js("window.__fab.repository = { members: [{ did: 'did:key:zOwner', is_self: false }] };");
-    settle_until(|| truthy("return window.__fab.live('xyz.tonk.membership/member').length > 0")).await;
+    until("the roster subscription opens", || {
+        truthy("return window.__fab.live('xyz.tonk.membership/member').length > 0")
+    })
+    .await;
     js(r#"window.__fab.push('xyz.tonk.membership/member', [
         { this: 'm:owner', fields: { member: 'did:key:zOwner', role: 'tonk:founder', name: 'Owner' } }]);"#);
-    settle_until(|| bar.has_attribute("data-observer")).await;
-    assert!(truthy(&format!("return {}.classList.contains('observing')", part(".fab .disc"))));
+    until("data-observer", || bar.has_attribute("data-observer")).await;
+    assert!(truthy(&format!(
+        "return {}.classList.contains('observing')",
+        part(".fab .disc")
+    )));
     unmount(&bar);
 }
 
@@ -357,7 +479,12 @@ async fn it_copies_a_share_link_through_a_write_opened_on_the_click() {
     register_account().await;
     js(&format!("{}.click();", part(".share")));
     assert_eq!(
-        js(&format!("return {}.getAttribute('data-share-state')", part(".share"))).as_string().as_deref(),
+        js(&format!(
+            "return {}.getAttribute('data-share-state')",
+            part(".share")
+        ))
+        .as_string()
+        .as_deref(),
         Some("copying")
     );
     assert!(
@@ -367,23 +494,41 @@ async fn it_copies_a_share_link_through_a_write_opened_on_the_click() {
     let invite = js("return JSON.stringify(window.__fab.claimed('xyz.tonk.invite/space').at(-1)?.claim ?? null)")
         .as_string()
         .unwrap_or_default();
-    assert!(invite.contains(SPACE) && invite.contains("xyz.tonk.command.invite/time"), "{invite}");
+    assert!(
+        invite.contains(SPACE) && invite.contains("xyz.tonk.command.invite/time"),
+        "{invite}"
+    );
     // A second click while the mint is in flight mints nothing more.
     js(&format!("{}.click();", part(".share")));
-    assert!(truthy("return window.__fab.claimed('xyz.tonk.invite/space').length === 1"));
+    assert!(truthy(
+        "return window.__fab.claimed('xyz.tonk.invite/space').length === 1"
+    ));
     js(&format!(
         "window.__fab.push('xyz.tonk.invite/status', [{{ this: '{SPACE}', fields: {{ status: 'invite:granted', url: 'https://tonk.test/#invite' }} }}]);"
     ));
-    settle_until(|| truthy("return window.__fab.writes[0].text === 'https://tonk.test/#invite'")).await;
-    settle_until(|| {
-        truthy(&format!("return {}.getAttribute('data-share-state') === 'copied'", part(".share")))
+    until("the clipboard receives the link", || {
+        truthy("return window.__fab.writes[0].text === 'https://tonk.test/#invite'")
     })
     .await;
-    assert!(truthy(&format!("return {}.textContent === 'copied'", part(".share span"))));
-    settle_until(|| truthy("return window.__fab.claimed('xyz.tonk.command.forget-invite/space').length === 1"))
-        .await;
+    until("the action reads copied", || {
+        truthy(&format!(
+            "return {}.getAttribute('data-share-state') === 'copied'",
+            part(".share")
+        ))
+    })
+    .await;
+    assert!(truthy(&format!(
+        "return {}.textContent === 'copied'",
+        part(".share span")
+    )));
+    until("the invite row is forgotten", || {
+        truthy("return window.__fab.claimed('xyz.tonk.command.forget-invite/space').length === 1")
+    })
+    .await;
     assert!(
-        truthy("return window.__fab.products.some((event) => event.props.action === 'copy_share_link' && event.props.result === 'success')"),
+        truthy(
+            "return window.__fab.products.some((event) => event.props.action === 'copy_share_link' && event.props.result === 'success')"
+        ),
         "the attempt finishes as a success"
     );
     unmount(&bar);
@@ -394,8 +539,13 @@ async fn it_gates_share_behind_the_trusted_account_task_and_resumes_after_it() {
     let bar = mount(&format!("space=\"{SPACE}\"")).await;
     js(&format!("{}.click();", part("[data-cell=space]")));
     js(&format!("{}.click();", part(".share")));
-    assert!(!truthy(&format!("return {}.hidden", part("#share-panel"))), "an accountless share opens the gate");
-    assert!(truthy("return window.__fab.claimed('xyz.tonk.invite/space').length === 0"));
+    assert!(
+        !truthy(&format!("return {}.hidden", part("#share-panel"))),
+        "an accountless share opens the gate"
+    );
+    assert!(truthy(
+        "return window.__fab.claimed('xyz.tonk.invite/space').length === 0"
+    ));
     js(&format!("{}.click();", part(".share-continue")));
     let task = js("return JSON.stringify(window.__fab.tasks.at(-1) ?? null)")
         .as_string()
@@ -406,15 +556,28 @@ async fn it_gates_share_behind_the_trusted_account_task_and_resumes_after_it() {
     assert_eq!(request["action"], "open");
     assert_eq!(request["account"]["reason"], "needs-account");
     assert_eq!(request["account"]["space"], SPACE);
-    assert!(request["presentation"]["anchor"]["width"].as_f64().unwrap_or_default() > 0.0);
+    assert!(
+        request["presentation"]["anchor"]["width"]
+            .as_f64()
+            .unwrap_or_default()
+            > 0.0
+    );
     assert!(bar.has_attribute("data-task-hosted"));
     // A second ask while the ceremony is up is not a second ceremony.
     js(&format!("{}.click();", part(".login")));
     assert!(truthy("return window.__fab.tasks.length === 1"));
-    js("window.dispatchEvent(new CustomEvent('tonk:task-closed', { detail: { result: 'completed' } }));");
+    js(
+        "window.dispatchEvent(new CustomEvent('tonk:task-closed', { detail: { result: 'completed' } }));",
+    );
     assert!(!bar.has_attribute("data-task-hosted"));
-    assert!(!bar.has_attribute("data-account-required"), "a completed ceremony means an account");
-    assert!(!truthy(&format!("return {}.hidden", part(".run"))), "share resumes at the actions");
+    assert!(
+        !bar.has_attribute("data-account-required"),
+        "a completed ceremony means an account"
+    );
+    assert!(
+        !truthy(&format!("return {}.hidden", part(".run"))),
+        "share resumes at the actions"
+    );
     unmount(&bar);
 }
 
@@ -427,42 +590,79 @@ async fn it_asks_for_an_agent_invitation_when_its_drawer_opens_and_renders_the_p
     let handoff = js("return JSON.stringify(window.__fab.claimed('xyz.tonk.agent-handoff/space').at(-1)?.claim ?? null)")
         .as_string()
         .unwrap_or_default();
-    assert!(handoff.contains(SPACE) && handoff.contains("\"fresh\":\"new\""), "{handoff}");
+    assert!(
+        handoff.contains(SPACE) && handoff.contains("\"fresh\":\"new\""),
+        "{handoff}"
+    );
     assert_eq!(
-        js(&format!("return {}.textContent", part(".agent-status"))).as_string().as_deref(),
+        js(&format!("return {}.textContent", part(".agent-status")))
+            .as_string()
+            .as_deref(),
         Some("creating an agent invitation…")
     );
-    settle_until(|| truthy("return window.__fab.live('xyz.tonk.agent-handoff/status').length > 0")).await;
+    until("the handoff subscription opens", || {
+        truthy("return window.__fab.live('xyz.tonk.agent-handoff/status').length > 0")
+    })
+    .await;
     assert!(truthy(&format!(
         "return window.__fab.live('xyz.tonk.agent-handoff/status')[0].context.with === 'main@{SPACE}'"
     )));
     js(&format!(
         "window.__fab.push('xyz.tonk.agent-handoff/status', [{{ this: '{SPACE}', fields: {{ status: 'ready', link: 'https://tonk.network/#tonk-agent-v2=secret', receipt: 'id:r1', account: 'did:key:zAccount' }} }}]);"
     ));
-    settle_until(|| truthy(&format!("return !{}.hidden", part(".agent-copy-link")))).await;
-    let prompt = js(&format!("return {}.textContent", part("#agent-panel .panel-copytext")))
-        .as_string()
-        .unwrap_or_default();
+    until("the link is offered", || {
+        truthy(&format!("return !{}.hidden", part(".agent-copy-link")))
+    })
+    .await;
+    let prompt = js(&format!(
+        "return {}.textContent",
+        part("#agent-panel .panel-copytext")
+    ))
+    .as_string()
+    .unwrap_or_default();
     assert!(prompt.contains("\"Garden\" Tonk space"), "{prompt}");
-    assert!(prompt.contains("npx --yes @tonk/cli join 'https://tonk.network/#tonk-agent-v2=secret'"), "{prompt}");
+    assert!(
+        prompt.contains("npx --yes @tonk/cli join 'https://tonk.network/#tonk-agent-v2=secret'"),
+        "{prompt}"
+    );
     // Reopening a ready drawer asks for nothing more.
     js(&format!("{}.click();", part(".agent")));
     js(&format!("{}.click();", part(".agent")));
-    assert!(truthy("return window.__fab.claimed('xyz.tonk.agent-handoff/space').length === 1"));
+    assert!(truthy(
+        "return window.__fab.claimed('xyz.tonk.agent-handoff/space').length === 1"
+    ));
     unmount(&bar);
 }
 
 #[dialog_common::test]
 async fn it_performs_a_request_left_on_its_site_but_not_one_from_before_it_connected() {
     let bar = mount(&format!("space=\"{SPACE}\"")).await;
-    settle_until(|| truthy("return window.__fab.live('xyz.tonk.site/request').length > 0")).await;
-    assert!(truthy("return window.__fab.live('xyz.tonk.site/request')[0].text.includes('site:fab-test')"));
-    js(r#"window.__fab.push('xyz.tonk.site/request', [{ this: 'site:fab-test', fields: { request: 'members', time: 1 } }]);"#);
+    until("the site request subscription opens", || {
+        truthy("return window.__fab.live('xyz.tonk.site/request').length > 0")
+    })
+    .await;
+    assert!(truthy(
+        "return window.__fab.live('xyz.tonk.site/request')[0].text.includes('site:fab-test')"
+    ));
+    js(
+        r#"window.__fab.push('xyz.tonk.site/request', [{ this: 'site:fab-test', fields: { request: 'members', time: 1 } }]);"#,
+    );
     settle_briefly().await;
-    assert!(truthy(&format!("return {}.hidden", part("#members-panel"))), "an earlier request is not replayed");
-    js(r#"window.__fab.push('xyz.tonk.site/request', [{ this: 'site:fab-test', fields: { request: 'members', time: 2 } }]);"#);
-    settle_until(|| truthy(&format!("return !{}.hidden", part("#members-panel")))).await;
-    assert!(!truthy(&format!("return {}.hidden", part("#members-panel"))));
+    assert!(
+        truthy(&format!("return {}.hidden", part("#members-panel"))),
+        "an earlier request is not replayed"
+    );
+    js(
+        r#"window.__fab.push('xyz.tonk.site/request', [{ this: 'site:fab-test', fields: { request: 'members', time: 2 } }]);"#,
+    );
+    until("the members drawer opens", || {
+        truthy(&format!("return !{}.hidden", part("#members-panel")))
+    })
+    .await;
+    assert!(!truthy(&format!(
+        "return {}.hidden",
+        part("#members-panel")
+    )));
     unmount(&bar);
 }
 
@@ -486,17 +686,29 @@ async fn it_glides_a_dropped_bar_to_the_nearest_edge_and_remembers_the_corner() 
     "#);
     assert!(!snap.is_null(), "a drop announces where it settled");
     assert_eq!(
-        Reflect::get(&snap, &"edge".into()).unwrap().as_string().as_deref(),
+        Reflect::get(&snap, &"edge".into())
+            .unwrap()
+            .as_string()
+            .as_deref(),
         Some("left")
     );
     assert!(!bar.has_attribute("dragging"));
-    assert!(!bar.has_attribute("flip"), "a bar on the left edge is not mirrored");
+    assert!(
+        !bar.has_attribute("flip"),
+        "a bar on the left edge is not mirrored"
+    );
     let dock = js("return window.__fab.claimed('xyz.tonk.fab/dock').at(-1)?.claim.claims[0].application.parameters.dock")
         .as_string();
-    assert!(dock.is_some_and(|dock| dock.ends_with("-left")), "the nearest corner is remembered");
+    assert!(
+        dock.is_some_and(|dock| dock.ends_with("-left")),
+        "the nearest corner is remembered"
+    );
     // The release's trailing click is not a fold.
     js(&format!("{}.click();", part(".fab")));
-    assert!(!truthy(&format!("return {}.classList.contains('collapsed')", part(".w"))));
+    assert!(!truthy(&format!(
+        "return {}.classList.contains('collapsed')",
+        part(".w")
+    )));
     unmount(&bar);
 }
 
@@ -504,24 +716,45 @@ async fn it_glides_a_dropped_bar_to_the_nearest_edge_and_remembers_the_corner() 
 async fn it_lends_its_seat_to_a_task_and_gives_it_back_as_it_was() {
     let bar = mount(&format!("space=\"{SPACE}\"")).await;
     js(&format!("{}.click();", part("[data-cell=space]")));
-    js("window.__content = document.createElement('section'); window.__content.innerHTML = '<p>hello</p><button data-fabb-result=\"keep\">keep</button>'; document.body.append(window.__content);");
-    let outcome = js("window.__outcome = document.querySelector('tonk-fab').present(window.__content, { heading: 'a question', dismissible: true }); return true;");
+    js(
+        "window.__content = document.createElement('section'); window.__content.innerHTML = '<p>hello</p><button data-fabb-result=\"keep\">keep</button>'; document.body.append(window.__content);",
+    );
+    let outcome = js(
+        "window.__outcome = document.querySelector('tonk-fab').present(window.__content, { heading: 'a question', dismissible: true }); return true;",
+    );
     assert!(outcome.is_truthy());
-    assert!(truthy("return document.querySelector('tonk-fab').requesting === true"));
-    assert!(truthy("return window.__content.parentElement === document.querySelector('tonk-fab') && window.__content.slot === 'request'"));
+    assert!(truthy(
+        "return document.querySelector('tonk-fab').requesting === true"
+    ));
+    assert!(truthy(
+        "return window.__content.parentElement === document.querySelector('tonk-fab') && window.__content.slot === 'request'"
+    ));
     assert_eq!(
-        js(&format!("return {}.textContent", part(".task-title"))).as_string().as_deref(),
+        js(&format!("return {}.textContent", part(".task-title")))
+            .as_string()
+            .as_deref(),
         Some("a question")
     );
     // Only one at a time.
     let busy = js_await(r#"return document.querySelector('tonk-fab').present(document.createElement('p')).then(() => 'presented', (error) => error.message);"#).await;
-    assert!(busy.as_string().unwrap_or_default().contains("Resolve the current FABB request"));
+    assert!(
+        busy.as_string()
+            .unwrap_or_default()
+            .contains("Resolve the current FABB request")
+    );
     js("window.__content.querySelector('[data-fabb-result]').click();");
     let result = js_await("return window.__outcome;").await;
     assert_eq!(result.as_string().as_deref(), Some("keep"));
-    assert!(truthy("return window.__content.parentElement === document.body && !window.__content.hasAttribute('slot')"));
-    assert!(truthy("return document.querySelector('tonk-fab').requesting === false"));
-    assert!(!truthy(&format!("return {}.hidden", part(".run"))), "the open actions come back");
+    assert!(truthy(
+        "return window.__content.parentElement === document.body && !window.__content.hasAttribute('slot')"
+    ));
+    assert!(truthy(
+        "return document.querySelector('tonk-fab').requesting === false"
+    ));
+    assert!(
+        !truthy(&format!("return {}.hidden", part(".run"))),
+        "the open actions come back"
+    );
     js("window.__content.remove();");
     unmount(&bar);
 }
@@ -533,13 +766,19 @@ async fn it_lends_its_seat_to_a_task_and_gives_it_back_as_it_was() {
 #[dialog_common::test]
 async fn it_declares_exactly_the_fields_each_command_sets() {
     let bar = mount(&format!("space=\"{SPACE}\"")).await;
-    let refused = js(r#"
+    // A value the command does not declare builds no claim at all, so a
+    // transact of it sends nothing.
+    assert!(truthy(
+        r#"
         const bar = document.querySelector('tonk-fab');
-        try { bar.command('pause-sync', { time: 1, space: 'did:key:z', marker: 'x' }); return null; }
-        catch (error) { return error.message; }
-    "#);
-    assert!(refused.as_string().unwrap_or_default().contains("does not declare"));
-    assert!(truthy(r#"
+        const before = window.__fab.claims.length;
+        const claim = bar.command('pause-sync', { time: 1, space: 'did:key:z', marker: 'x' });
+        bar.transact(claim);
+        return claim === undefined && window.__fab.claims.length === before;
+    "#
+    ));
+    assert!(truthy(
+        r#"
         const share = document.querySelector('tonk-share');
         for (const [element, name, values] of [
           [document.querySelector('tonk-fab'), 'pause-sync', { time: 1, space: 'did:key:z' }],
@@ -554,7 +793,8 @@ async fn it_declares_exactly_the_fields_each_command_sets() {
           if (!declared || declared !== set) return false;
         }
         return true;
-    "#));
+    "#
+    ));
     unmount(&bar);
 }
 
@@ -565,16 +805,27 @@ async fn it_cycles_tab_across_shadow_and_slotted_dialog_controls() {
     }
     install_fake_host();
     install();
-    let host = document().create_element("tonk-dialog").expect("dialog host");
+    let host = document()
+        .create_element("tonk-dialog")
+        .expect("dialog host");
     host.set_inner_html(
         r#"<button type="button">body control</button>
            <button slot="actions" type="button">cancel</button>
            <button slot="actions" type="button">remove space</button>"#,
     );
-    document().body().expect("body").append_child(&host).expect("append");
-    settle_until(|| defined("tonk-dialog") && host.shadow_root().is_some()).await;
+    document()
+        .body()
+        .expect("body")
+        .append_child(&host)
+        .expect("append");
+    until("the dialog upgrades", || {
+        defined("tonk-dialog") && host.shadow_root().is_some()
+    })
+    .await;
     js("document.querySelector('tonk-dialog').show();");
-    assert!(truthy("return document.querySelector('tonk-dialog').open === true"));
+    assert!(truthy(
+        "return document.querySelector('tonk-dialog').open === true"
+    ));
     let wrapped = js(r#"
         const host = document.querySelector('tonk-dialog');
         const close = host.shadowRoot.querySelector('.x');
@@ -589,6 +840,9 @@ async fn it_cycles_tab_across_shadow_and_slotted_dialog_controls() {
         host.close();
         return forward && back && host.open === false;
     "#);
-    assert!(wrapped.is_truthy(), "Tab wraps from the last action to the close, and back");
+    assert!(
+        wrapped.is_truthy(),
+        "Tab wraps from the last action to the close, and back"
+    );
     host.remove();
 }

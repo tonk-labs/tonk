@@ -439,6 +439,9 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
+    /// The bar and its family, registered from the profile library.
+    mod fab;
+
     /// A mutable stand-in for the branch: the name bindings, method
     /// dictionaries and attribute defaults the fake host answers from.
     /// Tests mutate it and then push a frame, which is exactly the
