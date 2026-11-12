@@ -27,8 +27,7 @@
 # `npm run build` there, which also regenerates the languages below and
 # every `language/<id>` component.
 #
-# Not `tonk-code`: the host owns that name (and the runtime leaves `tonk-`
-# tags to the host), so a page can have both. The interface is the same
+# Not `tonk-code`: the host owns that name, so a page can have both. The interface is the same
 # but for the language server: `source`, `connect()`, `diagnostics` and
 # the `tonk-code-connect` events stay with <tonk-code>, whose provider the
 # host bundles.

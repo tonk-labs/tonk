@@ -349,13 +349,25 @@
   const announced = new Set();
 
   /** Tag prefixes whose elements are registered by someone else. */
-  const FOREIGN = ["tonk-", "wa-"];
+  const FOREIGN = ["wa-"];
+
+  /**
+   * The registry's own consumer, which it parks beside every tag it
+   * watches. Never a definition anyone could supply.
+   *
+   * `tonk-` tags are otherwise as much the library's as any: the host's
+   * own (`<tonk-display>`, `<tonk-site>`) are registered before the
+   * first view renders, so `customElements.get` already answers for
+   * them, and the bar's family (`<tonk-fab>`, `<tonk-dialog>`, ...) is
+   * defined by the profile library like any author element.
+   */
+  const WATCH = "tonk-element-watch";
 
   /** The event announcing that an undefined custom element rendered. */
   const NEEDED = "tonk-element-needed";
 
   const mine = (tag) =>
-    tag.includes("-") && !FOREIGN.some((prefix) => tag.startsWith(prefix));
+    tag.includes("-") && tag !== WATCH && !FOREIGN.some((prefix) => tag.startsWith(prefix));
 
   /**
    * Announce every undefined custom element under `root`, once per tag.
