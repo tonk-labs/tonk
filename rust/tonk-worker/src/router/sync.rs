@@ -3141,14 +3141,14 @@ mod held_sync_tests {
         ingest["invocations"].as_u64().expect("a count")
     }
 
-    /// A member that read a space, and then synced a head the founder
+    /// B-10: a member that read a space, and then synced a head the founder
     /// moved, reads the space again without asking the service for a
     /// block.
     ///
     /// A space's sync pulled by reference, so the head moved and every
     /// leaf the founder had changed stayed on the service: the member's
     /// next load of a page it had just shown waited on the network for
-    /// them, and failed offline (BUG-213). The sync now pulls a space with
+    /// them, and failed offline (`BUG-213`). The sync now pulls a space with
     /// `Download::QueriedRanges`, which fetches what the member holds of
     /// the space before the head moves.
     #[dialog_common::test]

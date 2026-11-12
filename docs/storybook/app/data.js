@@ -56,6 +56,13 @@ window.STORYBOOK_DATA = {
       "id": "B-09",
       "severity": "high",
       "title": "A release resets a space's home and name"
+    },
+    {
+      "area": "Space sync",
+      "decision": "fixed in source",
+      "id": "B-10",
+      "severity": "high",
+      "title": "A page read before another device's change waits on the service, or fails offline"
     }
   ],
   "coverage": [
