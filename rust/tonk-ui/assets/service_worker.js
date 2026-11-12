@@ -1606,6 +1606,26 @@ function failurePage() {
     );
 }
 
+/// How long a request waits for this worker to release its streams. The
+/// release no longer takes the state lock, but it still boots the wasm worker
+/// and writes the overlay snapshot. A request held without bound would hang
+/// the page, and holding its fetch event open would keep the successor
+/// waiting, so past this the request is answered `update-pending` and the
+/// release goes on in the background.
+const RETIREMENT_WAIT_MS = 5_000;
+
+/// `attempt`, or `false` once `RETIREMENT_WAIT_MS` has passed.
+function boundedRetirement(attempt) {
+    let timer;
+    const expired = new Promise(resolve => {
+        timer = setTimeout(() => {
+            log(`Stream release still pending after ${RETIREMENT_WAIT_MS} ms`);
+            resolve(false);
+        }, RETIREMENT_WAIT_MS);
+    });
+    return Promise.race([attempt, expired]).finally(() => clearTimeout(timer));
+}
+
 /// Release streams if a successor is waiting and we have not already.
 ///
 /// Called from both the fetch path and an explicit update-aware page nudge. A
@@ -1615,7 +1635,7 @@ function failurePage() {
 /// successor becomes durable registration state.
 function retireIfSuperseded(event) {
     if (retired || !self.registration.waiting || !isActiveIncumbent()) return null;
-    const attempt = retireActiveIncumbent("a successor is waiting");
+    const attempt = boundedRetirement(retireActiveIncumbent("a successor is waiting"));
     event.waitUntil?.(attempt);
     return attempt;
 }
@@ -1702,7 +1722,7 @@ self.onfetch = event => {
                 return new Response(
                     JSON.stringify({
                         control: "update-pending",
-                        reason: "the outgoing worker could not release its streams",
+                        reason: "the outgoing worker did not release its streams",
                     }),
                     {
                         status: 503,

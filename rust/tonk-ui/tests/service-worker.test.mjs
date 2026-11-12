@@ -149,9 +149,16 @@ async function loadWith({
   assetPaths = ["/", "/ui-abc.js"],
   activateSource = "async () => ({})",
   navigationNetworkMs = null,
+  retirementWaitMs = null,
   exports = [],
 }) {
   let patched = source;
+  if (retirementWaitMs != null) {
+    patched = patched.replace(
+      /^const RETIREMENT_WAIT_MS = .*$/m,
+      `const RETIREMENT_WAIT_MS = ${retirementWaitMs};`,
+    );
+  }
   if (navigationNetworkMs != null) {
     patched = patched.replace(
       /^const NAVIGATION_NETWORK_MS = .*$/m,
@@ -2376,6 +2383,52 @@ describe("retiring on a waiting successor", () => {
       /retireIfSuperseded\(event\)/,
       "the fetch path must check too — a stream-pinned worker never restarts",
     );
+  });
+
+  test("answers a held request when the release does not finish", async () => {
+    // The outgoing worker holds every `/api/` request until it has
+    // released its streams. A release that never finishes (it once waited
+    // on a state lock queued behind a stalled sync) must not hang the
+    // page or keep the fetch event, and with it the successor, waiting.
+    const { self, caches } = withGlobals({
+      registration: { active: null, waiting: null, installing: null, addEventListener() {} },
+    });
+    self.registration.active = self.serviceWorker;
+    let releases = 0;
+    globalThis.__neverReleases = () => {
+      releases++;
+      return new Promise(() => {});
+    };
+    const source = readFileSync(SW_PATH, "utf8");
+    assert.match(source, /^const RETIREMENT_WAIT_MS = .*$/m);
+    const mod = await loadWith({
+      wasmHash: "dev",
+      activateSource: "async () => ({ onupdatefound: globalThis.__neverReleases })",
+      exports: ["WORKER_CACHE", "WORKER_WASM_URL"],
+      retirementWaitMs: 50,
+    });
+    await (await caches.open(mod.WORKER_CACHE)).put(mod.WORKER_WASM_URL, new Response("wasm"));
+    self.registration.waiting = {};
+
+    let responded;
+    const lifetimes = [];
+    self.onfetch({
+      request: new Request("https://tonk.test/api/repository/r/branch/main/query"),
+      respondWith(response) {
+        responded = response;
+      },
+      waitUntil(promise) {
+        lifetimes.push(promise);
+      },
+    });
+    assert.ok(responded, "the request must be answered by this worker");
+    const response = await responded;
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).control, "update-pending");
+    assert.equal(releases, 1, "the release was attempted");
+    assert.equal(lifetimes.length, 1);
+    assert.equal(await lifetimes[0], false, "the fetch lifetime ends without the release");
+    delete globalThis.__neverReleases;
   });
 
   test("declares its state before every use", () => {
