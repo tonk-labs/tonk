@@ -7,6 +7,10 @@ on:
   # uses the trusted base-branch workflow rather than checking out PR code.
   pull_request_target:
     types: [closed]
+  # Run by hand to delete the KV namespaces of every closed pull request
+  # (`scripts/preview-kv.sh sweep`): previews from before their cleanup
+  # deleted them still fill the account's quota.
+  workflow_dispatch:
   # `main` deploys dev on tonk.foundation. A `v*` tag is a release: a
   # prerelease tag (`v0.7.0-rc.1`) deploys staging and a final tag (`v0.7.0`)
   # deploys production. `release.yml` explains how to cut one.
@@ -772,6 +776,24 @@ jobs:
           nix --accept-flake-config develop .#ci --command \
             wrangler delete "$host" --force \
             || echo "No preview worker $host to delete"
+          # Its KV namespaces. The account holds at most 1000, and a
+          # preview's three outliving it used them up.
+          scripts/preview-kv.sh pr "${{ github.event.pull_request.number }}"
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  sweep-preview-kv:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Delete the KV namespaces of closed pull requests
+        run: scripts/preview-kv.sh sweep
+        env:
+          GH_TOKEN: ${{ github.token }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
