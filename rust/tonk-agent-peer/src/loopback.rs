@@ -10,7 +10,7 @@
 //! (`worker-guest.html`) from the runtime directory shipped beside the binary.
 use std::{
     collections::VecDeque,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -28,8 +28,9 @@ use tokio::{net::TcpListener, task::JoinHandle};
 
 /// Bind a loopback port and serve `router` on it. Returns the origin and the
 /// serving task.
-pub async fn start(router: Router) -> std::io::Result<(String, JoinHandle<()>)> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+pub async fn start(root: &Path, router: Router) -> std::io::Result<(String, JoinHandle<()>)> {
+    load_token(root)?;
+    let listener = bind(root).await?;
     let origin = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
     let app = Router::new()
         .route("/space-runtime.json", get(|| asset("space-runtime.json")))
@@ -214,17 +215,60 @@ fn missing(name: &str) -> Response {
         .expect("missing response")
 }
 
-/// The secret that views present on every request, random per process.
+/// Hosts start and stop server processes freely, so ownership of a peer
+/// moves between them while a view is open, and a host may keep a view's page
+/// from an earlier read. Both the address and the token a view was given must
+/// therefore outlive the process that gave them: the port is derived from the
+/// data directory, and the token is kept in it.
+async fn bind(root: &Path) -> std::io::Result<TcpListener> {
+    // FNV-1a over the directory path: stable across runs and builds.
+    let seed = root
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+        });
+    let preferred = 49152 + (seed % 16000) as u16;
+    for port in preferred..preferred + 8 {
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)).await {
+            return Ok(listener);
+        }
+    }
+    // Something else holds those ports: views opened before this owner
+    // will need reopening.
+    TcpListener::bind(("127.0.0.1", 0)).await
+}
+
+static TOKEN: OnceLock<String> = OnceLock::new();
+
+/// Read the views' token from the private data directory, creating it on
+/// first use. Anything that can read that directory can already act as the
+/// peer, so keeping the token beside the peer's key adds no exposure.
+fn load_token(root: &Path) -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    let path = root.join("view-token");
+    let token = match std::fs::read_to_string(&path) {
+        Ok(token) if token.trim().len() == 64 => token.trim().to_owned(),
+        _ => {
+            let mut bytes = [0u8; 32];
+            std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+            let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+            let mut file = std::fs::OpenOptions::new();
+            file.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut file, 0o600);
+            file.open(&path)?.write_all(token.as_bytes())?;
+            token
+        }
+    };
+    let _ = TOKEN.set(token);
+    Ok(())
+}
+
+/// The secret that views present on every request.
 pub fn token() -> &'static str {
-    static TOKEN: OnceLock<String> = OnceLock::new();
-    TOKEN.get_or_init(|| {
-        use std::io::Read;
-        let mut bytes = [0u8; 32];
-        std::fs::File::open("/dev/urandom")
-            .and_then(|mut random| random.read_exact(&mut bytes))
-            .expect("the system random source is readable");
-        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-    })
+    TOKEN.get().map(String::as_str).unwrap_or_default()
 }
 
 /// Refuse any request without the token. Preflights never reach here: the
@@ -234,10 +278,18 @@ async fn authorize(request: Request, next: Next) -> Response {
         .headers()
         .get("x-tonk-peer-token")
         .and_then(|value| value.to_str().ok());
-    if presented.is_some_and(|presented| constant_time_eq(presented.as_bytes(), token().as_bytes()))
+    if !token().is_empty()
+        && presented
+            .is_some_and(|presented| constant_time_eq(presented.as_bytes(), token().as_bytes()))
     {
         return next.run(request).await;
     }
+    record(format!(
+        "{} {} -> 401 ({} token)",
+        request.method(),
+        request.uri().path(),
+        if presented.is_some() { "wrong" } else { "no" }
+    ));
     Response::builder()
         .status(StatusCode::UNAUTHORIZED)
         .body(Body::from("This peer only answers its own views."))

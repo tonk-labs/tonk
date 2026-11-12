@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 use rmcp::ServiceExt;
 
+mod extension;
 #[path = "../../tonk-cli/src/guide.rs"]
 #[allow(dead_code)]
 mod guide;
