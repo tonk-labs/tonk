@@ -1,0 +1,74 @@
+# tree: the dialog-search-tree index behind a branch, node by node.
+#
+# Every fact a branch holds lives in a search tree: index nodes route by
+# key to the nodes below them, segment nodes hold the entries. The worker
+# answers four query formulas over it (`tree/node`, `tree/child`,
+# `tree/entry`, with the key decoding done on its side), and
+# `<space-tree>` draws them: an outline of nodes on the left, each row its
+# separator key as coloured parts, its size, entry count and buffered
+# operations, and the selected node on the right, a segment with its
+# entries (index, entity, attribute, value), each unfolding to its version
+# and raw key.
+#
+# A node the replica has not fetched yet shows hollow and dimmed; expanding
+# it fetches it. The outline is loaded lazily, a level per expand.
+#
+# The page lives at `/console/tree`. Installed in the profile, the same
+# route draws the profile's own branch.
+
+concept!: &tree/console
+  this: tonk:tree/console
+  description: The search-tree console (`/console/tree`).
+  with:
+    repo:
+      description: The repository location token, picked off the site entity.
+      the: xyz.tonk.site/repo
+      as: text
+    branch:
+      description: The branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      as: text
+
+view!:
+  this: tonk:tree/console
+  show:
+    ui: !include/text ./tree/console.html
+
+route!:
+  this: tonk:tree/route/console
+  path: "/console/tree"
+  concept: tonk:tree/console
+
+# ---------------------------------------------------------------------------
+# <space-tree with="branch@repo">
+#
+# Draws the branch its `with` names, or, given `repo` (and optionally
+# `branch`), that repository's. Without either it says it has nothing to
+# draw. Reads go through the host (`tonk-query`) as the formula queries
+# above; the element renders into its own shadow root, with its styles.
+# ---------------------------------------------------------------------------
+
+element!: &space-tree
+  description: "An outline of the search-tree index behind the branch its `with` names, with the selected node's detail and entries."
+  method:
+    connected: !include/text ./tree/connected.js
+    disconnected: !include/text ./tree/disconnected.js
+    attribute-changed: !include/text ./tree/attribute-changed.js
+    start: !include/text ./tree/start.js
+    route: !include/text ./tree/route.js
+    query: !include/text ./tree/query.js
+    node: !include/text ./tree/node.js
+    entry: !include/text ./tree/entry.js
+    kit: !include/text ./tree/kit.js
+    outline: !include/text ./tree/outline.js
+    item: !include/text ./tree/item.js
+    row: !include/text ./tree/row.js
+    expand: !include/text ./tree/expand.js
+    refresh: !include/text ./tree/refresh.js
+    key: !include/text ./tree/key.js
+    components: !include/text ./tree/components.js
+    pivot: !include/text ./tree/pivot.js
+    inspect: !include/text ./tree/inspect.js
+    entries: !include/text ./tree/entries.js
+    format: !include/text ./tree/format.js
+    stylesheet: !include/text ./tree/stylesheet.js

@@ -136,13 +136,15 @@ fn parsed(parsed: tonk_notation::Parsed) -> Result<Syntax, TonkWorkerError> {
 /// profile branch). Only these, and the [`LANGUAGES`]: a component names a
 /// library file by its name, so the list is what keeps an install to the
 /// library.
-pub(super) const COMPONENTS: [&str; 7] = [
+pub(super) const COMPONENTS: [&str; 9] = [
     "code-editor",
+    "inspector",
     "issue",
     "meta",
     "notebook",
     "prose-editor",
     "table",
+    "tree",
     "version-control",
 ];
 
@@ -184,7 +186,8 @@ pub(super) fn component_url(component: &str) -> Option<String> {
 /// Install a library component into the space it was asked in, or bring
 /// the installed one up to the shipped version. Like the space's seed, a
 /// component is recorded and upgraded on mount; unlike it, a space can have
-/// several (see `repository::install_component`).
+/// several (see `repository::install_component`). Asked on the profile, it
+/// installs onto the profile's own repository, the space the profile is.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::InstallComponent>
@@ -196,8 +199,14 @@ impl dialog_capability::Provider<tonk_schema::command::InstallComponent>
             tonk_common::log!("library/install: '{component}' is not a library component");
             return;
         };
-        let (repo, branch) = (self.origin().repo.clone(), self.origin().branch.clone());
         let tonk = self.state().read().await;
+        // A profile commit has no repository on its origin: the profile's
+        // own is the one its key names.
+        let repo = match self.origin().repo.as_str() {
+            "" => tonk.reactor.profile_key().to_owned(),
+            space => space.to_owned(),
+        };
+        let branch = self.origin().branch.clone();
         match super::repository::install_component(&tonk, &repo, &branch, &source).await {
             Ok(true) => tonk_common::log!("library/install: {source} installed in {repo}"),
             Ok(false) => tonk_common::log!("library/install: {source} is current in {repo}"),
