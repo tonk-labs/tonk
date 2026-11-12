@@ -762,7 +762,8 @@ concept!: &mcp-note
             let writer = self.writer(&session, space, &remote).await;
             let (parts, body) = request.into_parts();
             if parts.uri.path() == ACCESS_ROUTE {
-                return match writer.agent_access().await {
+                let (access, steps) = writer.agent_access_timed().await;
+                let mut response = match access {
                     Ok(access) => rpc(StatusCode::OK, serde_json::to_value(access).unwrap()),
                     // As the Host Worker does: an upstream refusal keeps
                     // its status and code.
@@ -776,6 +777,8 @@ concept!: &mcp-note
                     ),
                     Err(error) => plain(StatusCode::BAD_GATEWAY, &error.to_string()),
                 };
+                steps.insert(response.headers_mut());
+                return response;
             }
             let grants: Vec<String> = parts
                 .headers
@@ -1188,7 +1191,15 @@ concept!: &mcp-note
         // The write's own steps, as the writer timed them, reach the event.
         let written = events.last();
         assert_eq!(written.outcome, telemetry::Outcome::Ok);
-        for step in ["writer.lock", "writer.pull", "writer.eval", "writer.push"] {
+        // So do the agent space's, read before it: its pull and its read.
+        for step in [
+            "access.pull",
+            "access.read",
+            "writer.lock",
+            "writer.pull",
+            "writer.eval",
+            "writer.push",
+        ] {
             assert!(written.step(step).is_some(), "{step}: {:?}", written.steps);
         }
         let (found, error) = client
