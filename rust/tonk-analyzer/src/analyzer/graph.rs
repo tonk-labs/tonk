@@ -23,8 +23,8 @@
 
 use std::collections::HashMap;
 
-use dialog_artifacts::Entity;
 use dialog_common::ConditionalSync;
+use dialog_corpus::Entity;
 use tonk_notation::{Effectful, Expression, Field, FieldValue, HeadName, Syntax};
 
 use tonk_schema::concept::QueryEnv;

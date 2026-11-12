@@ -21,17 +21,17 @@
 
 use std::collections::HashMap;
 
-use dialog_artifacts::{Artifact, Changes, Entity, Instruction};
 use dialog_capability::{Command, Provider};
 use dialog_common::{ConditionalSend, ConditionalSync};
+use dialog_corpus::{Changes, Entity, Fact, Instruction};
 use dialog_query::concept::Concept;
 use dialog_query::{Application, ConceptDescriptor, Conclusion, Descriptor, Match, Term};
 
 /// The asserted facts for a single transient entity — the `(the, of,
-/// is)` triples grouped under one `of`. [`Artifact`] is `Clone`
+/// is)` triples grouped under one `of`. [`Fact`] is `Clone`
 /// (unlike [`Instruction`]), so a matched entity's facts can be
 /// handed to several handlers and decoded independently.
-pub type EntityFacts = Vec<Artifact>;
+pub type EntityFacts = Vec<Fact>;
 
 /// The dynamic→static bridge: decode a typed concept `C` from the raw
 /// `(the, of, is)` facts of one transient entity, reusing the derived
@@ -149,7 +149,7 @@ where
 ///
 /// ```no_run
 /// # use dialog_reactor::Migrated;
-/// # use dialog_artifacts::Entity;
+/// # use dialog_corpus::Entity;
 /// # use dialog_query::{Attribute, Concept};
 /// # #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
 /// # #[domain("xyz.example.rename")] pub struct Name(pub String);
@@ -553,13 +553,13 @@ impl<Env> CommandRegistry<Env> {
     }
 }
 
-/// Group a transient [`Changes`] batch into per-entity [`Artifact`]
+/// Group a transient [`Changes`] batch into per-entity [`Fact`]
 /// lists so each candidate entity is matched/decoded as a unit.
 /// Polarity is dropped — a transient command is asserted, and the
 /// decoder reads `(the, of, is)`, which every [`Instruction`] variant
 /// carries.
-fn group_by_entity(changes: Changes) -> HashMap<dialog_artifacts::Entity, EntityFacts> {
-    let mut by_entity: HashMap<dialog_artifacts::Entity, EntityFacts> = HashMap::new();
+fn group_by_entity(changes: Changes) -> HashMap<dialog_corpus::Entity, EntityFacts> {
+    let mut by_entity: HashMap<dialog_corpus::Entity, EntityFacts> = HashMap::new();
     for instruction in changes.into_instructions() {
         let artifact = match instruction {
             Instruction::Assert(a, _) | Instruction::Retract(a) => a,
@@ -582,7 +582,7 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     use super::*;
-    use dialog_artifacts::{Statement, Value};
+    use dialog_corpus::{Statement, Value};
     use dialog_query::{Attribute, Concept, the};
 
     // --- Test command concepts ------------------------------------------

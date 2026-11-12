@@ -17,9 +17,9 @@ use crate::tracking_branch::LegacyTrackingBranch;
 use crate::{
     Branch as BranchConcept, Remote, RemoteExecution, Replica, Space, SpaceName, TrackingBranch,
 };
-use dialog_artifacts::{Entity, Preload, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_corpus::{Entity, Preload, Speculation};
 use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
@@ -116,6 +116,9 @@ where
         + Provider<Identify>
         + Provider<Attest>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + dialog_common::Holds
         + Provider<Preload>
@@ -177,6 +180,9 @@ where
         + Provider<Resolve>
         + Provider<Identify>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + dialog_common::Holds
         + Provider<Preload>
@@ -266,6 +272,9 @@ where
         + Provider<Resolve>
         + Provider<Identify>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + dialog_common::Holds
         + Provider<Preload>
@@ -312,6 +321,9 @@ where
         + Provider<Resolve>
         + Provider<Identify>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + dialog_common::Holds
         + Provider<Preload>
@@ -339,6 +351,9 @@ where
         + Provider<Resolve>
         + Provider<Identify>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + dialog_common::Holds
         + Provider<Preload>
@@ -365,6 +380,9 @@ where
         + Provider<Resolve>
         + Provider<Identify>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + dialog_common::Holds
         + Provider<Preload>
@@ -483,7 +501,7 @@ where
     let mut remote_branches: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
     for (remote_entity, remote_name) in &remote_names {
-        let Ok(origin) = remote_entity.parse::<dialog_artifacts::Entity>() else {
+        let Ok(origin) = remote_entity.parse::<dialog_corpus::Entity>() else {
             continue;
         };
         let rows: Vec<BranchConcept> = auxiliary(

@@ -102,7 +102,7 @@ async fn account(env: &CommandEnv, expected: &str) -> Result<LocalRoot, TonkWork
     Ok(root)
 }
 
-async fn publish(env: &CommandEnv, this: &dialog_artifacts::Entity, state: &str, message: &str) {
+async fn publish(env: &CommandEnv, this: &dialog_corpus::Entity, state: &str, message: &str) {
     let tonk = env.state().read().await;
     let _ = tonk
         .reactor
@@ -179,8 +179,7 @@ async fn send(env: &CommandEnv, command: &SendEmailInvitation) -> Result<(), Ton
     Ok(())
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl Provider<SendEmailInvitation> for CommandEnv {
     async fn execute(&self, command: SendEmailInvitation) {
         if !self.from_profile() {
@@ -194,8 +193,7 @@ impl Provider<SendEmailInvitation> for CommandEnv {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl Provider<ClaimEmailInvitation> for CommandEnv {
     async fn execute(&self, command: ClaimEmailInvitation) {
         if !self.from_profile() {

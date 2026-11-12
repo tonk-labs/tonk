@@ -21,9 +21,9 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use dialog_artifacts::{Entity, Preload, Relation as ArtifactsRelation, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_corpus::{Entity, Preload, Relation as CorpusRelation, Speculation};
 use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
@@ -55,38 +55,36 @@ const OPTIONAL_DOMAIN: &str = "db.concept.optional";
 /// Build the claim relation that names a required field of a
 /// concept.
 ///
-/// The returned [`ArtifactsRelation`] has the form
+/// The returned [`CorpusRelation`] has the form
 /// `db.concept.with/{field_name}`. Used as the `the` of an EAV
 /// claim `concept_entity --with(name)--> attribute_entity` to
 /// record that the concept has a required field named `name`
 /// pointing at the given attribute.
 ///
 /// Field names are passed through verbatim — dialog's lower-level
-/// [`ArtifactsRelation`] only enforces a `domain/name` shape and a
+/// [`CorpusRelation`] only enforces a `domain/name` shape and a
 /// length cap, so any field name a YAML or JSON schema accepts is
 /// accepted here.
-pub fn with(field_name: &str) -> Result<ArtifactsRelation, dialog_artifacts::DialogArtifactsError> {
+pub fn with(field_name: &str) -> Result<CorpusRelation, dialog_corpus::DialogCorpusError> {
     format!("{WITH_DOMAIN}/{field_name}").parse()
 }
 
 /// Build the marker relation that flags a concept field as optional.
 ///
-/// The returned [`ArtifactsRelation`] has the form
+/// The returned [`CorpusRelation`] has the form
 /// `db.concept.optional/{field_name}`. Emitted as a boolean
 /// marker claim `concept_entity --optional(name)--> true` alongside
 /// the field's `db.concept.with/{name}` attribute link. Required
 /// fields carry no such marker, so their storage is byte-identical to
 /// the pre-optionality encoding.
-pub fn optional(
-    field_name: &str,
-) -> Result<ArtifactsRelation, dialog_artifacts::DialogArtifactsError> {
+pub fn optional(field_name: &str) -> Result<CorpusRelation, dialog_corpus::DialogCorpusError> {
     format!("{OPTIONAL_DOMAIN}/{field_name}").parse()
 }
 
 /// Recover the field name from a relation in the
 /// `db.concept.with` domain. Returns `None` if `the` is in any
 /// other domain.
-pub fn parse_with(the: &ArtifactsRelation) -> Option<String> {
+pub fn parse_with(the: &CorpusRelation) -> Option<String> {
     let s = String::from(the);
     s.strip_prefix(WITH_DOMAIN)
         .and_then(|rest| rest.strip_prefix('/'))
@@ -96,7 +94,7 @@ pub fn parse_with(the: &ArtifactsRelation) -> Option<String> {
 /// Recover the field name from a relation in the
 /// `db.concept.optional` domain. Returns `None` if `the` is in
 /// any other domain.
-pub fn parse_optional(the: &ArtifactsRelation) -> Option<String> {
+pub fn parse_optional(the: &CorpusRelation) -> Option<String> {
     let s = String::from(the);
     s.strip_prefix(OPTIONAL_DOMAIN)
         .and_then(|rest| rest.strip_prefix('/'))
@@ -163,6 +161,9 @@ pub trait QueryEnv:
     + Provider<Resolve>
     + Provider<Identify>
     + Provider<ArchiveLoad>
+    + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
     + Provider<BlobLoad>
     + Provider<Preload>
     + Provider<Speculation>
@@ -181,6 +182,9 @@ impl<T> QueryEnv for T where
         + Provider<Resolve>
         + Provider<Identify>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + Provider<Preload>
         + Provider<Speculation>
@@ -285,14 +289,14 @@ impl ConceptByEntity {
         let optional_fields: BTreeSet<String> = optional_claims
             .iter()
             .filter_map(|claim| {
-                let the: ArtifactsRelation = claim.the.clone().into();
+                let the: CorpusRelation = claim.the.clone().into();
                 parse_optional(&the)
             })
             .collect();
 
         let mut fields: Vec<(String, ConceptFieldDescriptor)> = Vec::new();
         for claim in raw_claims {
-            let the: ArtifactsRelation = claim.the.into();
+            let the: CorpusRelation = claim.the.into();
             let Some(field_name) = parse_with(&the) else {
                 continue;
             };
@@ -406,7 +410,7 @@ impl AttributePolicyFacts {
     fn from_claims(claims: Vec<Claim>) -> Self {
         let mut facts = Self::default();
         for claim in claims {
-            let the: ArtifactsRelation = claim.the.into();
+            let the: CorpusRelation = claim.the.into();
             let Value::String(value) = claim.is else {
                 continue;
             };
@@ -644,7 +648,7 @@ fn build_attribute_descriptor(
 // via `ApplicationPlan::name`, so the wrapper is no longer
 // needed; only `AnonymousConcept` remains.
 
-use dialog_artifacts::{Statement, Update, Value};
+use dialog_corpus::{Statement, Update, Value};
 
 /// A concept stored on a branch *without* a bookmark name.
 /// Identity comes from the wrapped descriptor's
@@ -681,9 +685,7 @@ impl Statement for AnonymousConcept {
             &self.this,
             &self.descriptor,
             update,
-            |update, the, of, is| {
-                Update::associate(update, the, of, is, dialog_artifacts::Pick::All)
-            },
+            |update, the, of, is| Update::associate(update, the, of, is, dialog_corpus::Pick::All),
         );
     }
     fn retract(self, update: &mut impl Update) {
@@ -773,7 +775,7 @@ impl IsTransient {
 
 /// Same as [`meta_attr`] but returns the typed
 /// [`dialog_query::attribute::Relation`] form required by the query
-/// builder rather than the runtime [`ArtifactsRelation`].
+/// builder rather than the runtime [`CorpusRelation`].
 fn meta_attr_typed(domain: &str, name: &str) -> dialog_query::attribute::Relation {
     format!("{domain}/{name}")
         .parse()
@@ -786,9 +788,7 @@ impl Statement for TransientConcept {
             &self.this,
             &self.descriptor,
             update,
-            |update, the, of, is| {
-                Update::associate(update, the, of, is, dialog_artifacts::Pick::All)
-            },
+            |update, the, of, is| Update::associate(update, the, of, is, dialog_corpus::Pick::All),
         );
         dialog_repository::Transient(self.this).assert(update);
     }
@@ -1403,14 +1403,14 @@ where
     let optional_fields: BTreeSet<String> = optional_claims
         .iter()
         .filter_map(|claim| {
-            let the: ArtifactsRelation = claim.the.clone().into();
+            let the: CorpusRelation = claim.the.clone().into();
             parse_optional(&the)
         })
         .collect();
 
     let mut fields: Vec<(String, ConceptFieldDescriptor)> = Vec::new();
     for claim in with_claims {
-        let the: ArtifactsRelation = claim.the.into();
+        let the: CorpusRelation = claim.the.into();
         let Some(field_name) = parse_with(&the) else {
             continue;
         };
@@ -1575,7 +1575,7 @@ pub async fn lookup_named_entity<'a, Env: QueryEnv>(
 /// per field, plus `db.meta/description` when the
 /// descriptor carries one. Shared between `assert` and
 /// `retract` so the two stay in lock-step.
-fn emit_concept_facts<U: Update, F: Fn(&mut U, ArtifactsRelation, Entity, Value)>(
+fn emit_concept_facts<U: Update, F: Fn(&mut U, CorpusRelation, Entity, Value)>(
     entity: &Entity,
     descriptor: &ConceptDescriptor,
     update: &mut U,
@@ -1639,11 +1639,11 @@ fn concept_marker_entity() -> Entity {
         .expect("`db:concept` is a valid entity URI")
 }
 
-/// Build a runtime [`ArtifactsRelation`] from a domain + local
+/// Build a runtime [`CorpusRelation`] from a domain + local
 /// name. Both halves are validated by dialog's own parser; we
 /// rely on the meta domains being well-formed so `expect` is
 /// safe.
-fn meta_attr(domain: &str, name: &str) -> ArtifactsRelation {
+fn meta_attr(domain: &str, name: &str) -> CorpusRelation {
     format!("{domain}/{name}")
         .parse()
         .expect("dialog meta-attribute names should always be valid")
@@ -1684,7 +1684,7 @@ mod tests {
 
     #[dialog_common::test]
     fn parse_with_rejects_other_domains() {
-        let the: ArtifactsRelation = "db.meta/name".parse().unwrap();
+        let the: CorpusRelation = "db.meta/name".parse().unwrap();
         assert_eq!(parse_with(&the), None);
         assert_eq!(parse_optional(&the), None);
     }
@@ -1715,7 +1715,7 @@ mod tests {
     /// branch-wide concept enumeration find this entity.
     #[dialog_common::test]
     fn anonymous_concept_writes_with_claims_and_description() {
-        use dialog_artifacts::Changes;
+        use dialog_corpus::Changes;
         let json = r#"{
             "description": "A cooking recipe",
             "with": {
@@ -1739,7 +1739,7 @@ mod tests {
     /// delta.
     #[dialog_common::test]
     fn transient_concept_writes_transient_marker() {
-        use dialog_artifacts::{Changes, Instruction};
+        use dialog_corpus::{Changes, Instruction};
         let json = r#"{
             "description": "An ephemeral command",
             "with": {
@@ -1788,7 +1788,7 @@ mod tests {
     /// selection from a single bound triple.
     #[dialog_common::test]
     fn anonymous_concept_writes_marker_claim() {
-        use dialog_artifacts::{Changes, Instruction};
+        use dialog_corpus::{Changes, Instruction};
         let json = r#"{
             "with": {
                 "x": { "the": "a/b", "as": "Text", "cardinality": "one" }
@@ -1818,7 +1818,7 @@ mod tests {
     /// branch ends up clean.
     #[dialog_common::test]
     fn anonymous_concept_retracts_marker_claim() {
-        use dialog_artifacts::{Changes, Instruction};
+        use dialog_corpus::{Changes, Instruction};
         let json = r#"{
             "with": {
                 "x": { "the": "a/b", "as": "Text", "cardinality": "one" }
@@ -1963,7 +1963,7 @@ mod tests {
     /// claim that goes in comes back out.
     #[dialog_common::test]
     fn anonymous_concept_assert_then_retract_balances() {
-        use dialog_artifacts::Changes;
+        use dialog_corpus::Changes;
         let json = r#"{
             "description": "A cooking recipe",
             "with": {
@@ -2033,14 +2033,14 @@ mod tests {
                 dialog_query::the!("db.attribute/as")
                     .of(attr_entity.clone())
                     .is("text:"
-                        .parse::<dialog_artifacts::Entity>()
+                        .parse::<dialog_corpus::Entity>()
                         .expect("a type entity")),
             )
             .assert(
                 dialog_query::the!("db.attribute/pick")
                     .of(attr_entity.clone())
                     .is("last:"
-                        .parse::<dialog_artifacts::Entity>()
+                        .parse::<dialog_corpus::Entity>()
                         .expect("a pick entity")),
             )
             .assert(
@@ -2299,14 +2299,14 @@ mod tests {
                 dialog_query::the!("db.attribute/as")
                     .of(t_attr_entity.clone())
                     .is("entity:"
-                        .parse::<dialog_artifacts::Entity>()
+                        .parse::<dialog_corpus::Entity>()
                         .expect("a type entity")),
             )
             .assert(
                 dialog_query::the!("db.attribute/pick")
                     .of(t_attr_entity.clone())
                     .is("last:"
-                        .parse::<dialog_artifacts::Entity>()
+                        .parse::<dialog_corpus::Entity>()
                         .expect("a pick entity")),
             )
             .assert(
@@ -2324,14 +2324,14 @@ mod tests {
                 dialog_query::the!("db.attribute/as")
                     .of(d_attr_entity.clone())
                     .is("text:"
-                        .parse::<dialog_artifacts::Entity>()
+                        .parse::<dialog_corpus::Entity>()
                         .expect("a type entity")),
             )
             .assert(
                 dialog_query::the!("db.attribute/pick")
                     .of(d_attr_entity.clone())
                     .is("last:"
-                        .parse::<dialog_artifacts::Entity>()
+                        .parse::<dialog_corpus::Entity>()
                         .expect("a pick entity")),
             )
             .assert(
@@ -2443,14 +2443,14 @@ mod tests {
                 dialog_query::the!("db.attribute/as")
                     .of(c_attr_entity.clone())
                     .is("entity:"
-                        .parse::<dialog_artifacts::Entity>()
+                        .parse::<dialog_corpus::Entity>()
                         .expect("a type entity")),
             )
             .assert(
                 dialog_query::the!("db.attribute/pick")
                     .of(c_attr_entity.clone())
                     .is("last:"
-                        .parse::<dialog_artifacts::Entity>()
+                        .parse::<dialog_corpus::Entity>()
                         .expect("a pick entity")),
             )
             .assert(
@@ -2467,14 +2467,14 @@ mod tests {
                 dialog_query::the!("db.attribute/as")
                     .of(d_attr_entity.clone())
                     .is("text:"
-                        .parse::<dialog_artifacts::Entity>()
+                        .parse::<dialog_corpus::Entity>()
                         .expect("a type entity")),
             )
             .assert(
                 dialog_query::the!("db.attribute/pick")
                     .of(d_attr_entity.clone())
                     .is("last:"
-                        .parse::<dialog_artifacts::Entity>()
+                        .parse::<dialog_corpus::Entity>()
                         .expect("a pick entity")),
             )
             .assert(
@@ -2596,7 +2596,7 @@ mod tests {
         // `db.meta/name` claim — id-shaped `this`, single
         // entity-typed value.
         mod pointer {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             #[derive(dialog_query::Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
             #[domain("test.supersession")]
             pub struct Target(pub Entity);
@@ -2679,7 +2679,7 @@ mod tests {
         use dialog_query::Output as _;
 
         mod pointer {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             #[derive(dialog_query::Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
             #[domain("test.supersession.same-tx")]
             pub struct Target(pub Entity);

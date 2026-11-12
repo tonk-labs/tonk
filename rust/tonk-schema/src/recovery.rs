@@ -1,6 +1,6 @@
 //! A passkey that can recover an account.
 
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_query::Concept;
 use dialog_varsig::Did;
 

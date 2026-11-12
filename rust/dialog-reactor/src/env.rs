@@ -10,9 +10,9 @@
 //! repo load and `BranchOpenProvider` for the branch open), the
 //! bound is `LoadProvider + BranchOpenProvider`.
 
-use dialog_artifacts::{Preload, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_corpus::{Preload, Speculation};
 use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
@@ -47,6 +47,9 @@ pub trait SelectProvider:
     + Provider<Resolve>
     + Provider<Identify>
     + Provider<ArchiveLoad>
+    + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
     + Provider<BlobLoad>
     + Provider<Preload>
     + Provider<Speculation>
@@ -64,6 +67,9 @@ impl<T> SelectProvider for T where
         + Provider<Resolve>
         + Provider<Identify>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + Provider<Preload>
         + Provider<Speculation>
@@ -88,6 +94,9 @@ pub trait CommitProvider:
     + Provider<Identify>
     + Provider<Attest>
     + Provider<ArchiveLoad>
+    + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
     + Provider<BlobLoad>
     + Provider<Preload>
     + Provider<Speculation>
@@ -110,6 +119,9 @@ impl<T> CommitProvider for T where
         + Provider<Identify>
         + Provider<Attest>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + Provider<Preload>
         + Provider<Speculation>
@@ -121,7 +133,7 @@ impl<T> CommitProvider for T where
 {
 }
 
-/// Bound needed to pull from upstream (`branch.pull().perform`): the
+/// Bound needed to pull from upstream (`branch.pull(dialog_repository::Download::MinimalRanges).perform`): the
 /// registry the branch's upstreams resolve from, and the host's
 /// connections to the peers they live at.
 pub trait PullProvider:

@@ -7,12 +7,11 @@
 use super::BranchReference;
 use super::env::{BranchOpenProvider, LoadProvider, PushProvider};
 use super::error::ReactorError;
-use dialog_artifacts::Index;
 use dialog_capability::Provider;
 use dialog_common::Blake3Hash as NodeHash;
-use dialog_common::{ConditionalSync, Holds};
+use dialog_common::ConditionalSync;
+use dialog_corpus::Index;
 use dialog_effects::archive::prelude::CatalogScope;
-use dialog_effects::archive::{Get, Load};
 use dialog_repository::{PushError, Revision, Upstream};
 use dialog_search_tree::{DialogSearchTreeError, TreeDifference};
 
@@ -46,7 +45,9 @@ async fn hydrate_divergence<S>(
     store: &S,
 ) -> Result<(), DialogSearchTreeError>
 where
-    S: Provider<Load> + Provider<Get> + Holds + ConditionalSync,
+    S: Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + ConditionalSync,
 {
     let base_tree = Index::at(catalog.clone(), base.clone());
     let current_tree = Index::at(catalog.clone(), current.clone());
@@ -162,13 +163,13 @@ impl<'a> Push<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use dialog_artifacts::tree::ArtifactTreeExt as _;
-    use dialog_artifacts::{ArchiveDelta, Artifact, Instruction, Value};
     use dialog_capability::Capability;
-    use dialog_common::{Buffer, Held};
+    use dialog_common::{Buffer, Held, Holds};
+    use dialog_corpus::tree::CorpusExt as _;
+    use dialog_corpus::{ArchiveDelta, Fact, Instruction, Value};
     use dialog_effects::archive::ArchiveError;
     use dialog_effects::archive::prelude::GetExt as _;
+    use dialog_effects::archive::{Get, Load};
     use dialog_search_tree::helpers::Blocks;
     use futures_util::stream;
     use std::sync::Arc;
@@ -194,12 +195,14 @@ mod tests {
         fn hold(&self, _key: String, _handle: Held) {}
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+    #[dialog_capability::provider]
     impl Provider<Load> for CachingStore {
         async fn execute(&self, load: Load) -> Result<Option<Buffer>, ArchiveError> {
             if let Some(block) = self.local.get(&load.digest) {
                 return Ok(Some(block));
+            }
+            if load.local {
+                return Ok(None);
             }
             let Some(block) = self.remote.get(&load.digest) else {
                 return Ok(None);
@@ -210,13 +213,14 @@ mod tests {
         }
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+    #[dialog_capability::provider]
     impl Provider<Get> for CachingStore {
         async fn execute(&self, get: Capability<Get>) -> Result<Option<Vec<u8>>, ArchiveError> {
             Ok(self.local.get(get.digest()).map(Buffer::into_vec))
         }
     }
+
+    dialog_search_tree::reads_nodes_through_blocks!(CachingStore);
 
     /// Seed `count` items starting at `offset` into `tree`, storing the
     /// flushed nodes in `remote`, and return how many blocks were stored.
@@ -229,20 +233,20 @@ mod tests {
         let mut delta = ArchiveDelta::zero();
         let instructions = (offset..offset + count).map(|index| {
             Instruction::Assert(
-                Artifact {
+                Fact {
                     the: "item/title".parse().unwrap(),
                     of: format!("item:{index}").parse().unwrap(),
                     is: Value::String(format!("Item {index}")),
                     cause: None,
                 },
-                dialog_artifacts::Pick::All,
+                dialog_corpus::Pick::All,
             )
         });
         tree.apply(remote, &mut delta, stream::iter(instructions))
             .await?;
         let mut stored = 0;
-        for block in delta.flush_blocks() {
-            remote.store(block);
+        for node in delta.flush_nodes() {
+            remote.store(node.buffer().clone());
             stored += 1;
         }
         Ok(stored)

@@ -346,7 +346,7 @@ const COPY_FROM_ATTR: &str = "xyz.tonk.command.create-space/copy-from";
 ///
 /// [`CreateSpace`]: tonk_schema::command::CreateSpace
 fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
-    use dialog_artifacts::Value;
+    use dialog_corpus::Value;
 
     facts
         .iter()
@@ -364,7 +364,7 @@ fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
 }
 
 fn description_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
-    use dialog_artifacts::Value;
+    use dialog_corpus::Value;
 
     facts
         .iter()
@@ -378,7 +378,7 @@ fn description_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String>
 }
 
 fn seed_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
-    use dialog_artifacts::Value;
+    use dialog_corpus::Value;
 
     facts
         .iter()
@@ -406,7 +406,7 @@ const OPEN_ATTR: &str = "xyz.tonk.command.create-space/open";
 /// Whether the create should navigate the caller into the new space.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 fn open_from_facts(facts: &crate::reactor::EntityFacts) -> bool {
-    use dialog_artifacts::Value;
+    use dialog_corpus::Value;
 
     facts
         .iter()
@@ -441,7 +441,7 @@ fn text_fact(facts: &crate::reactor::EntityFacts, attribute: &str) -> Option<Str
 }
 
 fn text_fact_any_target(facts: &crate::reactor::EntityFacts, attribute: &str) -> Option<String> {
-    use dialog_artifacts::Value;
+    use dialog_corpus::Value;
 
     facts
         .iter()
@@ -598,10 +598,7 @@ impl crate::reactor::Decode for CreateSpaceRequest {
         .to_vec()
     }
 
-    fn decode(
-        _this: dialog_artifacts::Entity,
-        facts: &crate::reactor::EntityFacts,
-    ) -> Option<Self> {
+    fn decode(_this: dialog_corpus::Entity, facts: &crate::reactor::EntityFacts) -> Option<Self> {
         let command = crate::reactor::Migrated::<
             tonk_schema::command::CreateSpace,
             tonk_schema::command::legacy::CreateSpace,
@@ -616,16 +613,16 @@ impl crate::reactor::Decode for CreateSpaceRequest {
                 .iter()
                 .find(|fact| fact.the.as_str() == "xyz.tonk.command.create-space/template")
                 .and_then(|fact| match &fact.is {
-                    dialog_artifacts::Value::String(value) => Some(value.clone()),
-                    dialog_artifacts::Value::Entity(value) => Some(value.to_string()),
+                    dialog_corpus::Value::String(value) => Some(value.clone()),
+                    dialog_corpus::Value::Entity(value) => Some(value.to_string()),
                     _ => None,
                 }),
             copy_from: facts
                 .iter()
                 .find(|fact| fact.the.as_str() == COPY_FROM_ATTR)
                 .map(|fact| match &fact.is {
-                    dialog_artifacts::Value::String(value) => value.clone(),
-                    dialog_artifacts::Value::Entity(value) => value.to_string(),
+                    dialog_corpus::Value::String(value) => value.clone(),
+                    dialog_corpus::Value::Entity(value) => value.to_string(),
                     _ => String::new(),
                 }),
         })
@@ -655,8 +652,7 @@ impl dialog_capability::Command for CreateSpaceRequest {
 /// capability, and a content branch asserting the same shape (including
 /// the legacy topbar `space/enable-sync` form, which used to mint a
 /// fresh space as a side effect) is refused rather than trusted.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<CreateSpaceRequest> for crate::router::CommandEnv {
     async fn execute(&self, request: CreateSpaceRequest) {
         execute_create_space(self.clone(), request).await
@@ -891,7 +887,7 @@ async fn prepare_seed(reference: &str, template: bool) -> Result<tonk_notation::
 /// command entity keeps simultaneous tabs and retries from sharing a result.
 async fn report_space_creation(
     state: &AppState,
-    receipt: &dialog_artifacts::Entity,
+    receipt: &dialog_corpus::Entity,
     status: &str,
     detail: &str,
 ) {
@@ -923,7 +919,7 @@ async fn report_space_creation(
 
 async fn report_profile_rename(
     state: &AppState,
-    receipt: &dialog_artifacts::Entity,
+    receipt: &dialog_corpus::Entity,
     status: &str,
     detail: &str,
 ) {
@@ -956,7 +952,7 @@ async fn report_profile_rename(
 /// The Hub's rename dialog waits on this receipt to close or show why not.
 async fn report_repository_rename(
     state: &AppState,
-    receipt: &dialog_artifacts::Entity,
+    receipt: &dialog_corpus::Entity,
     status: &str,
     detail: &str,
 ) {
@@ -1008,7 +1004,7 @@ const INVITE_SPACE_ATTR: &str = "xyz.tonk.invite/space";
 /// does). `None` for an older claim carrying no such fact — the handler
 /// falls back to the dispatch origin in that case.
 fn invite_space_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
-    use dialog_artifacts::Value;
+    use dialog_corpus::Value;
 
     facts
         .iter()
@@ -1047,10 +1043,7 @@ impl crate::reactor::Decode for InviteRequest {
         .to_vec()
     }
 
-    fn decode(
-        _this: dialog_artifacts::Entity,
-        facts: &crate::reactor::EntityFacts,
-    ) -> Option<Self> {
+    fn decode(_this: dialog_corpus::Entity, facts: &crate::reactor::EntityFacts) -> Option<Self> {
         let command = crate::reactor::Migrated::<
             tonk_schema::command::Invite,
             tonk_schema::command::legacy::Invite,
@@ -1088,8 +1081,7 @@ impl dialog_capability::Command for InviteRequest {
 /// [`Invite`]: tonk_schema::command::Invite
 /// [`Authorization`]: tonk_schema::command::Authorization
 /// [`Credential`]: tonk_schema::command::Credential
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<InviteRequest> for crate::router::CommandEnv {
     async fn execute(&self, request: InviteRequest) {
         execute_invite(self.clone(), request).await
@@ -1172,10 +1164,7 @@ impl crate::reactor::Decode for EnableSyncRequest {
         .to_vec()
     }
 
-    fn decode(
-        _this: dialog_artifacts::Entity,
-        facts: &crate::reactor::EntityFacts,
-    ) -> Option<Self> {
+    fn decode(_this: dialog_corpus::Entity, facts: &crate::reactor::EntityFacts) -> Option<Self> {
         let command = crate::reactor::Migrated::<
             tonk_schema::command::EnableSync,
             tonk_schema::command::legacy::EnableSync,
@@ -1206,7 +1195,7 @@ impl crate::reactor::Decode for AgentHandoffRequest {
         <tonk_schema::command::AgentHandoff as crate::reactor::Decode>::trigger_attributes()
     }
 
-    fn decode(this: dialog_artifacts::Entity, facts: &crate::reactor::EntityFacts) -> Option<Self> {
+    fn decode(this: dialog_corpus::Entity, facts: &crate::reactor::EntityFacts) -> Option<Self> {
         <tonk_schema::command::AgentHandoff as crate::reactor::Decode>::decode(this, facts)?;
         Some(Self {
             fresh: text_fact(facts, "xyz.tonk.agent-handoff/fresh").as_deref() == Some("new"),
@@ -1221,8 +1210,7 @@ impl dialog_capability::Command for AgentHandoffRequest {
 }
 
 /// Mint an account-scoped handoff for the originating space.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<AgentHandoffRequest> for crate::router::CommandEnv {
     async fn execute(&self, request: AgentHandoffRequest) {
         let repo = request
@@ -1880,8 +1868,7 @@ impl dialog_capability::Command for EnableSyncRequest {
 /// DIFFERENT space is refused, and the target must be a real user space
 /// — see [`CommandEnv::may_target_space`](crate::router::CommandEnv::may_target_space)
 /// and [`require_real_space`].
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<EnableSyncRequest> for crate::router::CommandEnv {
     async fn execute(&self, request: EnableSyncRequest) {
         execute_enable_sync(self.clone(), request).await
@@ -1889,7 +1876,7 @@ impl dialog_capability::Provider<EnableSyncRequest> for crate::router::CommandEn
 }
 
 async fn execute_enable_sync(env: crate::router::CommandEnv, request: EnableSyncRequest) {
-    use dialog_artifacts::Entity;
+    use dialog_corpus::Entity;
     use tonk_schema::prelude::DidExt as _;
 
     let time = request.command.time.0;
@@ -1995,7 +1982,7 @@ async fn run_invite(
     repo_name: &str,
     time: f64,
 ) -> Result<RunInvite, TonkWorkerError> {
-    use dialog_artifacts::Entity;
+    use dialog_corpus::Entity;
     use dialog_varsig::Principal as _;
     use tonk_schema::command::{Authorization, Credential};
     use tonk_schema::domain::authorization::{Proof, Remote as AuthorizationRemote};
@@ -2419,7 +2406,7 @@ fn invite_status_for(code: &str) -> &'static str {
 async fn publish_share_blocked<'a>(
     state: &'a AppState,
     repo_name: &'a str,
-    subject: dialog_artifacts::Entity,
+    subject: dialog_corpus::Entity,
     code: &'a str,
     detail: &'a str,
     time: f64,
@@ -2627,8 +2614,7 @@ fn with_referral(link: String, space_key: &str) -> String {
 ///
 /// [`PauseSync`]: tonk_schema::command::PauseSync
 /// [`ReplicaSyncEnabled`]: tonk_schema::ReplicaSyncEnabled
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::PauseSync> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::PauseSync) {
         use tonk_schema::prelude::DidExt as _;
@@ -2680,8 +2666,7 @@ impl dialog_capability::Provider<tonk_schema::command::PauseSync> for crate::rou
 /// [`ProfileRename`]: tonk_schema::command::ProfileRename
 /// [`ProfileName`]: tonk_schema::ProfileName
 /// [`MemberName`]: tonk_schema::MemberName
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::ProfileRename>
     for crate::router::CommandEnv
 {
@@ -2790,8 +2775,7 @@ pub(crate) fn rename_outcome(result: Result<(), RepositoryError>) -> RenameOutco
 /// and [`require_real_space`].
 ///
 /// [`RenameRepository`]: tonk_schema::command::RenameRepository
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
     for crate::router::CommandEnv
 {
@@ -2930,8 +2914,7 @@ async fn run_rename_repository(
 /// exactly "only the Hub can fire this."
 ///
 /// [`RemoveSpace`]: tonk_schema::command::RemoveSpace
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::RemoveSpace) {
         let receipt = command.this;
@@ -3013,7 +2996,7 @@ impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::r
 
 async fn report_space_removal(
     state: &AppState,
-    receipt: &dialog_artifacts::Entity,
+    receipt: &dialog_corpus::Entity,
     status: &str,
     detail: &str,
 ) {
@@ -3194,7 +3177,7 @@ async fn remove_replica_from_profile(
     tonk: &TonkState,
     subject: &Did,
 ) -> Result<(), RepositoryError> {
-    use dialog_artifacts::ArtifactSelector;
+    use dialog_corpus::Selector;
     use futures_util::StreamExt as _;
 
     let entity = Replica::new(tonk.profile.did(), subject.clone())
@@ -3228,8 +3211,7 @@ async fn remove_replica_from_profile(
         .try_vec()
         .await
         .map_err(|e| RepositoryError::Internal(format!("replica rows query: {e:?}")))?;
-    let mut entities: Vec<dialog_artifacts::Entity> =
-        rows.into_iter().map(|row| row.this).collect();
+    let mut entities: Vec<dialog_corpus::Entity> = rows.into_iter().map(|row| row.this).collect();
     if !entities.contains(&entity) {
         entities.push(entity);
     }
@@ -3244,7 +3226,7 @@ async fn remove_replica_from_profile(
         let stream = meta
             .handle()
             .claims()
-            .select(ArtifactSelector::new().of(row_entity))
+            .select(Selector::new().of(row_entity))
             .perform(&tonk.operator)
             .await
             .map_err(|e| RepositoryError::Internal(format!("select replica claims: {e}")))?;
@@ -3259,7 +3241,7 @@ async fn remove_replica_from_profile(
                 the: artifact.the,
                 of: artifact.of,
                 is: artifact.is,
-                policy: dialog_artifacts::Pick::All,
+                policy: dialog_corpus::Pick::All,
             });
         }
     }
@@ -3272,7 +3254,7 @@ async fn remove_replica_from_profile(
     let directory = meta
         .handle()
         .claims()
-        .select(ArtifactSelector::new().of(subject.this()))
+        .select(Selector::new().of(subject.this()))
         .perform(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("select directory claims: {e}")))?;
@@ -3290,7 +3272,7 @@ async fn remove_replica_from_profile(
             the: artifact.the,
             of: artifact.of,
             is: artifact.is,
-            policy: dialog_artifacts::Pick::All,
+            policy: dialog_corpus::Pick::All,
         });
     }
     if !found {
@@ -3327,7 +3309,7 @@ pub(crate) async fn carry_replica_rows(
     from: &str,
     subject: &Did,
 ) -> Result<(), RepositoryError> {
-    use dialog_artifacts::ArtifactSelector;
+    use dialog_corpus::Selector;
     use futures_util::StreamExt as _;
 
     let source = tonk
@@ -3350,7 +3332,7 @@ pub(crate) async fn carry_replica_rows(
         .try_vec()
         .await
         .map_err(|e| RepositoryError::Internal(format!("replica rows query: {e:?}")))?;
-    let mut entities: Vec<(dialog_artifacts::Entity, Option<&str>)> =
+    let mut entities: Vec<(dialog_corpus::Entity, Option<&str>)> =
         rows.into_iter().map(|row| (row.this, None)).collect();
     // The directory entity carries more than the space's own facts.
     entities.push((subject.this(), Some("xyz.tonk.space/")));
@@ -3360,7 +3342,7 @@ pub(crate) async fn carry_replica_rows(
         let stream = source
             .handle()
             .claims()
-            .select(ArtifactSelector::new().of(entity))
+            .select(Selector::new().of(entity))
             .perform(&tonk.operator)
             .await
             .map_err(|e| RepositoryError::Internal(format!("select listing claims: {e}")))?;
@@ -3391,13 +3373,13 @@ pub(crate) async fn carry_replica_rows(
             the: artifact.the.clone(),
             of: artifact.of.clone(),
             is: artifact.is.clone(),
-            policy: dialog_artifacts::Pick::All,
+            policy: dialog_corpus::Pick::All,
         });
         there = there.retract(super::claim::RawClaim {
             the: artifact.the,
             of: artifact.of,
             is: artifact.is,
-            policy: dialog_artifacts::Pick::All,
+            policy: dialog_corpus::Pick::All,
         });
     }
     let revision = here
@@ -4189,7 +4171,7 @@ impl ProfileLibraryCache {
 #[derive(Clone)]
 struct InstalledSeed {
     /// The seed's entity — the hash of its bytes.
-    seed: dialog_artifacts::Entity,
+    seed: dialog_corpus::Entity,
     /// Where those bytes were fetched from.
     source: String,
     /// The version of the commit that installed it.
@@ -4337,7 +4319,7 @@ async fn live_install_records_in(
     session: &crate::reactor::BranchSession,
     in_lineage: &str,
 ) -> Result<Vec<super::claim::RawClaim>, RepositoryError> {
-    use dialog_artifacts::Statement as _;
+    use dialog_corpus::Statement as _;
     use dialog_query::{Output as _, Query, Term};
 
     let failed = |e| RepositoryError::Internal(format!("read seed record: {e:?}"));
@@ -4348,7 +4330,7 @@ async fn live_install_records_in(
         .filter(|seed| lineage(&seed.source) == in_lineage)
         .map(|seed| seed.seed.to_string())
         .collect();
-    let mut changes = dialog_artifacts::Changes::new();
+    let mut changes = dialog_corpus::Changes::new();
     for record in session
         .handle()
         .query()
@@ -4387,11 +4369,11 @@ async fn live_install_records_in(
         .into_instructions()
         .into_iter()
         .filter_map(|instruction| match instruction {
-            dialog_artifacts::Instruction::Retract(claim) => Some(super::claim::RawClaim {
+            dialog_corpus::Instruction::Retract(claim) => Some(super::claim::RawClaim {
                 the: claim.the,
                 of: claim.of,
                 is: claim.is,
-                policy: dialog_artifacts::Pick::All,
+                policy: dialog_corpus::Pick::All,
             }),
             _ => None,
         })
@@ -4403,8 +4385,7 @@ async fn live_install_records_in(
 /// Target-agnostic: the source fetch resolves through
 /// `fetch_standard_library`, which already answers natively from the
 /// embedded libraries, so a CLI or a test can check for an update too.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::CheckUpdate> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::CheckUpdate) {
         let key = command.space.0.to_string();
@@ -4434,8 +4415,7 @@ impl dialog_capability::Provider<tonk_schema::command::CheckUpdate> for crate::r
 /// rather than retracting: an overlay retract records a tombstone beside
 /// the assertion instead of removing it, so the row — and the seed —
 /// would still read back.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::ForgetInvite> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::ForgetInvite) {
         let space = command.space.0.clone();
@@ -4483,7 +4463,7 @@ impl dialog_capability::Provider<tonk_schema::command::ForgetInvite> for crate::
 pub(crate) async fn check_seed_update(
     tonk: &TonkState,
     subject: &Did,
-    check: dialog_artifacts::Entity,
+    check: dialog_corpus::Entity,
 ) -> Result<(), RepositoryError> {
     let replica = Replica::new(tonk.profile.did(), subject.clone())
         .this()
@@ -4522,7 +4502,7 @@ struct FoundSeed {
     /// Where those bytes came from.
     source: String,
     /// The installed seed it would replace.
-    replaces: dialog_artifacts::Entity,
+    replaces: dialog_corpus::Entity,
 }
 
 /// Fetch the space's own source and compare it against what is installed.
@@ -4605,8 +4585,8 @@ async fn publish_available_seed(tonk: &TonkState, subject: &Did, found: &FoundSe
 /// needs the SAME check entity this stored.
 async fn stamp_checking(
     tonk: &TonkState,
-    replica: dialog_artifacts::Entity,
-    check: dialog_artifacts::Entity,
+    replica: dialog_corpus::Entity,
+    check: dialog_corpus::Entity,
 ) {
     let transaction = tonk
         .reactor
@@ -4629,8 +4609,8 @@ async fn stamp_checking(
 /// check still reads as running.
 async fn clear_checking(
     tonk: &TonkState,
-    replica: dialog_artifacts::Entity,
-    check: dialog_artifacts::Entity,
+    replica: dialog_corpus::Entity,
+    check: dialog_corpus::Entity,
 ) {
     let transaction = tonk
         .reactor
@@ -4645,7 +4625,7 @@ async fn clear_checking(
 }
 
 /// Record when this device's check completed.
-async fn stamp_checked(tonk: &TonkState, replica: dialog_artifacts::Entity) {
+async fn stamp_checked(tonk: &TonkState, replica: dialog_corpus::Entity) {
     let transaction = tonk
         .reactor
         .profile_repository()
@@ -4661,7 +4641,7 @@ async fn stamp_checked(tonk: &TonkState, replica: dialog_artifacts::Entity) {
 /// Record why this device's check failed, or clear a previous failure.
 async fn stamp_check_failure(
     tonk: &TonkState,
-    replica: dialog_artifacts::Entity,
+    replica: dialog_corpus::Entity,
     failure: Option<&str>,
 ) {
     let transaction = tonk
@@ -4705,7 +4685,7 @@ async fn commit_replica_stamp(
 
 // Preserve authored snapshots created by older Welcome-space builds.
 async fn has_welcome_snapshot(tonk: &TonkState, key: &str) -> Result<bool, RepositoryError> {
-    use dialog_artifacts::ArtifactSelector;
+    use dialog_corpus::Selector;
     use futures_util::StreamExt as _;
     fn internal(error: impl std::fmt::Display) -> RepositoryError {
         RepositoryError::Internal(format!("welcome marker: {error}"))
@@ -4726,7 +4706,7 @@ async fn has_welcome_snapshot(tonk: &TonkState, key: &str) -> Result<bool, Repos
     let stream = branch
         .claims()
         .select(
-            ArtifactSelector::new()
+            Selector::new()
                 .the("xyz.tonk.onboarding/imported".parse().map_err(internal)?)
                 .of("id:tonk/onboarding-v2/welcome".parse().map_err(internal)?),
         )
@@ -4946,7 +4926,7 @@ async fn install_seed(
         let uninstall = uninstall_claims(tonk, session, &current, &subject).await?;
         let prior = current.seed.to_string();
         let source = current.source.clone();
-        let record = |installed: &dialog_artifacts::history::Version| {
+        let record = |installed: &dialog_corpus::history::Version| {
             installed_seed_facts(&shipped, &source, &prior, installed)
         };
         match stage_reinstall(tonk, session, &uninstall, &install, &record, &[]).await {
@@ -5033,7 +5013,7 @@ pub(super) async fn install_fresh_from(
         .await
         .map_err(|e| RepositoryError::Internal(format!("open '{key}' branch '{branch}': {e}")))?;
     let _committing = session.transactor().lock().await;
-    let record = |installed: &dialog_artifacts::history::Version| {
+    let record = |installed: &dialog_corpus::history::Version| {
         installed_seed_facts(&seed, source, SEED_NONE, installed)
     };
     let mut attempt = 0;
@@ -5059,8 +5039,7 @@ async fn stage_reinstall(
     install: &LibraryClaims,
     record: super::evaluate::SeedRecord<'_>,
     own: &[super::claim::RawClaim],
-) -> Result<Vec<(dialog_artifacts::Entity, dialog_artifacts::Entity)>, dialog_repository::CommitError>
-{
+) -> Result<Vec<(dialog_corpus::Entity, dialog_corpus::Entity)>, dialog_repository::CommitError> {
     let operator = &tonk.operator;
     let mut first = session.handle().transaction();
     let installed = if uninstall.is_empty() {
@@ -5082,7 +5061,7 @@ async fn stage_reinstall(
     let rekey = if uninstall.is_empty() {
         None
     } else {
-        let declared: std::collections::HashSet<dialog_artifacts::Entity> = install
+        let declared: std::collections::HashSet<dialog_corpus::Entity> = install
             .durable
             .iter()
             .map(|claim| claim.of.clone())
@@ -5100,22 +5079,20 @@ async fn stage_reinstall(
     let mut last = installed.transaction();
     for instruction in record(&version) {
         last = match instruction {
-            dialog_artifacts::Instruction::Assert(artifact, _) => {
+            dialog_corpus::Instruction::Assert(artifact, _) => {
                 last.assert(super::claim::RawClaim {
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    policy: dialog_artifacts::Pick::All,
+                    policy: dialog_corpus::Pick::All,
                 })
             }
-            dialog_artifacts::Instruction::Retract(artifact) => {
-                last.retract(super::claim::RawClaim {
-                    the: artifact.the,
-                    of: artifact.of,
-                    is: artifact.is,
-                    policy: dialog_artifacts::Pick::All,
-                })
-            }
+            dialog_corpus::Instruction::Retract(artifact) => last.retract(super::claim::RawClaim {
+                the: artifact.the,
+                of: artifact.of,
+                is: artifact.is,
+                policy: dialog_corpus::Pick::All,
+            }),
         };
     }
     for claim in own {
@@ -5146,7 +5123,7 @@ async fn stage_reinstall(
 async fn rekey_sites(
     tonk: &TonkState,
     session: &crate::reactor::BranchSession,
-    moves: &[(dialog_artifacts::Entity, dialog_artifacts::Entity)],
+    moves: &[(dialog_corpus::Entity, dialog_corpus::Entity)],
 ) {
     if moves.is_empty() {
         return;
@@ -5182,17 +5159,41 @@ async fn rekey_sites(
             session.state.assert_overlay(super::claim::RawClaim {
                 the: dialog_query::the!("xyz.tonk.site/concept").into(),
                 of: site.this,
-                is: dialog_artifacts::Value::Entity(now.clone()),
-                policy: dialog_artifacts::Pick::Last,
+                is: dialog_corpus::Value::Entity(now.clone()),
+                policy: dialog_corpus::Pick::Last,
             });
         }
+    }
+}
+
+/// Claims gathered for a transaction that is not open yet.
+///
+/// A transaction reads and commits against the revision its branch stood
+/// at when it was opened, and is refused if the head moved meanwhile.
+/// Recording a repository's remotes and upstreams moves `meta`, which is
+/// the registry, while the claims that mirror them are being gathered. So
+/// they are gathered here, and the transaction is opened once the branch
+/// has stopped moving, with all of them at once.
+#[derive(Default)]
+struct StagedChanges(dialog_corpus::Changes);
+
+impl StagedChanges {
+    /// These changes with `claim` asserted.
+    fn assert<C: dialog_corpus::Statement>(mut self, claim: C) -> Self {
+        self.0.assert(claim);
+        self
+    }
+
+    /// The changes, to assert on a transaction.
+    fn into_changes(self) -> dialog_corpus::Changes {
+        self.0
     }
 }
 
 /// `transaction` with `install`'s claims asserted and its commands
 /// dispatched: commit-time induction reads the commands, and the commit keeps
 /// only what the rules they trigger write.
-fn with_library<Line>(
+fn with_library<Line: dialog_repository::Line>(
     mut transaction: dialog_repository::Transaction<Line>,
     install: &LibraryClaims,
 ) -> dialog_repository::Transaction<Line> {
@@ -5216,18 +5217,18 @@ fn installed_seed_facts(
     seed: &str,
     source: &str,
     prior: &str,
-    installed: &dialog_artifacts::history::Version,
-) -> Vec<dialog_artifacts::Instruction> {
-    use dialog_artifacts::Statement as _;
+    installed: &dialog_corpus::history::Version,
+) -> Vec<dialog_corpus::Instruction> {
+    use dialog_corpus::Statement as _;
 
     let (Ok(this), Ok(prior)) = (
-        seed.parse::<dialog_artifacts::Entity>(),
-        prior.parse::<dialog_artifacts::Entity>(),
+        seed.parse::<dialog_corpus::Entity>(),
+        prior.parse::<dialog_corpus::Entity>(),
     ) else {
         log!("seed record: '{seed}' or '{prior}' is not an entity");
         return Vec::new();
     };
-    let mut changes = dialog_artifacts::Changes::new();
+    let mut changes = dialog_corpus::Changes::new();
     tonk_schema::SeedAvailable {
         this: this.clone(),
         source: tonk_schema::domain::seed::Source(source.to_owned()),
@@ -5265,7 +5266,7 @@ async fn uninstall_claims(
     tonk: &TonkState,
     session: &crate::reactor::BranchSession,
     current: &InstalledSeed,
-    subject: &dialog_artifacts::Entity,
+    subject: &dialog_corpus::Entity,
 ) -> Result<Vec<super::claim::RawClaim>, RepositoryError> {
     let versions = if current.complete {
         vec![current.version.clone()]
@@ -5354,18 +5355,18 @@ async fn live_claims(
     session: &crate::reactor::BranchSession,
     entities: &[&str],
 ) -> Result<Vec<super::claim::RawClaim>, RepositoryError> {
-    use dialog_artifacts::ArtifactSelector;
+    use dialog_corpus::Selector;
     use futures_util::StreamExt as _;
 
     let mut claims = Vec::new();
     for entity in entities {
-        let entity: dialog_artifacts::Entity = entity
+        let entity: dialog_corpus::Entity = entity
             .parse()
             .map_err(|e| RepositoryError::Internal(format!("'{entity}' is not an entity: {e}")))?;
         let stream = session
             .handle()
             .claims()
-            .select(ArtifactSelector::new().of(entity))
+            .select(Selector::new().of(entity))
             .perform(&tonk.operator)
             .await
             .map_err(|e| RepositoryError::Internal(format!("read legacy routes: {e}")))?;
@@ -5379,7 +5380,7 @@ async fn live_claims(
                 the: found.the,
                 of: found.of,
                 is: found.is,
-                policy: dialog_artifacts::Pick::All,
+                policy: dialog_corpus::Pick::All,
             });
         }
     }
@@ -5402,26 +5403,26 @@ fn repository_name_claims(
     display_name: &str,
     description: Option<&str>,
 ) -> Result<Vec<super::claim::RawClaim>, RepositoryError> {
-    let of: dialog_artifacts::Entity = subject
+    let of: dialog_corpus::Entity = subject
         .as_str()
         .parse()
         .map_err(|e| RepositoryError::Internal(format!("space subject: {e}")))?;
     let attribute = |name: &str| {
-        name.parse::<dialog_artifacts::Relation>()
+        name.parse::<dialog_corpus::Relation>()
             .map_err(|e| RepositoryError::Internal(format!("attribute '{name}': {e}")))
     };
     let mut claims = vec![super::claim::RawClaim {
         the: attribute("xyz.tonk.repo/name")?,
         of: of.clone(),
-        is: dialog_artifacts::Value::String(display_name.to_owned()),
-        policy: dialog_artifacts::Pick::Last,
+        is: dialog_corpus::Value::String(display_name.to_owned()),
+        policy: dialog_corpus::Pick::Last,
     }];
     if let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) {
         claims.push(super::claim::RawClaim {
             the: attribute("xyz.tonk.repo/description")?,
             of,
-            is: dialog_artifacts::Value::String(description.to_owned()),
-            policy: dialog_artifacts::Pick::Last,
+            is: dialog_corpus::Value::String(description.to_owned()),
+            policy: dialog_corpus::Pick::Last,
         });
     }
     Ok(claims)
@@ -5452,7 +5453,7 @@ async fn retry_after_race(
 
 /// The entity a space's own facts are about: its subject DID, whichever
 /// key spelling names it.
-fn space_entity(key: &str) -> Result<dialog_artifacts::Entity, RepositoryError> {
+fn space_entity(key: &str) -> Result<dialog_corpus::Entity, RepositoryError> {
     let did = if key.starts_with("did:key:") {
         key.to_owned()
     } else {
@@ -5514,7 +5515,7 @@ async fn assertions_at_version(
             the: claim.the.clone(),
             of: claim.of.clone(),
             is: claim.is.clone(),
-            policy: dialog_artifacts::Pick::All,
+            policy: dialog_corpus::Pick::All,
         });
     }
     Ok(claims)
@@ -5527,18 +5528,18 @@ async fn assertions_at_version(
 /// `Version::from_key_bytes`. Storing the entity meant hunting the branch
 /// log for a matching revision, which only works while the install is
 /// still recent.
-pub(crate) fn encode_seed_version(version: &dialog_artifacts::history::Version) -> String {
+pub(crate) fn encode_seed_version(version: &dialog_corpus::history::Version) -> String {
     use base58::ToBase58 as _;
 
     version.key_bytes().to_base58()
 }
 
 /// The inverse of [`encode_seed_version`].
-fn decode_seed_version(encoded: &str) -> Option<dialog_artifacts::history::Version> {
+fn decode_seed_version(encoded: &str) -> Option<dialog_corpus::history::Version> {
     use base58::FromBase58 as _;
 
     let bytes = encoded.from_base58().ok()?;
-    dialog_artifacts::history::Version::from_key_bytes(&bytes).ok()
+    dialog_corpus::history::Version::from_key_bytes(&bytes).ok()
 }
 
 /// The facts recording a seed install: identity and source
@@ -5568,19 +5569,19 @@ pub(crate) fn seed_record_facts(
     prior: &str,
     replaces: &str,
     version: &str,
-) -> Vec<dialog_artifacts::Instruction> {
-    use dialog_artifacts::Statement as _;
+) -> Vec<dialog_corpus::Instruction> {
+    use dialog_corpus::Statement as _;
 
     let (Ok(seed), Ok(prior), Ok(replaces)) = (
-        seed.parse::<dialog_artifacts::Entity>(),
-        prior.parse::<dialog_artifacts::Entity>(),
-        replaces.parse::<dialog_artifacts::Entity>(),
+        seed.parse::<dialog_corpus::Entity>(),
+        prior.parse::<dialog_corpus::Entity>(),
+        replaces.parse::<dialog_corpus::Entity>(),
     ) else {
         log!("seed record: '{seed}', '{prior}' or '{replaces}' is not an entity");
         return Vec::new();
     };
 
-    let mut changes = dialog_artifacts::Changes::new();
+    let mut changes = dialog_corpus::Changes::new();
     tonk_schema::SeedAvailable {
         this: seed.clone(),
         source: tonk_schema::domain::seed::Source(url.to_owned()),
@@ -6229,8 +6230,7 @@ where
     // and never replicates, so a roster on it would only ever show the
     // local profile. The shared roster lives on the content branch (see
     // `record_membership_on_content`), written by the create + claim paths.
-    let mut transaction = meta
-        .transaction()
+    let mut transaction = StagedChanges::default()
         .assert(replica.clone())
         .assert(replica.branch(META_BRANCH));
 
@@ -6368,7 +6368,9 @@ where
     meta.refresh(&tonk.operator).await.map_err(|e| {
         RepositoryError::Internal(format!("Failed to refresh meta for '{}': {}", key, e))
     })?;
-    let revision = transaction
+    let revision = meta
+        .transaction()
+        .assert(transaction.into_changes())
         .commit()
         .publish()
         .perform(&tonk.operator)
@@ -6454,10 +6456,10 @@ async fn record_space_founded(tonk: &TonkState, subject: &Did) {
 /// directory entity (`subject.this()`), giving every device the same
 /// derived entities — the account-level mirror of the per-replica meta
 /// records.
-struct DirectoryAnchor(dialog_artifacts::Entity);
+struct DirectoryAnchor(dialog_corpus::Entity);
 
-impl AsRef<dialog_artifacts::Entity> for DirectoryAnchor {
-    fn as_ref(&self) -> &dialog_artifacts::Entity {
+impl AsRef<dialog_corpus::Entity> for DirectoryAnchor {
+    fn as_ref(&self) -> &dialog_corpus::Entity {
         &self.0
     }
 }
@@ -6871,7 +6873,7 @@ async fn recorded_install_versions(
     session: &dialog_reactor::BranchSession,
     source: &str,
 ) -> Result<Vec<String>, RepositoryError> {
-    use dialog_artifacts::history::HistorySelector;
+    use dialog_corpus::history::HistorySelector;
     use futures_util::StreamExt as _;
 
     let history = session.handle().history(&tonk.operator);
@@ -6888,12 +6890,12 @@ async fn recorded_install_versions(
         }
         let claim = record.claim();
         match (claim.the.as_str(), &claim.is) {
-            ("xyz.tonk.seed/source", dialog_artifacts::Value::String(source)) => {
+            ("xyz.tonk.seed/source", dialog_corpus::Value::String(source)) => {
                 sources.insert(claim.of.to_string(), source.clone());
             }
             (
                 "xyz.tonk.seed/version" | "xyz.tonk.seed/install-version",
-                dialog_artifacts::Value::String(version),
+                dialog_corpus::Value::String(version),
             ) => {
                 versions.push((claim.of.to_string(), version.clone()));
             }
@@ -7073,7 +7075,7 @@ async fn library_claims_after(
     library: &str,
     what: &str,
 ) -> Result<LibraryClaims, RepositoryError> {
-    use dialog_artifacts::{Changes, Instruction, Statement as _};
+    use dialog_corpus::{Changes, Instruction, Statement as _};
     use dialog_query::{Parameters, Term};
     use tonk_schema::transact::{ApplicationPlan, Planner as _, Statement};
 
@@ -7097,7 +7099,7 @@ async fn library_claims_after(
     for (name, entity) in &analyzed.analysis.variables {
         bindings.insert(
             name.clone(),
-            Term::Constant(dialog_artifacts::Value::Entity(entity.clone())),
+            Term::Constant(dialog_corpus::Value::Entity(entity.clone())),
         );
     }
 
@@ -7214,12 +7216,12 @@ async fn assertions_are_current(
     session: &dialog_reactor::BranchSession,
     assertions: &[super::claim::RawClaim],
 ) -> Result<bool, RepositoryError> {
-    use dialog_artifacts::ArtifactSelector;
+    use dialog_corpus::Selector;
     use futures_util::StreamExt as _;
 
     let mut grouped: HashMap<
-        (dialog_artifacts::Entity, dialog_artifacts::Relation),
-        (bool, Vec<dialog_artifacts::Value>),
+        (dialog_corpus::Entity, dialog_corpus::Relation),
+        (bool, Vec<dialog_corpus::Value>),
     > = HashMap::new();
     for expected in assertions {
         let entry = grouped
@@ -7235,7 +7237,7 @@ async fn assertions_are_current(
         let stream = session
             .handle()
             .claims()
-            .select(ArtifactSelector::new().the(the).of(of))
+            .select(Selector::new().the(the).of(of))
             .perform(&tonk.operator)
             .await
             .map_err(|error| {
@@ -7277,7 +7279,7 @@ async fn has_legacy_profile_library(
     tonk: &TonkState,
     session: &dialog_reactor::BranchSession,
 ) -> Result<bool, RepositoryError> {
-    use dialog_artifacts::ArtifactSelector;
+    use dialog_corpus::Selector;
     use futures_util::StreamExt as _;
 
     let entity = "tonk:space"
@@ -7286,7 +7288,7 @@ async fn has_legacy_profile_library(
     let stream = session
         .handle()
         .claims()
-        .select(ArtifactSelector::new().of(entity))
+        .select(Selector::new().of(entity))
         .perform(&tonk.operator)
         .await
         .map_err(|error| RepositoryError::Internal(format!("check legacy profile: {error}")))?;
@@ -7295,9 +7297,9 @@ async fn has_legacy_profile_library(
 }
 
 fn raw_seed_metadata(installation: &ProfileInstallation) -> Vec<super::claim::RawClaim> {
-    use dialog_artifacts::Statement as _;
+    use dialog_corpus::Statement as _;
 
-    let mut changes = dialog_artifacts::Changes::new();
+    let mut changes = dialog_corpus::Changes::new();
     installation.available.clone().assert(&mut changes);
     installation.installed.clone().assert(&mut changes);
     changes
@@ -7305,14 +7307,14 @@ fn raw_seed_metadata(installation: &ProfileInstallation) -> Vec<super::claim::Ra
         .into_iter()
         .map(|instruction| {
             let artifact = match instruction {
-                dialog_artifacts::Instruction::Assert(artifact, _)
-                | dialog_artifacts::Instruction::Retract(artifact) => artifact,
+                dialog_corpus::Instruction::Assert(artifact, _)
+                | dialog_corpus::Instruction::Retract(artifact) => artifact,
             };
             super::claim::RawClaim {
                 the: artifact.the,
                 of: artifact.of,
                 is: artifact.is,
-                policy: dialog_artifacts::Pick::All,
+                policy: dialog_corpus::Pick::All,
             }
         })
         .collect()
@@ -7438,7 +7440,7 @@ async fn reconcile_prepared_profile_library(
         .first()
         .map(|installation| installation.installed.this.to_string())
         .unwrap_or_else(|| SEED_NONE.to_owned());
-    let record = |minted: &dialog_artifacts::history::Version| {
+    let record = |minted: &dialog_corpus::history::Version| {
         seed_record_facts(
             &target,
             PROFILE_LIBRARY_URL,
@@ -8122,7 +8124,7 @@ where
     migrate_meta(&meta, repository.did().repo_key(), tonk).await;
 
     let replica = Replica::new(tonk.profile.did(), repository.did());
-    let mut transaction = meta.transaction().assert(replica.clone());
+    let mut transaction = StagedChanges::default().assert(replica.clone());
 
     // Ensure each configured remote exists at the dialog layer, then
     // mirror it on the meta branch. A remote that already exists is
@@ -8287,7 +8289,9 @@ where
     meta.refresh(&tonk.operator).await.map_err(|e| {
         RepositoryError::Internal(format!("Failed to refresh meta for '{}': {}", name, e))
     })?;
-    let revision = transaction
+    let revision = meta
+        .transaction()
+        .assert(transaction.into_changes())
         .commit()
         .publish()
         .perform(&tonk.operator)
@@ -8702,12 +8706,12 @@ mod space_creation_feedback_tests {
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod remote_from_facts_tests {
     use super::{DESCRIPTION_ATTR, description_from_facts, remote_from_facts};
-    use dialog_artifacts::{Artifact, Changes, Entity, Instruction, Statement, Value};
+    use dialog_corpus::{Changes, Entity, Fact, Instruction, Statement, Value};
     use dialog_query::the;
 
     const URL: &str = "http://127.0.0.1:8080/ucan/";
 
-    fn artifacts(changes: Changes) -> Vec<Artifact> {
+    fn artifacts(changes: Changes) -> Vec<Fact> {
         changes
             .into_instructions()
             .into_iter()
@@ -8909,12 +8913,12 @@ mod repository_description_body_tests {
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod invite_space_from_facts_tests {
     use super::invite_space_from_facts;
-    use dialog_artifacts::{Artifact, Changes, Entity, Instruction, Statement, Value};
+    use dialog_corpus::{Changes, Entity, Fact, Instruction, Statement, Value};
     use dialog_query::the;
 
     const DID: &str = "did:key:zTargetSpace";
 
-    fn artifacts(changes: Changes) -> Vec<Artifact> {
+    fn artifacts(changes: Changes) -> Vec<Fact> {
         changes
             .into_instructions()
             .into_iter()
@@ -9375,11 +9379,11 @@ mod notebook_creation_tests {
             .acquire(&tonk.operator)
             .await
             .expect("the content branch opens");
-        let entity: dialog_artifacts::Entity = "notebook:probe".parse().unwrap();
+        let entity: dialog_corpus::Entity = "notebook:probe".parse().unwrap();
         let stream = session
             .handle()
             .claims()
-            .select(dialog_artifacts::ArtifactSelector::new().of(entity))
+            .select(dialog_corpus::Selector::new().of(entity))
             .perform(&tonk.operator)
             .await
             .expect("the notebook claims select");
@@ -9393,7 +9397,7 @@ mod notebook_creation_tests {
                 .expect("a claim decodes");
             let attribute = artifact.the.to_string();
             if attribute == "xyz.tonk.notebook/title"
-                && let dialog_artifacts::Value::String(title) = &artifact.is
+                && let dialog_corpus::Value::String(title) = &artifact.is
             {
                 named = Some(title.clone());
             }
@@ -9417,7 +9421,7 @@ mod notebook_creation_tests {
 mod rename_repository_tests {
     use super::*;
     use crate::router::command::{CommandOrigin, dispatch};
-    use dialog_artifacts::Statement;
+    use dialog_corpus::Statement;
     use dialog_query::the;
     use tonk_schema::RepositoryDescription;
 
@@ -9548,15 +9552,15 @@ mod rename_repository_tests {
             .await
             .expect("the space creates");
 
-        let mut changes = dialog_artifacts::Changes::new();
-        let command: dialog_artifacts::Entity = "cmd:rename".parse().unwrap();
+        let mut changes = dialog_corpus::Changes::new();
+        let command: dialog_corpus::Entity = "cmd:rename".parse().unwrap();
         the!("xyz.tonk.command.rename-repository/name")
             .of(command.clone())
             .is("After Rename".to_string())
             .assert(&mut changes);
         the!("xyz.tonk.rename-repository/space")
             .of(command)
-            .is(key.parse::<dialog_artifacts::Entity>().unwrap())
+            .is(key.parse::<dialog_corpus::Entity>().unwrap())
             .assert(&mut changes);
         dispatch(
             &state,
@@ -10326,8 +10330,8 @@ route!: &foreign-profile-route
             .collect()
     }
 
-    async fn raw_values(tonk: &TonkState, the: &str, of: &str) -> Vec<dialog_artifacts::Value> {
-        use dialog_artifacts::ArtifactSelector;
+    async fn raw_values(tonk: &TonkState, the: &str, of: &str) -> Vec<dialog_corpus::Value> {
+        use dialog_corpus::Selector;
         use futures_util::StreamExt as _;
 
         let session = tonk
@@ -10341,7 +10345,7 @@ route!: &foreign-profile-route
             .handle()
             .claims()
             .select(
-                ArtifactSelector::new()
+                Selector::new()
                     .the(the.parse().expect("attribute parses"))
                     .of(of.parse().expect("entity parses")),
             )
@@ -10630,11 +10634,11 @@ route!: &foreign-profile-route
             .await
             .expect("installation history resolves");
 
-        let the: dialog_artifacts::Relation = "db.meta/description"
+        let the: dialog_corpus::Relation = "db.meta/description"
             .parse()
             .expect("description attribute parses");
-        let of: dialog_artifacts::Entity = "tonk:space".parse().expect("space entity parses");
-        let desired = dialog_artifacts::Value::String("A space on this account.".to_owned());
+        let of: dialog_corpus::Entity = "tonk:space".parse().expect("space entity parses");
+        let desired = dialog_corpus::Value::String("A space on this account.".to_owned());
         assert!(
             !history
                 .iter()
@@ -10649,13 +10653,13 @@ route!: &foreign-profile-route
                 the: the.clone(),
                 of: of.clone(),
                 is: desired.clone(),
-                policy: dialog_artifacts::Pick::All,
+                policy: dialog_corpus::Pick::All,
             })
             .assert(super::super::claim::RawClaim {
                 the: the.clone(),
                 of: of.clone(),
-                is: dialog_artifacts::Value::String("stale account writer".to_owned()),
-                policy: dialog_artifacts::Pick::All,
+                is: dialog_corpus::Value::String("stale account writer".to_owned()),
+                policy: dialog_corpus::Pick::All,
             })
             .commit()
             .publish()
@@ -10704,10 +10708,10 @@ route!: &foreign-profile-route
             let stale = super::super::claim::RawClaim {
                 the: expected.the.clone(),
                 of: expected.of.clone(),
-                is: dialog_artifacts::Value::String(
+                is: dialog_corpus::Value::String(
                     "<div data-stale-profile-library></div>".to_owned(),
                 ),
-                policy: dialog_artifacts::Pick::All,
+                policy: dialog_corpus::Pick::All,
             };
             let session = tonk
                 .reactor
@@ -10720,7 +10724,7 @@ route!: &foreign-profile-route
             if stale_first {
                 txn = txn.retract(expected.clone()).assert(stale.clone()).assert(
                     super::super::claim::RawClaim {
-                        policy: dialog_artifacts::Pick::All,
+                        policy: dialog_corpus::Pick::All,
                         ..expected.clone()
                     },
                 );
@@ -11602,12 +11606,12 @@ mod tests {
     /// command transient via `the!`, carrying both the `name`
     /// (`current-target/value`) and the `marker`
     /// (`current-target.dataset/rename`) so it decodes as a `ProfileRename`.
-    fn profile_rename_transient(of: &str, name: &str) -> dialog_artifacts::Changes {
-        use dialog_artifacts::{Entity, Statement};
+    fn profile_rename_transient(of: &str, name: &str) -> dialog_corpus::Changes {
+        use dialog_corpus::{Entity, Statement};
         use dialog_query::the;
 
         let entity: Entity = of.parse().expect("entity URI");
-        let mut changes = dialog_artifacts::Changes::new();
+        let mut changes = dialog_corpus::Changes::new();
         the!("dom.event.current-target/value")
             .of(entity.clone())
             .is(name.to_string())
@@ -11758,8 +11762,7 @@ mod tests {
             .acquire(&tonk.operator)
             .await
             .unwrap();
-        let entity: dialog_artifacts::Entity =
-            tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
+        let entity: dialog_corpus::Entity = tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
         let rows: Vec<tonk_schema::ProfileIdentity> = session
             .handle()
             .query()
@@ -12670,12 +12673,12 @@ block/insert!:
     /// (`dom.event.current-target.dataset/invite`) so it decodes as an
     /// `Invite` command and not a `PauseSync` (identical `{this, time}`
     /// shape otherwise).
-    fn invite_transient(of: &str) -> dialog_artifacts::Changes {
-        use dialog_artifacts::{Entity, Statement};
+    fn invite_transient(of: &str) -> dialog_corpus::Changes {
+        use dialog_corpus::{Entity, Statement};
         use dialog_query::the;
 
         let entity: Entity = of.parse().expect("entity URI");
-        let mut changes = dialog_artifacts::Changes::new();
+        let mut changes = dialog_corpus::Changes::new();
         the!("dom.event/time-stamp")
             .of(entity.clone())
             .is(1.0_f64)
@@ -12693,8 +12696,8 @@ block/insert!:
     /// profile branch and names the target space explicitly. Joined members
     /// exercise this path too, so a regression here otherwise presents only
     /// as the share control waiting until its clipboard timeout.
-    fn fabb_invite_transient(of: &str, subject: &dialog_varsig::Did) -> dialog_artifacts::Changes {
-        use dialog_artifacts::Statement;
+    fn fabb_invite_transient(of: &str, subject: &dialog_varsig::Did) -> dialog_corpus::Changes {
+        use dialog_corpus::Statement;
         use dialog_query::the;
         use tonk_schema::prelude::DidExt as _;
 
@@ -12866,8 +12869,7 @@ block/insert!:
             .await
             .expect("acquire main");
 
-        let entity: dialog_artifacts::Entity =
-            tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
+        let entity: dialog_corpus::Entity = tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
         let rows: Vec<tonk_schema::ProfileIdentity> = session
             .handle()
             .query()
@@ -13534,7 +13536,7 @@ block/insert!:
         share: bool,
         time: f64,
     ) {
-        use dialog_artifacts::{Changes, Statement};
+        use dialog_corpus::{Changes, Statement};
         use dialog_query::{Entity, the};
 
         let of: Entity = "tonk:enable-sync-test".parse().expect("entity URI");
@@ -13604,13 +13606,13 @@ block/insert!:
     /// (`dom.event.current-target.dataset/remove`) carries the target
     /// subject DID as its value and is the command's whole payload (see
     /// `tonk_schema::command::RemoveSpace`).
-    fn remove_space_transient(of: &str, subject: &dialog_varsig::Did) -> dialog_artifacts::Changes {
-        use dialog_artifacts::{Entity, Statement};
+    fn remove_space_transient(of: &str, subject: &dialog_varsig::Did) -> dialog_corpus::Changes {
+        use dialog_corpus::{Entity, Statement};
         use dialog_query::the;
         use tonk_schema::prelude::DidExt as _;
 
         let entity: Entity = of.parse().expect("entity URI");
-        let mut changes = dialog_artifacts::Changes::new();
+        let mut changes = dialog_corpus::Changes::new();
         the!("dom.event.current-target.dataset/remove")
             .of(entity)
             .is(subject.this())
@@ -13810,12 +13812,12 @@ mod seed_tests {
     /// The attribute names a set of instructions writes — what a record
     /// test asserts over, since `Instruction` is not `Debug`.
     #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-    fn attributes_of(facts: &[dialog_artifacts::Instruction]) -> Vec<String> {
+    fn attributes_of(facts: &[dialog_corpus::Instruction]) -> Vec<String> {
         facts
             .iter()
             .map(|instruction| match instruction {
-                dialog_artifacts::Instruction::Assert(artifact, _)
-                | dialog_artifacts::Instruction::Retract(artifact) => artifact.the.to_string(),
+                dialog_corpus::Instruction::Assert(artifact, _)
+                | dialog_corpus::Instruction::Retract(artifact) => artifact.the.to_string(),
             })
             .collect()
     }
@@ -13831,7 +13833,7 @@ mod seed_tests {
         assert_eq!(one, same, "the same bytes give the same identity");
         assert_ne!(one, other, "different bytes give a different identity");
         assert!(
-            one.parse::<dialog_artifacts::Entity>().is_ok(),
+            one.parse::<dialog_corpus::Entity>().is_ok(),
             "the identity must be a usable entity: {one}"
         );
     }
@@ -13877,8 +13879,8 @@ mod seed_tests {
         let attributes: Vec<String> = facts
             .iter()
             .map(|instruction| match instruction {
-                dialog_artifacts::Instruction::Assert(artifact, _)
-                | dialog_artifacts::Instruction::Retract(artifact) => artifact.the.to_string(),
+                dialog_corpus::Instruction::Assert(artifact, _)
+                | dialog_corpus::Instruction::Retract(artifact) => artifact.the.to_string(),
             })
             .collect();
 
@@ -13903,7 +13905,7 @@ mod seed_tests {
     /// withdraw. The entity cannot do this — it is a one-way hash.
     #[test]
     fn it_round_trips_a_seed_revision() {
-        use dialog_artifacts::history::{Edition, Origin, Version};
+        use dialog_corpus::history::{Edition, Origin, Version};
 
         let version = Version::new(Origin::from([7u8; 32]), Edition::new(3));
 
@@ -13981,7 +13983,7 @@ mod seed_tests {
         /// Why the last check on this device failed, if it did.
         async fn failure_of(
             tonk: &crate::worker::TonkState,
-            replica: &dialog_artifacts::Entity,
+            replica: &dialog_corpus::Entity,
         ) -> Option<String> {
             use dialog_query::{Output as _, Query, Term};
 
@@ -14009,7 +14011,7 @@ mod seed_tests {
         /// Whether a check is still marked in flight on this device.
         async fn checking(
             tonk: &crate::worker::TonkState,
-            replica: &dialog_artifacts::Entity,
+            replica: &dialog_corpus::Entity,
         ) -> bool {
             use dialog_query::{Output as _, Query, Term};
 
@@ -14034,7 +14036,7 @@ mod seed_tests {
             !rows.is_empty()
         }
 
-        let check: dialog_artifacts::Entity = "check:one".parse().expect("an entity");
+        let check: dialog_corpus::Entity = "check:one".parse().expect("an entity");
 
         // No record: the space predates one. That is not a failure —
         // nothing names its definitions, so there is simply nothing to
@@ -14291,7 +14293,7 @@ route!: &probe/dropped
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[dialog_common::test]
     async fn it_records_every_seeded_component_on_the_branch() {
-        use dialog_artifacts::ArtifactSelector;
+        use dialog_corpus::Selector;
         use dialog_query::{Output as _, Query, Term};
         use futures_util::StreamExt as _;
 
@@ -14345,9 +14347,7 @@ route!: &probe/dropped
         let commands = session
             .handle()
             .claims()
-            .select(
-                ArtifactSelector::new().the("xyz.tonk.seed-route/path".parse().expect("attribute")),
-            )
+            .select(Selector::new().the("xyz.tonk.seed-route/path".parse().expect("attribute")))
             .perform(&tonk.operator)
             .await
             .expect("command query");
@@ -14430,7 +14430,7 @@ mod connection_invite_overlay_tests {
     pub struct Mode(pub String);
     #[derive(dialog_query::Concept, Clone, Debug)]
     pub struct InviteMode {
-        this: dialog_artifacts::Entity,
+        this: dialog_corpus::Entity,
         mode: Mode,
     }
     async fn response_mode(state: &AppState, repo: &str) -> String {
@@ -15101,7 +15101,7 @@ name!:
         let shipped = seed_version(library);
         let prior = current.seed.to_string();
         let source = current.source.clone();
-        let record = |minted: &dialog_artifacts::history::Version| {
+        let record = |minted: &dialog_corpus::history::Version| {
             seed_record_facts(
                 &shipped,
                 &source,
@@ -15142,7 +15142,7 @@ name!:
 
     /// What a published name currently points at, e.g. `tonk/space`.
     async fn referents(tonk: &TonkState, key: &str, name: &str) -> Vec<String> {
-        let anchor: dialog_artifacts::Entity = format!("id:{name}").parse().expect("anchor");
+        let anchor: dialog_corpus::Entity = format!("id:{name}").parse().expect("anchor");
         content(tonk, key)
             .await
             .handle()
@@ -15162,7 +15162,7 @@ name!:
 
     /// The name the space renders, from its own content branch.
     async fn space_names(tonk: &TonkState, key: &str, subject: &Did) -> Vec<String> {
-        let this: dialog_artifacts::Entity = subject.as_str().parse().expect("subject entity");
+        let this: dialog_corpus::Entity = subject.as_str().parse().expect("subject entity");
         content(tonk, key)
             .await
             .handle()
@@ -15182,7 +15182,7 @@ name!:
 
     /// Whether the concept `this` declares a field named `field`.
     async fn declares(tonk: &TonkState, key: &str, this: &str, field: &str) -> bool {
-        use dialog_artifacts::ArtifactSelector;
+        use dialog_corpus::Selector;
         use futures_util::StreamExt as _;
 
         let session = content(tonk, key).await;
@@ -15190,7 +15190,7 @@ name!:
             .handle()
             .claims()
             .select(
-                ArtifactSelector::new()
+                Selector::new()
                     .the(format!("db.concept.with/{field}").parse().expect("field"))
                     .of(this.parse().expect("concept entity")),
             )
@@ -15370,7 +15370,7 @@ name!:
     /// themselves is kept, on install or upgrade.
     #[dialog_common::test]
     async fn a_library_keeps_nothing_of_its_commands() {
-        use dialog_artifacts::ArtifactSelector;
+        use dialog_corpus::Selector;
         use futures_util::StreamExt as _;
 
         async fn kept(tonk: &TonkState, key: &str, attribute: &str) -> bool {
@@ -15378,7 +15378,7 @@ name!:
             let stream = session
                 .handle()
                 .claims()
-                .select(ArtifactSelector::new().the(attribute.parse().expect("attribute")))
+                .select(Selector::new().the(attribute.parse().expect("attribute")))
                 .perform(&tonk.operator)
                 .await
                 .expect("claim query");
@@ -15499,7 +15499,7 @@ route!:
     /// `claims` under the identities `earlier` maps each current one to.
     fn under_earlier_identities(
         claims: Vec<super::super::claim::RawClaim>,
-        earlier: &HashMap<dialog_artifacts::Entity, dialog_artifacts::Entity>,
+        earlier: &HashMap<dialog_corpus::Entity, dialog_corpus::Entity>,
     ) -> Vec<super::super::claim::RawClaim> {
         claims
             .into_iter()
@@ -15507,10 +15507,10 @@ route!:
                 if let Some(then) = earlier.get(&claim.of) {
                     claim.of = then.clone();
                 }
-                if let dialog_artifacts::Value::Entity(entity) = &claim.is
+                if let dialog_corpus::Value::Entity(entity) = &claim.is
                     && let Some(then) = earlier.get(entity)
                 {
-                    claim.is = dialog_artifacts::Value::Entity(then.clone());
+                    claim.is = dialog_corpus::Value::Entity(then.clone());
                 }
                 claim
             })
@@ -15525,10 +15525,7 @@ route!:
         tonk: &TonkState,
         library: &str,
         template: &str,
-    ) -> (
-        String,
-        Vec<(dialog_artifacts::Entity, dialog_artifacts::Entity)>,
-    ) {
+    ) -> (String, Vec<(dialog_corpus::Entity, dialog_corpus::Entity)>) {
         let (key, subject) = empty_space(tonk, "Template").await;
         let install = library_claims(library, "library")
             .await
@@ -15552,7 +15549,7 @@ route!:
         let seed = seed_version(&format!(
             "{library}\n# the release before select policies\n"
         ));
-        let record = |installed: &dialog_artifacts::history::Version| {
+        let record = |installed: &dialog_corpus::history::Version| {
             installed_seed_facts(&seed, STANDARD_LIBRARY_URL, SEED_NONE, installed)
         };
         let own = repository_name_claims(&subject, "Template", None).expect("the name encodes");
@@ -15581,16 +15578,13 @@ route!:
     }
 
     /// Every live claim on the space whose value is `entity`.
-    async fn naming(tonk: &TonkState, key: &str, entity: &dialog_artifacts::Entity) -> Vec<Triple> {
+    async fn naming(tonk: &TonkState, key: &str, entity: &dialog_corpus::Entity) -> Vec<Triple> {
         use futures_util::StreamExt as _;
         let session = content(tonk, key).await;
         let stream = session
             .handle()
             .claims()
-            .select(
-                dialog_artifacts::ArtifactSelector::new()
-                    .is(dialog_artifacts::Value::Entity(entity.clone())),
-            )
+            .select(dialog_corpus::Selector::new().is(dialog_corpus::Value::Entity(entity.clone())))
             .perform(&tonk.operator)
             .await
             .expect("the claims read");
@@ -15632,7 +15626,7 @@ route!:
                 .map(|claim| claim.of.clone())
                 .expect("the notes declare it")
         };
-        let moved = |now: dialog_artifacts::Entity| {
+        let moved = |now: dialog_corpus::Entity| {
             moves
                 .iter()
                 .find(|(_, current)| *current == now)
@@ -15666,7 +15660,7 @@ route!:
             (
                 "db.concept.with/title".to_owned(),
                 of.to_owned(),
-                format!("{:?}", dialog_artifacts::Value::Entity(attribute.1.clone())),
+                format!("{:?}", dialog_corpus::Value::Entity(attribute.1.clone())),
             )
         };
         assert!(
@@ -15703,14 +15697,14 @@ concept!: &writer-app
         key: &str,
         of: &str,
         field: &str,
-    ) -> Option<dialog_artifacts::Entity> {
+    ) -> Option<dialog_corpus::Entity> {
         use futures_util::StreamExt as _;
         let session = content(tonk, key).await;
         let stream = session
             .handle()
             .claims()
             .select(
-                dialog_artifacts::ArtifactSelector::new()
+                dialog_corpus::Selector::new()
                     .the(
                         format!("db.concept.with/{field}")
                             .parse()
@@ -15724,13 +15718,13 @@ concept!: &writer-app
         futures_util::pin_mut!(stream);
         let claim = stream.next().await?.expect("a claim");
         match claim.to_owned().expect("the claim decodes").is {
-            dialog_artifacts::Value::Entity(attribute) => Some(attribute),
+            dialog_corpus::Value::Entity(attribute) => Some(attribute),
             _ => None,
         }
     }
 
     /// Whether `attribute` is declared on the space.
-    async fn declared(tonk: &TonkState, key: &str, attribute: &dialog_artifacts::Entity) -> bool {
+    async fn declared(tonk: &TonkState, key: &str, attribute: &dialog_corpus::Entity) -> bool {
         state_of(tonk, key, &[attribute.as_str()])
             .await
             .iter()
@@ -16144,7 +16138,7 @@ concept!: &writer-app
 
     /// Whether the branch holds `claim` now.
     async fn holds(tonk: &TonkState, key: &str, claim: &Triple) -> bool {
-        use dialog_artifacts::ArtifactSelector;
+        use dialog_corpus::Selector;
         use futures_util::StreamExt as _;
 
         let (the, of, is) = claim;
@@ -16153,7 +16147,7 @@ concept!: &writer-app
             .handle()
             .claims()
             .select(
-                ArtifactSelector::new()
+                Selector::new()
                     .of(of.parse().expect("an entity"))
                     .the(the.parse().expect("an attribute")),
             )
@@ -16419,14 +16413,14 @@ attribute!: &probe/next
 
     /// Every claim about `entity`, as `(attribute, value)`.
     async fn about(tonk: &TonkState, key: &str, entity: &str) -> Vec<(String, String)> {
-        use dialog_artifacts::ArtifactSelector;
+        use dialog_corpus::Selector;
         use futures_util::StreamExt as _;
 
         let session = content(tonk, key).await;
         let stream = session
             .handle()
             .claims()
-            .select(ArtifactSelector::new().of(entity.parse().expect("an entity")))
+            .select(Selector::new().of(entity.parse().expect("an entity")))
             .perform(&tonk.operator)
             .await
             .expect("the claims read");

@@ -159,7 +159,7 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    use dialog_artifacts::{Changes, Update as _, Value};
+    use dialog_corpus::{Changes, Update as _, Value};
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     use dialog_reactor::BranchSession;
 
@@ -174,7 +174,7 @@ mod tests {
             "test/status".parse().expect("attribute"),
             "tonk:test/handoff".parse().expect("entity"),
             Value::String("failed".into()),
-            dialog_artifacts::Pick::All,
+            dialog_corpus::Pick::All,
         );
         vec![OverlaySnapshot {
             repository: None,

@@ -15,7 +15,7 @@ use std::ops::Deref;
 use std::sync::{Arc, atomic::Ordering};
 
 use axum::{Extension, Json, extract::State};
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_varsig::Did;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -315,8 +315,7 @@ async fn activate_named(
 /// its account onto the wrong one.
 ///
 /// [`AddProfile`]: tonk_schema::command::AddProfile
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::AddProfile> for crate::router::CommandEnv {
     async fn execute(&self, _command: tonk_schema::command::AddProfile) {
         if let Err(error) = add_profile(self.state(), self.client()).await {
@@ -362,8 +361,7 @@ impl dialog_capability::Provider<tonk_schema::command::AddProfile> for crate::ro
 /// profile this device has no record of.
 ///
 /// [`SwitchProfile`]: tonk_schema::command::SwitchProfile
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::SwitchProfile>
     for crate::router::CommandEnv
 {
@@ -670,8 +668,7 @@ async fn promote(
 /// cannot drift while the route lives. The originating tab is fenced by
 /// the swap and cannot await a command, so it is reloaded from here once
 /// the empty branch is active.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::SignOut> for crate::router::CommandEnv {
     async fn execute(&self, _command: tonk_schema::command::SignOut) {
         match sign_out(self.state(), self.client()).await {

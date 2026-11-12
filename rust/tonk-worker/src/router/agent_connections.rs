@@ -61,10 +61,10 @@ fn enabled() -> Result<(), TonkWorkerError> {
         ))
     }
 }
-fn group_entity(id: &str) -> Result<dialog_artifacts::Entity, TonkWorkerError> {
+fn group_entity(id: &str) -> Result<dialog_corpus::Entity, TonkWorkerError> {
     format!("id:tonk:agent-grant:{id}").parse().map_err(failure)
 }
-fn receipt_entity(id: &str, cid: &str) -> Result<dialog_artifacts::Entity, TonkWorkerError> {
+fn receipt_entity(id: &str, cid: &str) -> Result<dialog_corpus::Entity, TonkWorkerError> {
     format!("id:tonk:agent-revocation:{id}:{cid}")
         .parse()
         .map_err(failure)
@@ -545,7 +545,7 @@ async fn confirmation(
         .acquire(&tonk.operator)
         .await
         .map_err(failure)?;
-    let entity: dialog_artifacts::Entity = format!("id:tonk:agent-connection:{}", group.id)
+    let entity: dialog_corpus::Entity = format!("id:tonk:agent-connection:{}", group.id)
         .parse()
         .map_err(failure)?;
     let rows: Vec<AgentConnectionConfirmation> = session
@@ -849,7 +849,7 @@ mod tests {
             issued_at: 1,
             chains: vec![],
         };
-        let receipt: dialog_artifacts::Entity =
+        let receipt: dialog_corpus::Entity =
             format!("id:tonk:agent-connection:{}", group.id).parse()?;
         tonk.reactor
             .repository(&group.repo)

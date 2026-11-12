@@ -16,7 +16,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dialog_capability::{Capability, Provider, Subject};
@@ -1269,8 +1268,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
 // platform-conditional `Send` and one generic impl serves every
 // environment. `ConditionalSync` bounds cover the `&self` captures.
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[dialog_capability::provider]
 impl<S, E, R, V> Provider<Activate> for Registration<'_, S, E, R, V>
 where
     S: Store + ConditionalSync,

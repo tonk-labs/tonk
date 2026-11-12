@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use dialog_artifacts::Revision;
+use dialog_corpus::Revision;
 use serde::{Deserialize, Serialize};
 
 /// Matches for one source-expression query, projected back into

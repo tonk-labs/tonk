@@ -39,7 +39,7 @@ use super::formula::{FormulaInfo, lookup_formula};
 use super::resolver_registry::{ResolverInfo, lookup_resolver};
 use super::scope::Scope;
 use crate::analyzer::Working;
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_query::attribute::The;
 use dialog_query::rule::inductive::Polarity;
 use tonk_schema::rule::Rule as StoredRule;
@@ -335,7 +335,7 @@ pub(crate) fn parse_rule_this_entity(
     };
     uri.parse()
         .map(Some)
-        .map_err(|e: dialog_artifacts::IdentityError| {
+        .map_err(|e: dialog_corpus::IdentityError| {
             AnalyzeError::at(
                 AnalyzeErrorKind::InvalidSubjectUri {
                     subject: uri,
@@ -1189,12 +1189,12 @@ fn lift_resolver_premise(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dialog_artifacts::Entity;
+    use dialog_corpus::Entity;
     use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::AttributeDescriptor;
-    use dialog_query::artifact::Type;
     use dialog_query::attribute::Cardinality as DialogCardinality;
     use dialog_query::concept::descriptor::ConceptDescriptor;
+    use dialog_query::corpus::Type;
     use dialog_query::the;
     use dialog_repository::Branch;
     use tonk_notation::parse;
@@ -2530,7 +2530,7 @@ rule!:
     /// converge on the same subject entity.
     #[dialog_common::test]
     async fn it_converges_notation_and_wire_path_entities() {
-        use dialog_artifacts::Value;
+        use dialog_corpus::Value;
         use tonk_core::claim::{
             ConceptDescriptor as DurableConceptDescriptor, SourceApplication, ValueMap,
         };
@@ -2607,7 +2607,7 @@ rule!:
     ///   2. convergence  — notation and wire paths agree.
     #[dialog_common::test]
     async fn it_derives_distinct_entities_for_distinct_reference_fields() {
-        use dialog_artifacts::Value;
+        use dialog_corpus::Value;
         use tonk_core::claim::{
             ConceptDescriptor as DurableConceptDescriptor, SourceApplication, ValueMap,
         };

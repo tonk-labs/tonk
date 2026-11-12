@@ -15,7 +15,7 @@
 //!
 //! [`TonkState`]: crate::worker::TonkState
 
-use dialog_artifacts::Changes;
+use dialog_corpus::Changes;
 use tonk_common::log;
 
 use super::AppState;
@@ -349,10 +349,8 @@ pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Chang
                     .into_instructions()
                     .into_iter()
                     .map(|instruction| match instruction {
-                        dialog_artifacts::Instruction::Assert(artifact, _)
-                        | dialog_artifacts::Instruction::Retract(artifact) => {
-                            artifact.the.to_string()
-                        }
+                        dialog_corpus::Instruction::Assert(artifact, _)
+                        | dialog_corpus::Instruction::Retract(artifact) => artifact.the.to_string(),
                     })
                     .collect();
                 if !attributes.is_empty() {
@@ -392,7 +390,7 @@ pub(crate) mod tests {
     #![allow(missing_docs)]
 
     use super::*;
-    use dialog_artifacts::Statement;
+    use dialog_corpus::Statement;
     use dialog_query::{Attribute, Concept, Entity, the};
     use std::sync::Mutex;
 
@@ -427,8 +425,7 @@ pub(crate) mod tests {
         std::mem::take(&mut *PING_LOG.lock().unwrap())
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[dialog_capability::provider]
     impl dialog_capability::Provider<Ping> for CommandEnv {
         async fn execute(&self, command: Ping) {
             PING_LOG.lock().unwrap().push(command.tag.0);
@@ -636,8 +633,8 @@ pub(crate) mod tests {
                     .assert(&mut changes);
                 // One entity → its facts.
                 match changes.into_instructions().into_iter().next().unwrap() {
-                    dialog_artifacts::Instruction::Assert(a, _)
-                    | dialog_artifacts::Instruction::Retract(a) => vec![a],
+                    dialog_corpus::Instruction::Assert(a, _)
+                    | dialog_corpus::Instruction::Retract(a) => vec![a],
                 }
             };
             handler.run(&unrelated, &env).await;

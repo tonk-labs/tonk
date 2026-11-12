@@ -21,7 +21,7 @@
 // compile under `-D warnings`.
 #![allow(missing_docs)]
 
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_query::Attribute;
 use dialog_repository::SiteAddress;
 
@@ -436,7 +436,7 @@ pub mod sync {
 /// tab's latest location + route. Route models pick whichever of these they
 /// need (e.g. `replica`) as their own fields, so they resolve on the site entity.
 ///
-/// [`Entity`]: dialog_artifacts::Entity
+/// [`Entity`]: dialog_corpus::Entity
 pub mod site {
     use super::{Attribute, Entity};
 
@@ -1324,7 +1324,7 @@ pub mod command {
 
         /// `space/create-branch` — give a space a branch it does not have.
         pub mod create_branch {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The space (its subject DID) to make the branch in.
@@ -1354,7 +1354,7 @@ pub mod command {
 
         /// `space/remove` — drop a space from this device.
         pub mod remove_space {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The space to remove. Called what it is: the old
@@ -1561,7 +1561,7 @@ pub mod command {
         /// `member/expel` — revoke a member's access to a space.
         /// `library/install` — add a library component to the space.
         pub mod install_component {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The component (`tonk:library/<name>`): which library file.
@@ -1576,7 +1576,7 @@ pub mod command {
         }
 
         pub mod expel_member {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The DID the member's membership is keyed on.
@@ -1620,7 +1620,7 @@ pub mod command {
 
         /// `tonk/add-passkey` — seal the account under a second passkey.
         pub mod add_passkey {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The account to add a passkey to.
@@ -1639,7 +1639,7 @@ pub mod command {
         /// `tonk/forget-invite` — drop a space's invite row once its
         /// link has been copied.
         pub mod forget_invite {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The copy's timestamp, so each one is a distinct transient.
@@ -1656,7 +1656,7 @@ pub mod command {
         /// `space/replicate` — pull a space the account has but this
         /// device does not.
         pub mod replicate_space {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The space to pull, as its subject DID.
@@ -1678,7 +1678,7 @@ pub mod command {
 
         /// `intent/interpret` — what was typed in the command palette.
         pub mod intent_interpret {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The palette opening it belongs to: one per opening, made by
@@ -1705,7 +1705,7 @@ pub mod command {
 
         /// `site/select` — what the page in a tab has selected.
         pub mod site_select {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The tab's site entity (`window.tonk.context.site`).
@@ -2200,7 +2200,7 @@ pub mod credential {
 /// thing that happens to share the noun.
 pub mod invite {
     use super::Attribute;
-    use dialog_artifacts::Entity;
+    use dialog_corpus::Entity;
 
     /// Where this space's invite has got to.
     ///

@@ -12,7 +12,7 @@
 
 use std::path::Path;
 
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_effects::blob::BlobError as UpstreamBlobError;
 use dialog_query::Attribute;
 use dialog_reactor::BranchSession;
@@ -124,7 +124,7 @@ fn mime_for_extension(ext: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct Included {
     /// The content, named `asset:<hash>` by its hash.
-    pub asset: dialog_artifacts::Asset,
+    pub asset: dialog_corpus::Asset,
     /// MIME type inferred from the included path's extension.
     pub content_type: String,
     /// File name of the included path.
@@ -136,7 +136,7 @@ impl Included {
     /// same bytes always name the same entity, so re-evaluating an
     /// unchanged document changes nothing.
     pub fn new(path: &Path, bytes: Vec<u8>) -> Result<Self, BlobError> {
-        let asset = dialog_artifacts::Asset::new(bytes);
+        let asset = dialog_corpus::Asset::new(bytes);
         let entity = asset
             .entity()
             .map_err(|e| BlobError::Site(format!("name blob: {e}")))?;
@@ -158,7 +158,7 @@ impl Included {
 /// Assert an included asset on `transaction`, which stores its bytes when
 /// the transaction commits, along with the media type and name [`add`]
 /// asserts, so the seeded media view renders it.
-pub fn describe<B>(
+pub fn describe<B: dialog_repository::Line>(
     transaction: dialog_repository::Transaction<B>,
     blob: &Included,
 ) -> dialog_repository::Transaction<B> {
@@ -457,7 +457,7 @@ async fn claims_by_entity(
     Ok(claims
         .into_iter()
         .filter_map(|claim| match claim.is {
-            dialog_artifacts::Value::String(value) => Some((claim.of, value)),
+            dialog_corpus::Value::String(value) => Some((claim.of, value)),
             _ => None,
         })
         .collect())

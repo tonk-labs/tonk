@@ -569,7 +569,7 @@ mod tests {
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[dialog_common::test]
     async fn the_first_read_of_a_branch_re_installs_rules_stored_the_earlier_way() {
-        use dialog_artifacts::{ArtifactSelector, Entity, Pick, Value};
+        use dialog_corpus::{Entity, Pick, Selector, Value};
         use dialog_query::rule::DeductiveRuleDescriptor;
         use dialog_query::rule::statement::source_attr;
         use dialog_query::{AttributeStatement, Cardinality};
@@ -644,7 +644,7 @@ mod tests {
             async move {
                 handle
                     .claims()
-                    .select(ArtifactSelector::new().the(source_attr()).of(entity))
+                    .select(Selector::new().the(source_attr()).of(entity))
                     .perform(operator)
                     .await
                     .expect("the source selects")

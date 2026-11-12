@@ -17,7 +17,7 @@ use crate::common::{
 /// stops matching the row the instant *any* field is missing.
 async fn select_claims(test: &TestSite, the: &str) -> Result<Vec<dialog_query::Claim>> {
     use anyhow::anyhow;
-    use dialog_artifacts::Relation;
+    use dialog_corpus::Relation;
     use dialog_query::{AttributeQuery, Output as _, Term, attribute};
 
     let attr: Relation = the
@@ -30,7 +30,7 @@ async fn select_claims(test: &TestSite, the: &str) -> Result<Vec<dialog_query::C
         .query()
         .select(AttributeQuery::new(
             Term::from(the_term),
-            Term::<dialog_artifacts::Entity>::var("of"),
+            Term::<dialog_corpus::Entity>::var("of"),
             Term::<dialog_query::Any>::var("is"),
             Term::<attribute::Cause>::blank(),
             None,

@@ -167,8 +167,7 @@ pub(crate) async fn enroll_customer(
 /// A command's fields are scalars and a concept resolves only when every
 /// one is there, so "unset" is the empty string; an empty email means
 /// the account's recorded address.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::EnrollCustomer>
     for crate::router::CommandEnv
 {
@@ -200,8 +199,7 @@ impl dialog_capability::Provider<tonk_schema::command::EnrollCustomer>
 /// it never got there or refused it. `requested` does not promise a
 /// mail: the service rate limits sends and, so as not to say whether an
 /// account exists, answers a throttled request exactly like a sent one.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::ResendActivation>
     for crate::router::CommandEnv
 {
@@ -245,7 +243,7 @@ async fn request_resend(state: &AppState) -> Result<(), String> {
 /// the profile branch, never account data.
 async fn report_resend_activation(
     state: &AppState,
-    receipt: &dialog_artifacts::Entity,
+    receipt: &dialog_corpus::Entity,
     status: &str,
     detail: &str,
 ) {

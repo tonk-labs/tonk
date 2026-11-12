@@ -112,7 +112,7 @@ pub enum NoQueryEnv {}
 // the trait dispatch still inspects it. On wasm the trait is
 // `?Send`, so the bound is unneeded.
 #[cfg(not(target_arch = "wasm32"))]
-#[async_trait]
+#[dialog_capability::provider]
 impl<C: Command> Provider<C> for NoQueryEnv
 where
     C::Input: Send + 'static,
@@ -123,7 +123,7 @@ where
 }
 
 #[cfg(target_arch = "wasm32")]
-#[async_trait(?Send)]
+#[dialog_capability::provider]
 impl<C: Command> Provider<C> for NoQueryEnv
 where
     C::Input: 'static,

@@ -5,9 +5,9 @@
 // comments; suppress `missing_docs` like the sibling concept modules.
 #![allow(missing_docs)]
 
-use dialog_artifacts::{ArtifactSelector, Entity, Preload, Speculation, Value};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_corpus::{Entity, Preload, Selector, Speculation, Value};
 use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
@@ -94,6 +94,9 @@ where
         + Provider<Resolve>
         + Provider<Identify>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + Provider<Preload>
         + Provider<Speculation>
@@ -142,13 +145,16 @@ where
         + Provider<Resolve>
         + Provider<Identify>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
         + 'static,
 {
-    let selector = ArtifactSelector::new()
+    let selector = Selector::new()
         .the(DELEGATION_AUDIENCE.parse().ok()?)
         .of(entity.clone());
     let facts = account

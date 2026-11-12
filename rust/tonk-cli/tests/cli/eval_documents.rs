@@ -316,7 +316,7 @@ mod when_the_upstream_moves_during_a_write {
         publish(&test, &root).await?;
 
         let session = WriteSession::begin(&test.site, true).await;
-        let entity: dialog_artifacts::Entity = "id:page-elsewhere".parse()?;
+        let entity: dialog_corpus::Entity = "id:page-elsewhere".parse()?;
         upstream(&test)
             .await?
             .transaction()
