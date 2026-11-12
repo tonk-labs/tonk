@@ -2,8 +2,13 @@
 //!
 //! An agent is a space marked [`AgentSpace`]; what it can reach is the
 //! grants this profile issued to that space's DID, as retained in the
-//! profile or in the agent's own space. Nothing else is recorded: the
-//! list reads the delegations themselves, not a summary of them.
+//! profile or in the agent's own space. The list reads the delegations
+//! themselves, not a summary of them.
+//!
+//! The same mark also sits in the account directory, beside the space's
+//! directory row, so that every device of the account knows which spaces
+//! are agents. A device mounts a marked agent space it does not have yet,
+//! and that pulls the grants the space holds.
 use axum::{
     Json,
     extract::{Path, State},
@@ -102,6 +107,67 @@ pub(super) async fn spaces(tonk: &TonkState) -> Result<Vec<Did>, TonkWorkerError
         .collect())
 }
 
+/// The agent spaces the account directory marks.
+async fn directory_agents(tonk: &TonkState) -> Result<Vec<Did>, TonkWorkerError> {
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(failure)?;
+    let rows = session
+        .handle()
+        .query()
+        .select(Query::<AgentSpace> {
+            this: Term::var("this"),
+            kind: Term::from(tonk_schema::agent::agent_space_kind()),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(failure)?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| row.this.to_string().parse().ok())
+        .collect())
+}
+
+/// The account's agent spaces. An agent approved on another device is
+/// known here only by its directory mark, so it is mounted now. An agent
+/// space on this device without the directory mark gets it, so the other
+/// devices find it too.
+async fn agent_spaces(tonk: &TonkState) -> Result<Vec<Did>, TonkWorkerError> {
+    let marked = directory_agents(tonk).await?;
+    let mut mounted = spaces(tonk).await?;
+    for did in &marked {
+        if mounted.contains(did) {
+            continue;
+        }
+        match super::adopt::ensure_space_mounted(tonk, did.as_str()).await {
+            Ok(true) => mounted.push(did.clone()),
+            Ok(false) => tonk_common::log!("agent {did} is in the directory but cannot be mounted"),
+            Err(error) => tonk_common::log!("agent {did} could not be mounted: {error}"),
+        }
+    }
+    let mut agents = Vec::new();
+    let mut unmarked = Vec::new();
+    for did in mounted {
+        if marked.contains(&did) {
+            agents.push(did);
+        } else if is_agent(tonk, &did).await {
+            unmarked.push(did.clone());
+            agents.push(did);
+        }
+    }
+    // An agent made before the profile held the mark gets it now, so the
+    // other devices and the palette find it. The listing stands either way.
+    if let Err(error) = mark_on_profile(tonk, &unmarked).await {
+        tonk_common::log!("agents: the profile did not take the agent marks: {error}");
+    }
+    Ok(agents)
+}
+
 /// Whether the space at `did` carries the agent-space mark.
 pub(super) async fn is_agent(tonk: &TonkState, did: &Did) -> bool {
     let Ok(session) = tonk
@@ -129,15 +195,11 @@ pub(super) async fn is_agent(tonk: &TonkState, did: &Did) -> bool {
 /// The agent space at routing key `key`, when it is one of this
 /// account's spaces and carries the agent-space mark.
 pub(super) async fn find(tonk: &TonkState, key: &str) -> Result<Did, TonkWorkerError> {
-    let agent = spaces(tonk)
+    agent_spaces(tonk)
         .await?
         .into_iter()
         .find(|did| did.repo_key() == key)
-        .ok_or_else(|| TonkWorkerError::NotFound(format!("no agent {key}")))?;
-    if !is_agent(tonk, &agent).await {
-        return Err(TonkWorkerError::NotFound(format!("no agent {key}")));
-    }
-    Ok(agent)
+        .ok_or_else(|| TonkWorkerError::NotFound(format!("no agent {key}")))
 }
 
 /// The name the agent space `agent` gives `space` in its directory.
@@ -273,14 +335,11 @@ pub(super) async fn grants(
 pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<AgentSummary>>, TonkWorkerError> {
-    let tonk = state.read().await;
+    // A clone, not a guard: an agent space another device approved is
+    // mounted here, which pulls it over the network.
+    let tonk = state.read().await.clone();
     let mut agents = Vec::new();
-    let mut marked = Vec::new();
-    for did in spaces(&tonk).await? {
-        if !is_agent(&tonk, &did).await {
-            continue;
-        }
-        marked.push(did.clone());
+    for did in agent_spaces(&tonk).await? {
         let mut by_space =
             std::collections::BTreeMap::<String, (Did, bool, Option<u64>, bool)>::new();
         for (chain, _, issued) in grants(&tonk, &did).await? {
@@ -323,11 +382,6 @@ pub async fn list(
             did,
             spaces,
         });
-    }
-    // An agent made before the profile held the mark gets it now, so the
-    // palette can name it. The listing stands whether or not it lands.
-    if let Err(error) = mark_on_profile(&tonk, &marked).await {
-        tonk_common::log!("agents: the profile did not take the agent marks: {error}");
     }
     Ok(Json(agents))
 }
@@ -425,6 +479,8 @@ pub async fn revoke(
         ));
     }
     if !leaves.is_empty() {
+        // A space granted on another device may not be on this one yet.
+        super::adopt::mount_on_first_use(&tonk, &state, request.space.repo_key()).await;
         revoke_issued(&tonk, &agent, &request.space, leaves).await?;
     }
     if links.is_empty() {
@@ -669,6 +725,12 @@ mod tests {
             vec![("Notes".into(), "read"), ("Plans".into(), "write")]
         );
 
+        // Listing marks the agent in the directory for the other devices.
+        assert_eq!(
+            directory_agents(&*state.read().await).await?,
+            vec![agent.clone()]
+        );
+
         // A revocation's witness path is the issuer's proof for the space
         // with the grant on its end.
         let tonk = state.read().await;
@@ -767,6 +829,49 @@ mod tests {
             "the link's grant stays listed"
         );
         assert_eq!(agents[0].spaces.len(), 3);
+        Ok(())
+    }
+
+    /// An agent approved on another device is known here only by its
+    /// directory row and mark. Listing mounts it and lists it.
+    #[dialog_common::test]
+    async fn it_lists_an_agent_another_device_approved() -> anyhow::Result<()> {
+        use dialog_repository::SiteAddress;
+
+        let state = crate::router::command::tests::native::test_state().await;
+        let agent = Ed25519Signer::generate().await?.did();
+        let address = SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
+            "https://sync.example.test/ucan/",
+        ));
+        let configuration = super::super::repository::RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                super::super::repository::RemoteConfiguration::new(address).subject(agent.clone()),
+            )
+            .branch(
+                "main",
+                super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
+            );
+        {
+            let tonk = state.read().await;
+            super::super::repository::record_space_mount(
+                &tonk,
+                &agent,
+                &configuration,
+                Some("Claude"),
+            )
+            .await;
+            mark_on_profile(&tonk, std::slice::from_ref(&agent)).await?;
+            assert!(!super::super::join::find_replica_for_subject(&tonk, &agent).await?);
+        }
+
+        let Json(agents) = list(State(state.clone())).await?;
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].did, agent);
+        assert!(
+            super::super::join::find_replica_for_subject(&*state.read().await, &agent).await?,
+            "listing mounts the agent space, which pulls its grants"
+        );
         Ok(())
     }
 }
