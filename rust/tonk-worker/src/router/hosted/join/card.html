@@ -4,150 +4,33 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Join a Tonk space</title>
+    <!-- tonk:in-agent -->
     <style>
-      /* The ask card of Tonk's in-agent system (gooey in-agent/in-agent.css):
-         ink fills the host's container; tokens live on .tonk. */
+      /* What only the join card draws; everything else is the in-agent
+         stylesheet spliced in above. */
       html,
       body {
         margin: 0;
         background: transparent;
       }
-      .tonk {
-        --tonk-ink: #38182a;
-        --tonk-ink-soft: #5b4953;
-        --tonk-paper: #f7f6f5;
-        --tonk-rule: #c5babf;
-        --tonk-fg: var(--tonk-ink);
-        --tonk-fg-soft: var(--tonk-ink-soft);
-        --tonk-bg: var(--tonk-paper);
-        --tonk-line: var(--tonk-rule);
-        --tonk-tag: rgb(56 24 42 / 10%);
-        --tonk-wash: rgb(56 24 42 / 6%);
-        --tonk-wash-press: rgb(56 24 42 / 12%);
-        --tonk-wash-solid: rgb(247 246 245 / 16%);
-        --tonk-cond: 'IBM Plex Sans Condensed', 'Arial Narrow', sans-serif;
-        --tonk-pad: 12px;
-        --tonk-line-h: 30px;
-        box-sizing: border-box;
-        display: flex;
-        flex-direction: column;
-        background: var(--tonk-bg);
-        color: var(--tonk-fg);
-        font: 400 14px/1.35 var(--tonk-cond);
-        -webkit-font-smoothing: antialiased;
-      }
-      .tonk *,
-      .tonk *::before,
-      .tonk *::after {
-        box-sizing: border-box;
-      }
-      .tonk--ask {
-        --tonk-fg: var(--tonk-paper);
-        --tonk-fg-soft: #c9bec4;
-        --tonk-bg: var(--tonk-ink);
-        --tonk-line: rgb(247 246 245 / 22%);
-        --tonk-tag: rgb(247 246 245 / 18%);
-        --tonk-wash: rgb(247 246 245 / 10%);
-        --tonk-wash-press: rgb(247 246 245 / 18%);
-        --tonk-wash-solid: rgb(56 24 42 / 14%);
-      }
-      .tonk--tell {
-        box-shadow: inset 0 3px 0 var(--tonk-ink);
-        padding-top: 3px;
-      }
       .tonk[hidden] {
         display: none;
       }
-      .tonk-disc {
-        flex: none;
-        display: inline-block;
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        background: var(--tonk-fg);
-      }
-      .tonk-disc[data-state='hollow'] {
-        background: none;
-        box-shadow: inset 0 0 0 1.5px var(--tonk-fg);
-      }
-      .tonk-disc[data-state='saving'] {
-        background: linear-gradient(90deg, var(--tonk-fg) 50%, transparent 50%);
-        box-shadow: inset 0 0 0 1.5px var(--tonk-fg);
-        animation: tonk-turn 1.2s linear infinite;
-      }
-      .tonk-disc[data-state='broken'] {
-        background: none;
-        border: 1.5px dashed var(--tonk-fg);
-      }
-      @keyframes tonk-turn {
-        to {
-          rotate: 1turn;
-        }
-      }
-      @media (prefers-reduced-motion: reduce) {
-        .tonk-disc[data-state='saving'] {
-          animation: none;
-        }
-      }
-      .tonk-head {
-        min-height: var(--tonk-line-h);
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 0 4px 0 var(--tonk-pad);
-        font-size: 13px;
-        white-space: nowrap;
-      }
-      .tonk-space {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        font-weight: 600;
-      }
-      .tonk-role {
-        flex: none;
-        margin-left: auto;
-        padding-right: 8px;
-        color: var(--tonk-fg-soft);
-      }
-      .tonk-say {
-        margin: 0;
-        padding: 6px var(--tonk-pad) 2px;
-        font-size: 15px;
-        text-wrap: pretty;
-      }
-      .tonk--ask .tonk-say {
-        font-size: 16px;
-        font-weight: 600;
-        line-height: 1.25;
-        text-wrap: balance;
-      }
-      .tonk-ledger {
-        margin: 0;
-        padding: 6px var(--tonk-pad) 8px;
-        display: grid;
-        grid-template-columns: minmax(72px, 104px) minmax(0, 1fr);
-        gap: 2px 10px;
-        font-size: 13px;
-      }
-      .tonk-ledger dt {
-        color: var(--tonk-fg-soft);
-      }
-      .tonk-ledger dd {
-        margin: 0;
-        overflow-wrap: anywhere;
+      /* empty, it leaves the row but stays a live region, so "saving" is
+         announced */
+      .tonk-head .tonk-receipt:empty {
+        position: absolute;
       }
       .tonk-choice {
         margin: 0;
-        padding: 0 var(--tonk-pad) 6px;
+        padding: 0 var(--in-agent-pad) 6px;
         border: 0;
         display: grid;
         gap: 4px;
       }
       .tonk-choice legend {
         padding: 0 0 2px;
-        color: var(--tonk-fg-soft);
-        font-size: 13px;
+        color: var(--tonk-text-soft);
       }
       .tonk-option {
         display: grid;
@@ -155,120 +38,36 @@
         align-items: baseline;
         gap: 6px;
         padding: 5px 8px;
-        border-radius: 6px;
-        box-shadow: inset 0 0 0 1px var(--tonk-line);
+        border-radius: var(--tonk-radius-control);
+        box-shadow: inset 0 0 0 1px var(--tonk-rule);
         cursor: pointer;
       }
-      .tonk-option:hover {
-        background: var(--tonk-wash);
+      @media (hover: hover) and (pointer: fine) {
+        .tonk-option:hover {
+          background: var(--tonk-wash);
+        }
+        .tonk-option:has(input:disabled):hover {
+          background: none;
+        }
       }
       .tonk-option:has(input:checked) {
-        box-shadow: inset 0 0 0 1.5px var(--tonk-fg);
+        box-shadow: inset 0 0 0 1.5px var(--tonk-text);
       }
       .tonk-option:has(input:disabled) {
-        opacity: 0.45;
+        color: var(--tonk-text-disabled);
         cursor: not-allowed;
-      }
-      .tonk-option:has(input:disabled):hover {
-        background: none;
       }
       .tonk-option input {
         margin: 0;
-        accent-color: var(--tonk-paper);
+        accent-color: var(--tonk-text);
       }
       .tonk-option b {
         font-weight: 600;
       }
       .tonk-option span span {
-        color: var(--tonk-fg-soft);
-      }
-      .tonk-fine {
-        margin: 0;
-        padding: 0 var(--tonk-pad) 8px;
-        color: var(--tonk-fg-soft);
-        font-size: 12.5px;
-        text-wrap: pretty;
-      }
-      .tonk-acts {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 6px 8px;
-        padding: 4px var(--tonk-pad) var(--tonk-pad);
-      }
-      .tonk-btn {
-        appearance: none;
-        height: 30px;
-        display: inline-flex;
-        align-items: center;
-        padding: 0 12px;
-        border: 0;
-        border-radius: 6px;
-        background: var(--tonk-fg);
-        color: var(--tonk-bg);
-        font: inherit;
-        font-size: 14px;
-        white-space: nowrap;
-        cursor: pointer;
-        transition:
-          scale 150ms ease,
-          background-color 150ms ease;
-      }
-      .tonk-btn:hover {
-        background-image: linear-gradient(var(--tonk-wash-solid), var(--tonk-wash-solid));
-      }
-      .tonk-btn:active {
-        scale: 0.96;
-      }
-      .tonk-btn--ring {
-        background: transparent;
-        color: var(--tonk-fg);
-        box-shadow: inset 0 0 0 1px var(--tonk-fg);
-      }
-      .tonk-btn--ring:hover {
-        background: var(--tonk-wash);
-        background-image: none;
-      }
-      .tonk-btn[disabled] {
-        opacity: 0.45;
-        cursor: not-allowed;
-        scale: 1;
-      }
-      .tonk :focus-visible {
-        outline: 2px solid var(--tonk-fg);
-        outline-offset: 2px;
-      }
-      .tonk-bot {
-        display: inline-block;
-        margin-left: 4px;
-        padding: 0 3px;
-        border-radius: 3px;
-        background: var(--tonk-tag);
-        color: var(--tonk-fg);
-        font: 500 11px/15px var(--tonk-cond);
-        letter-spacing: 0.02em;
-        vertical-align: 1px;
-        white-space: nowrap;
-      }
-      .tonk-strip {
-        flex-direction: row;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 2px 6px;
-        min-height: var(--tonk-line-h);
-        padding: 4px var(--tonk-pad);
-        font-size: 13px;
-      }
-      .tonk-strip .tonk-receipt {
-        flex: 1;
+        color: var(--tonk-text-soft);
       }
       @media (pointer: coarse) {
-        .tonk-btn {
-          height: 44px;
-        }
-        .tonk-head {
-          min-height: 40px;
-        }
         .tonk-option {
           padding: 10px 8px;
         }
@@ -286,14 +85,15 @@
   </head>
   <body>
     <section class="tonk tonk-strip" id="wait" aria-label="Tonk">
-      <span class="tonk-disc" data-state="hollow"></span>
+      <span class="tonk-disc" data-state="hollow" role="img" aria-label="local only" title="local only"></span>
       <span class="tonk-receipt">reading the invitation</span>
     </section>
 
     <form class="tonk tonk--ask" id="ask" hidden>
       <header class="tonk-head">
-        <span class="tonk-disc" data-state="hollow"></span>
+        <span class="tonk-disc" data-state="hollow" role="img" aria-label="local only" title="local only"></span>
         <span class="tonk-space" data-name></span>
+        <span class="tonk-receipt" role="status"></span>
         <span class="tonk-role">invitation</span>
       </header>
       <p class="tonk-say">Let <span data-agent></span><span class="tonk-bot">bot</span> join <span data-name></span></p>
@@ -325,14 +125,13 @@
       </div>
     </form>
 
-    <section class="tonk tonk-strip" id="done" hidden aria-live="polite">
-      <span class="tonk-disc"></span>
-      <span class="tonk-receipt"></span>
+    <section class="tonk tonk-strip" id="done" hidden>
+      <span class="tonk-disc" role="img" aria-label="synced" title="synced"></span>
+      <span class="tonk-receipt" role="status"></span>
     </section>
 
     <section class="tonk tonk--tell" id="tell" hidden role="alert">
       <header class="tonk-head">
-        <span class="tonk-disc" data-state="broken"></span>
         <span class="tonk-space" data-name></span>
         <span class="tonk-role">not joined</span>
       </header>
@@ -376,10 +175,18 @@
         function fill(selector, text) {
           for (const each of document.querySelectorAll(selector)) each.textContent = text;
         }
-        function strip(text, state) {
-          const disc = done.querySelector('.tonk-disc');
-          if (state) disc.dataset.state = state;
-          else delete disc.dataset.state;
+        // The disc's three states, each named for screen readers: filled
+        // (connected and synced, also while a save goes through), hollow
+        // (local only) and paused.
+        const DISC = { filled: 'synced', hollow: 'local only', paused: 'paused' };
+        function disc(element, state, label) {
+          if (state === 'filled') delete element.dataset.state;
+          else element.dataset.state = state;
+          element.setAttribute('aria-label', label || DISC[state]);
+          element.title = label || DISC[state];
+        }
+        function strip(text, state = 'filled') {
+          disc(done.querySelector('.tonk-disc'), state);
           done.querySelector('.tonk-receipt').replaceChildren(...text);
           show(done);
         }
@@ -453,7 +260,9 @@
             agent = offer.agent?.name || 'Your agent',
             words = access === 'write' ? 'read and write' : 'read';
           for (const control of ask.elements) control.disabled = true;
-          ask.querySelector('.tonk-disc').dataset.state = 'saving';
+          // Saving is a filled disc and the word, not a spinner.
+          disc(ask.querySelector('.tonk-disc'), 'filled', 'saving');
+          ask.querySelector('.tonk-head .tonk-receipt').textContent = 'saving';
           try {
             const result = await rpc('tools/call', {
               name: 'tonk_join_accept',
@@ -471,7 +280,8 @@
           } catch (error) {
             for (const control of ask.elements) control.disabled = false;
             choose();
-            ask.querySelector('.tonk-disc').dataset.state = 'hollow';
+            disc(ask.querySelector('.tonk-disc'), 'hollow');
+            ask.querySelector('.tonk-head .tonk-receipt').textContent = '';
             problem(String(error?.message || error), true);
           }
         });

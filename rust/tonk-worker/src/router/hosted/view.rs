@@ -186,7 +186,7 @@ pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
     }
     let origin = origin.trim_end_matches('/');
     let connect = connect_domains(origin);
-    let html = RELAY
+    let html = super::in_agent::splice(RELAY, origin)
         .replace("__TONK_MCP_ORIGIN__", &json!(origin).to_string())
         .replace("__TONK_VIEW_FRAME__", "false");
     Some(json!({
