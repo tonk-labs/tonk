@@ -1,0 +1,13 @@
+/* Vendored unchanged from gooey (github.com/tonk-labs/gooey) at 406b6d7db17477fe7a5b071b3aa59c248c45d5e6, path in-browser/fonts.css. Change it in gooey first, then copy it here byte for byte below this header. */
+/* =============================================================================
+   in-browser · fonts.css — the faces Tonk's own pages use, served from
+   tonk.network, so nothing on an account or consent page loads from a third
+   party. The files are in-agent's: IBM Plex, latin subset, woff2, with their
+   licence in ../in-agent/fonts/OFL.txt. Each page preloads the three it draws
+   first (Condensed 500 and 600, Sans 400).
+============================================================================= */
+@font-face { font-family: "IBM Plex Sans Condensed"; font-style: normal; font-weight: 400; font-display: swap; src: url("../in-agent/fonts/ibm-plex-sans-condensed-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Sans Condensed"; font-style: normal; font-weight: 500; font-display: swap; src: url("../in-agent/fonts/ibm-plex-sans-condensed-latin-500-normal.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Sans Condensed"; font-style: normal; font-weight: 600; font-display: swap; src: url("../in-agent/fonts/ibm-plex-sans-condensed-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400; font-display: swap; src: url("../in-agent/fonts/ibm-plex-sans-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("../in-agent/fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2"); }
