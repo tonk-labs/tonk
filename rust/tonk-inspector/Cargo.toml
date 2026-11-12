@@ -1,6 +1,6 @@
 [package]
 name = "tonk-inspector"
-description = "<tonk-inspector> custom element — a notebook-style scratch editor over a branch."
+description = "<tonk-notebook> custom element: a prose document whose dialog fences are live query cells."
 version.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -13,7 +13,6 @@ crate-type = ["cdylib", "rlib"]
 web = []
 
 [dependencies]
-bs58 = { workspace = true }
 dialog-artifacts = { workspace = true }
 custom-elements = { workspace = true }
 js-sys = { workspace = true }
@@ -25,7 +24,6 @@ wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
     "console",
-    "Clipboard",
     "CustomElementRegistry",
     "CustomEvent",
     "CustomEventInit",
@@ -42,7 +40,6 @@ web-sys = { workspace = true, features = [
     "Location",
     "MutationObserver",
     "MutationObserverInit",
-    "Navigator",
     "Node",
     "NodeList",
     "Request",

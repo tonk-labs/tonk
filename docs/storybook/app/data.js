@@ -830,7 +830,7 @@ window.STORYBOOK_DATA = {
       "gaps": "Top-level real-browser route matrix, configured-upstream probe, and interactive behavior beyond headless render.",
       "group": "Browser shell and runtime",
       "id": "UI-04",
-      "title": "Open a space home, explicit rendered route, or /inspector.",
+      "title": "Open a space home, explicit rendered route, or an installed /console/inspector.",
       "variants": "Blank/configured home; missing view/entity; local/remote; unauthorized; named-space/profile inspector."
     },
     {

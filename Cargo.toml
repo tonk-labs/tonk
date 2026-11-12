@@ -35,7 +35,6 @@ members = [
   "rust/tonk-schema",
   "rust/tonk-table",
   "rust/tonk-template",
-  "rust/tonk-tree",
   "rust/tonk-ui",
   "rust/tonk-worker",
   "rust/tonk-worker-api",
@@ -80,7 +79,6 @@ tonk-router = { path = "./rust/tonk-router" }
 tonk-schema = { path = "./rust/tonk-schema" }
 tonk-table = { path = "./rust/tonk-table" }
 tonk-template = { path = "./rust/tonk-template" }
-tonk-tree = { path = "./rust/tonk-tree" }
 tonk-ui = { path = "./rust/tonk-ui" }
 tonk-worker = { path = "./rust/tonk-worker" }
 tonk-worker-api = { path = "./rust/tonk-worker-api" }

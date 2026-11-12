@@ -45,7 +45,7 @@ use crate::blocks::{
     sort_by_key, split, title_of,
 };
 use crate::cell_output::render as render_result;
-use crate::element::{evaluate, reflect_string, resolve_context};
+use crate::host::{evaluate, reflect_string, resolve_context};
 
 /// The language pack a cell's editor uses — the id `<tonk-code>` resolves a
 /// grammar by (`tonk-code/assets/tonk-code-lang-dialog-yaml.js`).
@@ -127,10 +127,9 @@ const OUTPUT_CSS: &str = r#"
  */
 /* The palette itself, ON the element.
  *
- * `styles.css` declares these roles on `.query-notation` — a container the
- * inspector provides and a cell's output does not — so every
- * `var(--tonk-code-*)` here resolved to nothing and fell back to inherited
- * grey. Declaring them on `tonk-notation` makes the element carry its own
+ * `styles.css` declares these roles in the light DOM, which does not reach
+ * this shadow root, so every `var(--tonk-code-*)` here resolved to nothing
+ * and fell back to inherited grey. Declaring them on `tonk-notation` makes the element carry its own
  * colours wherever it is mounted, which is what a passive renderer should
  * do.
  *

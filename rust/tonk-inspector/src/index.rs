@@ -21,6 +21,8 @@ use web_sys::{CustomEvent, Element, HtmlElement};
 
 use custom_elements::CustomElement;
 
+use crate::host::evaluate;
+
 /// One notebook the switcher can offer.
 struct Candidate {
     title: String,
@@ -313,7 +315,7 @@ impl CustomElement for TonkNotebookIndexElement {
             };
             let target = creating.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                match crate::element::evaluate(&target, &notation, true).await {
+                match evaluate(&target, &notation, true).await {
                     Ok(_) => {
                         TonkNotebookIndexElement::navigate(&format!("notebook/{entity}"));
                     }
