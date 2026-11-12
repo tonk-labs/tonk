@@ -9,7 +9,7 @@ use dialog_query::Concept;
 use dialog_varsig::Did;
 use serde::Serialize;
 
-use crate::domain::membership::{Invitation, Kind, Member, Name, Role, Subject};
+use crate::domain::membership::{Invitation, Inviter, Kind, Member, Name, Role, Subject};
 use crate::prelude::*;
 
 /// A membership — an account is a member of a repository.
@@ -182,6 +182,34 @@ impl MemberName {
     }
 }
 
+/// Who brought a member in: the account that issued the invite the
+/// member joined through, derived from the invite's chain (see
+/// [`inviting_account`](crate::inviting_account)). A standalone fact on
+/// the membership entity, beside [`InvitedVia`], which names the
+/// invitation itself.
+///
+/// For an agent that joined through someone's link, this is the person
+/// it traces back to: "joined via Jack's link". First-wins, like
+/// [`InvitedVia`]: it answers how a member first got in. Not stamped on
+/// a member who claims an invite they issued.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InvitedBy {
+    /// The membership entity being stamped.
+    pub this: Entity,
+    /// The inviting account's DID.
+    pub inviter: Inviter,
+}
+
+impl InvitedBy {
+    /// Stamp `membership` as brought in by `inviter`.
+    pub fn new(membership: Entity, inviter: &Did) -> Self {
+        Self {
+            this: membership,
+            inviter: Inviter(inviter.this()),
+        }
+    }
+}
+
 /// Marks a member as an agent rather than a person. A standalone fact
 /// on the membership entity, like [`MemberRole`] and [`MemberName`], so
 /// the base [`Membership`] query stays uniform.
@@ -226,6 +254,15 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    fn it_stamps_who_invited_a_member() {
+        let membership = Membership::new(did!("test:m"), did!("test:r"));
+        let inviter = did!("test:inviter");
+        let stamp = InvitedBy::new(membership.this().clone(), &inviter);
+        assert_eq!(stamp.this, *membership.this());
+        assert_eq!(stamp.inviter.0, inviter.this());
+    }
 
     #[dialog_common::test]
     fn it_stamps_a_membership_as_an_agent() {
