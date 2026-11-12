@@ -59,7 +59,9 @@ pub(crate) fn build_query_application(
             // Queries don't carry durability — unwrap the plain
             // dialog descriptor from the durability-tagged
             // [`ConceptDefinition`].
-            let descriptor = resolved.descriptor.concept().clone();
+            let descriptor = tonk_schema::builtin::query_descriptor(&resolved, |field| {
+                query.fields.iter().any(|f| f.name == field)
+            });
             let this_term = this_term_for_query(&this);
             let mut terms = Parameters::new();
             let mut join: Vec<ConceptQuery> = Vec::new();

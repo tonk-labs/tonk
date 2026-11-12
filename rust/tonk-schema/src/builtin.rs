@@ -71,6 +71,48 @@ fn build_registry() -> Vec<(&'static str, ConceptDefinition)> {
     ]
 }
 
+/// The descriptor a read of `definition` should plan against.
+///
+/// For every concept this is its own descriptor. The built-in `view` is
+/// narrowed: `style` and `font` are keyed collections, and a keyed
+/// collection is a scan with one row per entry, so an entity with no
+/// entries yields no row and the whole match is dropped. Left required,
+/// a bare `view:` matched only a view that declared both a style and a
+/// font, and `optional` is refused on a collection by dialog. A query
+/// that does not name them therefore leaves them out, so a view is
+/// found by what makes it a view (`show`); one that does name them
+/// keeps them and means "has at least one".
+///
+/// Writes are not narrowed: `view!:` still needs every field to be
+/// assertable, and the renderer reads `style` and `font` through its
+/// own queries for the same reason.
+pub fn query_descriptor(
+    definition: &ConceptDefinition,
+    mentions: impl Fn(&str) -> bool,
+) -> DialogConceptDescriptor {
+    let full = definition.descriptor.concept().clone();
+    let view: Entity = "db:view".parse().expect("`db:view` is a valid entity URI");
+    if definition.entity != view {
+        return full;
+    }
+    let omitted: Vec<&str> = ["style", "font"]
+        .into_iter()
+        .filter(|field| !mentions(field))
+        .collect();
+    if omitted.is_empty() {
+        return full;
+    }
+    let Ok(mut json) = serde_json::to_value(&full) else {
+        return full;
+    };
+    if let Some(with) = json.get_mut("with").and_then(|with| with.as_object_mut()) {
+        for field in omitted {
+            with.remove(field);
+        }
+    }
+    serde_json::from_value(json).unwrap_or(full)
+}
+
 /// Built-in `concept` view — the concept-of-concept descriptor.
 ///
 /// Resolves to the sentinel descriptor whose `this()` triggers
