@@ -200,26 +200,25 @@ web-sys = { version = "0.3" }
 # Dialog DB
 # 0.4.0-rc.8: a pull says how much it downloads (dialog-db#775), on top
 # of the corpus rename (#768), node reads through the environment (#755)
-# and pinned reads (#758). Pinned to the commit the release was prepared
-# at until the `v0.4.0-rc.8` tag exists; then `tag = "v0.4.0-rc.8"`.
-dialog-corpus = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "116b35996d6eddad3e317e858351db4b305172e7", version = "0.4.0-rc.8" }
+# and pinned reads (#758).
+dialog-corpus = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.8", version = "0.4.0-rc.8" }
 
 [profile.dev]
 opt-level = 1
