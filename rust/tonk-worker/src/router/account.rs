@@ -364,9 +364,7 @@ async fn write_link_row(
 ) -> Option<std::sync::Arc<dialog_reactor::BranchState>> {
     use tonk_schema::{AccountLink, prelude::DidExt as _};
 
-    let this = AccountLink::ENTITY
-        .parse::<dialog_artifacts::Entity>()
-        .ok()?;
+    let this = AccountLink::ENTITY.parse::<dialog_corpus::Entity>().ok()?;
     let linked = account_link(state).await.map(|chain| chain.issuer().this());
     let main = match state
         .reactor

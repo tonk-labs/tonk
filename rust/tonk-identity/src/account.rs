@@ -196,24 +196,21 @@ impl LoadAccount {
 /// only where that fetch exists.
 pub struct Crypto;
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<CreateAccount> for Crypto {
     async fn execute(&self, input: CreateAccount) -> anyhow::Result<Account> {
         seal_under(&input.0, AccountSecret::generate()?).await
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<AdoptAccount> for Crypto {
     async fn execute(&self, input: AdoptAccount) -> anyhow::Result<Account> {
         seal_under(&input.0, input.1).await
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<ImportAccount> for Crypto {
     async fn execute(&self, input: ImportAccount) -> anyhow::Result<Account> {
         open_under(&input.0, input.1).await
@@ -221,8 +218,7 @@ impl dialog_capability::Provider<ImportAccount> for Crypto {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<LoadAccount> for Crypto {
     async fn execute(&self, input: LoadAccount) -> anyhow::Result<Option<Account>> {
         let signer = input.0.signer().await?;

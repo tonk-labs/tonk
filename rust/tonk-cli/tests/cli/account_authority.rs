@@ -613,7 +613,10 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
     let owner_view = tonk_cli::account_state::open_account_branch(&owner.profile, owner_operator)
         .await?
         .expect("the owner's account is hydrated");
-    owner_view.pull().perform(owner_operator).await?;
+    owner_view
+        .pull(dialog_repository::Download::MinimalRanges)
+        .perform(owner_operator)
+        .await?;
     let observed = owner_view
         .delegations()
         .prove(account_root.clone(), union_scope())
@@ -724,7 +727,10 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
     .await?;
 
     // The pull IS the recovery.
-    second_account.pull().perform(second_operator).await?;
+    second_account
+        .pull(dialog_repository::Download::MinimalRanges)
+        .perform(second_operator)
+        .await?;
     // Prove from the ACCESS branch, which is where the operator resolves
     // proofs at runtime — proving from the account branch alone would show
     // the data arrived without showing it is usable.

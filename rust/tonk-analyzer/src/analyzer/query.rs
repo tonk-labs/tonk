@@ -3,7 +3,7 @@
 //! parser rejects that), so the head intent here is just
 //! [`ThisIntent`] with no name to publish.
 
-use dialog_artifacts::Value;
+use dialog_corpus::Value;
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
 use tonk_notation::{Application as SyntaxApplication, Field, HeadName};
 

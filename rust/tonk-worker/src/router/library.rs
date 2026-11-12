@@ -185,8 +185,7 @@ pub(super) fn component_url(component: &str) -> Option<String> {
 /// the installed one up to the shipped version. Like the space's seed, a
 /// component is recorded and upgraded on mount; unlike it, a space can have
 /// several (see `repository::install_component`).
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::InstallComponent>
     for crate::router::CommandEnv
 {

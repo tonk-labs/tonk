@@ -22,7 +22,7 @@
 
 use std::sync::OnceLock;
 
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
 
 use crate::concept::{command_of_command_descriptor, concept_of_concept_descriptor};

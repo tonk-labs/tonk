@@ -90,8 +90,7 @@ pub async fn plan(
     Ok(Json(load_plan(&state).await?))
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::DeleteAccount>
     for crate::router::CommandEnv
 {

@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use dialog_artifacts::{Entity, Value};
+use dialog_corpus::{Entity, Value};
 use dialog_query::{Term, Type, attribute::The as AttributeRelation};
 use tonk_notation::{FieldValue, Scalar};
 
@@ -141,7 +141,7 @@ pub(crate) fn field_value_to_term(
             }
         }
         FieldValue::Uri(uri) => {
-            let entity: Entity = uri.parse().map_err(|e: dialog_artifacts::IdentityError| {
+            let entity: Entity = uri.parse().map_err(|e: dialog_corpus::IdentityError| {
                 AnalyzeError::at(
                     AnalyzeErrorKind::InvalidSubjectUri {
                         subject: uri.clone(),

@@ -7,7 +7,7 @@ use ::axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use dialog_artifacts::{ArtifactSelector, Entity, Relation, Value};
+use dialog_corpus::{Entity, Relation, Selector, Value};
 use dialog_effects::blob::BlobError;
 use dialog_repository::{Blob, CommitError, RepositoryExt as _};
 use futures_util::{StreamExt as _, stream};
@@ -153,7 +153,7 @@ async fn first_text(
         .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
     let stream = branch
         .claims()
-        .select(ArtifactSelector::new().the(attribute).of(entity.clone()))
+        .select(Selector::new().the(attribute).of(entity.clone()))
         .perform(operator)
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("metadata query: {e}")))?;
@@ -300,13 +300,13 @@ pub async fn upload(
             the: media_type_attr,
             of: entity.clone(),
             is: Value::String(content_type.clone()),
-            policy: dialog_artifacts::Pick::Last,
+            policy: dialog_corpus::Pick::Last,
         })
         .assert(RawClaim {
             the: name_attr,
             of: entity.clone(),
             is: Value::String(name.clone()),
-            policy: dialog_artifacts::Pick::Last,
+            policy: dialog_corpus::Pick::Last,
         });
     tx.commit()
         .perform(&tonk.operator)
@@ -807,7 +807,7 @@ fn internal(error: impl std::fmt::Display) -> TonkWorkerError {
 }
 #[derive(Deserialize)]
 struct Media {
-    entity: dialog_artifacts::Entity,
+    entity: dialog_corpus::Entity,
     url: String,
 }
 
@@ -821,7 +821,7 @@ fn bundled_media() -> Result<Vec<Media>, TonkWorkerError> {
 async fn import_blob(
     tonk: &TonkState,
     branch: &dialog_repository::Branch,
-    expected: &dialog_artifacts::Entity,
+    expected: &dialog_corpus::Entity,
     bytes: Vec<u8>,
 ) -> Result<(), TonkWorkerError> {
     // Verify before writing anything, including the branch's blob index.
@@ -846,7 +846,7 @@ async fn hydrate_media(
     state: &AppState,
     key: &str,
     branch_name: &str,
-    entity: &dialog_artifacts::Entity,
+    entity: &dialog_corpus::Entity,
 ) -> Result<(), TonkWorkerError> {
     // By hash: older Welcome spaces name their images `blob:<hash>`, and
     // dialog now names content `asset:<hash>`.
@@ -909,7 +909,7 @@ async fn media_branch(
 async fn has_media(
     tonk: &TonkState,
     branch: &dialog_repository::Branch,
-    entity: &dialog_artifacts::Entity,
+    entity: &dialog_corpus::Entity,
 ) -> Result<bool, TonkWorkerError> {
     match Blob::from(entity.clone())
         .read(branch.blobs())

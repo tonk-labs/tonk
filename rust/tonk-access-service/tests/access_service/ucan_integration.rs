@@ -12,8 +12,8 @@
 #![cfg(feature = "integration-tests")]
 
 use anyhow::Context as _;
-use dialog_artifacts::{ArtifactSelector, Entity};
 use dialog_capability::access::AuthorizeError;
+use dialog_corpus::{Entity, Selector};
 use dialog_peer::helpers::{test_session_with_peer, unique_name};
 use dialog_query::Attribute;
 use dialog_remote_ucan::UcanAddress;
@@ -78,13 +78,16 @@ async fn it_pushes_and_pulls_via_ucan(env: AccessServiceAddress) -> anyhow::Resu
     assert!(push_result.is_some(), "push should succeed");
 
     // Pull should find no new changes (just pushed)
-    let pull_result = branch.pull().perform(&operator).await?;
+    let pull_result = branch
+        .pull(dialog_repository::Download::MinimalRanges)
+        .perform(&operator)
+        .await?;
     assert!(pull_result.is_none(), "pull after push should return None");
 
     // Verify data survives round-trip via raw artifact query
     let results: Vec<_> = branch
         .claims()
-        .select(ArtifactSelector::new().the("user/name".parse()?))
+        .select(Selector::new().the("user/name".parse()?))
         .perform(&operator)
         .await?
         .collect::<Vec<_>>()
@@ -206,7 +209,10 @@ async fn it_collaborates_via_ucan_delegation(env: AccessServiceAddress) -> anyho
         .await?;
 
     // Bob pulls Alice's data
-    let pull_result = bob_branch.pull().perform(&bob_op).await?;
+    let pull_result = bob_branch
+        .pull(dialog_repository::Download::MinimalRanges)
+        .perform(&bob_op)
+        .await?;
     assert!(pull_result.is_some(), "Bob should pull Alice's data");
 
     // Bob commits his own change and pushes
@@ -221,13 +227,16 @@ async fn it_collaborates_via_ucan_delegation(env: AccessServiceAddress) -> anyho
     bob_branch.push().perform(&bob_op).await?;
 
     // Alice pulls Bob's changes
-    let alice_pull = alice_branch.pull().perform(&alice_op).await?;
+    let alice_pull = alice_branch
+        .pull(dialog_repository::Download::MinimalRanges)
+        .perform(&alice_op)
+        .await?;
     assert!(alice_pull.is_some(), "Alice should pull Bob's changes");
 
     // Alice should have both artifacts
     let alice_results: Vec<_> = alice_branch
         .claims()
-        .select(ArtifactSelector::new().the("user/name".parse()?))
+        .select(Selector::new().the("user/name".parse()?))
         .perform(&alice_op)
         .await?
         .collect::<Vec<_>>()
@@ -338,7 +347,11 @@ async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()
 
     // Bob pulls the revision, then lazily hydrates the bytes he never wrote.
     assert!(
-        branch_b.pull().perform(&operator_b).await?.is_some(),
+        branch_b
+            .pull(dialog_repository::Download::MinimalRanges)
+            .perform(&operator_b)
+            .await?
+            .is_some(),
         "Bob should pull Alice's revision"
     );
 

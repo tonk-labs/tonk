@@ -164,7 +164,7 @@ pub(crate) async fn create_branch(
         if head.is_some() {
             session
                 .handle()
-                .pull()
+                .pull(dialog_repository::Download::MinimalRanges)
                 .from(&upstream)
                 .perform(&operator)
                 .await
@@ -273,8 +273,7 @@ async fn track_remote(
 /// Only the profile branch may fire it: the panel that asks lives in the
 /// profile's space chrome, and a content branch matched by shape must not
 /// make branches in another space.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::CreateBranch> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::CreateBranch) {
         if !self.origin().repo.is_empty() {

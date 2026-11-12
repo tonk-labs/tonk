@@ -611,7 +611,7 @@ fn revision_badge(revision: Option<&Revision>) -> String {
 /// An attribute type, as stored, the way it is typed in notation: by
 /// its built-in anchor.
 fn type_name_to_notation(stored: &str) -> &str {
-    dialog_artifacts::ValueDataType::named(stored)
+    dialog_corpus::ValueDataType::named(stored)
         .map(|kind| tonk_notation::type_anchor(kind.uri()))
         .unwrap_or(stored)
 }

@@ -8,7 +8,7 @@
 //!
 //! The first family is `tree/*` — introspection of the branch's index
 //! tree (node structure, sizes, entries). The decoding itself is
-//! dialog's own [`dialog_artifacts::inspect`] surface (the same one
+//! dialog's own [`dialog_corpus::inspect`] surface (the same one
 //! the native `tree/*` query resolvers are built on): node bytes are
 //! fetched by content hash and summarized by `inspect_*`, and keys
 //! decompose through `key_components` / `separator_components` — the
@@ -21,14 +21,14 @@
 use std::collections::BTreeMap;
 
 use base58::{FromBase58, ToBase58};
-use dialog_artifacts::inspect::{
+use dialog_corpus::inspect::{
     BlobEntrySummary, EntrySummary, KeyComponent, KeySummary, NodeSummary, SpanSummary,
     inspect_blob_records, inspect_entries, inspect_keys, inspect_manifest, inspect_node,
     inspect_spans, key_components, separator_components,
 };
-use dialog_artifacts::{
-    ATTRIBUTE_KEY_TAG, Artifact, BLOB_KEY_TAG, COVERAGE_KEY_TAG, Datum, DialogArtifactsError,
-    ENTITY_KEY_TAG, Entity, HISTORY_KEY_TAG, Key, VALUE_KEY_TAG, Value,
+use dialog_corpus::{
+    ATTRIBUTE_KEY_TAG, BLOB_KEY_TAG, COVERAGE_KEY_TAG, Datum, DialogCorpusError, ENTITY_KEY_TAG,
+    Entity, Fact, HISTORY_KEY_TAG, Key, VALUE_KEY_TAG, Value,
 };
 use dialog_effects::archive::Load;
 use dialog_query::Term;
@@ -69,8 +69,8 @@ pub enum FormulaError {
     Decode(String),
 }
 
-impl From<DialogArtifactsError> for FormulaError {
-    fn from(error: DialogArtifactsError) -> Self {
+impl From<DialogCorpusError> for FormulaError {
+    fn from(error: DialogCorpusError) -> Self {
         Self::Decode(error.to_string())
     }
 }
@@ -511,7 +511,7 @@ fn fact_fields(key: &[u8], components: &[KeyComponent], spilled: bool) -> BTreeM
         supersedes: Vec::new(),
         retraction: false,
     };
-    let Ok(artifact) = Artifact::from_key_datum_placeholder(&key, &datum) else {
+    let Ok(artifact) = Fact::from_key_datum_placeholder(&key, &datum) else {
         return fields;
     };
     fields.insert("entity".into(), Ipld::String(artifact.of.to_string()));
@@ -813,9 +813,9 @@ fn tag_name(tag: u8) -> &'static str {
         ENTITY_KEY_TAG => "entity",
         ATTRIBUTE_KEY_TAG => "attribute",
         VALUE_KEY_TAG => "value",
-        dialog_artifacts::HISTORY_KEY_TAG => "history",
-        dialog_artifacts::BLOB_KEY_TAG => "blob",
-        dialog_artifacts::COVERAGE_KEY_TAG => "coverage",
+        dialog_corpus::HISTORY_KEY_TAG => "history",
+        dialog_corpus::BLOB_KEY_TAG => "blob",
+        dialog_corpus::COVERAGE_KEY_TAG => "coverage",
         _ => "unknown",
     }
 }
@@ -965,10 +965,10 @@ mod tests {
 
     /// Build the `(origin, edition)` version a history/coverage key is
     /// written under.
-    fn version(edition: u64) -> dialog_artifacts::history::Version {
-        dialog_artifacts::history::Version::new(
-            dialog_artifacts::history::Origin([0xab; 32]),
-            dialog_artifacts::history::Edition::new(edition),
+    fn version(edition: u64) -> dialog_corpus::history::Version {
+        dialog_corpus::history::Version::new(
+            dialog_corpus::history::Origin([0xab; 32]),
+            dialog_corpus::history::Edition::new(edition),
         )
     }
 
@@ -986,10 +986,10 @@ mod tests {
     /// and value and its ordering name squatting in the attribute column.
     #[dialog_common::test]
     fn it_reconstructs_the_fact_a_history_record_carries() {
-        let of: dialog_artifacts::Entity = "test:subject".parse().expect("entity parses");
-        let the: dialog_artifacts::Relation = "test/name".parse().expect("attribute parses");
+        let of: dialog_corpus::Entity = "test:subject".parse().expect("entity parses");
+        let the: dialog_corpus::Relation = "test/name".parse().expect("attribute parses");
         let is = Value::String("Zaphod".into());
-        let key = dialog_artifacts::history_key(
+        let key = dialog_corpus::history_key(
             &version(7),
             &of,
             &the,
@@ -1012,9 +1012,9 @@ mod tests {
     /// `String` — and no value.
     #[dialog_common::test]
     fn it_reconstructs_a_coverage_record_without_inventing_a_value() {
-        let of: dialog_artifacts::Entity = "test:subject".parse().expect("entity parses");
-        let the: dialog_artifacts::Relation = "test/age".parse().expect("attribute parses");
-        let key = dialog_artifacts::coverage_key(&version(3), &of, &the, &Value::UnsignedInt(42));
+        let of: dialog_corpus::Entity = "test:subject".parse().expect("entity parses");
+        let the: dialog_corpus::Relation = "test/age".parse().expect("attribute parses");
+        let key = dialog_corpus::coverage_key(&version(3), &of, &the, &Value::UnsignedInt(42));
 
         let fields = fact_fields(key.as_ref(), &key_components(key.as_ref()), true);
 
@@ -1027,22 +1027,22 @@ mod tests {
     /// An ordinary fact key still reconstructs, in every ordering.
     #[dialog_common::test]
     fn it_reconstructs_a_fact_in_every_ordering() {
-        let artifact = dialog_artifacts::Artifact {
+        let artifact = dialog_corpus::Fact {
             the: "test/name".parse().expect("attribute parses"),
             of: "test:subject".parse().expect("entity parses"),
             is: Value::String("Trillian".into()),
             cause: None,
         };
         let manifest = dialog_search_tree::Manifest::default();
-        use dialog_artifacts::KeyType as _;
+        use dialog_corpus::KeyType as _;
         for key in [
-            dialog_artifacts::EntityKey::<Key>::from_artifact(&artifact, &manifest)
+            dialog_corpus::EntityKey::<Key>::from_fact(&artifact, &manifest)
                 .bytes()
                 .to_vec(),
-            dialog_artifacts::AttributeKey::<Key>::from_artifact(&artifact, &manifest)
+            dialog_corpus::AttributeKey::<Key>::from_fact(&artifact, &manifest)
                 .bytes()
                 .to_vec(),
-            dialog_artifacts::ValueKey::<Key>::from_artifact(&artifact, &manifest)
+            dialog_corpus::ValueKey::<Key>::from_fact(&artifact, &manifest)
                 .bytes()
                 .to_vec(),
         ] {
@@ -1057,7 +1057,7 @@ mod tests {
     /// the row is furnished by its blob record instead.
     #[dialog_common::test]
     fn it_reports_no_fact_for_a_blob_key() {
-        let key = dialog_artifacts::BlobKey::new(&[0x11; 32]).into_key();
+        let key = dialog_corpus::BlobKey::new(&[0x11; 32]).into_key();
 
         let fields = fact_fields(key.as_ref(), &key_components(key.as_ref()), false);
 
@@ -1087,7 +1087,7 @@ mod tests {
         assert_eq!(
             text(&fields, "entity"),
             Some(
-                dialog_artifacts::Entity::from_blob(&hash)
+                dialog_corpus::Entity::from_blob(&hash)
                     .expect("blob entity")
                     .to_string()
             )
@@ -1115,13 +1115,13 @@ mod tests {
 
     /// Build a segment node holding `entries`, the way the tree stores
     /// them, so the decode runs over real node bytes.
-    fn segment(entries: Vec<(Key, dialog_artifacts::State<Datum>)>) -> Vec<u8> {
+    fn segment(entries: Vec<(Key, dialog_corpus::State<Datum>)>) -> Vec<u8> {
         use dialog_search_tree::{Entry, PersistentNodeBody};
-        let entries: Vec<Entry<Key, dialog_artifacts::State<Datum>>> = entries
+        let entries: Vec<Entry<Key, dialog_corpus::State<Datum>>> = entries
             .into_iter()
             .map(|(key, value)| Entry { key, value })
             .collect();
-        PersistentNodeBody::<dialog_artifacts::State<Datum>>::segment_from_entries::<Key>(
+        PersistentNodeBody::<dialog_corpus::State<Datum>>::segment_from_entries::<Key>(
             entries,
             dialog_search_tree::Manifest::default(),
         )
@@ -1147,14 +1147,14 @@ mod tests {
     /// and value — the history row used to report none of them.
     #[dialog_common::test]
     fn it_decodes_every_region_of_a_mixed_segment() {
-        use dialog_artifacts::{KeyType as _, State};
+        use dialog_corpus::{KeyType as _, State};
         let manifest = dialog_search_tree::Manifest::default();
-        let of: dialog_artifacts::Entity = "test:subject".parse().expect("entity parses");
-        let the: dialog_artifacts::Relation = "test/name".parse().expect("attribute parses");
+        let of: dialog_corpus::Entity = "test:subject".parse().expect("entity parses");
+        let the: dialog_corpus::Relation = "test/name".parse().expect("attribute parses");
         let is = Value::String("Ford".into());
         let at = version(9);
 
-        let fact = dialog_artifacts::Artifact {
+        let fact = dialog_corpus::Fact {
             the: the.clone(),
             of: of.clone(),
             is: is.clone(),
@@ -1177,22 +1177,22 @@ mod tests {
         let mut entries = vec![
             (
                 Key::from(
-                    dialog_artifacts::EntityKey::<Key>::from_artifact(&fact, &manifest)
+                    dialog_corpus::EntityKey::<Key>::from_fact(&fact, &manifest)
                         .bytes()
                         .to_vec(),
                 ),
                 datum(Some(at)),
             ),
             (
-                dialog_artifacts::history_key(&at, &of, &the, &is, &manifest),
+                dialog_corpus::history_key(&at, &of, &the, &is, &manifest),
                 datum(Some(at)),
             ),
             (
-                dialog_artifacts::coverage_key(&at, &of, &the, &is),
+                dialog_corpus::coverage_key(&at, &of, &the, &is),
                 datum(Some(at)),
             ),
             (
-                dialog_artifacts::BlobKey::new(&blob_hash).into_key(),
+                dialog_corpus::BlobKey::new(&blob_hash).into_key(),
                 State::Added(Datum {
                     cause: None,
                     blob: Some(record),

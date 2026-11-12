@@ -24,7 +24,7 @@ pub struct Conclusion {
     /// Entity URI of the matched concept (`did:key:…` etc.).
     pub this: String,
     /// Field values keyed by term name from the query. Each value is
-    /// the raw `dialog_artifacts::Value` serialized into the IPLD data
+    /// the raw `dialog_corpus::Value` serialized into the IPLD data
     /// model — strings, integers, floats, bools, byte buffers — so the
     /// wire encoding stays codec-agnostic (dag-json on the browser hop,
     /// dag-cbor for storage).

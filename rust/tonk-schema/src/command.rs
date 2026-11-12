@@ -16,8 +16,8 @@
 //! property of how the command is asserted (the
 //! `dialog.concept/transient` marker), not of the type.
 
-use dialog_artifacts::Entity;
 use dialog_capability::Command;
+use dialog_corpus::Entity;
 use dialog_query::Concept;
 
 pub mod legacy;

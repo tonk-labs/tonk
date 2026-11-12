@@ -219,7 +219,7 @@ async fn pull_content_on_mount(tonk: &TonkState, subject: &dialog_varsig::Did) {
         .reactor
         .repository(key)
         .branch(super::repository::CONTENT_BRANCH)
-        .pull()
+        .pull(dialog_repository::Download::MinimalRanges)
         .perform(&tonk.operator)
         .await
     {
@@ -239,8 +239,7 @@ async fn pull_content_on_mount(tonk: &TonkState, subject: &dialog_varsig::Did) {
 ///
 /// Target-agnostic: every host that can mount a space can run this, and
 /// the mount itself is already portable.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
     for crate::router::CommandEnv
 {
@@ -1631,7 +1630,7 @@ mod tests {
     /// must still restore the upstream and enter the sync sweep.
     #[dialog_common::test]
     async fn it_recovers_a_mounted_space_from_old_directory_branch_facts() {
-        use dialog_artifacts::Entity;
+        use dialog_corpus::Entity;
         use dialog_repository::SiteAddress;
         use tonk_schema::domain::branch::{Name, Origin, Upstream};
         use tonk_schema::domain::remote::Address;

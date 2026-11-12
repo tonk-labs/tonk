@@ -54,9 +54,9 @@
 
 use std::collections::BTreeMap;
 
-use dialog_artifacts::{Changes, Entity, Preload, Speculation, Value};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_corpus::{Changes, Entity, Preload, Speculation, Value};
 use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
@@ -168,6 +168,9 @@ pub trait EvaluateEnv:
     + Provider<Publish>
     + Provider<Identify>
     + Provider<ArchiveLoad>
+    + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
     + Provider<BlobLoad>
     + Provider<Preload>
     + Provider<Speculation>
@@ -187,6 +190,9 @@ impl<T> EvaluateEnv for T where
         + Provider<Publish>
         + Provider<Identify>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + Provider<Preload>
         + Provider<Speculation>
@@ -719,16 +725,16 @@ fn merge_frames(a: &Parameters, b: &Parameters) -> Option<Parameters> {
 /// Wraps dialog's `Statement` trait so retraction targets land
 /// in the transaction the same way an `ApplicationPlan` does.
 struct RawClaim {
-    the: dialog_artifacts::Relation,
+    the: dialog_corpus::Relation,
     of: Entity,
     is: Value,
 }
 
-impl dialog_artifacts::Statement for RawClaim {
-    fn assert(self, update: &mut impl dialog_artifacts::Update) {
-        update.associate(self.the, self.of, self.is, dialog_artifacts::Pick::All);
+impl dialog_corpus::Statement for RawClaim {
+    fn assert(self, update: &mut impl dialog_corpus::Update) {
+        update.associate(self.the, self.of, self.is, dialog_corpus::Pick::All);
     }
-    fn retract(self, update: &mut impl dialog_artifacts::Update) {
+    fn retract(self, update: &mut impl dialog_corpus::Update) {
         update.dissociate(self.the, self.of, self.is);
     }
 }
@@ -1348,12 +1354,12 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
 
-    use dialog_artifacts::Changes;
-    use dialog_artifacts::Statement as ArtifactsStatement;
+    use dialog_corpus::Changes;
+    use dialog_corpus::Statement as ArtifactsStatement;
     use dialog_peer::helpers::{test_repo, test_session_with_peer};
-    use dialog_query::artifact::Type;
     use dialog_query::attribute::Cardinality as DialogCardinality;
     use dialog_query::concept::descriptor::ConceptDescriptor;
+    use dialog_query::corpus::Type;
     use dialog_query::{AttributeDescriptor, the};
     use tonk_notation::parse;
 
@@ -1404,7 +1410,7 @@ mod tests {
         // Publish the name — `id:<name>` carries the
         // `db.meta/name` claim pointing at the concept
         // entity. This is the same shape `name!:` produces.
-        let id_entity: dialog_artifacts::Entity =
+        let id_entity: dialog_corpus::Entity =
             format!("id:{name}").parse().expect("id:<name> is valid");
         let mut txn = txn.assert(the!("db.name/referent").of(id_entity).is(entity.clone()));
         if transient {
@@ -1622,13 +1628,13 @@ concept!: &note
         }
 
         // Both edges must be stored: cardinality-many accumulates.
-        let a: dialog_artifacts::Entity = "id:a".parse()?;
+        let a: dialog_corpus::Entity = "id:a".parse()?;
         let claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::Relation>::from(the!("repro.demo/edge"))
-                    .of(Term::<dialog_artifacts::Entity>::from(a))
-                    .is(Term::<dialog_artifacts::Entity>::var("edge")),
+                    .of(Term::<dialog_corpus::Entity>::from(a))
+                    .is(Term::<dialog_corpus::Entity>::var("edge")),
             ))
             .perform(&operator)
             .try_vec()
@@ -2111,14 +2117,14 @@ concept!: &note
 
         // Every spelling stored the one number, read back as the
         // narrowest type that holds it: what the declared reader expects.
-        let the: dialog_artifacts::Relation = "io.test.person/age".parse()?;
+        let the: dialog_corpus::Relation = "io.test.person/age".parse()?;
         for (uri, spelling) in [("test:1", "41"), ("test:2", "+41"), ("test:3", "41.0")] {
-            let entity: dialog_artifacts::Entity = uri.parse()?;
+            let entity: dialog_corpus::Entity = uri.parse()?;
             let claims: Vec<dialog_query::Claim> = branch
                 .query()
                 .select(dialog_query::AttributeQuery::new(
-                    Term::Constant(dialog_artifacts::Value::Symbol(the.clone())),
-                    Term::<dialog_artifacts::Entity>::from(entity),
+                    Term::Constant(dialog_corpus::Value::Symbol(the.clone())),
+                    Term::<dialog_corpus::Entity>::from(entity),
                     Term::<dialog_query::Any>::var("age"),
                     Term::blank(),
                     None,
@@ -2175,15 +2181,15 @@ concept!: &note
             .await
             .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
 
-        let entity: dialog_artifacts::Entity = "test:raw".parse()?;
+        let entity: dialog_corpus::Entity = "test:raw".parse()?;
         let mut by_field = std::collections::BTreeMap::new();
         for field in ["bare", "signed", "negative", "float"] {
-            let the: dialog_artifacts::Relation = format!("io.test.raw/{field}").parse()?;
+            let the: dialog_corpus::Relation = format!("io.test.raw/{field}").parse()?;
             let claims: Vec<dialog_query::Claim> = branch
                 .query()
                 .select(dialog_query::AttributeQuery::new(
-                    Term::Constant(dialog_artifacts::Value::Symbol(the)),
-                    Term::<dialog_artifacts::Entity>::from(entity.clone()),
+                    Term::Constant(dialog_corpus::Value::Symbol(the)),
+                    Term::<dialog_corpus::Entity>::from(entity.clone()),
                     Term::<dialog_query::Any>::var("v"),
                     Term::blank(),
                     None,
@@ -2254,17 +2260,17 @@ concept!: &note
                 .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
         }
 
-        let nb: dialog_artifacts::Entity = "id:nb".parse()?;
+        let nb: dialog_corpus::Entity = "id:nb".parse()?;
         let mut entries: Vec<(String, String)> = Vec::new();
         for key in ["N", "N5"] {
             // A position-named attribute is not a `The` (those are the
             // symbol-named half), so the lookup pins the raw attribute.
-            let the: dialog_artifacts::Relation = format!("xyz.test.notebook/{key}").parse()?;
+            let the: dialog_corpus::Relation = format!("xyz.test.notebook/{key}").parse()?;
             let claims: Vec<dialog_query::Claim> = branch
                 .query()
                 .select(dialog_query::AttributeQuery::new(
-                    Term::Constant(dialog_artifacts::Value::Symbol(the)),
-                    Term::<dialog_artifacts::Entity>::from(nb.clone()),
+                    Term::Constant(dialog_corpus::Value::Symbol(the)),
+                    Term::<dialog_corpus::Entity>::from(nb.clone()),
                     Term::<dialog_query::Any>::var("block"),
                     Term::blank(),
                     None,
@@ -2273,7 +2279,7 @@ concept!: &note
                 .try_vec()
                 .await?;
             for claim in claims {
-                let dialog_artifacts::Value::Entity(block) = claim.is else {
+                let dialog_corpus::Value::Entity(block) = claim.is else {
                     anyhow::bail!("a block is an entity");
                 };
                 entries.push((key.to_owned(), block.to_string()));
@@ -2353,15 +2359,15 @@ concept!: &note
                 .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
         }
 
-        let nb: dialog_artifacts::Entity = "id:nb".parse()?;
+        let nb: dialog_corpus::Entity = "id:nb".parse()?;
         let mut counts = Vec::new();
         for key in ["N", "N5"] {
-            let the: dialog_artifacts::Relation = format!("xyz.test.notebook/{key}").parse()?;
+            let the: dialog_corpus::Relation = format!("xyz.test.notebook/{key}").parse()?;
             let claims: Vec<dialog_query::Claim> = branch
                 .query()
                 .select(dialog_query::AttributeQuery::new(
-                    Term::Constant(dialog_artifacts::Value::Symbol(the)),
-                    Term::<dialog_artifacts::Entity>::from(nb.clone()),
+                    Term::Constant(dialog_corpus::Value::Symbol(the)),
+                    Term::<dialog_corpus::Entity>::from(nb.clone()),
                     Term::<dialog_query::Any>::var("block"),
                     Term::blank(),
                     None,
@@ -2439,12 +2445,12 @@ concept!: &note
             refused.err()
         );
 
-        let the: dialog_artifacts::Relation = "xyz.test.ticket/queue".parse()?;
+        let the: dialog_corpus::Relation = "xyz.test.ticket/queue".parse()?;
         let queues: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::new(
                 Term::Constant(Value::Symbol(the)),
-                Term::<dialog_artifacts::Entity>::var("of"),
+                Term::<dialog_corpus::Entity>::var("of"),
                 Term::<dialog_query::Any>::var("is"),
                 Term::blank(),
                 None,
@@ -2485,8 +2491,8 @@ concept!: &note
         let branch = repo.branch("main").open().perform(&operator).await?;
 
         // Seed: id:demo's referent points at a target entity.
-        let target: dialog_artifacts::Entity = "did:key:zReproTarget".parse()?;
-        let id_demo: dialog_artifacts::Entity = "id:demo".parse()?;
+        let target: dialog_corpus::Entity = "did:key:zReproTarget".parse()?;
+        let id_demo: dialog_corpus::Entity = "id:demo".parse()?;
         branch
             .transaction()
             .assert(the!("db.name/referent").of(id_demo).is(target.clone()))
@@ -2525,13 +2531,13 @@ name!:
             .map_err(|e| anyhow::anyhow!("commit: {e}"))?;
 
         // id:demo-copy now carries the copied referent.
-        let id_copy: dialog_artifacts::Entity = "id:demo-copy".parse()?;
+        let id_copy: dialog_corpus::Entity = "id:demo-copy".parse()?;
         let claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::Relation>::from(the!("db.name/referent"))
-                    .of(Term::<dialog_artifacts::Entity>::from(id_copy))
-                    .is(Term::<dialog_artifacts::Entity>::var("referent")),
+                    .of(Term::<dialog_corpus::Entity>::from(id_copy))
+                    .is(Term::<dialog_corpus::Entity>::var("referent")),
             ))
             .perform(&operator)
             .try_vec()
@@ -2597,7 +2603,7 @@ name!:
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::Relation>::from(the!("dialog.rule/source"))
-                    .of(Term::<dialog_artifacts::Entity>::var("effect"))
+                    .of(Term::<dialog_corpus::Entity>::var("effect"))
                     .is(Term::<Vec<u8>>::var("source")),
             ))
             .perform(&operator)
@@ -2613,7 +2619,7 @@ name!:
         // through the raw Changes path. The reactor's induce
         // loop should fire the installed rule and land the
         // durable pong head.
-        let subject: dialog_artifacts::Entity = "did:key:zNotationSubject".parse()?;
+        let subject: dialog_corpus::Entity = "did:key:zNotationSubject".parse()?;
         let ping_tag = the!("io.gozala.ping/tag");
         let mut transients = Changes::new();
         ping_tag
@@ -2773,7 +2779,7 @@ rule!:
 
         // Second commit: submit a transient ping and verify
         // the rule fires through induce.
-        let subject: dialog_artifacts::Entity = "did:key:zPureNotationSubject".parse()?;
+        let subject: dialog_corpus::Entity = "did:key:zPureNotationSubject".parse()?;
         let ping_tag = the!("io.gozala.ping/tag");
         let mut transients = Changes::new();
         ping_tag
@@ -2894,7 +2900,7 @@ counter!: &counter-demo
 
         // The seeded counter holds an unsigned 0.
         let count_attr = the!("xyz.tonk.counter/count");
-        let counter_demo: dialog_artifacts::Entity =
+        let counter_demo: dialog_corpus::Entity =
             "id:counter-demo".parse().expect("id:<name> entity");
         // Resolve the named counter entity via its referent claim.
         let referent: Vec<dialog_query::Claim> = branch
@@ -2902,7 +2908,7 @@ counter!: &counter-demo
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::Relation>::from(the!("db.name/referent"))
                     .of(Term::from(counter_demo))
-                    .is(Term::<dialog_artifacts::Entity>::var("e")),
+                    .is(Term::<dialog_corpus::Entity>::var("e")),
             ))
             .perform(&operator)
             .try_vec()
@@ -3066,14 +3072,14 @@ counter!: &counter-demo
         }
 
         // Resolve counter-demo's entity via its name referent.
-        let counter_demo: dialog_artifacts::Entity =
+        let counter_demo: dialog_corpus::Entity =
             "id:counter-demo".parse().expect("id:<name> entity");
         let referent: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::Relation>::from(the!("db.name/referent"))
                     .of(Term::from(counter_demo))
-                    .is(Term::<dialog_artifacts::Entity>::var("e")),
+                    .is(Term::<dialog_corpus::Entity>::var("e")),
             ))
             .perform(&operator)
             .try_vec()
@@ -3188,13 +3194,13 @@ counter!: &counter-demo
             .await
             .map_err(|e| anyhow::anyhow!("commit (increment): {e}"))?;
 
-        let counter_demo: dialog_artifacts::Entity = "id:counter-demo".parse().expect("id:<name>");
+        let counter_demo: dialog_corpus::Entity = "id:counter-demo".parse().expect("id:<name>");
         let referent: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::Relation>::from(the!("db.name/referent"))
                     .of(Term::from(counter_demo))
-                    .is(Term::<dialog_artifacts::Entity>::var("e")),
+                    .is(Term::<dialog_corpus::Entity>::var("e")),
             ))
             .perform(&operator)
             .try_vec()
@@ -3526,7 +3532,7 @@ concept!: &pong
         setup = install_named_concept(setup, "ping", &ping, /*transient=*/ false);
         setup = install_named_concept(setup, "pong", &pong, /*transient=*/ false);
         // One durable `ping` instance — the premise the rule derives from.
-        let subject: dialog_artifacts::Entity = "did:key:zDeducedSubject".parse()?;
+        let subject: dialog_corpus::Entity = "did:key:zDeducedSubject".parse()?;
         setup = setup.assert(
             the!("io.gozala.ping/tag")
                 .of(subject.clone())
@@ -3592,7 +3598,7 @@ concept!: &pong
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::Relation>::from(the!("dialog.rule/source"))
-                    .of(Term::<dialog_artifacts::Entity>::var("rule"))
+                    .of(Term::<dialog_corpus::Entity>::var("rule"))
                     .is(Term::<Vec<u8>>::var("source")),
             ))
             .perform(&operator)
@@ -3747,7 +3753,7 @@ concept!: &person
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.person/name"))
-                    .of(Term::<dialog_artifacts::Entity>::var("p"))
+                    .of(Term::<dialog_corpus::Entity>::var("p"))
                     .is(Term::<String>::var("v")),
             ))
             .perform(&operator)
@@ -3827,7 +3833,7 @@ rule!:
             .await
             .map_err(|e| anyhow::anyhow!("commit (instance): {e}"))?;
 
-        let subject: dialog_artifacts::Entity = "did:key:zNotationTransientSubject".parse()?;
+        let subject: dialog_corpus::Entity = "did:key:zNotationTransientSubject".parse()?;
 
         let pong_claims: Vec<dialog_query::Claim> = branch
             .query()
@@ -3926,7 +3932,7 @@ ping!:
             .await
             .map_err(|e| anyhow::anyhow!("commit: {e}"))?;
 
-        let subject: dialog_artifacts::Entity = "did:key:zSingleCommitSubject".parse()?;
+        let subject: dialog_corpus::Entity = "did:key:zSingleCommitSubject".parse()?;
 
         let pong_claims: Vec<dialog_query::Claim> = branch
             .query()
@@ -4095,9 +4101,9 @@ workspace!:
             .await
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
 
-        let workspace: dialog_artifacts::Entity = "about:blank".parse()?;
-        let sheet_b: dialog_artifacts::Entity = "did:key:zSheetB".parse()?;
-        let sheet_c: dialog_artifacts::Entity = "did:key:zSheetC".parse()?;
+        let workspace: dialog_corpus::Entity = "about:blank".parse()?;
+        let sheet_b: dialog_corpus::Entity = "did:key:zSheetB".parse()?;
+        let sheet_c: dialog_corpus::Entity = "did:key:zSheetC".parse()?;
 
         // Sanity: active is sheet A.
         let active_before: Vec<dialog_query::Claim> = branch
@@ -4105,7 +4111,7 @@ workspace!:
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.workspace/active"))
                     .of(Term::from(workspace.clone()))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -4120,7 +4126,7 @@ workspace!:
         // (active is A). next = B (C's neighbour, as the binder would
         // compute). The retract rule should drop C's membership; the
         // reassign rule must NOT fire (active != C), so active stays A.
-        let close_entity: dialog_artifacts::Entity = "did:key:zCloseBgCmd".parse()?;
+        let close_entity: dialog_corpus::Entity = "did:key:zCloseBgCmd".parse()?;
         let mut transients = Changes::new();
         the!("dom.event.detail/closed")
             .of(close_entity.clone())
@@ -4145,7 +4151,7 @@ workspace!:
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.workspace/sheet"))
                     .of(Term::from(workspace.clone()))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -4167,7 +4173,7 @@ workspace!:
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.workspace/active"))
                     .of(Term::from(workspace.clone()))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -4283,12 +4289,12 @@ workspace!:
             .await
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
 
-        let workspace: dialog_artifacts::Entity = "did:key:zCloseActiveWorkspace".parse()?;
-        let sheet_a: dialog_artifacts::Entity = "did:key:zSheetA".parse()?;
-        let sheet_b: dialog_artifacts::Entity = "did:key:zSheetB".parse()?;
+        let workspace: dialog_corpus::Entity = "did:key:zCloseActiveWorkspace".parse()?;
+        let sheet_a: dialog_corpus::Entity = "did:key:zSheetA".parse()?;
+        let sheet_b: dialog_corpus::Entity = "did:key:zSheetB".parse()?;
 
         // Close the ACTIVE sheet A; next = B (its neighbour).
-        let close_entity: dialog_artifacts::Entity = "did:key:zCloseActiveCmd".parse()?;
+        let close_entity: dialog_corpus::Entity = "did:key:zCloseActiveCmd".parse()?;
         let mut transients = Changes::new();
         the!("dom.event.detail/closed")
             .of(close_entity.clone())
@@ -4313,7 +4319,7 @@ workspace!:
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.workspace/active"))
                     .of(Term::from(workspace.clone()))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -4478,10 +4484,10 @@ workspace!:
             .await
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
 
-        let workspace: dialog_artifacts::Entity = "did:key:zCreateCloseWorkspace".parse()?;
+        let workspace: dialog_corpus::Entity = "did:key:zCreateCloseWorkspace".parse()?;
 
         // Fire create-sheet (the new sheet entity = the command entity).
-        let new_sheet: dialog_artifacts::Entity = "did:key:zCreatedSheet".parse()?;
+        let new_sheet: dialog_corpus::Entity = "did:key:zCreatedSheet".parse()?;
         let mut create = Changes::new();
         the!("dom.event.detail/name")
             .of(new_sheet.clone())
@@ -4506,7 +4512,7 @@ workspace!:
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.workspace/active"))
                     .of(Term::from(workspace.clone()))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -4524,8 +4530,8 @@ workspace!:
         );
 
         // Now close the NEW (background) sheet; active is A, next = B.
-        let sheet_b: dialog_artifacts::Entity = "did:key:zSheetB".parse()?;
-        let close_entity: dialog_artifacts::Entity = "did:key:zCreateCloseCmd".parse()?;
+        let sheet_b: dialog_corpus::Entity = "did:key:zSheetB".parse()?;
+        let close_entity: dialog_corpus::Entity = "did:key:zCreateCloseCmd".parse()?;
         let mut close = Changes::new();
         the!("dom.event.detail/closed")
             .of(close_entity.clone())
@@ -4550,7 +4556,7 @@ workspace!:
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.workspace/active"))
                     .of(Term::from(workspace.clone()))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -4697,7 +4703,7 @@ workspace!:
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
 
         // Fire create-sheet. The new sheet entity = the command entity.
-        let new_sheet: dialog_artifacts::Entity = "did:key:zNewSheet".parse()?;
+        let new_sheet: dialog_corpus::Entity = "did:key:zNewSheet".parse()?;
         let mut create = Changes::new();
         the!("dom.event.detail/name")
             .of(new_sheet.clone())
@@ -4741,7 +4747,7 @@ workspace!:
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.artifact/entity"))
                     .of(Term::from(new_sheet.clone()))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -4757,7 +4763,7 @@ workspace!:
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.artifact/model"))
                     .of(Term::from(new_sheet.clone()))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -4770,13 +4776,13 @@ workspace!:
         );
 
         // The workspace auto-activated the new sheet.
-        let workspace: dialog_artifacts::Entity = "about:blank".parse()?;
+        let workspace: dialog_corpus::Entity = "about:blank".parse()?;
         let active: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.workspace/active"))
                     .of(Term::from(workspace))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -5177,8 +5183,8 @@ person!:
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
-        let alice: dialog_artifacts::Entity = "id:alice".parse()?;
-        let bob: dialog_artifacts::Entity = "id:bob".parse()?;
+        let alice: dialog_corpus::Entity = "id:alice".parse()?;
+        let bob: dialog_corpus::Entity = "id:bob".parse()?;
 
         // alice has only name; bob has name + bio.
         branch

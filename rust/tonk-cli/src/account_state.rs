@@ -617,7 +617,10 @@ async fn hydrate(
             // operator proves from, and a head that runs ahead of the local
             // archive would have its own hydration authorized by a walk
             // over nodes that are not here yet.
-            branch.pull().download().perform(operator).await?;
+            branch
+                .pull(dialog_repository::Download::Everything)
+                .perform(operator)
+                .await?;
         }
         Ok(RemotePresence::Absent) => {
             branch
@@ -635,7 +638,10 @@ async fn hydrate(
                 // against an empty upstream. Reads resolve missing blocks
                 // through the configured remote. See `account_remote`'s
                 // losing-adoption test.
-                branch.pull().download().perform(operator).await?;
+                branch
+                    .pull(dialog_repository::Download::Everything)
+                    .perform(operator)
+                    .await?;
             }
         }
         Err(error) => return Err(error.into()),
@@ -827,7 +833,11 @@ pub async fn ensure_with_operator_and_store(
         progress(format_args!("Pulling what other devices changed…"));
         // Ready remains ready offline. A best-effort normal sync catches up
         // without clearing the durable trust marker on failure.
-        let may_push = match branch.pull().download().perform(&operator).await {
+        let may_push = match branch
+            .pull(dialog_repository::Download::Everything)
+            .perform(&operator)
+            .await
+        {
             Ok(_) => {
                 trace("ensure: pulled");
                 progress(format_args!("Pulled."));

@@ -228,7 +228,7 @@ mod when_assets_and_legacy_blobs_meet {
     async fn claims(
         test: &TestSite,
         attribute: &str,
-        entity: &dialog_artifacts::Entity,
+        entity: &dialog_corpus::Entity,
     ) -> Result<Vec<String>> {
         use futures_util::StreamExt as _;
         let session = test.site.branch().await?;
@@ -236,7 +236,7 @@ mod when_assets_and_legacy_blobs_meet {
             .handle()
             .claims()
             .select(
-                dialog_artifacts::ArtifactSelector::new()
+                dialog_corpus::Selector::new()
                     .the(attribute.parse()?)
                     .of(entity.clone()),
             )
@@ -245,7 +245,7 @@ mod when_assets_and_legacy_blobs_meet {
         tokio::pin!(stream);
         let mut values = Vec::new();
         while let Some(artifact) = stream.next().await {
-            if let Ok(dialog_artifacts::Value::String(value)) = artifact?.value() {
+            if let Ok(dialog_corpus::Value::String(value)) = artifact?.value() {
                 values.push(value);
             }
         }

@@ -100,7 +100,7 @@ impl HandoffMetadata {
             metadata.version == 1,
             "unsupported local agent handoff version"
         );
-        let _: dialog_artifacts::Entity = metadata
+        let _: dialog_corpus::Entity = metadata
             .invitation
             .parse()
             .context("invalid handoff invitation identity")?;
@@ -229,7 +229,7 @@ pub fn pending_scoped_directory(
 /// Public confirmation entity for an exact invitation grant set.
 /// Multiple holders of the same invitation acknowledge the same grant identity;
 /// this record is neither exclusive process presence nor an authorization gate.
-pub fn scoped_connection_entity(connection_id: &str) -> anyhow::Result<dialog_artifacts::Entity> {
+pub fn scoped_connection_entity(connection_id: &str) -> anyhow::Result<dialog_corpus::Entity> {
     anyhow::ensure!(
         connection_id.len() == 64 && connection_id.bytes().all(|byte| byte.is_ascii_hexdigit()),
         "connection_invalid_identity"

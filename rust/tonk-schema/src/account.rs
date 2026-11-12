@@ -1,6 +1,6 @@
 //! Root-owned facts stored in the hidden account repository.
 
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_query::Concept;
 
 use crate::domain::account::{
@@ -267,14 +267,26 @@ mod tests {
             .await?;
 
         if a_first {
-            a.pull().perform(&operator).await?;
-            b.pull().perform(&operator).await?;
+            a.pull(dialog_repository::Download::MinimalRanges)
+                .perform(&operator)
+                .await?;
+            b.pull(dialog_repository::Download::MinimalRanges)
+                .perform(&operator)
+                .await?;
         } else {
-            b.pull().perform(&operator).await?;
-            a.pull().perform(&operator).await?;
+            b.pull(dialog_repository::Download::MinimalRanges)
+                .perform(&operator)
+                .await?;
+            a.pull(dialog_repository::Download::MinimalRanges)
+                .perform(&operator)
+                .await?;
         }
-        a.pull().perform(&operator).await?;
-        b.pull().perform(&operator).await?;
+        a.pull(dialog_repository::Download::MinimalRanges)
+            .perform(&operator)
+            .await?;
+        b.pull(dialog_repository::Download::MinimalRanges)
+            .perform(&operator)
+            .await?;
 
         let a_rows: Vec<AccountDisplayName> = a
             .query()
@@ -304,7 +316,9 @@ mod tests {
             .publish()
             .perform(&operator)
             .await?;
-        a.pull().perform(&operator).await?;
+        a.pull(dialog_repository::Download::MinimalRanges)
+            .perform(&operator)
+            .await?;
         let rows: Vec<AccountDisplayName> = a
             .query()
             .select(Query::<AccountDisplayName> {

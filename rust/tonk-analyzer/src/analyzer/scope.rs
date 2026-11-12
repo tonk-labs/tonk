@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use parking_lot::Mutex;
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};

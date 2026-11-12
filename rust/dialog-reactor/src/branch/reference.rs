@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use dialog_query::ConceptQuery;
 
-use dialog_artifacts::Exporter;
 use dialog_common::ConditionalSend;
+use dialog_corpus::Exporter;
 use dialog_repository::Importer;
 
 use crate::env::{BranchOpenProvider, CommitProvider, LoadProvider};
@@ -348,8 +348,8 @@ impl<'a> BranchReference<'a> {
     }
 
     /// Pull from upstream. On success, subscriptions re-poll.
-    pub fn pull(self) -> Pull<'a> {
-        Pull::new(self)
+    pub fn pull(self, download: dialog_repository::Download) -> Pull<'a> {
+        Pull::new(self, download)
     }
 
     /// Push to upstream. No re-poll — push doesn't change local
@@ -376,8 +376,8 @@ impl<'a> BranchReference<'a> {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::ProfileUpgrade;
-    use dialog_artifacts::{Entity, Pick, Relation, Statement, Update, Value};
     use dialog_capability::Principal as _;
+    use dialog_corpus::{Entity, Pick, Relation, Statement, Update, Value};
     use dialog_effects::storage::{Directory, Location};
     use dialog_peer::{Peer, PeerError, StepFuture};
     use dialog_repository::{Branch, Repository};

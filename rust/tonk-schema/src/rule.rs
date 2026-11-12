@@ -15,7 +15,7 @@
 //! `rule!: this: <entity> ..: _` retract form that addresses a rule
 //! without restating its body.
 
-use dialog_artifacts::{Entity, Value};
+use dialog_corpus::{Entity, Value};
 use dialog_query::{Output as _, Term};
 use thiserror::Error;
 
@@ -100,7 +100,7 @@ pub enum StoredRuleError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dialog_artifacts::{Changes, Instruction};
+    use dialog_corpus::{Changes, Instruction};
     use dialog_query::{Cardinality, ConceptDescriptor};
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -141,18 +141,18 @@ mod tests {
         let this = rule.this();
 
         let mut changes = Changes::new();
-        dialog_artifacts::Statement::assert(&rule, &mut changes);
+        dialog_corpus::Statement::assert(&rule, &mut changes);
         let instructions = changes.into_instructions();
 
-        let source: dialog_artifacts::Relation = "dialog.rule/source".parse().unwrap();
-        let induces: dialog_artifacts::Relation = "dialog.rule/induces".parse().unwrap();
+        let source: dialog_corpus::Relation = "dialog.rule/source".parse().unwrap();
+        let induces: dialog_corpus::Relation = "dialog.rule/induces".parse().unwrap();
         assert!(instructions.iter().any(|i| matches!(
             i,
-            Instruction::Assert(a, dialog_artifacts::Pick::All) if a.the == source && a.of == this
+            Instruction::Assert(a, dialog_corpus::Pick::All) if a.the == source && a.of == this
         )));
         assert!(instructions.iter().any(|i| matches!(
             i,
-            Instruction::Assert(a, dialog_artifacts::Pick::All) if a.the == induces && a.of == this
+            Instruction::Assert(a, dialog_corpus::Pick::All) if a.the == induces && a.of == this
         )));
 
         let _ = Cardinality::One; // keep the shared import used across cfgs

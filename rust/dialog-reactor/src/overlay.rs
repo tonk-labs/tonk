@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use dialog_artifacts::{Changes, Statement};
+use dialog_corpus::{Changes, Statement};
 use serde::{Deserialize, Serialize};
 
 use super::BranchReference;
