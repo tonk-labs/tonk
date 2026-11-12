@@ -423,3 +423,130 @@ test('the guest page takes the theme its host passes, over the system preference
     await browser.close();
   }
 });
+
+test('the whole space is a card that opens it in Tonk, with no view and no peer', async () => {
+  const link = 'https://tonk.example/space/' + SPACE;
+  const card = await shown({ extra: { view: null, viewName: null, show: 'handoff', link } });
+  try {
+    const frame = await card.relay();
+    await until(frame, () => !document.querySelector('#handoff').hidden);
+    const drawn = await frame.evaluate(() => ({
+      card: document.querySelector('#card').hidden,
+      space: document.querySelector('#handoff .tonk-space').textContent,
+      role: document.querySelector('#handoff .tonk-role').textContent,
+      says: document.querySelector('#handoff .tonk-handoff p').textContent,
+      disc: document.querySelector('#handoff .tonk-disc')?.getAttribute('aria-label'),
+      arrow: document.querySelector('#handoff .tonk-btn').innerHTML,
+    }));
+    assert.deepEqual(drawn, {
+      card: true,
+      space: 'Family trip',
+      role: 'write',
+      says: 'Opens the whole space in Tonk.',
+      disc: 'synced',
+      arrow: 'open in tonk ↗',
+    });
+    await frame.click('#handoff .tonk-btn');
+    await until(frame, () => true);
+    const opened = (await card.view.asked()).filter((ask) => ask.method === 'ui/open-link');
+    assert.deepEqual(opened, [{ method: 'ui/open-link', url: link }]);
+    assert.ok(!card.provider.served.some((path) => path.startsWith('/view-peer/')), 'no peer starts');
+    assert.equal(card.client.called.length, 0, 'no access is asked for');
+  } finally {
+    await card.close();
+  }
+});
+
+test('a strip is one line with a link that opens the view in the browser', async () => {
+  const link = `https://tonk.example/space/${SPACE}/packing`;
+  const card = await shown({ extra: { show: 'strip', link } });
+  try {
+    const frame = await card.relay();
+    await until(frame, () => !document.querySelector('#strip').hidden);
+    const says = await frame.evaluate(() => document.querySelector('#strip .tonk-receipt').textContent);
+    assert.equal(says, 'Family trip › Packing list opens in your browser');
+    assert.equal(
+      await frame.evaluate(() => document.querySelector('#strip .tonk-disc').getAttribute('role')),
+      'img',
+    );
+    await frame.click('#strip .tonk-link');
+    await until(frame, () => true);
+    const opened = (await card.view.asked()).filter((ask) => ask.method === 'ui/open-link');
+    assert.deepEqual(opened, [{ method: 'ui/open-link', url: link }]);
+    assert.ok(!card.provider.served.some((path) => path.startsWith('/view-peer/')), 'no peer starts');
+  } finally {
+    await card.close();
+  }
+});
+
+test('a whole view asks for full screen as it is shown, and the view hears its size', async () => {
+  const card = await shown({
+    extra: { size: 'full' },
+    guest: [...SPEAKS, { __tonkRuntime: 'runtime-ready' }],
+  });
+  try {
+    const frame = await card.relay();
+    await until(frame, () => document.querySelector('#card').classList.contains('tonk--fill'));
+    const asked = (await card.view.asked()).filter((ask) => ask.method === 'ui/request-display-mode');
+    assert.deepEqual(asked, [{ method: 'ui/request-display-mode', mode: 'fullscreen' }]);
+    const guest = await guestOf(card);
+    await until(guest, () => window.heard.some((m) => m?.type === 'tonk-mount'));
+    assert.equal(await guest.evaluate(() => window.heard.find((m) => m?.type === 'tonk-mount').size), 'full');
+  } finally {
+    await card.close();
+  }
+});
+
+test('an inline carousel tells the view its size, and full screen tells it full', async () => {
+  const card = await shown({
+    extra: { size: 'carousel' },
+    guest: [...SPEAKS, { __tonkRuntime: 'runtime-ready' }],
+  });
+  try {
+    const frame = await card.relay();
+    const guest = await guestOf(card);
+    await until(guest, () => window.heard.some((m) => m?.type === 'tonk-mount'));
+    assert.equal(await guest.evaluate(() => window.heard.find((m) => m?.type === 'tonk-mount').size), 'carousel');
+    await frame.click('#expand');
+    await until(guest, () => window.heard.some((m) => m?.type === 'tonk-size' && m.size === 'full'));
+  } finally {
+    await card.close();
+  }
+});
+
+test('inline, a view drops the heading it marks; full screen it keeps it', async () => {
+  const { chromium } = await import('playwright');
+  const { readFile } = await import('node:fs/promises');
+  const ui = new URL('../../../mcp/apps/ui/', import.meta.url);
+  const scripts = await Promise.all(
+    ['space-theme.js', 'embed-bootstrap.js'].map((name) => readFile(new URL(name, ui), 'utf8')),
+  );
+  const browser = await chromium.launch({ channel: process.env.TONK_E2E_CHANNEL || undefined });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(
+      `<iframe srcdoc="${`<script>${scripts.join('</script><script>')}</script>`.replaceAll('"', '&quot;')}"></iframe>`,
+    );
+    const guest = page.frames()[1];
+    await guest.waitForFunction(() => typeof window.__tonkSetTheme === 'function');
+    const post = (message) =>
+      page.evaluate((m) => document.querySelector('iframe').contentWindow.postMessage(m, '*'), message);
+    await post({ type: 'tonk-mount', subject: 'did:key:z', site: 'urn:s', model: 'tonk:site', size: 'card' });
+    await guest.waitForFunction(() => document.documentElement.dataset.tonkSize === 'card');
+    // A view's own markup, as a template renders it into the page.
+    await guest.evaluate(() => {
+      const heading = document.createElement('h2');
+      heading.dataset.tonkHeading = '';
+      heading.textContent = 'Packing list';
+      document.querySelector('tonk-display').append(heading);
+    });
+    const shownHeading = () =>
+      guest.evaluate(() => getComputedStyle(document.querySelector('[data-tonk-heading]')).display);
+    assert.equal(await shownHeading(), 'none');
+    await post({ type: 'tonk-size', size: 'full' });
+    await guest.waitForFunction(() => document.documentElement.dataset.tonkSize === 'full');
+    assert.equal(await shownHeading(), 'block');
+  } finally {
+    await browser.close();
+  }
+});

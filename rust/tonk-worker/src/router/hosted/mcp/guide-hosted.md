@@ -75,6 +75,23 @@ controls included. To show one record, such as one to-do, pass its item's
 `route` as `view`. A record that a nested view shows has that view's node as
 its route instead.
 
+How a view is shown in the chat:
+
+- Show one view, not the whole space. The whole space (path `/` with no
+  `view`) is not shown in the chat: the person gets a card that opens it in
+  Tonk. Outline the space and pass the part they need as `view`.
+- Pick a `size`. `card` (the default) is a short summary: 4 to 5 rows and at
+  most 2 actions. `carousel` is 3 to 8 like items side by side, 1 action each.
+  `strip` is one line with a link, when there is nothing to look at. `full`
+  opens the whole view full screen. Inline, the card cannot scroll and the
+  host clips what does not fit, so keep it small and offer `full` for more.
+- Your text carries the answer. Each result's text says what the view shows
+  (its records, as the outline reads them) and ends with the link into Tonk.
+  Answer from that, and say what you are showing; do not ask the person to
+  read the card for you.
+- A space that a view cannot reach from here, or a host that cannot run a
+  live view, gets a link instead of the view. Say so.
+
 You cannot see a view, whether you show it or author it with notation. Never
 claim that one rendered or that a control works, and never describe a query as
 proof of either; ask the person how it looks, or ask them to open the space in
