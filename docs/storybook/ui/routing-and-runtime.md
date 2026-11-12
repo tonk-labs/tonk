@@ -141,7 +141,7 @@ activation route reads one base64url `ucan`. Content routes are interpreted by
 the profile's route table inside `tonk-site`, not by a second top-document
 framework.
 
-The `/inspector` content route distinguishes a named-space repository from the
+The `/console/inspector` route distinguishes a named-space repository from the
 profile repository. Only the former resolves branch metadata and mounts the
 diagnostics disclosure.
 

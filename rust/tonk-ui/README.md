@@ -212,7 +212,7 @@ The crate's library side (see [`src/lib.rs`](./src/lib.rs)) provides the pieces 
 
 The worker resolves paths through the profile library's `route!` records and
 mounts the selected model in `<tonk-site>`. The profile branch owns `/`,
-`/settings`, `/settings/link`, `/join`, `/inspector`, and `/diagnose`. Space paths
+`/settings`, `/settings/link`, and `/join`. Space paths
 mount the selected repository and branch, with `/space/:space/*subject`
 preserving entity URIs containing `/`. The Rust shell owns the sealed guest,
 navigation bridge, and top-document ceremonies; the schema-owned views own Hub

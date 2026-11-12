@@ -954,7 +954,7 @@ fn button(document: &Document, class: &str, text: &str) -> Option<Element> {
 /// (red — grounded, literal), numbers and types the circle (blue —
 /// abstract, receding), comments the closure grey, and the `!` effect
 /// marker the alarm. Each is read through its `--tonk-*` variable with
-/// the literal as a fallback, the way `tonk-tree` does, because the
+/// the literal as a fallback, because the
 /// overlay lives in a shadow root inside a guest and cannot count on
 /// the sheet that defines them having been injected there.
 ///
