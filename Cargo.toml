@@ -190,6 +190,7 @@ unicode-width = "0.2"
 url = "2"
 urlencoding = "2"
 wasm-streams = "0.5"
+wasmparser = { version = "0.258", default-features = false, features = ["std", "component-model"] }
 web-time = "1"
 wit-bindgen = { version = "0.61.1", features = ["async-spawn"] }
 # The Wasm Component Model Polyfill, on which a host runs a Tonk kernel in a

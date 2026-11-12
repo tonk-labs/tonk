@@ -115,6 +115,21 @@ pub fn kernel_id(kernel: Uint8Array) -> String {
     boot::kernel_id(&kernel.to_vec())
 }
 
+/// Whether the kernel in `kernel` is a persona, which holds the person's
+/// account and hosts the person's spaces: it exports `sapling:kernel/guest`.
+#[wasm_bindgen(js_name = isPersona)]
+pub fn is_persona(kernel: Uint8Array) -> bool {
+    boot::is_persona(&kernel.to_vec())
+}
+
+/// Whether the kernel the space `subject` pins is a persona.
+#[wasm_bindgen(js_name = pinsPersona)]
+pub async fn pins_persona(subject: String) -> Result<bool, JsError> {
+    boot::pins_persona(&Layers::default(), &subject)
+        .await
+        .map_err(|error| JsError::new(&error))
+}
+
 /// Install `kernel` into the space `subject`, where the space is kept.
 #[wasm_bindgen]
 pub async fn install(subject: String, kernel: Uint8Array) -> Result<String, JsError> {

@@ -12,6 +12,7 @@
 
 pub use tonk_kernel_world::boot::{CELL, NAMESPACE, kernel_id};
 use tonk_kernel_world::boot::{cell_content, digest, read_cell};
+use wasmparser::{Parser, Payload};
 
 use crate::layers::{self, Layers};
 
@@ -65,6 +66,44 @@ pub async fn pinned(layers: &Layers, subject: &str) -> Result<Option<(String, Ve
         return Err(format!("the space holds other bytes than the kernel {id}"));
     }
     Ok(Some((id, kernel)))
+}
+
+/// The interface only a persona exports: the world `sapling:kernel/persona`
+/// is `kernel` with it. What a persona answers through it, delegating to the
+/// person's other workers and acting for the person, is what a site whose
+/// kernel is one can do and another cannot.
+const GUEST: &str = "sapling:kernel/guest@";
+
+/// Whether the kernel in `kernel` is a persona: it exports `guest`, at the
+/// top of the component. Bytes that do not parse are no persona.
+pub fn is_persona(kernel: &[u8]) -> bool {
+    let mut depth = 0usize;
+    for payload in Parser::new(0).parse_all(kernel) {
+        match payload {
+            Err(_) => return false,
+            Ok(Payload::ModuleSection { .. } | Payload::ComponentSection { .. }) => depth += 1,
+            Ok(Payload::End(_)) => depth = depth.saturating_sub(1),
+            Ok(Payload::ComponentExportSection(exports)) if depth == 0 => {
+                for export in exports {
+                    match export {
+                        Ok(export) if export.name.name.starts_with(GUEST) => return true,
+                        Ok(_) => {}
+                        Err(_) => return false,
+                    }
+                }
+            }
+            Ok(_) => {}
+        }
+    }
+    false
+}
+
+/// Whether the kernel the space `subject` pins is a persona. `false` when it
+/// pins none.
+pub async fn pins_persona(layers: &Layers, subject: &str) -> Result<bool, String> {
+    Ok(pinned(layers, subject)
+        .await?
+        .is_some_and(|(_, kernel)| is_persona(&kernel)))
 }
 
 /// The space this origin's host serves: the one whose layer holds a boot
@@ -124,6 +163,23 @@ mod tests {
             pinned(&layers, SPACE).await.unwrap(),
             Some((id, b"another".to_vec()))
         );
+    }
+
+    #[test]
+    fn it_tells_a_persona_by_what_it_exports() {
+        assert!(is_persona(tonk_components::TONK_PERSONA_BYTES));
+        assert!(!is_persona(tonk_components::TONK_KERNEL_BYTES));
+        assert!(!is_persona(b"kernel"));
+    }
+
+    #[tokio::test]
+    async fn it_says_whether_a_space_pins_a_persona() {
+        let layers = scratch("persona");
+        assert!(!pins_persona(&layers, SPACE).await.unwrap());
+        install(&layers, SPACE, tonk_components::TONK_PERSONA_BYTES)
+            .await
+            .unwrap();
+        assert!(pins_persona(&layers, SPACE).await.unwrap());
     }
 
     #[tokio::test]
