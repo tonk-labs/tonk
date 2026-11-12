@@ -3243,6 +3243,10 @@ view!:
                     </div>
                     <div class="agent-step" data-agent-panel="error" hidden>
                       <p class="agent-exp" data-agent-error role="alert"></p>
+                      <details class="agent-debug" data-agent-debug hidden>
+                        <summary>Debugging details</summary>
+                        <pre data-agent-debug-text tabindex="0" aria-label="Original error"></pre>
+                      </details>
                       <div class="agent-foot"><button class="agent-btn wide" type="button" data-agent-close>close</button></div>
                     </div>
                   </div>
@@ -6151,9 +6155,30 @@ element!: &account-settings
         self._agentTick = setInterval(show, 1000);
       }
     # A refusal the page can still recover from shows on the step it came
-    # from; one that ends the request shows as its own step.
+    # from; one that ends the request shows as its own step. A missing
+    # permission proof names the chosen space and one way to continue.
+    # Keep the original error in a collapsed disclosure. A repeated report
+    # leaves it open while someone is reading; a different error closes it.
     agent-error: |
-      (self, text) => {
+      (self, text, detail = text) => {
+        const original = detail ?? '';
+        const debug = self.querySelector('[data-agent-debug]');
+        if (debug) {
+          if (!original || self.querySelector('[data-agent-debug-text]')?.textContent !== original) debug.open = false;
+          debug.hidden = !original;
+        }
+        self.text('[data-agent-debug-text]', original);
+        const missing = text?.match(/did:key:[1-9A-HJ-NP-Za-km-z]+ holds no proof for (did:key:[1-9A-HJ-NP-Za-km-z]+)/);
+        if (missing) {
+          console.warn('Agent connection failed:', text);
+          const row = [...self.querySelectorAll('.agent-space')].find((row) => row.dataset.key === missing[1]);
+          const name = row?.querySelector('.agent-space-name')?.textContent?.trim();
+          const named = name && !name.startsWith('did:');
+          const space = named ? `“${name}”` : 'one of the selected spaces';
+          const choice = named ? 'that space' : 'all spaces';
+          const client = self._agentClient || 'your app';
+          text = `Tonk couldn’t verify access to ${space}. Restart the connection in ${client} with ${choice} set to “none”.`;
+        }
         self.text('[data-agent-error]', text);
         if (text) self.agentStep('error');
       }
@@ -6171,6 +6196,7 @@ element!: &account-settings
         self.pane('agent');
         if (!self.linked() || self.getAttribute('data-agent-shown') === request) return true;
         self.setAttribute('data-agent-shown', request);
+        self.agentError('');
         self.agentStep('agent');
         self.api(`/api/agent/request/${encodeURIComponent(request)}`).then((described) => {
           const client = described?.client_name || 'an app';
@@ -6386,7 +6412,7 @@ element!: &account-settings
         else if (state === 'refused') self.agentStep('spaces');
         else if (state === 'failed') self.agentError(/expired|another browser/i.test(detail)
           ? 'This connection request expired. Nothing was granted. Start connecting again from your app.'
-          : `Connecting the agent did not finish: ${detail}`);
+          : `Connecting the agent did not finish: ${detail}`, detail);
       }
     pane: |
       (self, name) => {
