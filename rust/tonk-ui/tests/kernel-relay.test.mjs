@@ -106,18 +106,32 @@ test("a page that says when it is ready leaves it to the page", () => {
   assert.deepEqual(it.told.map((message) => message.__tonkOrigin), ["shell", "need-port"]);
 });
 
-test("on the profile's origin, what the worker tells the page goes up to the app", () => {
-  const profile = page({ origin: "https://profile.tonk.test" });
-  profile.worker.dispatch("message", { data: { type: "webauthn" } });
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(profile.told.at(-1))),
-    { __tonkOrigin: "worker-message", message: { type: "webauthn" } },
-  );
+test("what the worker tells the page goes up to the page around it, on every site", () => {
+  for (const origin of ["https://profile.tonk.test", "https://bspace.tonk.test"]) {
+    const site = page({ origin });
+    site.worker.dispatch("message", { data: { type: "webauthn" } });
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(site.told.at(-1))),
+      { __tonkOrigin: "worker-message", message: { type: "webauthn" } },
+      origin,
+    );
+  }
+});
 
-  const space = page();
-  const before = space.told.length;
-  space.worker.dispatch("message", { data: { type: "webauthn" } });
-  assert.equal(space.told.length, before, "a space's worker says nothing else up");
+test("what the page around tells the worker reaches it, on every site, for the worker to answer", () => {
+  for (const origin of ["https://profile.tonk.test", "https://bspace.tonk.test"]) {
+    const site = page({ origin });
+    const port = {};
+    site.window.dispatch("message", {
+      source: site.parent,
+      data: { __tonkOrigin: "to-worker", message: { type: "resend" } },
+      ports: [port],
+      stopImmediatePropagation() {},
+    });
+    const told = site.toWorker.at(-1);
+    assert.equal(told.message.type, "resend", origin);
+    assert.equal(told.ports[0], port, origin);
+  }
 });
 
 test("the page keeps its own origin's worker up while it is open", () => {

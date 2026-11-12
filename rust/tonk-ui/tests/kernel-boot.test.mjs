@@ -22,10 +22,11 @@ const ACCESS = { subject: SPACE, command: "/", arguments: [], reason: "serve the
 // `holds` is the kernel the space already holds, if any; `shipped` is what
 // the deployment serves under `/_host/kernel/`, and `ships` what its
 // `/_host/kernel.json` says it ships; `record` is what the site's shell keeps
-// of the kernel it pins.
+// of the kernel it pins. `persona` is whether the kernel is a persona, as
+// the embedder reads it from the kernel's exports.
 function space({
   pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, ships = null, origin = ORIGIN, boots = true, record = null,
-  answers = {},
+  answers = {}, persona = false,
 } = {}) {
   const listeners = {};
   const told = [];
@@ -93,6 +94,8 @@ function space({
       return id;
     },
     pinned: async (subject) => kept.pins.get(subject),
+    isPersona: () => persona,
+    pinsPersona: async (subject) => persona && kept.pins.has(subject),
     // A kernel creates a space it takes up for the first time, and says so.
     bootSpace: async (subject, session, representative, persona, delegate, sent) => {
       if (!canBoot) throw new Error("the person has no such space");
@@ -110,7 +113,7 @@ function space({
     if (offline) throw new TypeError("Failed to fetch");
     const path = new URL(typeof address === "string" ? address : address.url, origin).pathname;
     fetched.push(path);
-    if (path === "/space.html") return new Response("<head></head>SHELL");
+    if (path === "/site.html") return new Response("<head></head>SHELL");
     if (path === "/library/media.webp") return new Response(new Uint8Array([0, 159, 255]));
     if (path === "/_host/kernel.json" && ships) return Response.json(ships);
     const id = /^\/_host\/kernel\/(.+)\.wasm$/.exec(path)?.[1];
@@ -286,10 +289,10 @@ test("a space with no kernel of its own installs the one its worker names, and b
   assert.equal(response.status, 404);
   assert.deepEqual(
     site.asked.map((asked) => Object.keys(asked).filter((key) => key !== "id")),
-    [["delegate", "access"], ["kernel"], ["seeded", "from"]],
-    "it asks for the space for its session, takes its kernel, and says it created the space",
+    [["kernel"], ["delegate", "access"], ["seeded", "from"]],
+    "it takes its kernel, which is no persona, asks for the space for its session, and says it created the space",
   );
-  assert.equal(site.asked[0].delegate, SESSION, "the space is delegated to the key made here");
+  assert.equal(site.asked.find((asked) => asked.delegate)?.delegate, SESSION, "the space is delegated to the key made here");
   assert.equal(site.asked.find((asked) => asked.kernel)?.kernel, KERNEL);
   assert.ok(!site.fetched.some((path) => path.startsWith("/_host/kernel/")), "nothing of the kernel is fetched");
   assert.deepEqual(
@@ -375,11 +378,11 @@ test("a worker for another kernel than the space pins does not boot it", async (
 
 test("the host's own files come from the network, and are kept for when it does not answer", async () => {
   const site = space();
-  const shell = await site.request("/space.html", { mode: "navigate" });
+  const shell = await site.request("/site.html", { mode: "navigate" });
   assert.match(await shell.text(), /SHELL/);
   assert.deepEqual(site.handled, [], "the kernel is not asked for the host's files");
   site.goOffline();
-  const kept = await site.request("/space.html", { mode: "navigate" });
+  const kept = await site.request("/site.html", { mode: "navigate" });
   assert.match(await kept.text(), /SHELL/, "offline, the kept copy answers");
 });
 
@@ -425,7 +428,7 @@ test("the kernel sends the page that asked somewhere, through its host", async (
 });
 
 test("the profile passes what a page asks about a space's content to that space's kernel, as it answers", async () => {
-  const profile = space({ origin: "https://profile.tonk.test" });
+  const profile = space({ origin: "https://profile.tonk.test", persona: true });
   const asked = [];
   const host = {
     postMessage: ({ call, request }) => {
@@ -451,7 +454,7 @@ test("the profile passes what a page asks about a space's content to that space'
 });
 
 test("a space's DID written percent-encoded still reaches that space's kernel", async () => {
-  const profile = space({ origin: "https://profile.tonk.test" });
+  const profile = space({ origin: "https://profile.tonk.test", persona: true });
   const asked = [];
   const host = {
     postMessage: ({ call, request }) => {
@@ -471,7 +474,7 @@ test("a space's DID written percent-encoded still reaches that space's kernel", 
 });
 
 test("the persona's subscription to a space's kernel reaches it in pieces, and stops when the persona stops reading", async () => {
-  const profile = space({ origin: "https://profile.tonk.test" });
+  const profile = space({ origin: "https://profile.tonk.test", persona: true });
   const asked = [];
   const host = {
     postMessage: (message) => {
@@ -506,7 +509,7 @@ const handoff = (request) => ({ type: "custody", credentialId: "aa", key: new Ui
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 test("the persona's ask to act as the account asks the page for the passkey, and lends the account it opens", async () => {
-  const profile = space({ origin: "https://profile.tonk.test" });
+  const profile = space({ origin: "https://profile.tonk.test", persona: true });
   await profile.started();
   const intent = { kind: "purge-account" };
   await profile.booted[0].authorize("to delete your account", sending(intent));
@@ -520,7 +523,7 @@ test("the persona's ask to act as the account asks the page for the passkey, and
 });
 
 test("a page's ask for a delegation is the kernel's to make, under the passkey the page already ran", async () => {
-  const profile = space({ origin: "https://profile.tonk.test" });
+  const profile = space({ origin: "https://profile.tonk.test", persona: true });
   await profile.started();
   const request = { kind: "delegate", subject: SPACE, command: "/", audience: PERSONA };
   const answered = profile.post(handoff(request));
@@ -539,7 +542,7 @@ test("a page's ask for a delegation is the kernel's to make, under the passkey t
 });
 
 test("the persona acts for another persona once it asks to, from its next boot too", async () => {
-  const profile = space({ origin: "https://profile.tonk.test" });
+  const profile = space({ origin: "https://profile.tonk.test", persona: true });
   await profile.started();
   await profile.booted[0].sent(sending({ ask: 7, standing: { persona: PERSONA, link64: btoa("link") } }));
   await settle();
@@ -553,14 +556,24 @@ test("the persona acts for another persona once it asks to, from its next boot t
   assert.equal(profile.stood.at(-1), null, "signed out, it acts for its provisional persona");
 });
 
-test("a new profile whose persona the deployment no longer serves runs the one it ships now", async () => {
-  const profile = space({ origin: "https://profile.tonk.test", pinned: "bafkr4igone", ships: { persona: KERNEL } });
+test("a new site whose kernel is a persona is its session's own, and asks no one for it", async () => {
+  const profile = space({ origin: "https://bwhatever.tonk.test", persona: true });
   await profile.started();
-  assert.equal(profile.booted.length, 1, "it boots the persona the deployment ships");
+  assert.deepEqual(profile.asked, [], "no host is asked for the space or the kernel");
+  assert.equal(profile.booted[0].subject, SESSION, "the persona's space is its session's");
+  assert.ok(profile.booted[0].merge, "and it boots as a persona, wherever it is");
+});
+
+test("a new site whose kernel is no persona is the space its host delegates, on the profile's origin too", async () => {
+  const site = space({ origin: "https://profile.tonk.test" });
+  site.handPort();
+  await site.started();
+  assert.equal(site.booted[0].subject, SPACE, "the space the host named");
+  assert.equal(site.booted[0].representative, REPRESENTATIVE, "booted as a space");
 });
 
 test("a profile whose kernel the deployment no longer serves says so on its page", async () => {
-  const profile = space({ origin: "https://profile.tonk.test", shipped: {} });
+  const profile = space({ origin: "https://profile.tonk.test", shipped: {}, persona: true });
   const response = await profile.request("/", { mode: "navigate" });
   assert.equal(response.status, 502);
   assert.match(await response.text(), /runs the kernel bafkr4ikernel, which this deployment no longer serves/);
@@ -587,7 +600,7 @@ test("a shell asking again for a kernel that did not boot has it boot again", as
 });
 
 test("what a page asks of a space whose kernel does not answer, the persona answers", async () => {
-  const profile = space({ origin: "https://profile.tonk.test" });
+  const profile = space({ origin: "https://profile.tonk.test", persona: true });
   const host = {
     postMessage: ({ call }) => {
       queueMicrotask(() => host.onmessage({ data: { call, error: "the person has no such space" } }));
@@ -601,7 +614,7 @@ test("what a page asks of a space whose kernel does not answer, the persona answ
 });
 
 test("what the persona answered of a space ends once the space's kernel answers", async () => {
-  const profile = space({ origin: "https://profile.tonk.test" });
+  const profile = space({ origin: "https://profile.tonk.test", persona: true });
   let answers = false;
   const host = {
     postMessage: ({ call }) => {
@@ -645,6 +658,7 @@ const KEPT = { name: "Old notes", content: new Uint8Array([1, 2, 3]).buffer, rev
 test("a space an earlier release kept is kept by the profile's host and made again by the persona", async () => {
   const profile = space({
     origin: "https://profile.tonk.test",
+    persona: true,
     answers: { "POST /_kernel/migrated": () => [200, JSON.stringify({ space: SPACE })] },
   });
   const answer = await profile.post({ type: "migrate", spaces: [KEPT] });
@@ -658,6 +672,7 @@ test("a space an earlier release kept is kept by the profile's host and made aga
 test("a space the persona did not make leaves nothing kept, and says why", async () => {
   const profile = space({
     origin: "https://profile.tonk.test",
+    persona: true,
     answers: { "POST /_kernel/migrated": () => [500, '"no space was made"'] },
   });
   const answer = await profile.post({ type: "migrate", spaces: [KEPT] });
@@ -669,6 +684,7 @@ test("a space made as a copy of one an earlier release kept is created from what
   let copy;
   const profile = space({
     origin: "https://profile.tonk.test",
+    persona: true,
     answers: {
       "POST /_kernel/migrated": (asked) => ((copy = asked.copy), [200, JSON.stringify({ space: SPACE })]),
       [`GET /_kernel/seed/${SPACE}`]: () => [200, JSON.stringify({ name: "Old notes", copy_from: copy })],
@@ -678,6 +694,8 @@ test("a space made as a copy of one an earlier release kept is created from what
   await profile.post({ type: "migrate", spaces: [KEPT] });
   const host = { postMessage: (message) => host.answers.push(message), answers: [] };
   profile.listeners.message({ data: { type: "space-port", repo: SPACE }, ports: [host], waitUntil() {} });
+  // The port is bound once the kernel booted and is known to be a persona.
+  for (let i = 0; i < 100 && !host.onmessage; i++) await new Promise((resolve) => setTimeout(resolve, 5));
   const until = async (id) => {
     for (let i = 0; i < 100 && !host.answers.some((answer) => answer.id === id && !answer.ack); i++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -691,4 +709,29 @@ test("a space made as a copy of one an earlier release kept is created from what
   await host.onmessage({ data: { id: 2, seeded: true } });
   assert.equal((await until(2)).settled, true);
   assert.deepEqual(await migrated(profile), [], "nothing is kept once the space is created");
+});
+
+test("a site renders with the renderer its kernel keeps", async () => {
+  const site = space({ holds: KERNEL, answers: { "GET /guest/manifest.json": () => [200, '{"kept":true}', "application/json"] } });
+  site.handPort();
+  const response = await site.request("/guest/manifest.json");
+  assert.deepEqual(await response.json(), { kept: true });
+  assert.ok(!site.fetched.includes("/guest/manifest.json"), "nothing of the deployment's renderer is fetched");
+});
+
+test("a site whose kernel keeps no renderer renders with the deployment's", async () => {
+  const profile = space({ persona: true });
+  await profile.request("/guest/manifest.json");
+  assert.ok(profile.handled.includes("GET /guest/manifest.json"), "its kernel is asked first");
+  assert.ok(profile.fetched.includes("/guest/manifest.json"), "then the deployment's is fetched");
+});
+
+test("a kernel that is no persona takes nothing for the person's account", async () => {
+  const site = space({ holds: KERNEL });
+  site.handPort();
+  for (const type of ["resend", "migrate", "custody"]) {
+    const answer = await site.post({ type, spaces: [] });
+    assert.match(answer.error, new RegExp(`does not take ${type}`));
+  }
+  assert.ok(!site.handled.includes("GET /api/profiles"), "and asks its kernel nothing of an account");
 });

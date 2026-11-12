@@ -1,12 +1,14 @@
-// Carries ports between a kernel space's worker and the page around it.
+// Carries ports between a site's worker and the page around it.
 //
-// The space's worker puts this at the top of each page the kernel answers a
+// The site's worker puts this at the top of each page the kernel answers a
 // page load with (see `kernel_boot.js`), so it runs before anything of the
 // page's own. It says to the frame above that the site is here, hands down to
 // the worker the port the frame above opens to the person's profile, and tells
-// the worker when the page is about to go, so it saves what it holds first. On
-// the profile's origin, it passes up what the profile's worker tells the page
-// that asked it something, such as to run a passkey ceremony.
+// the worker when the page is about to go, so it saves what it holds first. It
+// passes to the worker what the frame above tells it, such as what came of a
+// passkey ceremony, and up what the worker tells the page that asked it
+// something, such as to run one: the frame above heeds what it trusts the
+// site it framed with.
 //
 // The page's own code runs in this document too. The port is not for it:
 // this script hears the port before anything else can, and keeps it from
@@ -38,12 +40,9 @@
         if (sw.controller) sw.controller.postMessage({ type: "flush" });
     }
 
-    // The app's page runs the passkey ceremonies, and tells the profile's
-    // worker what came of one by way of this frame: what a custody ceremony
-    // derived, or that it was refused. It hands over the spaces an earlier
-    // release kept, and asks for another activation email, the same way.
-    var profile = location.hostname.split(".")[0].indexOf("profile") === 0;
-    var TO_WORKER = ["custody", "ceremony-refused", "migrate", "resend"];
+    // The page around this frame tells the site's worker things by way of
+    // it, such as what came of a passkey ceremony it ran for the worker. The
+    // worker answers what its kernel can.
     window.addEventListener(
         "message",
         function (e) {
@@ -52,10 +51,10 @@
                 e.stopImmediatePropagation();
                 var port = e.ports && e.ports[0];
                 if (port && sw.controller) sw.controller.postMessage({ type: "port" }, [port]);
-            } else if (profile && e.data.__tonkOrigin === "to-worker") {
+            } else if (e.data.__tonkOrigin === "to-worker") {
                 e.stopImmediatePropagation();
                 var message = e.data.message;
-                if (!message || TO_WORKER.indexOf(message.type) < 0 || !sw.controller) return;
+                if (!message || !sw.controller) return;
                 sw.controller.postMessage(message, Array.prototype.slice.call(e.ports || []));
             }
         },
@@ -74,13 +73,13 @@
         if (document.visibilityState === "hidden") flush();
     });
     // The worker asks for a port as it starts, and again after every restart;
-    // it says what it is busy with while the page waits on it. Only the
-    // profile's worker says anything else: a space's page holds author code.
+    // it says what it is busy with while the page waits on it. Anything else
+    // it says goes up.
     sw.addEventListener("message", function (e) {
         if (e.data && e.data.type === "need-port") ask();
         else if (e.data && e.data.type === "status") {
             tell({ __tonkOrigin: "status", stage: e.data.stage }, "*");
-        } else if (profile) {
+        } else {
             tell({ __tonkOrigin: "worker-message", message: e.data }, "*");
         }
     });

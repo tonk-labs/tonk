@@ -57,7 +57,8 @@ use web_sys::{
 };
 
 use crate::space_origin::{
-    broker_port, clear_unreachable, grant_relayed_port, on_top, relay_port, requested_location,
+    broker_port, clear_unreachable, grant_relayed_port, name_kernel, on_top, relay_port,
+    requested_location,
 };
 
 /// Per-portal bridge + iframe state. Held behind `Rc<RefCell<…>>` so
@@ -897,7 +898,7 @@ async fn app_stylesheet_css() -> Option<String> {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn fetch_text(url: &str) -> Result<String, String> {
+pub(crate) async fn fetch_text(url: &str) -> Result<String, String> {
     resp_text(fetch(url).await?).await
 }
 
@@ -1057,6 +1058,13 @@ pub(crate) fn install_message_listener() {
                         if state.with.as_ref().is_some_and(Location::profile) {
                             hear_worker_message(&data);
                         }
+                    }
+                    // A new site's shell asks which kernel it runs: this
+                    // page framed it, so it knows whether it is the
+                    // person's profile or one of their spaces.
+                    "need-kernel" => {
+                        let profile = state.with.as_ref().is_some_and(Location::profile);
+                        name_kernel(&iframe, origin, profile);
                     }
                     "need-port" => match requested_location(&data) {
                         Some(requested) if state.allow.permits(&requested) => {

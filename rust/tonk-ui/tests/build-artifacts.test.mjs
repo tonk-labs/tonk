@@ -107,8 +107,8 @@ test("the page build tracks top-level document resources and ignores guest code"
     const dist = fixtureDist();
     try {
       // What a site's own origin runs: its worker, the kernel it hosts,
-      // and its shells.
-      for (const name of ["kernel_boot.js", "space.html", "profile.html"]) {
+      // and its shell.
+      for (const name of ["kernel_boot.js", "site.html"]) {
         copyFileSync(join(UI, "assets", name), join(dist, name));
       }
       mkdirSync(join(dist, "_host", "kernel"), { recursive: true });
@@ -146,7 +146,7 @@ test("the page build tracks top-level document resources and ignores guest code"
   assert.notEqual(kernel.build, base.build);
   assert.equal(kernel.page, base.page, "the kernel a site runs does not change the page");
   const shell = stamp((dist) => {
-    writeFileSync(join(dist, "profile.html"), "<!doctype html><title>another shell</title>\n");
+    writeFileSync(join(dist, "site.html"), "<!doctype html><title>another shell</title>\n");
   });
   assert.notEqual(shell.build, base.build);
   assert.equal(shell.page, base.page, "what a site's origin runs does not change the page");

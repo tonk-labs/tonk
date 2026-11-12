@@ -3,18 +3,55 @@
     <head>
         <meta charset="utf-8" />
         <!-- The shell of a site's origin: the one page its worker answers
-             every address of the site with. It registers the site's worker,
-             waits for it to take control, then brings the site up itself,
-             from its own origin: the bootstrap that speaks to the page
-             around it, the element runtime, and the display of whatever
-             route its address names. It tells the page around it how far
-             along it is, and takes nothing from it but the port's answers. -->
+             every address of the site with, the profile's as any space's.
+             It registers the site's worker, waits for it to take control,
+             then brings the site up itself, from its own origin: the
+             bootstrap that speaks to the page around it, the element
+             runtime, and the display of whatever route its address names.
+             It tells the page around it how far along it is, and takes
+             nothing from it but the port's answers, the kernel a new site
+             runs, and what the page passes to the site's worker. -->
         <script>
             (function () {
                 // Say so at once: a parent that never hears this knows the
                 // frame could not load at all (offline, with no worker here
                 // yet), and tells the person why.
                 parent.postMessage({ __tonkOrigin: "shell" }, "*");
+
+                // The space whose origin `hostname` is: its label is the
+                // space's key in multibase base32, after the deployment's
+                // suffix is taken off, and the DID names the key in base58.
+                // Only for a shell opened on its own, with no worker yet to
+                // ask: the label is all there is to tell which site the app
+                // shows at which address.
+                function spaceOf(hostname) {
+                    var label = /^b([a-z2-7]+)(?:-[a-z0-9]+)?$/.exec(hostname.split(".")[0]);
+                    if (!label) return null;
+                    var bytes = [], bits = 0, value = 0;
+                    for (var i = 0; i < label[1].length; i++) {
+                        value = (value << 5) | "abcdefghijklmnopqrstuvwxyz234567".indexOf(label[1][i]);
+                        bits += 5;
+                        if (bits >= 8) {
+                            bits -= 8;
+                            bytes.push((value >> bits) & 255);
+                        }
+                    }
+                    var ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+                    var digits = [];
+                    for (var j = 0; j < bytes.length; j++) {
+                        var carry = bytes[j];
+                        for (var k = 0; k < digits.length; k++) {
+                            carry += digits[k] << 8;
+                            digits[k] = carry % 58;
+                            carry = (carry / 58) | 0;
+                        }
+                        for (; carry; carry = (carry / 58) | 0) digits.push(carry % 58);
+                    }
+                    var text = "";
+                    for (var z = 0; z < bytes.length && bytes[z] === 0; z++) text += "1";
+                    for (var d = digits.length - 1; d >= 0; d--) text += ALPHABET[digits[d]];
+                    return "did:key:z" + text;
+                }
 
                 // Carries ports between this origin's worker and the frame
                 // above. A site's worker reaches the worker it answers to
@@ -49,49 +86,41 @@
                         },
                         true,
                     );
-                    // The app's page runs the passkey ceremonies, and tells
-                    // the worker that holds the account, this origin's, what
-                    // came of one by way of this frame: what a custody
-                    // ceremony derived, or that a ceremony was refused. It
-                    // also hands over the spaces an earlier release kept, and
-                    // asks for another activation email.
-                    var TO_WORKER = ["custody", "ceremony-refused", "migrate", "resend"];
+                    // What the page around this frame tells the site's
+                    // worker, such as what came of a passkey ceremony it ran
+                    // for the worker. The worker answers what its kernel can.
                     window.addEventListener(
                         "message",
                         function (e) {
                             if (e.source !== parent || !e.data || e.data.__tonkOrigin !== "to-worker") return;
                             e.stopImmediatePropagation();
-                            var message = e.data.message;
-                            if (!message || TO_WORKER.indexOf(message.type) < 0 || !sw.controller) return;
-                            sw.controller.postMessage(message, Array.prototype.slice.call(e.ports));
+                            if (e.data.message && sw.controller) {
+                                sw.controller.postMessage(e.data.message, Array.prototype.slice.call(e.ports));
+                            }
                         },
                         true,
                     );
-                    // A profile's worker tells the page that asked it where
-                    // to go next, or to run a passkey ceremony. That page is
-                    // the app's, around this frame, and hears it from here.
-                    var profile = location.hostname.split(".")[0].indexOf("profile") === 0;
+                    // What the site's worker tells its pages, such as where
+                    // to go next, or to run a passkey ceremony, goes up to
+                    // the page around this frame, which heeds what it trusts
+                    // the site it framed with.
                     sw.addEventListener("message", function (e) {
                         if (e.data && e.data.type === "need-port") ask();
                         else if (e.data && e.data.type === "status") workerSays(e.data.stage);
-                        else if (profile) {
-                            parent.postMessage({ __tonkOrigin: "worker-message", message: e.data }, "*");
-                        }
+                        else parent.postMessage({ __tonkOrigin: "worker-message", message: e.data }, "*");
                     });
                     sw.startMessages();
                     ask();
-                    // The app's page counts visits by the profile acting
-                    // here, which only this origin's worker knows.
-                    if (profile) {
-                        fetch("/api/identify")
-                            .then(function (response) { return response.ok ? response.json() : null; })
-                            .then(function (identity) {
-                                if (identity && identity.did) {
-                                    parent.postMessage({ __tonkOrigin: "identity", did: identity.did }, "*");
-                                }
-                            })
-                            .catch(function () {});
-                    }
+                    // Who acts here, where the site's kernel says: the page
+                    // around counts visits by it.
+                    fetch("/api/identify")
+                        .then(function (response) { return response.ok ? response.json() : null; })
+                        .then(function (identity) {
+                            if (identity && identity.did) {
+                                parent.postMessage({ __tonkOrigin: "identity", did: identity.did }, "*");
+                            }
+                        })
+                        .catch(function () {});
                 }
                 // How far along the site is: what this shell is doing, or what
                 // its worker says it is busy with, which is the longer wait.
@@ -129,7 +158,7 @@
 
                 function report(error) {
                     parent.postMessage(
-                        { __tonkRuntime: "error", error: "space origin: " + (error && error.stack || error) },
+                        { __tonkRuntime: "error", error: "site origin: " +(error && error.stack || error) },
                         "*",
                     );
                 }
@@ -155,94 +184,121 @@
                     });
                 }
 
-                // Have the profile's worker answer this origin, this
-                // document included, and wait until one does. A worker that
-                // takes over later, a new build, takes this document as it
-                // is: it asks for a port of its own (`need-port`), and nothing
-                // here loads again.
-                // The worker the profile runs: the bootloader of the persona
-                // the profile pins, or, for a profile that pins none yet, of
-                // the one this deployment ships, which it pins from then on.
-                // A newer persona is taken up only when the person chooses.
-                // `null` where neither can be told now (offline), which leaves
-                // the worker as it is.
-                var BOOT_CACHE = "tonk-boot";
-                var BOOT_KEY = "/__boot";
-                // The persona this deployment ships, written in by the build
-                // (`scripts/build-kernel-host.sh`): a shell that a worker from
-                // before kernels served cannot ask that worker for
-                // `/_host/kernel.json`, which it does not know.
-                var SHIPPED_PERSONA = null;
-                async function deployed() {
-                    if (SHIPPED_PERSONA) return SHIPPED_PERSONA;
-                    var answer = await fetch("/_host/kernel.json", { cache: "no-cache" });
-                    return answer.ok ? (await answer.json()).persona : null;
-                }
-                async function shipped() {
-                    var id = null;
-                    try {
-                        var held = await (await caches.open(BOOT_CACHE)).match(BOOT_KEY);
-                        var record = held ? await held.json() : null;
-                        if (record && record.v === 2 && typeof record.kernel === "string") id = record.kernel;
-                    } catch (error) {}
-                    if (!id) {
-                        try {
-                            var persona = await deployed();
-                            if (typeof persona !== "string") return null;
-                            await (await caches.open(BOOT_CACHE)).put(BOOT_KEY, Response.json({ v: 2, kernel: persona }));
-                            id = persona;
-                        } catch (error) {
-                            return null;
-                        }
-                    }
-                    return "/kernel_boot.js?kernel=" + encodeURIComponent(id);
-                }
-
-                function runs(worker) {
-                    var url = new URL(worker.scriptURL);
-                    return url.pathname + url.search;
-                }
-
-                async function control() {
+                // Have `script` answer this origin, this document included,
+                // and wait until it does. A worker that takes over takes this
+                // document as it is: nothing here loads again.
+                async function install(script) {
                     var container = navigator.serviceWorker;
-                    var script = await shipped();
-                    var current = container.controller;
-                    if (current && (!script || runs(current) === script) && (await speaks(current))) return;
-                    // A worker the browser cannot update keeps control of
-                    // this origin for good: one registered as a classic script
-                    // cannot become a module. It is withdrawn, and the current
-                    // script takes its place.
-                    if (container.controller) {
-                        say("replacing its worker");
-                        var stuck = await container.getRegistration();
-                        if (stuck) await stuck.unregister();
-                    } else {
-                        say("installing its worker");
-                    }
+                    var wanted = new URL(script, location.href).href;
+                    var answers = function () {
+                        return !!container.controller && container.controller.scriptURL === wanted;
+                    };
+                    if (answers()) return;
                     var taken = new Promise(function (resolve) {
                         container.addEventListener("controllerchange", function check() {
-                            if (!container.controller) return;
+                            if (!answers()) return;
                             container.removeEventListener("controllerchange", check);
                             resolve();
                         });
                     });
-                    if (!script) throw new Error("the profile pins no persona, and this deployment names none");
-                    await container.register(script, {
-                        scope: "/",
-                        updateViaCache: "none",
-                    });
-                    if (container.controller && (await speaks(container.controller))) return;
-                    say("waiting for its worker");
+                    await container.register(script, { scope: "/", updateViaCache: "none" });
+                    if (answers()) return;
                     // A worker takes the documents open when it starts. One
                     // that loads just after is left with a worker that is
                     // running and does not answer it: ask that worker to
                     // take this document too.
                     container.ready.then(function (registration) {
-                        if (registration.active && registration.active !== container.controller) {
-                            registration.active.postMessage({ type: "claim" });
-                        }
+                        if (!answers() && registration.active) registration.active.postMessage({ type: "claim" });
                     });
                     await taken;
+                }
+
+                // A worker the browser cannot update keeps control of this
+                // origin for good. That happens when its registration can no
+                // longer load the current script: one registered as a classic
+                // script cannot become a module. Withdraw it, and have the
+                // current script take its place.
+                async function recover(script) {
+                    var registration = await navigator.serviceWorker.getRegistration();
+                    if (registration) await registration.unregister();
+                    await install(script);
+                }
+
+                // How long a site with no kernel recorded waits for the page
+                // around it to name one.
+                var NAMED_WITHIN_MS = 10000;
+
+                // The kernel the page around this frame says a new site
+                // runs: it framed the site, so it knows what the site is,
+                // the person's profile or one of their spaces. `null` where
+                // it names none in time.
+                function named() {
+                    return new Promise(function (resolve) {
+                        var timer = setTimeout(function () {
+                            window.removeEventListener("message", heard, true);
+                            resolve(null);
+                        }, NAMED_WITHIN_MS);
+                        function heard(e) {
+                            if (e.source !== parent || !e.data || e.data.__tonkOrigin !== "kernel") return;
+                            e.stopImmediatePropagation();
+                            if (typeof e.data.kernel !== "string") return;
+                            clearTimeout(timer);
+                            window.removeEventListener("message", heard, true);
+                            resolve(e.data.kernel);
+                        }
+                        window.addEventListener("message", heard, true);
+                        parent.postMessage({ __tonkOrigin: "need-kernel" }, "*");
+                    });
+                }
+
+                // The kernel this site runs (see `plan/space-kernel.md`): the
+                // one its boot record pins, where its worker last wrote it so
+                // a page can read it with no worker running; or, for a site
+                // with none pinned yet, the one the page around it names,
+                // which it pins from then on.
+                var BOOT_CACHE = "tonk-boot";
+                var BOOT_KEY = "/__boot";
+                async function kernel() {
+                    try {
+                        var held = await (await caches.open(BOOT_CACHE)).match(BOOT_KEY);
+                        var record = held ? await held.json() : null;
+                        if (record && record.v === 2 && typeof record.kernel === "string") return record.kernel;
+                    } catch (error) {}
+                    var id = await named();
+                    if (!id) return null;
+                    try {
+                        await (await caches.open(BOOT_CACHE)).put(BOOT_KEY, Response.json({ v: 2, kernel: id }));
+                    } catch (error) {}
+                    return id;
+                }
+
+                // What a worker was registered for: its own address says.
+                function runs(worker) {
+                    return new URL(worker.scriptURL).searchParams.get("kernel");
+                }
+
+                // Have the worker for the kernel this site pins answer it.
+                // One that runs another kernel, or none, is replaced in
+                // place, as is one too old to speak this shell's protocol. A
+                // worker that takes over later, a new build of the same one,
+                // takes this document as it is: it asks for a port of its own
+                // (`need-port`), and nothing here loads again.
+                async function control() {
+                    var container = navigator.serviceWorker;
+                    var kernelId = await kernel();
+                    if (!kernelId) throw new Error("the site pins no kernel, and the page around it names none");
+                    var script = "/kernel_boot.js?kernel=" + encodeURIComponent(kernelId);
+                    if (!container.controller) {
+                        say("installing its worker");
+                        return install(script);
+                    }
+                    if (runs(container.controller) !== kernelId) {
+                        say("switching its worker");
+                        return install(script);
+                    }
+                    if (await speaks(container.controller)) return;
+                    say("replacing its worker");
+                    return recover(script);
                 }
 
                 // Whether the site's worker served this document. Only then
@@ -260,25 +316,14 @@
                     return !!navigation && navigation.workerStart > 0;
                 }
 
-                // Load again, now that the worker is in control, so that it
-                // serves the document the site renders in. Once per frame: a
-                // worker that still does not serve it leaves the site unrendered.
-                function reloadUnderWorker() {
-                    var key = "tonk-space-shell-reload";
-                    try {
-                        if (sessionStorage.getItem(key) === location.href) return false;
-                        sessionStorage.setItem(key, location.href);
-                    } catch (error) {
-                        return false;
-                    }
-                    location.reload();
-                    return true;
-                }
+                // The path this shell is kept at. It is not a place in the site.
+                var SHELL = "/site.html";
 
                 // Opened on its own, not framed by the app: there is no one to
                 // ask for a document, and the app is where this site is
-                // shown. Go there; where that cannot be worked out, say what
-                // this address is.
+                // shown: a space at its DID, and the profile, which no key
+                // names, at the app's own addresses, path for path. Go there;
+                // where that cannot be worked out, say what this address is.
                 if (parent === window) {
                     var say = function (app) {
                         var tell = function () {
@@ -291,37 +336,28 @@
                         if (document.body) tell();
                         else document.addEventListener("DOMContentLoaded", tell);
                     };
-                    // Whether the profile is signed in to an account: its
-                    // active branch names one.
-                    function signedIn() {
-                        return fetch("/api/profiles")
-                            .then(function (answer) { return answer.json(); })
-                            .then(function (roster) {
-                                return (roster.profiles || []).some(function (entry) { return entry.active && !!entry.rootDid; });
-                            })
-                            .catch(function () { return false; });
-                    }
                     fetch("/.well-known/tonk")
                         .then(function (answer) { return answer.json(); })
                         .then(function (config) {
                             var app = config && config.sites && config.sites.app;
                             if (typeof app !== "string") throw new Error("no app is named");
-                            return app;
-                        })
-                        // The app shows the profile at the app's own
-                        // addresses, path for path; the shell's own address
-                        // is the one it was starting the worker for. On the
-                        // app's own origin it is the app's file, which sends
-                        // nowhere.
-                        .then(function (app) {
+                            // On the app's own origin this is the app's file,
+                            // which sends nowhere.
                             if (new URL(app, location.href).origin === location.origin) return say(app);
+                            // The shell's own address is the one it was
+                            // starting the worker for.
                             var address = location.pathname + location.search + location.hash;
-                            if (location.pathname === "/profile.html") {
+                            if (location.pathname === SHELL) {
                                 address = location.hash.indexOf("#boot=") === 0
                                     ? decodeURIComponent(location.hash.slice(6)) || "/"
                                     : "/";
                             }
-                            location.replace(new URL(address, app).href);
+                            var space = spaceOf(location.hostname);
+                            location.replace(
+                                space
+                                    ? app.replace(/\/$/, "") + "/" + space + (address === "/" ? "" : address)
+                                    : new URL(address, app).href,
+                            );
                         })
                         .catch(function () { say(null); });
                     return;
@@ -329,7 +365,7 @@
 
                 var inside = false;
                 try {
-                    inside = parent !== window && parent.location.origin === location.origin;
+                    inside = parent.location.origin === location.origin;
                 } catch (error) {}
                 if (inside) {
                     control().then(becomeContent).catch(report);
@@ -350,12 +386,14 @@
                 // whether an address it was given names one of the person's
                 // accounts, which is switched to, and whether the person is
                 // signed in at all. Only the app is heard: a port speaks for
-                // the person's persona.
+                // whoever this site's kernel acts as.
                 function answerApp() {
                     var worker = function () { return navigator.serviceWorker.controller; };
+                    function roster() {
+                        return fetch("/api/profiles").then(function (answer) { return answer.json(); });
+                    }
                     function account(did) {
-                        return fetch("/api/profiles")
-                            .then(function (answer) { return answer.json(); })
+                        return roster()
                             .then(function (roster) {
                                 var entry = (roster.profiles || []).find(function (entry) { return entry.rootDid === did; });
                                 if (!entry) return false;
@@ -368,11 +406,10 @@
                             })
                             .catch(function () { return false; });
                     }
-                    // Whether the profile is signed in to an account: its
-                    // active branch names one.
+                    // Whether the site is signed in to an account: its active
+                    // branch names one.
                     function signedIn() {
-                        return fetch("/api/profiles")
-                            .then(function (answer) { return answer.json(); })
+                        return roster()
                             .then(function (roster) {
                                 return (roster.profiles || []).some(function (entry) { return entry.active && !!entry.rootDid; });
                             })
@@ -508,8 +545,21 @@
                     location.replace(location.href);
                 }
 
-                // The path this shell is kept at. It is not a place in the site.
-                var SHELL = "/profile.html";
+                // How long a shell whose site did not start waits before it
+                // asks again.
+                var RETRY_START_MS = 3000;
+
+                // Wait for the worker's kernel to boot and take up its site.
+                function started() {
+                    return new Promise(function (resolve, reject) {
+                        var channel = new MessageChannel();
+                        channel.port1.onmessage = function (event) {
+                            if (event.data && event.data.booted) resolve();
+                            else reject(new Error((event.data && event.data.error) || "the site did not start"));
+                        };
+                        navigator.serviceWorker.controller.postMessage({ type: "booted" }, [channel.port2]);
+                    });
+                }
 
                 // The site runs in this document, so the shell brings it up
                 // only once the document is one the worker served, with the
@@ -517,20 +567,42 @@
                 control().then(async function () {
                     // The server answered an address of this site with the
                     // app's page, there being no worker yet, and that page
-                    // sent the frame here to start one. Go back to the
-                    // address: the worker answers it now, with this shell or
-                    // with whatever content the site keeps there.
-                    if (location.hash.indexOf("#boot=") === 0) {
-                        location.replace(decodeURIComponent(location.hash.slice(6)) || "/");
+                    // sent the frame here to start one. The address is what
+                    // this frame shows.
+                    var booting = location.hash.indexOf("#boot=") === 0
+                        ? decodeURIComponent(location.hash.slice(6)) || "/"
+                        : null;
+                    // A site starts its worker from here the first time, with
+                    // the server's copy of this shell: a space's first start
+                    // asks the person's profile which space it is, over the
+                    // port this shell hands its worker. Once its kernel has
+                    // booted, this frame goes to the address it was asked
+                    // for, which the kernel answers.
+                    if (!servedByWorker() || booting !== null) {
+                        broker();
+                        say("starting the site");
+                        // A space the person's profile does not hold yet,
+                        // such as one a visitor is still joining, starts
+                        // once it does: until then this asks again in a
+                        // while, as the host's page does, and says so.
+                        var told = false;
+                        for (;;) {
+                            try {
+                                await started();
+                                break;
+                            } catch (error) {
+                                if (!told) report(error);
+                                told = true;
+                                say("waiting for the site");
+                                await new Promise(function (resolve) {
+                                    setTimeout(resolve, RETRY_START_MS);
+                                });
+                            }
+                        }
+                        var here = location.pathname === SHELL ? "/" : location.pathname + location.search + location.hash;
+                        location.replace(booting !== null ? booting : here);
                         return;
                     }
-                    if (!servedByWorker()) {
-                        if (reloadUnderWorker()) return;
-                        throw new Error("the site's worker did not serve its shell");
-                    }
-                    try {
-                        sessionStorage.removeItem("tonk-space-shell-reload");
-                    } catch (error) {}
                     if (location.pathname === SHELL) history.replaceState(null, "", "/");
                     broker();
                     say("loading");

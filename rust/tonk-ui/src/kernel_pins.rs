@@ -111,20 +111,6 @@ pub(crate) mod tests {
         b.kernel = ship_another(&generation_b, &a.kernel)?;
         if persona {
             b.persona = ship_another(&generation_b, &a.persona)?;
-            let shell = generation_b.join("profile.html");
-            let page = std::fs::read_to_string(&shell)?;
-            let shipping = format!("var SHIPPED_PERSONA = \"{}\";", a.persona);
-            ensure!(
-                page.contains(&shipping),
-                "the profile's shell ships no persona"
-            );
-            std::fs::write(
-                &shell,
-                page.replace(
-                    &shipping,
-                    &format!("var SHIPPED_PERSONA = \"{}\";", b.persona),
-                ),
-            )?;
         }
         std::fs::write(
             generation_b.join("_host/kernel.json"),

@@ -6,17 +6,18 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const shell = (name) =>
-  readFileSync(join(HERE, "..", "assets", `${name}.html`), "utf8")
-    .split("<script>")[1]
-    .split("</script>")[0];
-const SHELLS = { space: shell("space"), profile: shell("profile") };
+// The one shell every site's origin serves, the profile's as a space's.
+const SHELL = readFileSync(join(HERE, "..", "assets", "site.html"), "utf8")
+  .split("<script>")[1]
+  .split("</script>")[0];
 
 const MANIFEST = { bootstrap: "bootstrap-1.js", runtime: "runtime-1.js", preview: "preview-1.js" };
 const turn = () => new Promise((resolve) => setTimeout(resolve, 0));
 const settle = async () => { for (let i = 0; i < 20; i++) await turn(); };
 
-// Run a site's shell in stand-ins for the frame it loads in.
+// Run a site's shell in stand-ins for the frame it loads in. `name` says
+// which site the frame is, `"space"` or `"profile"`, which only picks the
+// defaults below: the shell is the same.
 //
 // - `address`: where the frame is, path first (`/notes?x#y`).
 // - `controlled`: whether a worker controls the frame already.
@@ -31,9 +32,11 @@ const settle = async () => { for (let i = 0; i < 20; i++) await turn(); };
 // - `active`: whether the origin's worker is running already, whoever it
 //   controls.
 // - `record`: what the site's boot record holds, as its worker or shell
-//   wrote it down: by default, a space pins a kernel and a profile nothing.
+//   wrote it down: by default, the kernel the site pins.
 // - `runs`: the kernel the worker in control was registered for: by default,
 //   the one the record pins.
+// - `named`: the kernel the page around names for a site that pins none, or
+//   `null` where it names none.
 // - `host`: the hostname the shell is served on: by default, the site's own.
 // - `unstarted`: how many times the worker answers that its kernel did not
 //   boot before it says it did.
@@ -43,7 +46,8 @@ function boot(
   {
     address = "/", controlled = true, served = true, framed = "site", content = [], store = new Map(),
     answers = {}, marked = false, active = false,
-    record = name === "space" ? { v: 2, kernel: "bafkr4ispace" } : null, runs = record?.kernel ?? null,
+    record = { v: 2, kernel: name === "space" ? "bafkr4ispace" : "bafkr4ipersona" }, runs = record?.kernel ?? null,
+    named = name === "space" ? "bafkr4ikernel" : "bafkr4ipersona",
     host = name === "profile" ? "profile.tonk.test" : "bspace.tonk.test",
     unstarted = 0, wait = setTimeout,
   } = {},
@@ -52,12 +56,29 @@ function boot(
   const at = new URL(address, origin);
   const said = [];      // stages told to the page around
   const asked = [];     // ports asked of the page around
+  const kernelAsked = []; // kernels asked of the page around
+  const up = [];        // what else was told to the page around
   const toWorker = [];  // messages posted to the worker
   const ran = [];       // scripts run, in order
   const requests = [];  // requests made
   const went = [];      // navigations: ["replace", url] | ["reload"]
   const failed = [];    // errors reported to the page around
+  // Each type's listeners, in the order they were added, those that capture
+  // first.
   const listeners = {};
+  const listen = (type, listener, capture) => {
+    const all = (listeners[type] ??= []);
+    if (capture) all.unshift(listener);
+    else all.push(listener);
+  };
+  const dispatch = (type, event) => {
+    let stopped = false;
+    const heard = { ...event, stopImmediatePropagation: () => void (stopped = true) };
+    for (const listener of [...(listeners[type] ?? [])]) {
+      listener(heard);
+      if (stopped) break;
+    }
+  };
   const workerListeners = {};
 
   class Channel {
@@ -116,8 +137,10 @@ function boot(
     replaceChildren(...children) { this.children = children; this.innerHTML = ""; },
   };
   const window = {
-    addEventListener: (type, listener) => void (listeners[type] = listener),
-    removeEventListener() {},
+    addEventListener: (type, listener, capture) => listen(type, listener, capture === true),
+    removeEventListener: (type, listener) => {
+      listeners[type] = (listeners[type] ?? []).filter((heard) => heard !== listener);
+    },
     postMessage() {},
     // Its own location, which a page opened on its own reads as its
     // parent's.
@@ -139,16 +162,22 @@ function boot(
     },
     createElement: element,
     getElementById: (id) => body.children.find((child) => child.id === id) ?? null,
-    addEventListener: (type, listener) => void (listeners[`document:${type}`] = listener),
+    addEventListener: (type, listener) => listen(`document:${type}`, listener, false),
     // The mark the worker puts in the shell it serves.
     querySelector: (selector) => (marked && selector.includes("tonk-shell") ? {} : null),
     visibilityState: "visible",
   };
+  // The page around the frame tells it `data`, with `ports`.
+  const fromAbove = (data, ports = []) => dispatch("message", { source: outside, data, ports });
   const outside = {
     postMessage: (message) => {
       if (message.__tonkOrigin === "status") said.push(message.stage);
-      if (message.__tonkOrigin === "need-port") asked.push(message);
-      if (message.__tonkRuntime === "error") failed.push(message.error);
+      else if (message.__tonkOrigin === "need-port") asked.push(message);
+      else if (message.__tonkRuntime === "error") failed.push(message.error);
+      else if (message.__tonkOrigin === "need-kernel") {
+        kernelAsked.push(message);
+        if (named) queueMicrotask(() => fromAbove({ __tonkOrigin: "kernel", kernel: named }));
+      } else up.push(message);
     },
     get location() {
       if (framed === "content") return { origin };
@@ -184,7 +213,7 @@ function boot(
     setTimeout: wait, clearTimeout, setInterval: () => 0, Promise, Number, Date, String,
     decodeURIComponent, Error,
   });
-  vm.runInContext(SHELLS[name], context);
+  vm.runInContext(SHELL, context);
   // The worker speaking to its pages, and the page moving the site.
   const workerSays = (data) => workerListeners.message({ data });
   // A worker registered for `script` takes control of the frame, and the
@@ -196,24 +225,20 @@ function boot(
   const moved = async (address) => {
     const next = new URL(address, origin);
     at.pathname = next.pathname; at.search = next.search;
-    listeners["tonk:context"]?.();
+    dispatch("tonk:context", {});
     await settle();
   };
   return {
-    said, asked, failed, toWorker, ran, requests, went, body, container, at, workerSays, moved, workerListeners,
-    registration, booted, takenBy,
+    said, asked, kernelAsked, up, failed, toWorker, ran, requests, went, body, container, at, workerSays, moved,
+    workerListeners, registration, booted, takenBy, fromAbove,
   };
 }
 
-// What a deployment ships: a profile with no persona of its own runs the one
-// named here, and a space that pins its own kernel reads none in it.
-const SHIPS = { "/_host/kernel.json": { kernel: "bafkr4ikernel", persona: "bafkr4ipersona" } };
 const SCRIPTS = { space: "/kernel_boot.js?kernel=bafkr4ispace", profile: "/kernel_boot.js?kernel=bafkr4ipersona" };
-const STARTING = { space: ["installing its worker"], profile: ["installing its worker", "waiting for its worker"] };
-// Where the shell the server served goes once its worker is in control: a
-// space's kernel starts, and the frame goes to the address the kernel answers;
-// a profile loads once more, for the worker to serve it.
-const UNDER_WORKER = { space: [["replace", "/"]], profile: [["reload"]] };
+const STARTING = ["installing its worker"];
+// Where the shell the server served goes once its worker is in control: its
+// kernel starts, and the frame goes to the address the kernel answers.
+const UNDER_WORKER = [["replace", "/"]];
 
 for (const name of ["space", "profile"]) {
   test(`${name}: the shell brings the site up from its own origin and shows the route`, async () => {
@@ -277,13 +302,13 @@ for (const name of ["space", "profile"]) {
   });
 
   test(`${name}: with no worker it installs one and goes on once it is in control`, async () => {
-    const site = boot(name, { controlled: false, served: false, answers: SHIPS });
+    const site = boot(name, { controlled: false, served: false });
     await settle();
     const [script, options] = site.container.registered[0] ?? [];
     assert.equal(site.container.registered.length, 1);
     assert.equal(script, SCRIPTS[name]);
     assert.equal(options.type, undefined, "the bootloader is a classic script");
-    assert.deepEqual(site.said, STARTING[name]);
+    assert.deepEqual(site.said, STARTING);
     assert.deepEqual(site.went, [], "it waits for its worker");
 
     // The browser says the controller changed, with none in control yet.
@@ -295,19 +320,19 @@ for (const name of ["space", "profile"]) {
     await settle();
     // The server, not the worker, served this document: the worker serves
     // what comes after it.
-    assert.deepEqual(site.went, UNDER_WORKER[name]);
+    assert.deepEqual(site.went, UNDER_WORKER);
     assert.deepEqual(site.ran, [], "nothing of the site runs before its worker serves the shell");
   });
 
   test(`${name}: left out by a worker that is already running, it asks to be taken and goes on once it is`, async () => {
-    const site = boot(name, { controlled: false, served: false, active: true, answers: SHIPS });
+    const site = boot(name, { controlled: false, served: false, active: true });
     await settle();
     assert.deepEqual(site.toWorker.map((message) => message.type), ["claim"]);
     assert.deepEqual(site.went, [], "it waits for the worker to take it");
 
     site.takenBy(SCRIPTS[name]);
     await settle();
-    assert.deepEqual(site.went, UNDER_WORKER[name], "and goes on under the worker");
+    assert.deepEqual(site.went, UNDER_WORKER, "and goes on under the worker");
   });
 
   test(`${name}: it asks nothing of a worker that is not running yet`, async () => {
@@ -318,7 +343,7 @@ for (const name of ["space", "profile"]) {
 
   test(`${name}: sent here to start a worker, it returns to the address asked for`, async () => {
     const site = boot(name, {
-      address: `/${name}.html#boot=${encodeURIComponent("/notes?x=1#frag")}`,
+      address: `/site.html#boot=${encodeURIComponent("/notes?x=1#frag")}`,
       served: false,
     });
     await settle();
@@ -328,7 +353,7 @@ for (const name of ["space", "profile"]) {
   });
 
   test(`${name}: its own path is not a place in the site`, async () => {
-    const site = boot(name, { address: `/${name}.html` });
+    const site = boot(name, { address: "/site.html" });
     await settle();
 
     assert.equal(site.at.pathname, "/");
@@ -394,14 +419,14 @@ test("a profile's address opened on its own goes to the same address of the app"
 });
 
 test("the profile's shell opened on its own goes to the address it was starting", async () => {
-  const site = boot("profile", { framed: "alone", address: "/profile.html#boot=%2Fsettings", answers: SITES });
+  const site = boot("profile", { framed: "alone", address: "/site.html#boot=%2Fsettings", answers: SITES });
   await settle();
 
   assert.deepEqual(site.went, [["replace", "https://tonk.test/settings"]]);
 });
 
 test("the profile's shell on the app's own origin stays, saying what the address is", async () => {
-  const site = boot("profile", { framed: "alone", address: "/profile.html", answers: SITES, host: "tonk.test" });
+  const site = boot("profile", { framed: "alone", address: "/site.html", answers: SITES, host: "tonk.test" });
   await settle();
 
   assert.deepEqual(site.went, [], "it does not send the app to itself");
@@ -425,19 +450,17 @@ test("a space's address opened on its own goes to that space in the app, at its 
 });
 
 test("a space's shell opened on its own goes to the address it was starting", async () => {
-  const site = boot("space", { framed: "alone", address: "/space.html#boot=%2Fnotes%3Fx%3D1", answers: SITES, host: `${LABEL}.tonk.test` });
+  const site = boot("space", { framed: "alone", address: "/site.html#boot=%2Fnotes%3Fx%3D1", answers: SITES, host: `${LABEL}.tonk.test` });
   await settle();
 
   assert.deepEqual(site.went, [["replace", `https://tonk.test/${SPACE}/notes?x=1`]]);
 });
 
-test("an address no space's label names leaves a way to the app", async () => {
-  const site = boot("space", { framed: "alone", answers: SITES, host: "nothing.tonk.test" });
+test("any site no space's key names is shown at the app's own addresses, as the profile is", async () => {
+  const site = boot("space", { framed: "alone", address: "/notes", answers: SITES, host: "nothing.tonk.test" });
   await settle();
 
-  assert.deepEqual(site.went, []);
-  assert.match(site.body.textContent, /serves a Tonk site/);
-  assert.equal(site.body.children[0]?.href, "https://tonk.test");
+  assert.deepEqual(site.went, [["replace", "https://tonk.test/notes"]]);
 });
 
 for (const name of ["space", "profile"]) {
@@ -496,8 +519,8 @@ test("the app's page, served at a site's address, sends the frame to the shell w
   const space = appPageOn(`b${"a".repeat(52)}.tonk.test`, "/notes?x=1#frag");
   const profile = appPageOn("profile.tonk.test", "/space/did:key:zSpace");
 
-  assert.deepEqual(space.went, [`/space.html#boot=${encodeURIComponent("/notes?x=1#frag")}`]);
-  assert.deepEqual(profile.went, [`/profile.html#boot=${encodeURIComponent("/space/did:key:zSpace")}`]);
+  assert.deepEqual(space.went, [`/site.html#boot=${encodeURIComponent("/notes?x=1#frag")}`]);
+  assert.deepEqual(profile.went, [`/site.html#boot=${encodeURIComponent("/space/did:key:zSpace")}`]);
   assert.ok(space.stopped && profile.stopped, "nothing else of the app's page runs there");
   assert.ok(space.site && profile.site);
 });
@@ -510,10 +533,13 @@ test("the app's page stays put on the app's own origin", () => {
   assert.equal(app.site, false);
 });
 
-test("a space registers the worker of the kernel it pins", async () => {
-  const site = boot("space", { controlled: false, served: false, answers: SHIPS });
-  await settle();
-  assert.equal(site.container.registered[0][0], "/kernel_boot.js?kernel=bafkr4ispace");
+test("a site registers the worker of the kernel it pins, and asks no one which", async () => {
+  for (const name of ["space", "profile"]) {
+    const site = boot(name, { controlled: false, served: false });
+    await settle();
+    assert.equal(site.container.registered[0][0], SCRIPTS[name]);
+    assert.deepEqual(site.kernelAsked, []);
+  }
 });
 
 test("a space under the worker of the kernel it pins is brought up", async () => {
@@ -525,14 +551,17 @@ test("a space under the worker of the kernel it pins is brought up", async () =>
   assert.match(site.body.innerHTML, /tonk-display/);
 });
 
-test("a space that pins no kernel runs the one its deployment ships, and pins it", async () => {
+test("a site that pins no kernel runs the one the page around it names, and pins it", async () => {
   // A release pinned before kernels, which no worker runs any more.
   const release = { v: 1, pin: "https://tonk.network/releases/bafkreib7f5smq4ggn5xwqas57gchvhvfry6ym7jbw5h3w4zg7wtwk33l2i/worker.js" };
-  for (const record of [null, release]) {
-    const site = boot("space", { controlled: false, served: false, record, answers: SHIPS });
-    await settle();
-    assert.equal(site.container.registered[0][0], "/kernel_boot.js?kernel=bafkr4ikernel");
-    assert.deepEqual(site.booted.record, { v: 2, kernel: "bafkr4ikernel" });
+  for (const [name, named] of [["space", "bafkr4ikernel"], ["profile", "bafkr4ipersona"]]) {
+    for (const record of [null, release]) {
+      const site = boot(name, { controlled: false, served: false, record, named });
+      await settle();
+      assert.equal(site.kernelAsked.length, 1, "it asks the page around once");
+      assert.equal(site.container.registered[0][0], `/kernel_boot.js?kernel=${named}`);
+      assert.deepEqual(site.booted.record, { v: 2, kernel: named });
+    }
   }
 });
 
@@ -541,16 +570,18 @@ test("a space the person does not hold yet starts once they do, asked again in a
   for (let i = 0; i < 5; i++) await settle();
 
   assert.equal(site.toWorker.filter((message) => message.type === "booted").length, 3);
-  assert.ok(site.said.includes("waiting for the space"), "it says what it waits on");
+  assert.ok(site.said.includes("waiting for the site"), "it says what it waits on");
   assert.equal(site.failed.length, 1, "what went wrong is told once");
   assert.deepEqual(site.went, [["replace", "/"]], "it goes to the space once it started");
 });
 
-test("a space with no kernel to run starts no worker and says why", async () => {
-  const site = boot("space", { controlled: false, served: false, record: null });
-  await settle();
-  assert.deepEqual(site.container.registered, []);
-  assert.match(site.failed.join(" "), /pins no kernel/);
+test("a site with no kernel pinned or named starts no worker and says why", async () => {
+  for (const name of ["space", "profile"]) {
+    const site = boot(name, { controlled: false, served: false, record: null, named: null, wait: (resume) => setTimeout(resume, 1) });
+    for (let i = 0; i < 3; i++) await settle();
+    assert.deepEqual(site.container.registered, []);
+    assert.match(site.failed.join(" "), /pins no kernel, and the page around it names none/);
+  }
 });
 
 for (const [what, options] of [
@@ -580,24 +611,57 @@ for (const [what, options] of [
   });
 }
 
-test("a profile that pins no persona runs the one its deployment ships, and pins it", async () => {
-  const site = boot("profile", {
-    controlled: false,
-    served: false,
-    answers: { "/_host/kernel.json": { kernel: "bafkr4ikernel", persona: "bafkr4ipersona" } },
-  });
-  await settle();
-  assert.equal(site.container.registered[0][0], "/kernel_boot.js?kernel=bafkr4ipersona");
-  assert.deepEqual(site.booted.record, { v: 2, kernel: "bafkr4ipersona" });
-});
-
-test("a profile runs the persona it pins, whatever its deployment ships", async () => {
+test("a site runs the kernel it pins, whatever the page around would name", async () => {
   const site = boot("profile", {
     controlled: false,
     served: false,
     record: { v: 2, kernel: "bafkr4ipinned" },
-    answers: { "/_host/kernel.json": { kernel: "bafkr4ikernel", persona: "bafkr4inewer" } },
+    named: "bafkr4inewer",
   });
   await settle();
   assert.equal(site.container.registered[0][0], "/kernel_boot.js?kernel=bafkr4ipinned");
+  assert.deepEqual(site.kernelAsked, []);
 });
+
+test("the shell never reads which kernel to run from the deployment itself", async () => {
+  const site = boot("space", { controlled: false, served: false, record: null });
+  await settle();
+  assert.ok(!site.requests.some(([, url]) => url === "/_host/kernel.json"));
+});
+
+// A port the page around hands down, as a stand-in.
+const handed = () => ({ postMessage() {} });
+
+for (const name of ["space", "profile"]) {
+  test(`${name}: what the page around tells the worker reaches it, whatever it is`, async () => {
+    const site = boot(name);
+    await settle();
+    const port = handed();
+    site.fromAbove({ __tonkOrigin: "to-worker", message: { type: "resend" } }, [port]);
+    site.fromAbove({ __tonkOrigin: "to-worker", message: { type: "anything" } });
+    assert.deepEqual(
+      site.toWorker.filter((message) => message.type === "resend" || message.type === "anything").map((message) => message.type),
+      ["resend", "anything"],
+      "the worker decides what it answers",
+    );
+  });
+
+  test(`${name}: what the worker says goes up to the page around, which decides what it heeds`, async () => {
+    const site = boot(name);
+    await settle();
+    site.workerSays({ type: "navigate", href: "/elsewhere" });
+    assert.deepEqual(
+      site.up.filter((message) => message.__tonkOrigin === "worker-message").map((message) => message.message),
+      [{ type: "navigate", href: "/elsewhere" }],
+    );
+  });
+
+  test(`${name}: it says who acts there where its kernel does`, async () => {
+    const site = boot(name, { answers: { "/api/identify": { did: "did:key:zWho" } } });
+    await settle();
+    assert.equal(
+      JSON.stringify(site.up.filter((message) => message.__tonkOrigin === "identity")),
+      JSON.stringify([{ __tonkOrigin: "identity", did: "did:key:zWho" }]),
+    );
+  });
+}

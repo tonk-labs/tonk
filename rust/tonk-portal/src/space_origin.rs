@@ -38,26 +38,61 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::str::FromStr;
 
-use js_sys::{Array, Function, Object, Reflect};
+use js_sys::{Array, Function, JSON, Object, Reflect};
 use tonk_host::bridge::{context_field, context_origin};
 use tonk_host::location::Location;
 use tonk_host::space_origin::{encode_label, site_hostname};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen_futures::spawn_local;
 use web_sys::{
     AddEventListenerOptions, Element, HtmlElement, HtmlIFrameElement, MessageChannel, MessageEvent,
     MessagePort, Url, window,
 };
 
-use crate::bridge::PortalState;
+use crate::bridge::{PortalState, fetch_text};
 use crate::site::reload_site;
 
-/// The static page a space's origin loads first.
-const SPACE_SHELL: &str = "/space.html";
+/// The static page a site's origin loads first, the profile's as a space's.
+const SITE_SHELL: &str = "/site.html";
 
-/// The static page the profile's origin loads first: the same shell as a
-/// space's, at a path of its own so the two are told apart when debugging.
-const PROFILE_SHELL: &str = "/profile.html";
+/// What the deployment ships: the kernel it installs into a space it makes,
+/// `kernel`, and the persona a new profile runs, `persona`.
+const SHIPPED: &str = "/_host/kernel.json";
+
+/// Tell the shell of the new site at `origin`, framed by `iframe`, which
+/// kernel it runs: the deployment's persona for the person's profile, and
+/// for a space the kernel the profile installs into one it makes. This page
+/// framed the site, so it knows which the site is; the shell never tells by
+/// its hostname.
+pub(crate) fn name_kernel(iframe: &HtmlIFrameElement, origin: &str, profile: bool) {
+    let (iframe, origin) = (iframe.clone(), origin.to_owned());
+    spawn_local(async move {
+        let field = if profile { "persona" } else { "kernel" };
+        let shipped = match fetch_text(SHIPPED).await {
+            Ok(shipped) => shipped,
+            Err(error) => {
+                tonk_common::log!("tonk-site: {SHIPPED}: {error}");
+                return;
+            }
+        };
+        let Some(kernel) = JSON::parse(&shipped)
+            .ok()
+            .and_then(|shipped| Reflect::get(&shipped, &field.into()).ok())
+            .and_then(|kernel| kernel.as_string())
+        else {
+            tonk_common::log!("tonk-site: {SHIPPED} names no {field}");
+            return;
+        };
+        let Some(target) = iframe.content_window() else {
+            return;
+        };
+        let message = Object::new();
+        let _ = Reflect::set(&message, &"__tonkOrigin".into(), &"kernel".into());
+        let _ = Reflect::set(&message, &"kernel".into(), &JsValue::from_str(&kernel));
+        let _ = target.post_message(&message, &origin);
+    });
+}
 
 /// Let the top page tell the profile's worker what came of a passkey
 /// ceremony it ran, through `iframe`, the profile's frame on `origin`: what
@@ -104,12 +139,7 @@ pub(crate) fn site_url(origin: &str, path: &str) -> String {
 /// The page every address of `origin` is answered with where a route shows
 /// a model: what a frame that only reaches the origin's worker loads.
 pub(crate) fn shell_url(origin: &str) -> String {
-    let profile = Url::new(origin)
-        .ok()
-        .and_then(|url| url.hostname().split('.').next().map(str::to_owned))
-        .is_some_and(|label| label.starts_with(PROFILE_LABEL));
-    let path = if profile { PROFILE_SHELL } else { SPACE_SHELL };
-    format!("{origin}{path}")
+    format!("{origin}{SITE_SHELL}")
 }
 
 /// The label of the profile's origin, `profile.{host}`. A space label is the
@@ -571,6 +601,8 @@ mod connector {
                 .ok()
                 .and_then(|said| said.as_string());
             match said.as_deref() {
+                // The frame is the profile's: a new one runs the persona.
+                Some("need-kernel") => super::name_kernel(&iframe, &origin, true),
                 Some("connector-ready") => CONNECTOR.with_borrow_mut(|connector| {
                     let Some(connector) = connector.as_mut() else {
                         return;
@@ -655,13 +687,13 @@ pub(crate) fn install_reach() {
 
     // The frame's shell asks for a port once its worker is in control, and
     // again whenever that worker has restarted.
+    // A new space's shell asks first which kernel it runs.
     let needs = Closure::<dyn FnMut(MessageEvent)>::new(|event: MessageEvent| {
         let data = event.data();
-        let asks = Reflect::get(&data, &"__tonkOrigin".into())
+        let kind = Reflect::get(&data, &"__tonkOrigin".into())
             .ok()
-            .and_then(|kind| kind.as_string())
-            .is_some_and(|kind| kind == "need-port");
-        if !asks {
+            .and_then(|kind| kind.as_string());
+        if !matches!(kind.as_deref(), Some("need-port" | "need-kernel")) {
             return;
         }
         let source = Reflect::get(&event, &"source".into()).unwrap_or(JsValue::NULL);
@@ -673,7 +705,12 @@ pub(crate) fn install_reach() {
                         .content_window()
                         .is_some_and(|window| JsValue::from(window) == source)
             });
-            if let Some(frame) = frame {
+            let Some(frame) = frame else {
+                return;
+            };
+            if kind.as_deref() == Some("need-kernel") {
+                name_kernel(&frame.iframe, &frame.origin, false);
+            } else {
                 frame.listening = true;
                 hand_port(frame);
             }

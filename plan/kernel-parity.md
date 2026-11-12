@@ -31,7 +31,7 @@ lifecycle). In the kernel build:
 | Area | Now | How |
 |---|---|---|
 | A space's delegation | works | `representative.delegate`, answered by the persona's `guest.delegate` through the hosts |
-| A site's pages | works | the kernel answers every page load: with the content its routes keep at the address, an asset opened as a page, or its page, which renders the site's view with the renderer the host serves under `/guest/`; and with a page saying what it answered otherwise. The host keeps a page of its own only for a kernel that cannot answer, and the deployment's `space.html` and `profile.html` only to start a site's worker |
+| A site's pages | works | the kernel answers every page load: with the content its routes keep at the address, an asset opened as a page, or its page, which renders the site's view with the renderer the host serves under `/guest/`; and with a page saying what it answered otherwise. The host keeps a page of its own only for a kernel that cannot answer, and the deployment's `site.html`, the one shell of every site, only to start a site's worker |
 | The profile reaching a space: names, copies | works | `space_reach` sends its request with `application.send`; the persona's host passes it over the port the profile's page opens; the answer comes back with `channel.receive` |
 | A space's seed and copy | works | the space's kernel asks for the seed it was made from on its first boot, and the persona's host hands along the source's snapshot for a copy; requests wait until it is created |
 | Public reads (seeds, the deployment's configuration) | works | `{ ask, read }` on the channel, answered by the host |

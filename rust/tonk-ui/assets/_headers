@@ -27,11 +27,7 @@
 /kernel_boot.js
   Cache-Control: no-store
 
-/space.html
-  Cache-Control: no-cache
-  Permissions-Policy: publickey-credentials-get=(), publickey-credentials-create=()
-
-/profile.html
+/site.html
   Cache-Control: no-cache
   Permissions-Policy: publickey-credentials-get=(), publickey-credentials-create=()
 

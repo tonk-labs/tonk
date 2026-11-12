@@ -49,16 +49,3 @@ if [ -n "${TONK_KERNEL_STORE:-}" ]; then
     [ -f "$HOST_DIR/kernel/${KEPT##*/}" ] || cp "$KEPT" "$HOST_DIR/kernel/"
   done
 fi
-# The profile's shell names the persona this deployment ships, so that it can
-# take a profile a worker from before kernels serves over to it: that worker
-# does not answer `/_host/kernel.json`.
-PERSONA=$(sed -n 's/.*"persona":"\([a-z2-7]*\)".*/\1/p' "$HOST_DIR/kernel.json")
-SHELL="${TRUNK_STAGING_DIR}/profile.html"
-if [ -f "$SHELL" ]; then
-  sed -i.bak "s|var SHIPPED_PERSONA = null;|var SHIPPED_PERSONA = \"$PERSONA\";|" "$SHELL"
-  rm -f "$SHELL.bak"
-  grep -q "var SHIPPED_PERSONA = \"$PERSONA\";" "$SHELL" || {
-    echo "build-kernel-host: the profile's shell names no persona" >&2
-    exit 1
-  }
-fi

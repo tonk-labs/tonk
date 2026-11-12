@@ -21,11 +21,13 @@
 // - Installs into a space that holds no kernel the one it was made for, which
 //   the person's profile hands it, as the space's own blob and boot cell.
 //
-// On the profile's origin (`profile.{host}`) the space is the person's
-// profile: the session's own, so it needs no one's delegation, and its
-// kernel is the persona it pins. Until the person makes themselves known,
-// the session's key represents the persona and is it. There this worker
-// serves the ports a space's host asks the profile over.
+// Where the kernel a site pins is a persona (it exports
+// `sapling:kernel/guest`), the space is the person's profile: the session's
+// own, so it needs no one's delegation. Until the person makes themselves
+// known, the session's key represents the persona and is it. There this
+// worker serves the ports a space's host asks the profile over, and the
+// person's account. The worker is the same on every site: what a site can do
+// is what its kernel is, never where it is.
 //   From then on the kernel comes from the space's store, not from anywhere
 //   else. The kernel founds the space on it: its first commit records the
 //   kernel and the pin to it.
@@ -41,17 +43,18 @@
 importScripts("/_host/embedder.js");
 
 const PINNED = new URL(self.location.href).searchParams.get("kernel");
-// Which site this origin is. A profile's label starts with `profile`; a
-// space's is its key in base32, which never does.
-const PROFILE = self.location.hostname.split(".")[0].startsWith("profile");
+// Whether the kernel this site runs is a persona: it holds the person's
+// account and hosts their spaces. Known once the kernel is installed; what
+// only a persona does waits for the boot.
+let personaKernel = false;
 // The contract between this worker and its shell, as for a release.
 const PROTOCOL = 2;
 const RELAY_PATH = "/kernel/relay.js";
 // What this origin serves from the deployment, never from the kernel.
-const HOST_FILES = new Set(["/space.html", "/profile.html", "/kernel_boot.js", RELAY_PATH]);
+const HOST_FILES = new Set(["/site.html", "/kernel_boot.js", RELAY_PATH]);
 const HOST_PREFIXES = ["/_host/", "/.well-known/"];
 
-const log = (...args) => console.log(PROFILE ? "[Profile Kernel]" : "[Space Kernel]", ...args);
+const log = (...args) => console.log(`[Kernel ${self.location.hostname.split(".")[0]}]`, ...args);
 
 // The body of an answer of the kernel, as it writes it. The worker stays up
 // until it ends.
@@ -239,29 +242,32 @@ async function deployedKernel(id) {
     return checkedKernel(id, new Uint8Array(await response.arrayBuffer()));
 }
 
-// The persona a new profile installs: the one its worker was registered
-// for, or, where this deployment no longer serves it, the one it ships now.
-// The shell keeps which persona the profile pins; it is told of the new one
-// there, and registers the worker for it on its next load.
-const BOOT_CACHE = "tonk-boot";
-const BOOT_KEY = "/__boot";
-async function newPersona() {
-    try {
-        return await deployedKernel(PINNED);
-    } catch (error) {
-        const shipped = await hostFile(new Request(new URL("/_host/kernel.json", self.location.href)));
-        const persona = shipped.ok ? (await shipped.json()).persona : null;
-        if (typeof persona !== "string" || persona === PINNED) throw error;
-        log(`${error.message}: a new profile runs ${persona}, which it ships now`);
-        const kernel = await deployedKernel(persona);
-        await (await caches.open(BOOT_CACHE)).put(BOOT_KEY, Response.json({ v: 2, kernel: persona }));
-        return kernel;
+// How long a new site waits for a port up to a host, which a space's page
+// hands it as it loads and a profile's never does.
+const HOST_SOON_MS = 1_000;
+
+// The kernel a site taken up for the first time installs: the one its
+// worker was registered for. A space has it from its host, the person's
+// profile, which holds the deployment's copy, so a space made on this device
+// takes nothing from anywhere else; a site with no host, or a host without
+// it, from this origin's copy of the deployment's.
+async function firstKernel() {
+    const port = await within(portUp(), HOST_SOON_MS, "no host").catch(() => null);
+    if (port) {
+        try {
+            return await shippedKernel(PINNED);
+        } catch (error) {
+            log(`the host has no kernel ${PINNED}:`, String(error?.message ?? error));
+        }
     }
+    return deployedKernel(PINNED);
 }
 
 // The kernel the shell keeps that the site pins: where the site moved to
 // another kernel than the one its worker was registered for, the shell
 // registers the worker for it on its next load.
+const BOOT_CACHE = "tonk-boot";
+const BOOT_KEY = "/__boot";
 async function recordedKernel() {
     const held = await (await caches.open(BOOT_CACHE)).match(BOOT_KEY);
     const record = held ? await held.json() : null;
@@ -279,28 +285,30 @@ async function start() {
     if (!PINNED) throw new Error("this worker pins no kernel");
     await wasm_bindgen({ module_or_path: await hostFile(new Request(new URL("/_host/embedder_bg.wasm", self.location.href))) });
     const session = await wasm_bindgen.openSession(SESSION);
-    // The profile's space is its session's own: the profile acts under its
-    // own authority, so it asks for nothing.
-    let space = PROFILE ? session.did : await wasm_bindgen.heldSpace();
+    let space = await wasm_bindgen.heldSpace();
     let handed = null;
+    // A site with no kernel of its own yet is a new one: it installs the one
+    // its worker was registered for. A persona's space is its session's own:
+    // it acts under its own authority, so it asks for nothing. Any other is
+    // the space the person's profile delegates to this session, which says
+    // which space it is.
     if (!space) {
-        ({ space, handed } = await delegateSession(session));
-        awaitCreation();
+        const kernel = await firstKernel();
+        if (wasm_bindgen.isPersona(kernel)) {
+            space = session.did;
+        } else {
+            ({ space, handed } = await delegateSession(session));
+            awaitCreation();
+        }
+        log("installed the kernel", await wasm_bindgen.install(space, kernel));
     }
-    // A space with no kernel of its own yet is one being created, and a
-    // profile with none a new one: install the one its worker was registered
-    // for.
-    let pinned = await wasm_bindgen.pinned(space);
-    if (!pinned) {
-        const kernel = PROFILE ? await newPersona() : await shippedKernel(PINNED);
-        pinned = await wasm_bindgen.install(space, kernel);
-        log("installed the kernel", pinned);
-    }
+    const pinned = await wasm_bindgen.pinned(space);
     if (pinned !== PINNED && pinned !== (await recordedKernel())) {
         throw new Error(`the space pins ${pinned}, not ${PINNED}`);
     }
+    personaKernel = await wasm_bindgen.pinsPersona(space);
     let embedder;
-    if (PROFILE) {
+    if (personaKernel) {
         profileDid = session.did;
         embedder = await wasm_bindgen.bootPersona(space, session, kernelSent, askedToMerge, askedToAuthorize, await keptPersona());
     } else {
@@ -433,7 +441,7 @@ function hostPage(status, reason) {
         `<!doctype html><html><head>${RELAY}${retry}<meta charset="utf-8"><title>${status}</title>` +
         `<style>body{font:14px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;` +
         `min-height:100vh;opacity:.7}small{display:block;opacity:.7}</style></head>` +
-        `<body><p>This space could not answer.<small>${why}</small></p></body></html>`,
+        `<body><p>This site could not answer.<small>${why}</small></p></body></html>`,
         { status, headers: { "content-type": "text/html; charset=utf-8" } },
     );
 }
@@ -507,13 +515,12 @@ function cancelCall(call) {
 // app's static files this worker serves. A space's host reaches the profile
 // over a port a page of the space's origin hands up, bound to that space.
 
-// The app's static files, which the shell loads from this origin: on a
-// space's, all but the renderer the space keeps.
+// The app's static files, which the shell loads from this origin.
+const STATIC_PREFIXES = ["/images/", "/fonts/", "/tonk-code/", "/tonk-prose/", "/tonk-table/"];
+// The renderer the shell loads: the one the site's kernel keeps, as a space
+// keeps the one it was created with, or, where it keeps none, the
+// deployment's.
 const RENDERER_PREFIXES = ["/guest/", "/styles-"];
-const STATIC_PREFIXES = [
-    ...(PROFILE ? RENDERER_PREFIXES : []),
-    "/images/", "/fonts/", "/tonk-code/", "/tonk-prose/", "/tonk-table/",
-];
 // The icons `<wa-icon>` reads, which the app ships.
 const ICON_PATH = /^\/webawesome\/icons\/[a-z0-9-]+\/[a-z0-9-]+\.svg$/;
 // No document on a site's origin may use the app's passkeys.
@@ -530,15 +537,15 @@ async function siteOrigins() {
 }
 
 // The site's policy: framed by the app, by the profile, and by the site
-// itself, and framing the sites. The profile renders the app's own hub,
-// which reads the template catalog from where it is published. A space gets
-// no network at all: its code is its author's.
+// itself, and framing the sites. A persona's site renders the person's hub,
+// which reads the template catalog from where it is published. Any other
+// gets no network at all: its code is its author's.
 function sitePolicy(sites) {
     const scheme = sites ? new URL(sites.app).protocol : null;
     const profile = sites ? `${scheme}//profile${sites.suffix ?? ""}.${sites.host}` : null;
     const ancestors = sites ? `'self' ${sites.app} ${profile}` : "'none'";
     const framed = sites ? ` ${scheme}//*.${sites.host}` : "";
-    const published = PROFILE ? " https: http://localhost:* http://127.0.0.1:*" : "";
+    const published = personaKernel ? " https: http://localhost:* http://127.0.0.1:*" : "";
     return [
         "default-src 'none'",
         "script-src 'self' blob: 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'",
@@ -593,8 +600,8 @@ async function kernelSent(bytes) {
     if (message?.tell === "navigate") return navigatePage(message);
     if (message?.tell === "cancel") return cancelStream(message.ask);
     if (message?.tell === "changed") return signalSpaces(message.space);
-    if (message?.tell === "post" && PROFILE) return postPages(message);
-    if (message?.tell === "delegated" && PROFILE) return delegated(message);
+    if (message?.tell === "post" && personaKernel) return postPages(message);
+    if (message?.tell === "delegated" && personaKernel) return delegated(message);
     if (typeof message?.ask !== "number") return;
     if (message.stream === true) return streamToKernel(message);
     let answer;
@@ -626,7 +633,7 @@ async function streamToKernel(message) {
     };
     const id = message.ask;
     try {
-        if (!PROFILE) throw new Error("a space's kernel asks no other kernel");
+        if (!personaKernel) throw new Error("a kernel that is no persona asks no other kernel");
         const held = await spacePort(message.to);
         if (!held) throw new Error(`the host of ${message.to} could not be reached`);
         const call = nextSpaceCall++;
@@ -695,22 +702,22 @@ async function postPages({ client, except, message }) {
 // What answers `message`: `{ status, body }`.
 async function answerOf(message) {
     if (typeof message.read === "string") return readPublic(message.read, message.bytes === true);
-    if (typeof message.ceremony === "string" && PROFILE) {
+    if (typeof message.ceremony === "string" && personaKernel) {
         const link = Uint8Array.from(atob(message.ceremony), char => char.charCodeAt(0));
         return { status: 200, body: await (await booting).ceremony(link) };
     }
-    if (message.enroll === true && PROFILE) return enroll();
-    if ("standing" in message && PROFILE) {
+    if (message.enroll === true && personaKernel) return enroll();
+    if ("standing" in message && personaKernel) {
         await stand(message.standing);
         return { status: 200, body: "" };
     }
     if (typeof message.fetch === "string") {
-        if (!PROFILE) throw new Error("a space's kernel has nothing delivered");
+        if (!personaKernel) throw new Error("a kernel that is no persona has nothing delivered");
         return deliver(message);
     }
     // What the space is to be created from, which the person's profile kept
     // as it created it, and that it has been.
-    if (message.seed === true && !PROFILE) {
+    if (message.seed === true && !personaKernel) {
         const answer = await within(askHost({ seed: true }), CREATION_WAIT_MS, "the profile did not say what the space is made from");
         log(answer.fresh ? "the profile kept a seed for the space" : "the profile kept no seed for the space");
         if (!answer.fresh) settleCreation();
@@ -721,16 +728,16 @@ async function answerOf(message) {
         return { status: 200, body: JSON.stringify({ seed, copy }) };
     }
     // What only the person's persona can do for the space, passed up to it.
-    if (message.profile && !PROFILE) {
+    if (message.profile && !personaKernel) {
         const { id: _, ...answer } = await askHost(message.profile);
         return { status: 200, body: JSON.stringify(answer) };
     }
-    if (message.seeded === true && !PROFILE) {
+    if (message.seeded === true && !personaKernel) {
         settleCreation();
         await askHost({ seeded: true, from: "seed" });
         return { status: 200, body: "" };
     }
-    if (!PROFILE) throw new Error("a space's kernel asks no other kernel");
+    if (!personaKernel) throw new Error("a kernel that is no persona asks no other kernel");
     const body = message.body == null ? null : new TextEncoder().encode(message.body).buffer;
     const headers = body ? [["content-type", "application/json"]] : [];
     const reply = await callSpace(message.to, { method: message.method, path: message.path, headers, body });
@@ -789,7 +796,7 @@ async function readPublic(url, bytes) {
 
 const PERSONA_REQUEST = new Request(new URL("/_host/persona.json", self.location.href));
 async function keptPersona() {
-    if (!PROFILE) return null;
+    if (!personaKernel) return null;
     const kept = await caches.match(PERSONA_REQUEST, { cacheName: HOST_CACHE });
     if (!kept) return null;
     const { persona, link64 } = await kept.json();
@@ -1388,28 +1395,35 @@ function serveSite(event, url) {
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", event => event.waitUntil(self.clients.claim()));
 
+// What only a persona does for the page that asked, once the kernel booted:
+// `act`, or, where the kernel is no persona, that it is not done.
+async function asPersona(type, reply, act) {
+    let persona = false;
+    try {
+        await booting;
+        persona = personaKernel;
+    } catch {}
+    if (persona) return act();
+    log(`a kernel that is no persona does not take ${type}`);
+    reply?.postMessage({ error: `this site's kernel does not take ${type}` });
+}
+
+// What the pages of a persona's site hand its worker for the person's
+// account: what a passkey ceremony derived, or that the person refused it;
+// spaces an earlier release kept in the app's origin, to be made again
+// here; and asking for another activation email.
+const FOR_THE_ACCOUNT = {
+    custody: (data, reply) => custodyFrom(data, reply),
+    migrate: (data, reply) => bringOver(data, reply),
+    resend: (_data, reply) => resendActivation(reply),
+    "ceremony-refused": data => tellKernel({ tell: "refused", kind: data.kind, name: data.name }),
+};
+
 self.addEventListener("message", event => {
     const type = event.data?.type;
-    // What the page around the profile derived with a passkey, or that the
-    // person refused the ceremony.
-    if (PROFILE && type === "custody") {
-        event.waitUntil(custodyFrom(event.data, event.ports[0]));
-        return;
-    }
-    // Spaces an earlier release kept in the app's origin, which the app's
-    // page read, to be made again here.
-    if (PROFILE && type === "migrate") {
-        event.waitUntil(bringOver(event.data, event.ports[0]));
-        return;
-    }
-    // The app's page asks for another activation email, for the account
-    // its panel waits on.
-    if (PROFILE && type === "resend") {
-        event.waitUntil(resendActivation(event.ports[0]));
-        return;
-    }
-    if (PROFILE && type === "ceremony-refused") {
-        event.waitUntil(tellKernel({ tell: "refused", kind: event.data.kind, name: event.data.name }));
+    if (Object.hasOwn(FOR_THE_ACCOUNT, type)) {
+        const reply = event.ports[0];
+        event.waitUntil(asPersona(type, reply, () => FOR_THE_ACCOUNT[type](event.data, reply)));
         return;
     }
     if (type === "protocol") event.ports[0]?.postMessage({ protocol: PROTOCOL });
@@ -1436,9 +1450,11 @@ self.addEventListener("message", event => {
         adopt(event.ports[0]);
         event.waitUntil(booting.catch(() => {}));
     }
-    // The page of the app hands the profile one end of a port to a space's
-    // host.
-    else if (type === "space-port" && PROFILE) bindSpacePort(event.ports[0], event.data);
+    // A page hands a persona's site one end of a port to a space's host.
+    else if (type === "space-port") {
+        const port = event.ports[0];
+        event.waitUntil(asPersona(type, null, () => bindSpacePort(port, event.data)));
+    }
 });
 
 self.addEventListener("fetch", event => {
@@ -1454,23 +1470,54 @@ self.addEventListener("fetch", event => {
         event.respondWith(served);
         return;
     }
-    const space = PROFILE ? spaceAsked(url) : null;
-    if (space) {
-        // A space whose kernel does not answer, such as one the person does
-        // not hold, is answered by the persona: of one it does not hold, it
-        // knows nothing.
-        const unanswered = { request: event.request.clone(), clientId: event.clientId, resultingClientId: event.resultingClientId, waitUntil: promise => event.waitUntil(promise) };
-        event.respondWith(
-            passToSpace(event, space).catch(error => {
-                log("the kernel of", space, "did not answer; the persona does:", String(error?.message ?? error));
-                return serveKernel(unanswered).then(
-                    response => untilSpaceAnswers(space, response),
-                    error => new Response(String(error?.message ?? error), { status: 502 }),
-                );
-            }),
-        );
+    if (event.request.method === "GET" && RENDERER_PREFIXES.some(prefix => url.pathname.startsWith(prefix))) {
+        event.respondWith(serveRenderer(event));
         return;
     }
+    const space = spaceAsked(url);
+    if (space) {
+        event.respondWith(answerAboutSpace(event, space));
+        return;
+    }
+    event.respondWith(answer(event));
+});
+
+// The renderer's file `event` asks for: the kernel's, where it keeps the
+// renderer, else the deployment's.
+async function serveRenderer(event) {
+    try {
+        const kept = await serveKernel(event);
+        if (kept.ok) return kept;
+        await kept.body?.cancel();
+    } catch (error) {
+        restartIfStopped(error);
+    }
+    return hostFile(event.request);
+}
+
+// What a page of a persona's site asks about a space's content is that
+// space's kernel's to answer. A space whose kernel does not answer, such as
+// one the person does not hold, is answered by the persona: of one it does
+// not hold, it knows nothing. Any other site's kernel answers for its own
+// space.
+async function answerAboutSpace(event, space) {
+    try {
+        await booting;
+    } catch {}
+    if (!personaKernel) return answer(event);
+    const unanswered = { request: event.request.clone(), clientId: event.clientId, resultingClientId: event.resultingClientId, waitUntil: promise => event.waitUntil(promise) };
+    return passToSpace(event, space).catch(error => {
+        log("the kernel of", space, "did not answer; the persona does:", String(error?.message ?? error));
+        return serveKernel(unanswered).then(
+            response => untilSpaceAnswers(space, response),
+            error => new Response(String(error?.message ?? error), { status: 502 }),
+        );
+    });
+}
+
+// What the site's kernel answers `event` with.
+function answer(event) {
+    const url = new URL(event.request.url);
     // A request that had the kernel booted again is answered by the kernel
     // it booted, when it reads nothing it could not read twice.
     const notAnswered = error => {
@@ -1480,9 +1527,7 @@ self.addEventListener("fetch", event => {
             : new Response(String(error?.message ?? error), { status: 502 });
     };
     const again = event.request.method === "GET" || event.request.method === "HEAD";
-    event.respondWith(
-        serveKernel(event).catch(error =>
-            restartIfStopped(error) && again ? serveKernel(event).catch(notAnswered) : notAnswered(error),
-        ),
+    return serveKernel(event).catch(error =>
+        restartIfStopped(error) && again ? serveKernel(event).catch(notAnswered) : notAnswered(error),
     );
-});
+}

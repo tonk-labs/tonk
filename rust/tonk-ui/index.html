@@ -19,9 +19,8 @@
                     window.stop();
                     // The shell starts the site's worker, then returns to
                     // this address, which the worker answers from then on.
-                    const shell = label.startsWith("profile") ? "/profile.html" : "/space.html";
                     const address = location.pathname + location.search + location.hash;
-                    location.replace(`${shell}#boot=${encodeURIComponent(address)}`);
+                    location.replace(`/site.html#boot=${encodeURIComponent(address)}`);
                 }
             })();
         </script>
@@ -293,8 +292,7 @@
         <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
         <!-- Served on every site's origin: its shell, and its worker, which
              hosts the kernel the site runs, with the relay its pages load. -->
-        <link data-trunk rel="copy-file" href="./assets/space.html" />
-        <link data-trunk rel="copy-file" href="./assets/profile.html" />
+        <link data-trunk rel="copy-file" href="./assets/site.html" />
         <link data-trunk rel="copy-file" href="./assets/kernel_boot.js" />
         <link data-trunk rel="copy-file" href="./assets/kernel/relay.js" data-target-path="kernel" />
         <!-- What a site's shell runs before the element runtime: the bridge

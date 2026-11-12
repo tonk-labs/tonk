@@ -225,7 +225,7 @@ ASSET_GRAPH_HASH=$(hash_file "$ASSET_GRAPH")
 # same page identity differ only in what the sites and guests run, so an open
 # document can keep running while its sites load again.
 grep -v -e '^/guest/' -e '^/tonk-code/' -e '^/tonk-prose/' -e '^/tonk-table/' -e '^/library/' \
-    -e '^/_host/' -e '^/kernel/' -e '^/kernel_boot\.js|' -e '^/space\.html|' -e '^/profile\.html|' \
+    -e '^/_host/' -e '^/kernel/' -e '^/kernel_boot\.js|' -e '^/site\.html|' \
     "$ASSET_GRAPH" > "$PAGE_GRAPH" || true
 PAGE_BUILD=$(hash_file "$PAGE_GRAPH")
 # Include the outer service-worker policy without hashing generated identities
