@@ -55,7 +55,7 @@ struct Roster: View {
       }
     }
     .accessibilityElement(children: .ignore)
-    .accessibilityLabel(member.displayName)
+    .accessibilityLabel(member.isAgent ? member.displayName + ", agent" : member.displayName)
   }
 
   /// Opens on hover and stays open while the pointer is over the chip or the list;
@@ -108,6 +108,7 @@ private struct MemberList: View {
             Text(member.initial).font(.caption.weight(.semibold)).rosterChip()
               .accessibilityHidden(true)
             Text(member.displayName).lineLimit(1)
+            if member.isAgent { LinkBadge(text: "agent") }
           }
         }
       }
