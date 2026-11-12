@@ -281,8 +281,12 @@ test("a request that is not a page load is answered as the kernel answers it", a
   assert.match(await response.text(), /^<!doctype html><html><head><title>/, "no relay outside a page load");
 });
 
+// What the shell of a space keeps when the page that framed it named its
+// kernel and said it hands it a host.
+const HOSTED = { v: 2, kernel: KERNEL, host: true };
+
 test("a space with no kernel of its own installs the one its worker names, and boots it", async () => {
-  const site = space();
+  const site = space({ record: HOSTED });
   site.handPort();
   assert.equal((await site.started()).booted, true, "the shell is told the kernel has started");
   const response = await site.request("/api/anything");
@@ -734,4 +738,22 @@ test("a kernel that is no persona takes nothing for the person's account", async
     assert.match(answer.error, new RegExp(`does not take ${type}`));
   }
   assert.ok(!site.handled.includes("GET /api/profiles"), "and asks its kernel nothing of an account");
+});
+
+test("a new site its framer hands a host waits for the port, however late, and takes its kernel from the host", async () => {
+  const site = space({ record: HOSTED });
+  const started = site.started();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(site.booted.length, 0, "it waits for the port it was promised");
+  site.handPort();
+  assert.equal((await started).booted, true);
+  assert.ok(site.asked.some((asked) => asked.kernel === KERNEL), "the host is asked for the kernel");
+  assert.ok(!site.fetched.some((path) => path.startsWith("/_host/kernel/")), "nothing of the kernel is fetched");
+});
+
+test("a new site its framer hands no host takes the deployment's kernel, and asks no host for it", async () => {
+  const profile = space({ record: { v: 2, kernel: KERNEL, host: false }, persona: true });
+  await profile.started();
+  assert.ok(profile.fetched.includes(`/_host/kernel/${KERNEL}.wasm`), "the deployment's copy");
+  assert.deepEqual(profile.asked, [], "no host is asked");
 });

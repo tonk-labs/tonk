@@ -64,8 +64,10 @@ const SHIPPED: &str = "/_host/kernel.json";
 /// kernel it runs: the deployment's persona for the person's profile, and
 /// for a space the kernel the profile installs into one it makes. This page
 /// framed the site, so it knows which the site is; the shell never tells by
-/// its hostname.
-pub(crate) fn name_kernel(iframe: &HtmlIFrameElement, origin: &str, profile: bool) {
+/// its hostname. It says too whether it hands the site a port up to a host,
+/// `hosted`, as it does a space: the site's worker then takes its kernel from
+/// that host, and waits for the port to do so.
+pub(crate) fn name_kernel(iframe: &HtmlIFrameElement, origin: &str, profile: bool, hosted: bool) {
     let (iframe, origin) = (iframe.clone(), origin.to_owned());
     spawn_local(async move {
         let field = if profile { "persona" } else { "kernel" };
@@ -90,6 +92,7 @@ pub(crate) fn name_kernel(iframe: &HtmlIFrameElement, origin: &str, profile: boo
         let message = Object::new();
         let _ = Reflect::set(&message, &"__tonkOrigin".into(), &"kernel".into());
         let _ = Reflect::set(&message, &"kernel".into(), &JsValue::from_str(&kernel));
+        let _ = Reflect::set(&message, &"host".into(), &JsValue::from_bool(hosted));
         let _ = target.post_message(&message, &origin);
     });
 }
@@ -601,8 +604,9 @@ mod connector {
                 .ok()
                 .and_then(|said| said.as_string());
             match said.as_deref() {
-                // The frame is the profile's: a new one runs the persona.
-                Some("need-kernel") => super::name_kernel(&iframe, &origin, true),
+                // The frame is the profile's: a new one runs the persona,
+                // and has no host.
+                Some("need-kernel") => super::name_kernel(&iframe, &origin, true, false),
                 Some("connector-ready") => CONNECTOR.with_borrow_mut(|connector| {
                     let Some(connector) = connector.as_mut() else {
                         return;
@@ -709,7 +713,8 @@ pub(crate) fn install_reach() {
                 return;
             };
             if kind.as_deref() == Some("need-kernel") {
-                name_kernel(&frame.iframe, &frame.origin, false);
+                // A space's frame this page hands a port, once it asks.
+                name_kernel(&frame.iframe, &frame.origin, false, true);
             } else {
                 frame.listening = true;
                 hand_port(frame);

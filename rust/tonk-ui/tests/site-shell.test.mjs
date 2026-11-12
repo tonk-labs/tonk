@@ -36,7 +36,8 @@ const settle = async () => { for (let i = 0; i < 20; i++) await turn(); };
 // - `runs`: the kernel the worker in control was registered for: by default,
 //   the one the record pins.
 // - `named`: the kernel the page around names for a site that pins none, or
-//   `null` where it names none.
+//   `null` where it names none; `hosted`, whether it says it hands the site
+//   a port up to a host, as it does a space.
 // - `host`: the hostname the shell is served on: by default, the site's own.
 // - `unstarted`: how many times the worker answers that its kernel did not
 //   boot before it says it did.
@@ -47,7 +48,7 @@ function boot(
     address = "/", controlled = true, served = true, framed = "site", content = [], store = new Map(),
     answers = {}, marked = false, active = false,
     record = { v: 2, kernel: name === "space" ? "bafkr4ispace" : "bafkr4ipersona" }, runs = record?.kernel ?? null,
-    named = name === "space" ? "bafkr4ikernel" : "bafkr4ipersona",
+    named = name === "space" ? "bafkr4ikernel" : "bafkr4ipersona", hosted = name === "space",
     host = name === "profile" ? "profile.tonk.test" : "bspace.tonk.test",
     unstarted = 0, wait = setTimeout,
   } = {},
@@ -176,7 +177,7 @@ function boot(
       else if (message.__tonkRuntime === "error") failed.push(message.error);
       else if (message.__tonkOrigin === "need-kernel") {
         kernelAsked.push(message);
-        if (named) queueMicrotask(() => fromAbove({ __tonkOrigin: "kernel", kernel: named }));
+        if (named) queueMicrotask(() => fromAbove({ __tonkOrigin: "kernel", kernel: named, host: hosted }));
       } else up.push(message);
     },
     get location() {
@@ -554,13 +555,17 @@ test("a space under the worker of the kernel it pins is brought up", async () =>
 test("a site that pins no kernel runs the one the page around it names, and pins it", async () => {
   // A release pinned before kernels, which no worker runs any more.
   const release = { v: 1, pin: "https://tonk.network/releases/bafkreib7f5smq4ggn5xwqas57gchvhvfry6ym7jbw5h3w4zg7wtwk33l2i/worker.js" };
-  for (const [name, named] of [["space", "bafkr4ikernel"], ["profile", "bafkr4ipersona"]]) {
+  for (const [name, named, hosted] of [["space", "bafkr4ikernel", true], ["profile", "bafkr4ipersona", false]]) {
     for (const record of [null, release]) {
-      const site = boot(name, { controlled: false, served: false, record, named });
+      const site = boot(name, { controlled: false, served: false, record, named, hosted });
       await settle();
       assert.equal(site.kernelAsked.length, 1, "it asks the page around once");
       assert.equal(site.container.registered[0][0], `/kernel_boot.js?kernel=${named}`);
-      assert.deepEqual(site.booted.record, { v: 2, kernel: named });
+      assert.deepEqual(
+        site.booted.record,
+        { v: 2, kernel: named, host: hosted },
+        "and keeps whether that page hands it a host, for its worker's first start",
+      );
     }
   }
 });

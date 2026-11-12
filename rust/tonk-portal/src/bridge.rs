@@ -1061,10 +1061,14 @@ pub(crate) fn install_message_listener() {
                     }
                     // A new site's shell asks which kernel it runs: this
                     // page framed it, so it knows whether it is the
-                    // person's profile or one of their spaces.
+                    // person's profile or one of their spaces, and whether
+                    // it brokers the site a port up to a host, as it does
+                    // a space (`broker_port`).
                     "need-kernel" => {
-                        let profile = state.with.as_ref().is_some_and(Location::profile);
-                        name_kernel(&iframe, origin, profile);
+                        let with = state.with.as_ref();
+                        let profile = with.is_some_and(Location::profile);
+                        let hosted = with.and_then(Location::space).is_some();
+                        name_kernel(&iframe, origin, profile, hosted);
                     }
                     "need-port" => match requested_location(&data) {
                         Some(requested) if state.allow.permits(&requested) => {

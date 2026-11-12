@@ -242,18 +242,14 @@ async function deployedKernel(id) {
     return checkedKernel(id, new Uint8Array(await response.arrayBuffer()));
 }
 
-// How long a new site waits for a port up to a host, which a space's page
-// hands it as it loads and a profile's never does.
-const HOST_SOON_MS = 1_000;
-
 // The kernel a site taken up for the first time installs: the one its
-// worker was registered for. A space has it from its host, the person's
-// profile, which holds the deployment's copy, so a space made on this device
-// takes nothing from anywhere else; a site with no host, or a host without
-// it, from this origin's copy of the deployment's.
+// worker was registered for. A site whose framer hands it a port up to a
+// host, as the person's profile does a space, has it from that host, which
+// holds the deployment's copy, so a space made on this device takes nothing
+// from anywhere else. A site with no host, or a host without it, has it from
+// this origin's copy of the deployment's.
 async function firstKernel() {
-    const port = await within(portUp(), HOST_SOON_MS, "no host").catch(() => null);
-    if (port) {
+    if (await handedHost()) {
         try {
             return await shippedKernel(PINNED);
         } catch (error) {
@@ -261,6 +257,14 @@ async function firstKernel() {
         }
     }
     return deployedKernel(PINNED);
+}
+
+// Whether the page that framed this site said it hands the site a port up to
+// a host, when it named the kernel the site runs (see `site.html`).
+async function handedHost() {
+    const held = await (await caches.open(BOOT_CACHE)).match(BOOT_KEY);
+    const record = held ? await held.json() : null;
+    return record?.v === 2 && record.host === true;
 }
 
 // The kernel the shell keeps that the site pins: where the site moved to

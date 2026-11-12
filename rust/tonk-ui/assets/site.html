@@ -229,9 +229,10 @@
                 var NAMED_WITHIN_MS = 10000;
 
                 // The kernel the page around this frame says a new site
-                // runs: it framed the site, so it knows what the site is,
-                // the person's profile or one of their spaces. `null` where
-                // it names none in time.
+                // runs, and whether it hands the site a port up to a host:
+                // it framed the site, so it knows what the site is, the
+                // person's profile or one of their spaces. `null` where it
+                // names none in time.
                 function named() {
                     return new Promise(function (resolve) {
                         var timer = setTimeout(function () {
@@ -244,7 +245,7 @@
                             if (typeof e.data.kernel !== "string") return;
                             clearTimeout(timer);
                             window.removeEventListener("message", heard, true);
-                            resolve(e.data.kernel);
+                            resolve({ kernel: e.data.kernel, host: e.data.host === true });
                         }
                         window.addEventListener("message", heard, true);
                         parent.postMessage({ __tonkOrigin: "need-kernel" }, "*");
@@ -255,7 +256,9 @@
                 // one its boot record pins, where its worker last wrote it so
                 // a page can read it with no worker running; or, for a site
                 // with none pinned yet, the one the page around it names,
-                // which it pins from then on.
+                // which it pins from then on. The record says too whether
+                // that page hands the site a host, for the worker's first
+                // start to take its kernel from.
                 var BOOT_CACHE = "tonk-boot";
                 var BOOT_KEY = "/__boot";
                 async function kernel() {
@@ -264,12 +267,15 @@
                         var record = held ? await held.json() : null;
                         if (record && record.v === 2 && typeof record.kernel === "string") return record.kernel;
                     } catch (error) {}
-                    var id = await named();
-                    if (!id) return null;
+                    var answer = await named();
+                    if (!answer) return null;
                     try {
-                        await (await caches.open(BOOT_CACHE)).put(BOOT_KEY, Response.json({ v: 2, kernel: id }));
+                        await (await caches.open(BOOT_CACHE)).put(
+                            BOOT_KEY,
+                            Response.json({ v: 2, kernel: answer.kernel, host: answer.host }),
+                        );
                     } catch (error) {}
-                    return id;
+                    return answer.kernel;
                 }
 
                 // What a worker was registered for: its own address says.
