@@ -796,6 +796,13 @@ concept!: &member
       description: The member's self-asserted display name for this space
       the: xyz.tonk.membership/name
       as: text
+  maybe:
+    kind:
+      description: >
+        tonk:agent when the member is an agent rather than a person. Absent for
+        a person: only the agent kind is stamped, and once stamped it stays.
+      the: xyz.tonk.membership/kind
+      as: entity
 
 # A single roster row — the default view for `model: tonk:member`. Each
 # member is one entry in the "shared with" list: the member's display name

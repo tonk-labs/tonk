@@ -24,7 +24,7 @@ use dialog_varsig::Did;
 use ipld_core::cid::Cid;
 use tonk_account::customer::RevokeReceipt;
 use tonk_common::log;
-use tonk_schema::{InvitedVia, MemberName, MemberRole, Membership};
+use tonk_schema::{InvitedVia, MemberKind, MemberName, MemberRole, Membership};
 
 use super::revoke_invite::{leaf_cid, prove_path, publish_revocation, retract_leaf};
 use crate::{TonkState, TonkWorkerError};
@@ -136,6 +136,19 @@ pub(super) async fn retract_member_rows(
         .unwrap_or_default();
     for name in names {
         transaction = transaction.retract(name);
+    }
+    let kinds: Vec<MemberKind> = branch
+        .query()
+        .select(Query::<MemberKind> {
+            this: Term::from(entity.clone()),
+            kind: Term::var("kind"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .unwrap_or_default();
+    for kind in kinds {
+        transaction = transaction.retract(kind);
     }
     let stamps: Vec<InvitedVia> = branch
         .query()
