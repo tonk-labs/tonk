@@ -2449,6 +2449,10 @@ fn apply_entity_frame(
         return;
     }
 
+    // A frame ends any hold: it supersedes the held empty, is that empty
+    // applied once the grace ran out, or is held in its turn.
+    let _ = host.remove_attribute(HELD);
+
     if frame.is_empty() {
         // HOLD a reconnect-empty over previously rendered content: the
         // first frame after a re-opened subscription can reflect state the
@@ -2458,7 +2462,9 @@ fn apply_entity_frame(
         // nested guests, only for the heal to rebuild them seconds later.
         // Keep the content; if no real frame supersedes this one within the
         // grace period, apply the emptiness for real (a genuine deletion
-        // still lands, just unhurriedly).
+        // still lands, just unhurriedly). While it holds, the display says
+        // so (`data-held`), which is how the owner learns to re-assert
+        // what the worker lost before the grace runs out.
         let held = {
             let mut s = state.borrow_mut();
             s.entity_serial += 1;
@@ -2466,6 +2472,7 @@ fn apply_entity_frame(
         };
         if held {
             diagnostics::count(names::DISPLAY_ENTITY_HELD);
+            let _ = host.set_attribute(HELD, "");
             let serial = state.borrow().entity_serial;
             let host = host.clone();
             let state = state.clone();
@@ -3232,6 +3239,11 @@ fn replay_host_frame(host: &Element, state: &Rc<RefCell<Inner>>) {
         call_render(&slide.view_el, &detail);
     }
 }
+
+/// The attribute a display carries while it holds a reconnect-empty frame
+/// over what it rendered: the owner of what the frame lost, such as a
+/// site's stamp, re-asserts it on seeing it.
+const HELD: &str = "data-held";
 
 /// The reconnect-empty grace: long enough for the owner's heal claim to
 /// re-stamp (retry jitter + claim round-trip), short enough that genuine
@@ -5181,12 +5193,17 @@ mod tests {
             Some("no-entity"),
             "a reconnect-empty must not surface absence"
         );
+        assert!(
+            host.has_attribute(HELD),
+            "a held display says so, for the owner to re-assert what was lost"
+        );
 
         handle_entity_frame(&host, &state, Vec::new(), false);
         assert!(
             state.borrow().last_frame.is_empty(),
             "a plain empty frame clears as before"
         );
+        assert!(!host.has_attribute(HELD), "a frame applied ends the hold");
     }
 
     #[cfg(target_arch = "wasm32")]
