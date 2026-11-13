@@ -384,7 +384,15 @@ impl handler::Guest for Kernel {
                 let Ok(answer) = router.clone().oneshot(request).await;
                 match site::shown(&answer, viewed, &site) {
                     Some(page) => {
-                        let Ok(page) = router.oneshot(page).await;
+                        let Ok(mut page) = router.clone().oneshot(page).await;
+                        if page.status() == StatusCode::NOT_FOUND
+                            && holds(&site).await
+                            && given_renderer(&site).await
+                            && let Some(again) = site::shown(&answer, viewed, &site)
+                        {
+                            let Ok(again) = router.oneshot(again).await;
+                            page = again;
+                        }
                         if page.status() == StatusCode::NOT_FOUND && !holds(&site).await {
                             site::unready()
                         } else {
@@ -705,6 +713,31 @@ async fn holds(site: &Site) -> bool {
     };
     let holds = state.read().await.holds_content(space).await;
     holds.unwrap_or(true)
+}
+
+/// Give the space `site` serves the renderer its deployment serves, as it
+/// opens, where it keeps none: a space made where no renderer is kept, such
+/// as by the CLI, or before spaces kept theirs. Whether it was given one.
+async fn given_renderer(site: &Site) -> bool {
+    let (Some(space), Some(state)) = (&site.space, state()) else {
+        return false;
+    };
+    let kept = state.read().await.keeps_renderer(space).await;
+    if !matches!(kept, Ok(false)) {
+        return false;
+    }
+    let files = match renderer().await {
+        Ok(files) => files,
+        Err(error) => {
+            tonk_common::log!("tonk-kernel: {space} was given no renderer: {error}");
+            return false;
+        }
+    };
+    let given = state.read().await.keep_renderer(space, files).await;
+    if let Err(error) = &given {
+        tonk_common::log!("tonk-kernel: {space} was given no renderer: {error}");
+    }
+    given.is_ok()
 }
 
 /// Give the space the renderer its deployment serves, unless it keeps one,
