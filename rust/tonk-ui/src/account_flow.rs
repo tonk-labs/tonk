@@ -1222,10 +1222,26 @@ note:
             if controlled == Some(true) {
                 return Ok(());
             }
-            anyhow::ensure!(
-                tokio::time::Instant::now() < deadline,
-                "the service worker never took control of the page"
-            );
+            if tokio::time::Instant::now() >= deadline {
+                let registration = driver
+                    .execute_async(
+                        r#"
+                        const done = arguments[arguments.length - 1];
+                        navigator.serviceWorker.getRegistration().then(r => done(r ? {
+                            installing: r.installing?.state ?? null,
+                            waiting: r.waiting?.state ?? null,
+                            active: r.active?.state ?? null,
+                        } : null), e => done(String(e)));
+                        "#,
+                        vec![],
+                    )
+                    .await
+                    .map(|ret| ret.json().clone())
+                    .unwrap_or_default();
+                anyhow::bail!(
+                    "the service worker never took control of the page (registration: {registration})"
+                );
+            }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
@@ -6147,7 +6163,6 @@ note:
         name: &str,
         expect_remote: bool,
     ) -> Result<String> {
-        wait_for_service_worker(driver).await?;
         let branch = active_branch(driver).await?;
         let before = space_keys(driver).await?;
         // `name` alone: where a space syncs is the worker's to resolve
