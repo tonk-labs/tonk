@@ -651,7 +651,7 @@ async fn create(state: &AppState, space: &Space) {
             false
         }
     };
-    if seeded && let Err(error) = furnish(state, space).await {
+    if seeded && let Err(error) = furnish(state, &space.subject).await {
         tonk_common::log!("tonk-kernel: {} keeps no renderer: {error}", space.subject);
     }
     if !seeded && let Err(error) = found(&*state.read().await, space).await {
@@ -722,39 +722,23 @@ async fn given_renderer(site: &Site) -> bool {
     let (Some(space), Some(state)) = (&site.space, state()) else {
         return false;
     };
-    let kept = state.read().await.keeps_renderer(space).await;
-    if !matches!(kept, Ok(false)) {
-        return false;
-    }
-    let files = match renderer().await {
-        Ok(files) => files,
-        Err(error) => {
-            tonk_common::log!("tonk-kernel: {space} was given no renderer: {error}");
-            return false;
-        }
-    };
-    let given = state.read().await.keep_renderer(space, files).await;
-    if let Err(error) = &given {
+    furnish(&state, space).await.unwrap_or_else(|error| {
         tonk_common::log!("tonk-kernel: {space} was given no renderer: {error}");
-    }
-    given.is_ok()
+        false
+    })
 }
 
 /// Give the space the renderer its deployment serves, unless it keeps one,
 /// as a copy of a space that kept one does. Nothing is locked while the host
-/// reads the files.
-async fn furnish(state: &AppState, space: &Space) -> Result<(), String> {
-    let kept = state.read().await.keeps_renderer(&space.subject).await;
+/// reads the files. Whether it was given one.
+async fn furnish(state: &AppState, space: &str) -> Result<bool, String> {
+    let kept = state.read().await.keeps_renderer(space).await;
     if kept.map_err(|error| error.to_string())? {
-        return Ok(());
+        return Ok(false);
     }
     let files = renderer().await?;
-    let kept = state
-        .read()
-        .await
-        .keep_renderer(&space.subject, files)
-        .await;
-    kept.map_err(|error| error.to_string())
+    let kept = state.read().await.keep_renderer(space, files).await;
+    kept.map(|()| true).map_err(|error| error.to_string())
 }
 
 /// The renderer the deployment serves, each file with the path a space keeps
