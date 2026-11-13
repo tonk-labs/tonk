@@ -434,7 +434,7 @@ mod tests {
 
         // A resend is not an activation, and noise is nothing.
         let account = Ed25519Signer::import(&[3u8; 32]).await.unwrap().did();
-        let resend = build_anonymous_resend_invocation(&account.to_string())
+        let resend = build_anonymous_resend_invocation(account.as_ref())
             .await
             .unwrap();
         assert_eq!(activation_customer(&resend), None);
