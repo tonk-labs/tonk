@@ -9,6 +9,7 @@
     state.teardown = false;
     if (self.isConnected) return;
     self.unwatch();
+    self.withdraw();
     state.editor?.destroy();
     state.editor = null;
     state.source = null;

@@ -196,14 +196,14 @@
       //
       // The trigger is the DOM, not a connectedCallback: with the element
       // undefined, `<tonk-code>` gets no callbacks, so it cannot ask for
-      // itself. Both consumers (tonk-inspector, tonk-notebook) append a
-      // `<tonk-diagnostics-provider>` and THEN await
+      // itself. Its consumer (tonk-notebook) appends a
+      // `<tonk-diagnostics-provider>` and THEN awaits
       // `customElements.whenDefined("tonk-code")` before mounting an editor
       // — a promise that simply stays pending until the import below runs
       // `define`. So observing either tag's arrival catches every real use,
-      // and the consumers need no change: their existing wait resolves when
-      // the bundle lands. Both mount into LIGHT dom, so a document-wide
-      // subtree observer reaches them.
+      // and the consumer needs no change: its existing wait resolves when
+      // the bundle lands. It mounts into LIGHT dom, so a document-wide
+      // subtree observer reaches it.
       (function(){
         var CODE_TAGS=["TONK-CODE","TONK-DIAGNOSTICS-PROVIDER"];
         var requested=false;

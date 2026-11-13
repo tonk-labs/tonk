@@ -144,7 +144,7 @@ pub struct CommandProviders {
     /// [`ExpelMember`](tonk_schema::command::ExpelMember), whose target
     /// is likewise the origin space, and installing a library component
     /// ([`InstallComponent`](tonk_schema::command::InstallComponent)) into
-    /// the origin space, which the profile has none of.
+    /// the origin space, as the profile installs one into itself.
     space: CommandRegistry<CommandEnv>,
 }
 
@@ -276,6 +276,9 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::ReplicateSpace>()
         .command::<tonk_schema::command::ForgetInvite>()
         .command::<tonk_schema::command::CheckUpdate>()
+        // The profile is a space like any other: it installs a library
+        // component (the console's inspector and tree) onto its own branch.
+        .command::<tonk_schema::command::InstallComponent>()
 }
 
 /// A space branch's vocabulary — see [`CommandProviders`] for why each
@@ -329,8 +332,7 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // when the person joins the space. It claims for the origin and
         // names no other space.
         .command::<tonk_schema::command::ClaimMembership>()
-        // A space installs a library component into itself; the profile
-        // has no components to install.
+        // A space installs a library component into itself.
         .command::<tonk_schema::command::InstallComponent>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
@@ -612,6 +614,7 @@ pub(crate) mod tests {
     pub(crate) mod native {
         use super::*;
         use crate::router::AppState;
+        use crate::router::session::matched_route;
         use crate::worker::TonkState;
         use dialog_query::{Output as _, Query, Term};
         use tonk_schema::Replica;
@@ -716,6 +719,57 @@ pub(crate) mod tests {
                 .is(subject.this())
                 .assert(&mut changes);
             changes
+        }
+
+        /// The exact transient `library/install!:` commits for `component`.
+        fn install_component_transient(component: &str) -> Changes {
+            let mut changes = Changes::new();
+            let command = "cmd:install".parse::<Entity>().unwrap();
+            the!("xyz.tonk.command.install-component/component")
+                .of(command.clone())
+                .is(component.parse::<Entity>().unwrap())
+                .assert(&mut changes);
+            the!("xyz.tonk.command.install-component/time")
+                .of(command)
+                .is(1.0_f64)
+                .assert(&mut changes);
+            changes
+        }
+
+        /// The profile is a space like any other: a component asked for on
+        /// its branch installs onto that branch, and its route routes there.
+        #[dialog_common::test]
+        async fn it_installs_a_library_component_into_the_profile() {
+            let state = test_state().await;
+            let branch = state.read().await.active_branch.clone();
+            let profile = CommandOrigin {
+                repo: String::new(),
+                branch: branch.clone(),
+                client: None,
+            };
+            dispatch(
+                &state,
+                profile,
+                install_component_transient("tonk:library/tree"),
+            )
+            .await;
+
+            let tonk = state.read().await;
+            let session = tonk
+                .reactor
+                .profile_repository()
+                .branch(&branch)
+                .acquire(&tonk.operator)
+                .await
+                .unwrap();
+            assert_eq!(
+                matched_route(&tonk, &session, "/console/tree")
+                    .await
+                    .map(|route| route.to_string())
+                    .as_deref(),
+                Some("tonk:tree/route/console"),
+                "the tree's console routes on the profile once installed there"
+            );
         }
 
         #[dialog_common::test]

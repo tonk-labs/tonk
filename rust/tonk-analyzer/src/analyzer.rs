@@ -5826,10 +5826,14 @@ mod library_analysis_tests {
         // concepts, which says nothing about the file. `profile.yaml`
         // declares its own copies of the shared concepts, so it analyzes
         // standalone.
-        let chained: [(&str, &str); 5] = [
+        let chained: [(&str, &str); 7] = [
             (
                 "code-editor.yaml",
                 include_str!("../../tonk-core/assets/library/code-editor.yaml"),
+            ),
+            (
+                "inspector.yaml",
+                include_str!("../../tonk-core/assets/library/inspector.yaml"),
             ),
             (
                 "language/python.yaml",
@@ -5846,6 +5850,10 @@ mod library_analysis_tests {
             (
                 "table.yaml",
                 include_str!("../../tonk-core/assets/library/table.yaml"),
+            ),
+            (
+                "tree.yaml",
+                include_str!("../../tonk-core/assets/library/tree.yaml"),
             ),
         ];
         let core = include_str!("../../tonk-core/assets/library/core.yaml");

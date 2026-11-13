@@ -11327,4 +11327,433 @@ note:
         driver.quit().await?;
         Ok(())
     }
+
+    // The console's inspector and search tree are library components: a
+    // space, or the profile, installs them, and each serves a page under
+    // `/console`.
+
+    /// Which sealed frame a page renders in: the profile's own pages in the
+    /// guest, a space's in the space view nested inside it.
+    #[derive(Clone, Copy)]
+    enum Surface {
+        Profile,
+        Space,
+    }
+
+    async fn enter_surface(driver: &WebDriver, surface: Surface) -> Result<()> {
+        match surface {
+            Surface::Profile => enter_guest(driver).await,
+            Surface::Space => enter_space_view(driver).await,
+        }
+    }
+
+    /// Run `script` in `surface` with `args`, once.
+    async fn run_in(
+        driver: &WebDriver,
+        surface: Surface,
+        script: &str,
+        args: Vec<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        enter_surface(driver, surface).await?;
+        let value = driver.execute(script, args).await?.json().clone();
+        driver.enter_default_frame().await?;
+        Ok(value)
+    }
+
+    /// Run `script` in `surface` until it returns something truthy, and
+    /// return that. The frames are entered afresh on every look, since a
+    /// guest that re-mounts replaces them.
+    async fn await_in(
+        driver: &WebDriver,
+        surface: Surface,
+        script: &str,
+        what: &str,
+    ) -> Result<serde_json::Value> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut last: serde_json::Value;
+        loop {
+            match run_in(driver, surface, script, Vec::new()).await {
+                Ok(value) => {
+                    let truthy = match &value {
+                        serde_json::Value::Null => false,
+                        serde_json::Value::Bool(flag) => *flag,
+                        serde_json::Value::String(text) => !text.is_empty(),
+                        serde_json::Value::Number(number) => number.as_f64() != Some(0.0),
+                        _ => true,
+                    };
+                    if truthy {
+                        return Ok(value);
+                    }
+                    last = value;
+                }
+                Err(error) => last = serde_json::json!(error.to_string()),
+            }
+            if tokio::time::Instant::now() >= deadline {
+                driver.enter_default_frame().await.ok();
+                let state = page_diagnostic_state(driver).await;
+                return Err(anyhow!(
+                    "timed out waiting for {what}; last={last}; page={state}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Install the library component `name` on the branch `branch` (its
+    /// `/api/repository/.../branch/...` path), the way any author would:
+    /// by evaluating `library/install!:` there.
+    async fn install_component(driver: &WebDriver, branch: &str, name: &str) -> Result<()> {
+        wait_for_service_worker(driver).await?;
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis();
+        let installed = post_yaml(
+            driver,
+            &format!("{branch}/evaluate"),
+            &format!("library/install!:\n  component: tonk:library/{name}\n  time: {time}.0\n"),
+        )
+        .await?;
+        assert_eq!(
+            installed["status"].as_u64(),
+            Some(200),
+            "installing {name} on {branch}: {installed}"
+        );
+        Ok(())
+    }
+
+    /// Wait until `branch` answers `query` with a row: the install a
+    /// command ran after its commit has landed.
+    async fn await_row(
+        driver: &WebDriver,
+        branch: &str,
+        query: serde_json::Value,
+        what: &str,
+    ) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let found = post_json(driver, &format!("{branch}/query"), query.clone()).await?;
+            if found["body"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty())
+            {
+                return Ok(());
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "{what} never landed on {branch}: {found}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// The query for the route at `path`.
+    fn route_at(path: &str) -> serde_json::Value {
+        serde_json::json!({
+            "predicate": { "with": {
+                "path": { "the": "xyz.tonk.route/path", "as": "Text", "cardinality": "one" }
+            } },
+            "terms": { "this": { "?": { "name": "this" } }, "path": path }
+        })
+    }
+
+    /// The query for what the name `name` refers to: an installed element.
+    fn named(name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "predicate": { "with": {
+                "entity": { "the": "db.name/referent", "as": "Entity", "cardinality": "one" }
+            } },
+            "terms": { "this": format!("id:{name}"), "entity": { "?": { "name": "entity" } } }
+        })
+    }
+
+    /// Replace the inspector's newest cell with `arguments[0]`, as typing
+    /// it would.
+    const TYPE_IN_CELL: &str = r#"
+        const editors = document.querySelectorAll('space-inspector code-editor');
+        const editor = editors[editors.length - 1];
+        if (!editor || !editor.view) return false;
+        editor.view.dispatch({
+            changes: { from: 0, to: editor.view.state.doc.length, insert: arguments[0] },
+            userEvent: 'input',
+        });
+        return true;
+    "#;
+
+    /// The inspector installed into a space serves `/console/inspector`.
+    /// Until code-editor is installed beside it, it says it needs it; once
+    /// it is, its cell is an editor on the language server: a clean query
+    /// previews as a dry run, and a submitted assertion commits, seals the
+    /// cell and opens the next.
+    #[dialog_common::test]
+    async fn it_inspects_a_space_from_its_installed_console(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        let key = create_space(&driver, "Console inspector").await?;
+        let branch = format!("/api/repository/{key}/branch/main");
+        install_component(&driver, &branch, "inspector").await?;
+        await_row(
+            &driver,
+            &branch,
+            route_at("/console/inspector"),
+            "the inspector's route",
+        )
+        .await?;
+
+        goto(
+            &driver,
+            env.tonk_web
+                .join(&format!("space/{key}/console/inspector"))?
+                .as_str(),
+        )
+        .await?;
+        await_in(
+            &driver,
+            Surface::Space,
+            r#"const notice = document.querySelector('space-inspector .inspector-requires');
+               return !!notice && !notice.hidden && notice.textContent.includes('code-editor');"#,
+            "the inspector to say it needs code-editor",
+        )
+        .await?;
+        await_in(
+            &driver,
+            Surface::Space,
+            r#"const summary = document.querySelector('space-inspector .inspector-debug__summary');
+               return summary ? summary.textContent : null;"#,
+            "the space's branch diagnostics",
+        )
+        .await?;
+
+        install_component(&driver, &branch, "code-editor").await?;
+        await_row(&driver, &branch, named("code-editor"), "code-editor").await?;
+        let source = await_in(
+            &driver,
+            Surface::Space,
+            r#"const notice = document.querySelector('space-inspector .inspector-requires');
+               const editor = document.querySelector('space-inspector code-editor');
+               return notice && notice.hidden && editor && editor.view ? editor.getAttribute('source') : null;"#,
+            "the cell to become an editor",
+        )
+        .await?;
+        assert_eq!(
+            source.as_str(),
+            Some(format!("tonk-buffer:///{key}/main/scratch-0").as_str()),
+            "a cell's buffer names the space's branch"
+        );
+
+        run_in(
+            &driver,
+            Surface::Space,
+            TYPE_IN_CELL,
+            vec![serde_json::json!(
+                "route:\n  this: ?route\n  path: \"/console/inspector\"\n"
+            )],
+        )
+        .await?;
+        await_in(
+            &driver,
+            Surface::Space,
+            r#"const slots = document.querySelectorAll('space-inspector .evaluate-slot');
+               const slot = slots[slots.length - 1];
+               return slot && slot.textContent.includes('/console/inspector') ? slot.textContent : null;"#,
+            "the query to preview its result",
+        )
+        .await?;
+
+        run_in(
+            &driver,
+            Surface::Space,
+            TYPE_IN_CELL,
+            vec![serde_json::json!(
+                "attribute!: &console-e2e\n  the: xyz.tonk.e2e/console\n  as: text\n  description: inspector e2e marker\n"
+            )],
+        )
+        .await?;
+        await_in(
+            &driver,
+            Surface::Space,
+            r#"const play = document.querySelector('space-inspector .evaluate-play.is-visible');
+               if (!play) return false;
+               play.click();
+               return true;"#,
+            "the bolt to offer the commit",
+        )
+        .await?;
+        let next = await_in(
+            &driver,
+            Surface::Space,
+            r#"const forms = document.querySelectorAll('space-inspector form');
+               return forms.length === 2 && forms[0].classList.contains('cell-sealed')
+                 ? forms[1].querySelector('code-editor').getAttribute('source') : null;"#,
+            "the committed cell to seal and the next to open",
+        )
+        .await?;
+        assert_eq!(
+            next.as_str(),
+            Some(format!("tonk-buffer:///{key}/main/scratch-1").as_str())
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// The search tree installed into a space serves `/console/tree`: the
+    /// root node, selected, and a segment's entries once one is opened.
+    #[dialog_common::test]
+    async fn it_draws_a_space_tree_from_its_installed_console(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        let key = create_space(&driver, "Console tree").await?;
+        let branch = format!("/api/repository/{key}/branch/main");
+        install_component(&driver, &branch, "tree").await?;
+        await_row(
+            &driver,
+            &branch,
+            route_at("/console/tree"),
+            "the tree's route",
+        )
+        .await?;
+
+        goto(
+            &driver,
+            env.tonk_web
+                .join(&format!("space/{key}/console/tree"))?
+                .as_str(),
+        )
+        .await?;
+        let root = await_in(
+            &driver,
+            Surface::Space,
+            r#"const tree = document.querySelector('space-tree');
+               const title = tree && tree.shadowRoot && tree.shadowRoot.querySelector('.inspector h2');
+               return title ? title.textContent : null;"#,
+            "the tree's root",
+        )
+        .await?;
+        assert!(
+            matches!(root.as_str(), Some("Index node" | "Segment node")),
+            "the root is drawn selected: {root}"
+        );
+
+        // Open the outline down to a segment the replica holds.
+        let segment = await_in(
+            &driver,
+            Surface::Space,
+            r#"const tree = document.querySelector('space-tree');
+               const shadow = tree.shadowRoot;
+               const state = tree.__tree;
+               const segment = [...state.nodes.values()].find((node) => node.kind === 'segment' && node.cached);
+               if (segment && shadow.querySelector(`wa-tree-item[data-hash="${segment.hash}"]`)) return segment.hash;
+               for (const lazy of shadow.querySelectorAll('wa-tree-item[lazy]:not([data-loading])')) {
+                 if (!lazy.expanded) lazy.expanded = true;
+               }
+               return null;"#,
+            "a segment in the outline",
+        )
+        .await?;
+        let segment = segment.as_str().context("a segment's hash")?.to_owned();
+
+        // Select it the way a person does: a click on its row.
+        enter_surface(&driver, Surface::Space).await?;
+        let tree = driver.find(By::Css("space-tree")).await?;
+        let row = tree
+            .get_shadow_root()
+            .await?
+            .find(By::Css(format!(
+                "wa-tree-item[data-hash='{segment}'] > .row"
+            )))
+            .await?;
+        row.scroll_into_view().await?;
+        row.click().await?;
+        driver.enter_default_frame().await?;
+
+        let entries = await_in(
+            &driver,
+            Surface::Space,
+            r#"const shadow = document.querySelector('space-tree').shadowRoot;
+               const title = shadow.querySelector('.inspector h2');
+               const rows = shadow.querySelectorAll('.entries tr.entry');
+               return title && title.textContent === 'Segment node' ? rows.length : 0;"#,
+            "the selected segment's entries",
+        )
+        .await?;
+        assert!(entries.as_u64().unwrap_or(0) > 0, "entries: {entries}");
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// The profile is a space like any other: the console components
+    /// install onto its branch, and `/console/tree` and
+    /// `/console/inspector` serve its own branch, the inspector without a
+    /// named space's diagnostics.
+    #[dialog_common::test]
+    async fn it_inspects_the_profile_from_its_installed_console(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        wait_for_service_worker(&driver).await?;
+        let profile = format!(
+            "/api/repository/profile:tonk/branch/{}",
+            active_branch(&driver).await?
+        );
+        for name in ["tree", "code-editor", "inspector"] {
+            install_component(&driver, &profile, name).await?;
+        }
+        await_row(
+            &driver,
+            &profile,
+            route_at("/console/tree"),
+            "the tree's route",
+        )
+        .await?;
+        await_row(
+            &driver,
+            &profile,
+            route_at("/console/inspector"),
+            "the inspector's route",
+        )
+        .await?;
+        await_row(&driver, &profile, named("code-editor"), "code-editor").await?;
+
+        goto(&driver, env.tonk_web.join("console/tree")?.as_str()).await?;
+        await_in(
+            &driver,
+            Surface::Profile,
+            r#"const tree = document.querySelector('space-tree');
+               const title = tree && tree.shadowRoot && tree.shadowRoot.querySelector('.inspector h2');
+               return title ? title.textContent : null;"#,
+            "the profile's tree",
+        )
+        .await?;
+
+        goto(&driver, env.tonk_web.join("console/inspector")?.as_str()).await?;
+        let inspector = await_in(
+            &driver,
+            Surface::Profile,
+            r#"const inspector = document.querySelector('space-inspector');
+               const editor = inspector && inspector.querySelector('code-editor');
+               if (!editor || !editor.view) return null;
+               return {
+                 source: editor.getAttribute('source'),
+                 diagnostics: !!inspector.querySelector('.inspector-debug'),
+               };"#,
+            "the profile's inspector",
+        )
+        .await?;
+        assert!(
+            inspector["source"]
+                .as_str()
+                .is_some_and(|source| source.starts_with("tonk-buffer:///profile:")),
+            "the profile's cell names the profile: {inspector}"
+        );
+        assert_eq!(
+            inspector["diagnostics"],
+            serde_json::json!(false),
+            "the profile has no named space's diagnostics"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
 }

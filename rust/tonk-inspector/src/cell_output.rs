@@ -1,9 +1,9 @@
 //! Rendering a cell's result the way a notebook wants it.
 //!
-//! The inspector's [`crate::render`] targets a full-height panel: it dumps
-//! every match as notation text, unbounded. In a notebook that is wrong twice
-//! over — the output sits between two paragraphs of prose, so it must be
-//! compact and it must not push the next block off the screen. A query
+//! The console inspector (inspector.yaml) targets a full-height panel: it
+//! dumps every match as notation text, unbounded. In a notebook that is wrong
+//! twice over — the output sits between two paragraphs of prose, so it must
+//! be compact and it must not push the next block off the screen. A query
 //! returning 116 concepts should not produce 116 screens of YAML.
 //!
 //! So this renders an Observable-style output instead:
@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use crate::render::{
+use crate::descriptor::{
     COMMAND_LABEL, CONCEPT_LABEL, RULE_LABEL, concept_descriptor, rule_definition,
 };
 use crate::response::{EvaluateResponse, QueryMatchBlock, QueryResult};

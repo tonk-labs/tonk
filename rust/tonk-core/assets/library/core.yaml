@@ -1333,33 +1333,11 @@ view!:
     title: |
       <tab-title text="{name} — Tonk"></tab-title>
 
-concept!: &inspector
-  description: An inspector tile body — renders <tonk-inspector source="…">
-  with:
-    source:
-      description: Space name to inspect (passed through as the source attribute)
-      the: xyz.tonk.inspector/source
-      as: text
-
 # One view per concept, keyed by `model`. Each nested
 # `<tonk-display>` passes only `model=…` (and `entity=…`); with no
 # `view` attribute it resolves the view whose `model` matches. The
 # chain iterates one level of the hierarchy per template via
 # `subject={field}` and bottoms out in the tile's content display.
-
-view!:
-  this: inspector
-  show:
-    ui: |
-      <tonk-inspector source={source} />
-
-
-
-view!:
-  this: inspector
-  show:
-    directory: |
-      <tonk-inspector />
 
 # An author-defined custom element carried as branch data.
 #
@@ -2125,7 +2103,7 @@ view!:
 # The directory page — `/space/{name}/{model}`. The `{model}` path param is
 # stamped on the site entity (`xyz.tonk.site/model`) and picked here; the view
 # mounts a directory `<tonk-display model={model}>` (no entity → the model's
-# `view/directory` renders, e.g. the board strip, the inspector, the tree). The
+# `view/directory` renders, e.g. the board strip). The
 # param uses the slash-tolerant `path` extent in its route pattern so a
 # namespaced model (`tonk/person`) is captured whole.
 concept!: &directory/route
@@ -2146,7 +2124,7 @@ concept!: &directory/route
       as: text
 
 # The directory display carries its own `with` so its view's content
-# (`<tonk-tree>`, `<tonk-inspector>`) resolves the route's target space —
+# (a `<tonk-notebook>`, a `<ui-sync-status>`) resolves the route's target space —
 # `<tonk-display>` forwards this context onto the view it mounts, so no
 # routing wrapper element is needed.
 view!:
@@ -2276,35 +2254,6 @@ view!:
         title="asset:{hash}"
         style="display: block; width: 100%; height: 100vh; border: 0;"
       ></iframe>
-
-# ============================================================
-# Tree inspector — `<tonk-tree>` over the branch's search-tree
-# index. Visit `/space/{repo}/dialog:diagnose` to explore the
-# dialog-search-tree state under the DB: index/segment nodes,
-# their keys (color-coded components, shared prefixes dimmed),
-# byte sizes, and entries. The view renders `<tonk-tree>`, which
-# resolves its repository from the `with` routing
-# ancestor and drives itself from the worker's `tree/*` query
-# formulas — no entity needed (it inspects the whole branch).
-# ============================================================
-concept!: &diagnose
-  this: dialog:diagnose
-  description: Marker model for the search-tree inspector view.
-  with:
-    name:
-      description: A label for the inspector (unused; satisfies the concept shape).
-      the: db.diagnose/name
-      as: text
-
-# A directory-kind view (not a plain `view!`): a `/space/{repo}/dialog:diagnose`
-# URL carries no entity, so `<tonk-display>` resolves a `view/directory`
-# for the model. The inspector needs no entity — it renders the whole
-# branch's tree — so the directory view is the right kind.
-view!:
-  this: dialog:diagnose
-  show:
-    directory: |
-      <tonk-tree></tonk-tree>
 
 # ============================================================
 # BLOB
@@ -2932,9 +2881,11 @@ view!:
       {name}
 
 # The library's components a space can install, each beside the others
-# and beside the space's seed: code-editor, issue, meta, notebook,
-# prose-editor, table, tonk, version-control (every library file but `core.yaml`,
-# which every space runs, and `profile.yaml`, the profile's). The
+# and beside the space's seed: code-editor, inspector, issue, meta,
+# notebook, prose-editor, table, tonk, tree, version-control (every library
+# file but `core.yaml`, which every space runs, and `profile.yaml`, the
+# profile's). The inspector edits in <code-editor>, and a component cannot
+# install another, so it needs code-editor installed beside it. The
 # <code-editor> languages are components too, `language/<id>`, listed by
 # code-editor.yaml once it is installed. An install is recorded like the seed's and brought up to
 # date the same way when the space mounts; installing one already there
@@ -2956,6 +2907,10 @@ view!:
 library/component!:
   this: tonk:library/code-editor
   name: "code-editor"
+
+library/component!:
+  this: tonk:library/inspector
+  name: "inspector"
 
 library/component!:
   this: tonk:library/issue
@@ -2980,6 +2935,10 @@ library/component!:
 library/component!:
   this: tonk:library/tonk
   name: "tonk"
+
+library/component!:
+  this: tonk:library/tree
+  name: "tree"
 
 library/component!:
   this: tonk:library/version-control

@@ -545,9 +545,10 @@ async fn stamp_site_on(tonk: &crate::worker::TonkState, client: ClientId, stamp:
     }
     // Stamp the Level-0-resolved repository + branch on the site too, so a route
     // view can give its content a `<tonk-repository>`/`<tonk-branch>` context.
-    // Repository-context elements (`<tonk-tree>`, `<tonk-inspector>`) resolve
-    // repo/branch by walking DOM ancestors, which the sealed guest otherwise
-    // lacks. These are `as: text` site fields, hence string-typed raw claims.
+    // A route view hands them to repository-context elements (the console's
+    // `<space-tree>`, `<space-inspector>`) as their `with`, which the sealed
+    // guest otherwise lacks. These are `as: text` site fields, hence
+    // string-typed raw claims.
     //
     // `repo` is a LOCATION TOKEN, not a bare name: it is what a view
     // interpolates into `with="{branch}@{repo}"`, and `tonk_host::Location`

@@ -1,0 +1,73 @@
+# inspector: a scratch notebook of notation over a space's branch.
+#
+# `<space-inspector>` is a stack of cells. The cell at the bottom is a
+# <code-editor> in Dialog YAML; the cells above it are history, sealed
+# read-only with their results still showing. A cell runs itself as a dry
+# run whenever the language server finds no errors in it, so a query
+# answers as it is typed and an assertion shows what it would change
+# without changing it. Submitting a cell (Shift+Enter, or the bolt that
+# appears once it asserts something) commits it, seals it, and opens the
+# next one.
+#
+# Above the cells, in a space (not the profile), the branch's diagnostics:
+# the repository's local metadata, and on request a probe of its remote.
+#
+# The page lives at `/console/inspector`. Installed in the profile, the
+# same route inspects the profile's own branch: a route model reads the
+# repository and branch off the site, whichever it is.
+#
+# Requires code-editor. A library component cannot install another, so
+# install code-editor first; the inspector says so, in place of its cells,
+# while the space lacks it, and its cells become editors the moment it
+# arrives.
+
+concept!: &inspector/console
+  this: tonk:inspector/console
+  description: The inspector console (`/console/inspector`).
+  with:
+    repo:
+      description: The repository location token, picked off the site entity.
+      the: xyz.tonk.site/repo
+      as: text
+    branch:
+      description: The branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      as: text
+
+view!:
+  this: tonk:inspector/console
+  show:
+    ui: !include/text ./inspector/console.html
+
+route!:
+  this: tonk:inspector/route/console
+  path: "/console/inspector"
+  concept: tonk:inspector/console
+
+# ---------------------------------------------------------------------------
+# <space-inspector with="branch@repo">
+#
+# Its `with` names the branch it inspects: evaluations, the cells' buffer
+# URIs (so the language server completes against that branch) and the
+# diagnostics all follow it. Without one it explains that it has nothing to
+# inspect. Evaluations go through the host (`tonk-evaluate`), dry runs
+# with `transact: false`; a commit also fires `tonk:committed` on the
+# window, for a sync control to notice.
+# ---------------------------------------------------------------------------
+
+element!: &space-inspector
+  description: "A notebook of notation cells over the branch its `with` names: clean cells preview as dry runs, a submitted cell commits and seals."
+  method:
+    connected: !include/text ./inspector/connected.js
+    disconnected: !include/text ./inspector/disconnected.js
+    attribute-changed: !include/text ./inspector/attribute-changed.js
+    context: !include/text ./inspector/context.js
+    mount: !include/text ./inspector/mount.js
+    require: !include/text ./inspector/require.js
+    cell: !include/text ./inspector/cell.js
+    submit: !include/text ./inspector/submit.js
+    evaluate: !include/text ./inspector/evaluate.js
+    asserts: !include/text ./inspector/asserts.js
+    result: !include/text ./inspector/result.js
+    panel: !include/text ./inspector/panel.js
+    panel-html: !include/text ./inspector/panel-html.js
