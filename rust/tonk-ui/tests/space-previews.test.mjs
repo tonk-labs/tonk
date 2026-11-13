@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
-import { previewRequest } from '../../tonk-portal/src/preview_cache.js';
+import { previewRequest } from '../../tonk-site/src/preview_cache.js';
 
 const host = { isConnected: true };
 const profile = { with: 'account-a@profile:tonk', repo: '', branch: 'account-a' };
@@ -70,7 +70,7 @@ test('tab cache survives reload, throttles, expires, caps entries and clears on 
     await put('did:key:a');
     await put('did:key:a', image + 'AA');
     assert.equal((await get(['did:key:a']))['did:key:a'], image, 'one write per minute');
-    const reloaded = await import('../../tonk-portal/src/preview_cache.js?reload');
+    const reloaded = await import('../../tonk-site/src/preview_cache.js?reload');
     assert.equal((await reloaded.previewRequest({ action: 'get', repos: ['did:key:a'] }, profile, host))['did:key:a'], image);
     for (let i = 0; i < 40; i++) { now += 1000; await put(`did:key:${i}`); }
     assert.equal(Object.keys(JSON.parse([...storage.values()][0]).entries).length, 32);

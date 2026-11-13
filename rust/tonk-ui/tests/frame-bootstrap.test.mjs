@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SOURCE = readFileSync(join(HERE, "..", "..", "tonk-portal", "src", "bootstrap.js"), "utf8");
+const SOURCE = readFileSync(join(HERE, "..", "..", "tonk-site", "src", "bootstrap.js"), "utf8");
 
 const turn = () => new Promise((resolve) => setTimeout(resolve, 0));
 const settle = async () => { for (let i = 0; i < 10; i++) await turn(); };

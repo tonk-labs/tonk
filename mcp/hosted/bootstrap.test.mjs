@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 
 const source = readFileSync(
-  new URL('../../rust/tonk-portal/src/bootstrap.js', import.meta.url),
+  new URL('../../rust/tonk-site/src/bootstrap.js', import.meta.url),
   'utf8',
 );
 

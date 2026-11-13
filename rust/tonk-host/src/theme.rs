@@ -7,7 +7,7 @@
 //! space behind it untouched.
 //!
 //! So a change is applied locally and then relayed DOWN the frame tree: each
-//! guest's bootstrap (`tonk-portal::bridge`) applies it and passes it on, so
+//! guest's bootstrap (`tonk-site::bridge`) applies it and passes it on, so
 //! one call reaches every depth.
 //!
 //! ## What this deliberately does not do

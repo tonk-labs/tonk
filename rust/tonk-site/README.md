@@ -1,4 +1,4 @@
-# tonk-portal
+# tonk-site
 
 The `<tonk-site>` custom element and the bridge between it and the guest it frames.
 

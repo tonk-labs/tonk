@@ -31,7 +31,7 @@ members = [
   "rust/tonk-lingo",
   "rust/tonk-agent-peer",
   "rust/tonk-perf",
-  "rust/tonk-portal",
+  "rust/tonk-site",
   "rust/tonk-render",
   "rust/tonk-router",
   "rust/tonk-schema",
@@ -74,7 +74,7 @@ tonk-macros = { path = "./rust/tonk-macros" }
 tonk-notation = { path = "./rust/tonk-notation" }
 tonk-intent = { path = "./rust/tonk-intent" }
 tonk-lingo = { path = "./rust/tonk-lingo" }
-tonk-portal = { path = "./rust/tonk-portal" }
+tonk-site = { path = "./rust/tonk-site" }
 tonk-render = { path = "./rust/tonk-render" }
 tonk-router = { path = "./rust/tonk-router" }
 tonk-schema = { path = "./rust/tonk-schema" }

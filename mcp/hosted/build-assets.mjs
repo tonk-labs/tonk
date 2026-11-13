@@ -37,7 +37,7 @@ for (const match of glue.matchAll(/import\s+[^;]+?from\s*['"]([^'"]+snippets\/[^
   });
 }
 const local = (path) => readFile(new URL('../../' + path, import.meta.url), 'utf8');
-// Match tonk-portal's build_inject_payload: base CSS, application CSS, then
+// Match tonk-site's build_inject_payload: base CSS, application CSS, then
 // inline local fonts so opaque guests need no external font requests.
 const waCss = cached ? (cached.waCss ?? cached.css) : await get('/guest/' + manifest.waCss);
 let css = waCss + '\n' + (await local('rust/tonk-ui/styles.css'));
@@ -64,8 +64,8 @@ const pack = {
   waCss,
   css,
   theme,
-  bootstrap: await local('rust/tonk-portal/src/bootstrap.js'),
-  runtimeBootstrap: await local('rust/tonk-portal/src/runtime_bootstrap.js'),
+  bootstrap: await local('rust/tonk-site/src/bootstrap.js'),
+  runtimeBootstrap: await local('rust/tonk-site/src/runtime_bootstrap.js'),
 };
 if (
   !Buffer.from(pack.wasm, 'base64')

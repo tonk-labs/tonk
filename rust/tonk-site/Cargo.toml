@@ -1,5 +1,5 @@
 [package]
-name = "tonk-portal"
+name = "tonk-site"
 version.workspace = true
 authors.workspace = true
 license.workspace = true

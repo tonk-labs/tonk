@@ -66,7 +66,7 @@ watch = [
     "../tonk-notation",
     "../tonk-display",
     "../tonk-host",
-    "../tonk-portal",
+    "../tonk-site",
     "../tonk-guest/src",
     "../tonk-inspector/src",
     # What an earlier release kept, read for the page to bring over.

@@ -249,5 +249,5 @@ The relevant source locations are:
   activation-link surface.
 - [`rust/tonk-ui/src/account_flow.rs`](../../rust/tonk-ui/src/account_flow.rs):
   real-browser account and browser/CLI integration tests.
-- [`rust/tonk-portal`](../../rust/tonk-portal): rendered-space host and routing.
+- [`rust/tonk-site`](../../rust/tonk-site): rendered-space host and routing.
 - [`flake.nix`](../../flake.nix): repository-defined E2E command.

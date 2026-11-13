@@ -27,7 +27,7 @@ use web_sys::{Element, MessageChannel, MessageEvent};
 use crate::user_error::{self, AccountAction};
 
 thread_local! {
-    static RETURN_FOCUS: RefCell<Option<tonk_portal::RegisterFocusReturn>> = const { RefCell::new(None) };
+    static RETURN_FOCUS: RefCell<Option<tonk_site::RegisterFocusReturn>> = const { RefCell::new(None) };
     static ANCHOR: RefCell<Option<Anchor>> = const { RefCell::new(None) };
     static INSTALLED: Cell<bool> = const { Cell::new(false) };
     /// One card at a time: a second request arriving while the card is
@@ -160,7 +160,7 @@ fn on_click(card: &Element, selector: &str, callback: impl FnMut() + 'static) {
 }
 
 /// Retain the guest lifecycle reply while its approval screen is replaced.
-pub fn return_to_approval(focus: Option<tonk_portal::RegisterFocusReturn>) {
+pub fn return_to_approval(focus: Option<tonk_site::RegisterFocusReturn>) {
     if let Some(focus) = focus {
         if card().is_some_and(|card| card.has_attribute("data-anchored")) {
             focus.show_custody();

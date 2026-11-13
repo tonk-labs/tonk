@@ -25,7 +25,7 @@ async fn main() {
     // ceremonies the profile's worker asks for. Everything else (the hub,
     // a space's chrome, the bar, a space's content) renders in that site
     // and the sites it nests, and this page asks no worker for anything.
-    tonk_portal::register_site();
+    tonk_site::register_site();
 
     // Passkey ceremonies live on the window: `navigator.credentials`
     // does not exist in the service worker, and each ceremony needs a
@@ -42,7 +42,7 @@ async fn main() {
     // The panel that adds an account is the profile frame's own; what a
     // frame still asks of this page is where to seat the passkey rows a
     // settings command raised, beside the column that asked.
-    tonk_portal::on_register(|reason, return_focus| {
+    tonk_site::on_register(|reason, return_focus| {
         let request = tonk_ui::custody_relay::parse_seat_request(reason);
         if request.reason == "custody-anchor" {
             tonk_ui::custody_relay::return_to_approval(return_focus);
@@ -54,7 +54,7 @@ async fn main() {
     // A delegation from the account is signed by the worker that holds the
     // account, behind a passkey this page asks for. A person known to have
     // no account signs in first.
-    tonk_portal::on_delegate(|request, reply| {
+    tonk_site::on_delegate(|request, reply| {
         let delegation = tonk_worker_api::RootDelegation {
             subject: request.subject,
             command: request.command,
@@ -75,7 +75,7 @@ async fn main() {
     });
     // An account task is the profile frame's to answer. One that reaches
     // this page has no panel here to open.
-    tonk_portal::on_task(|_request, reply| {
+    tonk_site::on_task(|_request, reply| {
         if let Some(reply) = reply {
             reply.finish("invalid");
         }
@@ -206,7 +206,7 @@ fn render_root(shell: &web_sys::Element) {
                         let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&rest));
                     }
                 } else {
-                    tonk_portal::signed_in(&site_pattern, |signed_in| {
+                    tonk_site::signed_in(&site_pattern, |signed_in| {
                         SIGNED_OUT.set(!signed_in);
                     });
                 }
@@ -214,7 +214,7 @@ fn render_root(shell: &web_sys::Element) {
             }
         };
         let late = settle.clone();
-        tonk_portal::account(&site_pattern, did, settle);
+        tonk_site::account(&site_pattern, did, settle);
         let timeout = wasm_bindgen::closure::Closure::once_into_js(move || late(false));
         if let Some(window) = web_sys::window() {
             let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
@@ -335,7 +335,7 @@ fn show_stages(shell: &web_sys::Element) {
             }
         });
     let _ = shell.add_event_listener_with_callback(
-        tonk_portal::STAGE_EVENT,
+        tonk_site::STAGE_EVENT,
         on_stage.as_ref().unchecked_ref(),
     );
     on_stage.forget();

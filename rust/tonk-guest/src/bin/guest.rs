@@ -45,7 +45,7 @@ pub fn start() {
     // The nested router: a space's chrome runs a `<tonk-site>` inside the guest
     // to route the sub-path against the space's route table, rendering its match
     // in a further-nested sealed iframe.
-    tonk_portal::register_site();
+    tonk_site::register_site();
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

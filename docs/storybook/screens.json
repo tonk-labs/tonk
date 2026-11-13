@@ -5,7 +5,7 @@
   "tracked_product_paths": [
     "rust/tonk-ui/",
     "rust/tonk-cli/",
-    "rust/tonk-portal/"
+    "rust/tonk-site/"
   ],
   "screens": [
     {
@@ -42,7 +42,7 @@
       "capture": "running product",
       "status": "captured",
       "journey_ids": ["ACCT-C13", "ACCT-C14", "SPACE-09", "DATA-02", "DATA-09", "UI-04", "SPACE-17"],
-      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/styles.css", "rust/tonk-portal/src/site.rs", "rust/tonk-core/assets/library/profile.yaml"]
+      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/styles.css", "rust/tonk-site/src/site.rs", "rust/tonk-core/assets/library/profile.yaml"]
     },
     {
       "id": "WEB-04",
@@ -66,7 +66,7 @@
       "capture": "running product",
       "status": "captured",
       "journey_ids": ["COLLAB-01", "COLLAB-02", "COLLAB-03", "COLLAB-04", "COLLAB-05"],
-      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/src/fabb_task.rs", "rust/tonk-core/assets/library/profile.yaml", "rust/tonk-portal/src/task.rs"]
+      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/src/fabb_task.rs", "rust/tonk-core/assets/library/profile.yaml", "rust/tonk-site/src/task.rs"]
     },
     {
       "id": "WEB-06",

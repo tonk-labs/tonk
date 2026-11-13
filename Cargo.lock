@@ -5797,7 +5797,7 @@ dependencies = [
  "tonk-display",
  "tonk-host",
  "tonk-inspector",
- "tonk-portal",
+ "tonk-site",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -6177,24 +6177,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tonk-portal"
-version = "0.6.16-rc.1"
-dependencies = [
- "custom-elements",
- "dialog-common",
- "js-sys",
- "serde",
- "serde_json",
- "tonk-common",
- "tonk-display",
- "tonk-host",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test",
- "web-sys",
-]
-
-[[package]]
 name = "tonk-render"
 version = "0.6.16-rc.1"
 dependencies = [
@@ -6264,6 +6246,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-site"
+version = "0.6.16-rc.1"
+dependencies = [
+ "custom-elements",
+ "dialog-common",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "tonk-common",
+ "tonk-display",
+ "tonk-host",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
+]
+
+[[package]]
 name = "tonk-template"
 version = "0.6.16-rc.1"
 dependencies = [
@@ -6319,7 +6319,7 @@ dependencies = [
  "tonk-identity",
  "tonk-invite",
  "tonk-kernel-world",
- "tonk-portal",
+ "tonk-site",
  "tonk-worker",
  "tonk-worker-api",
  "tracing",

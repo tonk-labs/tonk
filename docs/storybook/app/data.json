@@ -910,7 +910,7 @@
       "source_paths": [
         "rust/tonk-ui/src/bin/ui.rs",
         "rust/tonk-ui/styles.css",
-        "rust/tonk-portal/src/site.rs",
+        "rust/tonk-site/src/site.rs",
         "rust/tonk-core/assets/library/profile.yaml"
       ],
       "status": "captured",
@@ -958,7 +958,7 @@
         "rust/tonk-ui/src/bin/ui.rs",
         "rust/tonk-ui/src/fabb_task.rs",
         "rust/tonk-core/assets/library/profile.yaml",
-        "rust/tonk-portal/src/task.rs"
+        "rust/tonk-site/src/task.rs"
       ],
       "status": "captured",
       "summary": "Share, sync repair, activation, and account-required states stay attached to the originating FABB or replace it through one trusted contained task without leaving the space.",
