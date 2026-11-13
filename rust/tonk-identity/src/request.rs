@@ -358,6 +358,39 @@ pub async fn build_resend_invocation(device: impl Into<Signer>, account: &Did) -
         .context("failed to serialize the resend invocation")
 }
 
+/// The account an emailed activation link names: the `customer` argument
+/// of its `/customer/activate` invocation. Read without verifying, which
+/// is all a page needs to ask for that account's link again: a
+/// `/customer/resend` only ever mails the address the service already
+/// holds. `None` for anything that is not an activation container.
+pub fn activation_customer(container: &[u8]) -> Option<String> {
+    let tokens = Container::from_bytes(container).ok()?.into_tokens();
+    let invocation: Invocation<AnySignature> =
+        serde_ipld_dagcbor::from_slice(tokens.first()?).ok()?;
+    let command: Vec<&str> = invocation.command().0.iter().map(String::as_str).collect();
+    if command != ["customer", "activate"] {
+        return None;
+    }
+    match invocation.arguments().get("customer")? {
+        Promised::String(customer) => Some(customer.clone()),
+        _ => None,
+    }
+}
+
+/// [`build_resend_invocation`] signed by a key made for it and then
+/// dropped, for a page that holds no account or device key (an
+/// activation link opened on any device). The service asks nothing more
+/// of a resend than a self-signed invocation naming the account.
+pub async fn build_anonymous_resend_invocation(account: &str) -> Result<Vec<u8>> {
+    let account: Did = account
+        .parse()
+        .map_err(|_| anyhow::anyhow!("the activation link names no account"))?;
+    let signer = dialog_credentials::Ed25519Signer::generate()
+        .await
+        .context("failed to make a key for the resend")?;
+    build_resend_invocation(signer, &account).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,6 +402,44 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    async fn it_reads_the_account_an_activation_link_names() {
+        let service = Ed25519Signer::import(&[9u8; 32]).await.unwrap();
+        let service_did = service.did();
+        let invocation = InvocationBuilder::new()
+            .issuer(service)
+            .audience(&service_did)
+            .subject(&service_did)
+            .command(vec!["customer".to_string(), "activate".to_string()])
+            .arguments(BTreeMap::from([
+                (
+                    "customer".to_string(),
+                    Promised::String("did:key:z6MkCustomer".to_string()),
+                ),
+                ("terms".to_string(), Promised::String("2026-10".to_string())),
+            ]))
+            .proofs(Vec::<ipld_core::cid::Cid>::new())
+            .expiration(Timestamp::five_minutes_from_now())
+            .try_build()
+            .await
+            .unwrap();
+        let link = InvocationChain::new(invocation, HashMap::new())
+            .to_bytes()
+            .unwrap();
+        assert_eq!(
+            activation_customer(&link).as_deref(),
+            Some("did:key:z6MkCustomer")
+        );
+
+        // A resend is not an activation, and noise is nothing.
+        let account = Ed25519Signer::import(&[3u8; 32]).await.unwrap().did();
+        let resend = build_anonymous_resend_invocation(account.as_ref())
+            .await
+            .unwrap();
+        assert_eq!(activation_customer(&resend), None);
+        assert_eq!(activation_customer(&[0, 1, 2]), None);
+    }
 
     #[dialog_common::test]
     async fn it_builds_a_device_signed_invocation_the_service_verifies() {

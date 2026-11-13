@@ -7,11 +7,22 @@
       <p id="activate-terms">Confirm your email address to activate your account. This allows Tonk to sync your data across browsers and devices, meaning other people and tools can connect to it. By selecting accept and activate, you agree to the <a class="fabb-inline-action" href="https://tonk.xyz/legal/terms" target="_blank" rel="noopener noreferrer">terms of service</a>.</p>
       <tonk-message id="activate-error" kind="error" heading="not activated" tabindex="-1" hidden></tonk-message>
     </div>
-    <div class="fabb-actions"><button id="activate-accept" type="button" data-wait="activating" aria-describedby="activate-terms activate-error">accept and activate</button></div>
+    <div class="fabb-actions"><button id="activate-not-mine" type="button">not mine</button><button id="activate-accept" type="button" data-wait="activating" aria-describedby="activate-terms activate-error">accept and activate</button></div>
   </main>
 
   <main id="activate-done" class="fabb-task" aria-labelledby="activate-done-title" hidden>
     <header class="fabb-task-head"><h1 id="activate-done-title" class="fabb-task-title" tabindex="-1">account verified</h1></header>
     <tonk-message kind="success">You may close this tab. Return to the original tab where you started account setup.</tonk-message>
+  </main>
+
+  <main id="activate-not-mine-done" class="fabb-task" aria-labelledby="activate-not-mine-title" hidden>
+    <header class="fabb-task-head"><h1 id="activate-not-mine-title" class="fabb-task-title" tabindex="-1">activate your account</h1></header>
+    <tonk-message kind="status" tabindex="-1">Nothing changed. You can ignore the email.</tonk-message>
+  </main>
+
+  <main id="activate-expired" class="fabb-task" aria-labelledby="activate-expired-title" hidden>
+    <header class="fabb-task-head"><h1 id="activate-expired-title" class="fabb-task-title" tabindex="-1">activate your account</h1></header>
+    <tonk-message id="activate-expired-message" kind="error" heading="this link expired" tabindex="-1">Nothing changed. Send a new link to the address this one came to.</tonk-message>
+    <div class="fabb-actions"><button id="activate-resend" type="button" data-wait="sending">send a new link</button></div>
   </main>
 </div>

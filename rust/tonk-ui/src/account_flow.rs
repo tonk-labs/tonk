@@ -3042,6 +3042,53 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Not mine answers the link without activating: nothing is posted,
+    /// and the page says the account stays as it was.
+    #[dialog_common::test]
+    async fn it_leaves_the_account_unactivated_when_the_link_is_not_mine(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let mut activation = env.tonk_web.join("activate")?;
+        activation.set_query(Some("ucan=AA"));
+        goto(&driver, activation.as_str()).await?;
+        element(&driver, "#activate-not-mine").await?;
+
+        let answer = driver
+            .execute_async(
+                r#"const done = arguments[arguments.length - 1];
+                   const original = window.fetch;
+                   let requests = 0;
+                   window.fetch = (...args) => {
+                     if (String(args[0]?.url || args[0]).includes('/ucan/')) requests += 1;
+                     return original(...args);
+                   };
+                   document.querySelector('#activate-not-mine').click();
+                   document.querySelector('#activate-accept').click();
+                   setTimeout(() => done({
+                     requests,
+                     shown: !document.querySelector('#activate-not-mine-done').hidden,
+                     confirm: !document.querySelector('#activate-confirm').hidden,
+                     message: document.querySelector('#activate-not-mine-done tonk-message').textContent,
+                     focused: document.activeElement?.matches('#activate-not-mine-done tonk-message')
+                   }), 300);"#,
+                Vec::new(),
+            )
+            .await?;
+        let answer = answer.json();
+        assert_eq!(answer["requests"], 0, "not mine must not activate");
+        assert_eq!(answer["shown"], true);
+        assert_eq!(answer["confirm"], false);
+        assert_eq!(
+            answer["message"],
+            "Nothing changed. You can ignore the email."
+        );
+        assert_eq!(answer["focused"], true);
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     fn tonk_bin() -> PathBuf {
         let path = std::env::var_os("TONK_BIN")
             .map(PathBuf::from)
