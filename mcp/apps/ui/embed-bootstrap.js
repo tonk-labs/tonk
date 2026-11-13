@@ -2,8 +2,7 @@
 // in the stock Tonk guest runtime, including installed space views.
 addEventListener('message', (e) => {
   if (e.source !== parent || e.data?.type !== 'tonk-mount') return;
-  window.__tonkHideFab = e.data.hideFab === true;
-  if (window.__tonkHideFab) {
+  if (e.data.hideFab === true) {
     const style = document.createElement('style');
     style.textContent = 'tonk-fab{display:none!important}';
     document.head.append(style);

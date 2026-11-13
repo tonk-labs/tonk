@@ -6,20 +6,27 @@ import XCTest
 
 @MainActor
 final class RuntimeInspectionTests: XCTestCase {
-  func testNativeFabFlagIsAvailableBeforePageScriptsOnEveryLoad() async throws {
+  func testWebFabIsHiddenInEveryFrameOnEveryLoad() async throws {
     let runtime = RuntimeModel()
     let webView = runtime.makePage().webView
     webView.navigationDelegate = nil
     for _ in 0..<2 {
       webView.loadHTMLString(
-        "<script>window.flagAtBoot = window.__tonkHideFab === true;</script>", baseURL: nil)
+        """
+        <tonk-fab id="fab">fab</tonk-fab>
+        <iframe srcdoc="<tonk-fab id='fab'>fab</tonk-fab>"></iframe>
+        """, baseURL: nil)
       for _ in 0..<100 {
         if !webView.isLoading { break }
         try await Task.sleep(for: .milliseconds(20))
       }
-      let flag = try await webView.callAsyncJavaScript(
-        "return window.flagAtBoot === true;", arguments: [:], in: nil, contentWorld: .page)
-      XCTAssertEqual(flag as? Bool, true)
+      let hidden = try await webView.callAsyncJavaScript(
+        """
+        const frame = document.querySelector("iframe").contentDocument;
+        return [document, frame].map((doc) =>
+          doc.defaultView.getComputedStyle(doc.getElementById("fab")).display);
+        """, arguments: [:], in: nil, contentWorld: .page)
+      XCTAssertEqual(hidden as? [String], ["none", "none"])
     }
   }
 

@@ -72,12 +72,18 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     webView.isInspectable = true
   }
 
-  /// Tonk carries this presentation flag into its sealed guest iframes.
+  /// The app has native chrome, so it hides the web FAB in every frame: the
+  /// profile and each space render on origins of their own, out of reach of
+  /// the top page.
   static func hideFab(in controller: WKUserContentController) {
     controller.addUserScript(
       WKUserScript(
-        source: "window.__tonkHideFab = true;",
-        injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
+        source: """
+          const style = document.createElement("style");
+          style.textContent = "tonk-fab{display:none!important}";
+          document.documentElement.append(style);
+          """,
+        injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))
   }
 
   /// Tells the web app's analytics it runs inside the desktop app, so its events

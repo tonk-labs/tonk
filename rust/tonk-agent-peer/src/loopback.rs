@@ -141,7 +141,6 @@ for (const level of ['warn', 'error']) {
 }
 addEventListener('message', (e) => {
   if (e.source !== parent || e.data?.type !== 'tonk-display-mount') return;
-  window.__tonkHideFab = true;
   const style = document.createElement('style');
   style.textContent = 'tonk-fab{display:none!important} body{padding:8px;display:flex;flex-direction:column;gap:12px}';
   document.head.append(style);
