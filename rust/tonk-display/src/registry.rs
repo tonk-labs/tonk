@@ -734,6 +734,17 @@ mod tests {
         host
     }
 
+    /// A `<tonk-display>` that stays a plain ancestor, for the elements
+    /// that read `closest('tonk-display')`. Outside the HTML namespace, so
+    /// it is never upgraded, not even after another test of this realm
+    /// has registered the real display: a real one with nothing to show
+    /// fails and clears what it holds.
+    fn inert_display() -> Element {
+        document()
+            .create_element_ns(Some("urn:tonk:test"), "tonk-display")
+            .expect("display")
+    }
+
     fn defined(tag: &str) -> bool {
         !window()
             .expect("window")
@@ -1561,7 +1572,7 @@ mod tests {
         define_from_library(CORE_LIBRARY, "page-mount");
         install_fake_host();
         install();
-        let display = document().create_element("tonk-display").expect("display");
+        let display = inert_display();
         let page = document().create_element("page-mount").expect("page");
         display.append_child(&page).expect("nest");
         let mounts = js_sys::Array::new();
@@ -2614,7 +2625,7 @@ mod tests {
             ("search", "?via=https%3A%2F%2Ftonk.network&request=r1"),
             ("hash", "#authorize=abc"),
         ]);
-        let display = document().create_element("tonk-display").expect("display");
+        let display = inert_display();
         let host = document().create_element("account-settings").expect("host");
         host.set_inner_html(
             r#"<div class="pane" data-pane="account"></div><div class="pane" data-pane="via" hidden><b data-via-origin></b><button type="button" data-via-continue data-via="">continue</button><span hidden data-via-return></span></div><p data-ceremony-status hidden></p>"#,

@@ -12,7 +12,7 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::Element;
 
 use super::{
-    PROFILE_LIBRARY, define_from_library, defined, document, install, install_fake_host,
+    PROFILE_LIBRARY, define_from_library, defined, document, install, install_fake_host, notify,
     settle_briefly,
 };
 
@@ -127,13 +127,24 @@ async fn until(what: &str, done: impl Fn() -> bool) {
     panic!("never happened: {what}");
 }
 
+/// Put the bar's family on the branch. A tag some earlier test of this
+/// realm already watched learns of its definition the way it would from
+/// the host: a frame on the watch's open name subscription.
+fn define_family() {
+    for tag in FAMILY {
+        define_from_library(PROFILE_LIBRARY, tag);
+        let watch = format!("tonk-element-watch[data-tag=\"{tag}\"]");
+        if document().query_selector(&watch).ok().flatten().is_some() {
+            notify(tag, "name");
+        }
+    }
+}
+
 /// Register the bar's family from the library, install the bridge, and
 /// mount `<tonk-fab>` with `attributes`, waiting until it and its
 /// children have upgraded.
 async fn mount(attributes: &str) -> Element {
-    for tag in FAMILY {
-        define_from_library(PROFILE_LIBRARY, tag);
-    }
+    define_family();
     install_fake_host();
     install();
     js(BRIDGE);
@@ -805,9 +816,7 @@ async fn it_declares_exactly_the_fields_each_command_sets() {
 
 #[dialog_common::test]
 async fn it_cycles_tab_across_shadow_and_slotted_dialog_controls() {
-    for tag in FAMILY {
-        define_from_library(PROFILE_LIBRARY, tag);
-    }
+    define_family();
     install_fake_host();
     install();
     let host = document()
