@@ -21,6 +21,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Collector } from "./diagnostics.mjs";
 import { SCENARIOS, check } from "./invariants.mjs";
+import { profileFrame, spaceFrame, timedFetch, within } from "./sites.mjs";
 
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
@@ -33,6 +34,8 @@ const LATENCY_MS = String(process.env.STABILITY_LATENCY_MS ?? 150);
 const only = process.env.STABILITY_SCENARIOS?.split(",");
 // How long a plain read may take while a sync stalls (write-while-sync-stalls).
 const READ_BUDGET_MS = 2_000;
+// How long a scenario keeps counting after its body ends.
+const TAIL_MS = Number(process.env.STABILITY_TAIL_MS ?? 6_000);
 
 // The one place that talks to the network shaper: `tonk-perf link`'s
 // control server, in front of the page and the remote it syncs with.
@@ -45,10 +48,6 @@ async function network(mode, extra = {}) {
 
 function cli(args) {
   return execFileSync(config.tonk, args, { env: { ...process.env, ...config.cliEnv }, encoding: "utf8" });
-}
-
-function within(promise, fallback, ms = 2_000) {
-  return Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(fallback), ms))]);
 }
 
 // CI passes the Nix chromium in CHROME; locally Playwright's own browser.
@@ -70,13 +69,27 @@ page.on("load", () => topLoads++);
 // What the last unsettled sample saw, for a scenario that never settles.
 let lastUnsettled = null;
 
-// Content in a guest and no loading pulse anywhere for `quiet` ms.
+// The space the page shows, by its DID: its frame is the one whose content
+// counts, and whose worker the scenarios measure.
+let viewing = null;
+
+// Whether `frame` is the frame of the space the page shows, or a frame in it.
+function inViewedSpace(frame) {
+  const space = viewing && spaceFrame(page, viewing);
+  for (let f = frame; space && f; f = f.parentFrame()) if (f === space) return true;
+  return false;
+}
+
+// Content in the space's frame and no loading pulse anywhere for `quiet`
+// ms. The profile's frame around the space always has text of its own (its
+// chrome), so only the space's frame says whether the space shows.
 async function settled(limit = 60_000, quiet = 1_000) {
   const t0 = Date.now();
   let quietSince = null;
   while (Date.now() - t0 < limit) {
+    const frames = page.frames();
     const state = await Promise.all(
-      page.frames().map((f) =>
+      frames.map((f) =>
         within(
           f.evaluate(() => ({
             pulse: [...document.querySelectorAll(".tonk-pulse")].some((el) => {
@@ -90,8 +103,9 @@ async function settled(limit = 60_000, quiet = 1_000) {
         ).catch(() => ({ pulse: false, text: 0 })),
       ),
     );
-    lastUnsettled = { pulsing: state.flatMap((s, i) => (s.pulse ? [i ? `guest:${i}` : "top"] : [])), guest_text: state.slice(1).map((s) => s.text) };
-    if (!state.some((s) => s.pulse) && state.slice(1).some((s) => s.text > 0)) {
+    const shown = state.filter((s, i) => inViewedSpace(frames[i])).map((s) => s.text);
+    lastUnsettled = { pulsing: state.flatMap((s, i) => (s.pulse ? [i ? `guest:${i}` : "top"] : [])), space_text: shown };
+    if (!state.some((s) => s.pulse) && shown.some((text) => text > 0)) {
       quietSince ??= Date.now();
       if (Date.now() - quietSince >= quiet) return quietSince - t0;
     } else quietSince = null;
@@ -114,11 +128,19 @@ async function shows(text, limit) {
   return null;
 }
 
-async function navigate(path) {
+// The app's page owns the address bar: it tells the profile where it is,
+// and the profile frames the space the address names.
+async function navigate(did) {
+  viewing = did;
   await page.evaluate((href) => {
     history.pushState(null, "", href);
     dispatchEvent(new PopStateEvent("popstate"));
-  }, path);
+  }, `/space/${did}`);
+}
+
+async function open(did) {
+  viewing = did;
+  await page.goto(`${config.base}/space/${did}`);
 }
 
 function remoteWrite(label) {
@@ -139,17 +161,21 @@ const results = [];
 async function scenario(name, body) {
   if (only && !only.includes(name)) return;
   await network("shaped");
-  if (!page.url().includes(`/space/${spaceA}`)) await page.goto(`${config.base}/space/${spaceA}`);
+  if (!page.url().includes(`/space/${spaceA}`)) await open(spaceA);
+  viewing = spaceA;
   // A scenario measures a page that was showing its content. If the one
   // before left it broken, reload (before the counters reset, so the
   // reload is not this scenario's), and if it still will not settle, the
   // scenario is vacuous.
   let ready = await settled();
   if (ready === null) {
-    await page.goto(`${config.base}/space/${spaceA}`);
+    await open(spaceA);
     ready = await settled(60_000);
   }
-  const collector = new Collector(page);
+  // The workers that matter: the space's kernel, which answers the space's
+  // frame, and the profile's, which frames the space and hosts the
+  // person's spaces.
+  const collector = new Collector(page, () => ({ space: spaceFrame(page, spaceA), profile: profileFrame(page) }));
   await collector.reset();
   topLoads = 0;
   // Sample once before the body runs, so a realm the body destroys at once
@@ -163,6 +189,11 @@ async function scenario(name, body) {
     observed = { error: String(error).slice(0, 300) };
   }
   await network("shaped");
+  // What the scenario set off can land after the page settled: a display
+  // holds an empty frame for its grace (5 s) before it applies it. Keep
+  // counting a while, so that lands in the scenario that caused it and
+  // not in the next one.
+  await page.waitForTimeout(TAIL_MS);
   await collector.stop();
   const { counters, lockSites } = collector.totals();
   const unsettled = [observed.settled_ms].flat().some((ms) => ms === null);
@@ -182,7 +213,11 @@ async function scenario(name, body) {
 
 // Joining is setup, not a scenario: it reloads by design.
 await network("shaped");
-for (const invite of [config.invite, config.inviteB]) {
+for (const [invite, did] of [
+  [config.invite, spaceA],
+  [config.inviteB, spaceB],
+]) {
+  viewing = did;
   await page.goto(invite);
   for (let i = 0; i < 240 && /\/join/.test(page.url()); i++) await page.waitForTimeout(500);
   await settled(120_000);
@@ -191,7 +226,7 @@ for (const invite of [config.invite, config.inviteB]) {
 await scenario("switch-spaces", async () => {
   const settled_ms = [];
   for (const did of [spaceB, spaceA]) {
-    await navigate(`/space/${did}`);
+    await navigate(did);
     settled_ms.push(await settled());
   }
   return { settled_ms };
@@ -202,12 +237,24 @@ await scenario("switch-spaces", async () => {
 // scenario measures.
 if (!only || only.includes("worker-restart")) await page.waitForTimeout(Number(process.env.STABILITY_IDLE_MS ?? 90_000));
 
-await scenario("worker-restart", async () => {
+// The browser stops every worker of the page: the app's, the profile's
+// kernel and the space's. Something has to wake them: the person keeps
+// using the page, which asks the space's kernel and the profile's, each
+// from a frame of its own origin. The app's worker serves no request of
+// theirs.
+async function restartWorkers() {
   await cdp.send("ServiceWorker.stopAllWorkers");
-  // Something has to wake the worker: the person keeps using the page.
   await page.waitForTimeout(2_000);
-  await page.evaluate(() => fetch("/api/health").catch(() => {}));
-  return { settled_ms: await settled(30_000) };
+  const woken = await Promise.all([
+    timedFetch(spaceFrame(page, spaceA), "/api/health"),
+    timedFetch(profileFrame(page), "/api/health"),
+  ]);
+  return { space: woken[0].status, profile: woken[1].status };
+}
+
+await scenario("worker-restart", async () => {
+  const woken = await restartWorkers();
+  return { woken, settled_ms: await settled(30_000) };
 });
 
 await scenario("remote-write-while-viewing", async () => {
@@ -232,29 +279,40 @@ for (const [name, mode] of [
 // about 30 idle seconds), then the network stalls: the new worker instance
 // must not need the network to keep the page showing what it had.
 await scenario("restart-then-stall", async () => {
-  await cdp.send("ServiceWorker.stopAllWorkers");
-  await page.waitForTimeout(2_000);
-  await page.evaluate(() => fetch("/api/health").catch(() => {}));
+  const woken = await restartWorkers();
   const restarted_ms = await settled(30_000);
   await network("stall");
   await page.waitForTimeout(Number(process.env.STABILITY_OUTAGE_MS ?? 20_000));
   await network("shaped");
   const settled_ms = await settled(60_000);
-  return settled_ms === null ? { restarted_ms, settled_ms, unsettled: lastUnsettled } : { restarted_ms, settled_ms };
+  return settled_ms === null
+    ? { woken, restarted_ms, settled_ms, unsettled: lastUnsettled }
+    : { woken, restarted_ms, settled_ms };
 });
 
-// A sync of space A hangs on a stalled remote while a writer arrives: the
-// page creates a space, which takes the worker's state for writing. The
-// state lock is write-preferring, so if the sync holds its guard across the
-// round trip, the writer queues behind it and every request after the
-// writer queues too. A local read of space B issued after the writer must
-// still answer within READ_BUDGET_MS (declared at the top). The read is a
-// claim select, which answers from the replica: `sync/status` fetches the
-// upstream head and would wait on the stalled remote whatever the lock does. Only the remote leg is stalled (`link=ucan`, which
-// `tonk-perf link` honours; bench/trace/gate.mjs stalls everything, and
-// cannot stall a sync that bypasses it, so there the scenario is vacuous).
-// bench/trace/gate.mjs has no `/stats`; only `tonk-perf link` can stall
-// the remote leg alone.
+// A sync of space A hangs on a stalled remote while a writer arrives and
+// takes the worker's state for writing. The state lock is
+// write-preferring, so if the sync holds its guard across the round trip,
+// the writer queues behind it and every request after the writer queues
+// too. A local read issued after the writer must still answer within
+// READ_BUDGET_MS (declared at the top). The read is a claim select, which
+// answers from the replica under a read guard: `sync/status` fetches the
+// upstream head and would wait on the stalled remote whatever the lock
+// does.
+//
+// With one worker for every space this was a pull of space A, the page
+// creating a space, and a read of space B. Each site now has a worker and
+// a lock of its own: space A's kernel syncs A, the profile's creates
+// spaces, and B's answers B, so those three never meet on one lock. The
+// lock they shared is now space A's kernel's alone, so all three go to it,
+// from space A's frame: the pull, the same space creation (`PUT
+// /api/repository/{name}`, which takes the kernel's state for writing),
+// and a read of A.
+//
+// Only the remote leg is stalled (`link=ucan`, which `tonk-perf link`
+// honours; bench/trace/gate.mjs stalls everything, and cannot stall a sync
+// that bypasses it, so there the scenario is vacuous). bench/trace/gate.mjs
+// has no `/stats`; only `tonk-perf link` can stall the remote leg alone.
 const shapesRemote = await fetch(`${config.gate}/stats`)
   .then((r) => (r.ok ? r.text() : "null"))
   .then((body) => Array.isArray(JSON.parse(body)))
@@ -262,15 +320,7 @@ const shapesRemote = await fetch(`${config.gate}/stats`)
 if (!shapesRemote) console.error("stability: write-while-sync-stalls skipped: the network cannot stall the remote alone");
 if (shapesRemote) await scenario("write-while-sync-stalls", async () => {
   await network("stall", { link: "ucan" });
-  const timed = (label, init) =>
-    page.evaluate(
-      async ({ label, init }) => {
-        const t0 = performance.now();
-        const status = await fetch(label, init).then((r) => r.status, (e) => String(e));
-        return { status, ms: Math.round(performance.now() - t0) };
-      },
-      { label, init },
-    );
+  const timed = (path, init) => timedFetch(spaceFrame(page, spaceA), path, init);
   const pull = timed(`/api/repository/${spaceA}/branch/main/sync/pull`, { method: "POST" });
   let pullDone = null;
   pull.then(() => (pullDone = Date.now()));
@@ -280,7 +330,7 @@ if (shapesRemote) await scenario("write-while-sync-stalls", async () => {
   const writer = timed(`/api/repository/stability-${Date.now()}`, { method: "PUT" });
   await page.waitForTimeout(500);
   const read = await timed(
-    `/api/repository/${spaceB}/branch/main/claim/select?the=${encodeURIComponent("tonk/repository/name")}`,
+    `/api/repository/${spaceA}/branch/main/claim/select?the=${encodeURIComponent("tonk/repository/name")}`,
     {},
   );
   await page.waitForTimeout(Math.max(0, Number(process.env.STABILITY_OUTAGE_MS ?? 20_000) - (Date.now() - t0)));

@@ -155,8 +155,11 @@
   // The stamp lives in the worker's memory, so a restarted worker, or the
   // successor taking over from an updated one, starts without it: the site's
   // display falls back to `no-entity` and the page would spin forever. Claim
-  // again whenever it does, as `<tonk-site>` does for the host's stamp. At most
-  // once a second, so a stamp that cannot land does not loop.
+  // again whenever it does, as `<tonk-site>` does for the host's stamp, and
+  // as soon as the display holds what it showed over the empty frame its
+  // reopened subscription got (`data-held`): claimed within the display's
+  // grace, the stamp is back before it gives up what it shows. At most once
+  // a second, so a stamp that cannot land does not loop.
   var lastClaim=0;
   function healLoad(){
     if(!claimTarget()) return;
@@ -166,11 +169,11 @@
   new MutationObserver(function(records){
     for(var i=0;i<records.length;i++){
       var el=records[i].target;
-      if(el.getAttribute&&el.getAttribute("model")==="tonk:site"&&el.getAttribute("data-state")==="no-entity"){
+      if(el.getAttribute&&el.getAttribute("model")==="tonk:site"&&(el.getAttribute("data-state")==="no-entity"||el.hasAttribute("data-held"))){
         healLoad(); return;
       }
     }
-  }).observe(document,{subtree:true,attributes:true,attributeFilter:["data-state"]});
+  }).observe(document,{subtree:true,attributes:true,attributeFilter:["data-state","data-held"]});
   function call(type,extra){
     return ready.then(function(){
       return new Promise(function(resolve,reject){
