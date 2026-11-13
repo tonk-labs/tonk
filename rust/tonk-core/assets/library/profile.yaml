@@ -3831,6 +3831,13 @@ view!:
            runs (or once a ticket link fails) its status replaces the wall. The join's own surfaces, the
            opening pulse and the failure wall, are styled as on `/join`. */
         .space-unknown:has(.join-status) .space-unknown-wall { display:none; }
+        .space-unknown:has(.join-status) .space-private { display:none; }
+        /* The private wall is a task page (fabb-pages.css): it brings its
+           own ground and padding, takes none of this panel's type, and
+           its focus is the press wash, not this panel's ring. */
+        .space-unknown:has(:not([hidden]) > .space-private) { padding:0; }
+        .space-unknown .space-private { letter-spacing:normal; }
+        .space-unknown .space-private :focus-visible { box-shadow:none; }
         .space-unknown .join-opening { position:fixed; inset:0; z-index:3;
           display:flex; align-items:center; justify-content:center;
           color:var(--edge-ink); background:var(--edge-page); }
@@ -3933,21 +3940,24 @@ view!:
                  directory concept has not arrived yet. -->
             <div slot="no-model" hidden>
               <tab-title text="Open this space — Tonk"></tab-title>
-              <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
-              <div class="space-unknown-wall">
-                <h1 class="space-unknown-statement">open this space</h1>
-                <p class="space-unknown-narrator">Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
-                <!-- The recovery control opens the top-page account ceremony. -->
-                <div class="space-unknown-run">
-                  <space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></space-login>
-                </div>
-                <p class="space-unknown-narrator">New to this space? Ask someone in it to send you an invite link from <strong>share</strong>.</p>
-                <a class="space-unknown-back" href="/">go to home</a>
+              <!-- A wall (gooey in-browser/PAGES.md, task-page.html#private):
+                   no disc, the reason, who can help, and a way on. -->
+              <div class="fabb-page space-private">
+                <header class="fabb-top"><a href="/" aria-label="Tonk home" style="display:flex;color:inherit"><svg class="fabb-logo" viewBox="0 0 202 54" fill="currentColor" role="img" aria-label="Tonk"><path d="M61.4097 26.2461C61.4097 18.671 67.4444 12.5295 74.8889 12.5295C82.3321 12.5295 88.3669 18.671 88.3669 26.2461C88.3669 33.8225 82.3321 39.964 74.8889 39.964C67.4444 39.964 61.4097 33.8225 61.4097 26.2461ZM130.925 0C124.313 0 118.752 1.74144 114.845 5.27674C112.849 7.08238 111.33 9.28375 110.316 11.8062C110.19 9.83541 109.614 7.085 107.631 4.80894C105.309 2.14503 101.749 0.414067 97.0759 0.50055C95.7813 0.528067 94.7524 1.59992 94.7785 2.89585C94.8047 4.17605 95.8494 5.19681 97.1231 5.19681C97.1388 5.19681 97.1558 5.19681 97.1715 5.19681C100.388 5.1326 102.706 6.32108 104.075 7.87252C106.074 10.1381 105.617 13.5882 105.606 13.6708C105.412 14.947 106.285 16.1421 107.56 16.3425C107.683 16.3622 108.675 16.488 109.147 16.0254C108.933 17.3056 108.819 18.6396 108.819 20.0285C108.819 29.3752 105.425 38.6157 100.012 44.0038C95.7001 48.2952 90.4351 50.3721 83.5522 51.1845C93.6894 47.6164 100.961 37.9343 100.961 26.5422C100.961 12.1193 89.3094 0.428481 74.9347 0.428481C60.5614 0.428481 48.9096 12.1193 48.9096 26.5422C48.9096 40.9651 60.5614 52.6573 74.9347 52.6573C75.4243 52.6573 75.9087 52.6403 76.3904 52.614C87.2345 52.483 94.8296 50.5804 100.72 44.7166C106.327 39.1359 109.823 29.649 109.823 20.0285C109.823 8.21583 117.909 0.877927 130.925 0.877927C152.316 0.877927 153.196 12.0748 153.214 13.617C150.903 14.1661 145.751 16.5994 145.751 21.1764V52.3926H153.364C154.142 52.3926 154.225 51.9052 154.225 51.6274V13.6734C154.225 12.2595 153.566 0 130.925 0Z"/><path d="M17.5255 1.03747L14.2306 1.0414C8.87533 1.05188 5.55428 3.49042 3.70984 5.42841C1.35094 7.90495 0 11.3262 0 14.8118C0 21.3818 4.4429 28.4524 15.0566 28.4524V23.0865C7.61079 23.0865 5.36054 18.6288 5.36054 14.8118C5.36054 11.3616 7.42883 6.30241 14.338 6.30241L17.5255 6.3011V47.1116C14.6914 47.1116 13.1232 44.2773 13.1232 41.8047L8.62399 41.8074C8.62399 48.4442 14.3288 52.3202 17.4823 52.3936H23.4895C29.2572 52.3936 33.6228 46.7185 33.6228 32.4581V12.1059H36.0917V23.0865H47.0471V1.03747H17.5255Z"/><path d="M195.242 32.633L188.118 32.5806C190.005 31.59 191.522 30.4172 192.686 29.3126C198.678 23.6297 201.716 14.1166 201.716 1.04073H198.03C198.03 13.0644 195.379 21.6759 190.152 26.6356C187.771 28.8933 183.605 31.5035 177.24 31.2362V1.04073H161.239V35.8053C161.239 43.3083 156.125 44.4889 156.125 44.4889V52.3955H177.24V36.9755C177.24 35.8145 179.356 35.8184 179.356 36.9755C179.356 38.9567 179.351 42.1959 179.351 44.2793C179.351 50.4117 184.599 53.5355 190.909 53.5355C196.451 53.5355 201.763 50.0985 201.915 44.2793C202.014 40.4662 202.94 32.633 195.242 32.633Z"/></svg></a></header>
+                <section class="fabb-task" aria-labelledby="space-open-title">
+                  <header class="fabb-task-head"><h1 class="fabb-task-title" id="space-open-title" tabindex="-1">open this space</h1></header>
+                  <!-- No "you don't have access": missing local state (a lost
+                       sign-in, a Home Screen app) is not proof of it. -->
+                  <div class="fabb-request">
+                    <p>Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
+                    <p class="fabb-note">New to this space? Ask someone in it to send you an invite link from <strong>share</strong>.</p>
+                  </div>
+                  <!-- sign in opens the top-page account ceremony. -->
+                  <div class="fabb-actions"><a href="/">your spaces</a><space-login><button type="button">sign in</button></space-login></div>
+                </section>
               </div>
             </div>
             <div slot="no-entity" hidden>
-              <tab-title text="Open this space — Tonk"></tab-title>
-              <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
               <!-- A ticket link carries its key's seed in the fragment,
                    which only the page can read: mount the join with the
                    page's location. With no ticket the join leaves this
@@ -3965,15 +3975,22 @@ view!:
                    holds none and the space keeps no public ticket. Hidden
                    while the join is still looking (`.space-unknown:has(.join-status)`),
                    so a public space never flashes it on the way in. -->
-              <div class="space-unknown-wall">
-                <h1 class="space-unknown-statement">this space is private</h1>
-                <p class="space-unknown-narrator">Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
-                <!-- The recovery control opens the top-page account ceremony. -->
-                <div class="space-unknown-run">
-                  <space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></space-login>
-                </div>
-                <p class="space-unknown-narrator">New to this space? Opening it takes an invite: ask someone in it to send you a link from <strong>share</strong>.</p>
-                <a class="space-unknown-back" href="/">go to home</a>
+              <tab-title text="Open this space — Tonk"></tab-title>
+              <!-- A wall (gooey in-browser/PAGES.md, task-page.html#private):
+                   no disc, the reason, who can help, and a way on. -->
+              <div class="fabb-page space-private">
+                <header class="fabb-top"><a href="/" aria-label="Tonk home" style="display:flex;color:inherit"><svg class="fabb-logo" viewBox="0 0 202 54" fill="currentColor" role="img" aria-label="Tonk"><path d="M61.4097 26.2461C61.4097 18.671 67.4444 12.5295 74.8889 12.5295C82.3321 12.5295 88.3669 18.671 88.3669 26.2461C88.3669 33.8225 82.3321 39.964 74.8889 39.964C67.4444 39.964 61.4097 33.8225 61.4097 26.2461ZM130.925 0C124.313 0 118.752 1.74144 114.845 5.27674C112.849 7.08238 111.33 9.28375 110.316 11.8062C110.19 9.83541 109.614 7.085 107.631 4.80894C105.309 2.14503 101.749 0.414067 97.0759 0.50055C95.7813 0.528067 94.7524 1.59992 94.7785 2.89585C94.8047 4.17605 95.8494 5.19681 97.1231 5.19681C97.1388 5.19681 97.1558 5.19681 97.1715 5.19681C100.388 5.1326 102.706 6.32108 104.075 7.87252C106.074 10.1381 105.617 13.5882 105.606 13.6708C105.412 14.947 106.285 16.1421 107.56 16.3425C107.683 16.3622 108.675 16.488 109.147 16.0254C108.933 17.3056 108.819 18.6396 108.819 20.0285C108.819 29.3752 105.425 38.6157 100.012 44.0038C95.7001 48.2952 90.4351 50.3721 83.5522 51.1845C93.6894 47.6164 100.961 37.9343 100.961 26.5422C100.961 12.1193 89.3094 0.428481 74.9347 0.428481C60.5614 0.428481 48.9096 12.1193 48.9096 26.5422C48.9096 40.9651 60.5614 52.6573 74.9347 52.6573C75.4243 52.6573 75.9087 52.6403 76.3904 52.614C87.2345 52.483 94.8296 50.5804 100.72 44.7166C106.327 39.1359 109.823 29.649 109.823 20.0285C109.823 8.21583 117.909 0.877927 130.925 0.877927C152.316 0.877927 153.196 12.0748 153.214 13.617C150.903 14.1661 145.751 16.5994 145.751 21.1764V52.3926H153.364C154.142 52.3926 154.225 51.9052 154.225 51.6274V13.6734C154.225 12.2595 153.566 0 130.925 0Z"/><path d="M17.5255 1.03747L14.2306 1.0414C8.87533 1.05188 5.55428 3.49042 3.70984 5.42841C1.35094 7.90495 0 11.3262 0 14.8118C0 21.3818 4.4429 28.4524 15.0566 28.4524V23.0865C7.61079 23.0865 5.36054 18.6288 5.36054 14.8118C5.36054 11.3616 7.42883 6.30241 14.338 6.30241L17.5255 6.3011V47.1116C14.6914 47.1116 13.1232 44.2773 13.1232 41.8047L8.62399 41.8074C8.62399 48.4442 14.3288 52.3202 17.4823 52.3936H23.4895C29.2572 52.3936 33.6228 46.7185 33.6228 32.4581V12.1059H36.0917V23.0865H47.0471V1.03747H17.5255Z"/><path d="M195.242 32.633L188.118 32.5806C190.005 31.59 191.522 30.4172 192.686 29.3126C198.678 23.6297 201.716 14.1166 201.716 1.04073H198.03C198.03 13.0644 195.379 21.6759 190.152 26.6356C187.771 28.8933 183.605 31.5035 177.24 31.2362V1.04073H161.239V35.8053C161.239 43.3083 156.125 44.4889 156.125 44.4889V52.3955H177.24V36.9755C177.24 35.8145 179.356 35.8184 179.356 36.9755C179.356 38.9567 179.351 42.1959 179.351 44.2793C179.351 50.4117 184.599 53.5355 190.909 53.5355C196.451 53.5355 201.763 50.0985 201.915 44.2793C202.014 40.4662 202.94 32.633 195.242 32.633Z"/></svg></a></header>
+                <section class="fabb-task" aria-labelledby="space-private-title">
+                  <header class="fabb-task-head"><h1 class="fabb-task-title" id="space-private-title" tabindex="-1">this space is private</h1></header>
+                  <!-- No "you don't have access": missing local state (a lost
+                       sign-in, a Home Screen app) is not proof of it. -->
+                  <div class="fabb-request">
+                    <p>Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
+                    <p class="fabb-note">New to this space? Opening it takes an invite: ask someone in it to send you a link from <strong>share</strong>.</p>
+                  </div>
+                  <!-- sign in opens the top-page account ceremony. -->
+                  <div class="fabb-actions"><a href="/">your spaces</a><space-login><button type="button">sign in</button></space-login></div>
+                </section>
               </div>
             </div>
             <!-- A space seeded before the `downloading` facet existed
@@ -4032,23 +4049,17 @@ view!:
         <tonk-fab with="{profile-branch}@profile:tonk" latent>
           <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
         </tonk-fab>
-        <style>
-          .nf { display: flex; flex-direction: column; align-items: center;
-                justify-content: center; gap: 8px; height: 100%; padding: 32px;
-                text-align: center; color: var(--wa-color-text-normal); }
-          .nf__code { font-size: 3rem; font-weight: 600; line-height: 1;
-                      color: var(--wa-color-text-quiet); }
-          .nf__msg { font-size: 1rem; color: var(--wa-color-text-quiet); }
-          .nf__path { font-family: var(--wa-font-family-code, monospace);
-                      color: var(--wa-color-text-normal); }
-          .nf__home { margin-top: 8px; text-decoration: none; }
-        </style>
-        <tab-title text="Tonk"></tab-title>
-        <div class="nf">
-          <div class="nf__code">404</div>
-          <div class="nf__msg">No page at <span class="nf__path">{path}</span></div>
-          <a class="nf__home" href="/"><wa-button variant="brand">Back to Hub</wa-button></a>
-        </div>
+        <tab-title text="no page here — Tonk"></tab-title>
+        <!-- A wall (gooey in-browser/PAGES.md, task-page.html#notfound): a
+             whole-page status on a task sheet, no disc, and a way on. -->
+        <main class="fabb-page nf" aria-labelledby="nf-title">
+          <header class="fabb-top"><a href="/" aria-label="Tonk home" style="display:flex;color:inherit"><svg class="fabb-logo" viewBox="0 0 202 54" fill="currentColor" role="img" aria-label="Tonk"><path d="M61.4097 26.2461C61.4097 18.671 67.4444 12.5295 74.8889 12.5295C82.3321 12.5295 88.3669 18.671 88.3669 26.2461C88.3669 33.8225 82.3321 39.964 74.8889 39.964C67.4444 39.964 61.4097 33.8225 61.4097 26.2461ZM130.925 0C124.313 0 118.752 1.74144 114.845 5.27674C112.849 7.08238 111.33 9.28375 110.316 11.8062C110.19 9.83541 109.614 7.085 107.631 4.80894C105.309 2.14503 101.749 0.414067 97.0759 0.50055C95.7813 0.528067 94.7524 1.59992 94.7785 2.89585C94.8047 4.17605 95.8494 5.19681 97.1231 5.19681C97.1388 5.19681 97.1558 5.19681 97.1715 5.19681C100.388 5.1326 102.706 6.32108 104.075 7.87252C106.074 10.1381 105.617 13.5882 105.606 13.6708C105.412 14.947 106.285 16.1421 107.56 16.3425C107.683 16.3622 108.675 16.488 109.147 16.0254C108.933 17.3056 108.819 18.6396 108.819 20.0285C108.819 29.3752 105.425 38.6157 100.012 44.0038C95.7001 48.2952 90.4351 50.3721 83.5522 51.1845C93.6894 47.6164 100.961 37.9343 100.961 26.5422C100.961 12.1193 89.3094 0.428481 74.9347 0.428481C60.5614 0.428481 48.9096 12.1193 48.9096 26.5422C48.9096 40.9651 60.5614 52.6573 74.9347 52.6573C75.4243 52.6573 75.9087 52.6403 76.3904 52.614C87.2345 52.483 94.8296 50.5804 100.72 44.7166C106.327 39.1359 109.823 29.649 109.823 20.0285C109.823 8.21583 117.909 0.877927 130.925 0.877927C152.316 0.877927 153.196 12.0748 153.214 13.617C150.903 14.1661 145.751 16.5994 145.751 21.1764V52.3926H153.364C154.142 52.3926 154.225 51.9052 154.225 51.6274V13.6734C154.225 12.2595 153.566 0 130.925 0Z"/><path d="M17.5255 1.03747L14.2306 1.0414C8.87533 1.05188 5.55428 3.49042 3.70984 5.42841C1.35094 7.90495 0 11.3262 0 14.8118C0 21.3818 4.4429 28.4524 15.0566 28.4524V23.0865C7.61079 23.0865 5.36054 18.6288 5.36054 14.8118C5.36054 11.3616 7.42883 6.30241 14.338 6.30241L17.5255 6.3011V47.1116C14.6914 47.1116 13.1232 44.2773 13.1232 41.8047L8.62399 41.8074C8.62399 48.4442 14.3288 52.3202 17.4823 52.3936H23.4895C29.2572 52.3936 33.6228 46.7185 33.6228 32.4581V12.1059H36.0917V23.0865H47.0471V1.03747H17.5255Z"/><path d="M195.242 32.633L188.118 32.5806C190.005 31.59 191.522 30.4172 192.686 29.3126C198.678 23.6297 201.716 14.1166 201.716 1.04073H198.03C198.03 13.0644 195.379 21.6759 190.152 26.6356C187.771 28.8933 183.605 31.5035 177.24 31.2362V1.04073H161.239V35.8053C161.239 43.3083 156.125 44.4889 156.125 44.4889V52.3955H177.24V36.9755C177.24 35.8145 179.356 35.8184 179.356 36.9755C179.356 38.9567 179.351 42.1959 179.351 44.2793C179.351 50.4117 184.599 53.5355 190.909 53.5355C196.451 53.5355 201.763 50.0985 201.915 44.2793C202.014 40.4662 202.94 32.633 195.242 32.633Z"/></svg></a></header>
+          <section class="fabb-task" data-path="{path}">
+            <header class="fabb-task-head"><h1 class="fabb-task-title" id="nf-title" tabindex="-1">no page here</h1></header>
+            <tonk-message kind="status">There’s nothing at this address. Check the link, or ask whoever sent it.</tonk-message>
+            <div class="fabb-actions"><a href="/">your spaces</a></div>
+          </section>
+        </main>
       </div>
 
 # ════════════════════════════════════════════════════════════════════

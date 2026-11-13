@@ -712,8 +712,24 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         PROFILE_LIBRARY
             .matches("class=\"space-unknown-narrator\"")
             .count(),
-        5,
-        "the absent-space panel must explain downloading, login, and invite recovery"
+        1,
+        "the absent-space panel must explain downloading"
+    );
+    // The two absence walls are task pages (gooey in-browser/PAGES.md):
+    // a sheet, the login and invite recovery, and a way on.
+    assert_eq!(
+        PROFILE_LIBRARY
+            .matches("<div class=\"fabb-page space-private\">")
+            .count(),
+        2,
+        "both absence states must be task-page walls"
+    );
+    assert_eq!(
+        PROFILE_LIBRARY
+            .matches("<div class=\"fabb-actions\"><a href=\"/\">your spaces</a><space-login><button type=\"button\">sign in</button></space-login></div>")
+            .count(),
+        2,
+        "both absence walls must offer your spaces and sign in"
     );
     assert!(
         PROFILE_LIBRARY.contains("model=space view=downloading"),
@@ -2032,4 +2048,24 @@ fn it_routes_a_seed_link_to_the_seed_page_with_the_url_intact() {
         matched.params.get("url"),
         Some("https://tonk.network/library/notebook.yaml")
     );
+}
+
+#[dialog_common::test]
+fn it_draws_a_missing_page_as_a_wall() {
+    let view = PROFILE_LIBRARY
+        .split("view!:\n  this: tonk:not-found")
+        .nth(1)
+        .and_then(|tail| tail.split("# ════").next())
+        .expect("not-found view");
+    // gooey in-browser/task-page.html#notfound: a whole-page status on a
+    // task sheet, no disc, and `your spaces`. No Web Awesome, no tokens.
+    assert!(view.contains("<main class=\"fabb-page nf\""));
+    assert!(view.contains(">no page here</h1>"));
+    assert!(view.contains(
+        "<tonk-message kind=\"status\">There’s nothing at this address. Check the link, or ask whoever sent it.</tonk-message>"
+    ));
+    assert!(view.contains("<div class=\"fabb-actions\"><a href=\"/\">your spaces</a></div>"));
+    for gone in ["<wa-button", "--wa-", "fabb-disc", "404"] {
+        assert!(!view.contains(gone), "the wall must not draw `{gone}`");
+    }
 }

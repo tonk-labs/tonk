@@ -192,6 +192,106 @@
             .tonk-boot-center:has(.tonk-boot-status[data-failed]) .tonk-pulse {
                 display: none;
             }
+            /* A start that failed is a wall (gooey in-browser/PAGES.md,
+               task-page.html#no-start): the task sheet under the
+               logotype, its title, the reason, and the one thing to do.
+               Drawn here, inline, because the sheets that draw every other
+               task page may be what didn't load; the values are
+               tonk-look.css's light ones. */
+            .tonk-boot-top,
+            .tonk-boot-actions {
+                display: none;
+            }
+            #tonk-boot:has([data-failed]) {
+                align-items: center;
+                padding: 40px 16px 32px;
+                overflow: auto;
+                background: #e8e6e4;
+                color: #38182a;
+                color-scheme: light;
+            }
+            #tonk-boot:has([data-failed]) .tonk-boot-top {
+                display: flex;
+                align-items: center;
+                width: min(480px, 100%);
+                height: 44px;
+                margin-bottom: 20px;
+            }
+            .tonk-boot-logo {
+                height: 22px;
+                width: auto;
+            }
+            #tonk-boot:has([data-failed]) .tonk-boot-center {
+                flex: none;
+                display: block;
+                width: min(480px, 100%);
+                border-radius: 12px;
+                background: #f7f6f5;
+                box-shadow:
+                    0 0 0 1px rgb(56 24 42 / 6%),
+                    0 1px 3px rgb(56 24 42 / 6%),
+                    0 8px 24px -12px rgb(56 24 42 / 12%);
+            }
+            #tonk-boot:has([data-failed]) .tonk-boot-title {
+                display: flex;
+                align-items: center;
+                min-height: 48px;
+                max-width: none;
+                padding: 5px 16px 6px;
+                border-bottom: 1px solid rgb(56 24 42 / 12%);
+                font-size: 16px;
+                line-height: 1.3;
+                text-align: start;
+                outline: none;
+            }
+            #tonk-boot .tonk-boot-status[data-failed] {
+                width: auto;
+                padding: 16px;
+                color: #38182a;
+                text-align: start;
+            }
+            #tonk-boot:has([data-failed]):not(:has([data-boot-stuck]))
+                .tonk-boot-actions {
+                display: flex;
+                justify-content: flex-end;
+                padding: 0 16px 16px;
+            }
+            .tonk-boot-actions button {
+                height: 36px;
+                padding: 0 12px;
+                border: 0;
+                border-radius: 6px;
+                background: #38182a;
+                color: #f7f6f5;
+                font:
+                    600 14px / 1.3 "IBM Plex Sans Condensed",
+                    "Arial Narrow",
+                    sans-serif;
+                letter-spacing: 0.02em;
+                cursor: pointer;
+            }
+            .tonk-boot-actions button:focus-visible {
+                outline: none;
+                background: color-mix(in oklab, #f7f6f5 12%, #38182a);
+            }
+            @media (pointer: coarse) {
+                .tonk-boot-actions button {
+                    height: 44px;
+                }
+            }
+            @media (max-width: 560px) {
+                #tonk-boot:has([data-failed]) {
+                    padding-top: 20px;
+                }
+            }
+            @media (forced-colors: active) {
+                .tonk-boot-actions button {
+                    border: 1px solid transparent;
+                }
+                .tonk-boot-actions button:focus-visible {
+                    outline: 2px solid Highlight;
+                }
+            }
             @keyframes tonk-pulse {
                 0%,
                 100% {
@@ -341,9 +441,9 @@
                 reg.active?.postMessage({ type: "connectivity" });
             };
 
-            const GENERIC_BOOT_FAILURE_TITLE = "Tonk couldn’t start";
+            const GENERIC_BOOT_FAILURE_TITLE = "this page didn’t load";
             const GENERIC_BOOT_FAILURE =
-                "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.";
+                "Tonk couldn’t start. Your local data is safe. Reload the page. If it keeps happening, check your connection or try another browser.";
             const isSafariBrowser = () => {
                 const userAgent = navigator.userAgent || "";
                 const vendor = navigator.vendor || "";
@@ -400,6 +500,13 @@
                     status.setAttribute("data-failed", "");
                     status.setAttribute("role", "alert");
                     status.textContent = message;
+                    // Reload is the one thing to do, unless this browser can't
+                    // run Tonk at all. Focus goes to the reason.
+                    if (title !== "this page didn’t load") {
+                        status.setAttribute("data-boot-stuck", "");
+                    }
+                    status.tabIndex = -1;
+                    status.focus?.({ preventScroll: true });
                 }
             };
 
@@ -970,7 +1077,7 @@
                             `boot: still stuck after ${n} recoveries (${why}); giving up`,
                         );
                         self.tonkBootTerminal(
-                            "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.",
+                            "Tonk couldn’t start. Your local data is safe. Reload the page. If it keeps happening, check your connection or try another browser.",
                         );
                         return;
                     }
@@ -986,7 +1093,7 @@
                 self.tonkBootRecover = recover;
                 self.tonkBootTerminal = (
                     message,
-                    title = "Tonk couldn’t start",
+                    title = "this page didn’t load",
                 ) => {
                     if (terminal) return;
                     terminal = true;
@@ -1002,6 +1109,13 @@
                         status.setAttribute("data-failed", "");
                         status.setAttribute("role", "alert");
                         status.textContent = message;
+                        // Reload is the one thing to do, unless this browser can't
+                        // run Tonk at all. Focus goes to the reason.
+                        if (title !== "this page didn’t load") {
+                            status.setAttribute("data-boot-stuck", "");
+                        }
+                        status.tabIndex = -1;
+                        status.focus?.({ preventScroll: true });
                     }
                 };
 
@@ -1183,12 +1297,16 @@
          critical CSS in <head>; hidden purely by CSS
          (`body:has(tonk-site)`) — the wasm never has to know it exists. -->
         <div id="tonk-boot" aria-live="polite">
+            <header class="tonk-boot-top"><svg class="tonk-boot-logo" viewBox="0 0 202 54" fill="currentColor" role="img" aria-label="Tonk"><path d="M61.4097 26.2461C61.4097 18.671 67.4444 12.5295 74.8889 12.5295C82.3321 12.5295 88.3669 18.671 88.3669 26.2461C88.3669 33.8225 82.3321 39.964 74.8889 39.964C67.4444 39.964 61.4097 33.8225 61.4097 26.2461ZM130.925 0C124.313 0 118.752 1.74144 114.845 5.27674C112.849 7.08238 111.33 9.28375 110.316 11.8062C110.19 9.83541 109.614 7.085 107.631 4.80894C105.309 2.14503 101.749 0.414067 97.0759 0.50055C95.7813 0.528067 94.7524 1.59992 94.7785 2.89585C94.8047 4.17605 95.8494 5.19681 97.1231 5.19681C97.1388 5.19681 97.1558 5.19681 97.1715 5.19681C100.388 5.1326 102.706 6.32108 104.075 7.87252C106.074 10.1381 105.617 13.5882 105.606 13.6708C105.412 14.947 106.285 16.1421 107.56 16.3425C107.683 16.3622 108.675 16.488 109.147 16.0254C108.933 17.3056 108.819 18.6396 108.819 20.0285C108.819 29.3752 105.425 38.6157 100.012 44.0038C95.7001 48.2952 90.4351 50.3721 83.5522 51.1845C93.6894 47.6164 100.961 37.9343 100.961 26.5422C100.961 12.1193 89.3094 0.428481 74.9347 0.428481C60.5614 0.428481 48.9096 12.1193 48.9096 26.5422C48.9096 40.9651 60.5614 52.6573 74.9347 52.6573C75.4243 52.6573 75.9087 52.6403 76.3904 52.614C87.2345 52.483 94.8296 50.5804 100.72 44.7166C106.327 39.1359 109.823 29.649 109.823 20.0285C109.823 8.21583 117.909 0.877927 130.925 0.877927C152.316 0.877927 153.196 12.0748 153.214 13.617C150.903 14.1661 145.751 16.5994 145.751 21.1764V52.3926H153.364C154.142 52.3926 154.225 51.9052 154.225 51.6274V13.6734C154.225 12.2595 153.566 0 130.925 0Z"/><path d="M17.5255 1.03747L14.2306 1.0414C8.87533 1.05188 5.55428 3.49042 3.70984 5.42841C1.35094 7.90495 0 11.3262 0 14.8118C0 21.3818 4.4429 28.4524 15.0566 28.4524V23.0865C7.61079 23.0865 5.36054 18.6288 5.36054 14.8118C5.36054 11.3616 7.42883 6.30241 14.338 6.30241L17.5255 6.3011V47.1116C14.6914 47.1116 13.1232 44.2773 13.1232 41.8047L8.62399 41.8074C8.62399 48.4442 14.3288 52.3202 17.4823 52.3936H23.4895C29.2572 52.3936 33.6228 46.7185 33.6228 32.4581V12.1059H36.0917V23.0865H47.0471V1.03747H17.5255Z"/><path d="M195.242 32.633L188.118 32.5806C190.005 31.59 191.522 30.4172 192.686 29.3126C198.678 23.6297 201.716 14.1166 201.716 1.04073H198.03C198.03 13.0644 195.379 21.6759 190.152 26.6356C187.771 28.8933 183.605 31.5035 177.24 31.2362V1.04073H161.239V35.8053C161.239 43.3083 156.125 44.4889 156.125 44.4889V52.3955H177.24V36.9755C177.24 35.8145 179.356 35.8184 179.356 36.9755C179.356 38.9567 179.351 42.1959 179.351 44.2793C179.351 50.4117 184.599 53.5355 190.909 53.5355C196.451 53.5355 201.763 50.0985 201.915 44.2793C202.014 40.4662 202.94 32.633 195.242 32.633Z"/></svg></header>
             <div class="tonk-boot-center">
                 <span class="tonk-pulse" aria-hidden="true"></span>
-                <h1 class="tonk-boot-title" data-boot-title>
-                    Tonk couldn’t start
+                <h1 class="tonk-boot-title" data-boot-title tabindex="-1">
+                    this page didn’t load
                 </h1>
                 <p class="tonk-boot-status" data-boot-status>loading…</p>
+                <div class="tonk-boot-actions">
+                    <button type="button" onclick="location.reload()">reload</button>
+                </div>
             </div>
         </div>
 

@@ -10459,7 +10459,7 @@ pub(crate) mod tests {
                 };
                 const bar = document.querySelector('tonk-fab');
                 const root = bar?.shadowRoot;
-                const wall = [...document.querySelectorAll('.space-unknown-statement')]
+                const wall = [...document.querySelectorAll('.space-private .fabb-task-title')]
                     .find((heading) => heading.textContent.includes('private'));
                 return {
                     name: (root?.querySelector('.space .n')?.textContent || '').trim(),
