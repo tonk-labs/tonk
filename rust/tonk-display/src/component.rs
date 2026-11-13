@@ -34,7 +34,7 @@
 //! Trust: the module runs in the same realm as every other view in
 //! the sealed guest — the same power a view author already has over
 //! sibling views' DOM and the command pipeline. The branch remains the
-//! trust boundary, exactly as it is for views and portals.
+//! trust boundary, exactly as it is for views.
 
 use custom_elements::CustomElement;
 use wasm_bindgen::JsCast;

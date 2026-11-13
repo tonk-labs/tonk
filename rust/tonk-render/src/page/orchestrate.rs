@@ -4,9 +4,7 @@
 //! component runs, against a [`QueryBackend`], then feeds the result
 //! through the shared `tonk-template` planner and this crate's pure
 //! headless renderer ([`crate::render`]). Nested `<tonk-display>`
-//! elements inside a view are rendered recursively; a model whose
-//! `show` dictionary carries `type: text/html` (portal mode) is
-//! emitted as an isolated `<iframe srcdoc>`.
+//! elements inside a view are rendered recursively.
 
 use std::collections::BTreeMap;
 
@@ -15,8 +13,8 @@ use tonk_schema::conclusion::Conclusion;
 use tonk_template::fold::{select_rows, show_template};
 use tonk_template::resolve::scalar_field_names;
 use tonk_template::resolve::{
-    DETAIL_FACET, DIRECTORY_FACET, TYPE_FACET, entity_query, instances_query, looks_like_uri,
-    name_query, parse_source, phase1_query, view_query,
+    DETAIL_FACET, DIRECTORY_FACET, entity_query, instances_query, looks_like_uri, name_query,
+    parse_source, phase1_query, view_query,
 };
 use tonk_template::{split_plan_with_scalars, this_repeat_root};
 
@@ -82,9 +80,6 @@ pub struct Outline {
     pub view: Option<String>,
     /// How many records the view rendered.
     pub records: usize,
-    /// The view is a sandboxed `text/html` document, not a template.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub portal: bool,
     /// Why this display did not render.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -131,7 +126,6 @@ impl Outline {
             entity: route.entity.clone(),
             view: route.view.clone(),
             records: 0,
-            portal: false,
             error: None,
             children: Vec::new(),
             items: Vec::new(),
@@ -214,13 +208,7 @@ async fn render_at_depth<B: QueryBackend>(
         return Err(RenderError::NoView(route.model.clone()));
     };
 
-    // 4. Portal views (a `type: text/html` entry) render as an isolated iframe.
-    if view.is_portal {
-        node.portal = true;
-        return Ok(render_portal(&view.display));
-    }
-
-    // 5. Query the entity (detail) or all instances (directory), then
+    // 4. Query the entity (detail) or all instances (directory), then
     //    fold flat rows into one conclusion per subject.
     let rows = if let Some(entity) = &entity_uri {
         run_query(backend, entity_query(&descriptor_json, entity)?).await?
@@ -230,7 +218,7 @@ async fn render_at_depth<B: QueryBackend>(
     let folded = select_rows(rows);
     node.records = folded.len();
 
-    // 6. Parse, plan, and render each sibling against the same entity query.
+    // 5. Parse, plan, and render each sibling against the same entity query.
     //    Inject the host attributes (model/entity/view) as `dom.host/*`
     //    fields so nested displays resolve like the browser's
     //    `with_host_attributes` path.
@@ -244,7 +232,7 @@ async fn render_at_depth<B: QueryBackend>(
         .iter()
         .map(|c| to_render_conclusion(c, &host_fields))
         .collect();
-    let mut roots = crate::parse_fragment(&view.display);
+    let mut roots = crate::parse_fragment(&view);
     let bindings = crate::collect_bindings(&mut roots);
     let repeat_root = this_repeat_root(&bindings);
     // A list repeats part of its template once per record; those are
@@ -256,7 +244,7 @@ async fn render_at_depth<B: QueryBackend>(
     let plan = split_plan_with_scalars(bindings, repeat_root, &scalar_fields);
     let html = crate::render(&roots, &plan, &conclusions);
 
-    // 7. Recursively render nested <tonk-display> elements before
+    // 6. Recursively render nested <tonk-display> elements before
     //    returning. A record a nested display shows has that node as
     //    its route, so it is not listed again as an item; a nested
     //    display that failed shows nothing, so the item stays.
@@ -335,13 +323,6 @@ fn host_fields(route: &RenderRoute) -> BTreeMap<String, Ipld> {
     fields
 }
 
-/// View resolution result: the facet's template and whether the
-/// model's views are portals (a `type: text/html` entry).
-struct ResolvedView {
-    display: String,
-    is_portal: bool,
-}
-
 /// Resolve a model/view concept name (or URI) to `(entity_uri,
 /// descriptor_json)`. Mirrors the browser's `resolve_model_query`: a
 /// non-URI source is first resolved through the Name concept (so a
@@ -418,7 +399,7 @@ async fn resolve_view<B: QueryBackend>(
     backend: &B,
     facet: &str,
     model_entity: &str,
-) -> Result<Option<ResolvedView>, RenderError> {
+) -> Result<Option<String>, RenderError> {
     if let Some(view) = query_view(backend, facet, model_entity).await? {
         return Ok(Some(view));
     }
@@ -427,13 +408,12 @@ async fn resolve_view<B: QueryBackend>(
 }
 
 /// Run the view query for one model entity, fold the entry rows into
-/// the `show` dictionary, and read the facet's template (plus the
-/// portal marker).
+/// the `show` dictionary, and read the facet's template.
 async fn query_view<B: QueryBackend>(
     backend: &B,
     facet: &str,
     model_entity: &str,
-) -> Result<Option<ResolvedView>, RenderError> {
+) -> Result<Option<String>, RenderError> {
     let query = view_query(model_entity)
         .map_err(|e| RenderError::QueryConstruction(format!("view query: {e}")))?;
     let rows = run_query(backend, query).await?;
@@ -444,11 +424,7 @@ async fn query_view<B: QueryBackend>(
     let Some(display) = show_template(row, facet) else {
         return Ok(None);
     };
-    let is_portal = show_template(row, TYPE_FACET) == Some("text/html");
-    Ok(Some(ResolvedView {
-        display: display.to_owned(),
-        is_portal,
-    }))
+    Ok(Some(display.to_owned()))
 }
 
 /// Lower a `tonk_schema::query::Query` to a concept query and run it
@@ -535,31 +511,6 @@ fn route_from_attrs(attrs: &[(String, String)]) -> Option<RenderRoute> {
         entity: get("entity"),
         view: get("view"),
     })
-}
-
-/// Wrap a portal view's HTML document in an isolated, sandboxed
-/// `<iframe srcdoc>`.
-///
-/// A `text/html` portal `display` is NOT a template: it is an
-/// author-written document that runs its own JS against the
-/// `window.tonk` bridge to fetch what it needs. The browser loads it
-/// verbatim (no `{field}` interpolation) and prepends a bridge
-/// bootstrap script. We inline the same verbatim content but omit the
-/// bootstrap, which can't function headlessly (no service worker, no
-/// message-channel peer) — so the portal's own queries don't run under
-/// SSR. Inlining the content verbatim is the faithful match to the
-/// browser's `content` attribute; substituting placeholders would
-/// diverge from it.
-fn render_portal(document: &str) -> String {
-    format!(
-        "<iframe sandbox=\"allow-scripts\" srcdoc=\"{}\"></iframe>",
-        escape_attr(document)
-    )
-}
-
-/// Escape a double-quoted attribute value.
-fn escape_attr(s: &str) -> String {
-    s.replace('&', "&amp;").replace('"', "&quot;")
 }
 
 /// Convert a schema conclusion to a `tonk_render` conclusion, merging
