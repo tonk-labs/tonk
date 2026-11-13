@@ -221,7 +221,7 @@ fn announce_local_commit(branch: &str, response: &TransactResponse) {
 pub(super) async fn spawn_dispatch(
     state: AppState,
     origin: super::CommandOrigin,
-    transients: dialog_artifacts::Changes,
+    transients: dialog_corpus::Changes,
     lifetime: Option<Extension<crate::worker::FetchLifetime>>,
 ) {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -250,7 +250,7 @@ async fn transact_on_branch<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: BranchReference<'a>,
     body: Bytes,
-) -> Result<(Json<TransactResponse>, Option<dialog_artifacts::Changes>), TonkWorkerError> {
+) -> Result<(Json<TransactResponse>, Option<dialog_corpus::Changes>), TonkWorkerError> {
     let request: TransactRequest = serde_json::from_slice(&body)
         .map_err(|e| TonkWorkerError::Router(format!("invalid TransactRequest body: {e}")))?;
 
@@ -496,7 +496,7 @@ mod profile_write_boundary {
     }
 }
 
-/// Bucket an all-transient claim list into a [`dialog_artifacts::Changes`]
+/// Bucket an all-transient claim list into a [`dialog_corpus::Changes`]
 /// without a branch.
 ///
 /// Mirrors what `TransactionBuilder::apply` does for the transient case,
@@ -506,12 +506,12 @@ mod profile_write_boundary {
 /// is still absent.
 fn transient_changes(
     claims: Vec<tonk_schema::claim::SourceClaim>,
-) -> Result<dialog_artifacts::Changes, TonkWorkerError> {
+) -> Result<dialog_corpus::Changes, TonkWorkerError> {
     // `Statement` carries the `assert`/`retract` methods on the plan.
-    use dialog_artifacts::Statement as _;
+    use dialog_corpus::Statement as _;
     use tonk_schema::transact::application_plan_from_predicate;
 
-    let mut changes = dialog_artifacts::Changes::new();
+    let mut changes = dialog_corpus::Changes::new();
     for source in claims {
         let claim = Claim::try_from(source)
             .map_err(|e| TonkWorkerError::Router(format!("invalid claim: {e}")))?;

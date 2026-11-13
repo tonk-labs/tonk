@@ -10,7 +10,7 @@
 //! palette proposes commands from both. Overlay facts only: nothing is
 //! stored, and the selection goes with the tab.
 
-use dialog_artifacts::{Change, Entity, Value};
+use dialog_corpus::{Change, Entity, Value};
 use tonk_common::log;
 
 use crate::router::CommandEnv;
@@ -60,7 +60,7 @@ async fn record(
             the: SELECTION.parse().expect("the selection attribute parses"),
             of: site.clone(),
             is: value,
-            policy: dialog_artifacts::Pick::Last,
+            policy: dialog_corpus::Pick::Last,
         });
     }
     if !text.is_empty() {
@@ -68,7 +68,7 @@ async fn record(
             the,
             of: site.clone(),
             is: Value::String(text.to_owned()),
-            policy: dialog_artifacts::Pick::Last,
+            policy: dialog_corpus::Pick::Last,
         });
     }
     if let Err(error) = overlay.write().perform(&tonk.operator).await {
@@ -76,8 +76,7 @@ async fn record(
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::SiteSelect> for CommandEnv {
     async fn execute(&self, command: tonk_schema::command::SiteSelect) {
         let site = command.site.0;

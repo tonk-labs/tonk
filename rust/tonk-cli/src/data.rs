@@ -239,7 +239,7 @@ mod tests {
     /// declared type is the lens, so the literal carries no sign.
     #[test]
     fn it_spells_signed_values_as_plain_numbers() {
-        use dialog_query::artifact::Type;
+        use dialog_query::corpus::Type;
         assert_eq!(
             super::render_value(Some(Type::SignedInt), "41").unwrap(),
             "41"

@@ -3,7 +3,7 @@
 //! build the `Application`s that the orchestrator caches by
 //! source-expression index.
 
-use dialog_artifacts::{Entity, Value};
+use dialog_corpus::{Entity, Value};
 use dialog_query::{
     AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor, Parameters, Term,
     concept::query::ConceptQuery,
@@ -607,7 +607,7 @@ fn stub_attr() -> serde_json::Value {
 fn parse_concept_this(field: &tonk_notation::Field) -> Result<Option<Entity>, AnalyzeError> {
     match &field.value {
         FieldValue::Uri(uri) => {
-            let entity = uri.parse().map_err(|e: dialog_artifacts::IdentityError| {
+            let entity = uri.parse().map_err(|e: dialog_corpus::IdentityError| {
                 AnalyzeError::at(
                     AnalyzeErrorKind::InvalidSubjectUri {
                         subject: uri.clone(),

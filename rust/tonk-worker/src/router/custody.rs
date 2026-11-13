@@ -876,7 +876,7 @@ async fn complete_login(
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn stamp_account_linking(
     tonk: &crate::worker::TonkState,
-    account: dialog_artifacts::Entity,
+    account: dialog_corpus::Entity,
     linking: bool,
 ) {
     let main = match tonk

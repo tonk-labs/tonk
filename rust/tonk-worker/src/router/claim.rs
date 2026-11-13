@@ -11,7 +11,7 @@ use ::axum::{
 };
 use axum::extract::Query as AxumQuery;
 use base64::Engine;
-use dialog_artifacts::{ArtifactSelector, Entity, Pick, Relation, Statement, Update, Value};
+use dialog_corpus::{Entity, Pick, Relation, Selector, Statement, Update, Value};
 use dialog_repository::RepositoryExt as _;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -239,7 +239,7 @@ pub async fn assert_claim(
         the: attribute,
         of: entity,
         is: value,
-        policy: dialog_artifacts::Pick::All,
+        policy: dialog_corpus::Pick::All,
     };
 
     tonk_state
@@ -313,7 +313,7 @@ pub async fn retract_claim(
         the: attribute,
         of: entity,
         is: value,
-        policy: dialog_artifacts::Pick::All,
+        policy: dialog_corpus::Pick::All,
     };
 
     tonk_state
@@ -391,9 +391,9 @@ pub async fn select_claims(
         })?;
 
     // Build the constrained artifact selector.
-    // ArtifactSelector transitions from Unconstrained -> Constrained on the first constraint.
+    // Selector transitions from Unconstrained -> Constrained on the first constraint.
     // We need at least one constraint (validated above).
-    let selector = ArtifactSelector::new();
+    let selector = Selector::new();
 
     // Parse optional attribute
     let attribute: Option<Relation> = match &query.the {

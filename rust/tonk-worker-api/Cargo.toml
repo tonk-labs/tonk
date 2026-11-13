@@ -6,6 +6,7 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+dialog-search-tree = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
@@ -13,7 +14,7 @@ ipld-core = { workspace = true }
 lsp-types = { workspace = true }
 dialog-varsig = { workspace = true }
 dialog-capability = { workspace = true }
-dialog-artifacts = { workspace = true }
+dialog-corpus = { workspace = true }
 dialog-common = { workspace = true }
 dialog-effects = { workspace = true }
 dialog-repository = { workspace = true }

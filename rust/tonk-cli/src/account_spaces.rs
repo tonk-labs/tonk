@@ -182,7 +182,11 @@ pub async fn list(profile: &Peer<NativeSpace>, store: &SpaceStore) -> Result<Vec
     let (operator, branch) = ready_account_branch(profile, store).await?;
     // Freshen best-effort: an offline listing still renders the local
     // copy of the directory.
-    if let Err(error) = branch.pull().download().perform(&operator).await {
+    if let Err(error) = branch
+        .pull(dialog_repository::Download::Everything)
+        .perform(&operator)
+        .await
+    {
         eprintln!("warning: account sync failed; listing the local copy: {error:#}");
     }
     let local = local_subjects(profile, store).await?;
@@ -217,7 +221,11 @@ pub async fn pull(
     requested_name: Option<&str>,
 ) -> Result<PullOutcome> {
     let (operator, account) = ready_account_branch(profile, store).await?;
-    if let Err(error) = account.pull().download().perform(&operator).await {
+    if let Err(error) = account
+        .pull(dialog_repository::Download::Everything)
+        .perform(&operator)
+        .await
+    {
         eprintln!("warning: account sync failed; pulling from the local copy: {error:#}");
     }
     // Bring retained certificates into the profile's provable reach so

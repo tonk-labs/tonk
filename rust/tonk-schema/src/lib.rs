@@ -31,7 +31,7 @@
 //! The URI scheme is the same in both cases; the difference lives in how
 //! the bytes are produced, not in how they are formatted. For
 //! content-derived entities, import [`prelude::EntityExt`] and call
-//! [`Entity::of`][dialog_artifacts::Entity] with any serializable
+//! [`Entity::of`][dialog_corpus::Entity] with any serializable
 //! value.
 
 pub mod prelude;

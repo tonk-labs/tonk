@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use dialog_artifacts::Statement;
+use dialog_corpus::Statement;
 use dialog_query::ConceptQuery;
 use dialog_repository::Branch;
 use indexmap::IndexMap;
@@ -265,7 +265,7 @@ impl BranchState {
     /// [`Overlay::retain_entities`](dialog_repository::Overlay).
     /// Returns whether anything was removed; the caller schedules a
     /// poll when it was, so live subscribers observe the removal.
-    pub fn retain_overlay_entities<F: FnMut(&dialog_artifacts::Entity) -> bool>(
+    pub fn retain_overlay_entities<F: FnMut(&dialog_corpus::Entity) -> bool>(
         &self,
         keep: F,
     ) -> bool {

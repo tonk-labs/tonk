@@ -22,7 +22,7 @@ use ::axum::{
     extract::{Path, State},
     http::HeaderMap,
 };
-use dialog_artifacts::Changes;
+use dialog_corpus::Changes;
 use dialog_repository::{RepositoryExt as _, Revision};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -378,11 +378,8 @@ pub async fn evaluate_profile(
     not(all(target_arch = "wasm32", target_os = "unknown")),
     allow(dead_code)
 )]
-pub type SeedRecord<'a> = &'a (
-        dyn Fn(&dialog_artifacts::history::Version) -> Vec<dialog_artifacts::Instruction>
-            + Send
-            + Sync
-    );
+pub type SeedRecord<'a> =
+    &'a (dyn Fn(&dialog_corpus::history::Version) -> Vec<dialog_corpus::Instruction> + Send + Sync);
 
 /// Commit the evaluated transaction, optionally chaining a second commit
 /// that names the first's version, then publish the whole chain.
@@ -402,7 +399,7 @@ pub(super) async fn stage_and_publish(
     tonk_state: &crate::worker::TonkState,
     txn: dialog_repository::Transaction<&dialog_repository::Branch>,
     record: Option<SeedRecord<'_>>,
-) -> Result<dialog_artifacts::Revision, dialog_repository::CommitError> {
+) -> Result<dialog_corpus::Revision, dialog_repository::CommitError> {
     let batch = txn.commit().perform(&tonk_state.operator).await?;
     let Some(record) = record else {
         return batch.publish().perform(&tonk_state.operator).await;
@@ -414,20 +411,20 @@ pub(super) async fn stage_and_publish(
     let mut next = batch.transaction();
     for instruction in instructions {
         next = match instruction {
-            dialog_artifacts::Instruction::Assert(artifact, _) => {
+            dialog_corpus::Instruction::Assert(artifact, _) => {
                 next.assert(crate::router::claim::RawClaim {
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    policy: dialog_artifacts::Pick::All,
+                    policy: dialog_corpus::Pick::All,
                 })
             }
-            dialog_artifacts::Instruction::Retract(artifact) => {
+            dialog_corpus::Instruction::Retract(artifact) => {
                 next.retract(crate::router::claim::RawClaim {
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    policy: dialog_artifacts::Pick::All,
+                    policy: dialog_corpus::Pick::All,
                 })
             }
         };
@@ -717,7 +714,7 @@ async fn evaluate_on_branch_with<'a>(
         // comes to the desired value alone, whatever a read elects today:
         // a write of a value the cell already holds writes nothing.
         for claim in desired.iter().filter(|claim| claim.policy.elects()) {
-            use dialog_artifacts::ArtifactSelector;
+            use dialog_corpus::Selector;
             use futures_util::StreamExt as _;
 
             let competing = |error: &dyn std::fmt::Display| {
@@ -725,11 +722,7 @@ async fn evaluate_on_branch_with<'a>(
             };
             let stream = branch
                 .claims()
-                .select(
-                    ArtifactSelector::new()
-                        .the(claim.the.clone())
-                        .of(claim.of.clone()),
-                )
+                .select(Selector::new().the(claim.the.clone()).of(claim.of.clone()))
                 .perform(&tonk_state.operator)
                 .await
                 .map_err(|error| competing(&error))?;
@@ -743,7 +736,7 @@ async fn evaluate_on_branch_with<'a>(
                     the: found.the,
                     of: found.of,
                     is: found.is,
-                    policy: dialog_artifacts::Pick::All,
+                    policy: dialog_corpus::Pick::All,
                 };
                 if !kept.contains(&identity(&stale)) {
                     txn = txn.retract(stale);
@@ -898,8 +891,8 @@ async fn evaluate_on_branch_with<'a>(
                     .assert(crate::router::claim::RawClaim {
                         the: "xyz.tonk.test/raced-head".parse().expect("test attribute"),
                         of: "test:evaluate-race".parse().expect("test entity"),
-                        is: dialog_artifacts::Value::String("advanced".to_owned()),
-                        policy: dialog_artifacts::Pick::All,
+                        is: dialog_corpus::Value::String("advanced".to_owned()),
+                        policy: dialog_corpus::Pick::All,
                     })
                     .commit()
                     .perform(&tonk_state.operator)
@@ -1600,7 +1593,7 @@ mod tests {
         let stream = session
             .handle()
             .claims()
-            .select(dialog_artifacts::ArtifactSelector::new().of_starting_with(""))
+            .select(dialog_corpus::Selector::new().of_starting_with(""))
             .perform(&tonk.operator)
             .await
             .unwrap();
@@ -1616,7 +1609,7 @@ mod tests {
         let mut rules = std::collections::BTreeMap::new();
         for artifact in &artifacts {
             if artifact.the.to_string() == "dialog.rule/source" {
-                let dialog_artifacts::Value::Bytes(bytes) = &artifact.is else {
+                let dialog_corpus::Value::Bytes(bytes) = &artifact.is else {
                     panic!("rule source must be bytes")
                 };
                 let mut rule = match dialog_query::rule::InductiveRule::decode(bytes) {

@@ -2,7 +2,7 @@
 
 #![allow(missing_docs)]
 
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_query::Concept;
 
 use crate::Invitation;

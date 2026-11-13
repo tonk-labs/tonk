@@ -1,6 +1,6 @@
 //! Public invitation management facts on the issuing account's profile main.
 #![allow(missing_docs)]
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_query::{Attribute, Concept};
 
 #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]

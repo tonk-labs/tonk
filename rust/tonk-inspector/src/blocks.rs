@@ -523,7 +523,7 @@ pub fn landed_inserts<'a>(
 /// the same insert converges to the same key on every replica. Returns
 /// only the blocks that need a new key.
 pub fn assign_keys(order: &[(String, Option<String>)]) -> Vec<(String, String)> {
-    use dialog_artifacts::position::{Bias, Position, insert};
+    use dialog_corpus::position::{Bias, Position, insert};
 
     let current: Vec<Option<Position>> = order
         .iter()
@@ -563,7 +563,7 @@ pub fn assign_keys(order: &[(String, Option<String>)]) -> Vec<(String, String)> 
 
 /// Indices of the longest subsequence of present keys in ascending
 /// order. Quadratic, which is nothing at notebook sizes.
-fn longest_increasing_run(keys: &[Option<dialog_artifacts::position::Position>]) -> Vec<usize> {
+fn longest_increasing_run(keys: &[Option<dialog_corpus::position::Position>]) -> Vec<usize> {
     let n = keys.len();
     let mut best = vec![0usize; n];
     let mut prev = vec![usize::MAX; n];
@@ -1304,7 +1304,7 @@ mod tests {
         // The keys `notebook.yaml` seeds its scratch blocks under.
         for seed in ["N1", "N5", "N9"] {
             assert!(
-                dialog_artifacts::position::Position::try_from(seed).is_ok(),
+                dialog_corpus::position::Position::try_from(seed).is_ok(),
                 "{seed} is a position"
             );
         }

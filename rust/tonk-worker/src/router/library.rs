@@ -188,8 +188,7 @@ pub(super) fn component_url(component: &str) -> Option<String> {
 /// component is recorded and upgraded on mount; unlike it, a space can have
 /// several (see `repository::install_component`). Asked on the profile, it
 /// installs onto the profile's own repository, the space the profile is.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::InstallComponent>
     for crate::router::CommandEnv
 {

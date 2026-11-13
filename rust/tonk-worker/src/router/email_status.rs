@@ -79,8 +79,7 @@ pub(crate) fn state_for_status(status: u16) -> &'static str {
 /// Run `account/check-email`: look the address up at the access service
 /// and publish the answer to the profile overlay. A blank address is a
 /// keystroke race, not a lookup — skipped.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::CheckEmail> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::CheckEmail) {
         let email = command.email.0;
@@ -198,7 +197,7 @@ pub(crate) async fn record(tonk: &crate::worker::TonkState, email: &str, answer:
     if email.is_empty() {
         return;
     }
-    let Ok(this) = EmailStatus::ENTITY.parse::<dialog_artifacts::Entity>() else {
+    let Ok(this) = EmailStatus::ENTITY.parse::<dialog_corpus::Entity>() else {
         return;
     };
     if let Err(error) = tonk
@@ -228,8 +227,7 @@ pub(crate) async fn record(tonk: &crate::worker::TonkState, email: &str, answer:
 /// at activation — and the form is already subscribed to them. A provider
 /// that blocked on the ceremony would be holding a command open across a
 /// dialog the user might never finish.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::RegisterAccount>
     for crate::router::CommandEnv
 {

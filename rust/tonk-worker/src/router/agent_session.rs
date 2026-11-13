@@ -280,7 +280,7 @@ async fn reusable(
         else {
             continue;
         };
-        let this: dialog_artifacts::Entity = did.to_string().parse().map_err(failure)?;
+        let this: dialog_corpus::Entity = did.to_string().parse().map_err(failure)?;
         let providers = session
             .handle()
             .query()
@@ -816,7 +816,7 @@ pub(super) async fn mark(
     agent: &Did,
     provider: Option<&str>,
 ) -> Result<(), TonkWorkerError> {
-    let this: dialog_artifacts::Entity = agent.to_string().parse().map_err(failure)?;
+    let this: dialog_corpus::Entity = agent.to_string().parse().map_err(failure)?;
     let mut transaction = tonk
         .reactor
         .repository(key)

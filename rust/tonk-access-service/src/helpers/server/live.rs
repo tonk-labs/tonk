@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use dialog_capability::{Capability, Did, Provider, Subject};
 use dialog_effects::archive::{self, ArchiveError};
 use dialog_effects::blob::{self, BlobError, BlobReader, BlobWriter};
@@ -406,7 +405,7 @@ pub(super) struct LocalObjects {
     network: S3Network,
 }
 
-#[async_trait]
+#[dialog_capability::provider]
 impl Provider<archive::Get> for LocalObjects {
     async fn execute(
         &self,
@@ -416,14 +415,14 @@ impl Provider<archive::Get> for LocalObjects {
     }
 }
 
-#[async_trait]
+#[dialog_capability::provider]
 impl Provider<archive::Put> for LocalObjects {
     async fn execute(&self, capability: Capability<archive::Put>) -> Result<(), ArchiveError> {
         capability.fork(&self.address).perform(&self.network).await
     }
 }
 
-#[async_trait]
+#[dialog_capability::provider]
 impl Provider<memory::Resolve> for LocalObjects {
     async fn execute(
         &self,
@@ -433,7 +432,7 @@ impl Provider<memory::Resolve> for LocalObjects {
     }
 }
 
-#[async_trait]
+#[dialog_capability::provider]
 impl Provider<memory::Publish> for LocalObjects {
     async fn execute(
         &self,
@@ -443,7 +442,7 @@ impl Provider<memory::Publish> for LocalObjects {
     }
 }
 
-#[async_trait]
+#[dialog_capability::provider]
 impl Provider<memory::Retract> for LocalObjects {
     async fn execute(&self, capability: Capability<memory::Retract>) -> Result<(), MemoryError> {
         capability.fork(&self.address).perform(&self.network).await
@@ -452,14 +451,14 @@ impl Provider<memory::Retract> for LocalObjects {
 
 /// Blobs are not carried over a socket: they go as requests, to
 /// `/object/`, which streams them.
-#[async_trait]
+#[dialog_capability::provider]
 impl Provider<blob::Read> for LocalObjects {
     async fn execute(&self, _: Capability<blob::Read>) -> Result<BlobReader, BlobError> {
         Err(blobs_go_as_requests())
     }
 }
 
-#[async_trait]
+#[dialog_capability::provider]
 impl Provider<blob::Import> for LocalObjects {
     async fn execute(&self, _: Capability<blob::Import>) -> Result<BlobWriter, BlobError> {
         Err(blobs_go_as_requests())

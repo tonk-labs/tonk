@@ -25,7 +25,7 @@
 use anyhow::{Context, Result, anyhow};
 use std::collections::BTreeMap;
 
-use dialog_artifacts::{Entity, Relation};
+use dialog_corpus::{Entity, Relation};
 use dialog_query::{AttributeQuery, Output as _, Term, attribute};
 use tonk_render::QueryBackend as _;
 

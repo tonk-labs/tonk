@@ -33,7 +33,9 @@
 //! why this (option #1, result enum) was preferred over `Box<dyn>`.
 
 use dialog_query::query::{Application, Output};
-use dialog_repository::{Branch, QueryLayer, SelectQuery, Transaction, TransactionSelectQuery};
+use dialog_repository::{
+    Branch, QueryLayer, SelectQuery, Transaction, TransactionQuery, TransactionSelectQuery,
+};
 use futures_util::future::Either;
 
 use crate::concept::QueryEnv;
@@ -101,7 +103,26 @@ pub enum Source<'a> {
     /// Resolve against a committed branch.
     Branch(QueryLayer<'a>),
     /// Resolve against a transaction's "as-if committed" view.
-    Transaction(&'a Transaction<&'a Branch>),
+    Transaction(&'a dyn Pending),
+}
+
+/// A transaction as a query source: what [`Source`] needs of one, with
+/// the lifetime of the branch it is open on erased.
+///
+/// A transaction is invariant in its line, so a `&'a Transaction<&'b
+/// Branch>` cannot be read as a `&'a Transaction<&'a Branch>`, and a
+/// `Source` that named the transaction's type would have to carry both
+/// lifetimes everywhere it goes. Behind this trait it carries the borrow
+/// alone.
+pub trait Pending: dialog_common::ConditionalSync {
+    /// The transaction's view, to stage a query against.
+    fn query(&self) -> TransactionQuery<'_>;
+}
+
+impl Pending for Transaction<&Branch> {
+    fn query(&self) -> TransactionQuery<'_> {
+        Transaction::<&Branch>::query(self)
+    }
 }
 
 impl<'a> From<&'a Branch> for Source<'a> {
@@ -110,8 +131,8 @@ impl<'a> From<&'a Branch> for Source<'a> {
     }
 }
 
-impl<'a> From<&'a Transaction<&'a Branch>> for Source<'a> {
-    fn from(transaction: &'a Transaction<&'a Branch>) -> Self {
+impl<'a, 'b> From<&'a Transaction<&'b Branch>> for Source<'a> {
+    fn from(transaction: &'a Transaction<&'b Branch>) -> Self {
         Self::Transaction(transaction)
     }
 }
@@ -170,7 +191,7 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
-    use dialog_artifacts::Entity;
+    use dialog_corpus::Entity;
     use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::query::Output as _;
     use dialog_query::{Concept, Query, Term};

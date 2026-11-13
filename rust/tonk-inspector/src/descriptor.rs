@@ -7,7 +7,7 @@
 //! so these expand it into a field map with types spelled by their built-in
 //! anchors (`text`, `natural:64`) and variables as `?name`.
 
-use dialog_artifacts::ValueDataType;
+use dialog_corpus::ValueDataType;
 use serde_json::{Map, Value};
 use tonk_notation::type_anchor;
 

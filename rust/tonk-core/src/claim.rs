@@ -12,7 +12,7 @@
 //! to bucket transients without re-querying the schema.
 
 use crate::meta::AnchorName;
-use dialog_artifacts::{Relation, Value, ValueDataType};
+use dialog_corpus::{Relation, Value, ValueDataType};
 use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};

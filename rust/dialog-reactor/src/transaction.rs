@@ -22,7 +22,7 @@
 //! ([`super::effects::retract_transients`]) before commit so they
 //! never reach durable storage.
 
-use dialog_artifacts::{Changes, Statement};
+use dialog_corpus::{Changes, Statement};
 use dialog_repository::{CommitError, Revision};
 use tonk_schema::claim::{Claim, PredicateApplication};
 use tonk_schema::transact::application_plan_from_predicate;
@@ -204,8 +204,8 @@ impl Commit<'_> {
             let mut names: Vec<String> = instructions
                 .iter()
                 .map(|instruction| match instruction {
-                    dialog_artifacts::Instruction::Assert(claim, _)
-                    | dialog_artifacts::Instruction::Retract(claim) => claim.the.to_string(),
+                    dialog_corpus::Instruction::Assert(claim, _)
+                    | dialog_corpus::Instruction::Retract(claim) => claim.the.to_string(),
                 })
                 .collect();
             names.sort();
