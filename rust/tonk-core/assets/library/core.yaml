@@ -2028,7 +2028,7 @@ view!:
 # fields (`space` names the routing context, picked off the site).
 concept!: &workspace/shell
   this: tonk:workspace/shell
-  description: Two-portal workspace shell — content portal plus FAB overlay.
+  description: The space page layout that shows the active replica's content.
   with:
     space:
       description: The active space (repository name), picked off the site.
