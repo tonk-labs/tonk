@@ -75,6 +75,24 @@
     --fabb-ring: rgb(56 24 42 / 85%);
 }
 
+/* Tonk's own pages in a browser (gooey's in-browser system, vendored in
+   assets/in-browser/) read their values from tonk-look.css. The knobs above
+   are the in-space bar's frost; on a task page they are unset, so its
+   sheet is paper, not frost. */
+.fabb-page {
+    --fabb-ink: initial;
+    --fabb-ink-soft: initial;
+    --fabb-on-ink: initial;
+    --fabb-hover: initial;
+    --fabb-press: initial;
+    --fabb-panel: initial;
+}
+/* Web Awesome colours every `label` with its own (dark-mode) label colour;
+   a task page's labels are ink, as fabb-forms.css draws them. */
+.fabb-page label {
+    color: inherit;
+}
+
 /* Chrome surfaces pan without a scrollbar (the fabb studies' L10):
    the page and the chrome guests keep scrolling, the bar itself never
    shows. Space CONTENT renders in its own inner frame with its own

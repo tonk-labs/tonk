@@ -1,0 +1,398 @@
+/* Vendored from tonk-labs/gooey in-browser/fabb-pages.css at ready-to-tonk 406b6d7db17477fe7a5b071b3aa59c248c45d5e6.
+   Unchanged below this comment: change it in gooey, then copy it here again. */
+/* =============================================================================
+   in-browser · fabb-pages.css — Tonk's own pages in a browser
+   -----------------------------------------------------------------------------
+   Everything Tonk shows in a browser is one of two places (DESIGN.md): the
+   hub (hub.css), or a task page: one task, alone on the page, when Tonk needs
+   one answer (connect an agent app, approve access, a link that no longer
+   works). This file draws task pages and their parts.
+   Load it after fabb-forms.css (fields, the rung, the inline action) and
+   tonk-look.css. The host page loads the faces: IBM Plex Sans Condensed 400,
+   500 and 600, IBM Plex Sans 400, IBM Plex Mono 400.
+   Light only: these pages don't follow the system's dark mode.
+============================================================================= */
+
+.fabb-page,
+.fabb-request {
+  --fp-ink: var(--fabb-ink, var(--tonk-text, #38182a));
+  --fp-soft: var(--fabb-ink-soft, var(--tonk-text-soft, #5b4953));
+  --fp-on: var(--fabb-on-ink, var(--tonk-sheet, #f7f6f5));
+  --fp-page: var(--tonk-ground, #e8e6e4);
+  --fp-panel: var(--fabb-panel, var(--tonk-sheet, #f7f6f5));
+  --fp-hover: var(--fabb-hover, var(--tonk-wash, rgb(56 24 42 / 6%)));
+  --fp-press: var(--fabb-press, var(--tonk-wash-strong, rgb(56 24 42 / 12%)));
+  --fp-tag: var(--tonk-wash-strong, rgb(56 24 42 / 10%));
+  --fabb-control-size: var(--tonk-size-label);
+  --fabb-control-leading: var(--tonk-leading-label);
+  --fabb-message-size: var(--tonk-size-sentence);
+  --fabb-message-leading: var(--tonk-leading-sentence);
+  --fp-control: 600 var(--fabb-control-size) / var(--fabb-control-leading) var(--tonk-font-label);
+  --fp-message: 400 var(--fabb-message-size) / var(--fabb-message-leading) var(--tonk-font-sentence);
+  --fp-mono: 400 var(--tonk-size-sentence) / var(--tonk-leading-sentence) var(--tonk-font-code);
+  --fp-stroke: 1.5px;
+  --fp-radius: var(--tonk-radius-sheet);
+  --fp-row: var(--tonk-height-row);
+  --fp-pad: 16px;
+  --fp-text: var(--fp-ink);
+}
+/* every part sets a display, which defeats the browser's own [hidden] rule */
+.fabb-page [hidden], .fabb-request [hidden] { display: none !important; }
+/* the ground included: its padding sits inside its one screen of height */
+.fabb-page, .fabb-page *, .fabb-page *::before, .fabb-page *::after { box-sizing: border-box; }
+
+/* ── 2 · the task page ─────────────────────────────────────────────────────
+   the same place as the hub: the ground, the logotype, and one sheet that
+   starts where the hub's first sheet starts, so a step that grows or shrinks
+   never moves the head. no navigation and no footer. 480px: room for a list */
+.fabb-page {
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  align-content: start;
+  padding: 40px max(16px, env(safe-area-inset-right)) max(32px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  background: var(--fp-page);
+  color: var(--fp-ink);
+  font: var(--fp-message);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-synthesis: none;
+  -webkit-tap-highlight-color: transparent;
+}
+/* a phone: as high as the hub, so a long step fits one screen */
+@media (max-width: 560px) { .fabb-page { padding-top: 20px; } }
+.fabb-page ::selection { background: var(--fp-ink); color: var(--fp-on); }
+/* for a screen reader only */
+.fabb-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* the top: the logotype on the task's edge, in a row as tall as the hub's */
+.fabb-top {
+  width: min(480px, 100%);
+  height: 44px;
+  display: flex;
+  align-items: center;
+  margin-bottom: 20px;
+}
+.fabb-logo { flex: none; width: auto; height: 22px; }
+/* at this size the N's hairline falls under a pixel: this holds it */
+.fabb-logo path { stroke: currentColor; stroke-width: .5px; vector-effect: non-scaling-stroke; }
+
+/* a task is a hub sheet: paper, the sheet's shadow, no edge of its own */
+.fabb-task {
+  width: min(480px, 100%);
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--fp-radius);
+  background: var(--fp-panel);
+  box-shadow: var(--tonk-shadow);
+}
+/* the head is Tonk's line: the title at the left, after the disc when the task
+   is about one space; the step at the right end when it is one of several */
+.fabb-task-head {
+  flex: none;
+  min-height: var(--fp-row);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 5px var(--fp-pad) 6px;
+  border-bottom: 1px solid var(--tonk-rule-soft);
+}
+/* a space's whole name, however long: here it may be the only place it shows */
+.fabb-task-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font: 600 var(--tonk-size-heading)/var(--tonk-leading-label) var(--tonk-font-label);
+}
+.fabb-task-title:focus { outline: none; }
+.fabb-task-step {
+  flex: none;
+  order: 1;
+  color: var(--fp-soft);
+  font: 400 var(--tonk-size-heading)/var(--tonk-leading-label) var(--tonk-font-label);
+  font-variant-numeric: tabular-nums;
+}
+.fabb-task > .fabb-request { padding: var(--fp-pad); }
+.fabb-task > .fabb-request > :last-child { margin-bottom: 0; }
+/* a message task: the message is the body, on the sheet, at the body's padding */
+.fabb-task > tonk-message { --fabb-message-padding: var(--fp-pad); --fabb-message-ground: transparent; }
+.fabb-task > .fabb-actions { flex: none; }
+
+/* ── the parts of a task ─────────────────────────────
+   a task reads down the left; the right edge holds what a person does and
+   what is state. soft ink is for what describes, never for an action */
+
+/* label · value, for what the person is agreeing to: a sentence's size and
+   face, because that is what they agree to */
+.fabb-request .fabb-ledger {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0 0 var(--fp-pad);
+  font: var(--fp-message);
+}
+.fabb-ledger dt { color: var(--fp-soft); }
+.fabb-ledger dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+/* a group's name, above its rows, like a field label */
+.fabb-request .fabb-group {
+  min-width: 0;
+  margin: 0 0 var(--fp-pad);
+  padding: 0;
+  border: 0;
+}
+.fabb-group > legend,
+.fabb-group > .fabb-group-label {
+  display: block;
+  padding: 0;
+  margin: 0 0 4px;
+  font: var(--fp-control);
+}
+
+/* a group whose choice fits on its own line: the name left, the roles right */
+.fabb-request .fabb-group.is-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 16px;
+}
+.fabb-group.is-inline > .fabb-group-label { margin: 0; }
+
+/* what describes a name, beside it: a label, soft ink */
+.fabb-quiet { color: var(--fp-soft); font-size: var(--tonk-size-label); font-weight: 400; }
+
+/* one choice of several: a row edge to edge, the word beside its mark. the
+   chosen row has a check in the mark column, as a menu marks its choice.
+   chosen is drawn, never filled: solid ink is only ever the main action, and
+   a circle is only ever the sync disc. -2px puts the check's ink on the text
+   edge; with the gap, the word lands in .fabb-reach's name column */
+.fabb-choice {
+  position: relative;
+  min-height: var(--fp-row);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 calc(-1 * var(--fp-pad));
+  padding: 6px var(--fp-pad);
+  font: 500 var(--tonk-size-name)/var(--tonk-leading-label) var(--tonk-font-label);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color var(--tonk-change);
+}
+.fabb-choice > span { min-width: 0; overflow-wrap: anywhere; }
+.fabb-choice input {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0 0 0 -2px;
+  border: 0;
+  background: transparent;
+  cursor: inherit;
+}
+.fabb-choice input:checked {
+  background: currentColor;
+  -webkit-mask: var(--fp-check) center / 16px no-repeat;
+  mask: var(--fp-check) center / 16px no-repeat;
+}
+.fabb-choice input:focus-visible { outline: none; }
+@media (hover: hover) and (pointer: fine) {
+  .fabb-choice:hover { background: var(--fp-hover); }
+}
+.fabb-choice:active { background: var(--fp-press); }
+.fabb-choice:has(input:focus-visible) { background: var(--fp-press); }
+.fabb-page, .fabb-request {
+  --fp-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+}
+
+/* a role, picked in place: rule 4's words side by side, in ink because each
+   is an action, the chosen one drawn with a ring. 36px to see, 44px to aim at.
+   one tab stop per group; the arrows move between the words */
+.fabb-roles {
+  flex: none;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.fabb-roles label {
+  position: relative;
+  height: var(--tonk-height-control);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border-radius: var(--tonk-radius-control);
+  color: var(--fp-text);
+  font: var(--fp-control);
+  letter-spacing: .02em;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color var(--tonk-change), box-shadow var(--tonk-change), scale var(--tonk-change);
+}
+.fabb-roles label::before { content: ""; position: absolute; inset: -4px 0; }
+/* a touch screen draws at the size it hits */
+@media (pointer: coarse) {
+  .fabb-roles label { height: 44px; }
+  .fabb-roles label::before { inset: 0; }
+}
+.fabb-roles input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+@media (hover: hover) and (pointer: fine) {
+  .fabb-roles label:hover { background: var(--fp-hover); }
+}
+.fabb-roles label:has(input:checked) { box-shadow: inset 0 0 0 var(--fp-stroke) currentColor; }
+.fabb-roles label:active { background: var(--fp-press); scale: 0.96; }
+.fabb-roles label:has(input:focus-visible) { background: var(--fp-press); }
+
+/* what an agent can reach: a space a row, its disc in its real state, its
+   name, then its role. a space that can't be shared says why instead */
+/* one grid for the whole list, so every row's words stand in the same
+   columns, also where a role is missing because you don't have it */
+.fabb-reach {
+  list-style: none;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  column-gap: 12px;
+  margin: 0 0 var(--fp-pad);
+  padding: 0;
+}
+.fabb-reach li {
+  grid-column: 1 / -1;
+  min-height: var(--fp-row);
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: center;
+  row-gap: 4px;
+  padding: 4px 0;
+}
+/* a role is 44px on touch, which fills the 48px row */
+@media (pointer: coarse) { .fabb-reach li { padding: 0; } }
+.fabb-reach .fabb-roles { justify-self: start; }
+.fabb-reach .fabb-reach-state { justify-self: end; }
+.fabb-request { container: fabb-parts / inline-size; }
+/* too narrow for a name and three words side by side: the roles go under the name, their first word on its edge */
+@container fabb-parts (width < 17.5em) {
+  .fabb-reach { grid-template-columns: 14px minmax(0, 1fr); }
+  .fabb-reach .fabb-roles,
+  .fabb-reach .fabb-reach-state { grid-column: 2; justify-self: start; margin-left: -10px; }
+  .fabb-reach .fabb-reach-state { margin-left: 0; padding-right: 0; color: var(--fp-soft); }
+}
+.fabb-reach-name { min-width: 0; font: 500 var(--tonk-size-name)/var(--tonk-leading-label) var(--tonk-font-label); overflow-wrap: anywhere; }
+.fabb-reach-state { color: var(--fp-soft); font: 400 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label); white-space: nowrap; padding-right: 10px; }
+.fabb-request .fabb-reach-why { grid-column: 2 / -1; color: var(--fp-soft); font: 400 var(--tonk-size-hint)/var(--tonk-leading-sentence) var(--tonk-font-sentence); }
+
+/* steps while something takes a while: the mark column holds a check when a
+   step is done and a ring on the one under way; steps to come are soft.
+   the word stands beside its mark, in the same column as .fabb-choice. never
+   discs: a circle is only the sync disc */
+.fabb-request .fabb-steps {
+  list-style: none;
+  margin: 0 calc(-1 * var(--fp-pad)) var(--fp-pad);
+  padding: 0;
+}
+.fabb-steps li {
+  min-height: var(--fp-row);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 var(--fp-pad);
+  color: var(--fp-soft);
+  font: 400 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label);
+  transition: color var(--tonk-change);
+}
+.fabb-steps li::before {
+  content: "";
+  transition: background-color var(--tonk-change);
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-left: -2px;
+}
+.fabb-steps [data-step="done"],
+.fabb-steps [data-step="now"] { color: var(--fp-ink); }
+.fabb-steps [data-step="done"]::before {
+  content: "" / "done";
+  background: currentColor;
+  -webkit-mask: var(--fp-check) center / 16px no-repeat;
+  mask: var(--fp-check) center / 16px no-repeat;
+}
+.fabb-steps [data-step="now"]::before { border-radius: var(--tonk-radius-control, 6px); box-shadow: inset 0 0 0 var(--fp-stroke) currentColor; }
+
+/* a phone: the disc's column narrows, so the roles stay beside the name and a
+   space keeps one row. choices and steps close up with it, to keep one column
+   of words. after the steps, because it has to win over their gap */
+@container fabb-parts (min-width: 17.5em) and (max-width: 23.75em) {
+  .fabb-reach { grid-template-columns: 10px minmax(0, 1fr) auto; }
+  .fabb-reach .fabb-reach-state { padding-right: 0; }
+  .fabb-choice, .fabb-steps li { gap: 8px; }
+}
+
+/* the sync disc every Tonk surface draws (rule 2): 10px, the ring a 1.5px inset */
+.fabb-disc {
+  flex: none;
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.fabb-disc[data-state="hollow"] { background: transparent; box-shadow: inset 0 0 0 1.5px currentColor; }
+.fabb-disc[data-state="paused"] { background: linear-gradient(135deg, currentColor 0 50%, transparent 50% 100%); box-shadow: inset 0 0 0 1.5px currentColor; }
+
+/* a sentence that describes rather than asks: a hint, soft ink */
+.fabb-request .fabb-note { margin: 0 0 var(--fp-pad); color: var(--fp-soft); font: 400 var(--tonk-size-hint)/var(--tonk-leading-sentence) var(--tonk-font-sentence); text-wrap: pretty; }
+.fabb-request p { max-width: var(--tonk-measure); text-wrap: pretty; }
+
+/* a code the person compares with the agent app's: mono, digits that line up */
+.fabb-code {
+  font: var(--fp-mono);
+  font-size: inherit;
+  letter-spacing: .08em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* an agent is its account's name and this tag (rule 4) */
+.fabb-bot {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 3px;
+  border-radius: var(--tonk-radius-tag, 3px);
+  background: var(--fp-tag, var(--tonk-wash-strong, rgb(56 24 42 / 10%)));
+  color: inherit;
+  font: 500 var(--tonk-size-tag, 12px)/var(--tonk-leading-tag, 1.333) var(--tonk-font-label, "IBM Plex Sans Condensed", "Arial Narrow", sans-serif);
+  letter-spacing: .02em;
+  vertical-align: 2px;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fabb-page *, .fabb-page *::before { transition: none !important; }
+  .fabb-roles label:active { scale: 1; }
+}
+
+/* high contrast drops backgrounds and box-shadows, which is all a role's ring, a
+   check and the disc are made of */
+@media (forced-colors: active) {
+  .fabb-roles label:has(input:checked) { outline: 2px solid CanvasText; outline-offset: -2px; }
+  .fabb-disc { forced-color-adjust: none; color: CanvasText; }
+  .fabb-choice input:checked, .fabb-steps [data-step="done"]::before { forced-color-adjust: none; background: CanvasText; }
+  .fabb-steps [data-step="now"]::before { forced-color-adjust: none; box-shadow: inset 0 0 0 var(--fp-stroke) CanvasText; }
+  /* the press wash is a background, so focus needs its outline back here */
+  .fabb-choice:has(input:focus-visible), .fabb-roles label:has(input:focus-visible) { outline: 2px solid Highlight; outline-offset: 2px; }
+}

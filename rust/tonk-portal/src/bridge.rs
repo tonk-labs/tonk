@@ -18,6 +18,7 @@
 //!   subscribe(body?)  -> ReadableStream<Conclusion[]>,
 //!   transact(request) -> Promise<receipt>,
 //!   navigate(href)    -> void,
+//!   reload()           -> void,
 //!   setTitle(text)    -> void,
 //!   open(href)        -> void,
 //!   analytics(event)  -> void,
@@ -385,6 +386,13 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
     let wa = fetch_array_buffer(&format!("/guest/{}", manifest.wa_js))
         .await
         .unwrap_or(JsValue::UNDEFINED);
+    // `<tonk-message>` (gooey's fabb.js), which Tonk's own pages in a
+    // browser draw their errors, statuses and successes with. A classic
+    // script with no imports; a guest without it still renders, its
+    // messages as plain text.
+    let fabb = fetch_text("/library/gooey/in-browser/fabb.js")
+        .await
+        .unwrap_or_default();
 
     // Find every `import … from '…/snippets/…'` statement in the glue and
     // fetch each snippet file, so the guest can rewrite them to blob URLs.
@@ -431,6 +439,7 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
     let _ = Reflect::set(&payload, &"wasm".into(), &wasm);
     let _ = Reflect::set(&payload, &"css".into(), &JsValue::from_str(&css));
     let _ = Reflect::set(&payload, &"wa".into(), &wa);
+    let _ = Reflect::set(&payload, &"fabb".into(), &JsValue::from_str(&fabb));
     // Mirror the outer document's root classes (the WA theme/palette/dark
     // classes) so the guest themes identically — recomputing from
     // matchMedia inside the guest can disagree with the parent.
@@ -852,7 +861,25 @@ fn bundle_graph_entries(files: Vec<(String, String)>) -> js_sys::Array {
 async fn app_stylesheet_css() -> Option<String> {
     let document = window()?.document()?;
 
-    // Top document: a `<link rel=stylesheet href=/styles-*.css>`.
+    // Top document: Tonk's own page sheets (gooey's in-browser system,
+    // marked `data-tonk-guest-css`) in document order, then `<link
+    // rel=stylesheet href=/styles-*.css>`.
+    let mut guest_css = String::new();
+    if let Ok(links) = document.query_selector_all("link[rel=stylesheet][data-tonk-guest-css]") {
+        for i in 0..links.length() {
+            let Some(href) = links
+                .item(i)
+                .and_then(|node| node.dyn_into::<Element>().ok())
+                .and_then(|el| el.get_attribute("href"))
+            else {
+                continue;
+            };
+            if let Ok(text) = fetch_text(&href).await {
+                guest_css.push_str(&text);
+                guest_css.push('\n');
+            }
+        }
+    }
     if let Ok(links) = document.query_selector_all("link[rel=stylesheet]") {
         for i in 0..links.length() {
             let Some(node) = links.item(i) else { continue };
@@ -862,9 +889,13 @@ async fn app_stylesheet_css() -> Option<String> {
             if let Some(href) = el.get_attribute("href")
                 && (href.contains("/styles-") || href.ends_with("styles.css"))
             {
-                return fetch_text(&href).await.ok();
+                let app = fetch_text(&href).await.ok()?;
+                return Some(guest_css + &app);
             }
         }
+    }
+    if !guest_css.is_empty() {
+        return Some(guest_css);
     }
 
     // A guest bringing up a nested guest: its injected app CSS is inline.
@@ -1153,6 +1184,7 @@ fn make_dispatcher(
             "subscribe" => handle_subscribe(&host, &state, &port, &data),
             "unsubscribe" => handle_unsubscribe(&state, &data),
             "navigate" => handle_navigate(&state, &data),
+            "reload" => tonk_host::reload_page(),
             "title" => handle_title(&data),
             "open" => handle_open(&state, &data),
             "analytics" => handle_analytics(&data),

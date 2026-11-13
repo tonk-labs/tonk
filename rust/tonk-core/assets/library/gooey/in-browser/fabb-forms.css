@@ -1,0 +1,58 @@
+/* Vendored from tonk-labs/gooey in-browser/fabb-forms.css at ready-to-tonk 406b6d7db17477fe7a5b071b3aa59c248c45d5e6.
+   Unchanged below this comment: change it in gooey, then copy it here again. */
+/* Native form controls for a task page's .fabb-request content. Load beside fabb-pages.css.
+   Ordinary inputs retain labels, autofill, input types and keyboard behavior. */
+.fabb-request .fabb-field{font:var(--fp-control);display:grid;gap:8px;margin:0 0 var(--fp-pad)}
+.fabb-request .fabb-field :is(input,select,textarea){
+  box-sizing:border-box;width:100%;min-width:0;min-height:var(--tonk-height-field);padding:9px 12px;
+  border:1px solid var(--tonk-control-edge,#86757d);border-radius:var(--tonk-radius-control,6px);background:var(--tonk-field,#fff);color:inherit;
+  font:400 var(--tonk-size-field)/var(--tonk-leading-sentence) var(--tonk-font-sentence);
+  caret-color:currentColor;
+}
+/* A field's edge reaches 3:1; focus is the press wash; an error is a heavier ink edge and a sentence, never a hue. */
+@media (hover:hover) and (pointer:fine){.fabb-request .fabb-field :is(input,select,textarea):hover{border-color:var(--fabb-ink,#38182a)}}
+.fabb-request .fabb-field :is(input,select,textarea):focus-visible{outline:none;background:var(--fabb-press,rgba(56,24,42,.12))}
+.fabb-request .fabb-field [aria-invalid=true]{border-color:var(--fabb-ink,#38182a);box-shadow:inset 0 0 0 1px var(--fabb-ink,#38182a)}
+
+/* An error sits where the problem is: under its field, or last in the form, just above the buttons.
+   It is 14, like the hub's field error; a message that is a whole page stays 16. */
+.fabb-request tonk-message{margin:0 0 var(--fp-pad)}
+.fabb-request tonk-message[kind=error]{--fabb-control-size:var(--tonk-size-label);--fabb-message-size:var(--tonk-size-hint)}
+
+/* A task's answers are the hub's buttons: at the right edge, the safe one first, the main one last in solid ink.
+   36px to see, 44px to hit, and 44px to see on a touch screen. */
+.fabb-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;margin:0;padding:0 var(--fp-pad) var(--fp-pad)}
+.fabb-actions :is(button,a){position:relative;display:inline-flex;align-items:center;justify-content:center;gap:6px;height:var(--tonk-height-control);margin:0;padding:0 10px;border:0;border-radius:var(--tonk-radius-control,6px);background:transparent;color:var(--fp-ink);font:var(--fp-control);letter-spacing:.02em;font-variant-numeric:tabular-nums;text-decoration:none;white-space:nowrap;cursor:pointer}
+.fabb-actions :is(button,a)::before{content:"";position:absolute;inset:-4px 0}
+.fabb-actions :is(button,a):last-child{padding:0 12px;background:var(--tonk-main);color:var(--tonk-main-text)}
+@media (pointer:coarse){.fabb-actions :is(button,a){height:44px}.fabb-actions :is(button,a)::before{inset:0}}
+@media (hover:hover) and (pointer:fine){
+  .fabb-actions :is(button,a):not(:last-child):hover{background:var(--fp-hover)}
+  .fabb-actions :is(button,a):last-child:hover{background:var(--tonk-main-hover)}
+}
+/* waiting: the button says so in its own words, at its width, and takes no second press */
+.fabb-actions [data-wait]{flex-direction:column;gap:0}
+.fabb-actions [data-wait]::after{content:attr(data-wait);height:0;overflow:hidden;visibility:hidden}
+.fabb-actions [aria-disabled=true]{pointer-events:none}
+.fabb-actions :is(button,a):focus-visible{outline:none;background:var(--fp-press)}
+.fabb-actions :is(button,a):last-child:focus-visible{background:var(--tonk-main-hover)}
+
+/* A task's sentences and its buttons. */
+.fabb-request p{font:var(--fp-message);margin:0 0 var(--fp-pad)}
+.fabb-request button{font:var(--fp-control)}
+
+/* Small supporting actions: a label in a sentence, 44px to hit however short the word. */
+.fabb-inline-action{position:relative;min-height:44px;padding:10px 0;border:0;background:transparent;color:var(--fabb-ink,#38182a);font:var(--fp-control);text-decoration:underline;text-underline-offset:4px;cursor:pointer}
+.fabb-inline-action::before{content:"";position:absolute;inset:0 -6px}
+@media (hover:hover) and (pointer:fine){.fabb-inline-action:hover{background:var(--fabb-hover,rgba(56,24,42,.06))}}
+.fabb-inline-action:focus-visible{outline:none;background:var(--fabb-press,rgba(56,24,42,.12))}
+
+/* Press: a control shrinks to 96% under the press wash, as on every Tonk surface. */
+.fabb-actions :is(button,a),.fabb-inline-action,.fabb-request .fabb-field :is(input,select,textarea){touch-action:manipulation}
+.fabb-actions :is(button,a):not(:last-child):active,.fabb-inline-action:active{background:var(--fabb-press,rgba(56,24,42,.12))}
+.fabb-actions :is(button,a):last-child:active{background:var(--tonk-main-hover)}
+.fabb-actions :is(button,a),.fabb-inline-action{transition:scale var(--tonk-change,150ms ease-out),background-color var(--tonk-change,150ms ease-out)}
+.fabb-actions :is(button,a):active,.fabb-inline-action:active{scale:.96}
+@media (prefers-reduced-motion:reduce){.fabb-actions :is(button,a),.fabb-inline-action{transition:none}.fabb-actions :is(button,a):active,.fabb-inline-action:active{scale:1}}
+/* High contrast drops backgrounds, so a button needs an edge of its own. */
+@media (forced-colors:active){.fabb-actions :is(button,a){border:1px solid transparent}.fabb-actions :is(button,a):focus-visible,.fabb-inline-action:focus-visible,.fabb-request .fabb-field :is(input,select,textarea):focus-visible{outline:2px solid Highlight;outline-offset:2px}}

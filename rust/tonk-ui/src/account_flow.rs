@@ -2258,54 +2258,48 @@ pub(crate) mod tests {
         goto(&driver, activation.as_str()).await?;
         element(&driver, "tonk-activate #activate-confirm").await?;
 
-        assert!(
-            driver.find(By::Css(".account__brand")).await.is_err(),
-            "activation should use the same unbadged Tonk wordmark as settings"
-        );
-        assert!(
-            driver.find(By::Css(".account__badge")).await.is_err(),
-            "activation should not retain the retired page badge"
-        );
-
+        // A task page (gooey in-browser/PAGES.md): the ground, the 22px
+        // logotype on the task's edge, and one 480px sheet starting 104px
+        // down, its head 48px, its main action 36px at the right edge.
         driver.set_window_rect(0, 0, 1200, 900).await?;
         let desktop = driver
             .execute(
-                r#"document.documentElement.classList.remove('wa-dark');
-                    document.documentElement.classList.add('wa-light');
-                    const host = document.querySelector('tonk-activate');
-                    const main = document.querySelector('.account').getBoundingClientRect();
-                    const ceremony = document.querySelector('.account__ceremony').getBoundingClientRect();
-                    const logo = document.querySelector('.account__logo').getBoundingClientRect();
+                r#"const page = document.querySelector('tonk-activate .fabb-page');
+                    const task = document.querySelector('#activate-confirm').getBoundingClientRect();
+                    const head = document.querySelector('#activate-confirm .fabb-task-head').getBoundingClientRect();
+                    const logo = document.querySelector('.fabb-logo').getBoundingClientRect();
                     const action = document.querySelector('#activate-accept').getBoundingClientRect();
-                    const styles = getComputedStyle(host);
                     return {
-                      hostDisplay: styles.display,
-                      hostHeight: Math.round(host.getBoundingClientRect().height),
-                      viewportHeight: innerHeight,
-                      page: styles.backgroundColor,
-                      mainWidth: Math.round(main.width),
-                      mainCenter: Math.round(main.left + main.width / 2),
-                      viewportCenter: Math.round(innerWidth / 2),
-                      ceremonyWidth: Math.round(ceremony.width),
-                      ceremonyTop: Math.round(ceremony.top),
-                      logoWidth: Math.round(logo.width),
+                      page: getComputedStyle(page).backgroundColor,
+                      sheet: getComputedStyle(document.querySelector('#activate-confirm')).backgroundColor,
+                      taskWidth: Math.round(task.width),
+                      taskTop: Math.round(task.top),
+                      headHeight: Math.round(head.height),
+                      logoHeight: Math.round(logo.height),
+                      logoLeft: Math.round(logo.left),
+                      taskLeft: Math.round(task.left),
                       actionHeight: Math.round(action.height),
-                      heading: document.querySelector('.account__ceremony-head')?.textContent.trim(),
+                      actionRight: Math.round(action.right),
+                      taskRight: Math.round(task.right),
+                      heading: document.querySelector('#activate-confirm-title')?.textContent.trim(),
                       overflow: document.documentElement.scrollWidth > innerWidth
                     };"#,
                 Vec::new(),
             )
             .await?;
         let desktop = desktop.json();
-        assert_eq!(desktop["hostDisplay"], "grid");
-        assert_eq!(desktop["hostHeight"], desktop["viewportHeight"]);
         assert_eq!(desktop["page"], "rgb(232, 230, 228)");
-        assert_eq!(desktop["mainWidth"], 360);
-        assert_eq!(desktop["mainCenter"], desktop["viewportCenter"]);
-        assert_eq!(desktop["ceremonyWidth"], 360);
-        assert_eq!(desktop["ceremonyTop"], 148);
-        assert_eq!(desktop["logoWidth"], 132);
-        assert_eq!(desktop["actionHeight"], 48);
+        assert_eq!(desktop["sheet"], "rgb(247, 246, 245)");
+        assert_eq!(desktop["taskWidth"], 480);
+        assert_eq!(desktop["taskTop"], 104);
+        assert_eq!(desktop["headHeight"], 48);
+        assert_eq!(desktop["logoHeight"], 22);
+        assert_eq!(desktop["logoLeft"], desktop["taskLeft"]);
+        assert_eq!(desktop["actionHeight"], 36);
+        assert_eq!(
+            desktop["actionRight"].as_i64().unwrap_or_default() + 16,
+            desktop["taskRight"].as_i64().unwrap_or_default()
+        );
         assert_eq!(desktop["heading"], "activate your account");
         assert_eq!(desktop["overflow"], false);
 
@@ -2316,36 +2310,25 @@ pub(crate) mod tests {
                     const actions = document.querySelectorAll('#activate-done a, #activate-done button');
                     return {
                       heading: document.querySelector('#activate-done-title').textContent.trim(),
+                      message: document.querySelector('#activate-done tonk-message')?.getAttribute('kind'),
                       actions: actions.length
                     };"#,
                 Vec::new(),
             )
             .await?;
         assert_eq!(done.json()["heading"], "account verified");
+        assert_eq!(done.json()["message"], "success");
         assert_eq!(done.json()["actions"], 0);
 
         driver.set_window_rect(0, 0, 390, 844).await?;
         let compact = driver
             .execute(
-                r#"const main = document.querySelector('.account').getBoundingClientRect();
-                    const ceremony = document.querySelector('.account__ceremony').getBoundingClientRect();
-                    const visible = [...document.querySelectorAll('button,a,input')]
-                      .filter(el => el.offsetParent !== null);
+                r#"const task = document.querySelector('#activate-done').getBoundingClientRect();
                     return {
                       viewport: innerWidth,
-                      mainWidth: Math.round(main.width),
-                      ceremonyWidth: Math.round(ceremony.width),
-                      logoWidth: Math.round(document.querySelector('.account__logo').getBoundingClientRect().width),
-                      overflow: document.documentElement.scrollWidth > innerWidth,
-                      undersized: visible.flatMap(el => {
-                        const rect = el.getBoundingClientRect();
-                        if (rect.width >= 44 && rect.height >= 44) return [];
-                        return [{
-                          selector: el.id ? `#${el.id}` : el.tagName.toLowerCase(),
-                          width: rect.width,
-                          height: rect.height
-                        }];
-                      })
+                      taskWidth: Math.round(task.width),
+                      taskTop: Math.round(task.top),
+                      overflow: document.documentElement.scrollWidth > innerWidth
                     };"#,
                 Vec::new(),
             )
@@ -2353,21 +2336,15 @@ pub(crate) mod tests {
         let compact = compact.json();
         let viewport = compact["viewport"].as_i64().unwrap_or_default();
         // Some browsers refuse to shrink a window below a floor of their
-        // own (Chrome 152 headless clamps to 500px), and the compact
-        // layout is only what it claims to be at the width we asked for.
-        // Above that floor the 576px account shell, rather than the requested
-        // compact viewport, controls the measurement, so the assertion below
-        // would be measuring the wrong rule rather than a broken layout.
+        // own (Chrome 152 headless clamps to 500px); the phone layout is
+        // only what it claims to be at the width we asked for.
         if viewport > 390 {
             driver.quit().await?;
             return Ok(());
         }
-        let available = (viewport - 32).min(360);
-        assert_eq!(compact["mainWidth"], available);
-        assert_eq!(compact["ceremonyWidth"], available);
-        assert_eq!(compact["logoWidth"], 98);
+        assert_eq!(compact["taskWidth"], viewport - 32);
+        assert_eq!(compact["taskTop"], 84);
         assert_eq!(compact["overflow"], false);
-        assert_eq!(compact["undersized"], serde_json::json!([]));
 
         driver.quit().await?;
         Ok(())
@@ -2690,7 +2667,7 @@ pub(crate) mod tests {
             .await?
             .click()
             .await?;
-        element(&driver, ".edge-wall--closed").await?;
+        element(&driver, ".join-closed").await?;
         element(&driver, "join-paste input[name=link]").await?;
 
         // The address bar is the top page's, outside the guest.
@@ -3032,19 +3009,34 @@ pub(crate) mod tests {
                      return original(...args);
                    };
                    const accept = document.querySelector('#activate-accept');
+                   const label = accept.textContent;
                    accept.click();
                    accept.click();
-                   queueMicrotask(() => done({
+                   // A quick answer never flickers: the words change only
+                   // past 400ms, and the button keeps its width.
+                   const width = accept.getBoundingClientRect().width;
+                   const early = accept.textContent;
+                   setTimeout(() => done({
                      requests,
-                     disabled: accept.disabled,
-                     busy: document.querySelector('#activate-confirm')?.getAttribute('aria-busy')
-                   }));"#,
+                     early,
+                     label,
+                     waiting: accept.textContent,
+                     busy: accept.getAttribute('aria-busy'),
+                     disabled: accept.getAttribute('aria-disabled'),
+                     sameWidth: accept.getBoundingClientRect().width === width,
+                     section: document.querySelector('#activate-confirm')?.getAttribute('aria-busy')
+                   }), 600);"#,
                 Vec::new(),
             )
             .await?;
-        assert_eq!(count.json()["requests"], 1, "activation must post once");
-        assert_eq!(count.json()["disabled"], true);
-        assert_eq!(count.json()["busy"], "true");
+        let count = count.json();
+        assert_eq!(count["requests"], 1, "activation must post once");
+        assert_eq!(count["early"], count["label"]);
+        assert_eq!(count["waiting"], "activating");
+        assert_eq!(count["busy"], "true");
+        assert_eq!(count["disabled"], "true");
+        assert_eq!(count["sameWidth"], true);
+        assert_eq!(count["section"], "true");
 
         driver.quit().await?;
         Ok(())
