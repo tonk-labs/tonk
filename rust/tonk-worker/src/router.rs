@@ -202,6 +202,9 @@ mod blob;
 
 mod migration;
 
+/// The wire the profile library's bar elements speak, for tests.
+#[cfg(test)]
+pub(crate) mod fab_wire;
 mod interpret;
 mod navigate;
 mod site_request;

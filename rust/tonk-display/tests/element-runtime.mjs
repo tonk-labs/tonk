@@ -492,13 +492,15 @@ check('an unclaimed announcement is re-offered', await page.evaluate(async () =>
   return first === 1 && globalThis.unclaimed > 1;
 }));
 
-// 21. Built-in and vendor prefixes are left to their own loaders.
-check('tonk- and wa- tags are not claimed', await page.evaluate(async () => {
+// 21. The vendor prefix and the registry's own consumer are left alone;
+// an undefined `tonk-` tag is the library's to define like any other.
+check('wa- tags and the registry watch are not claimed', await page.evaluate(async () => {
   globalThis.asked = [];
-  document.body.append(document.createElement('tonk-whatever'));
   document.body.append(document.createElement('wa-whatever'));
+  document.body.append(document.createElement('tonk-element-watch'));
+  document.body.append(document.createElement('tonk-whatever'));
   await new Promise(r => setTimeout(r, 0));
-  return globalThis.asked.length === 0;
+  return globalThis.asked.length === 1 && globalThis.asked[0] === 'tonk-whatever';
 }));
 
 // 22. A tag deep in an added subtree is found — a view renders a

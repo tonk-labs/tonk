@@ -1016,6 +1016,7 @@ async fn issued_link_entities(
 mod tests {
     use super::*;
     use crate::router::api_router_with_state;
+    use crate::router::fab_wire;
     use crate::router::join::tests::{handcrafted_invite_url, post_join};
     use crate::router::tests::{
         content_invited_via, content_member_names, content_member_roles, content_memberships,
@@ -1377,7 +1378,7 @@ mod tests {
             .await
             .unwrap();
         let wire: crate::reactor::Query =
-            serde_json::from_str(&tonk_fab::logic::member_roster_query_body()).unwrap();
+            serde_json::from_str(&fab_wire::query("tonk-fab", "roster", None)).unwrap();
         let roster_query = wire.into_concept_query().unwrap();
         let mut subscription = tonk
             .reactor

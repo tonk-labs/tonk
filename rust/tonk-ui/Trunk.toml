@@ -67,7 +67,6 @@ watch = [
     "../tonk-host",
     "../tonk-portal",
     "../tonk-guest/src",
-    "../tonk-fab/src",
     "../tonk-inspector/src",
     "../tonk-code/assets",
     "../tonk-prose/assets",

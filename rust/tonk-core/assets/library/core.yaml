@@ -762,6 +762,17 @@ concept!: &agent-connection
       the: xyz.tonk.agent-connection/status
       as: text
 
+# The receipt an agent connecting with this device's last handoff will carry,
+# on the space's subject in the session overlay. The bar's agent drawer
+# watches for it among the durable receipts above to say "agent connected".
+concept!: &agent-handoff/receipt
+  description: The receipt the last agent handoff from this device will carry (overlay-only).
+  with:
+    receipt:
+      description: The `agent-connection` entity the handed-off link will acknowledge with.
+      the: xyz.tonk.agent-handoff/receipt
+      as: text
+
 # Receipts are durable access-management data. Connection feedback belongs to
 # the initiating session's FAB, never to the shared space's rendered content.
 view!:
@@ -795,6 +806,50 @@ concept!: &member
     name:
       description: The member's self-asserted display name for this space
       the: xyz.tonk.membership/name
+      as: text
+
+# How a membership came to be: the invitation it was claimed through. A
+# stamp beside the membership rather than a field of `member`, so the
+# roster reads founders (no stamp) and claimers alike; the bar's roster
+# joins it to the invitation's inviter to draw who invited whom.
+concept!: &member/invited
+  description: The invitation a membership was claimed through.
+  with:
+    invitation:
+      description: The invitation the member claimed, an `invitation/record` entity.
+      the: xyz.tonk.membership/invitation
+      as: entity
+
+# A durable invitation to this space, keyed by its leaf delegation. It repeats
+# what the chain says as queryable attributes; the delegation itself is
+# retained on the branch, which is the copy a proof search reads.
+concept!: &invitation/record
+  description: A durable invitation to this space, keyed by its leaf delegation.
+  with:
+    subject:
+      description: The space the invitation grants access to.
+      the: xyz.tonk.invitation/subject
+      as: entity
+    inviter:
+      description: The account that minted the invitation.
+      the: xyz.tonk.invitation/inviter
+      as: entity
+    audience:
+      description: >
+        The chain's tail audience: an ephemeral key for an open invite, the
+        recipient for a scoped one. Revocation proves from it back to the space.
+      the: xyz.tonk.invitation/audience
+      as: entity
+
+# How an invitation is executed, beside the invitation record. A published
+# space records one of kind `public`, which is what the bar reads to offer
+# making it private.
+concept!: &invitation/execution
+  description: An invitation's audience mode.
+  with:
+    kind:
+      description: "`open`, `scoped`, or `public` for the ticket a published space leaves its readers."
+      the: xyz.tonk.invitation-execution/kind
       as: text
 
 # A single roster row — the default view for `model: tonk:member`. Each
