@@ -562,6 +562,3 @@ Events fire only in the live shell: open `/space/<space>/<model>`, or
 prints markup with nothing behind it. A visual click proves neither
 persistence nor sync: read the record back, reload, and check a second
 client.
-
-For a whole isolated page (third-party embeds, canvas apps) use a
-`portal` view instead (`tonk help views`).

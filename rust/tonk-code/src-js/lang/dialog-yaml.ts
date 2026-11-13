@@ -377,9 +377,9 @@ const dialectTheme = EditorView.theme({
  *
  *  - **Short forms** — `!html`, `!css`, `!js`, `!md`, etc.
  *  - **MIME-type forms** — `!text/html`, `!text/css`,
- *    `!application/javascript`, `!text/markdown`. These mirror
- *    the `type: text/html` shape used elsewhere in the data
- *    model so users don't have to remember a separate vocabulary.
+ *    `!application/javascript`, `!text/markdown`, so users who
+ *    know the MIME type don't have to remember a separate
+ *    vocabulary.
  *
  *  The HTML parser handles embedded `<style>` and `<script>` itself
  *  via its own `parseMixed`, so a single `!html` tag picks up
