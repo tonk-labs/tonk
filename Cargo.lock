@@ -5685,15 +5685,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tonk-code"
-version = "0.6.16-rc.1"
-dependencies = [
- "js-sys",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
 name = "tonk-common"
 version = "0.6.16-rc.1"
 dependencies = [
@@ -6204,15 +6195,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tonk-prose"
-version = "0.6.16-rc.1"
-dependencies = [
- "js-sys",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
 name = "tonk-render"
 version = "0.6.16-rc.1"
 dependencies = [
@@ -6279,15 +6261,6 @@ dependencies = [
  "url",
  "wasm-bindgen-test",
  "zeroize",
-]
-
-[[package]]
-name = "tonk-table"
-version = "0.6.16-rc.1"
-dependencies = [
- "js-sys",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]

@@ -37,16 +37,6 @@ for (const match of glue.matchAll(/import\s+[^;]+?from\s*['"]([^'"]+snippets\/[^
   });
 }
 const local = (path) => readFile(new URL('../../' + path, import.meta.url), 'utf8');
-const graph = async (directory, entry, seen = new Map()) => {
-  if (seen.has(entry)) return [];
-  seen.set(entry, true);
-  const src = await local(directory + '/' + entry),
-    result = [];
-  for (const match of src.matchAll(/['"]\.\/([^'"$]+\.js)['"]/g))
-    result.push(...(await graph(directory, match[1], seen)));
-  result.push({ name: entry, src });
-  return result;
-};
 // Match tonk-portal's build_inject_payload: base CSS, application CSS, then
 // inline local fonts so opaque guests need no external font requests.
 const waCss = cached ? (cached.waCss ?? cached.css) : await get('/guest/' + manifest.waCss);
@@ -76,16 +66,6 @@ const pack = {
   theme,
   bootstrap: await local('rust/tonk-portal/src/bootstrap.js'),
   runtimeBootstrap: await local('rust/tonk-portal/src/runtime_bootstrap.js'),
-  prose: await graph('rust/tonk-prose/assets', 'tonk-prose.js'),
-  proseCore: await graph('rust/tonk-prose/assets', 'tonk-prose-editor.js'),
-  table: [{ name: 'tonk-table.js', src: await local('rust/tonk-table/assets/tonk-table.js') }],
-  tableGrid: await Promise.all(
-    ['tonk-table-engine.js', 'tonk-table-grid.js'].map(async (name) => ({
-      name,
-      src: await local('rust/tonk-table/assets/' + name),
-    })),
-  ),
-  code: await graph('rust/tonk-code/assets', 'tonk-code.js'),
 };
 if (
   !Buffer.from(pack.wasm, 'base64')
@@ -97,9 +77,7 @@ if (snippets.some((s) => typeof s.src !== 'string' || s.src.trimStart().startsWi
   throw Error('Invalid guest snippet');
 await mkdir(new URL('./public/', import.meta.url), { recursive: true });
 await writeFile(new URL('./public/space-runtime.json', import.meta.url), JSON.stringify(pack));
-console.log(
-  `Built real guest runtime: ${snippets.length} snippets, ${pack.code.length} code modules`,
-);
+console.log(`Built real guest runtime: ${snippets.length} snippets`);
 
 const guest = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline' blob:; img-src data: blob:; font-src data: blob:; connect-src blob:; frame-src blob: about:; form-action 'none'"><style>html,body{margin:0;min-height:100%;font-family:system-ui}</style>`;
 const script = (source) => '<script>' + source.replace(/<\/script/gi, '<\\/script') + '</script>';

@@ -25,10 +25,7 @@
 //
 // The engine wasm arrives as BYTES from the sibling
 // `tonk-table-engine.js` data leaf (see `../engine.ts`), never via a
-// URL fetch — which is what lets this chunk come up inside a sealed,
-// opaque-origin portal guest where relative fetches are dead. The
-// relative import below is rewritten to a blob URL by tonk-portal's
-// injector in that environment.
+// URL fetch.
 
 import init, { Model, columnNameFromNumber } from "@ironcalc/wasm";
 import type {

@@ -30,7 +30,7 @@ window.tonk = {
 
 The parent is a port relay: after the handshake it binds the transferred port and posts `ready { context }` back, then answers each inbound envelope on the trusted page. A guest's fetch of a location outside the site's `allow` is denied with a typed error.
 
-The shell then runs [`runtime_bootstrap.js`](src/runtime_bootstrap.js), which asks the parent for the element runtime (`runtime-ready`) and for the `<tonk-code>`, `<tonk-prose>` and `<tonk-table>` bundles on demand (`need-code`, `need-prose`, `need-table`).
+The shell then runs [`runtime_bootstrap.js`](src/runtime_bootstrap.js), which brings up the element runtime: from the site's own origin, or, in a sealed guest, by asking the parent for it (`runtime-ready`). Editors and other components are not part of it: a space installs them as library components.
 
 ## Modules
 

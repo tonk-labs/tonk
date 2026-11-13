@@ -50,11 +50,9 @@ const options = {
   target: ["es2022"],
   minify: true,
   sourcemap: true,
-  // No code splitting: the shell must be ONE self-contained file. It's
-  // postMessaged into sealed guests as a single string and blob-minted
-  // there (tonk-portal), where a cross-file `import "./chunk-….js"`
-  // can't resolve. Splitting is safe to drop because the shell and the
-  // editor share no stateful module — the shell imports only the pure
+  // No code splitting: the shell is ONE self-contained file. Splitting
+  // is safe to drop because the shell and the editor share no stateful
+  // module — the shell imports only the pure
   // `content`/`hlc` logic and dynamic-imports the editor entry, which
   // is emitted as its own file regardless. (The ProseMirror `schema`
   // singleton lives entirely inside the editor chunk, so there's no

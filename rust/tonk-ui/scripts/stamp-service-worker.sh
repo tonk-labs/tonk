@@ -219,12 +219,12 @@ done < "$ASSET_LIST" > "$ASSET_GRAPH"
 ASSET_GRAPH_HASH=$(hash_file "$ASSET_GRAPH")
 # The page identity covers everything the top-level document runs or reads by
 # a name it holds, which is every published resource except the sealed-guest
-# runtime and editor bundles (the portal fetches those afresh for each guest it
-# mounts), library data (seeded by the kernel), and what a site's own origin
-# runs: its shell, its worker and the kernel it hosts. Two builds with the
+# runtime (the portal fetches it afresh for each guest it mounts), library
+# data (seeded by the kernel), and what a site's own origin runs: its shell,
+# its worker and the kernel it hosts. Two builds with the
 # same page identity differ only in what the sites and guests run, so an open
 # document can keep running while its sites load again.
-grep -v -e '^/guest/' -e '^/tonk-code/' -e '^/tonk-prose/' -e '^/tonk-table/' -e '^/library/' \
+grep -v -e '^/guest/' -e '^/library/' \
     -e '^/_host/' -e '^/kernel/' -e '^/kernel_boot\.js|' -e '^/site\.html|' \
     "$ASSET_GRAPH" > "$PAGE_GRAPH" || true
 PAGE_BUILD=$(hash_file "$PAGE_GRAPH")

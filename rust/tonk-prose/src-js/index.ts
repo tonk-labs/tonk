@@ -96,42 +96,18 @@ export type ReadyDetail = {
   editor: ProseEditor;
 };
 
-/** Resolve the URL of the editor-core chunk.
- *
- *  Default: relative to this module — `import.meta.url` is the URL
- *  `tonk-prose.js` was loaded from, so the core chunk lives next to
- *  it regardless of where the consumer mounted the bundle (root,
- *  /assets/, CDN, …).
- *
- *  Override: `window.__tonkProseEditor`. Sealed environments that
- *  import this shell from a minted `blob:` URL (tonk-portal guests)
- *  have no working relative resolution — the injector provides this
- *  global instead. Either a URL string (core already minted), or a
- *  function returning the URL / a promise of it — the lazy form:
- *  the guest asks its trusted parent for the core's bytes only when
- *  the first element actually connects, keeping the boot payload at
- *  the shell alone. */
-async function editorChunkUrl(): Promise<string> {
-  const override = (globalThis as { __tonkProseEditor?: unknown })
-    .__tonkProseEditor;
-  if (typeof override === "string" && override) return override;
-  if (typeof override === "function") {
-    const url = await (override as () => string | Promise<string>)();
-    if (typeof url === "string" && url) return url;
-  }
-  return new URL("./tonk-prose-editor.js", import.meta.url).href;
-}
-
 /** Single in-flight / resolved load of the editor core, shared by
- *  every element instance. Cleared on failure so a later connect can
- *  retry after e.g. a network blip. */
+ *  every element instance. The core chunk sits next to this module
+ *  (`import.meta.url` is the URL `tonk-prose.js` was loaded from),
+ *  wherever the consumer mounted the bundle. Cleared on failure so a
+ *  later connect can retry after e.g. a network blip. */
 let editorModule: Promise<EditorModule> | null = null;
 
 function loadEditorModule(): Promise<EditorModule> {
   if (!editorModule) {
-    editorModule = editorChunkUrl().then(
-      (url) =>
-        import(/* @vite-ignore */ url).then((mod) => mod as EditorModule),
+    const url = new URL("./tonk-prose-editor.js", import.meta.url).href;
+    editorModule = import(/* @vite-ignore */ url).then(
+      (mod) => mod as EditorModule,
     );
     editorModule.catch(() => {
       editorModule = null;

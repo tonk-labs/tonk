@@ -1,8 +1,10 @@
 # tonk-prose
 
 `<tonk-prose>`: a ProseMirror-backed, Typora-style markdown editor
-packaged as a custom element, plus a tiny Rust shim that injects the
-bundle's loader script into the page.
+packaged as a custom element. The same build emits the core of the
+library's `<prose-editor>` component
+(`rust/tonk-core/assets/library/prose-editor.yaml`), which is how a
+space gets a markdown editor: the host ships neither.
 
 The document renders rich; the markdown syntax of the block under
 the caret reveals itself for editing (muted `**`, `# `, `[…](url)`
@@ -43,11 +45,10 @@ per-language chunks; otherwise they fall back to a plain editable
 
 | Path | Purpose |
 | --- | --- |
-| `src/` | Rust crate. The `web` feature exposes [`install`] which appends `<script type="module">` for the bundle. |
 | `src-js/index.ts` | The shell: registers `tonk-prose`, lazy-loads the core. |
 | `src-js/editor/` | The editor core chunk (schema, markup layer, reparse loop, reveal, input rules, code blocks). |
 | `scripts/build.mjs` | esbuild driver. Produces `assets/tonk-prose.js` + `assets/tonk-prose-editor.js`. |
-| `assets/` | Build output. **Committed** so consumers (and CI) don't need a Node toolchain to build the Rust workspace. |
+| `assets/` | Build output. **Committed** so consumers (and CI) don't need a Node toolchain. |
 
 ## Building the bundle
 
@@ -128,25 +129,6 @@ from the consumer's design system; the variables are the contract.
 
 Both bundles resolve sibling chunks relative to their own module URL.
 Copy each package's `assets/` to its own directory and load the shell
-with the crate's `install("/tonk-prose/tonk-prose.js")` or a module
-script. `tonk-ui`'s `index.html` already ships the bundle at
-`/tonk-prose/` (a `copy-dir` link next to tonk-code's, with a
-matching `Trunk.toml` watch entry). Install `tonk-code` too to get
-embedded code editors with language highlighting; without it, code
-blocks stay editable as plain text.
-
-## Inside `<tonk-site>` guests
-
-tonk-portal wires the element into every sealed guest iframe
-(`bridge.rs`), *preserving the lazy split*: the boot payload carries
-only the ~4 kB registration shell, so guests that never render an
-editor never pay for one. When the first `<tonk-prose>` connects,
-the shell calls `window.__tonkProseEditor` — in guests, a function
-that asks the trusted parent for the editor core (`need-prose`),
-mints blob URLs from the `inject-prose` reply, and resolves the
-core's blob (relative `import.meta.url` resolution is dead at a
-blob origin, and sealed guests can't fetch). The handshake runs
-once per guest; failures reject and retry on the next connect
-instead of wedging the runtime. Guest views can therefore render
-`<tonk-prose>` directly and get the full editor, including
-`<tonk-code>`-backed code blocks.
+with a module script. Load `tonk-code` too to get embedded code
+editors with language highlighting; without it, code blocks stay
+editable as plain text.

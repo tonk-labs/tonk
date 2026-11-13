@@ -325,16 +325,8 @@
             wasm: bytes(pack.wasm),
             wa: bytes(pack.wa),
             css: pack.css,
-            prose: pack.prose,
-            table: pack.table,
           });
         }
-        if (m?.__tonkRuntime === 'need-prose')
-          send({ __tonkRuntime: 'inject-prose', prose: pack.proseCore });
-        if (m?.__tonkRuntime === 'need-table')
-          send({ __tonkRuntime: 'inject-table', table: pack.tableGrid });
-        if (m?.__tonkRuntime === 'need-code')
-          send({ __tonkRuntime: 'inject-code', code: pack.code });
         if (m?.__tonkRuntime === 'error') showError('Tonk runtime could not load.');
       });
       const ready = (async () => {

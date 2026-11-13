@@ -2,8 +2,7 @@
 
 `<tonk-table>`: the [IronCalc](https://github.com/ironcalc/IronCalc)
 spreadsheet engine packaged as a custom element with a framework-free
-grid, plus a tiny Rust shim that injects the bundle's loader script
-into the page.
+grid.
 
 The engine is the spreadsheet: formula evaluation, the dependency
 graph, number formatting, undo/redo, clipboard parsing, and even
@@ -41,13 +40,12 @@ whole graph works at origins where fetch is dead (sealed guests).
 
 | Path | Purpose |
 | --- | --- |
-| `src/` | Rust crate. The `web` feature exposes [`install`] which appends `<script type="module">` for the bundle. |
 | `src-js/index.ts` | The shell: registers `tonk-table`, lazy-loads the grid core. |
 | `src-js/grid/` | The grid core chunk (engine bootstrap, DOM grid, workbook helpers). |
 | `src-js/engine.ts` | The engine-bytes leaf entry. |
 | `src-js/hlc.ts`, `content.ts`, `b64.ts` | The versioned-content protocol (shared shape with tonk-prose). |
 | `scripts/build.mjs` | esbuild driver. Produces the three `assets/` chunks. |
-| `assets/` | Build output. **Committed** so consumers (and CI) don't need a Node toolchain to build the Rust workspace. |
+| `assets/` | Build output. **Committed** so consumers (and CI) don't need a Node toolchain. |
 
 ## Building the bundle
 
@@ -190,29 +188,11 @@ Three layers, weakest to strongest — the whole look is overridable:
 
 ## Serving
 
-Copy `assets/` to its own directory and load the shell with the
-crate's `install("/tonk-table/tonk-table.js")` or a module script;
-all three chunks resolve as siblings of the shell's URL. `tonk-ui`'s
-`index.html` already ships the bundle at `/tonk-table/` (a `copy-dir`
-link next to tonk-prose's, with a matching `Trunk.toml` watch entry).
-
-## Inside `<tonk-site>` guests
-
-tonk-portal wires the element into every sealed guest iframe
-(`bridge.rs`), *preserving the lazy split*: the boot payload carries
-only the registration shell, so guests that never render a table
-never pay for one. When the first `<tonk-table>` connects, the shell
-calls `window.__tonkTableGrid` — in guests, a function that asks the
-trusted parent for the grid core (`need-table`), mints blob URLs from
-the `inject-table` reply (the grid's relative import of the engine
-leaf is rewritten to its blob), and resolves the grid's blob URL. The
-engine then instantiates from the leaf's embedded bytes — no fetch,
-which is why it works at the opaque origin at all. The parent fetches
-the two core files BY NAME rather than walking the import graph: the
-grid chunk embeds the wasm import-object key `"./wasm_bg.js"`, which
-a graph walk would chase into the SPA's HTML fallback and the blob
-rewrite would then corrupt. Failures reject and retry on the next
-connect instead of wedging the runtime.
+Copy `assets/` to its own directory and load the shell with a module
+script; all three chunks resolve as siblings of the shell's URL. The
+host no longer ships the bundle: a space gets a spreadsheet only once
+it is ported to a library component, as `<code-editor>` and
+`<prose-editor>` were.
 
 ## Library module
 

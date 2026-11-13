@@ -81,8 +81,8 @@ The crate produces one Wasm bin target, referenced from `index.html` by a
 
 - **`ui`** ([`src/bin/ui.rs`](./src/bin/ui.rs), `data-type="main"`): the page
   entry point. It installs the panic hook, registers every custom element the app
-  uses (`tonk-sigil`, `tonk-host`, `tonk-display`, `tonk-board`, `tonk-portal`,
-  and the `<tonk-code>` JS bundle), then mounts the `TonkShell` Leptos component into the document body. Under debug
+  uses (`tonk-sigil`, `tonk-host`, `tonk-display`, `tonk-board`, `tonk-portal`),
+  then mounts the `TonkShell` Leptos component into the document body. Under debug
   builds (`trunk serve`) it also injects the dev-only `hot-swap.js` reload client;
   release builds never load it.
 

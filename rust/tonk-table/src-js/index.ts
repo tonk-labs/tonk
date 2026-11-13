@@ -188,41 +188,17 @@ export type ReadyDetail = {
   grid: TableGrid;
 };
 
-/** Resolve the URL of the grid-core chunk.
- *
- *  Default: relative to this module — `import.meta.url` is the URL
- *  `tonk-table.js` was loaded from, so the core chunk lives next to it
- *  regardless of where the consumer mounted the bundle (root,
- *  /assets/, CDN, …).
- *
- *  Override: `window.__tonkTableGrid`. Sealed environments that import
- *  this shell from a minted `blob:` URL (tonk-portal guests) have no
- *  working relative resolution — the injector provides this global
- *  instead. Either a URL string (core already minted), or a function
- *  returning the URL / a promise of it — the lazy form: the guest asks
- *  its trusted parent for the core's bytes only when the first element
- *  actually connects, keeping the boot payload at the shell alone. */
-async function gridChunkUrl(): Promise<string> {
-  const override = (globalThis as { __tonkTableGrid?: unknown })
-    .__tonkTableGrid;
-  if (typeof override === "string" && override) return override;
-  if (typeof override === "function") {
-    const url = await (override as () => string | Promise<string>)();
-    if (typeof url === "string" && url) return url;
-  }
-  return new URL("./tonk-table-grid.js", import.meta.url).href;
-}
-
 /** Single in-flight / resolved load of the grid core, shared by every
- *  element instance. Cleared on failure so a later connect can retry
- *  after e.g. a network blip. */
+ *  element instance. The core chunk sits next to this module
+ *  (`import.meta.url` is the URL `tonk-table.js` was loaded from),
+ *  wherever the consumer mounted the bundle. Cleared on failure so a
+ *  later connect can retry after e.g. a network blip. */
 let gridModule: Promise<GridModule> | null = null;
 
 function loadGridModule(): Promise<GridModule> {
   if (!gridModule) {
-    gridModule = gridChunkUrl().then(
-      (url) => import(/* @vite-ignore */ url).then((mod) => mod as GridModule),
-    );
+    const url = new URL("./tonk-table-grid.js", import.meta.url).href;
+    gridModule = import(/* @vite-ignore */ url).then((mod) => mod as GridModule);
     gridModule.catch(() => {
       gridModule = null;
     });

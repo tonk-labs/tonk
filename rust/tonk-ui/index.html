@@ -364,52 +364,6 @@
        injects alongside the guest runtime. Only `wa.js` / `wa.css` live
        here now; the wasm/js/snippets are built by the rust link above. -->
         <link data-trunk rel="copy-dir" href="./assets/guest" />
-        <!-- `<tonk-code>` web component bundle. On a plain page the crate's
-       `install()` injects `<script type="module"
-       src="/tonk-code/tonk-code.js">`; inside a sealed guest the bundle is
-       relayed on demand over `need-code` (nothing rides the guest boot
-       payload — see `tonk-portal/src/bridge.rs`). Either way the chunked
-       language packs (e.g. `tonk-code-lang-yaml.js`) are loaded on demand
-       by the element via relative imports, so all chunks must sit next to
-       the main bundle in the same directory. The trunk copy below
-       preserves that layout. -->
-        <link
-            data-trunk
-            rel="copy-dir"
-            href="../tonk-code/assets"
-            data-target-path="tonk-code"
-        />
-
-        <!-- `<tonk-prose>` markdown editor bundle, same layout contract
-       as tonk-code above: the shell (`tonk-prose.js`) registers the
-       element and lazily imports the ProseMirror core
-       (`tonk-prose-editor.js`) from a sibling URL on first connect,
-       so both files must sit in the same directory. Load it with the
-       crate's `install("/tonk-prose/tonk-prose.js")` or a module
-       script; code blocks upgrade to embedded `<tonk-code>` editors
-       when that element is defined. -->
-        <link
-            data-trunk
-            rel="copy-dir"
-            href="../tonk-prose/assets"
-            data-target-path="tonk-prose"
-        />
-
-        <!-- `<tonk-table>` IronCalc spreadsheet bundle, same layout
-       contract as tonk-prose above: the shell (`tonk-table.js`)
-       registers the element and lazily imports the grid core
-       (`tonk-table-grid.js`) from a sibling URL on first connect; the
-       grid in turn pulls `tonk-table-engine.js` (the base64-embedded
-       IronCalc engine wasm) the same way, so all three files must sit
-       in the same directory. Load it with the crate's
-       `install("/tonk-table/tonk-table.js")` or a module script. -->
-        <link
-            data-trunk
-            rel="copy-dir"
-            href="../tonk-table/assets"
-            data-target-path="tonk-table"
-        />
-
         <!-- The app's stylesheet is the sites' to load, not this page's:
          copied as a file, named by its content in the guest manifest
          (`scripts/hash-guest.sh`), and linked by each site's own frame. -->

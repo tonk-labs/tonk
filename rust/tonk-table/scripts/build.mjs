@@ -18,12 +18,9 @@
 // registration. The grid core (and then the engine bytes) are fetched
 // exactly once, the first time an element actually connects.
 //
-// No code splitting: each chunk must be ONE self-contained file. They
-// are postMessaged into sealed guests as strings and blob-minted there
-// (tonk-portal), where a cross-file `import "./chunk-….js"` can't
-// resolve — the ONLY cross-chunk seams are the two runtime-variable
-// dynamic imports (shell → grid, grid → engine), which esbuild leaves
-// alone and the guest injector rewrites to blob URLs. Splitting is safe
+// No code splitting: each chunk is ONE self-contained file, and the
+// ONLY cross-chunk seams are the two runtime-variable dynamic imports
+// (shell → grid, grid → engine), which esbuild leaves alone. Splitting is safe
 // to drop because the chunks share no stateful module: the shell
 // imports only the pure hlc/content/b64 logic, and the engine chunk is
 // pure data (the wasm bytes; the wasm-bindgen module state lives in the

@@ -572,7 +572,7 @@ function cancelCall(call) {
 // over a port a page of the space's origin hands up, bound to that space.
 
 // The app's static files, which the shell loads from this origin.
-const STATIC_PREFIXES = ["/images/", "/fonts/", "/tonk-code/", "/tonk-prose/", "/tonk-table/"];
+const STATIC_PREFIXES = ["/images/", "/fonts/"];
 // The renderer the shell loads: the one the site's kernel keeps, as a space
 // keeps the one it was created with, or, where it keeps none, the
 // deployment's.

@@ -43,11 +43,6 @@ function fixtureDist() {
   );
   writeFileSync(join(dist, "guest", "guest-a1b2c3.js"), "guest glue\n");
   writeFileSync(join(dist, "guest", "guest_bg-a1b2c3.wasm"), "guest wasm\n");
-  mkdirSync(join(dist, "tonk-prose"));
-  writeFileSync(
-    join(dist, "tonk-prose", "tonk-prose-editor.js"),
-    "stable lazy editor\n",
-  );
   return dist;
 }
 
@@ -82,9 +77,6 @@ test("the publisher emits the complete immutable UI and guest resource graph", (
         join(dist, "guest", "guest_bg-a1b2c3.wasm"),
       ),
       "/guest/manifest.json": sha256(join(dist, "guest", "manifest.json")),
-      "/tonk-prose/tonk-prose-editor.js": sha256(
-        join(dist, "tonk-prose", "tonk-prose-editor.js"),
-      ),
       "/ui-a1b2c3.js": sha256(join(dist, "ui-a1b2c3.js")),
     });
     assert.equal(
@@ -132,7 +124,6 @@ test("the page build tracks top-level document resources and ignores guest code"
   const base = stamp(() => {});
   const guest = stamp((dist) => {
     writeFileSync(join(dist, "guest", "guest_bg-a1b2c3.wasm"), "guest wasm B\n");
-    writeFileSync(join(dist, "tonk-prose", "tonk-prose-editor.js"), "editor B\n");
   });
   const kernel = stamp((dist) => {
     writeFileSync(join(dist, "_host", "kernel", "bafkr4ikernel.wasm"), "kernel B\n");
@@ -142,7 +133,7 @@ test("the page build tracks top-level document resources and ignores guest code"
   });
 
   assert.notEqual(guest.build, base.build);
-  assert.equal(guest.page, base.page, "guest and editor code do not change the page");
+  assert.equal(guest.page, base.page, "guest code does not change the page");
   assert.notEqual(kernel.build, base.build);
   assert.equal(kernel.page, base.page, "the kernel a site runs does not change the page");
   const shell = stamp((dist) => {

@@ -416,14 +416,14 @@ mod value_spelling_tests {
         };
         result
             .fields
-            .insert("show".into(), serde_json::json!("<tonk-inspector />\n"));
+            .insert("show".into(), serde_json::json!("<space-inspector />\n"));
         result
             .fields
             .insert("show/key".into(), serde_json::json!("ui"));
         let mut out = String::new();
         render_one(&mut out, "view!", &result);
         assert_eq!(
-            out, "view!:\n  this: concept:zX\n  show: {ui: \"<tonk-inspector />\\n\"}\n",
+            out, "view!:\n  this: concept:zX\n  show: {ui: \"<space-inspector />\\n\"}\n",
             "the key nests back; the sibling /key field does not leak",
         );
     }
