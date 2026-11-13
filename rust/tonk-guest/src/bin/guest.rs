@@ -39,9 +39,6 @@ pub fn start() {
     // naming it here is the guarantee that it happens.
     tonk_display::registry::install();
     tonk_display::register();
-    // `<tonk-notebook>`: a `<tonk-prose>` document whose ```dialog fences are
-    // live cells, evaluated over the host fetch bridge.
-    tonk_inspector::register_notebook();
     // The nested router: a space's chrome runs a `<tonk-site>` inside the guest
     // to route the sub-path against the space's route table, rendering its match
     // in a further-nested sealed iframe.

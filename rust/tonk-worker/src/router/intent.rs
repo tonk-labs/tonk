@@ -12,10 +12,10 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::api_router_with_state;
+use super::repository::install_component;
 use super::repository::profile_library_tests::test_state;
 
 const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
-const NOTEBOOK: &str = include_str!("../../../tonk-core/assets/library/notebook.yaml");
 const PROFILE: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
 
 /// The core library leaves the space's rename unsaid (the profile's says
@@ -528,7 +528,7 @@ notebook/route!:
 
 #[dialog_common::test]
 async fn it_renames_the_notebook_a_page_shows() {
-    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
     let created = send(
         &app,
         "PUT",
@@ -542,7 +542,9 @@ async fn it_renames_the_notebook_a_page_shows() {
     let space = format!("/api/repository/{key}/branch/main");
     let evaluate = format!("{space}/evaluate");
     send(&app, "POST", &evaluate, "application/yaml", CORE.into()).await;
-    send(&app, "POST", &evaluate, "application/yaml", NOTEBOOK.into()).await;
+    install_component(&*state.read().await, &key, "main", "/library/notebook.yaml")
+        .await
+        .expect("the notebook installs");
     let page = "site:4a1f0c9e-2b7d-4e8a-9c3f-5d6e7f8a9b0c";
     let notebook = "notebook:plans";
     send(

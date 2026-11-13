@@ -2608,10 +2608,10 @@ mod tests {
     const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/notebook.yaml");
 
     /// A `<notebook-save>` from the notebook library, wrapped around a
-    /// stand-in notebook whose `<tonk-prose>` editor shows `markdown`.
+    /// stand-in notebook whose `<prose-editor>` shows `markdown`.
     ///
-    /// The stand-in carries only what the element reads: a `<tonk-prose>`
-    /// inside a `<tonk-notebook>`, with the editor's live text as its
+    /// The stand-in carries only what the element reads: a `<prose-editor>`
+    /// inside a `<notebook-editor>`, with the editor's live text as its
     /// `value` property. Returns the element and the editor.
     async fn notebook_save(markdown: &str) -> (Element, Element) {
         define_from_library(NOTEBOOK_LIBRARY, "notebook-save");
@@ -2624,9 +2624,9 @@ mod tests {
             defined("notebook-save"),
             "the library definition of <notebook-save> was never installed"
         );
-        host.set_inner_html("<tonk-notebook><tonk-prose></tonk-prose></tonk-notebook>");
+        host.set_inner_html("<notebook-editor><prose-editor></prose-editor></notebook-editor>");
         let prose = host
-            .query_selector("tonk-prose")
+            .query_selector("prose-editor")
             .expect("query")
             .expect("the editor");
         let _ = Reflect::set(&prose, &"value".into(), &markdown.into());
