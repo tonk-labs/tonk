@@ -644,6 +644,7 @@ async fn found(state: &TonkState, space: &Space) -> Result<(), String> {
 /// person's persona kept for it, with the renderer its deployment serves,
 /// or, when it kept nothing, as for a space joined, only its first commit.
 async fn create(state: &AppState, space: &Space) {
+    let started = now();
     let seeded = match seed(state, space).await {
         Ok(seeded) => seeded,
         Err(error) => {
@@ -651,12 +652,20 @@ async fn create(state: &AppState, space: &Space) {
             false
         }
     };
+    let was_seeded = now();
     if seeded && let Err(error) = furnish(state, &space.subject).await {
         tonk_common::log!("tonk-kernel: {} keeps no renderer: {error}", space.subject);
     }
     if !seeded && let Err(error) = found(&*state.read().await, space).await {
         tonk_common::log!("tonk-kernel: {} was not founded: {error}", space.subject);
     }
+    tonk_common::log!(
+        "tonk-kernel: created {} in {}ms: seed {}ms, renderer {}ms",
+        space.subject,
+        millis(now() - started),
+        millis(was_seeded - started),
+        millis(now() - was_seeded)
+    );
     CREATING.store(false, Ordering::Release);
     created().notify();
 }
@@ -669,6 +678,7 @@ async fn seed(state: &AppState, space: &Space) -> Result<bool, String> {
     let Some((hash, size)) = pinned(space).await? else {
         return Ok(false);
     };
+    let started = now();
     let Some(seed) = tonk_kernel_world::application::seed()
         .await
         .map_err(|error| format!("the persona was not asked: {error:?}"))?
@@ -679,6 +689,7 @@ async fn seed(state: &AppState, space: &Space) -> Result<bool, String> {
         );
         return Ok(false);
     };
+    let asked = now();
     let tonk = state.read().await;
     let created = match &seed.copy {
         Some(copy) => {
@@ -699,9 +710,17 @@ async fn seed(state: &AppState, space: &Space) -> Result<bool, String> {
     };
     drop(tonk);
     created.map_err(|error| error.to_string())?;
+    let written = now();
     tonk_kernel_world::application::seeded()
         .await
         .map_err(|error| format!("the persona was not told: {error:?}"))?;
+    tonk_common::log!(
+        "tonk-kernel: seeded {}: asked {}ms, wrote {}ms, told {}ms",
+        space.subject,
+        millis(asked - started),
+        millis(written - asked),
+        millis(now() - written)
+    );
     Ok(true)
 }
 
@@ -736,9 +755,27 @@ async fn furnish(state: &AppState, space: &str) -> Result<bool, String> {
     if kept.map_err(|error| error.to_string())? {
         return Ok(false);
     }
+    let started = now();
     let files = renderer().await?;
+    let read = now();
+    let bytes: usize = files.iter().map(|(_, bytes)| bytes.len()).sum();
     let kept = state.read().await.keep_renderer(space, files).await;
+    tonk_common::log!(
+        "tonk-kernel: kept the renderer of {space}, {bytes} bytes: read {}ms, kept {}ms",
+        millis(read - started),
+        millis(now() - read)
+    );
     kept.map(|()| true).map_err(|error| error.to_string())
+}
+
+/// The monotonic clock, in nanoseconds.
+fn now() -> u64 {
+    world::wasi::clocks::monotonic_clock::now()
+}
+
+/// `nanos` in whole milliseconds.
+fn millis(nanos: u64) -> u64 {
+    nanos / 1_000_000
 }
 
 /// The renderer the deployment serves, each file with the path a space keeps

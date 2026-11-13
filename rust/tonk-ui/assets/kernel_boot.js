@@ -58,14 +58,29 @@ const log = (...args) => console.log(`[Kernel ${self.location.hostname.split("."
 
 // The body of an answer of the kernel, as it writes it. The worker stays up
 // until it ends.
+// A large answer, such as a file of the renderer, that takes longer than
+// SLOW_BODY_MS to write is logged, with its size and the pieces it came in.
+const SLOW_BODY_MS = 250;
+const LARGE_BODY = 256 * 1024;
 function bodyOf(reply, event) {
     let ended;
     event.waitUntil(new Promise(resolve => (ended = resolve)));
+    const started = performance.now();
+    let pieces = 0;
+    let bytes = 0;
     return new ReadableStream({
         async pull(controller) {
             try {
                 const piece = await reply.body.next();
-                if (piece) return controller.enqueue(piece);
+                if (piece) {
+                    pieces += 1;
+                    bytes += piece.byteLength;
+                    return controller.enqueue(piece);
+                }
+                const took = Math.round(performance.now() - started);
+                if (took > SLOW_BODY_MS && bytes > LARGE_BODY) {
+                    log(`answered ${new URL(event.request.url).pathname} in ${took} ms: ${bytes} bytes in ${pieces} pieces`);
+                }
                 controller.close();
             } catch (error) {
                 controller.error(error);
@@ -299,8 +314,17 @@ function checkedKernel(id, bytes) {
 
 async function start() {
     const started = performance.now();
+    // How long each step of the boot took, in milliseconds, as it went.
+    const steps = {};
+    let last = started;
+    const step = name => {
+        const now = performance.now();
+        steps[name] = Math.round(now - last);
+        last = now;
+    };
     if (!PINNED) throw new Error("this worker pins no kernel");
     await wasm_bindgen({ module_or_path: await hostFile(new Request(new URL("/_host/embedder_bg.wasm", self.location.href))) });
+    step("embedder");
     const session = await wasm_bindgen.openSession(SESSION);
     let space = await wasm_bindgen.heldSpace();
     let handed = null;
@@ -309,15 +333,19 @@ async function start() {
     // it acts under its own authority, so it asks for nothing. Any other is
     // the space the person's profile delegates to this session, which says
     // which space it is.
+    step("session");
     if (!space) {
         const kernel = await firstKernel();
+        step("kernel");
         if (wasm_bindgen.isPersona(kernel)) {
             space = session.did;
         } else {
             ({ space, handed } = await delegateSession(session));
             awaitCreation();
+            step("delegation");
         }
         log("installed the kernel", await wasm_bindgen.install(space, kernel));
+        step("install");
     }
     const pinned = await wasm_bindgen.pinned(space);
     if (pinned !== PINNED && pinned !== (await recordedKernel())) {
@@ -330,9 +358,13 @@ async function start() {
         embedder = await wasm_bindgen.bootPersona(space, session, kernelSent, askedToMerge, askedToAuthorize, await keptPersona());
     } else {
         const { representative, persona } = await standing();
+        step("standing");
         embedder = await wasm_bindgen.bootSpace(space, session, representative, persona, delegates(handed), kernelSent);
     }
-    log("booted in", Math.round(performance.now() - started), "ms", embedder.timings);
+    step("boot");
+    const kernelSteps = Object.entries(embedder.timings).map(([name, ms]) => `${name} ${Math.round(ms)}`);
+    const hostSteps = Object.entries(steps).map(([name, ms]) => `${name} ${ms}`);
+    log("booted in", Math.round(performance.now() - started), "ms:", hostSteps.join(", "), `(boot: ${kernelSteps.join(", ")})`);
     return embedder;
 }
 
