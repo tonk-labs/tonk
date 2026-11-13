@@ -11596,6 +11596,101 @@ note:
         Ok(())
     }
 
+    /// The notebook installed into a space, beside the editors it writes in,
+    /// opens its seeded notebook as a <prose-editor>: the seeded query cell
+    /// runs and shows its result, and a paragraph typed into the document is
+    /// committed and still there after a reload.
+    #[dialog_common::test]
+    async fn it_edits_a_notebook_installed_into_a_space(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        let key = create_space(&driver, "Notebook").await?;
+        let branch = format!("/api/repository/{key}/branch/main");
+        for component in ["code-editor", "prose-editor", "notebook"] {
+            install_component(&driver, &branch, component).await?;
+        }
+        await_row(
+            &driver,
+            &branch,
+            route_at("/notebook"),
+            "the notebook's route",
+        )
+        .await?;
+        await_row(&driver, &branch, named("prose-editor"), "prose-editor").await?;
+        await_row(&driver, &branch, named("code-editor"), "code-editor").await?;
+
+        let page = env
+            .tonk_web
+            .join(&format!("space/{key}/notebook/id:notebook/scratch"))?;
+        goto(&driver, page.as_str()).await?;
+        await_in(
+            &driver,
+            Surface::Space,
+            r#"const prose = document.querySelector('notebook-editor prose-editor');
+               return !!prose && !!prose.editor && prose.value.startsWith('# Scratch');"#,
+            "the seeded notebook in its editor",
+        )
+        .await?;
+        let result = await_in(
+            &driver,
+            Surface::Space,
+            r#"const prose = document.querySelector('notebook-editor prose-editor');
+               const slot = prose && prose.shadowRoot.querySelector('.md-code-block .notebook-cell-result');
+               return slot && slot.textContent.includes('result') ? slot.textContent : null;"#,
+            "the seeded cell's result",
+        )
+        .await?;
+        assert!(
+            result.as_str().is_some_and(|text| text.contains("concept")),
+            "the seeded `concept:` cell answers: {result}"
+        );
+
+        run_in(
+            &driver,
+            Surface::Space,
+            r#"const view = document.querySelector('notebook-editor prose-editor').editor.view;
+               view.dispatch(view.state.tr.insertText(' Typed in e2e.', view.state.doc.content.size - 1));
+               return true;"#,
+            Vec::new(),
+        )
+        .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let rows = post_json(
+                &driver,
+                &format!("{branch}/query"),
+                serde_json::json!({
+                    "predicate": { "with": {
+                        "source": { "the": "xyz.tonk.notebook.block/source", "as": "Text", "cardinality": "one" }
+                    } },
+                    "terms": { "this": "id:notebook/scratch/3", "source": { "?": { "name": "source" } } }
+                }),
+            )
+            .await?;
+            if rows.to_string().contains("Typed in e2e.") {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the typed paragraph never committed: {rows}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        goto(&driver, page.as_str()).await?;
+        await_in(
+            &driver,
+            Surface::Space,
+            r#"const prose = document.querySelector('notebook-editor prose-editor');
+               return !!prose && !!prose.editor && prose.value.includes('Typed in e2e.');"#,
+            "the typed paragraph after a reload",
+        )
+        .await?;
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// The search tree installed into a space serves `/console/tree`: the
     /// root node, selected, and a segment's entries once one is opened.
     #[dialog_common::test]
