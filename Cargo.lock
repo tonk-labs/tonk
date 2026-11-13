@@ -5295,7 +5295,6 @@ dependencies = [
  "tonk-host",
  "tonk-inspector",
  "tonk-portal",
- "tonk-tree",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -5381,7 +5380,6 @@ dependencies = [
 name = "tonk-inspector"
 version = "0.6.16-rc.1"
 dependencies = [
- "bs58",
  "custom-elements",
  "dialog-common",
  "dialog-corpus",
@@ -5653,23 +5651,6 @@ dependencies = [
  "tonk-notation",
  "tonk-schema",
  "wasm-bindgen-test",
-]
-
-[[package]]
-name = "tonk-tree"
-version = "0.6.16-rc.1"
-dependencies = [
- "custom-elements",
- "dialog-common",
- "js-sys",
- "serde",
- "serde_json",
- "tokio",
- "tonk-host",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test",
- "web-sys",
 ]
 
 [[package]]

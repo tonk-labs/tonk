@@ -28,19 +28,32 @@
 # every `language/<id>` component.
 #
 # Not `tonk-code`: the host owns that name (and the runtime leaves `tonk-`
-# tags to the host), so a page can have both. The interface is the same
-# but for the language server: `source`, `connect()`, `diagnostics` and
-# the `tonk-code-connect` events stay with <tonk-code>, whose provider the
-# host bundles.
+# tags to the host), so a page can have both.
 #
 # Attributes: value, language, readonly, placeholder, line-numbers,
-# active-line, auto-focus. Properties: `value`, `view` (the CodeMirror
-# `EditorView`, null until mounted). Events: `change` and `run` with
-# `{value, doc}`, `ready` with `{view}`.
+# active-line, auto-focus, source, language-server. Properties: `value`,
+# `view` (the CodeMirror `EditorView`, null until mounted), `errorCount`.
+# Methods: `connect(client)`, `disconnect()`. Events: `change` and `run`
+# with `{value, doc}`, `ready` with `{view}`, `diagnostics` with `{value,
+# doc, count, errorCount}`, `code-editor-connect` with `{source, language,
+# url}` and `code-editor-disconnect` with `{source}`.
+#
+# The language server. An editor with a `source` (the document's URI, as
+# `tonk-buffer:///<repo>/<branch>/<name>`) opens it on the language server
+# at `language-server` (`/api/language-server` by default), and every
+# frame the server sends for it arrives as a `diagnostics` event: the
+# verdict on the text as typed, which a host waits for before running it.
+# It announces itself with `code-editor-connect` first; an ancestor that
+# claims the event (`preventDefault`) supplies the client by calling
+# `connect`, and otherwise the core's own session does. A client must come
+# from this core (`LSPClient` among its exports): one built on another
+# CodeMirror, such as the host's <tonk-diagnostics-provider> hands to
+# <tonk-code>, is refused, which is why the events are not
+# <tonk-code>'s `tonk-code-connect`.
 # ---------------------------------------------------------------------------
 
 element!: &code-editor
-  description: A CodeMirror code editor; `language` names a `code-editor/language` the space has, and `change` carries each edit.
+  description: A CodeMirror code editor; `language` names a `code-editor/language` the space has, `change` carries each edit, and a `source` puts the document on the language server, whose verdicts arrive as `diagnostics`.
   method:
     connected: !include/text ./code-editor/connected.js
     disconnected: !include/text ./code-editor/disconnected.js
@@ -53,6 +66,10 @@ element!: &code-editor
     watch: !include/text ./code-editor/watch.js
     unwatch: !include/text ./code-editor/unwatch.js
     emit: !include/text ./code-editor/emit.js
+    announce: !include/text ./code-editor/announce.js
+    withdraw: !include/text ./code-editor/withdraw.js
+    connect: !include/text ./code-editor/connect.js
+    disconnect: !include/text ./code-editor/disconnect.js
     core: !include/text ./code-editor/core.js
   getter:
     # The document; before the editor mounts, the `value` attribute it
@@ -62,6 +79,9 @@ element!: &code-editor
     # The live CodeMirror view, once mounted.
     view: |
       (self) => self.__code?.editor?.view ?? null
+    # Errors in the language server's latest frame; 0 before one lands.
+    error-count: |
+      (self) => self.__code?.errors ?? 0
   setter:
     # Patches only the span that differs, so the caret stays put, and
     # fires no `change`. Before the mount, a write goes to the attribute.

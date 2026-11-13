@@ -3462,107 +3462,36 @@ view!:
         </main>
       </div>
 
-# The /inspector and /diagnose routes: the same query-inspector and
-# search-tree views a space exposes, but pinned to the PROFILE branch so
-# you can explore the profile DB (the hub's replicas, the member name,
-# sync state) directly. `<tonk-inspector>` and `<tonk-tree>` resolve their
-# repository from their own `with` — here the profile endpoint — so they
-# query `/api/repository/profile:tonk/branch/main/query` rather than a named space.
+# Library components. The profile is a space like any other, so it takes
+# the library's components the way a space does: `library/install` with
+# the component, `tonk:library/<name>`, installs it onto the profile's own
+# branch, and its routes route here. The console components
+# (`/console/inspector`, `/console/tree`) are how the profile is inspected.
 #
-# Both take that `with` from the SITE, exactly as core.yaml's route views do,
-# rather than naming the profile endpoint literally. The site's `repo` is a
-# LOCATION TOKEN (`profile:<name>` here, a bare repository key in a space), so
-# `{branch}@{repo}` is the one spelling that resolves in either context — which
-# is what lets the same view be written once. The literal it replaces also
-# pinned the profile NAME, so it addressed the wrong endpoint outright for any
-# profile not called `tonk`.
-route!: &route/inspector
-  this: id:tonk:route/inspector
-  path: "/inspector"
-  concept: tonk:inspector/route
+# No palette verb: in a space the palette reads both branches, and the
+# space's own `install` already says this, so one here would offer every
+# install twice. Installing into the profile is notation evaluated on it:
+#
+#   library/install!:
+#     component: tonk:library/tree
+#     time: 1
+attribute!: &install-component/component
+  description: Which component to install, `tonk:library/<name>`.
+  the: xyz.tonk.command.install-component/component
+  as: entity
+  role: :object
 
-concept!: &inspector/route
-  this: tonk:inspector/route
-  description: The /inspector page — a query inspector over the profile DB.
+attribute!: &install-component/time
+  description: The moment it was asked; makes each dispatch a distinct transient.
+  the: xyz.tonk.command.install-component/time
+  as: float:64
+  role: :now
+
+command!: &library/install
+  description: Install a library component into the profile, or update it.
   with:
-    # The inspector needs no entity — it inspects the whole branch — but it
-    # does need the branch, so `repo`/`branch` are what the model declares.
-    path:
-      description: The active path, picked off the site.
-      the: xyz.tonk.site/path
-      as: text
-    repo:
-      description: The repository location token, picked off the site entity.
-      the: xyz.tonk.site/repo
-      as: text
-    branch:
-      description: The branch, picked off the site entity.
-      the: xyz.tonk.site/branch
-      as: text
-  maybe:
-    profile-branch:
-      description: >
-        The branch the profile is on, picked off the site entity: the
-        latent bar's command line talks to the profile.
-      the: xyz.tonk.site/profile-branch
-      as: text
-
-view!:
-  this: tonk:inspector/route
-  show:
-    ui: |
-      <div class="display-view-slot">
-        <!-- The bar, latent: no space here, so it shows only for the
-             command line (Cmd/Ctrl+K) and what a command opens. -->
-        <tonk-fab with="{profile-branch}@profile:tonk" latent>
-          <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
-        </tonk-fab>
-        <tab-title text="Tonk"></tab-title>
-        <tonk-inspector with="{branch}@{repo}"></tonk-inspector>
-      </div>
-
-route!: &route/diagnose
-  this: id:tonk:route/diagnose
-  path: "/diagnose"
-  concept: tonk:diagnose/route
-
-concept!: &diagnose/route
-  this: tonk:diagnose/route
-  description: The /diagnose page — the search-tree inspector over the profile DB.
-  with:
-    path:
-      description: The active path, picked off the site.
-      the: xyz.tonk.site/path
-      as: text
-    repo:
-      description: The repository location token, picked off the site entity.
-      the: xyz.tonk.site/repo
-      as: text
-    branch:
-      description: The branch, picked off the site entity.
-      the: xyz.tonk.site/branch
-      as: text
-  maybe:
-    profile-branch:
-      description: >
-        The branch the profile is on, picked off the site entity: the
-        latent bar's command line talks to the profile.
-      the: xyz.tonk.site/profile-branch
-      as: text
-
-view!:
-  this: tonk:diagnose/route
-  show:
-    ui: |
-      <div class="display-view-slot">
-        <!-- The bar, latent: no space here, so it shows only for the
-             command line (Cmd/Ctrl+K) and what a command opens. -->
-        <tonk-fab with="{profile-branch}@profile:tonk" latent>
-          <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
-        </tonk-fab>
-        <tab-title text="Tonk"></tab-title>
-        <tonk-tree with="{branch}@{repo}"></tonk-tree>
-      </div>
+    component: install-component/component
+    time: install-component/time
 
 # The /seed route: `/seed/<url>` offers to create a space from the
 # definitions at <url> — `/seed/https://tonk.network/library/notebook.yaml`.
@@ -3645,7 +3574,7 @@ view!:
 # The space route: the profile routes ANY `/space/{id}/...` to the same UI — a
 # full-size repo portal with the FAB floating on top — and hands the rest of the
 # path to a NESTED `<tonk-site>` inside the portal, which routes it against the
-# space's own route table. So `/space/{id}`, `/space/{id}/inspector`, etc. all
+# space's own route table. So `/space/{id}`, `/space/{id}/console/tree`, etc. all
 # render the same chrome; only the nested router's path differs.
 # Two routes, same concept: the bare space root (`/space/{id}`, no sub-path) and
 # any sub-path (`/space/{id}/{*rest}`). A `{*rest}` span may not capture nothing,
@@ -4045,7 +3974,7 @@ view!:
 
 # The catch-all: any path no static/`/space/…` route claims lands here. The
 # router matches most-specific-first, so this `{*rest}` span never shadows `/`,
-# `/join`, `/inspector`, `/diagnose`, or `/space/{id}` — it only catches what
+# `/join`, an installed component's `/console/...`, or `/space/{id}` — it only catches what
 # nothing else does (a mistyped `/board`, a stale deep link). Without it such a
 # path matches no route, the site is never stamped, and the shell spins forever.
 route!: &route/not-found

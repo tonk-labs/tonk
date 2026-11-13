@@ -3051,7 +3051,8 @@ fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool
 ///
 /// Forward the display host's OWN routing context (`with`) onto the view
 /// it just mounted — so a view whose content resolves its own context
-/// (`<tonk-tree>`, `<tonk-inspector>`, a nested `<ui-sync-status>`) sees
+/// (`<tonk-notebook>`, an element marked `data-tonk-with`, a nested
+/// `<ui-sync-status>`) sees
 /// the display's context without inferring it from DOM ancestors. This is
 /// the ONE propagation boundary: context flows across a `<tonk-display>`,
 /// never through an arbitrary element. A view element that carries its own
@@ -3204,9 +3205,10 @@ fn forward_with(host: &Element, view_el: &Element) {
 }
 
 /// Every element whose routing context a display forwards: the routing
-/// consumers, and a nested display, which forwards it on in turn.
-const ROUTING_CONSUMERS: &str = "[data-tonk-with], tonk-display, tonk-tree, tonk-inspector, \
-                                 tonk-notebook, ui-sync-status";
+/// consumers, and a nested display, which forwards it on in turn. A library
+/// element (the console's `<space-tree>`, say) opts in by carrying
+/// `data-tonk-with`, since the host cannot know the tags a space defines.
+const ROUTING_CONSUMERS: &str = "[data-tonk-with], tonk-display, tonk-notebook, ui-sync-status";
 
 /// Stamp `context` as `with` on each of `consumers` that lacks one, then
 /// descend into each of `templates` and do the same for its content.
@@ -5102,8 +5104,8 @@ mod tests {
         let view = document.create_element("tonk-view").unwrap();
         view.set_inner_html(concat!(
             "<ui-sync-status></ui-sync-status>",
-            "<tonk-tree></tonk-tree>",
-            r#"<tonk-inspector with="main@did:key:zOther"></tonk-inspector>"#,
+            "<space-tree data-tonk-with></space-tree>",
+            r#"<tonk-notebook with="main@did:key:zOther"></tonk-notebook>"#,
             "<span>plain</span>",
         ));
         host.append_child(&view).unwrap();
@@ -5120,15 +5122,16 @@ mod tests {
             "a routing consumer without its own with inherits the display's",
         );
         assert_eq!(
-            view.query_selector("tonk-tree")
+            view.query_selector("space-tree")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")
                 .as_deref(),
             Some("main@did:key:zSpace"),
+            "an element marked data-tonk-with inherits it too",
         );
         assert_eq!(
-            view.query_selector("tonk-inspector")
+            view.query_selector("tonk-notebook")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")
@@ -5153,9 +5156,9 @@ mod tests {
     /// `querySelectorAll` on the view never sees them. The forward pass
     /// must stamp the content, and the content of any `<template>` nested
     /// inside it (a view's own row template), or every routing consumer
-    /// inside a view loses its context: `<tonk-tree>`, `<tonk-inspector>`,
-    /// `<tonk-notebook>`, `<ui-sync-status>` and the nested display that
-    /// is how context cascades.
+    /// inside a view loses its context: `<tonk-notebook>`, an element
+    /// marked `data-tonk-with`, `<ui-sync-status>` and the nested display
+    /// that is how context cascades.
     #[cfg(target_arch = "wasm32")]
     #[dialog_common::test]
     fn it_forwards_its_with_into_template_content() {
@@ -5166,9 +5169,9 @@ mod tests {
         let template = document.create_element("template").unwrap();
         template.set_inner_html(concat!(
             "<ui-sync-status></ui-sync-status>",
-            "<tonk-inspector></tonk-inspector>",
+            "<tonk-notebook></tonk-notebook>",
             "<tonk-display></tonk-display>",
-            "<template><tonk-tree></tonk-tree></template>",
+            "<template><space-tree data-tonk-with></space-tree></template>",
         ));
         view.append_child(&template).unwrap();
         host.append_child(&view).unwrap();
@@ -5179,7 +5182,7 @@ mod tests {
             .dyn_into::<web_sys::HtmlTemplateElement>()
             .unwrap()
             .content();
-        for tag in ["ui-sync-status", "tonk-inspector", "tonk-display"] {
+        for tag in ["ui-sync-status", "tonk-notebook", "tonk-display"] {
             assert_eq!(
                 content
                     .query_selector(tag)
@@ -5199,7 +5202,7 @@ mod tests {
             .unwrap()
             .content();
         assert_eq!(
-            row.query_selector("tonk-tree")
+            row.query_selector("space-tree")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")
@@ -5212,8 +5215,8 @@ mod tests {
     /// The same, through the real mount: `mount_view_slide` parses the
     /// markup into a `<template>` and forwards over it in one place, so a
     /// consumer in a mounted view must come out stamped. This is the path
-    /// `/inspector` and `/diagnose` take, and the one that lost its
-    /// context when the parse moved into a template.
+    /// a route view takes, and the one that lost its context when the
+    /// parse moved into a template.
     #[cfg(target_arch = "wasm32")]
     #[dialog_common::test]
     fn it_stamps_context_into_the_mounted_view_template() {
@@ -5225,8 +5228,8 @@ mod tests {
             &host,
             &mut inner,
             concat!(
-                "<tonk-inspector></tonk-inspector>",
-                r#"<tonk-tree with="main@did:key:zOther"></tonk-tree>"#,
+                "<tonk-notebook></tonk-notebook>",
+                r#"<space-tree data-tonk-with with="main@did:key:zOther"></space-tree>"#,
             ),
             "tonk:test",
             "ui",
@@ -5243,17 +5246,17 @@ mod tests {
             .content();
         assert_eq!(
             content
-                .query_selector("tonk-inspector")
+                .query_selector("tonk-notebook")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")
                 .as_deref(),
             Some("main@did:key:zSpace"),
-            "the mounted view's inspector inherits the display's context",
+            "the mounted view's notebook inherits the display's context",
         );
         assert_eq!(
             content
-                .query_selector("tonk-tree")
+                .query_selector("space-tree")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")

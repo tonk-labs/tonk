@@ -5736,6 +5736,9 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         "/library/code-editor.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/code-editor.yaml").to_owned())
         }
+        "/library/inspector.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/inspector.yaml").to_owned())
+        }
         "/library/issue.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/issue.yaml").to_owned())
         }
@@ -5750,6 +5753,9 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         }
         "/library/table.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/table.yaml").to_owned())
+        }
+        "/library/tree.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/tree.yaml").to_owned())
         }
         "/library/version-control.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/version-control.yaml").to_owned())
@@ -16561,6 +16567,10 @@ mod library_quarantine_tests {
                 include_str!("../../../tonk-core/assets/library/language/python.yaml"),
             ),
             (
+                "inspector",
+                include_str!("../../../tonk-core/assets/library/inspector.yaml"),
+            ),
+            (
                 "issue",
                 include_str!("../../../tonk-core/assets/library/issue.yaml"),
             ),
@@ -16579,6 +16589,10 @@ mod library_quarantine_tests {
             (
                 "table",
                 include_str!("../../../tonk-core/assets/library/table.yaml"),
+            ),
+            (
+                "tree",
+                include_str!("../../../tonk-core/assets/library/tree.yaml"),
             ),
             (
                 "version-control",

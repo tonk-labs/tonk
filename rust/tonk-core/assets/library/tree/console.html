@@ -1,0 +1,12 @@
+<style>
+  /* A fixed height, not a minimum: the two panes scroll inside it on
+     their own rather than the page scrolling both. */
+  space-tree {
+    display: grid;
+    box-sizing: border-box;
+    height: 100dvh;
+    /* Clear the space chrome pinned over the page's top edge. */
+    padding-top: 88px;
+  }
+</style>
+<space-tree with="{branch}@{repo}"></space-tree>

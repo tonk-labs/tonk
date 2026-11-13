@@ -42,6 +42,8 @@ const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.y
 const META_LIBRARY: &str = include_str!("../../tonk-core/assets/library/meta.yaml");
 const VERSION_CONTROL_LIBRARY: &str =
     include_str!("../../tonk-core/assets/library/version-control.yaml");
+const INSPECTOR_LIBRARY: &str = include_str!("../../tonk-core/assets/library/inspector.yaml");
+const TREE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/tree.yaml");
 
 /// Lower a library document the same way the seed does, asserting it
 /// parses, analyzes with no running system, and lowers to claims. Like
@@ -1231,7 +1233,10 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
         .nth(1)
-        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .and_then(|tail| {
+            tail.split("# Library components. The profile is a space")
+                .next()
+        })
         .expect("join route view");
 
     for rejected in ["<wa-callout", "variant=\"danger\"", "{reason}"] {
@@ -1272,7 +1277,10 @@ fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
         .nth(1)
-        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .and_then(|tail| {
+            tail.split("# Library components. The profile is a space")
+                .next()
+        })
         .expect("join route view");
 
     assert!(
@@ -1324,7 +1332,10 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
         .nth(1)
-        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .and_then(|tail| {
+            tail.split("# Library components. The profile is a space")
+                .next()
+        })
         .expect("join route view");
     let join_view = css_rule(route, ".join-view {");
     let fallback = join_view
@@ -1456,6 +1467,62 @@ async fn it_lowers_the_version_control_library() {
         VERSION_CONTROL_LIBRARY,
     )
     .await;
+}
+
+#[dialog_common::test]
+async fn it_lowers_the_inspector_library() {
+    assert_component_library_lowers(
+        "inspector library (inspector.yaml)",
+        "inspector.yaml",
+        INSPECTOR_LIBRARY,
+    )
+    .await;
+}
+
+#[dialog_common::test]
+async fn it_lowers_the_tree_library() {
+    assert_component_library_lowers("tree library (tree.yaml)", "tree.yaml", TREE_LIBRARY).await;
+}
+
+/// The console components install into the profile too, where the
+/// profile library, not `core.yaml`, declares what they build on.
+#[dialog_common::test]
+async fn it_lowers_the_console_components_on_the_profile() {
+    for (label, file, document) in [
+        (
+            "inspector on the profile",
+            "inspector.yaml",
+            INSPECTOR_LIBRARY,
+        ),
+        ("tree on the profile", "tree.yaml", TREE_LIBRARY),
+    ] {
+        assert_library_lowers(label, file, &format!("{PROFILE_LIBRARY}\n{document}")).await;
+    }
+}
+
+/// The console pages route under `/console`, beside version-control's,
+/// from the site's repository and branch, so one route serves a space and
+/// the profile alike.
+#[dialog_common::test]
+fn it_routes_the_console_components_from_the_site() {
+    for (document, path, element) in [
+        (INSPECTOR_LIBRARY, "/console/inspector", "space-inspector"),
+        (TREE_LIBRARY, "/console/tree", "space-tree"),
+    ] {
+        assert!(
+            document.contains(&format!("path: \"{path}\"")),
+            "{element} routes at {path}"
+        );
+        assert!(
+            document.contains(&format!("element!: &{element}")),
+            "the component defines <{element}>"
+        );
+        assert!(
+            document.contains("the: xyz.tonk.site/repo")
+                && document.contains("the: xyz.tonk.site/branch"),
+            "{element}'s route model reads the site's repository and branch"
+        );
+    }
 }
 
 // The `on:` binding gates that used to live here — a dangling

@@ -15,8 +15,11 @@
 // value in extension set"). The build gives every pack it emits that
 // shape; a pack built anywhere else needs the same.
 //
-// Nothing here talks to a language server: the LSP client stays with
-// `<tonk-code>`, which the host bundles with its provider.
+// The language server is the core's too: `languageServer(url)` is the
+// session an editor with a `source` attaches to, and `LSPClient` is the
+// class its clients are, so an editor can refuse a client built against
+// another CodeMirror (the host's `<tonk-diagnostics-provider>` hands out
+// those).
 
 import * as state from "@codemirror/state";
 import * as view from "@codemirror/view";
@@ -29,6 +32,8 @@ import * as highlight from "@lezer/highlight";
 import * as lr from "@lezer/lr";
 
 export { createEditor, SHADOW_STYLESHEET } from "./editor";
+export { LSPClient } from "@codemirror/lsp-client";
+export { languageServer } from "./lsp/session";
 
 /** The modules a pack shares with this core, by package name. Only
  *  these: they are the ones that carry the identities CodeMirror checks

@@ -39,14 +39,9 @@ pub fn start() {
     // naming it here is the guarantee that it happens.
     tonk_display::registry::install();
     tonk_display::register();
-    tonk_tree::register();
     tonk_fab::register();
-    // The scratch inspector — a leptos-free notebook element that evaluates over
-    // the host fetch bridge; its `<tonk-code>` editor + diagnostics provider are
-    // injected by the portal.
-    tonk_inspector::register();
-    // `<tonk-notebook>` — the same evaluate path as the inspector, hosted on a
-    // `<tonk-prose>` document whose ```dialog fences are the cells.
+    // `<tonk-notebook>`: a `<tonk-prose>` document whose ```dialog fences are
+    // live cells, evaluated over the host fetch bridge.
     tonk_inspector::register_notebook();
     // A view inside the guest can itself mount a `<tonk-portal>` (the Sketch
     // sheet's imperative canvas). Register it so a NESTED portal upgrades —

@@ -217,9 +217,9 @@ space's home page at `/`, use the home recipe in `tonk help views`.
   pair on their ancestors.
 - Write in-space links as absolute paths (`href="/notes/{this}"`). A
   relative link resolves against the space's root rather than the
-  current page. `/join`, `/account`, `/inspector` and `/diagnose` are
-  profile pages: a link to them from a space page leaves the space, so
-  do not use them as space paths.
+  current page. `/join` and `/account` are profile pages: a link to
+  them from a space page leaves the space, so do not use them as space
+  paths.
 - `tonk render` takes the `entity@model!facet` shorthand, not paths,
   and does not consult routes. Check a route by opening its path.
 
