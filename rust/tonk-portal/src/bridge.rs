@@ -18,6 +18,7 @@
 //!   subscribe(body?)  -> ReadableStream<Conclusion[]>,
 //!   transact(request) -> Promise<receipt>,
 //!   navigate(href)    -> void,
+//!   reload()           -> void,
 //!   setTitle(text)    -> void,
 //!   open(href)        -> void,
 //!   analytics(event)  -> void,
@@ -389,7 +390,9 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
     // browser draw their errors, statuses and successes with. A classic
     // script with no imports; a guest without it still renders, its
     // messages as plain text.
-    let fabb = fetch_text("/in-browser/fabb.js").await.unwrap_or_default();
+    let fabb = fetch_text("/library/gooey/in-browser/fabb.js")
+        .await
+        .unwrap_or_default();
 
     // Find every `import … from '…/snippets/…'` statement in the glue and
     // fetch each snippet file, so the guest can rewrite them to blob URLs.
@@ -488,13 +491,37 @@ fn font_mime(path: &str) -> &'static str {
     }
 }
 
+/// Collect the distinct `/fonts/*` paths referenced as `url(...)` arguments
+/// in `css`, in first-appearance order. Only genuine `url()` arguments
+/// qualify: scanning for the raw `/fonts/` substring also matches prose in
+/// comments — a comment in styles.css mentioning `` `/fonts/` `` used to
+/// produce a junk `GET /fonts/%60%20(copied…` 404 on every guest boot.
+fn find_font_paths(css: &str) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    let mut rest = css;
+    while let Some(i) = rest.find("url(") {
+        rest = &rest[i + "url(".len()..];
+        let Some(close) = rest.find(')') else { break };
+        let arg = rest[..close].trim().trim_matches(['"', '\'']);
+        // Skip a bare `/fonts/` with no filename.
+        if let Some(name) = arg.strip_prefix("/fonts/")
+            && !name.is_empty()
+            && !paths.iter().any(|p| p == arg)
+        {
+            paths.push(arg.to_owned());
+        }
+        rest = &rest[close + 1..];
+    }
+    paths
+}
+
 /// Replace every `url("/fonts/<name>.<ext>")` in `css` with a
 /// `url("data:<mime>;base64,…")` so the sealed guest needs no font fetch.
 /// Inlines ANY file under `/fonts/`, not a fixed set of extensions. Fonts
 /// whose fetch/encode fails are left as-is (degrade to a fallback face).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn inline_fonts(css: &str) -> String {
-    let mut paths = crate::guest_css::find_font_paths(css);
+    let mut paths = find_font_paths(css);
     // Substitute longest-first so a path that is a prefix of another
     // (`a.woff` next to `a.woff2`) isn't corrupted by the shorter one's
     // replacement landing inside it.
@@ -834,10 +861,9 @@ fn bundle_graph_entries(files: Vec<(String, String)>) -> js_sys::Array {
 async fn app_stylesheet_css() -> Option<String> {
     let document = window()?.document()?;
 
-    // Top document: Tonk's own page sheets (`data-tonk-guest-css`, in
-    // document order, their relative addresses made absolute so the font
-    // inlining below finds them), then `<link rel=stylesheet
-    // href=/styles-*.css>`.
+    // Top document: Tonk's own page sheets (gooey's in-browser system,
+    // marked `data-tonk-guest-css`) in document order, then `<link
+    // rel=stylesheet href=/styles-*.css>`.
     let mut guest_css = String::new();
     if let Ok(links) = document.query_selector_all("link[rel=stylesheet][data-tonk-guest-css]") {
         for i in 0..links.length() {
@@ -849,7 +875,7 @@ async fn app_stylesheet_css() -> Option<String> {
                 continue;
             };
             if let Ok(text) = fetch_text(&href).await {
-                guest_css.push_str(&crate::guest_css::absolute_urls(&text, &href));
+                guest_css.push_str(&text);
                 guest_css.push('\n');
             }
         }
@@ -1158,6 +1184,7 @@ fn make_dispatcher(
             "subscribe" => handle_subscribe(&host, &state, &port, &data),
             "unsubscribe" => handle_unsubscribe(&state, &data),
             "navigate" => handle_navigate(&state, &data),
+            "reload" => tonk_host::reload_page(),
             "title" => handle_title(&data),
             "open" => handle_open(&state, &data),
             "analytics" => handle_analytics(&data),
@@ -2871,6 +2898,34 @@ mod tests {
         // A path that merely STARTS with a top-level name is not one.
         assert!(!is_top_level_route("joinery"));
         assert!(!is_top_level_route("accounts-payable"));
+    }
+
+    // --- find_font_paths: url() argument extraction --------------------
+
+    #[dialog_common::test]
+    fn it_finds_font_paths_in_url_args_only() {
+        // The comment reproduces styles.css prose that the old raw-substring
+        // scan turned into `GET /fonts/%60%20(copied…` — a 404 on every
+        // guest boot. Prose mentions of `/fonts/` must not count; quoted,
+        // single-quoted, and bare url() arguments must; duplicates collapse.
+        let css = r#"
+            /* Files live under `/fonts/` (copied into the dist by Trunk's
+               `copy-dir` on `./assets/fonts`). */
+            @font-face { src: url("/fonts/space-grotesk-400.woff2") format("woff2"); }
+            @font-face { src: url('/fonts/gestalte-400.otf'); }
+            .bare { mask: url(/fonts/unquoted.ttf); }
+            .other { background: url("/images/mark-white.svg"); }
+            .dup { src: url("/fonts/space-grotesk-400.woff2"); }
+            .empty { background: url("/fonts/"); }
+        "#;
+        assert_eq!(
+            find_font_paths(css),
+            vec![
+                "/fonts/space-grotesk-400.woff2",
+                "/fonts/gestalte-400.otf",
+                "/fonts/unquoted.ttf",
+            ]
+        );
     }
 
     // --- forwarded_route: the allow chokepoint -------------------------

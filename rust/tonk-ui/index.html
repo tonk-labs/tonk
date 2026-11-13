@@ -75,7 +75,7 @@
             content="https://tonk.xyz/tonk-media-preview.png"
         />
 
-        <link rel="icon" type="image/svg+xml" href="/in-browser/tonk-icon.svg" />
+        <link rel="icon" type="image/svg+xml" href="/library/gooey/in-browser/tonk-icon.svg" />
         <link rel="apple-touch-icon" href="/images/tonk-icon.png" />
 
         <!-- Boot-shell critical CSS, inlined so first paint needs ZERO
@@ -241,22 +241,22 @@
             onload="this.onload=null;this.media='all'"
         />
         <!-- Tonk's own pages in a browser (gooey's in-browser system,
-       vendored unchanged): the task pages' look, their parts and buttons,
-       and `<tonk-message>`. The faces come from Tonk's own `/in-agent/fonts/`,
-       so a passkey page loads nothing from a third party; the three a task
-       draws first are preloaded. Everything is scoped to `.fabb-*` classes,
+       vendored unchanged under the library's gooey/ folder): the task
+       pages' look, their parts and buttons, and `<tonk-message>`. The faces
+       are Tonk's own (`/fonts/`, declared in styles.css), so a passkey page
+       loads nothing from a third party; the three a task draws first are
+       preloaded. Everything is scoped to `.fabb-*` and `.tonk-*` classes,
        so a page that draws none of them is untouched; like the sheets below
-       they load async, off the boot shell's first paint. The sealed guest gets
-       the same sheets and element through tonk-portal's inject payload
+       they load async, off the boot shell's first paint. The sealed guest
+       gets the same sheets and element through tonk-portal's inject payload
        (`data-tonk-guest-css`). -->
-        <link rel="preload" href="/in-agent/fonts/ibm-plex-sans-condensed-latin-500-normal.woff2" as="font" type="font/woff2" crossorigin />
-        <link rel="preload" href="/in-agent/fonts/ibm-plex-sans-condensed-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin />
-        <link rel="preload" href="/in-agent/fonts/ibm-plex-sans-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin />
-        <link rel="stylesheet" href="/in-browser/fonts.css" data-tonk-guest-css media="print" onload="this.onload=null;this.media='all'" />
-        <link rel="stylesheet" href="/tonk-look.css" data-tonk-guest-css media="print" onload="this.onload=null;this.media='all'" />
-        <link rel="stylesheet" href="/in-browser/fabb-forms.css" data-tonk-guest-css media="print" onload="this.onload=null;this.media='all'" />
-        <link rel="stylesheet" href="/in-browser/fabb-pages.css" data-tonk-guest-css media="print" onload="this.onload=null;this.media='all'" />
-        <script src="/in-browser/fabb.js" defer></script>
+        <link rel="preload" href="/fonts/ibm-plex-sans-condensed-latin-500-normal.woff2" as="font" type="font/woff2" crossorigin />
+        <link rel="preload" href="/fonts/ibm-plex-sans-condensed-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin />
+        <link rel="preload" href="/fonts/ibm-plex-sans-400-normal.woff2" as="font" type="font/woff2" crossorigin />
+        <link rel="stylesheet" href="/library/gooey/tonk-look.css" data-tonk-guest-css media="print" onload="this.onload=null;this.media='all'" />
+        <link rel="stylesheet" href="/library/gooey/in-browser/fabb-forms.css" data-tonk-guest-css media="print" onload="this.onload=null;this.media='all'" />
+        <link rel="stylesheet" href="/library/gooey/in-browser/fabb-pages.css" data-tonk-guest-css media="print" onload="this.onload=null;this.media='all'" />
+        <script src="/library/gooey/in-browser/fabb.js" defer></script>
         <!-- Interface fonts (IBM Plex Sans / IBM Plex Sans Condensed /
        IBM Plex Mono) are self-hosted: see styles.css
        for the `@font-face` declarations. Files live in
@@ -1092,11 +1092,6 @@
             data-target-path="library"
         />
         <link data-trunk rel="copy-dir" href="./assets/fonts" />
-        <!-- gooey's tree at the site root, so the vendored files' relative
-       addresses hold: /tonk-look.css, /in-browser/, /in-agent/fonts/. -->
-        <link data-trunk rel="copy-file" href="./assets/tonk-look.css" />
-        <link data-trunk rel="copy-dir" href="./assets/in-browser" />
-        <link data-trunk rel="copy-dir" href="./assets/in-agent" />
         <link data-trunk rel="copy-dir" href="./assets/images" />
         <link data-trunk rel="copy-dir" href="./assets/webawesome" />
         <!-- Sealed-guest element runtime (registration-only wasm). Built as
