@@ -285,20 +285,6 @@ pub async fn evaluate_profile(
     body: Bytes,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
     log!("evaluate profile branch={}", path.branch);
-    // Same write boundary as `transact_profile`: a sealed guest is bound
-    // to its view's {repo, branch} and must not write the profile. A
-    // dry run (`transact=false`) commits nothing, so only the committing
-    // form is refused.
-    if query.transact
-        && let Some(Extension(client_id)) = &client
-    {
-        let bindings = state.read().await.view_bindings.clone();
-        if bindings.read().await.contains_key(client_id) {
-            return Err(TonkWorkerError::Forbidden(
-                "sealed guests may not write the profile branch".into(),
-            ));
-        }
-    }
     let (response, transients) = {
         // Read lock — see [`evaluate`] for why a write lock here serialized every
         // concurrent request behind a commit.

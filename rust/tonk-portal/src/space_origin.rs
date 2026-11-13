@@ -161,8 +161,8 @@ pub(crate) const SANDBOX: &str = "allow-scripts allow-same-origin allow-forms al
 /// `<tonk-site>` renders on an origin of its own: the top document's names
 /// the pattern in its `origin` attribute (from the deployment's
 /// configuration), and a site inside a real-origin guest takes the one its
-/// parent handed it (`sitePattern` in its context). Other portals
-/// (`<tonk-portal>`, the FAB's) stay sealed.
+/// parent handed it (`sitePattern` in its context). Any other host stays
+/// sealed.
 pub(crate) fn site_pattern(host: &Element) -> Option<String> {
     if host.tag_name() != "TONK-SITE" {
         return None;

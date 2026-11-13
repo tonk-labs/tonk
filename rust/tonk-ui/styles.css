@@ -108,8 +108,8 @@ html::-webkit-scrollbar { width: 0; height: 0; display: none; }
    every `<button>`. An author `display` declaration beats the UA's
    `[hidden] { display: none }` whatever its specificity or layer, so the
    attribute silently stops working on a bare button wherever that sheet
-   loads. A sealed `<tonk-portal>` guest concatenates it ahead of this file
-   (`tonk-portal`'s `build_inject_payload`), which is where it first bit: a
+   loads. A sealed guest concatenates it ahead of this file (the bridge's
+   `build_inject_payload`), which is where it first bit: a
    `hidden` bare button rendered anyway, and hiding it again was equally
    inert.
 

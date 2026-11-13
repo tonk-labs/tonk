@@ -110,10 +110,9 @@ async fn connection_candidate_grants_cover_cli_authoring_and_remote_sync() -> Re
     tonk_cli::eval::run_against_site(
         &writer,
         tonk_cli::eval::Source::Inline(format!(
-            "{}\n{}\n{}",
+            "{}\n{}",
             common::ATTRIBUTE_DECL,
             common::CONCEPT_DECL,
-            common::VIEW_DECL,
         )),
         tonk_cli::eval::Options::default(),
     )
@@ -121,10 +120,20 @@ async fn connection_candidate_grants_cover_cli_authoring_and_remote_sync() -> Re
     tonk_cli::eval::run_against_site(
         &writer,
         tonk_cli::eval::Source::Inline(
-            "task!: &first-task\n  title: Scoped build\n  done: false\n\npage!: &agent-page\n  body: '<h1>Scoped build</h1>'\n".into(),
+            "task!: &first-task\n  title: Scoped build\n  done: false\n".into(),
         ),
         tonk_cli::eval::Options::default(),
-    ).await?;
+    )
+    .await?;
+    tonk_cli::data_ops::view_add(
+        &writer,
+        "task",
+        tonk_cli::authoring::ViewKind::Detail,
+        "<h1>{title}</h1>",
+        false,
+        Default::default(),
+    )
+    .await?;
     let blob_bytes = b"scoped connection blob roundtrip";
     let blob_file = temp.path().join("asset.txt");
     std::fs::write(&blob_file, blob_bytes)?;
@@ -141,7 +150,7 @@ async fn connection_candidate_grants_cover_cli_authoring_and_remote_sync() -> Re
     assert!(
         views
             .iter()
-            .any(|view| view.name.as_deref() == Some("agent-page"))
+            .any(|view| view.name.as_deref() == Some("task"))
     );
     let mut readback = Vec::new();
     tonk_cli::blob::cat(&reader, &blob.entity.to_string(), &mut readback).await?;

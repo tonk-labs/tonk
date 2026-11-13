@@ -377,32 +377,6 @@ concept!: &note
     tag:  note-tag
 "#;
 
-/// Seed schema for HTML views: a `text/html`-bound attribute and
-/// a `view` concept that uses it. Pasted at the top of any test
-/// that needs `view!` heads. Shared with [`tonk_cli::guide`] so the
-/// agent-facing reference matches what the tests exercise.
-/// An author's own HTML-page concept, plus the `text/html` attribute
-/// it stores its body under.
-///
-/// Deliberately NOT named `view`: `view` is a built-in concept, and a
-/// built-in shadows a branch declaration of the same name, so a
-/// document written after this one is seeded would resolve `view!:` to
-/// the built-in's `show:` shape rather than to this. The listing these
-/// fixtures exercise keys off the `text/html` attribute and the `show`
-/// dictionary, never off a concept name, so the name is free.
-pub const VIEW_DECL: &str = r#"
-attribute!: &html-body
-  description: "HTML body of a tonk-authored view"
-  the:         "text/html"
-  as:          text
-  cardinality: :many
-
-concept!: &page
-  description: "An HTML page, served via the host route"
-  with:
-    body: html-body
-"#;
-
 /// A stand-in for the browser authorization page.
 ///
 /// The real page runs a passkey ceremony; this holds the account key

@@ -23,12 +23,6 @@ pub const DETAIL_FACET: &str = "ui";
 /// renders when no explicit `view=` facet is given.
 pub const DIRECTORY_FACET: &str = "directory";
 
-/// The `show` entry marking a portal document: a `type` entry whose
-/// value is `text/html` says the selected template is a full HTML
-/// document mounted in an isolated `<tonk-portal>`, not interpolated
-/// inline.
-pub const TYPE_FACET: &str = "type";
-
 /// Build the live view-resolution query: every `show` entry of the
 /// model's `view` instance. The view instance's `this` IS the model
 /// entity, so the query pins `this` and projects the whole dictionary

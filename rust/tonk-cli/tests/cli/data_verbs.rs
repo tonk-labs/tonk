@@ -43,7 +43,7 @@ async fn select_claims(test: &TestSite, the: &str) -> Result<Vec<dialog_query::C
 
 mod when_rendering_a_concept_schema_subset {
     use super::*;
-    use crate::common::VIEW_DECL;
+    use crate::common::{NOTE_ATTRIBUTE_DECL, NOTE_CONCEPT_DECL};
 
     #[dialog_common::test]
     async fn it_emits_only_the_named_concepts_notation() -> Result<()> {
@@ -51,7 +51,8 @@ mod when_rendering_a_concept_schema_subset {
         test.eval_inline(ATTRIBUTE_DECL).await?;
         test.eval_inline(CONCEPT_DECL).await?;
         // A second concept on the branch that must NOT appear.
-        test.eval_inline(VIEW_DECL).await?;
+        test.eval_inline(NOTE_ATTRIBUTE_DECL).await?;
+        test.eval_inline(NOTE_CONCEPT_DECL).await?;
         let out = tonk_cli::data_ops::schema_subset(&test.site, "task").await?;
         assert!(
             out.contains("concept!: &task"),
@@ -62,7 +63,7 @@ mod when_rendering_a_concept_schema_subset {
             "subset should carry the referenced attribute decls:\n{out}"
         );
         assert!(
-            !out.contains("&view") && !out.contains("html-body"),
+            !out.contains("&note") && !out.contains("note-body"),
             "subset must not leak other concepts:\n{out}"
         );
         Ok(())

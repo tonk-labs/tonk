@@ -142,8 +142,7 @@ pub async fn transact(
 }
 
 /// [`transact`] for the profile's own repository, which [`transact`]
-/// hands a request naming it. A sealed guest is refused, and the commit's
-/// origin names no space.
+/// hands a request naming it. The commit's origin names no space.
 #[handler]
 async fn transact_profile(
     State(state): State<AppState>,
@@ -153,14 +152,6 @@ async fn transact_profile(
     body: Bytes,
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
     log!("transact profile branch={}", path.branch);
-    if let Some(Extension(client_id)) = &client {
-        let bindings = state.read().await.view_bindings.clone();
-        if bindings.read().await.contains_key(client_id) {
-            return Err(TonkWorkerError::Forbidden(
-                "sealed guests may not write the profile branch".into(),
-            ));
-        }
-    }
     let (response, transients) = {
         let tonk_state = state.read().await;
         let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);

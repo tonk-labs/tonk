@@ -50,8 +50,7 @@ use crate::fold::show_template;
 use crate::introspect::recorder::{Arrival, Recorder};
 use crate::introspect::registry;
 use crate::resolve::{
-    DETAIL_FACET, DIRECTORY_FACET, TYPE_FACET, entity_query, instances_query, looks_like_uri,
-    view_query,
+    DETAIL_FACET, DIRECTORY_FACET, entity_query, instances_query, looks_like_uri, view_query,
 };
 use crate::state::{self, State};
 
@@ -213,10 +212,7 @@ struct Inner {
     /// The model concept's descriptor JSON: the fields introspection
     /// reports and the scalar fields a view is told about. Set on every
     /// connect.
-    portal_descriptor: Option<String>,
-    /// The resolved model entity, surfaced to the portal as its `model`
-    /// attribute (the bridge's `context.model`).
-    portal_model: Option<String>,
+    model_descriptor: Option<String>,
     /// Introspection's hold on this display's entity frames. `None`
     /// is the ordinary case: no recording, no cost, frames applied as
     /// they arrive. `Some` only while the display is being observed.
@@ -293,8 +289,7 @@ impl Inner {
             entity_serial: 0,
             host_watch: None,
             waiting: None,
-            portal_descriptor: None,
-            portal_model: None,
+            model_descriptor: None,
             recorder: None,
             facets: BTreeMap::new(),
             model_name: None,
@@ -366,7 +361,7 @@ impl crate::introspect::registry::DisplayFacts for Inner {
             // is the carousel's business, so report the first
             // rather than guess.
             model_name: self.model_name.clone(),
-            descriptor: self.portal_descriptor.clone(),
+            descriptor: self.model_descriptor.clone(),
             facets: self.facets.clone(),
             template: self
                 .slides
@@ -382,7 +377,7 @@ impl crate::introspect::registry::DisplayFacts for Inner {
                 })
                 .collect(),
             fields: self
-                .portal_descriptor
+                .model_descriptor
                 .as_deref()
                 .map(declared_fields)
                 .unwrap_or_default(),
@@ -1382,7 +1377,7 @@ async fn start_downstream(
         // for the facet pick on each view frame and the `tonk:_`
         // default fallback.
         s.view_facet = view.clone();
-        s.model_entity = Some(model_entity.clone());
+        s.model_entity = Some(model_entity);
         // Advertise the effective facet so the default-view notice can
         // say WHICH view was not found — a directory's default and its
         // cards' defaults otherwise read as the same message twice.
@@ -1395,14 +1390,7 @@ async fn start_downstream(
             .to_owned()
         });
         let _ = host.set_attribute("data-view-facet", &facet);
-        // Context handed to a `<tonk-portal>` if a view frame routes
-        // here in portal mode: the subject's model entity (the
-        // bridge's `context.model`) and its descriptor (so the bridge
-        // can build its own entity query). A text/html view's iframe
-        // fetches data itself, so the entity subscription above just
-        // no-ops against the portal (it has no `draw`).
-        s.portal_descriptor = Some(descriptor_json);
-        s.portal_model = Some(model_entity);
+        s.model_descriptor = Some(descriptor_json);
     }
 
     // The view query is model-constrained, so it resolves to one
@@ -1765,21 +1753,6 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
         .map(|c| BTreeMap::from([(c.this.clone(), display)]))
         .unwrap_or_default();
 
-    // A `type: text/html` entry says the templates are full HTML
-    // documents mounted into a `<tonk-portal>` — whose bridge fetches
-    // the entity's own data through the live `tonk` object — rather
-    // than interpolated inline. A `display` change just reloads the
-    // portal's `content` in place.
-    if folded
-        .first()
-        .is_some_and(|c| show_template(c, TYPE_FACET) == Some("text/html"))
-    {
-        handle_portal_view_frame(host, &mut s, incoming);
-        drop(s);
-        dispatch_event(host, "tonk-display:template", Some(JsValue::from_str("ok")));
-        return;
-    }
-
     // Remove vanished slides.
     let stale: Vec<String> = s
         .slides
@@ -2027,72 +2000,6 @@ fn mount_notation_fallback(host: &Element, state: &Rc<RefCell<Inner>>, conclusio
     // `default-view`, not a model-specific render.
     state::set(host, State::DefaultView);
     refresh_host_watch(host, state);
-}
-
-/// Diff a portal-mode view frame. Single-mode only, so at most one
-/// slide keyed by the model entity URI. A new row mounts a
-/// `<tonk-portal>` scoped to the entity; a changed `display` updates
-/// the portal's `content` in place (it reloads itself); a vanished row
-/// removes the portal.
-fn handle_portal_view_frame(host: &Element, s: &mut Inner, incoming: BTreeMap<String, String>) {
-    // Remove a vanished portal.
-    let stale: Vec<String> = s
-        .slides
-        .keys()
-        .filter(|k| !incoming.contains_key(*k))
-        .cloned()
-        .collect();
-    for name in stale {
-        if let Some(slide) = s.slides.remove(&name)
-            && let Some(parent) = slide.item.parent_node()
-        {
-            let _: Result<Node, _> = parent.remove_child(&slide.item);
-        }
-    }
-
-    for (name, display) in incoming {
-        match s.slides.get(&name) {
-            Some(slide) if slide.display == display => {}
-            // Content changed: patch the portal's `content` attribute;
-            // it reloads its iframe internally.
-            Some(slide) => {
-                let _ = slide.view_el.set_attribute("content", &display);
-                if let Some(slide) = s.slides.get_mut(&name) {
-                    slide.display = display;
-                }
-            }
-            None => {
-                if let Some(slide) = mount_portal_slide(host, s, &display) {
-                    s.slides.insert(name, slide);
-                }
-            }
-        }
-    }
-
-    if !s.slides.is_empty() {
-        state::set(host, State::Ready);
-    }
-}
-
-/// Mount a `<tonk-portal>` scoped to the displayed entity. Attributes are
-/// set before append so the portal's
-/// `connected_callback` builds its bridge against the final context.
-fn mount_portal_slide(host: &Element, inner: &Inner, display: &str) -> Option<Slide> {
-    let document = window()?.document()?;
-    let portal = document.create_element("tonk-portal").ok()?;
-    let _ = portal.set_attribute("content", display);
-    if let Some(entity) = host.get_attribute("entity") {
-        let _ = portal.set_attribute("entity", &entity);
-    }
-    if let Some(model) = inner.portal_model.as_ref() {
-        let _ = portal.set_attribute("model", model);
-    }
-    let _ = host.append_child(&portal);
-    Some(Slide {
-        display: display.to_owned(),
-        item: portal.clone(),
-        view_el: portal,
-    })
 }
 
 /// Marker attribute stamped on a `<tonk-display>` host once its event
@@ -3133,7 +3040,7 @@ fn mount_view_slide(
     // (blank when absent) instead of being cloned zero times and dropped. Set
     // before the element connects (append below), since `<tonk-view>` reads it
     // in `connected_callback`.
-    if let Some(descriptor) = inner.portal_descriptor.as_deref() {
+    if let Some(descriptor) = inner.model_descriptor.as_deref() {
         let scalars = tonk_template::resolve::scalar_field_names(descriptor);
         if !scalars.is_empty() {
             let csv = scalars.into_iter().collect::<Vec<_>>().join(",");
@@ -5413,7 +5320,7 @@ mod tests {
         let document = web_sys::window().expect("window").document().expect("doc");
         let host = document.create_element("div").expect("host");
         let mut inner = Inner::new();
-        inner.portal_descriptor = Some(
+        inner.model_descriptor = Some(
             r#"{
                 "with":  { "id":   { "the": "xyz.tonk.site/id",   "as": "Text", "cardinality": "one" } },
                 "maybe": { "rest": { "the": "xyz.tonk.site/rest", "as": "Text", "cardinality": "one" } }
@@ -5608,15 +5515,11 @@ mod tests {
         );
     }
 
-    // --- Display hook: routing a `text/html` view to a portal ---
+    // --- Display hook ---
     //
     // Driven through the real `<tonk-display>` flow against a fake host
     // that answers the resolve one-shots in order (model concept → view
-    // concept) and captures the subscriptions. Portal mode is decided
-    // per view frame: a row whose projected `type` is `text/html`
-    // mounts a `<tonk-portal>`; any other row renders inline through
-    // `<tonk-view>`. Both runs open the view and entity subscriptions —
-    // in portal mode the entity frames simply no-op against the iframe.
+    // concept) and captures the subscriptions.
     #[cfg(target_arch = "wasm32")]
     mod hook {
         use super::*;
@@ -5892,9 +5795,7 @@ mod tests {
 
         // The flow resolves ONE concept: the subject `model` concept
         // (projected for the entity query). The view query needs no
-        // resolve — its predicate is the built-in `view` concept and a
-        // `type: text/html` entry in the `show` dictionary decides
-        // portal mode.
+        // resolve — its predicate is the built-in `view` concept.
         //
         // `resolve_model` resolves a bare name through the Name concept
         // first (`id:<name>` → `db.name/referent`), then runs the
@@ -6005,60 +5906,6 @@ mod tests {
             assert!(view.text_content().unwrap().contains('8'));
         }
 
-        #[dialog_common::test]
-        async fn it_mounts_a_portal_for_a_text_html_view_frame() {
-            let host =
-                FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
-            let display = mount_display(&host, "", "counter", "id:demo-counter");
-
-            // Wait for the flow to open its subscriptions (model, then
-            // view + entity once the model frame resolves).
-            for _ in 0..200 {
-                if host.subscribe_tags().contains(&"entity".to_owned()) {
-                    break;
-                }
-                sleep(5).await;
-            }
-            // The view frame carries a `type: text/html` entry beside the
-            // document, which routes the facet to a portal.
-            host.push_frame(
-                "view",
-                &show_rows(
-                    "did:key:zModel",
-                    &[("ui", "<h1>monolith</h1>"), ("type", "text/html")],
-                ),
-            );
-
-            let portal = await_selector(&display, "tonk-portal")
-                .await
-                .expect("a text/html view should mount a <tonk-portal>");
-            assert_eq!(
-                portal.get_attribute("content").as_deref(),
-                Some("<h1>monolith</h1>"),
-                "the view's HTML document becomes the portal content",
-            );
-            assert_eq!(
-                portal.get_attribute("entity").as_deref(),
-                Some("id:demo-counter"),
-                "the portal is scoped to the displayed entity",
-            );
-            assert!(
-                display.query_selector("tonk-view").unwrap().is_none(),
-                "a portal view renders no inline <tonk-view>",
-            );
-            // The model subscription opens first, then the view + entity
-            // subs once the model frame resolves; the entity sub just
-            // no-ops against the portal (a `<tonk-portal>` exposes no
-            // `draw`).
-            assert_eq!(
-                host.subscribe_tags()
-                    .into_iter()
-                    .filter(|tag| tag != "name")
-                    .collect::<Vec<_>>(),
-                vec!["model".to_owned(), "view".to_owned(), "entity".to_owned()],
-            );
-        }
-
         /// A load-time delta supersedes ONE dictionary entry. The
         /// worker's per-entity diff can carry a retract whose row shape
         /// drifted from the retained snapshot row (field projection
@@ -6147,7 +5994,7 @@ mod tests {
         }
 
         #[dialog_common::test]
-        async fn it_renders_inline_and_subscribes_to_the_entity_when_no_type() {
+        async fn it_renders_inline_and_subscribes_to_the_entity() {
             let host =
                 FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
             let display = mount_display(&host, "", "counter", "id:demo-counter");
@@ -6162,11 +6009,7 @@ mod tests {
 
             assert!(
                 await_selector(&display, "tonk-view").await.is_some(),
-                "a view frame with no type renders inline through <tonk-view>",
-            );
-            assert!(
-                display.query_selector("tonk-portal").unwrap().is_none(),
-                "no portal is mounted for a non-portal view",
+                "a view frame renders inline through <tonk-view>",
             );
             let mut tags = host.subscribe_tags();
             tags.sort();

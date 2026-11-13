@@ -6,11 +6,11 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+use crate::bootstrap_profile;
 #[cfg(target_arch = "wasm32")]
 use crate::router::AppState;
 #[cfg(target_arch = "wasm32")]
 use crate::router::space_worker;
-use crate::{bootstrap_profile, router::ViewBindings};
 #[cfg(target_arch = "wasm32")]
 use dialog_artifacts::Asset;
 use dialog_peer::{Peer, Session};
@@ -131,11 +131,6 @@ pub struct TonkShared {
     /// successor installs, no later query reconnect may recreate an SSE stream
     /// on the outgoing worker, even after `registration.waiting` clears.
     pub(crate) retiring: Arc<AtomicBool>,
-    /// View-iframe bindings keyed by service-worker Client ID.
-    /// Behind its own interior lock so binding registration /
-    /// lookup doesn't contend with profile/operator access on
-    /// the outer state lock.
-    pub view_bindings: ViewBindings,
     /// Registered command handlers — the typed-Rust effects fired by
     /// transient command concepts after a commit. Two vocabularies
     /// (profile / space), selected per dispatch by the triggering
@@ -557,7 +552,6 @@ async fn open_state(
             #[cfg(any(test, feature = "helpers"))]
             reject_admission_content_reads: Default::default(),
             retiring: Arc::new(AtomicBool::new(false)),
-            view_bindings: Default::default(),
             commands: crate::router::command_providers(),
             sync_queue: Default::default(),
             clients: Default::default(),

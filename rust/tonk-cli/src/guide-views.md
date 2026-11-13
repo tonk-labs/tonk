@@ -170,10 +170,7 @@ a model's own lacks the facet, and renders nested `<tonk-display>`
 recursively.
 
 Headless rendering resolves templates and nested `<tonk-display>` elements,
-but it does not run custom elements or their JavaScript. In particular, the
-seeded `portal` model (below) prints a `<tonk-portal>` element headlessly; only
-the browser runtime turns that element into its sandboxed iframe and installs
-the `window.tonk` bridge.
+but it does not run custom elements or their JavaScript.
 
 ## Rendering a reference by name (cross-concept join)
 
@@ -482,44 +479,9 @@ Rules of the road:
   `define`, `() => class extends HTMLElement { … }`, whose returned
   class is registered instead of the wrapper, ignoring every other key.
 - Elements **share the realm** with every view on the branch —
-  that is the point (they compose with bindings and events). For a
-  fully isolated third-party page, use a portal (below) instead.
+  that is the point (they compose with bindings and events).
 - `component` rows are deprecated; author `element!` instead.
   `tonk element` still lists existing ones.
-
-## Escape hatch: the `portal` model
-
-For an imperative HTML document, assert the always-seeded `portal` concept.
-Its `content` may contain scripts, which read and write the branch over HTTP
-(`POST /api/repository/<space>/branch/<branch>/query`) in the live browser:
-
-```yaml tonk=eval
-portal!: &about
-  this: id:about
-  content: |
-    <h1>About</h1>
-    <script>
-      const { repo, branch } = window.tonk.context;
-      fetch(`/api/repository/${repo}/branch/${branch}/query`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          predicate: { with: { name: { the: 'xyz.tonk.space/name', as: 'Text', cardinality: 'one' } } },
-          terms: { name: { '?': { name: 'name' } } },
-        }),
-      }).then((response) => response.json()).then(console.log)
-    </script>
-```
-
-Open it at `/space/<space>/about@portal`. `tonk render about@portal` verifies
-the outer declarative markup, but cannot execute `<tonk-portal>` or the script.
-The live element prepends the bridge bootstrap and mounts the document in an
-opaque-origin sandboxed iframe.
-
-`tonk view` is a lower-level, claim-driven inventory: it lists every model
-carrying `show` entries, plus legacy bare `text/html` claims served by the
-worker's guest-host endpoint. A bare `text/html` claim is not a `tonk render`
-route and is distinct from the seeded `portal` concept above.
 
 ---
 

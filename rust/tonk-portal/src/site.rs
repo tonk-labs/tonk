@@ -15,7 +15,7 @@
 //! Flow on connect (and on navigation):
 //! 1. Parse `with` + `allow`; take the path from the `path` attribute (a
 //!    nested router; the top page's mount keeps it synced to the location).
-//! 2. Bring up the frame on the site's origin via [`connect_portal`], with
+//! 2. Bring up the frame on the site's origin (`render_in_iframe`), with
 //!    the site's entity and path in its context.
 //! 3. The frame claims the transient `tonk:load` against its own worker,
 //!    which stamps `tonk:site` (matching the path against its `route!`
@@ -39,8 +39,7 @@ use crate::space_origin::{
 };
 
 /// Shared cell holding the portal state once the iframe is up. An `Rc` so the
-/// async site-registration task can hold it across the await and hand it to
-/// `connect_portal`.
+/// async site-registration task can hold it across the await.
 type StateCell = Rc<RefCell<Option<Rc<RefCell<PortalState>>>>>;
 
 /// The `<tonk-site>` element. Holds the shared [`PortalState`] once its iframe is
@@ -499,9 +498,8 @@ pub(crate) fn reload_site(host: &Element, state: &Rc<RefCell<PortalState>>) {
 }
 
 /// Register `<tonk-site>`. Idempotent. Installs the page-level `hello` /
-/// runtime-injection message listener (the same one `<tonk-portal>` installs),
-/// since `<tonk-site>` owns sealed iframes that hand-shake and request the
-/// element runtime through it.
+/// runtime-injection message listener, since `<tonk-site>` owns iframes
+/// that hand-shake and request the element runtime through it.
 pub fn register() {
     crate::bridge::install_message_listener();
     crate::space_origin::install_reach();
@@ -515,6 +513,8 @@ pub fn register() {
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::*;
+    use js_sys::Promise;
+    use wasm_bindgen_futures::JsFuture;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
     wasm_bindgen_test_configure!(run_in_browser);
@@ -541,9 +541,21 @@ mod tests {
         host
     }
 
+    /// Let the resolve pass a connect queues run. `schedule` defers it to
+    /// a microtask, so it has run once the next task starts.
+    async fn next_task() {
+        let promise = Promise::new(&mut |resolve, _reject| {
+            let _ = window()
+                .expect("window")
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0);
+        });
+        let _ = JsFuture::from(promise).await;
+    }
+
     #[dialog_common::test]
-    fn it_says_so_when_the_deployment_names_no_origin_for_sites() {
+    async fn it_says_so_when_the_deployment_names_no_origin_for_sites() {
         let host = site(&[("with", "main@did:key:zSpace"), ("allow", "self")]);
+        next_task().await;
 
         assert_eq!(
             host.get_attribute("data-state").as_deref(),

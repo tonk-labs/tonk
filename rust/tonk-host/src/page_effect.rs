@@ -37,9 +37,9 @@ use web_sys::window;
 /// effect on its own document). Returns `false` only for a real page, which
 /// must perform the effect itself.
 ///
-/// The discriminator is `window.tonk`. Only `BOOTSTRAP_JS`
-/// (`tonk-portal/src/bridge.rs`) installs one, in the document a
-/// `<tonk-portal>` or `<tonk-site>` frame loads, so its presence means
+/// The discriminator is `window.tonk`. Only the bridge bootstrap
+/// (`tonk-portal/src/bootstrap.js`) installs one, in the document a
+/// `<tonk-site>` frame loads, so its presence means
 /// precisely "I am a guest with a bridge to my parent". Deliberately NOT
 /// `window === window.top`, which encodes "I am the outermost frame": a
 /// different claim that would break if the Tonk page were ever itself

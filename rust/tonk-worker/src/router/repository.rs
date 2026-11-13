@@ -2964,7 +2964,7 @@ fn with_referral(link: String, space_key: &str) -> String {
 ///
 /// The preference lives on the space's content branch — not the profile meta —
 /// so the sealed-guest chip can read it (it can only reach the branch the
-/// `<tonk-portal>` is mounted under) and so the service worker's background
+/// `<tonk-site>` is mounted under) and so the service worker's background
 /// sweep can gate on it (the same branch it syncs). Keyed on `state:here`, the
 /// same singleton the live status uses, so both fold into one chip
 /// subscription.
@@ -10938,7 +10938,6 @@ route!: &foreign-profile-route
                 admission: Default::default(),
                 reject_admission_content_reads: Default::default(),
                 retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                view_bindings: Default::default(),
                 sync_queue: Default::default(),
                 commands: crate::router::command_providers(),
                 clients: Default::default(),
