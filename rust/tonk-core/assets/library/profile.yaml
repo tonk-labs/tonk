@@ -1606,12 +1606,10 @@ view!:
            here would reveal whether the space still exists. Bind the wall to
            the failure row: static chrome renders even on an empty frame while
            the join is pending or the entity query is still resolving. -->
-      <section class="edge-wall edge-wall--closed" data-id={this} role="status" aria-labelledby="edge-closed-title" aria-describedby="edge-closed-guidance">
-        <h1 class="edge-statement" id="edge-closed-title">this share link expired</h1>
-        <div class="edge-narrator" id="edge-closed-guidance">ask the person who shared this space to send you a new link</div>
-        <div class="edge-run">
-          <a class="ebtn solid" href="/">go to home</a>
-        </div>
+      <section class="fabb-task tonk-task join-closed" data-id={this} aria-labelledby="edge-closed-title">
+        <header class="fabb-task-head"><h1 class="fabb-task-title" id="edge-closed-title" tabindex="-1">join a space</h1></header>
+        <tonk-message kind="error" heading="this share link expired" tabindex="-1">Ask the person who shared this space to send you a new link.</tonk-message>
+        <div class="fabb-actions"><a href="/">your spaces</a></div>
       </section>
 
 # ============================================================
@@ -3365,62 +3363,24 @@ view!:
           <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
         </tonk-fab>
         <tab-title text="Tonk"></tab-title>
-        <main class="join-view" data-path="{path}">
+        <main class="join-view fabb-page" data-path="{path}">
           <style>
-            .join-view {
-              --edge-page:#e8e6e4; --edge-ink:#38182a; --edge-on:#f7f6f5;
-              --edge-soft:#5b4953; --edge-card:#f7f6f5;
-              --edge-ring:rgba(56,24,42,.85); --edge-wash:rgba(56,24,42,.12);
-              min-height:100vh; min-height:100dvh; padding:48px 16px 80px;
-              box-sizing:border-box; color:var(--edge-ink);
-              background:var(--edge-page); font-family:'IBM Plex Sans Condensed',
-                'Bahnschrift','Arial Narrow',system-ui,sans-serif;
-              font-weight:600; letter-spacing:.02em; -webkit-font-smoothing:antialiased;
-            }
-            :root.wa-dark .join-view {
-              --edge-page:#161313; --edge-ink:#e2dfdd; --edge-on:#221c1d;
-              --edge-soft:#c8c3bf; --edge-card:#1b1718;
-              --edge-ring:rgba(226,223,221,.55); --edge-wash:rgba(226,223,221,.15);
-            }
-            .edge-mast { position:relative; display:block; width:132px;
-              margin:0 auto 56px; color:var(--edge-ink); z-index:2; }
-            .edge-mast img { display:block; width:100%; height:auto; }
-            :root.wa-dark .edge-mast img { filter:invert(1); }
-            .edge-wall { width:min(576px, 100%); margin:0 auto;
-              display:flex; flex-direction:column; gap:7px; }
-            .edge-statement, .edge-narrator { min-height:36px;
-              background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
-            .edge-statement { margin:0; padding:10px 14px; display:flex; align-items:flex-end;
-              color:var(--edge-ink); font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
-              line-height:1.55; text-wrap:balance; }
-            .edge-narrator { padding:10px 14px; color:var(--edge-soft);
-              font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
-              font-weight:400; line-height:1.55; text-wrap:pretty; }
-            .edge-run { display:flex; gap:0; }
-            .ebtn { height:40px; min-height:40px; flex:1 1 0; box-sizing:border-box;
-              padding:8px 10px; display:flex; align-items:flex-end; justify-content:flex-end;
-              appearance:none; border:0; border-radius:0; color:var(--edge-ink);
-              background:transparent; font:inherit; line-height:1; white-space:normal;
-              text-decoration:none; text-transform:lowercase; cursor:pointer; }
-            .ebtn.solid { color:var(--edge-on); background:var(--edge-ink); }
-            .ebtn:active { scale:.96; }
-            .join-view:not([data-path="/join"]):has(.join-status-slot[data-state="ready"]):not(:has(.edge-wall--closed))
-              .edge-mast { display:none; }
+            /* A task page (gooey in-browser/PAGES.md): the look is
+               fabb-pages.css; this only lays the view's own elements out
+               as the page's rows and says which of its tasks shows. */
+            .join-view :is(page-mount, .join-status-slot, join-paste) { display:contents; }
+            .join-view .fabb-top a { display:flex; color:inherit; }
+            .join-view:not([data-path="/join"]):has(.join-status-slot[data-state="ready"]):not(:has(.join-closed))
+              .fabb-top { visibility:hidden; }
             /* The paste form is the bare /join page's; a carried link's
                page shows only the join's own surfaces. */
-            .join-paste { display:none; }
-            .join-view[data-path="/join"] .join-paste { display:block; margin-top:28px; }
-            .join-paste-input { width:100%; min-height:44px; box-sizing:border-box;
-              padding:10px 14px; border:0; border-radius:0; color:var(--edge-ink);
-              background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring);
-              font:400 13px/1.4 'IBM Plex Mono',ui-monospace,monospace; }
-            .join-paste-input:focus-visible { outline:2px solid var(--edge-ink); outline-offset:1px; }
+            .join-view:not([data-path="/join"]) .join-paste-task { display:none; }
             /* Match the destination-neutral boot shell: only the shared pulse
                is visible, centred over the whole route. Keep the status text
                in the live region for assistive technology. */
             .join-opening { position:fixed; inset:0; z-index:3;
               display:flex; align-items:center; justify-content:center;
-              color:var(--edge-ink); background:var(--edge-page); }
+              color:var(--tonk-text); background:var(--tonk-ground); }
             .join-opening-status { position:absolute; width:1px; height:1px;
               margin:-1px; padding:0; overflow:hidden; clip:rect(0,0,0,0);
               white-space:nowrap; border:0; }
@@ -3428,16 +3388,9 @@ view!:
             /* A reconnect keeps the last good failure view mounted while its
                display returns to loading. Prefer the rendered terminal state
                over that transient lifecycle attribute, or both rows appear. */
-            .join-status:has(.edge-wall--closed) .join-opening { display:none; }
-            @media (max-width:680px) {
-              .join-view { padding-top:20px; }
-              .edge-mast { width:98px; min-height:44px; margin-bottom:40px;
-                display:flex; align-items:center; }
-              .edge-run { flex-direction:column; }
-              .ebtn { height:44px; min-height:44px; }
-            }
+            .join-status:has(.join-closed) .join-opening { display:none; }
           </style>
-          <a class="edge-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+          <header class="fabb-top"><a href="/" aria-label="Tonk home"><svg class="fabb-logo" viewBox="0 0 202 54" fill="currentColor" role="img" aria-label="Tonk"><path d="M61.4097 26.2461C61.4097 18.671 67.4444 12.5295 74.8889 12.5295C82.3321 12.5295 88.3669 18.671 88.3669 26.2461C88.3669 33.8225 82.3321 39.964 74.8889 39.964C67.4444 39.964 61.4097 33.8225 61.4097 26.2461ZM130.925 0C124.313 0 118.752 1.74144 114.845 5.27674C112.849 7.08238 111.33 9.28375 110.316 11.8062C110.19 9.83541 109.614 7.085 107.631 4.80894C105.309 2.14503 101.749 0.414067 97.0759 0.50055C95.7813 0.528067 94.7524 1.59992 94.7785 2.89585C94.8047 4.17605 95.8494 5.19681 97.1231 5.19681C97.1388 5.19681 97.1558 5.19681 97.1715 5.19681C100.388 5.1326 102.706 6.32108 104.075 7.87252C106.074 10.1381 105.617 13.5882 105.606 13.6708C105.412 14.947 106.285 16.1421 107.56 16.3425C107.683 16.3622 108.675 16.488 109.147 16.0254C108.933 17.3056 108.819 18.6396 108.819 20.0285C108.819 29.3752 105.425 38.6157 100.012 44.0038C95.7001 48.2952 90.4351 50.3721 83.5522 51.1845C93.6894 47.6164 100.961 37.9343 100.961 26.5422C100.961 12.1193 89.3094 0.428481 74.9347 0.428481C60.5614 0.428481 48.9096 12.1193 48.9096 26.5422C48.9096 40.9651 60.5614 52.6573 74.9347 52.6573C75.4243 52.6573 75.9087 52.6403 76.3904 52.614C87.2345 52.483 94.8296 50.5804 100.72 44.7166C106.327 39.1359 109.823 29.649 109.823 20.0285C109.823 8.21583 117.909 0.877927 130.925 0.877927C152.316 0.877927 153.196 12.0748 153.214 13.617C150.903 14.1661 145.751 16.5994 145.751 21.1764V52.3926H153.364C154.142 52.3926 154.225 51.9052 154.225 51.6274V13.6734C154.225 12.2595 153.566 0 130.925 0Z"/><path d="M17.5255 1.03747L14.2306 1.0414C8.87533 1.05188 5.55428 3.49042 3.70984 5.42841C1.35094 7.90495 0 11.3262 0 14.8118C0 21.3818 4.4429 28.4524 15.0566 28.4524V23.0865C7.61079 23.0865 5.36054 18.6288 5.36054 14.8118C5.36054 11.3616 7.42883 6.30241 14.338 6.30241L17.5255 6.3011V47.1116C14.6914 47.1116 13.1232 44.2773 13.1232 41.8047L8.62399 41.8074C8.62399 48.4442 14.3288 52.3202 17.4823 52.3936H23.4895C29.2572 52.3936 33.6228 46.7185 33.6228 32.4581V12.1059H36.0917V23.0865H47.0471V1.03747H17.5255Z"/><path d="M195.242 32.633L188.118 32.5806C190.005 31.59 191.522 30.4172 192.686 29.3126C198.678 23.6297 201.716 14.1166 201.716 1.04073H198.03C198.03 13.0644 195.379 21.6759 190.152 26.6356C187.771 28.8933 183.605 31.5035 177.24 31.2362V1.04073H161.239V35.8053C161.239 43.3083 156.125 44.4889 156.125 44.4889V52.3955H177.24V36.9755C177.24 35.8145 179.356 35.8184 179.356 36.9755C179.356 38.9567 179.351 42.1959 179.351 44.2793C179.351 50.4117 184.599 53.5355 190.909 53.5355C196.451 53.5355 201.763 50.0985 201.915 44.2793C202.014 40.4662 202.94 32.633 195.242 32.633Z"/></svg></a></header>
           <page-mount on:join=tonk:join></page-mount>
           <!-- Invite URLs open directly in the browser, on this host or
                carried to it as /join/<link>. A bare /join visit stays here
@@ -3448,16 +3401,15 @@ view!:
             <span slot="no-entity"></span>
           </tonk-display>
           <join-paste class="join-paste" on:join=tonk:join>
-            <form class="edge-wall" data-join-paste-form aria-labelledby="join-paste-title" novalidate>
-              <h1 class="edge-statement" id="join-paste-title">join a space from a link</h1>
-              <label class="edge-narrator" for="join-paste-link">paste a share link from any tonk host. the space joins your account here.</label>
-              <input class="join-paste-input" id="join-paste-link" name="link" type="url" inputmode="url" required autocomplete="off" spellcheck="false" placeholder="https://tonk.network/space/…">
-              <p class="edge-narrator" data-join-paste-error role="alert" hidden></p>
-              <div class="edge-run">
-                <a class="ebtn" href="/">go to home</a>
-                <button class="ebtn solid" type="submit">join</button>
-              </div>
-            </form>
+            <section class="fabb-task join-paste-task" aria-labelledby="join-paste-title">
+              <header class="fabb-task-head"><h1 class="fabb-task-title" id="join-paste-title" tabindex="-1">join a space from a link</h1></header>
+              <form class="fabb-request" id="join-paste-form" data-join-paste-form novalidate>
+                <label class="fabb-field">share link<input id="join-paste-link" name="link" type="url" inputmode="url" required autocomplete="off" spellcheck="false" placeholder="https://tonk.network/space/…" aria-describedby="join-paste-hint"></label>
+                <tonk-message kind="error" id="join-paste-error" data-join-paste-error hidden></tonk-message>
+                <p class="fabb-note" id="join-paste-hint">Paste a share link from any Tonk host. The space joins your account here.</p>
+              </form>
+              <div class="fabb-actions"><a href="/">your spaces</a><button type="submit" form="join-paste-form">join</button></div>
+            </section>
           </join-paste>
         </main>
       </div>
@@ -3885,7 +3837,7 @@ view!:
         .space-unknown .join-opening-status { position:absolute; width:1px; height:1px;
           margin:-1px; padding:0; overflow:hidden; clip:rect(0,0,0,0);
           white-space:nowrap; border:0; }
-        .space-unknown .join-status:has(.edge-wall--closed) .join-opening { display:none; }
+        .space-unknown .join-status:has(.join-closed) .join-opening { display:none; }
         .space-unknown .edge-wall { width:min(576px, 100%); margin:0 auto;
           display:flex; flex-direction:column; gap:7px; }
         .space-unknown .edge-statement, .space-unknown .edge-narrator { min-height:36px;
@@ -5039,13 +4991,18 @@ element!: &join-paste
         const error = form.querySelector('[data-join-paste-error]');
         let link = null;
         try { link = new URL(input.value.trim()); } catch { link = null; }
+        // The error sits under its field and goes once the field is right.
         if (!link || !['https:', 'http:'].includes(link.protocol)) {
-          error.textContent = 'that is not a link. paste the whole share link, starting with https://';
+          error.textContent = 'That isn’t a link. Paste the whole share link, starting with https://';
           error.hidden = false;
+          input.setAttribute('aria-invalid', 'true');
+          input.setAttribute('aria-describedby', 'join-paste-error join-paste-hint');
           input.focus();
           return;
         }
         error.hidden = true;
+        input.removeAttribute('aria-invalid');
+        input.setAttribute('aria-describedby', 'join-paste-hint');
         const origin = window.tonk?.context?.origin ?? window.location.origin;
         self.dispatchEvent(new CustomEvent('mount', {
           bubbles: true,

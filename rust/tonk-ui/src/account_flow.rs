@@ -2667,7 +2667,7 @@ pub(crate) mod tests {
             .await?
             .click()
             .await?;
-        element(&driver, ".edge-wall--closed").await?;
+        element(&driver, ".join-closed").await?;
         element(&driver, "join-paste input[name=link]").await?;
 
         // The address bar is the top page's, outside the guest.

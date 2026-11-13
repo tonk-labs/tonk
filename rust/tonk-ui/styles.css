@@ -87,6 +87,11 @@
     --fabb-press: initial;
     --fabb-panel: initial;
 }
+/* Web Awesome colours every `label` with its own (dark-mode) label colour;
+   a task page's labels are ink, as fabb-forms.css draws them. */
+.fabb-page label {
+    color: inherit;
+}
 
 /* Chrome surfaces pan without a scrollbar (the fabb studies' L10):
    the page and the chrome guests keep scrolling, the bar itself never

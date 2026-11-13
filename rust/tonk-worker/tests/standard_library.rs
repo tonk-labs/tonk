@@ -29,6 +29,11 @@ const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core
 /// backs the Hub (the `space` directory view + the `space/create`
 /// command and its form).
 const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profile.yaml");
+/// gooey's task-page sheets, vendored beside the library.
+const TASK_PAGES_CSS: &str =
+    include_str!("../../tonk-core/assets/library/gooey/in-browser/fabb-pages.css");
+const TASK_FORMS_CSS: &str =
+    include_str!("../../tonk-core/assets/library/gooey/in-browser/fabb-forms.css");
 
 /// The component libraries. Each is seeded the same way and lowers the
 /// same way, so each belongs in the lowering gate — until now only
@@ -1241,8 +1246,9 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
         );
     }
     assert!(failure.contains("this share link expired"));
-    assert!(failure.contains("ask the person who shared this space to send you a new link"));
-    assert!(failure.contains("go to home"));
+    assert!(failure.contains("Ask the person who shared this space to send you a new link."));
+    // A wall is never a dead end for someone signed in (PAGES.md).
+    assert!(failure.contains("<a href=\"/\">your spaces</a>"));
     assert!(!failure.contains("edge-field edge-field--settled"));
     assert!(!failure.contains("paste a new link"));
     assert!(!failure.contains("tonk-join-retry"));
@@ -1260,11 +1266,10 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
         .expect("the paste form lives in <join-paste>");
     assert!(paste.contains("<form") && paste.contains("<input"));
     assert!(route.contains("<join-paste class=\"join-paste\" on:join=tonk:join>"));
-    assert!(route.contains(".join-paste { display:none; }"));
-    assert!(route.contains(".join-view[data-path=\"/join\"] .join-paste"));
+    assert!(route.contains(".join-view:not([data-path=\"/join\"]) .join-paste-task { display:none; }"));
     assert!(!route.contains("tonk-invite-link"));
     assert!(route.contains("<page-mount on:join=tonk:join>"));
-    assert_eq!(failure.matches("class=\"ebtn solid\"").count(), 1);
+    assert_eq!(failure.matches("class=\"fabb-actions\"").count(), 1);
 }
 
 #[dialog_common::test]
@@ -1275,12 +1280,13 @@ fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
         .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
         .expect("join route view");
 
+    // A task page (gooey in-browser/PAGES.md): the vendored parts draw
+    // it, so the view sets no colour, size or font of its own.
+    assert!(route.contains("<main class=\"join-view fabb-page\""));
+    assert!(route.contains("<section class=\"fabb-task join-paste-task\""));
+    assert!(!route.contains("--edge-"), "no tokens of the view's own");
     assert!(
-        css_rule(route, ".edge-statement {").contains("color:var(--edge-ink)"),
-        "join statements must override the global heading colour with local mode ink",
-    );
-    assert!(
-        route.contains(".join-status:has(.edge-wall--closed) .join-opening { display:none; }"),
+        route.contains(".join-status:has(.join-closed) .join-opening { display:none; }"),
         "retained failure content must suppress the opening row even while its display reconnects",
     );
 
@@ -1290,7 +1296,7 @@ fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
         "inset:0",
         "align-items:center",
         "justify-content:center",
-        "background:var(--edge-page)",
+        "background:var(--tonk-ground)",
     ] {
         assert!(
             opening.contains(contract),
@@ -1300,23 +1306,11 @@ fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
     assert!(PROFILE_LIBRARY.contains("class=\"join-opening-status\""));
     assert!(PROFILE_LIBRARY.contains("class=\"tonk-pulse\""));
     assert!(route.contains(
-        ".join-view:not([data-path=\"/join\"]):has(.join-status-slot[data-state=\"ready\"]):not(:has(.edge-wall--closed))"
+        ".join-view:not([data-path=\"/join\"]):has(.join-status-slot[data-state=\"ready\"]):not(:has(.join-closed))"
     ));
 
-    let action = css_rule(route, ".ebtn {");
-    for contract in [
-        "height:40px",
-        "border:0",
-        "border-radius:0",
-        "font:inherit",
-        "line-height:1",
-        "white-space:normal",
-    ] {
-        assert!(
-            action.contains(contract),
-            "join actions must normalize links and native buttons with `{contract}`",
-        );
-    }
+    // The answers are the hub's buttons, at the right edge.
+    assert!(route.contains("<div class=\"fabb-actions\"><a href=\"/\">your spaces</a><button type=\"submit\" form=\"join-paste-form\">join</button></div>"));
 }
 
 #[dialog_common::test]
@@ -1326,28 +1320,16 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
         .nth(1)
         .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
         .expect("join route view");
-    let join_view = css_rule(route, ".join-view {");
-    let fallback = join_view
-        .find("min-height:100vh")
-        .expect("join route must retain the legacy viewport fallback");
-    let dynamic = join_view
-        .find("min-height:100dvh")
-        .expect("join route must use the dynamic mobile viewport");
+    // The join route is a task page: gooey's sheet sizes it, the legacy
+    // viewport first and the dynamic one after it.
+    assert!(route.contains("class=\"join-view fabb-page\""));
+    let page = css_rule(TASK_PAGES_CSS, ".fabb-page {");
+    let fallback = page.find("min-height: 100vh").expect("legacy viewport fallback");
+    let dynamic = page.find("min-height: 100dvh").expect("dynamic mobile viewport");
     assert!(
         fallback < dynamic,
         "the dynamic viewport declaration must follow and override the fallback"
     );
-    for contract in [
-        "padding:48px 16px 80px",
-        ".edge-mast { position:relative; display:block; width:132px;",
-        "margin:0 auto 56px",
-        ".edge-wall { width:min(576px, 100%); margin:0 auto;",
-    ] {
-        assert!(
-            route.contains(contract),
-            "the join state must use the shared upper-page geometry `{contract}`"
-        );
-    }
 }
 
 #[dialog_common::test]
@@ -1362,15 +1344,11 @@ fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
             "mobile Hub CSS must contain `{contract}`"
         );
     }
-    for contract in [
-        ".edge-mast { width:98px; min-height:44px; margin-bottom:40px;",
-        ".ebtn { height:44px; min-height:44px; }",
-    ] {
-        assert!(
-            PROFILE_LIBRARY.contains(contract),
-            "mobile Hub/join CSS must contain `{contract}`"
-        );
-    }
+    // The join route's answers are a task page's buttons: 44px to see on a
+    // touch screen.
+    assert!(TASK_FORMS_CSS.contains(
+        "@media (pointer:coarse){.fabb-actions :is(button,a){height:44px}"
+    ));
 }
 
 /// Lower a component library the way the seed reaches it: on top of
