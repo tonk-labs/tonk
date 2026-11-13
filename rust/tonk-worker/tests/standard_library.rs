@@ -1266,7 +1266,9 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
         .expect("the paste form lives in <join-paste>");
     assert!(paste.contains("<form") && paste.contains("<input"));
     assert!(route.contains("<join-paste class=\"join-paste\" on:join=tonk:join>"));
-    assert!(route.contains(".join-view:not([data-path=\"/join\"]) .join-paste-task { display:none; }"));
+    assert!(
+        route.contains(".join-view:not([data-path=\"/join\"]) .join-paste-task { display:none; }")
+    );
     assert!(!route.contains("tonk-invite-link"));
     assert!(route.contains("<page-mount on:join=tonk:join>"));
     assert_eq!(failure.matches("class=\"fabb-actions\"").count(), 1);
@@ -1324,8 +1326,12 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
     // viewport first and the dynamic one after it.
     assert!(route.contains("class=\"join-view fabb-page\""));
     let page = css_rule(TASK_PAGES_CSS, ".fabb-page {");
-    let fallback = page.find("min-height: 100vh").expect("legacy viewport fallback");
-    let dynamic = page.find("min-height: 100dvh").expect("dynamic mobile viewport");
+    let fallback = page
+        .find("min-height: 100vh")
+        .expect("legacy viewport fallback");
+    let dynamic = page
+        .find("min-height: 100dvh")
+        .expect("dynamic mobile viewport");
     assert!(
         fallback < dynamic,
         "the dynamic viewport declaration must follow and override the fallback"
@@ -1346,9 +1352,9 @@ fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
     }
     // The join route's answers are a task page's buttons: 44px to see on a
     // touch screen.
-    assert!(TASK_FORMS_CSS.contains(
-        "@media (pointer:coarse){.fabb-actions :is(button,a){height:44px}"
-    ));
+    assert!(
+        TASK_FORMS_CSS.contains("@media (pointer:coarse){.fabb-actions :is(button,a){height:44px}")
+    );
 }
 
 /// Lower a component library the way the seed reaches it: on top of
