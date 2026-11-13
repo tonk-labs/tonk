@@ -1,8 +1,11 @@
-# `<tonk-table>` — spreadsheet
+# `<table-editor>` — spreadsheet
 
 An IronCalc-backed spreadsheet: live formulas, multiple sheets, and
 selection/clipboard/undo semantics, as a self-contained custom element.
-Two ways to hold its data — pick per use.
+It is branch data, not part of the host: install the `table` library
+component (`rust/tonk-core/assets/library/table.yaml`) and the element,
+its grid and the engine come with it. Two ways to hold its data — pick
+per use.
 
 ## Standalone (self-contained, no store)
 
@@ -10,16 +13,16 @@ The element's **text content** is the workbook. Bare CSV is the easy
 seed; formulas ride as `=…` cell text:
 
 ```html
-<tonk-table>Item,Qty,Total
-Widget,2,=B2*10</tonk-table>
+<table-editor>Item,Qty,Total
+Widget,2,=B2*10</table-editor>
 ```
 
 Edits fire a debounced `change` event carrying `{ value, content }` —
 `value` is the active sheet as CSV, `content` is a versioned envelope
 (base64 workbook bytes + HLC) you can persist and feed back verbatim;
 the element drops its own echo by the version. This is the same
-one-attribute pattern as `<tonk-prose>`; good for embedding a table in a
-document or a `board` card.
+one-attribute pattern as `<prose-editor>`; good for embedding a table in
+a document or a `board` card.
 
 ## Claims mode (individuated, store-backed) — the norm for a data app
 
@@ -30,27 +33,27 @@ cell grain. Wire it like the board: hidden `<tonk-display>` rows feed
 the element, and each mutation event maps to a command.
 
 ```html
-<tonk-table subject={this}
-  oncreatecell=table/create-cell
-  oneditcell=table/edit-cell
-  onclearcell=table/clear-cell
-  oncreatesheet=table/create-sheet
-  onrenamesheet=table/rename-sheet>
+<table-editor subject={this}
+  on:table-create-cell=table/create-cell
+  on:table-edit-cell=table/edit-cell
+  on:table-clear-cell=table/clear-cell
+  on:table-create-sheet=table/create-sheet
+  on:table-rename-sheet=table/rename-sheet>
   <div hidden>
     <tonk-display model=tonk:table/sheet></tonk-display>
     <tonk-display model=tonk:table/cell></tonk-display>
     <tonk-display model=tonk:table/column></tonk-display>
     <tonk-display model=tonk:table/row></tonk-display>
   </div>
-</tonk-table>
+</table-editor>
 ```
 
-The full concept/command/rule set is the `table` library module — seed
-it with `tonk eval` from `rust/tonk-core/assets/library/table.yaml`, then
-`tonk query table/cell --json` lists cells. Update one by copying its entity
-and running `tonk assert table/cell <ENTITY> --content '=A1*2'`; create one
-with `tonk assert table/cell --sheet <SHEET_ENTITY> --at B2 --content
-'=A1*2'`.
+The full concept/command/rule set, with the `event!:` declarations the
+`on:` bindings name, is the `table` library component. Once it is
+installed, `tonk query table/cell --json` lists cells. Update one by
+copying its entity and running `tonk assert table/cell <ENTITY> --content
+'=A1*2'`; create one with `tonk assert table/cell --sheet <SHEET_ENTITY>
+--at B2 --content '=A1*2'`.
 
 ## Attributes
 
@@ -70,7 +73,8 @@ with `tonk assert table/cell --sheet <SHEET_ENTITY> --at B2 --content
 `{sheetTable, sheetName, sheetOrder, time}` · `renamesheet`
 `{renameSheet, renameName}` · `createcolumn`/`resizecolumn`,
 `createrow`/`resizerow` (sizing). Both modes emit `selectionchange`
-`{sheet, at, from, to}`. Standalone emits `change` `{value, content}`.
+`{sheet, at, from, to}` and `ready` `{grid}`. Standalone emits `change`
+`{value, content}`.
 
 ## Programmatic control (`el.grid`, null until `ready`)
 

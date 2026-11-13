@@ -219,10 +219,10 @@ has a full page: **`tonk help <element>`**.
 | `<tonk-display>` | Render an entity (or every instance) through a view. The primitive everything else hangs off. | `model` + `entity` attrs |
 | `<tonk-prose>` | Typora-style markdown editor. | text content; `change` event |
 | `<tonk-code>` | CodeMirror code editor with per-language highlighting. | `value`/`language` attrs; `change` event |
-| `<tonk-table>` | IronCalc spreadsheet — live formulas, sheets, per-cell claims. | text (CSV) or `subject` + `<tonk-display>` rows |
+| `<table-editor>` | IronCalc spreadsheet — live formulas, sheets, per-cell claims. Installed with the `table` component. | text (CSV) or `subject` + `<tonk-display>` rows |
 
 ```
-tonk help tonk-table     # full docs for one element
+tonk help table-editor   # full docs for one element
 tonk help tonk-prose
 ```
 
@@ -230,7 +230,7 @@ The editors persist the same way: bind the store's value in (as element
 text or an attribute), bind the element's `change` event with an
 `on:<name>=<command>` whose `event!:` declaration reads `.detail.…`, and a
 rule writes it back — the loop in
-`tonk help events`. `<tonk-table>` also offers a store-native *claims*
+`tonk help events`. `<table-editor>` also offers a store-native *claims*
 mode (one claim per cell). Your own elements (below) are peers of
 these.
 
@@ -472,7 +472,7 @@ Rules of the road:
   `<tally-widget count={count} on:tally-bump=tally/bump>` plus an
   `event!: &on/tally-bump` with `type: "bump"` reading `.detail.amount`.
   `tonk help events` ("Events from custom elements") has the complete,
-  runnable loop. The built-in `<tonk-table>` works this way; your
+  runnable loop. The `table` component's `<table-editor>` works this way; your
   elements are peers of it.
 - **The escape hatch is a reserved key.** What a method table cannot
   say — `static formAssociated`, extending a built-in — goes in

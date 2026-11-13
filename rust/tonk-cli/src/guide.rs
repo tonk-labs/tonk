@@ -24,8 +24,8 @@ pub const ELEMENT_TONK_DISPLAY: &str = include_str!("guide-element-tonk-display.
 pub const ELEMENT_TONK_PROSE: &str = include_str!("guide-element-tonk-prose.md");
 /// `<tonk-code>` reference.
 pub const ELEMENT_TONK_CODE: &str = include_str!("guide-element-tonk-code.md");
-/// `<tonk-table>` reference.
-pub const ELEMENT_TONK_TABLE: &str = include_str!("guide-element-tonk-table.md");
+/// `<table-editor>` reference.
+pub const ELEMENT_TABLE_EDITOR: &str = include_str!("guide-element-table-editor.md");
 
 /// Every guide name, in the order `tonk help -g` presents it.
 pub const TOPICS: &[&str] = &[
@@ -41,7 +41,7 @@ pub const TOPICS: &[&str] = &[
     "tonk-display",
     "tonk-prose",
     "tonk-code",
-    "tonk-table",
+    "table-editor",
 ];
 
 /// One-line catalogue description for a guide.
@@ -59,7 +59,7 @@ pub fn description(name: &str) -> Option<&'static str> {
         "tonk-display" => Some("Render an entity through a view"),
         "tonk-prose" => Some("Markdown editor element"),
         "tonk-code" => Some("Code editor element"),
-        "tonk-table" => Some("Spreadsheet element"),
+        "table-editor" => Some("Spreadsheet element (the table component)"),
         _ => None,
     }
 }
@@ -79,7 +79,7 @@ pub fn topic(name: &str) -> Option<&'static str> {
         "tonk-display" => Some(ELEMENT_TONK_DISPLAY),
         "tonk-prose" => Some(ELEMENT_TONK_PROSE),
         "tonk-code" => Some(ELEMENT_TONK_CODE),
-        "tonk-table" => Some(ELEMENT_TONK_TABLE),
+        "table-editor" => Some(ELEMENT_TABLE_EDITOR),
         _ => None,
     }
 }
@@ -110,5 +110,5 @@ pub const GUIDE: &str = concat!(
     "\n",
     include_str!("guide-element-tonk-code.md"),
     "\n",
-    include_str!("guide-element-tonk-table.md"),
+    include_str!("guide-element-table-editor.md"),
 );
