@@ -208,17 +208,30 @@ function delegates(handed) {
 
 // The host's files this origin serves, from the network while it answers,
 // and from what this worker kept of them when it does not: a space that
-// started once starts again offline.
+// started once starts again offline. A network that stalls never says it
+// does not answer, so where a copy is kept, the network has NETWORK_MS to
+// begin answering before the copy does. The fetch goes on, and keeps what it
+// gets for the next load.
 const HOST_CACHE = "tonk-host";
+const NETWORK_MS = 1_000;
 async function hostFile(request) {
-    try {
-        const response = await fetch(request);
-        if (response.ok) await (await caches.open(HOST_CACHE)).put(request, response.clone());
+    const fetched = fetch(request).then(response => {
+        if (response.ok) {
+            const copy = response.clone();
+            caches.open(HOST_CACHE).then(cache => cache.put(request, copy)).catch(() => {});
+        }
         return response;
-    } catch (error) {
-        const kept = await caches.match(request, { cacheName: HOST_CACHE });
-        if (kept) return kept;
-        throw error;
+    });
+    const kept = await caches.match(request, { cacheName: HOST_CACHE });
+    if (!kept) return fetched;
+    let timer;
+    const waited = new Promise(resolve => (timer = setTimeout(() => resolve(kept), NETWORK_MS)));
+    try {
+        return await Promise.race([fetched, waited]);
+    } catch {
+        return kept;
+    } finally {
+        clearTimeout(timer);
     }
 }
 
@@ -530,12 +543,21 @@ const ICON_PATH = /^\/webawesome\/icons\/[a-z0-9-]+\/[a-z0-9-]+\.svg$/;
 // No document on a site's origin may use the app's passkeys.
 const NO_PASSKEYS = "publickey-credentials-get=(), publickey-credentials-create=()";
 
-// Where the deployment says its sites are.
+// Where the deployment says its sites are: read once in a worker's life,
+// since every page load's policy names them, and read again only where that
+// read had no answer.
+let sitesRead = null;
 async function siteOrigins() {
+    sitesRead ??= hostFile(new Request(new URL("/.well-known/tonk", self.location.href)))
+        .then(response => {
+            if (!response.ok) throw new Error(`/.well-known/tonk answered ${response.status}`);
+            return response.json();
+        })
+        .then(config => config.sites);
     try {
-        const response = await hostFile(new Request(new URL("/.well-known/tonk", self.location.href)));
-        return (await response.json()).sites;
+        return await sitesRead;
     } catch {
+        sitesRead = null;
         return null;
     }
 }

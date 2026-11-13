@@ -23,10 +23,11 @@ const ACCESS = { subject: SPACE, command: "/", arguments: [], reason: "serve the
 // the deployment serves under `/_host/kernel/`, and `ships` what its
 // `/_host/kernel.json` says it ships; `record` is what the site's shell keeps
 // of the kernel it pins. `persona` is whether the kernel is a persona, as
-// the embedder reads it from the kernel's exports.
+// the embedder reads it from the kernel's exports. `sites` is where the
+// deployment says its sites are, at `/.well-known/tonk`, if it says.
 function space({
   pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" }, ships = null, origin = ORIGIN, boots = true, record = null,
-  answers = {}, persona = false,
+  answers = {}, persona = false, sites = null,
 } = {}) {
   const listeners = {};
   const told = [];
@@ -109,11 +110,17 @@ function space({
     },
   });
   let offline = false;
+  // A network that stalls takes every request and answers none, as a link
+  // that stopped carrying anything does: nothing says it is down.
+  let stalled = false;
   const network = async (address) => {
     if (offline) throw new TypeError("Failed to fetch");
     const path = new URL(typeof address === "string" ? address : address.url, origin).pathname;
     fetched.push(path);
+    if (stalled) return new Promise(() => {});
     if (path === "/site.html") return new Response("<head></head>SHELL");
+    if (path === "/kernel/relay.js") return new Response("RELAY");
+    if (path === "/.well-known/tonk" && sites) return Response.json({ sites });
     if (path === "/library/media.webp") return new Response(new Uint8Array([0, 159, 255]));
     if (path === "/_host/kernel.json" && ships) return Response.json(ships);
     const id = /^\/_host\/kernel\/(.+)\.wasm$/.exec(path)?.[1];
@@ -222,13 +229,14 @@ function space({
   // the app asks about this space.
   const passDown = (call, path) => port.onmessage({ data: { call, request: { method: "GET", path } } });
   const goOffline = () => void (offline = true);
+  const stall = () => void (stalled = true);
   // Ask, as the shell that installed the worker does, for the kernel to boot
   // and take up its space.
   const started = () =>
     new Promise((resolve) =>
       listeners.message({ data: { type: "booted" }, ports: [{ postMessage: resolve }], waitUntil() {} }),
     );
-  return { hostCaches, bodies, received, sentHeaders, listeners, imported, fetched, booted, handled, asked, told, kept, opened, authorized, stood, handPort, passDown, request, message, post, goOffline, started, letBoot };
+  return { hostCaches, bodies, received, sentHeaders, listeners, imported, fetched, booted, handled, asked, told, kept, opened, authorized, stood, handPort, passDown, request, message, post, goOffline, stall, started, letBoot };
 }
 
 test("the bootloader loads the host's embedder", () => {
@@ -388,6 +396,26 @@ test("the host's own files come from the network, and are kept for when it does 
   site.goOffline();
   const kept = await site.request("/site.html", { mode: "navigate" });
   assert.match(await kept.text(), /SHELL/, "offline, the kept copy answers");
+});
+
+test("a page load does not wait on a network that stalls for what the worker keeps", async () => {
+  const site = space({ sites: { app: "https://tonk.test", host: "tonk.test" } });
+  site.handPort();
+  // A page loaded once: its policy read where the deployment says its
+  // sites are, and its relay fetched.
+  await (await site.request("/page", { mode: "navigate" })).text();
+  assert.equal(await (await site.request("/kernel/relay.js")).text(), "RELAY");
+  site.stall();
+  let timer;
+  const stalled = new Promise((resolve) => (timer = setTimeout(() => resolve("stalled"), 5_000)));
+  const page = await Promise.race([site.request("/page", { mode: "navigate" }), stalled]);
+  assert.notEqual(page, "stalled", "the page load is answered while the network stalls");
+  assert.match(page.headers.get("content-security-policy"), /frame-ancestors 'self' https:\/\/tonk\.test/);
+  assert.match(await page.text(), /<title>A page<\/title>/);
+  const relay = await Promise.race([site.request("/kernel/relay.js"), stalled]);
+  assert.notEqual(relay, "stalled", "the relay the page loads is answered while the network stalls");
+  clearTimeout(timer);
+  assert.equal(await relay.text(), "RELAY");
 });
 
 test("the worker speaks the shell's protocol", () => {
