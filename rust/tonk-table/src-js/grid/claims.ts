@@ -164,7 +164,7 @@ export function readCellRows(root: ParentNode, sheetIds: Set<string>): CellRow[]
     const at = r.dataset.at ?? "";
     if (!id || !sheetIds.has(sheet)) continue;
     if (parseAddress(at) === null) {
-      console.warn(`[tonk-table] ignoring cell claim with bad address: ${at}`);
+      console.warn(`[table-editor] ignoring cell claim with bad address: ${at}`);
       continue;
     }
     rows.push({
@@ -194,7 +194,7 @@ export function readColumnRows(
     const width = r.dataset.width ?? "";
     if (!id || !sheetIds.has(sheet)) continue;
     if (columnNumber(at) === null || !(Number(width) > 0)) {
-      console.warn(`[tonk-table] ignoring column claim ${at}=${width}`);
+      console.warn(`[table-editor] ignoring column claim ${at}=${width}`);
       continue;
     }
     rows.push({ id, sheet, at, width });
@@ -217,7 +217,7 @@ export function readRowSizeRows(
     const height = r.dataset.height ?? "";
     if (!id || !sheetIds.has(sheet)) continue;
     if (!/^[1-9][0-9]*$/.test(at) || !(Number(height) > 0)) {
-      console.warn(`[tonk-table] ignoring row claim ${at}=${height}`);
+      console.warn(`[table-editor] ignoring row claim ${at}=${height}`);
       continue;
     }
     rows.push({ id, sheet, at, height });

@@ -8,7 +8,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { initSync, Model } from "@ironcalc/wasm";
-import engineBytes from "../engine";
+import engineBytes from "@ironcalc/wasm/wasm_bg.wasm";
 import {
   modelFromSource,
   newModel,

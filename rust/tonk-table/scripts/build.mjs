@@ -1,79 +1,73 @@
 #!/usr/bin/env node
-// Bundles the `<tonk-table>` element into `assets/` as three chunks:
+// Builds the library's <table-editor> (rust/tonk-core/assets/library/table.yaml).
 //
-//   assets/tonk-table.js        — shell bundle, registers the element.
-//                                 Contains no engine or grid code.
-//   assets/tonk-table-grid.js   — grid core (DOM grid + IronCalc JS
-//                                 glue), loaded on demand via dynamic
-//                                 import by the first connected element.
-//   assets/tonk-table-engine.js — the IronCalc engine wasm, embedded as
-//                                 base64 (`binary` loader) in a pure
-//                                 data leaf the grid pulls in the same
-//                                 way. Isolated so it only changes on an
-//                                 IronCalc version bump — grid-UI edits
-//                                 never rewrite the multi-megabyte file.
+// Branch data has no URL to import a chunk from, so both outputs are
+// text the library includes as methods of the element:
 //
-// The shell stays tiny on purpose: pages that ship the bundle but never
-// render a `<tonk-table>` element pay only for the custom element
-// registration. The grid core (and then the engine bytes) are fetched
-// exactly once, the first time an element actually connects.
+//   library/table-editor/core.js   — the grid core (src-js/library.ts):
+//                                    an IIFE wrapped into a function that
+//                                    evaluates the bundle and returns its
+//                                    exports (`createGrid`, ...).
+//   library/table-editor/engine.js — the IronCalc engine wasm as base64,
+//                                    `() => "<base64>"`. Apart from the
+//                                    core so it changes only on an
+//                                    IronCalc version bump.
 //
-// No code splitting: each chunk is ONE self-contained file, and the
-// ONLY cross-chunk seams are the two runtime-variable dynamic imports
-// (shell → grid, grid → engine), which esbuild leaves alone. Splitting is safe
-// to drop because the chunks share no stateful module: the shell
-// imports only the pure hlc/content/b64 logic, and the engine chunk is
-// pure data (the wasm bytes; the wasm-bindgen module state lives in the
-// grid chunk alone).
-//
-// The engine instantiates FROM BYTES (`init({ module_or_path })`), so
-// the glue's own `new URL('wasm_bg.wasm', import.meta.url)` default-
-// resolution line never executes — no `.wasm` asset is emitted or
-// fetched at runtime.
+// The engine instantiates FROM BYTES (`init({ module_or_path })`), so the
+// glue's own `new URL('wasm_bg.wasm', import.meta.url)` default never
+// executes and nothing is fetched at runtime.
 //
 // Usage:
 //   node scripts/build.mjs           # production build
-//   node scripts/build.mjs --watch   # rebuild on file changes
+//   node scripts/build.mjs --watch   # rebuild the core on file changes
 
 import { build, context } from "esbuild";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
-const outdir = resolve(root, "assets");
-mkdirSync(outdir, { recursive: true });
-
-const entryPoints = {
-  "tonk-table": resolve(root, "src-js/index.ts"),
-  "tonk-table-grid": resolve(root, "src-js/grid/index.ts"),
-  "tonk-table-engine": resolve(root, "src-js/engine.ts"),
-};
+const library = resolve(root, "../tonk-core/assets/library/table-editor");
+mkdirSync(library, { recursive: true });
 
 /** @type {import('esbuild').BuildOptions} */
-const options = {
-  entryPoints,
-  outdir,
+const core = {
+  entryPoints: [resolve(root, "src-js/library.ts")],
+  outfile: resolve(library, "core.js"),
   bundle: true,
-  format: "esm",
+  format: "iife",
+  globalName: "core",
   target: ["es2022"],
   minify: true,
-  sourcemap: true,
-  splitting: false,
-  // The engine wasm import (src-js/engine.ts) becomes an embedded
-  // base64 string decoded to a Uint8Array at module evaluation.
-  loader: { ".wasm": "binary" },
-  external: [],
+  // The glue's URL default is dead code (the engine comes as bytes); an
+  // empty base keeps esbuild from warning that an IIFE has no import.meta.
+  define: { "import.meta.url": '""' },
+  banner: { js: "() => {" },
+  footer: { js: "return core;\n}" },
   logLevel: "info",
 };
 
+/** Write the engine method from the installed @ironcalc/wasm. */
+function engine() {
+  const require = createRequire(import.meta.url);
+  const pkg = require("@ironcalc/wasm/package.json");
+  const wasm = readFileSync(require.resolve("@ironcalc/wasm/wasm_bg.wasm"));
+  writeFileSync(
+    resolve(library, "engine.js"),
+    `// GENERATED by rust/tonk-table/scripts/build.mjs: the @ironcalc/wasm ${pkg.version} engine as base64.\n` +
+      `() => ${JSON.stringify(wasm.toString("base64"))}\n`,
+  );
+}
+
 const watch = process.argv.includes("--watch");
 
+engine();
 if (watch) {
-  const ctx = await context(options);
+  const ctx = await context(core);
   await ctx.watch();
-  console.log("[tonk-table] watching…");
+  console.log("[table-editor] watching…");
 } else {
-  await build(options);
+  await build(core);
 }

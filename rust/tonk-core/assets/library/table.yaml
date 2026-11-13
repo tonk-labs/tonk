@@ -1,6 +1,10 @@
 # ===========================================================================
-# table — a <tonk-table> spreadsheet over INDIVIDUATED claims.
+# table — a <table-editor> spreadsheet over INDIVIDUATED claims.
 # ===========================================================================
+# <table-editor> is defined below as branch data (`element!:`), so the
+# component carries its own grid and spreadsheet engine: installing it
+# into a space needs nothing from the host.
+#
 # The workbook is not a blob: every sheet and every non-empty cell is its
 # own claim instance, so cells are addressable (`tonk query table/cell`,
 # `tonk assert table/cell --at B2 --content '=A1*2'`), concurrent editors
@@ -96,7 +100,7 @@ attribute!: &row/height
 
 concept!: &table
   this: tonk:table
-  description: A spreadsheet workbook edited with <tonk-table>.
+  description: A spreadsheet workbook edited with <table-editor>.
   with:
     name:
       description: The workbook's display name.
@@ -179,7 +183,7 @@ concept!: &table/row-height
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Events — how `<tonk-table>`'s CustomEvents fill the commands.
+# Events — how `<table-editor>`'s CustomEvents fill the commands.
 #
 # Detail keys are spelled the way the element spells them. The old
 # `dom.event.detail/edit-cell` identifier kebab-cased then camel-cased
@@ -469,6 +473,74 @@ rule!:
       where: { row: ?this, height: ?height }
 
 # ---------------------------------------------------------------------------
+# Element — the grid, as branch data rather than a host bundle.
+#
+# <tonk-table> ported to an `element!`: the methods in `table-editor/` are
+# its custom-element class (content channel, claim rows, versioned
+# envelope, debounced `change`, deferred teardown), `core` is its grid
+# (`rust/tonk-table/src-js/library.ts`), and `engine` is the IronCalc
+# engine wasm as base64, instantiated from bytes once per page. Both are
+# built by `rust/tonk-table/scripts/build.mjs`: `npm run build` there.
+# The engine is its own method so it changes only on an IronCalc bump.
+#
+# Not `tonk-table`: the runtime leaves `tonk-` tags to the host. The
+# interface is the same, and so are the stored claims and envelope.
+#
+# Attributes: subject (claims mode), content, value, readonly,
+# auto-focus, min-rows, min-cols. Properties: `value` (CSV of the active
+# sheet), `content` (the versioned envelope), `version`, `grid` (the
+# live handle, null until `ready`). Events: the claim mutations bound
+# above, `selectionchange`, `ready` with `{grid}` and, without a
+# subject, `change` with `{value, content}`.
+# ---------------------------------------------------------------------------
+
+element!: &table-editor
+  description: An IronCalc spreadsheet grid; with a `subject` its sheets and cells are claims fed in as light-DOM rows and each edit leaves as a typed event, without one its text is the workbook and `change` carries edits as a versioned envelope.
+  method:
+    connected: !include/text ./table-editor/connected.js
+    disconnected: !include/text ./table-editor/disconnected.js
+    attribute-changed: !include/text ./table-editor/attribute-changed.js
+    mount: !include/text ./table-editor/mount.js
+    adopt: !include/text ./table-editor/adopt.js
+    relight: !include/text ./table-editor/relight.js
+    restyle: !include/text ./table-editor/restyle.js
+    rows: !include/text ./table-editor/rows.js
+    apply: !include/text ./table-editor/apply.js
+    schedule: !include/text ./table-editor/schedule.js
+    flush: !include/text ./table-editor/flush.js
+    emit: !include/text ./table-editor/emit.js
+    extent: !include/text ./table-editor/extent.js
+    core: !include/text ./table-editor/core.js
+    engine: !include/text ./table-editor/engine.js
+  getter:
+    # CSV of the active sheet: raw input, so formulas survive. Lossy.
+    value: |
+      (self) => {
+        const state = self.__table;
+        if (state?.grid) return state.grid.toCsv();
+        const raw = state?.pending ?? (self.textContent || self.getAttribute('content') || self.getAttribute('value'));
+        return raw ? (self.constructor.__core ??= self.core()).parseContent(raw).value : '';
+      }
+    # The versioned envelope around the lossless workbook bytes.
+    content: |
+      (self) => {
+        const state = self.__table;
+        if (state?.grid) return state.core.envelope(state.grid, state.known);
+        return state?.pending ?? (self.textContent || self.getAttribute('content') || self.getAttribute('value') || '');
+      }
+    # The last version issued or adopted, as a decimal string.
+    version: |
+      (self) => String(self.__table?.known ?? 0n)
+    # The live grid handle, once mounted.
+    grid: |
+      (self) => self.__table?.grid ?? null
+  setter:
+    value: |
+      (self, next) => { if (self.__table) self.adopt(String(next ?? '')); else self.textContent = String(next ?? ''); }
+    content: |
+      (self, next) => { if (self.__table) self.adopt(String(next ?? '')); else self.textContent = String(next ?? ''); }
+
+# ---------------------------------------------------------------------------
 # Data-row views (invisible; feed the element)
 # ---------------------------------------------------------------------------
 #
@@ -520,7 +592,7 @@ view!:
   this: table
   show:
     ui: |
-      <tonk-table subject={this}
+      <table-editor subject={this}
         on:table-create-sheet=table/create-sheet
         on:table-rename-sheet=table/rename-sheet
         on:table-create-cell=table/create-cell
@@ -537,7 +609,7 @@ view!:
           <tonk-display model=tonk:table/column></tonk-display>
           <tonk-display model=tonk:table/row></tonk-display>
         </div>
-      </tonk-table>
+      </table-editor>
 
 # A directory view so `tonk render table` (list of workbooks) resolves.
 view!:

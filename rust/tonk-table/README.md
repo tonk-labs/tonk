@@ -1,13 +1,15 @@
 # tonk-table
 
-`<tonk-table>`: the [IronCalc](https://github.com/ironcalc/IronCalc)
-spreadsheet engine packaged as a custom element with a framework-free
-grid.
+The core of the library's `<table-editor>`
+(`rust/tonk-core/assets/library/table.yaml`): the
+[IronCalc](https://github.com/ironcalc/IronCalc) spreadsheet engine
+with a framework-free grid. A space gets a spreadsheet by installing
+the `table` component; the host ships none.
 
 The engine is the spreadsheet: formula evaluation, the dependency
 graph, number formatting, undo/redo, clipboard parsing, and even
 selection/navigation semantics (`onArrowDown`, `onExpandSelectedRange`,
-`onAreaSelecting`, …) live in IronCalc's wasm — a headless *view
+`onAreaSelecting`, …) live in IronCalc's wasm, a headless *view
 model*. The grid only draws that state into DOM and routes input
 events back, so editing behaves like a spreadsheet because it *is*
 one, not a re-implementation.
@@ -15,58 +17,57 @@ one, not a re-implementation.
 Why the headless engine and not `@ironcalc/workbook` (IronCalc's own
 UI): that component is React + MUI + Emotion, draws on a `<canvas>`
 outside any design-token contract, pins an older engine, and injects
-styles into `document.head` — all of which fight the shadow-root,
+styles into `document.head`, all of which fight the shadow-root,
 `--wa-*`-token, sealed-guest architecture every tonk element follows.
 The engine alone is MIT/Apache-2.0, dependency-free, and initializes
-**from bytes**, which is the property everything below leans on.
+**from bytes**, which is what lets it travel as branch data.
 
-## Lazy loading
+## As branch data
 
-Three chunks, two lazy seams:
+`<table-editor>` is an `element!:` in `table.yaml`. Its methods in
+`library/table-editor/*.js` are the custom-element class (content
+channel, claim rows, versioned envelope, debounced `change`, deferred
+teardown), and two of them are built here:
 
-| Chunk | Size | Role |
+| Method | Size | Role |
 | --- | --- | --- |
-| `tonk-table.js` | ~9 kB | The shell: registers the element, nothing else. |
-| `tonk-table-grid.js` | ~33 kB | Grid UI + IronCalc JS glue. Dynamically imported on the first element connect. |
-| `tonk-table-engine.js` | ~3.8 MB | The engine wasm, base64-embedded in a pure data leaf. Pulled by the grid, decoded, and passed to `init({ module_or_path: bytes })`. |
+| `core` | ~55 kB | `src-js/library.ts`: the grid and what the methods share, as an expression returning its exports. |
+| `engine` | ~3.9 MB | The IronCalc engine wasm as base64 (~1.1 MB gzipped). Decoded and instantiated once per page, from bytes. |
 
-Pages that ship the bundle but never render a `<tonk-table>` pay only
-for the shell. The engine leaf changes ONLY on an IronCalc version
-bump, so grid iteration never rewrites the multi-megabyte artifact.
-The engine instantiates from bytes — never from a URL fetch — so the
-whole graph works at origins where fetch is dead (sealed guests).
+The engine is its own method so it changes only on an IronCalc
+version bump: grid edits never rewrite the multi-megabyte file.
 
 ## Layout
 
 | Path | Purpose |
 | --- | --- |
-| `src-js/index.ts` | The shell: registers `tonk-table`, lazy-loads the grid core. |
-| `src-js/grid/` | The grid core chunk (engine bootstrap, DOM grid, workbook helpers). |
-| `src-js/engine.ts` | The engine-bytes leaf entry. |
+| `src-js/library.ts` | The core entry: `createGrid`, the claim-row and content helpers, the host stylesheet. |
+| `src-js/grid/` | The grid (engine bootstrap, DOM grid, workbook helpers, claims plumbing). |
 | `src-js/hlc.ts`, `content.ts`, `b64.ts` | The versioned-content protocol (shared shape with tonk-prose). |
-| `scripts/build.mjs` | esbuild driver. Produces the three `assets/` chunks. |
-| `assets/` | Build output. **Committed** so consumers (and CI) don't need a Node toolchain. |
+| `scripts/build.mjs` | esbuild driver. Writes `library/table-editor/core.js` and `engine.js`. |
+| `tests/library-element.mjs` | The element in Chromium, defined from `table.yaml` by the real element runtime. |
 
-## Building the bundle
+## Building
 
 ```bash
 cd rust/tonk-table
 npm install
-npm run build      # production build → assets/
-npm run watch      # rebuild on source changes
+npm run build      # core.js + engine.js into the library
+npm run watch      # rebuild the core on source changes
 npm run check      # typecheck only
 npm test           # node tests, including the REAL engine (initSync from bytes)
+node tests/library-element.mjs   # the element in Chromium
 ```
 
-`assets/` is a build artifact but committed: regenerate it whenever
-`src-js/` or the IronCalc dependency changes, and commit the result
-alongside the source change.
+The outputs are committed beside `table.yaml`: regenerate them
+whenever `src-js/` or the IronCalc dependency changes, and commit the
+result alongside the source change.
 
 ## Element API
 
 ```html
-<tonk-table>a,b,total
-1,2,=A2+B2</tonk-table>
+<table-editor>a,b,total
+1,2,=A2+B2</table-editor>
 ```
 
 The element's **text content** is its content channel (the way
@@ -83,10 +84,12 @@ Attributes:
 
 | Name | Type | Notes |
 | --- | --- | --- |
+| `subject` | entity | The workbook whose claims the hidden light-DOM rows carry (claims mode, as `table.yaml` renders it). Absent: standalone. |
 | `content` | string | Content source, same parsing as the text channel (text child wins when both are present). |
 | `value` | string | Legacy/convenience content source, same parsing. |
 | `readonly` | boolean | Presence locks the grid (selection + copy still work). |
 | `auto-focus` | boolean | Focus the grid once mounted. |
+| `min-rows`, `min-cols` | integer | Minimum rendered extent (default 100×26). |
 
 Properties:
 
@@ -151,15 +154,15 @@ Three layers, weakest to strongest — the whole look is overridable:
    `--tonk-table-selection`, `--tonk-table-header-bg`,
    `--tonk-table-height`, …), defaulting to the page's WebAwesome
    `--wa-*` tokens with GitHub-flavored light/dark fallbacks. Plain
-   host CSS works too (`tonk-table { border: none; height: 30rem }`).
+   host CSS works too (`table-editor { border: none; height: 30rem }`).
 2. **Parts** — every structural element exports a `part`, so outside
    CSS restyles any piece with full power:
 
    ```css
-   tonk-table::part(formula-bar) { display: none }
-   tonk-table::part(column-header) { text-transform: lowercase }
-   tonk-table::part(cell selected) { outline-color: hotpink }
-   tonk-table::part(tab active) { font-weight: 700 }
+   table-editor::part(formula-bar) { display: none }
+   table-editor::part(column-header) { text-transform: lowercase }
+   table-editor::part(cell selected) { outline-color: hotpink }
+   table-editor::part(tab active) { font-weight: 700 }
    ```
 
    Part names: `frame`, `formula-bar`, `cell-reference`,
@@ -168,35 +171,20 @@ Three layers, weakest to strongest — the whole look is overridable:
    `selected` / `range`), `tab-strip`, `tab` (token `active`),
    `tab-delete`, `add-sheet`, `cell-editor`, `sheet-rename`,
    `sheet-confirm`, `sheet-confirm-delete`, `sheet-confirm-keep`.
-3. **User stylesheets** — any `<style>` child of `<tonk-table>` is
+3. **User stylesheets** — any `<style>` child of `<table-editor>` is
    adopted into the shadow root, cascading LAST (it wins over the
    built-in sheets at equal specificity), for rules parts can't
    express:
 
    ```html
-   <tonk-table subject={this}>
+   <table-editor subject={this}>
      <style>
        tbody tr:nth-child(even) td { background: #00000006; }
      </style>
      …
-   </tonk-table>
+   </table-editor>
    ```
 
    Live-updated; the internal class names (`.formula`, `.scroller`,
    `.tabs`, `td.num`, …) are a semi-stable contract for this layer.
    Views restyle per-use by authoring a style child.
-
-## Serving
-
-Copy `assets/` to its own directory and load the shell with a module
-script; all three chunks resolve as siblings of the shell's URL. The
-host no longer ships the bundle: a space gets a spreadsheet only once
-it is ported to a library component, as `<code-editor>` and
-`<prose-editor>` were.
-
-## Library module
-
-`rust/tonk-core/assets/library/table.yaml` defines the `tonk:table`
-concept, the `table/edit` command + persistence rule, instance and
-directory views, and a seeded demo workbook — the same shape as
-`prose-editor.yaml`.
