@@ -122,33 +122,59 @@ pub fn is_persona(kernel: Uint8Array) -> bool {
     boot::is_persona(&kernel.to_vec())
 }
 
-/// Whether the kernel the space `subject` pins is a persona.
-#[wasm_bindgen(js_name = pinsPersona)]
-pub async fn pins_persona(subject: String) -> Result<bool, JsError> {
-    boot::pins_persona(&Layers::default(), &subject)
-        .await
-        .map_err(|error| JsError::new(&error))
+/// The kernel a space pins: its bytes, read from the space and checked
+/// against the id the space pins them by once, for the bootloader to tell
+/// what it is and to boot it with.
+#[wasm_bindgen]
+pub struct PinnedKernel {
+    subject: String,
+    id: String,
+    bytes: Vec<u8>,
 }
 
-/// Install `kernel` into the space `subject`, where the space is kept.
 #[wasm_bindgen]
-pub async fn install(subject: String, kernel: Uint8Array) -> Result<String, JsError> {
-    boot::install(&Layers::default(), &subject, &kernel.to_vec())
-        .await
-        .map_err(|error| JsError::new(&error))
+impl PinnedKernel {
+    /// The space that pins the kernel.
+    #[wasm_bindgen(getter)]
+    pub fn subject(&self) -> String {
+        self.subject.clone()
+    }
+
+    /// The kernel's content identifier.
+    #[wasm_bindgen(getter)]
+    pub fn id(&self) -> String {
+        self.id.clone()
+    }
+
+    /// Whether the kernel is a persona, which holds the person's account
+    /// and hosts the person's spaces: it exports `sapling:kernel/guest`.
+    #[wasm_bindgen(getter)]
+    pub fn persona(&self) -> bool {
+        boot::is_persona(&self.bytes)
+    }
 }
 
-/// The id of the kernel the space `subject` pins, or `undefined` when it pins
-/// none.
+/// Install `kernel` into the space `subject`, where the space is kept, and
+/// answer it as the space now pins it.
 #[wasm_bindgen]
-pub async fn pinned(subject: String) -> Result<Option<String>, JsError> {
+pub async fn install(subject: String, kernel: Uint8Array) -> Result<PinnedKernel, JsError> {
+    let bytes = kernel.to_vec();
+    let id = boot::install(&Layers::default(), &subject, &bytes)
+        .await
+        .map_err(|error| JsError::new(&error))?;
+    Ok(PinnedKernel { subject, id, bytes })
+}
+
+/// The kernel the space `subject` pins, or `undefined` when it pins none.
+#[wasm_bindgen(js_name = pinnedKernel)]
+pub async fn pinned_kernel(subject: String) -> Result<Option<PinnedKernel>, JsError> {
     let pinned = boot::pinned(&Layers::default(), &subject)
         .await
         .map_err(|error| JsError::new(&error))?;
-    Ok(pinned.map(|(id, _)| id))
+    Ok(pinned.map(|(id, bytes)| PinnedKernel { subject, id, bytes }))
 }
 
-/// Boot the persona the profile `subject` pins, with a session that acts
+/// Boot `kernel`, the persona the profile pins, with a session that acts
 /// under `session`, whose key represents the persona: the provisional
 /// persona it is itself, until the person makes themselves known, and after
 /// that the permanent persona `standing` names, `{ persona, link }`, with the
@@ -160,7 +186,7 @@ pub async fn pinned(subject: String) -> Result<Option<String>, JsError> {
 /// reason to show the person and the context, bytes, to pass back.
 #[wasm_bindgen(js_name = bootPersona)]
 pub async fn boot_persona(
-    subject: String,
+    kernel: PinnedKernel,
     session: &Session,
     message: Function,
     merge: Function,
@@ -177,12 +203,12 @@ pub async fn boot_persona(
     } else {
         Standing::persona(session.key.clone())
     };
-    let mut embedder = run(subject, standing, message, Some((merge, authorize))).await?;
+    let mut embedder = run(kernel, standing, message, Some((merge, authorize))).await?;
     embedder.session = Some(session.key.clone());
     Ok(embedder)
 }
 
-/// Boot the kernel the space `subject` pins, with a session that acts under
+/// Boot `kernel`, the kernel a space pins, with a session that acts under
 /// `session`, for the persona `persona`, through the representative
 /// `representative`, whose delegations `delegate` answers: a function that
 /// takes the audience's DID and `{ subject, command, arguments, reason }`,
@@ -191,7 +217,7 @@ pub async fn boot_persona(
 /// `message`, as bytes.
 #[wasm_bindgen(js_name = bootSpace)]
 pub async fn boot_space(
-    subject: String,
+    kernel: PinnedKernel,
     session: &Session,
     representative: String,
     persona: String,
@@ -200,7 +226,7 @@ pub async fn boot_space(
 ) -> Result<Embedder, JsError> {
     let representative = Representation::remote(representative, delegates_of(delegate));
     run(
-        subject,
+        kernel,
         Standing::space(session.key.clone(), representative, persona),
         message,
         None,
@@ -209,18 +235,12 @@ pub async fn boot_space(
 }
 
 async fn run(
-    subject: String,
+    kernel: PinnedKernel,
     standing: Standing,
     message: Function,
     persona: Option<(Function, Function)>,
 ) -> Result<Embedder, JsError> {
-    let started = platform::now_millis();
-    let layers = Layers::default();
-    let (_, bytes) = boot::pinned(&layers, &subject)
-        .await
-        .map_err(|error| JsError::new(&error))?
-        .ok_or_else(|| JsError::new("the space pins no kernel"))?;
-    let read = platform::now_millis() - started;
+    let PinnedKernel { subject, bytes, .. } = kernel;
     // The kernel serves this worker's origin.
     let location = Reflect::get(&js_sys::global(), &"location".into()).unwrap_or_default();
     let part = |name: &str| {
@@ -232,9 +252,16 @@ async fn run(
         (Some(protocol), Some(host)) => Some((protocol.trim_end_matches(':').to_owned(), host)),
         _ => None,
     };
-    let mut embedder = start(&bytes, layers, subject, origin, standing, message, persona).await?;
-    embedder.timings.insert(0, ("read".to_owned(), read));
-    Ok(embedder)
+    start(
+        &bytes,
+        Layers::default(),
+        subject,
+        origin,
+        standing,
+        message,
+        persona,
+    )
+    .await
 }
 
 /// Boot the kernel `component` over the space `subject`, with its layers

@@ -80,6 +80,9 @@ function space({
   // What the embedder keeps where Dialog DB keeps it: the space this origin
   // serves, and the kernel each space pins.
   const kept = { pins: new Map(holds ? [[SPACE, holds]] : []) };
+  // Each space whose kernel the bootloader had read out of the space, or
+  // written into it, once per read.
+  const reads = [];
   const opened = [];
   // Whether the space's kernel boots: the person's profile came to hold the
   // space once `letBoot` is called.
@@ -89,23 +92,28 @@ function space({
     openSession: async (name) => (opened.push(name), { did: SESSION }),
     heldSpace: async () => kept.pins.keys().next().value,
     kernelId: (bytes) => new TextDecoder().decode(bytes).replace("WASM", KERNEL),
+    // The kernel a space pins, as the embedder hands it over: read once,
+    // and booted from what was read.
     install: async (subject, bytes) => {
       const id = new TextDecoder().decode(bytes).replace("WASM", KERNEL);
       kept.pins.set(subject, id);
-      return id;
+      reads.push(subject);
+      return { subject, id, persona };
     },
-    pinned: async (subject) => kept.pins.get(subject),
+    pinnedKernel: async (subject) => {
+      reads.push(subject);
+      return kept.pins.has(subject) ? { subject, id: kept.pins.get(subject), persona } : undefined;
+    },
     isPersona: () => persona,
-    pinsPersona: async (subject) => persona && kept.pins.has(subject),
     // A kernel creates a space it takes up for the first time, and says so.
-    bootSpace: async (subject, session, representative, persona, delegate, sent) => {
+    bootSpace: async (kernel, session, representative, persona, delegate, sent) => {
       if (!canBoot) throw new Error("the person has no such space");
-      booted.push({ subject, session: session.did, representative, persona, delegate, sent });
+      booted.push({ subject: kernel.subject, session: session.did, representative, persona, delegate, sent });
       if (!holds) queueMicrotask(() => sent(new TextEncoder().encode(JSON.stringify({ ask: 1, seeded: true }))));
       return embedder;
     },
-    bootPersona: async (subject, session, sent, merge, authorize) => {
-      booted.push({ subject, session: session.did, sent, merge, authorize });
+    bootPersona: async (kernel, session, sent, merge, authorize) => {
+      booted.push({ subject: kernel.subject, session: session.did, sent, merge, authorize });
       return embedder;
     },
   });
@@ -236,7 +244,7 @@ function space({
     new Promise((resolve) =>
       listeners.message({ data: { type: "booted" }, ports: [{ postMessage: resolve }], waitUntil() {} }),
     );
-  return { hostCaches, bodies, received, sentHeaders, listeners, imported, fetched, booted, handled, asked, told, kept, opened, authorized, stood, handPort, passDown, request, message, post, goOffline, stall, started, letBoot };
+  return { hostCaches, bodies, received, sentHeaders, listeners, imported, fetched, booted, handled, asked, told, kept, reads, opened, authorized, stood, handPort, passDown, request, message, post, goOffline, stall, started, letBoot };
 }
 
 test("the bootloader loads the host's embedder", () => {
@@ -311,6 +319,7 @@ test("a space with no kernel of its own installs the one its worker names, and b
     site.booted.map(({ subject, session }) => ({ subject, session })),
     [{ subject: SPACE, session: SESSION }],
   );
+  assert.deepEqual(site.reads, [SPACE], "the kernel boots as installed, not read back out of the space");
   assert.deepEqual(site.handled, ["GET /api/anything"], "the kernel takes its space up as it boots");
 });
 
@@ -352,6 +361,7 @@ test("a space that holds its kernel boots it from where it is kept, with no port
     [{ subject: SPACE, session: SESSION }],
     "it boots with no port up",
   );
+  assert.deepEqual(site.reads, [SPACE], "the kernel is read out of the space once");
 });
 
 test("a kernel that boots on what it kept has its request answered by the profile once a port is up", async () => {

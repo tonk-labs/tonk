@@ -98,14 +98,6 @@ pub fn is_persona(kernel: &[u8]) -> bool {
     false
 }
 
-/// Whether the kernel the space `subject` pins is a persona. `false` when it
-/// pins none.
-pub async fn pins_persona(layers: &Layers, subject: &str) -> Result<bool, String> {
-    Ok(pinned(layers, subject)
-        .await?
-        .is_some_and(|(_, kernel)| is_persona(&kernel)))
-}
-
 /// The space this origin's host serves: the one whose layer holds a boot
 /// cell, if any does yet.
 pub async fn held(layers: &Layers) -> Result<Option<String>, String> {
@@ -170,16 +162,6 @@ mod tests {
         assert!(is_persona(tonk_components::TONK_PERSONA_BYTES));
         assert!(!is_persona(tonk_components::TONK_KERNEL_BYTES));
         assert!(!is_persona(b"kernel"));
-    }
-
-    #[tokio::test]
-    async fn it_says_whether_a_space_pins_a_persona() {
-        let layers = scratch("persona");
-        assert!(!pins_persona(&layers, SPACE).await.unwrap());
-        install(&layers, SPACE, tonk_components::TONK_PERSONA_BYTES)
-            .await
-            .unwrap();
-        assert!(pins_persona(&layers, SPACE).await.unwrap());
     }
 
     #[tokio::test]

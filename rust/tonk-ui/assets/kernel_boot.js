@@ -334,32 +334,39 @@ async function start() {
     // the space the person's profile delegates to this session, which says
     // which space it is.
     step("session");
+    // The kernel the space pins, read from the space once, or as installed
+    // into it: the boot takes it from here, and reads it no more.
+    let kernel;
     if (!space) {
-        const kernel = await firstKernel();
+        const bytes = await firstKernel();
         step("kernel");
-        if (wasm_bindgen.isPersona(kernel)) {
+        if (wasm_bindgen.isPersona(bytes)) {
             space = session.did;
         } else {
             ({ space, handed } = await delegateSession(session));
             awaitCreation();
             step("delegation");
         }
-        log("installed the kernel", await wasm_bindgen.install(space, kernel));
+        kernel = await wasm_bindgen.install(space, bytes);
+        log("installed the kernel", kernel.id);
         step("install");
+    } else {
+        kernel = await wasm_bindgen.pinnedKernel(space);
+        step("read");
     }
-    const pinned = await wasm_bindgen.pinned(space);
+    const pinned = kernel?.id;
     if (pinned !== PINNED && pinned !== (await recordedKernel())) {
         throw new Error(`the space pins ${pinned}, not ${PINNED}`);
     }
-    personaKernel = await wasm_bindgen.pinsPersona(space);
+    personaKernel = kernel.persona;
     let embedder;
     if (personaKernel) {
         profileDid = session.did;
-        embedder = await wasm_bindgen.bootPersona(space, session, kernelSent, askedToMerge, askedToAuthorize, await keptPersona());
+        embedder = await wasm_bindgen.bootPersona(kernel, session, kernelSent, askedToMerge, askedToAuthorize, await keptPersona());
     } else {
         const { representative, persona } = await standing();
         step("standing");
-        embedder = await wasm_bindgen.bootSpace(space, session, representative, persona, delegates(handed), kernelSent);
+        embedder = await wasm_bindgen.bootSpace(kernel, session, representative, persona, delegates(handed), kernelSent);
     }
     step("boot");
     const kernelSteps = Object.entries(embedder.timings).map(([name, ms]) => `${name} ${Math.round(ms)}`);
