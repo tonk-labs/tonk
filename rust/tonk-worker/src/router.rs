@@ -224,8 +224,8 @@ mod view_tree;
 mod transfer;
 pub use transfer::ImportResponse;
 
-mod host;
-pub use host::{ClientId, ViewBinding, ViewBindings};
+mod client;
+pub use client::ClientId;
 
 mod blob;
 pub(crate) mod renderer;
@@ -514,17 +514,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/query",
             post(query::query),
-        )
-        // Host/guest iframe binding. The shell embeds an iframe
-        // pointed at this URL; the handler records the iframe's
-        // client id against `{repo, branch}` so its later
-        // subresource fetches can be re-rooted, and serves the
-        // entity's body by selecting `(the=<mime>, of=<entity>)`
-        // on the branch. The MIME comes from the entity's
-        // trailing `.<ext>` (defaulting to `text/html`).
-        .route(
-            "/api/repository/{repo}/branch/{branch}/host/{host}/{entity}",
-            get(host::guest),
         )
         // Content-addressed blob bytes: GET serves an entity's bytes; POST
         // ingests a new blob into the branch store and returns its ref.

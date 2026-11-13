@@ -483,13 +483,6 @@ Rules of the road:
 - `component` rows are deprecated; author `element!` instead.
   `tonk element` still lists existing ones.
 
-## Listing views: `tonk view`
-
-`tonk view` is a lower-level, claim-driven inventory: it lists every model
-carrying `show` entries, plus legacy bare `text/html` claims served by the
-worker's guest-host endpoint. A bare `text/html` claim is not a `tonk render`
-route.
-
 ---
 
 For pages at their own paths see `tonk help routes`. For

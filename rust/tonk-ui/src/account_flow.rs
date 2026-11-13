@@ -8882,10 +8882,10 @@ note:
                 .get("account")
                 .is_none_or(serde_json::Value::is_null)
         );
-        let schema = "attribute!: &agent-title\n  description: Agent note title\n  the: test.agent/title\n  as: text\n  cardinality: :one\nconcept!: &agent-note\n  description: Agent authored note\n  with:\n    title: agent-title\nattribute!: &agent-html\n  description: Agent page body\n  the: \"text/html\"\n  as: text\n  cardinality: :many\nconcept!: &agent-page\n  description: Agent authored page\n  with:\n    body: agent-html\n";
+        let schema = "attribute!: &agent-title\n  description: Agent note title\n  the: test.agent/title\n  as: text\n  cardinality: :one\nconcept!: &agent-note\n  description: Agent authored note\n  with:\n    title: agent-title\n";
         for document in [
             schema,
-            "agent-note!: &agent-note-one\n  title: Built with scoped authority\nagent-page!: &agent-page-one\n  body: '<h1>Scoped browser build</h1>'\n",
+            "agent-note!: &agent-note-one\n  title: Built with scoped authority\n",
         ] {
             let built = run_cli(
                 &env,

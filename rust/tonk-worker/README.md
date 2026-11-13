@@ -45,7 +45,6 @@ submodule per route family in [`router/`](src/router):
   its own repository outside the named-repo namespace.
 - **Inspect** (`inspect/`): read-only views of branch state, remote/remote-branch
   status, and archive index blocks for debugging.
-- **Host/guest binding** (`host.rs`): the view iframe's route (see below).
 - **LSP** (`lsp.rs`, `lsp_env.rs`): a language-server surface merged into the
   router, carrying its own `LspHub` state and an SSE event stream.
 - **Migration** (`migration.rs`): `GET /api/migrate/repo-vs-profile`.
@@ -60,8 +59,7 @@ The router's shared state is `Arc<RwLock<TonkState>>`. `TonkState` owns:
   `reactor.repository(r).branch(b)` so subscription broadcasts happen
   automatically,
 - a `CommandRegistry<CommandEnv>` (also from `dialog-reactor`) of typed-Rust
-  command handlers fired by transient command concepts after a commit,
-- the view iframe bookkeeping (`view_bindings`).
+  command handlers fired by transient command concepts after a commit.
 
 `dialog-reactor` is the branch layer: it was extracted from this crate and is
 re-exported here as `tonk_worker::reactor` (and flattened), so `Reactor`,
@@ -85,22 +83,6 @@ later expiry.
 Renewal is local (a key derivation and a self-signed delegation) and adds no
 request to the account or access service. Expiry and revocation stay where they
 were: the access service checks them on the next ordinary remote call.
-
-## Host/guest routing model
-
-A view is rendered in a sandboxed iframe. Routing policy lives entirely in
-`on_fetch` / `route_for` (see [`worker.rs`](src/worker.rs)):
-
-- `/api/...` from an ordinary client routes through axum unchanged.
-- A registered guest iframe (recorded by client id against `{repo, branch}` via
-  `GET .../host/{host}/{entity}`) gets a virtual root: its subresource fetches
-  are rewritten under `/api/repository/{repo}/branch/{branch}/...`, so a fetch
-  for `/foo.js` lands inside its branch.
-- A view client hitting `/api/...` directly is rejected with a synthetic 404:
-  the data plane is not reachable from the iframe.
-
-Everything else passes through to the network (or the shell cache, via
-stale-while-revalidate in [`cache.rs`](src/cache.rs)).
 
 ## Browser contracts
 
