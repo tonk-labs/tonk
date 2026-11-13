@@ -57,6 +57,23 @@ Each run writes `bench/trace/runs/<stamp>/`:
   connections, bytes, resets and forgotten connections per link.
 - `requests.jsonl`, screenshots, and the access service's and proxy's logs.
 
+## Creating a space
+
+`create-space.mjs` times a space's creation in a fresh browser, from the
+press of the hub's create button to the new space's canvas, phase by phase:
+the profile's command, the space's worker starting, its kernel's first boot
+(handed over, installed, compiled, instantiated, initialized), the seed and
+the renderer it keeps, its first page load and its first render. It reads
+the phases from what the page shows and what the space's worker logs, over
+the DevTools protocol, so it needs no Playwright.
+
+```sh
+TRACE_DRIVER=bench/trace/create-space.mjs bench/trace/run.sh
+```
+
+It writes `create-space.json` (each run's phases and their medians).
+`CREATE_RUNS` sets the number of runs, 3 by default.
+
 ## Running
 
 ```sh
