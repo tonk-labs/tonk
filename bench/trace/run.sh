@@ -47,7 +47,9 @@ GATE_PORT="${TRACE_GATE_PORT:-8799}"
 UCAN_PORT="${TRACE_UCAN_PORT:-8800}"
 CONTROL_PORT="${TRACE_CONTROL_PORT:-8801}"
 PROFILE="${TRACE_PROFILE:-lan}"
-BASE="http://127.0.0.1:$GATE_PORT"
+# The page on `localhost`, never an address: each site is an origin of its
+# own at `{label}.localhost`, and an address has no subdomains.
+BASE="http://localhost:$GATE_PORT"
 CONTROL="http://127.0.0.1:$CONTROL_PORT"
 # The remote the browser syncs with: the access service, through its link.
 REMOTE="http://127.0.0.1:$UCAN_PORT"
@@ -76,8 +78,8 @@ trap cleanup EXIT INT TERM
 # permits name the link (ACCESS_PUBLIC_ENDPOINT), and so does the service's
 # DID document (ACCESS_PUBLIC_ORIGIN), which is where the browser finds the
 # socket live updates arrive on. A document naming another host is not
-# taken, and the browser falls back to polling.
-ACCESS_PUBLIC_ENDPOINT="$REMOTE" ACCESS_PUBLIC_ORIGIN="$REMOTE" "$ACCESS_LOCAL" > "$RUN_DIR/access.log" 2>&1 &
+# taken, and the browser falls back to polling. The sites are the page's.
+ACCESS_PUBLIC_ENDPOINT="$REMOTE" ACCESS_PUBLIC_ORIGIN="$REMOTE" ACCESS_PAGE_ORIGIN="$BASE" "$ACCESS_LOCAL" > "$RUN_DIR/access.log" 2>&1 &
 echo $! > "$RUN_DIR/access.pid"
 ACCESS_URL=""
 for _ in $(seq 1 60); do
