@@ -69,6 +69,12 @@ export const SCENARIOS = {
     // Without a sync actually hanging on the remote it proved nothing.
     preconditions: [STARTED_SETTLED, { metric: "harness.sync_stalled", target: 1 }],
   },
+  // A space's page loads, from what its worker holds, while the network
+  // stalls and a pull of the space hangs on it.
+  "load-while-sync-stalls": {
+    invariants: [...NO_REMOVALS, ...NO_RELOADS, { metric: "harness.load_over_budget", target: 0 }],
+    preconditions: [STARTED_SETTLED, { metric: "harness.sync_stalled", target: 1 }],
+  },
   "offline-while-viewing": {
     invariants: [...NO_REMOVALS, ...NO_RELOADS, ...NO_REBUILDS],
   },

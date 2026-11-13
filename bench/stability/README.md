@@ -52,6 +52,11 @@ kernel's state lock), then times a plain read of A, which must answer
 within 2 s. All three go to space A's kernel: with a worker per site, it is
 the one lock a stalled sync of A can hold up.
 
+`load-while-sync-stalls` needs `tonk-perf link` too, to tell that a pull
+still hangs. It stalls the whole network while a pull of space A hangs on
+it, then reloads space A's frame. The page and the frame's whole reload
+must each finish within 5 s, answered from what A's worker holds.
+
 ## Invariants and ratchets
 
 An invariant has a fixed target that is never re-recorded: no content

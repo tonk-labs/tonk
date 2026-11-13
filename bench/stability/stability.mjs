@@ -34,6 +34,9 @@ const LATENCY_MS = String(process.env.STABILITY_LATENCY_MS ?? 150);
 const only = process.env.STABILITY_SCENARIOS?.split(",");
 // How long a plain read may take while a sync stalls (write-while-sync-stalls).
 const READ_BUDGET_MS = 2_000;
+// How long a page load of a space may take while the network stalls
+// (load-while-sync-stalls).
+const LOAD_BUDGET_MS = 5_000;
 // How long a scenario keeps counting after its body ends.
 const TAIL_MS = Number(process.env.STABILITY_TAIL_MS ?? 6_000);
 
@@ -200,6 +203,15 @@ async function scenario(name, body) {
   const values = {
     ...counters,
     ...(observed.read ? { "harness.read_over_budget": observed.read.status !== 200 || observed.read.ms > READ_BUDGET_MS ? 1 : 0 } : {}),
+    ...(observed.load
+      ? {
+          "harness.load_over_budget": [observed.load, observed.reload].some(
+            (l) => !(l.status === 200 || l.status === "loaded") || l.ms > LOAD_BUDGET_MS,
+          )
+            ? 1
+            : 0,
+        }
+      : {}),
     ...(observed.pull_stalled !== undefined ? { "harness.sync_stalled": observed.pull_stalled ? 1 : 0 } : {}),
     "harness.top_loads": topLoads,
     "harness.started_settled": ready === null ? 0 : 1,
@@ -341,6 +353,51 @@ if (shapesRemote) await scenario("write-while-sync-stalls", async () => {
     writer: wrote,
     read,
     pull_stalled: pullStalled,
+    settled_ms: await settled(60_000),
+  };
+});
+
+// The network stalls while a pull of space A hangs on it, and the person
+// opens space A again: its frame reloads. Every request of the reload goes
+// to A's worker, which answers it from what it holds: the page from A's
+// kernel, the relay and the host's files from what the worker kept of them.
+// None of it may wait for the network. Timed twice: the page alone (`GET /`
+// as a page asks for it), then the frame's whole reload, to its `load`
+// event. Both within LOAD_BUDGET_MS (declared at the top).
+//
+// Both links stall, as a network that stops carrying anything does: with
+// only the remote stalled, nothing a page load asks for crosses a stalled
+// link. Whether the pull still hangs once the frame reloaded (which drops
+// the frame's fetch of it) is what the remote's link holds open.
+if (shapesRemote) await scenario("load-while-sync-stalls", async () => {
+  await network("stall");
+  const space = spaceFrame(page, spaceA);
+  timedFetch(space, `/api/repository/${spaceA}/branch/main/sync/pull`, { method: "POST" });
+  const t0 = Date.now();
+  await page.waitForTimeout(2_000);
+  const syncWaiting = async () =>
+    fetch(`${config.gate}/inflight?link=ucan`)
+      .then((r) => r.json())
+      .then((open) => open.filter((x) => x.kind !== "socket" && Date.now() - x.t0 > 1_000).length)
+      .catch(() => 0);
+  const pullStalled = (await syncWaiting()) > 0;
+  const load = await timedFetch(space, "/", { headers: { accept: "text/html" } });
+  const reloadStarted = Date.now();
+  const navigated = page.waitForEvent("framenavigated", { predicate: (f) => f === space, timeout: 30_000 });
+  await space.evaluate(() => setTimeout(() => location.reload(), 0)).catch(() => {});
+  const reload = await navigated
+    .then(() => space.waitForLoadState("load", { timeout: 30_000 }))
+    .then(
+      () => ({ status: "loaded", ms: Date.now() - reloadStarted }),
+      (error) => ({ status: String(error).split("\n")[0].slice(0, 120), ms: Date.now() - reloadStarted }),
+    );
+  const reloadStalled = (await syncWaiting()) > 0;
+  await page.waitForTimeout(Math.max(0, Number(process.env.STABILITY_OUTAGE_MS ?? 20_000) - (Date.now() - t0)));
+  await network("shaped");
+  return {
+    load,
+    reload,
+    pull_stalled: pullStalled && reloadStalled,
     settled_ms: await settled(60_000),
   };
 });
