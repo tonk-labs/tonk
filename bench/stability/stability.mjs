@@ -34,6 +34,8 @@ const LATENCY_MS = String(process.env.STABILITY_LATENCY_MS ?? 150);
 const only = process.env.STABILITY_SCENARIOS?.split(",");
 // How long a plain read may take while a sync stalls (write-while-sync-stalls).
 const READ_BUDGET_MS = 2_000;
+// How long a scenario keeps counting after its body ends.
+const TAIL_MS = Number(process.env.STABILITY_TAIL_MS ?? 6_000);
 
 // The one place that talks to the network shaper: `tonk-perf link`'s
 // control server, in front of the page and the remote it syncs with.
@@ -187,6 +189,11 @@ async function scenario(name, body) {
     observed = { error: String(error).slice(0, 300) };
   }
   await network("shaped");
+  // What the scenario set off can land after the page settled: a display
+  // holds an empty frame for its grace (5 s) before it applies it. Keep
+  // counting a while, so that lands in the scenario that caused it and
+  // not in the next one.
+  await page.waitForTimeout(TAIL_MS);
   await collector.stop();
   const { counters, lockSites } = collector.totals();
   const unsettled = [observed.settled_ms].flat().some((ms) => ms === null);
