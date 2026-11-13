@@ -199,6 +199,7 @@ impl TonkSite {
 /// unloads the realm while replacing the current entry rather than adding one.
 fn teardown(cell: &StateCell) {
     if let Some(state) = cell.borrow_mut().take() {
+        bridge::disconnect_task(&state);
         let mut s = state.borrow_mut();
         s.disposed = true;
         s.sever();
@@ -513,6 +514,7 @@ pub fn register() {
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::*;
+    use crate::task::{Action, Purpose, Request, VERSION};
     use js_sys::Promise;
     use wasm_bindgen_futures::JsFuture;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -572,6 +574,37 @@ mod tests {
             "and must not fall back to a sealed frame"
         );
         host.remove();
+    }
+
+    #[dialog_common::test]
+    fn it_dismisses_the_task_its_guest_leased_when_torn_down() {
+        let dismissed = Rc::new(Cell::new(false));
+        let observed = dismissed.clone();
+        bridge::on_task(move |request, _| {
+            if request.action == Action::Dismiss {
+                observed.set(true);
+            }
+        });
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        state
+            .borrow_mut()
+            .accept_task(&Request {
+                version: VERSION,
+                request_id: "lease-1".into(),
+                purpose: Purpose::Probe,
+                action: Action::Open,
+                account: None,
+                presentation: None,
+            })
+            .expect("lease the task");
+        let cell: StateCell = Rc::new(RefCell::new(Some(state)));
+
+        teardown(&cell);
+
+        assert!(
+            dismissed.get(),
+            "a torn-down site dismisses its guest's task"
+        );
     }
 
     #[dialog_common::test]

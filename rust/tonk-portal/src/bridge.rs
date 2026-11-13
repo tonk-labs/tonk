@@ -199,7 +199,10 @@ impl PortalState {
         self.relays.push(controller);
     }
 
-    fn accept_task(&mut self, request: &crate::task::Request) -> Result<(), &'static str> {
+    pub(crate) fn accept_task(
+        &mut self,
+        request: &crate::task::Request,
+    ) -> Result<(), &'static str> {
         use crate::task::Action;
 
         match request.action {
