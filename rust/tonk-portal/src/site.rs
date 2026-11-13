@@ -513,6 +513,8 @@ pub fn register() {
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::*;
+    use js_sys::Promise;
+    use wasm_bindgen_futures::JsFuture;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
     wasm_bindgen_test_configure!(run_in_browser);
@@ -539,9 +541,21 @@ mod tests {
         host
     }
 
+    /// Let the resolve pass a connect queues run. `schedule` defers it to
+    /// a microtask, so it has run once the next task starts.
+    async fn next_task() {
+        let promise = Promise::new(&mut |resolve, _reject| {
+            let _ = window()
+                .expect("window")
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0);
+        });
+        let _ = JsFuture::from(promise).await;
+    }
+
     #[dialog_common::test]
-    fn it_says_so_when_the_deployment_names_no_origin_for_sites() {
+    async fn it_says_so_when_the_deployment_names_no_origin_for_sites() {
         let host = site(&[("with", "main@did:key:zSpace"), ("allow", "self")]);
+        next_task().await;
 
         assert_eq!(
             host.get_attribute("data-state").as_deref(),
