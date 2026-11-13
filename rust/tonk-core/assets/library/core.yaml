@@ -1286,19 +1286,6 @@ concept!: &inspector
       the: xyz.tonk.inspector/source
       as: text
 
-# The imperative escape hatch: `<tonk-portal>` writes an
-# author-supplied HTML document into a sandboxed iframe, for work the
-# declarative template stack can't express (canvas, WebGL, widgets).
-# The `content` is first-class dialog data, fetched by a nested
-# `<tonk-display model=portal>` like any other concept.
-concept!: &portal
-  description: Imperative HTML rendered in an isolated iframe
-  with:
-    content:
-      description: HTML document written into the portal iframe
-      the: xyz.tonk.portal/content
-      as: text
-
 # One view per concept, keyed by `model`. Each nested
 # `<tonk-display>` passes only `model=…` (and `entity=…`); with no
 # `view` attribute it resolves the view whose `model` matches. The
@@ -1318,17 +1305,6 @@ view!:
   show:
     directory: |
       <tonk-inspector />
-
-# The canonical bridge from the `portal` concept to the
-# `<tonk-portal>` element. `html:` forces the binding through
-# setAttribute so `attributeChangedCallback` fires. Users never write
-# this; nesting a `<tonk-display model=portal>` over a portal entity
-# resolves it by model and renders it.
-view!:
-  this: portal
-  show:
-    ui: |
-      <tonk-portal html:content={content} />
 
 # An author-defined custom element carried as branch data.
 #
@@ -2044,13 +2020,9 @@ view!:
     ui: |
       <tonk-display with="{branch}@{repo}" entity={replica} model=tonk/space />
 
-# The workspace shell — the declarative two-portal composition the space route
-# resolves to. It renders OUTER-side (the top document mounts
-# `<tonk-display model=tonk:site>`, whose site view nests `{concept}` =
-# `tonk:workspace/shell` on the same site entity). The shell owns the page
-# layout and mounts the CONTENT portal: a sealed `<tonk-portal runtime>` whose
-# guest renders the space's content. The FAB portal is a later task — a slot
-# comment for now.
+# The workspace shell the space route resolves to: the site's view nests
+# `{concept}` = `tonk:workspace/shell` on the same site entity. The shell owns
+# the page layout and mounts a `<tonk-display>` for the space's content.
 #
 # It renders on the site entity, so it reuses the site's `space`/`replica`
 # fields (`space` names the routing context, picked off the site).
