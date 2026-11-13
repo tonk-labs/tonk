@@ -106,7 +106,7 @@ pub async fn publish_self_identity(tonk: &crate::worker::TonkState, repo: &str, 
 
 /// The fact saying which account a session acts for, on dialog's session
 /// entity beside the profile and operator dialog records there.
-const SESSION_ACCOUNT: &str = "xyz.tonk.session/account";
+pub(super) const SESSION_ACCOUNT: &str = "xyz.tonk.session/account";
 
 /// Say, in the session overlay of a space's branch, which account this
 /// session acts for: the one the space's memberships name, so a view can

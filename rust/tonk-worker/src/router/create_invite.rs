@@ -588,7 +588,7 @@ pub(super) async fn retain_invite_chains(
 /// a stalled origin, a dropped connection) must not pin the mint on a
 /// convenience. Both legs get their own timeout, so the worst case is
 /// twice this — still far inside the share control's own 15s backstop
-/// (`tonk_fab::logic::SHARE_TIMEOUT_MS`), which is what has to stay true
+/// (`<tonk-share>`'s `arm-timeout` in `profile.yaml`), which is what has to stay true
 /// for the long-URL fallback to reach the clipboard.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) const SHORTCUT_TIMEOUT_MS: u32 = tonk_invite::shortcut::TIMEOUT_MS;

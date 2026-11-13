@@ -147,9 +147,10 @@ pub fn install() {
 
 /// Begin watching `tag`, if not already.
 ///
-/// The consumer element is parked next to whatever announced the tag so
-/// it shares that element's `with` ancestry, and stays in the document
-/// for as long as the realm cares about the tag. A tag is watched once
+/// The consumer element carries the routing context of whatever
+/// announced the tag and is parked at the document root, so it stays in
+/// the document for as long as the realm cares about the tag, however
+/// long the announcing element itself stays. A tag is watched once
 /// per realm because `customElements` is realm-global: the first
 /// announcement's routing context is the one that governs.
 async fn watch(source: &Element, tag: &str) {
@@ -181,13 +182,14 @@ async fn watch(source: &Element, tag: &str) {
     {
         let _ = consumer.set_attribute("with", &context);
     }
-    // Alongside the announcing element rather than inside it: an author
-    // element's children are its own business, and a sibling shares the
-    // same `with` ancestry.
-    let parent = source
-        .parent_element()
-        .or_else(|| document.document_element());
-    let Some(parent) = parent else {
+    // At the document root rather than beside the announcing element. The
+    // watch serves the tag for the whole realm, and the tag is announced
+    // only once, so a watch parked beside its first element would leave
+    // with it: removed before the definition arrived, that element would
+    // take with it the only thing able to define any later one. The
+    // routing context is on the watch itself (above), and the host's
+    // listeners sit on the document, so the root serves both.
+    let Some(parent) = document.document_element() else {
         return;
     };
     if parent.append_child(&consumer).is_err() {
@@ -457,6 +459,9 @@ mod tests {
     use web_sys::Document;
 
     wasm_bindgen_test_configure!(run_in_browser);
+
+    /// The bar and its family, registered from the profile library.
+    mod fab;
 
     /// A mutable stand-in for the branch: the name bindings, method
     /// dictionaries and attribute defaults the fake host answers from.
@@ -764,6 +769,17 @@ mod tests {
         host
     }
 
+    /// A `<tonk-display>` that stays a plain ancestor, for the elements
+    /// that read `closest('tonk-display')`. Outside the HTML namespace, so
+    /// it is never upgraded, not even after another test of this realm
+    /// has registered the real display: a real one with nothing to show
+    /// fails and clears what it holds.
+    fn inert_display() -> Element {
+        document()
+            .create_element_ns(Some("urn:tonk:test"), "tonk-display")
+            .expect("display")
+    }
+
     fn defined(tag: &str) -> bool {
         !window()
             .expect("window")
@@ -812,6 +828,51 @@ mod tests {
             host.text_content().as_deref(),
             Some("arrived"),
             "the element already on the page should upgrade in place",
+        );
+    }
+
+    /// The first element of a tag is removed before its definition
+    /// arrives. The tag stays announced, so a later element of it is never
+    /// announced again: only the watch the first one opened can define it.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_defines_a_tag_whose_first_element_left_before_its_definition() {
+        install_fake_host();
+        install();
+        let holder = document().create_element("div").expect("holder");
+        let first = document()
+            .create_element("probe-orphan")
+            .expect("first element");
+        holder.append_child(&first).expect("nest");
+        document()
+            .body()
+            .expect("body")
+            .append_child(&holder)
+            .expect("attach");
+        let selector = "tonk-element-watch[data-tag=\"probe-orphan\"]";
+        settle_until(|| document().query_selector(selector).ok().flatten().is_some()).await;
+        holder.remove();
+        assert!(!defined("probe-orphan"), "nothing defines it yet");
+
+        define(
+            "probe-orphan",
+            "did:key:zOrphan",
+            &[("connected", "(self) => { self.textContent = 'arrived'; }")],
+        );
+        notify("probe-orphan", "name");
+        let later = document()
+            .create_element("probe-orphan")
+            .expect("later element");
+        document()
+            .body()
+            .expect("body")
+            .append_child(&later)
+            .expect("attach");
+
+        settle_until(|| later.text_content().as_deref() == Some("arrived")).await;
+        assert_eq!(
+            later.text_content().as_deref(),
+            Some("arrived"),
+            "a later element of the tag must upgrade",
         );
     }
 
@@ -1601,7 +1662,7 @@ mod tests {
         define_from_library(CORE_LIBRARY, "page-mount");
         install_fake_host();
         install();
-        let display = document().create_element("tonk-display").expect("display");
+        let display = inert_display();
         let page = document().create_element("page-mount").expect("page");
         display.append_child(&page).expect("nest");
         let mounts = js_sys::Array::new();
@@ -2342,7 +2403,7 @@ mod tests {
             ("search", "?via=https%3A%2F%2Ftonk.network&request=r1"),
             ("hash", "#authorize=abc"),
         ]);
-        let display = document().create_element("tonk-display").expect("display");
+        let display = inert_display();
         let host = document().create_element("account-settings").expect("host");
         host.set_inner_html(
             r#"<div class="pane" data-pane="account"></div><div class="pane" data-pane="via" hidden><b data-via-origin></b><button type="button" data-via-continue data-via="">continue</button><span hidden data-via-return></span></div><p data-ceremony-status hidden></p>"#,

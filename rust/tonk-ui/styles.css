@@ -127,8 +127,14 @@ html::-webkit-scrollbar { width: 0; height: 0; display: none; }
    is upgraded it renders as an undefined element: a `<wa-button>` shows
    as bare text, and a `<wa-dialog>` dumps its slotted form inline
    instead of hiding in a modal. Hide them until `:defined` so they
-   appear already styled rather than flashing. Tonk's own custom
-   elements register synchronously at boot, so they are not affected. */
+   appear already styled rather than flashing. The bar's family is the
+   same: the profile library defines it, so it registers when the
+   library answers, a moment after it first renders. */
+tonk-fab:not(:defined),
+tonk-dialog:not(:defined),
+tonk-cluster:not(:defined) {
+    display: none !important;
+}
 wa-button:not(:defined),
 wa-button-group:not(:defined),
 wa-badge:not(:defined),

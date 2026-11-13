@@ -885,7 +885,6 @@
       "source_paths": [
         "rust/tonk-ui/src/bin/ui.rs",
         "rust/tonk-ui/styles.css",
-        "rust/tonk-fab/src/markup.rs",
         "rust/tonk-core/assets/library/profile.yaml",
         "rust/tonk-worker/src/router/repository/duplication.rs"
       ],
@@ -912,7 +911,7 @@
         "rust/tonk-ui/src/bin/ui.rs",
         "rust/tonk-ui/styles.css",
         "rust/tonk-portal/src/site.rs",
-        "rust/tonk-fab/src/markup.rs"
+        "rust/tonk-core/assets/library/profile.yaml"
       ],
       "status": "captured",
       "summary": "A selected space renders its configured home with the floating action bar available over the content.",
@@ -936,12 +935,7 @@
       "name": "Space actions and attached panels",
       "source_paths": [
         "rust/tonk-ui/src/bin/ui.rs",
-        "rust/tonk-fab/src/markup.rs",
-        "rust/tonk-fab/src/bar.rs",
-        "rust/tonk-fab/src/tool_connection.rs",
-        "rust/tonk-fab/src/agent_panel.rs",
-        "rust/tonk-fab/src/member_roster.rs",
-        "rust/tonk-fab/src/skin.rs"
+        "rust/tonk-core/assets/library/profile.yaml"
       ],
       "status": "captured",
       "summary": "The v0.17 floating action bar names the current space and separates person invitations from scoped tool connections alongside share, members, and Tonk-home actions.",
@@ -963,9 +957,7 @@
       "source_paths": [
         "rust/tonk-ui/src/bin/ui.rs",
         "rust/tonk-ui/src/fabb_task.rs",
-        "rust/tonk-fab/src/contained_tasks.rs",
-        "rust/tonk-fab/src/trusted_tasks.rs",
-        "rust/tonk-fab/src/share.rs",
+        "rust/tonk-core/assets/library/profile.yaml",
         "rust/tonk-portal/src/task.rs"
       ],
       "status": "captured",
@@ -1190,10 +1182,7 @@
       ],
       "name": "Make space public",
       "source_paths": [
-        "rust/tonk-fab/src/markup.rs",
-        "rust/tonk-fab/src/bar.rs",
-        "rust/tonk-fab/src/skin.rs",
-        "rust/tonk-fab/src/publication.rs",
+        "rust/tonk-core/assets/library/profile.yaml",
         "rust/tonk-worker/src/router/publication.rs"
       ],
       "status": "captured",
@@ -1211,10 +1200,7 @@
       ],
       "name": "Observing a public space",
       "source_paths": [
-        "rust/tonk-fab/src/markup.rs",
-        "rust/tonk-fab/src/bar.rs",
-        "rust/tonk-fab/src/skin.rs",
-        "rust/tonk-fab/src/member_roster.rs",
+        "rust/tonk-core/assets/library/profile.yaml",
         "rust/tonk-worker/src/router/join.rs"
       ],
       "status": "captured",

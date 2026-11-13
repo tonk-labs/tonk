@@ -40,7 +40,6 @@ pub fn start() {
     tonk_display::registry::install();
     tonk_display::register();
     tonk_tree::register();
-    tonk_fab::register();
     // The scratch inspector — a leptos-free notebook element that evaluates over
     // the host fetch bridge; its `<tonk-code>` editor + diagnostics provider are
     // injected by the portal.

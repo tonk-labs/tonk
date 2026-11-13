@@ -15,7 +15,6 @@ members = [
   "rust/tonk-display",
   "rust/tonk-email",
   "rust/tonk-evaluator",
-  "rust/tonk-fab",
   "rust/tonk-guest",
   "rust/tonk-host",
   "rust/tonk-identity",
@@ -66,7 +65,6 @@ tonk-core = { path = "./rust/tonk-core" }
 tonk-display = { path = "./rust/tonk-display" }
 tonk-email = { path = "./rust/tonk-email" }
 tonk-evaluator = { path = "./rust/tonk-evaluator" }
-tonk-fab = { path = "./rust/tonk-fab" }
 tonk-host = { path = "./rust/tonk-host" }
 tonk-identity = { path = "./rust/tonk-identity" }
 tonk-inspector = { path = "./rust/tonk-inspector" }

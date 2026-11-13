@@ -1807,12 +1807,10 @@ fn every_handled_command_matches_attributes_its_declaration_carries() {
     // worth stating: the name belongs to TWO different commands. The one
     // `core.yaml` declares carries `{subject, name}` and is consumed by a
     // space-side `rule!:`. `tonk_schema::command::RenameRepository`
-    // carries `{space, name}` and is dispatched from the profile branch by
-    // the FAB, which inlines its own descriptor because the space-side
-    // rule cannot consume a claim made on the profile branch. They share a
-    // notation name and nothing else, so pairing them here would compare
-    // two unrelated things. The FAB's claim is pinned against the struct
-    // in `fab_drift.rs` instead, which is where that pairing lives.
+    // carries `{space, name}` and is dispatched from the profile branch,
+    // because the space-side rule cannot consume a claim made on the
+    // profile branch. They share a notation name and nothing else, so
+    // pairing them here would compare two unrelated things.
     let handled: Vec<(&str, Vec<String>)> = vec![
         (
             "space/create",
@@ -1833,6 +1831,31 @@ fn every_handled_command_matches_attributes_its_declaration_carries() {
         (
             "tonk/pause-sync",
             tonk_schema::command::PauseSync::trigger_attributes(),
+        ),
+        // What the bar dispatches on the profile, naming the space each is for.
+        (
+            "invite/mint",
+            tonk_schema::command::Invite::trigger_attributes(),
+        ),
+        (
+            "invite/forget",
+            tonk_schema::command::ForgetInvite::trigger_attributes(),
+        ),
+        (
+            "sync/enable",
+            tonk_schema::command::EnableSync::trigger_attributes(),
+        ),
+        (
+            "agent-handoff/request",
+            tonk_schema::command::AgentHandoff::trigger_attributes(),
+        ),
+        (
+            "space/publish",
+            tonk_schema::command::PublishSpace::trigger_attributes(),
+        ),
+        (
+            "space/unpublish",
+            tonk_schema::command::UnpublishSpace::trigger_attributes(),
         ),
         (
             "profile/rename",
