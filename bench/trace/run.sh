@@ -110,6 +110,7 @@ for _ in $(seq 1 20); do
   grep -q PROXY_READY "$RUN_DIR/proxy.log" 2>/dev/null && break
   sleep 0.5
 done
+grep -q PROXY_READY "$RUN_DIR/proxy.log" || { echo "trace: proxy never came up (see proxy.log)" >&2; exit 1; }
 "$PERF" link --profile "$PROFILE" --control "$CONTROL_PORT" \
   --link "page=$GATE_PORT:127.0.0.1:$PROXY_PORT" \
   --link "ucan=$UCAN_PORT:$ACCESS_URL" \
@@ -119,6 +120,7 @@ for _ in $(seq 1 20); do
   grep -q LINK_CONTROL "$RUN_DIR/links.log" 2>/dev/null && break
   sleep 0.5
 done
+grep -q LINK_CONTROL "$RUN_DIR/links.log" || { echo "trace: links never came up (see links.log)" >&2; exit 1; }
 curl -fso /dev/null "$BASE/" || { echo "trace: links not serving" >&2; exit 1; }
 # TRACE_SHAPE adjusts the profile, as `/profile` takes it, such as
 # `idle_cut_ms=10000` for a NAT that forgets a connection quiet for 10 s.
