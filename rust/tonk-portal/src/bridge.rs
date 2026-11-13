@@ -1,11 +1,10 @@
-//! The live-data bridge injected into a portal's iframe.
+//! The bridge between a `<tonk-site>` and the guest it frames.
 //!
-//! A portal mounts an **opaque-origin** iframe (`sandbox="allow-scripts"`)
-//! and prepends a small bootstrap script to its document. That script
-//! defines `window.tonk` synchronously, opens a [`MessageChannel`], and
-//! posts a `hello` envelope to its parent transferring one port. The
-//! iframe keeps the other port; thereafter author code and the parent
-//! communicate only over that port.
+//! A site's shell runs a small bootstrap script (`bootstrap.js`) before
+//! anything else. That script defines `window.tonk` synchronously, opens a
+//! [`MessageChannel`], and posts a `hello` envelope to its parent
+//! transferring one port. The guest keeps the other port; thereafter it and
+//! the parent communicate only over that port.
 //!
 //! [`MessageChannel`]: https://developer.mozilla.org/docs/Web/API/MessageChannel
 //!
@@ -92,13 +91,11 @@ pub(crate) struct PortalState {
     /// Which locations this portal permits its guest to reach. A
     /// **privilege of the trusted portal element**, set host-side at
     /// construction — NOT something the guest can assert. `<tonk-site>`
-    /// derives it from its `allow` attribute; `<tonk-fab-portal>` grants
-    /// `*`; the generic `<tonk-portal>` grants `self`, so a
-    /// synced/untrusted content guest's fetch of another location is
-    /// denied with a typed error. See `handle_host_fetch`.
+    /// derives it from its `allow` attribute, and a guest's fetch of a
+    /// location outside it is denied with a typed error. See
+    /// `handle_host_fetch`.
     allow: Allow,
-    /// The space's real origin when this portal renders it there (a
-    /// `<tonk-site origin>`), rather than in an opaque `srcdoc` frame.
+    /// The space's real origin, once `<tonk-site>` renders it there.
     origin: Option<String>,
     /// The authority real-origin sites render under, handed down to the
     /// guest so the sites it nests render on origins of their own too.
@@ -153,15 +150,15 @@ impl PortalState {
         self.origin.as_deref()
     }
 
-    /// Set this portal's routing context and reach. Called once, host-side,
-    /// by the trusted portal element during `connect_portal`.
+    /// Set this portal's routing context and reach. Called host-side by
+    /// `<tonk-site>` when it frames a site.
     pub(crate) fn set_route(&mut self, with: Option<Location>, allow: Allow) {
         self.with = with;
         self.allow = allow;
     }
 
     /// This portal's target space (a `did:key` string), or `None` when it
-    /// targets the profile/Hub. Drives the guest's synthetic `<base>` origin.
+    /// targets the profile/Hub. Drives how a guest's href maps to a route.
     pub(crate) fn route_space(&self) -> Option<String> {
         self.with
             .as_ref()
@@ -253,68 +250,10 @@ impl PortalState {
     }
 }
 
-/// The bootstrap script prepended into the iframe's `srcdoc`. It defines
-/// `window.tonk` synchronously, opens a `MessageChannel`, and hands one
-/// port to the parent via `parent.postMessage(hello, "*", [port2])`.
-/// Posting to `"*"` is unavoidable from a null origin; the parent
-/// authenticates by `event.source`, not `event.origin`.
-const BOOTSTRAP_JS: &str = include_str!("bootstrap.js");
-
-/// Runtime-injection bootstrap, appended after [`BOOTSTRAP_JS`] when the
-/// portal is in `runtime` mode. It receives the element runtime from the
-/// parent (over `window` `postMessage`, NOT the data port) and brings it up
-/// inside the sealed guest: inject CSS, mint blob URLs for the glue +
-/// snippet modules, rewrite the glue's relative snippet imports to those
-/// blobs, import the glue, instantiate the wasm from bytes (no fetch), and
-/// call `start()` to register the custom elements. The `content` markup
-/// (e.g. `<tonk-display>`) is already in the document and upgrades the
-/// moment the elements are defined.
-///
-/// The guest fetches NOTHING — the parent (trusted, networked) hands over
-/// every byte. `runtime-ready` tells the parent to send.
-const RUNTIME_BOOTSTRAP_JS: &str = include_str!("runtime_bootstrap.js");
-const PREVIEW_CAPTURE_JS: &str = include_str!("preview_capture.js");
-
 #[wasm_bindgen::prelude::wasm_bindgen(module = "/src/preview_cache.js")]
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = previewRequest)]
     fn preview_request(request: &JsValue, context: &JsValue, host: &Element) -> js_sys::Promise;
-}
-
-/// A `<base href>` element pinning the guest's document base to the
-/// per-space synthetic origin, so the BROWSER resolves every relative URL
-/// (links, forms, `new URL`, `<page-mount>` location reads) under it. Empty
-/// when there is no space origin (the profile/Hub), leaving the guest's
-/// inherited base untouched. Prepended before everything so it applies from
-/// the first parsed node.
-fn base_tag(base: &str) -> String {
-    if base.is_empty() {
-        String::new()
-    } else {
-        // `base` is a same-origin literal we built (`https://{label}.tonk.network/`),
-        // so there is nothing to escape, but keep it minimal and attribute-safe.
-        format!("<base href=\"{base}\">")
-    }
-}
-
-/// Prepend the bootstrap script that wires `window.tonk` to this
-/// portal's bridge over a `MessagePort`. `base` is the per-space synthetic
-/// origin the guest should resolve URLs against (empty = leave inherited).
-pub(crate) fn bootstrap_srcdoc(content: &str, base: &str, head: &str) -> String {
-    format!(
-        "{}{head}<script>{BOOTSTRAP_JS}</script><script>{PREVIEW_CAPTURE_JS}</script>{content}",
-        base_tag(base)
-    )
-}
-
-/// Like [`bootstrap_srcdoc`], plus the runtime-injection bootstrap: the
-/// guest will ask the parent (`runtime-ready`) for the element runtime and
-/// bring it up before `content`'s custom elements upgrade.
-pub(crate) fn bootstrap_srcdoc_with_runtime(content: &str, base: &str, head: &str) -> String {
-    format!(
-        "{}{head}<script>{BOOTSTRAP_JS}</script><script>{RUNTIME_BOOTSTRAP_JS}</script><script>{PREVIEW_CAPTURE_JS}</script>{content}",
-        base_tag(base)
-    )
 }
 
 /// Fetch the element runtime + app CSS (the parent is trusted + networked)
@@ -425,7 +364,7 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
     // is nothing smaller to register. Its ~659 kB graph (main + dialog-yaml
     // pack + shared chunks) crosses the boundary over `need-code`, the first
     // time a `<tonk-code>`/`<tonk-diagnostics-provider>` appears in the
-    // guest's DOM (see the observer in `BOOTSTRAP_JS` and `inject_code_core`).
+    // guest's DOM (see the observer in `bootstrap.js` and `inject_code_core`).
     // Most guests — the Hub, settings, join, a space page — never mount an
     // editor, and now never pay for one.
 
@@ -2701,7 +2640,8 @@ fn post_error(port: &MessagePort, ty: &str, id: &str, error: &str) {
 
 #[cfg(test)]
 mod runtime_bootstrap_tests {
-    use super::RUNTIME_BOOTSTRAP_JS;
+    /// The runtime loader a site's shell runs after `bootstrap.js`.
+    const RUNTIME_BOOTSTRAP_JS: &str = include_str!("runtime_bootstrap.js");
 
     /// A nested guest fills its parent's whole viewport, so once content
     /// renders in one, no click reaches the frame the FABB lives in and its
@@ -3073,27 +3013,52 @@ mod tests {
 
     // --- End-to-end smoke tests --------------------------------------
 
-    /// Mount a real `<tonk-portal>` (opaque-origin iframe) under the
-    /// fake host with the given attributes.
-    fn mount_portal(
+    /// The bootstrap a site's shell runs first: it defines `window.tonk`
+    /// and opens the bridge with a `hello`.
+    const BOOTSTRAP_JS: &str = include_str!("bootstrap.js");
+
+    /// A guest the bridge serves: an opaque-origin frame running
+    /// `bootstrap.js` ahead of `content`, registered under a host element
+    /// that carries the scoped `entity` / `model`.
+    struct Guest {
+        host: Element,
+        state: Rc<RefCell<PortalState>>,
+    }
+
+    /// Mount a [`Guest`] under the fake host with the given attributes.
+    fn mount_guest(
         host: &FakeHost,
         content: &str,
         entity: Option<&str>,
         model: Option<&str>,
-    ) -> Element {
-        crate::register();
-        let portal = document()
-            .create_element("tonk-portal")
-            .expect("tonk-portal");
-        portal.set_attribute("content", content).expect("content");
-        if let Some(e) = entity {
-            portal.set_attribute("entity", e).expect("entity");
+    ) -> Guest {
+        install_message_listener();
+        let element = relay_consumer(host, entity, model);
+        let iframe = document()
+            .create_element("iframe")
+            .expect("iframe")
+            .dyn_into::<HtmlIFrameElement>()
+            .expect("iframe cast");
+        iframe
+            .set_attribute("sandbox", "allow-scripts")
+            .expect("sandbox");
+        iframe
+            .set_attribute("style", "width:100%;height:100%;border:0")
+            .expect("style");
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        register_portal(&iframe, &element, &state);
+        element.append_child(&iframe).expect("attach iframe");
+        iframe
+            .set_attribute(
+                "srcdoc",
+                &format!("<script>{BOOTSTRAP_JS}</script>{content}"),
+            )
+            .expect("srcdoc");
+        state.borrow_mut().iframe = Some(iframe);
+        Guest {
+            host: element,
+            state,
         }
-        if let Some(m) = model {
-            portal.set_attribute("model", m).expect("model");
-        }
-        host.container.append_child(&portal).expect("attach portal");
-        portal
     }
 
     /// Listen on `window` for the author iframe's `{ __test: tag, ... }`
@@ -3183,8 +3148,9 @@ mod tests {
             tonk.task({open:?});tonk.task({reseat:?});
             </script>"#
         );
-        let portal = mount_portal(&host, &content, None, None);
-        portal
+        let guest = mount_guest(&host, &content, None, None);
+        guest
+            .host
             .set_attribute(
                 "style",
                 "display:block;margin:29px 0 0 37px;width:320px;height:220px",
@@ -3211,10 +3177,11 @@ mod tests {
             dialog.matches(":modal").expect(":modal selector"),
             "the request is modal in the top page rather than only the guest"
         );
-        let iframe = portal
+        let iframe = guest
+            .host
             .query_selector("iframe")
             .expect("iframe selector")
-            .expect("portal iframe")
+            .expect("guest iframe")
             .dyn_into::<HtmlElement>()
             .expect("HTML iframe");
         let frame = iframe.get_bounding_client_rect();
@@ -3256,7 +3223,7 @@ mod tests {
         );
         dialog.close();
         dialog.remove();
-        portal.remove();
+        guest.host.remove();
     }
 
     #[dialog_common::test]
@@ -3296,7 +3263,7 @@ mod tests {
         });
 
         let open = task_payload(crate::task::Action::Open, 10.0, 12.0);
-        let portal = mount_portal(
+        let guest = mount_guest(
             &host,
             &format!("<script>tonk.task({open:?})</script>"),
             None,
@@ -3314,7 +3281,8 @@ mod tests {
         }
         assert!(standing.borrow().is_some(), "trusted task opened");
 
-        portal.remove();
+        disconnect_task(&guest.state);
+        guest.host.remove();
         for _ in 0..100 {
             if dismissed.get() {
                 break;
@@ -3386,8 +3354,8 @@ mod tests {
                  </script>"
             )
         };
-        mount_portal(&host, &report("a"), Some("id:alpha"), Some("counter"));
-        mount_portal(&host, &report("b"), Some("id:beta"), Some("counter"));
+        mount_guest(&host, &report("a"), Some("id:alpha"), Some("counter"));
+        mount_guest(&host, &report("b"), Some("id:beta"), Some("counter"));
 
         let a = probe_a.wait().await;
         let b = probe_b.wait().await;
@@ -3564,7 +3532,7 @@ mod tests {
               .then(function(r){parent.postMessage({__test:'u',url:r.url},'*');})\
               .catch(function(err){parent.postMessage({__test:'u',error:String(err)},'*');});\
             </script>";
-        mount_portal(&host, content, None, None);
+        mount_guest(&host, content, None, None);
 
         let msg = probe.wait().await;
         assert!(

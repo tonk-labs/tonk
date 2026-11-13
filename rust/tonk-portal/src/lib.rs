@@ -1,31 +1,11 @@
-//! `<tonk-portal>` — an imperative rendering escape hatch.
+//! `<tonk-site>` and the bridge to the page around it.
 //!
-//! The declarative `<tonk-view>` / `<tonk-display>` stack paints a
-//! template by interpolating an entity's fields into the page DOM.
-//! That cannot express arbitrary imperative DOM work — canvas/WebGL
-//! drawing, third-party widgets, custom state machines. `<tonk-portal>`
-//! fills the gap: it writes an author-supplied HTML document (which
-//! may run its own scripts) into a sandboxed `<iframe>`.
-//!
-//! Like `<tonk-view>`, the portal is a **painter, not a fetcher**. It
-//! opens no subscription and resolves no descriptor; it receives an
-//! already-fetched HTML string through its `content` attribute and does
-//! one imperative thing — assign the iframe's `srcdoc`. The iframe
-//! always fills its container. The
-//! `content` is itself first-class dialog data: the `portal` concept
-//! holds it, and a nested `<tonk-display model=portal>` fetches it,
-//! exactly as a board column fetches its tiles.
-//!
-//! This crate ships the element. The `portal` concept and its canonical
-//! view (resolved by model) that bridges it to the element live in the
-//! standard library (`tonk-core/assets/library/core.yaml`), seeded by
-//! the service worker at repository creation.
-//!
-//! Set `hide-fab` on a `<tonk-site>` or `<tonk-portal>` before mounting to
-//! hide `<tonk-fab>` in its guest and nested guests. Native embedders can
-//! instead set `window.__tonkHideFab = true` before Tonk boots. This is a
-//! presentation setting only; it leaves the elements and bridge active.
-//! It is inherited at mount/reload time, not a live toggle.
+//! `<tonk-site>` frames a site on an origin of its own and tells it which
+//! path to show (see `site.rs`). The page that mounts it talks to the
+//! framed guest only over the bridge (see `bridge.rs`): a `MessagePort`
+//! the guest opens with a `hello`, through which it asks the trusted page
+//! for what a sealed frame cannot do itself, such as navigation, titles,
+//! tasks and fetches on the page's real origin.
 
 #![warn(missing_docs)]
 
@@ -40,17 +20,10 @@ pub use bridge::{
     on_delegate, on_register, on_task,
 };
 #[cfg(target_arch = "wasm32")]
-mod element;
-#[cfg(target_arch = "wasm32")]
-mod shared;
-#[cfg(target_arch = "wasm32")]
 mod site;
-mod site_content;
 #[cfg(target_arch = "wasm32")]
 mod space_origin;
 pub mod task;
-#[cfg(target_arch = "wasm32")]
-pub use element::register;
 #[cfg(target_arch = "wasm32")]
 pub use site::register as register_site;
 #[cfg(target_arch = "wasm32")]

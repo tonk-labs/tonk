@@ -48,11 +48,6 @@ pub fn start() {
     // `<tonk-notebook>` — the same evaluate path as the inspector, hosted on a
     // `<tonk-prose>` document whose ```dialog fences are the cells.
     tonk_inspector::register_notebook();
-    // A view inside the guest can itself mount a `<tonk-portal>` (the Sketch
-    // sheet's imperative canvas). Register it so a NESTED portal upgrades —
-    // it nests cleanly since the canvas portal is plain `content=` (a
-    // self-contained srcdoc), needing no runtime injection or network.
-    tonk_portal::register();
     // The nested router: a space's chrome runs a `<tonk-site>` inside the guest
     // to route the sub-path against the space's route table, rendering its match
     // in a further-nested sealed iframe.

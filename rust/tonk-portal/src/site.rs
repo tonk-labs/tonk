@@ -15,7 +15,7 @@
 //! Flow on connect (and on navigation):
 //! 1. Parse `with` + `allow`; take the path from the `path` attribute (a
 //!    nested router; the top page's mount keeps it synced to the location).
-//! 2. Bring up the frame on the site's origin via [`connect_portal`], with
+//! 2. Bring up the frame on the site's origin (`render_in_iframe`), with
 //!    the site's entity and path in its context.
 //! 3. The frame claims the transient `tonk:load` against its own worker,
 //!    which stamps `tonk:site` (matching the path against its `route!`
@@ -39,8 +39,7 @@ use crate::space_origin::{
 };
 
 /// Shared cell holding the portal state once the iframe is up. An `Rc` so the
-/// async site-registration task can hold it across the await and hand it to
-/// `connect_portal`.
+/// async site-registration task can hold it across the await.
 type StateCell = Rc<RefCell<Option<Rc<RefCell<PortalState>>>>>;
 
 /// The `<tonk-site>` element. Holds the shared [`PortalState`] once its iframe is
@@ -499,9 +498,8 @@ pub(crate) fn reload_site(host: &Element, state: &Rc<RefCell<PortalState>>) {
 }
 
 /// Register `<tonk-site>`. Idempotent. Installs the page-level `hello` /
-/// runtime-injection message listener (the same one `<tonk-portal>` installs),
-/// since `<tonk-site>` owns sealed iframes that hand-shake and request the
-/// element runtime through it.
+/// runtime-injection message listener, since `<tonk-site>` owns iframes
+/// that hand-shake and request the element runtime through it.
 pub fn register() {
     crate::bridge::install_message_listener();
     crate::space_origin::install_reach();
