@@ -17,7 +17,7 @@ function harness({ retries = 0, storageThrows = false } = {}) {
     failed: false,
     setAttribute(name) { if (name === "data-failed") this.failed = true; },
   };
-  const heading = { textContent: "Tonk couldn’t start" };
+  const heading = { textContent: "this page didn’t load" };
   let reloads = 0;
   const self = {};
   const storage = {
