@@ -356,7 +356,7 @@ Requirements, all from how the runtime listens:
   event type (`on/tally-bump` listens for `bump`). Prefix it with the
   element's name to keep declarations from colliding.
 
-The standard library's `<table-editor>` and `<tonk-notebook>` views are
+The standard library's `<table-editor>` and `<notebook-editor>` views are
 bound exactly this way.
 
 ## The `event` concept

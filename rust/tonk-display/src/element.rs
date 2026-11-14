@@ -2992,7 +2992,7 @@ fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool
 ///
 /// Forward the display host's OWN routing context (`with`) onto the view
 /// it just mounted — so a view whose content resolves its own context
-/// (`<tonk-notebook>`, an element marked `data-tonk-with`, a nested
+/// (an element marked `data-tonk-with`, such as `<notebook-editor>`, a nested
 /// `<ui-sync-status>`) sees
 /// the display's context without inferring it from DOM ancestors. This is
 /// the ONE propagation boundary: context flows across a `<tonk-display>`,
@@ -3014,7 +3014,7 @@ const MODEL_CHAIN: &str = "data-tonk-models";
 ///
 /// Looked up across shadow roots. `closest` stops at one, and a view that
 /// renders inside an element's shadow tree (a notebook cell's results live
-/// in `<tonk-prose>`'s) would otherwise start with an empty chain and never
+/// in `<prose-editor>`'s) would otherwise start with an empty chain and never
 /// see the notebook it sits in: a cell querying `notebook:` mounted the
 /// notebook again in its own results, forever.
 fn model_chain(host: &Element) -> Vec<String> {
@@ -3043,7 +3043,7 @@ fn model_chain(host: &Element) -> Vec<String> {
 /// What is not fine is a model whose view mounts a display of the same
 /// model, because that view mounts the same view again, forever. A notebook
 /// whose cell queries `notebook:` is the case that found this: each result
-/// card mounted a `<tonk-notebook>`, which bound editors, ran the cell, and
+/// card mounted a `<notebook-editor>`, which bound editors, ran the cell, and
 /// produced the results that mounted the next generation — ~200 queries a
 /// second on an idle page, with the cards visibly flipping between the
 /// nested notebook and a bare name as each frame replaced the last.
@@ -3149,7 +3149,7 @@ fn forward_with(host: &Element, view_el: &Element) {
 /// consumers, and a nested display, which forwards it on in turn. A library
 /// element (the console's `<space-tree>`, say) opts in by carrying
 /// `data-tonk-with`, since the host cannot know the tags a space defines.
-const ROUTING_CONSUMERS: &str = "[data-tonk-with], tonk-display, tonk-notebook, ui-sync-status";
+const ROUTING_CONSUMERS: &str = "[data-tonk-with], tonk-display, ui-sync-status";
 
 /// Stamp `context` as `with` on each of `consumers` that lacks one, then
 /// descend into each of `templates` and do the same for its content.
@@ -4844,7 +4844,7 @@ mod tests {
 
     /// The same entity through the same view is refused past one level of
     /// self-nesting, even when the repeat sits inside a SHADOW ROOT. A notebook cell's results render
-    /// in `<tonk-prose>`'s shadow tree, and the chain lookup stopped at
+    /// in `<prose-editor>`'s shadow tree, and the chain lookup stopped at
     /// that boundary: a cell querying `notebook:` mounted its own notebook
     /// in its results, which ran the cell again, forever.
     #[cfg(target_arch = "wasm32")]
@@ -5051,7 +5051,7 @@ mod tests {
         view.set_inner_html(concat!(
             "<ui-sync-status></ui-sync-status>",
             "<space-tree data-tonk-with></space-tree>",
-            r#"<tonk-notebook with="main@did:key:zOther"></tonk-notebook>"#,
+            r#"<notebook-editor data-tonk-with with="main@did:key:zOther"></notebook-editor>"#,
             "<span>plain</span>",
         ));
         host.append_child(&view).unwrap();
@@ -5077,7 +5077,7 @@ mod tests {
             "an element marked data-tonk-with inherits it too",
         );
         assert_eq!(
-            view.query_selector("tonk-notebook")
+            view.query_selector("notebook-editor")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")
@@ -5102,7 +5102,7 @@ mod tests {
     /// `querySelectorAll` on the view never sees them. The forward pass
     /// must stamp the content, and the content of any `<template>` nested
     /// inside it (a view's own row template), or every routing consumer
-    /// inside a view loses its context: `<tonk-notebook>`, an element
+    /// inside a view loses its context: an element
     /// marked `data-tonk-with`, `<ui-sync-status>` and the nested display
     /// that is how context cascades.
     #[cfg(target_arch = "wasm32")]
@@ -5115,7 +5115,7 @@ mod tests {
         let template = document.create_element("template").unwrap();
         template.set_inner_html(concat!(
             "<ui-sync-status></ui-sync-status>",
-            "<tonk-notebook></tonk-notebook>",
+            "<notebook-editor data-tonk-with></notebook-editor>",
             "<tonk-display></tonk-display>",
             "<template><space-tree data-tonk-with></space-tree></template>",
         ));
@@ -5128,7 +5128,7 @@ mod tests {
             .dyn_into::<web_sys::HtmlTemplateElement>()
             .unwrap()
             .content();
-        for tag in ["ui-sync-status", "tonk-notebook", "tonk-display"] {
+        for tag in ["ui-sync-status", "notebook-editor", "tonk-display"] {
             assert_eq!(
                 content
                     .query_selector(tag)
@@ -5174,7 +5174,7 @@ mod tests {
             &host,
             &mut inner,
             concat!(
-                "<tonk-notebook></tonk-notebook>",
+                "<notebook-editor data-tonk-with></notebook-editor>",
                 r#"<space-tree data-tonk-with with="main@did:key:zOther"></space-tree>"#,
             ),
             "tonk:test",
@@ -5192,7 +5192,7 @@ mod tests {
             .content();
         assert_eq!(
             content
-                .query_selector("tonk-notebook")
+                .query_selector("notebook-editor")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")

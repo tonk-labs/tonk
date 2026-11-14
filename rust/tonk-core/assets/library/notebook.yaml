@@ -1,9 +1,15 @@
 # ===========================================================================
-# notebook — a <tonk-notebook> document whose ```dialog-yaml fences are live cells.
+# notebook — a <notebook-editor> document whose ```dialog-yaml fences are live cells.
 # ===========================================================================
 # A notebook IS a prose document. What makes it a notebook is that its fenced
 # `dialog` code blocks are evaluated against the branch and their results
 # rendered beneath them, which is the element's business, not the model's.
+#
+# Requires prose-editor and code-editor: the document is a <prose-editor>,
+# and each of its code blocks a <code-editor>. A library component cannot
+# install another, so install those two as well; until the space has them
+# the notebook says so in place of its editor, and becomes one the moment
+# they arrive.
 #
 # Blocks are the STORED unit: the document the editor shows is the blocks
 # projected (joined with a blank line), and an edit writes back only the
@@ -186,15 +192,15 @@ concept!: &block/chain
 
 # Cmd+S on macOS, Ctrl+S elsewhere, saves what the editor shows.
 #
-# It wraps the `<tonk-notebook>` rather than sitting beside it, so "focus is
-# in the notebook" is just "the key reached this element": a press anywhere
-# else on the page never gets here, and the browser's own Cmd+S still
-# behaves normally there. It listens in the BUBBLE phase and steps aside
-# for a press something inside already handled: neither prose's keymap nor
-# a `<tonk-code>` cell's binds Mod-S today, but if one ever does, the editor
-# keeps it.
+# It wraps the `<notebook-editor>` rather than sitting beside it, so "focus
+# is in the notebook" is just "the key reached this element": a press
+# anywhere else on the page never gets here, and the browser's own Cmd+S
+# still behaves normally there. It listens in the BUBBLE phase and steps
+# aside for a press something inside already handled: neither prose's keymap
+# nor a `<code-editor>` cell's binds Mod-S today, but if one ever does, the
+# editor keeps it.
 #
-# The text is the `<tonk-prose>` editor's live `value`, the same string the
+# The text is the `<prose-editor>`'s live `value`, the same string the
 # notebook commits from, read at the moment of the press: typing that has
 # not been committed yet is saved as shown, not re-read from the store.
 #
@@ -242,7 +248,7 @@ element!: &notebook-save
       }
     markdown: |
       (self) => {
-        const prose = self.querySelector('tonk-notebook tonk-prose');
+        const prose = self.querySelector('notebook-editor prose-editor');
         const value = prose?.value;
         return typeof value === 'string' ? value : '';
       }
@@ -300,6 +306,86 @@ element!: &notebook-save
           { bubbles: true, detail: { name, via: 'download' } }));
       }
 
+# ---------------------------------------------------------------------------
+# <notebook-editor with="branch@repo"> — one notebook, as a <prose-editor>.
+#
+# The view renders the notebook's rows into it, hidden: its `block`
+# sequence (`.notebook-order__item`, an entry's block and key, in position
+# order) and every block's source (`.notebook-block-row`). The element
+# projects them into the editor's document, and commits an edit as ONE
+# evaluated document of the commands below: the blocks it changed, moved,
+# removed or inserted, and a rename when the heading changed (the heading IS
+# the title). It reads and writes the branch its `with` names, over the
+# worker's `/evaluate`.
+#
+# Each ```dialog-yaml fence (or `dialog`, or untagged) is a cell: its
+# <code-editor> is put on the language server, a clean query runs as a dry
+# run as it is typed, and its result renders under it; a cell that asserts
+# runs only on the bolt or Cmd/Ctrl+Enter, and commits.
+#
+# `draft` makes it the index's: nothing behind it, and its heading the
+# switcher <notebook-index> answers. Attributes: `with`, `draft`, `title`
+# (the title it has), `data-notebook` (whose blocks it shows and writes).
+# Methods worth calling from outside: `blocks()`, `positions()` and
+# `notation()` (the pure halves, returned as functions), `evaluate(notation,
+# transact)`.
+# ---------------------------------------------------------------------------
+
+element!: &notebook-editor
+  description: "A notebook over the branch its `with` names: its blocks projected into a <prose-editor>, edits committed block by block, and its dialog fences live query cells."
+  method:
+    connected: !include/text ./notebook/connected.js
+    disconnected: !include/text ./notebook/disconnected.js
+    attribute-changed: !include/text ./notebook/attribute-changed.js
+    start: !include/text ./notebook/start.js
+    context: !include/text ./notebook/context.js
+    mount: !include/text ./notebook/mount.js
+    require: !include/text ./notebook/require.js
+    attach: !include/text ./notebook/attach.js
+    listen: !include/text ./notebook/listen.js
+    observe: !include/text ./notebook/observe.js
+    refresh: !include/text ./notebook/refresh.js
+    later: !include/text ./notebook/later.js
+    rows: !include/text ./notebook/rows.js
+    live: !include/text ./notebook/live.js
+    project: !include/text ./notebook/project.js
+    land: !include/text ./notebook/land.js
+    overlay: !include/text ./notebook/overlay.js
+    settle: !include/text ./notebook/settle.js
+    commit: !include/text ./notebook/commit.js
+    write: !include/text ./notebook/write.js
+    evaluate: !include/text ./notebook/evaluate.js
+    mark: !include/text ./notebook/mark.js
+    band: !include/text ./notebook/band.js
+    fences: !include/text ./notebook/fences.js
+    cell: !include/text ./notebook/cell.js
+    asserts: !include/text ./notebook/asserts.js
+    result: !include/text ./notebook/result.js
+    stylesheet: !include/text ./notebook/stylesheet.js
+    blocks: !include/text ./notebook/blocks.js
+    positions: !include/text ./notebook/positions.js
+    notation: !include/text ./notebook/notation.js
+
+# ---------------------------------------------------------------------------
+# <notebook-index> — the index page, around a draft <notebook-editor>.
+#
+# Its draft's heading is the switcher: the element hands the editor the
+# notebooks the directory rendered inside it (`.notebook-index__item`
+# links), draws the suggestions the editor ranks, opens the one picked and
+# creates the one named, minting its entity and writing its title and the
+# draft's blocks in one commit before opening it.
+# ---------------------------------------------------------------------------
+
+element!: &notebook-index
+  description: "The notebook index: a draft notebook whose heading suggests, opens and creates notebooks."
+  method:
+    connected: !include/text ./notebook/index-connected.js
+    publish: !include/text ./notebook/index-publish.js
+    panel: !include/text ./notebook/index-panel.js
+    create: !include/text ./notebook/index-create.js
+    navigate: !include/text ./notebook/index-navigate.js
+    stylesheet: !include/text ./notebook/index-stylesheet.js
+
 # ONE notebook. The element reads two hidden row sets: the notebook's own
 # `block` sequence, one `.notebook-order__item` per entry in position order
 # carrying the entry's key, and the block rows carrying each block's source.
@@ -310,7 +396,8 @@ view!:
   show:
     ui: |
       <notebook-save style="display: block;">
-      <tonk-notebook
+      <notebook-editor
+        data-tonk-with
         data-subject={this}
         data-notebook={this}
         title={title}
@@ -326,7 +413,7 @@ view!:
           </div>
           <tonk-display model=notebook/block></tonk-display>
         </div>
-      </tonk-notebook>
+      </notebook-editor>
       </notebook-save>
 
 # EVERY notebook — the directory view, which is what core's `/{*model}` route
@@ -334,7 +421,7 @@ view!:
 # EVERY notebook — the rows the switcher reads.
 #
 # There is no search form here any more. The index page mounts an empty
-# notebook whose HEADING is the switcher (see `heading-switcher.ts`): typing
+# notebook whose HEADING is the switcher (see <notebook-index>): typing
 # a title suggests the notebooks that match, and the list carries an
 # explicit "create this" row so Enter always has a visible target.
 #
@@ -407,7 +494,7 @@ concept!: &notebook/index-route
 # The index IS a notebook — a DRAFT one.
 #
 # Not a search page that happens to contain an editor: the same
-# `<tonk-notebook>` you land in, opened on nothing. Its heading is the
+# `<notebook-editor>` you land in, opened on nothing. Its heading is the
 # switcher (type a title, get suggestions, Enter opens or creates), and the
 # body below it is the notebook's real body. Nothing changes shape under
 # the author when the draft becomes a notebook — that is the whole point,
@@ -419,9 +506,9 @@ view!:
   this: tonk:notebook/index-route
   show:
     ui: |
-      <tonk-notebook-index class="notebook-index">
+      <notebook-index class="notebook-index">
         <notebook-save style="display: block;">
-        <tonk-notebook
+        <notebook-editor
           draft
           with="{branch}@{repo}"
           on:block-edit=block/edit
@@ -429,10 +516,10 @@ view!:
           on:block-remove=block/remove
           on:notebook-retitle=notebook/retitle
           style="display: block;"
-        ></tonk-notebook>
+        ></notebook-editor>
         </notebook-save>
         <tonk-display with="{branch}@{repo}" model=notebook></tonk-display>
-      </tonk-notebook-index>
+      </notebook-index>
 
 route!:
   path: "/notebook/{*entity}"
@@ -514,7 +601,7 @@ command!: &block/insert
 # author types into the body, so a notebook begins as a name and nothing
 # else.
 # ---------------------------------------------------------------------------
-# Events — how `<tonk-notebook>`'s CustomEvents fill the commands.
+# Events — how `<notebook-editor>`'s CustomEvents fill the commands.
 #
 # The commands above used to give near-identical fields their own
 # attributes (`created-title` rather than `title`, `removed` rather than

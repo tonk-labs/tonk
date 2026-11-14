@@ -34,10 +34,10 @@ no_autoreload = true
 # pull from the workspace:
 #   - tonk-ui wasm (the page) — directly + via the in-SW tonk-worker.
 #   - tonk-worker (the SW) — incl. tonk-router (route matching).
-#   - the sealed-guest wasm (tonk-guest) — display/board/workspace/notebook/
+#   - the sealed-guest wasm (tonk-guest) — display/board/workspace/
 #     portal register the elements rendered inside the iframe.
 # A crate missing here means its edits never reach the dev server (e.g. a
-# tonk-inspector change wouldn't rebuild the guest bundle).
+# tonk-display change wouldn't rebuild the guest bundle).
 #
 # The guest Web Awesome bundle under `./assets/guest` is covered by `./`.
 watch = [
@@ -68,7 +68,6 @@ watch = [
     "../tonk-host",
     "../tonk-site",
     "../tonk-guest/src",
-    "../tonk-inspector/src",
     # What an earlier release kept, read for the page to bring over.
     "../tonk-migrate/src",
     # The kernel a space runs, and the embedder that runs it: built by the

@@ -2124,7 +2124,7 @@ concept!: &directory/route
       as: text
 
 # The directory display carries its own `with` so its view's content
-# (a `<tonk-notebook>`, a `<ui-sync-status>`) resolves the route's target space —
+# (a `<notebook-editor>`, a `<ui-sync-status>`) resolves the route's target space —
 # `<tonk-display>` forwards this context onto the view it mounts, so no
 # routing wrapper element is needed.
 view!:

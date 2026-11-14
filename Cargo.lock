@@ -5796,7 +5796,6 @@ dependencies = [
  "js-sys",
  "tonk-display",
  "tonk-host",
- "tonk-inspector",
  "tonk-site",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -5868,25 +5867,6 @@ dependencies = [
  "web-sys",
  "x25519-dalek",
  "zeroize",
-]
-
-[[package]]
-name = "tonk-inspector"
-version = "0.6.16-rc.1"
-dependencies = [
- "custom-elements",
- "dialog-artifacts",
- "dialog-common",
- "js-sys",
- "serde",
- "serde_json",
- "tokio",
- "tonk-host",
- "tonk-notation",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test",
- "web-sys",
 ]
 
 [[package]]
@@ -6389,7 +6369,6 @@ dependencies = [
  "tonk-common",
  "tonk-evaluator",
  "tonk-identity",
- "tonk-inspector",
  "tonk-invite",
  "tonk-kernel-world",
  "tonk-language-server",

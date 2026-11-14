@@ -9969,8 +9969,6 @@ mod next_untitled_label_tests {
 mod notebook_sequence_tests {
     use super::*;
 
-    const NOTEBOOK: &str = include_str!("../../../tonk-core/assets/library/notebook.yaml");
-
     /// A fresh space with the notebook library, and so its scratch
     /// notebook: blocks `1`, `2` and `3` under `N1`, `N5` and `N9`.
     async fn notebook_space(name: &str) -> (AppState, String) {
@@ -9978,7 +9976,14 @@ mod notebook_sequence_tests {
         let key = create_space_inner(&state, name, None)
             .await
             .expect("the space creates");
-        seed(&state, &key, NOTEBOOK).await;
+        install_component(
+            &*state.read().await,
+            &key,
+            CONTENT_BRANCH,
+            "/library/notebook.yaml",
+        )
+        .await
+        .expect("the notebook installs");
         (state, key)
     }
 
@@ -10217,12 +10222,10 @@ mod notebook_sequence_tests {
 mod notebook_creation_tests {
     use super::*;
 
-    const NOTEBOOK_LIBRARY: &str = include_str!("../../../tonk-core/assets/library/notebook.yaml");
-
     /// Notebook creation with NO worker provider: the page-built notation
-    /// (the inspector element's `create_notation`, evaluated through the
-    /// same pipeline its host consumer submits on) writes `notebook/named`
-    /// and the draft's blocks in one commit, and the library's own rules
+    /// (what `<notebook-index>` evaluates, built by `notation().create`
+    /// in the notebook library) writes `notebook/named` and the draft's
+    /// blocks in one commit, and the library's own rules
     /// persist the inserted blocks. This is the end-to-end guard for the
     /// retired `CreateNotebook` provider — its failure mode is the old
     /// one: creation silently doing nothing.
@@ -10237,22 +10240,41 @@ mod notebook_creation_tests {
         let tonk = state.read().await;
         // The notebook library installs onto the space, rules and all —
         // what a notebook-using space carries.
-        super::super::evaluate::evaluate_body(
-            &tonk,
-            &key,
-            CONTENT_BRANCH,
-            NOTEBOOK_LIBRARY.to_owned(),
-            true,
-        )
-        .await
-        .expect("the notebook library installs");
+        install_component(&tonk, &key, CONTENT_BRANCH, "/library/notebook.yaml")
+            .await
+            .expect("the notebook library installs");
 
-        let notation = tonk_inspector::notation::create_notation(
-            "notebook:probe",
-            "Groceries: a \"list\"",
-            "# Groceries\n\nmilk\n\neggs",
-        )
-        .expect("the document builds");
+        // What the index writes for the title `Groceries: a "list"` over a
+        // draft of `# Groceries`, `milk` and `eggs`.
+        let notation = r#"notebook/named!:
+  this: notebook:probe
+  title: "Groceries: a \"list\""
+
+block/insert!:
+  this: ?b2
+  notebook: notebook:probe
+  source: |-
+    eggs
+  next: case:none
+  prev: tonk:notebook/edge
+
+block/insert!:
+  this: ?b1
+  notebook: notebook:probe
+  source: |-
+    milk
+  next: ?b2
+  prev: tonk:notebook/edge
+
+block/insert!:
+  this: ?b0
+  notebook: notebook:probe
+  source: |-
+    # Groceries
+  next: ?b1
+  prev: tonk:notebook/edge
+"#
+        .to_owned();
         let response =
             super::super::evaluate::evaluate_body(&tonk, &key, CONTENT_BRANCH, notation, true)
                 .await
