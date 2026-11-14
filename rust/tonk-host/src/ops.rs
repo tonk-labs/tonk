@@ -312,8 +312,8 @@ where
 ///
 /// NOT `ev.target()`. These events are `composed`, so they escape a shadow
 /// root — and crossing that boundary RETARGETS `target` to the shadow host.
-/// A `<tonk-display>` inside `<tonk-prose>`'s shadow root therefore arrives
-/// here reported as `<tonk-prose>`, and every frame this handler routes back
+/// A `<tonk-display>` inside `<prose-editor>`'s shadow root therefore arrives
+/// here reported as `<prose-editor>`, and every frame this handler routes back
 /// by calling `reset` on the "consumer" lands on the host element, which has
 /// no such method. The display stays at `data-state="loading"` forever while
 /// its data is delivered to something that drops it on the floor.
@@ -1628,7 +1628,7 @@ mod tests {
     ///
     /// The operation events are `composed`, so they escape a shadow root —
     /// and crossing that boundary retargets `event.target` to the shadow
-    /// HOST. Reading `target` therefore named `<tonk-prose>` for a
+    /// HOST. Reading `target` therefore named `<prose-editor>` for a
     /// `<tonk-display>` mounted in its shadow root, and every frame was
     /// then delivered by calling `reset` on the prose element, which has no
     /// such method. The display sat at `data-state="loading"` forever with

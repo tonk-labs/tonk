@@ -20,10 +20,10 @@ pub const ROUTES: &str = include_str!("guide-routes.md");
 pub const EVENTS: &str = include_str!("guide-events.md");
 /// `<tonk-display>` reference.
 pub const ELEMENT_TONK_DISPLAY: &str = include_str!("guide-element-tonk-display.md");
-/// `<tonk-prose>` reference.
-pub const ELEMENT_TONK_PROSE: &str = include_str!("guide-element-tonk-prose.md");
-/// `<tonk-code>` reference.
-pub const ELEMENT_TONK_CODE: &str = include_str!("guide-element-tonk-code.md");
+/// `<prose-editor>` reference.
+pub const ELEMENT_PROSE_EDITOR: &str = include_str!("guide-element-prose-editor.md");
+/// `<code-editor>` reference.
+pub const ELEMENT_CODE_EDITOR: &str = include_str!("guide-element-code-editor.md");
 /// `<table-editor>` reference.
 pub const ELEMENT_TABLE_EDITOR: &str = include_str!("guide-element-table-editor.md");
 
@@ -39,8 +39,8 @@ pub const TOPICS: &[&str] = &[
     "routes",
     "events",
     "tonk-display",
-    "tonk-prose",
-    "tonk-code",
+    "prose-editor",
+    "code-editor",
     "table-editor",
 ];
 
@@ -57,8 +57,8 @@ pub fn description(name: &str) -> Option<&'static str> {
         "routes" => Some("Pages at paths: route patterns and route models"),
         "events" => Some("Effects, rules, transient concepts, and DOM events"),
         "tonk-display" => Some("Render an entity through a view"),
-        "tonk-prose" => Some("Markdown editor element"),
-        "tonk-code" => Some("Code editor element"),
+        "prose-editor" => Some("Markdown editor element (the prose-editor component)"),
+        "code-editor" => Some("Code editor element (the code-editor component)"),
         "table-editor" => Some("Spreadsheet element (the table component)"),
         _ => None,
     }
@@ -77,8 +77,8 @@ pub fn topic(name: &str) -> Option<&'static str> {
         "routes" => Some(ROUTES),
         "events" => Some(EVENTS),
         "tonk-display" => Some(ELEMENT_TONK_DISPLAY),
-        "tonk-prose" => Some(ELEMENT_TONK_PROSE),
-        "tonk-code" => Some(ELEMENT_TONK_CODE),
+        "prose-editor" => Some(ELEMENT_PROSE_EDITOR),
+        "code-editor" => Some(ELEMENT_CODE_EDITOR),
         "table-editor" => Some(ELEMENT_TABLE_EDITOR),
         _ => None,
     }
@@ -106,9 +106,9 @@ pub const GUIDE: &str = concat!(
     "\n",
     include_str!("guide-element-tonk-display.md"),
     "\n",
-    include_str!("guide-element-tonk-prose.md"),
+    include_str!("guide-element-prose-editor.md"),
     "\n",
-    include_str!("guide-element-tonk-code.md"),
+    include_str!("guide-element-code-editor.md"),
     "\n",
     include_str!("guide-element-table-editor.md"),
 );

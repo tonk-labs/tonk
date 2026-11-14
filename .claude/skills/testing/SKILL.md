@@ -102,7 +102,7 @@ mod tests {
 
 Live in the same `#[cfg(test)] mod tests` blocks but gated to wasm32. Use `wasm_bindgen_test_configure!` to choose the JS execution context:
 
-- `run_in_browser` — needs `window` / `document` / DOM APIs (e.g. tonk-invite, tonk-code).
+- `run_in_browser` — needs `window` / `document` / DOM APIs (e.g. tonk-invite, tonk-host).
 - `run_in_service_worker` — needs IndexedDB / Cache API / Storage etc. (e.g. tonk-worker).
 
 ```rust
@@ -124,7 +124,7 @@ These run via `nix develop -c test:web:debug` (or `:release`), which builds a wa
 
 ### 3. Real-browser integration tests (chromedriver-driven)
 
-For testing the **real built app** — the actual `tonk-ui` SPA, the actual `<tonk-code>` editor bundle, real LSP wiring through Caddy + the access service. These take a `TestEnvironment` parameter from `tonk_ui::helpers`:
+For testing the **real built app** — the actual `tonk-ui` SPA, the library elements a space installs (`<code-editor>`), real LSP wiring through Caddy + the access service. These take a `TestEnvironment` parameter from `tonk_ui::helpers`:
 
 ```rust
 #[dialog_common::test]
@@ -136,7 +136,7 @@ async fn it_does_a_real_thing(env: TestEnvironment) -> Result<()> {
 
     // Or eval JS in the page
     let result = driver.execute(
-        r#"const el = document.querySelector("tonk-code");
+        r#"const el = document.querySelector("code-editor");
            el.value = "hello";
            return el.value;"#,
         vec![],
@@ -150,7 +150,7 @@ async fn it_does_a_real_thing(env: TestEnvironment) -> Result<()> {
 
 The macro detects "function takes a parameter" and generates an *integration* test instead of a unit test. The test:
 
-- Spins up Caddy serving the prebuilt `tonk-ui` (with all assets including `tonk-code/*`).
+- Spins up Caddy serving the prebuilt `tonk-ui`.
 - Spins up the access service for `/ucan/*` proxying.
 - Spins up chromedriver.
 - Hands you a `TestEnvironment` with the URLs.
@@ -210,7 +210,7 @@ async fn it_drives_the_editor(env: TestEnvironment) -> Result<()> {
     driver.query(By::Css(".space-banner-title")).first().await?;
 
     // Find the editor element
-    let editor = driver.query(By::Css("tonk-code")).first().await?;
+    let editor = driver.query(By::Css("code-editor")).first().await?;
 
     // Drive it
     let value = driver.execute(
@@ -297,7 +297,7 @@ connected.
 - **`#[tokio::test]` directly** — won't run on wasm. Use `#[dialog_common::test]`.
 - **`#[wasm_bindgen_test]` directly** — won't run on native. Same.
 - **`futures::executor::block_on(async_call())` inside `#[test]`** — the test isn't async. Make it `#[dialog_common::test] async fn` and `.await` instead.
-- **Stub bundles or mocks for testing the real `<tonk-code>` editor** — use a real-browser integration test in `tonk-ui`. Stubs verify your own contract; they don't catch CodeMirror/LSP bugs.
+- **Stub bundles or mocks for testing the real `<code-editor>`** — use a real-browser test: `rust/tonk-code/tests/library-element.mjs` defines it from `code-editor.yaml` through the real element runtime, and `tonk-ui` integration tests drive the built app. Stubs verify your own contract; they don't catch CodeMirror/LSP bugs.
 - **JS-side tests for things that have a Rust integration-test path** — prefer the Rust path so coverage shows up in the same `nix develop -c test:*` runs.
 - **Asserting on the fact instead of the render** — passes while nothing displays it. See "Assert on what the user sees" above.
 - **Treating a successful transact as a finished command** — it means accepted, not done.

@@ -209,21 +209,24 @@ print the URI. The same nesting renders any reference: `entity` is the
 reference field, `model` the referenced concept, and `view` the facet
 you want (`label` for just a name, none for the full `ui` card).
 
-## Built-in view elements
+## Ready-made view elements
 
-Ready-made custom elements a view can drop in, no script needed. Each
-has a full page: **`tonk help <element>`**.
+Custom elements a view can drop in, no script needed. `<tonk-display>`
+is built into the host; the editors are library components a space
+installs, and the element comes with its component. Each has a full
+page: **`tonk help <element>`**.
 
 | Element | What it is | Bind by |
 |---------|-----------|---------|
-| `<tonk-display>` | Render an entity (or every instance) through a view. The primitive everything else hangs off. | `model` + `entity` attrs |
-| `<tonk-prose>` | Typora-style markdown editor. | text content; `change` event |
-| `<tonk-code>` | CodeMirror code editor with per-language highlighting. | `value`/`language` attrs; `change` event |
+| `<tonk-display>` | Render an entity (or every instance) through a view. The primitive everything else hangs off. Built in. | `model` + `entity` attrs |
+| `<prose-editor>` | Typora-style markdown editor. Installed with the `prose-editor` component. | text content; `change` event |
+| `<code-editor>` | CodeMirror code editor; languages are installable components. Installed with the `code-editor` component. | `value`/`language` attrs; `change` event |
 | `<table-editor>` | IronCalc spreadsheet — live formulas, sheets, per-cell claims. Installed with the `table` component. | text (CSV) or `subject` + `<tonk-display>` rows |
 
 ```
 tonk help table-editor   # full docs for one element
-tonk help tonk-prose
+tonk help prose-editor
+tonk help code-editor
 ```
 
 The editors persist the same way: bind the store's value in (as element
@@ -237,10 +240,11 @@ these.
 ## Web components
 
 Views can freely use any custom element already registered in the
-rendering realm — the built-in `<tonk-*>` elements above and the Web
-Awesome `<wa-*>` set (`<wa-icon>`, `<wa-carousel>`, …) — with no
-script. A `<script>` written directly in a template never executes
-(templates render through inert fragments), so behaviour the
+rendering realm — `<tonk-display>`, the installed components'
+elements above and the Web Awesome `<wa-*>` set (`<wa-icon>`,
+`<wa-carousel>`, …) — with no script. A `<script>` written directly
+in a template never executes (templates render through inert
+fragments), so behaviour the
 template language can't express (rich editing, canvas, drag
 interactions) is packaged as a **web component** instead.
 
