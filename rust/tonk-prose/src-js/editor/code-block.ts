@@ -1,15 +1,15 @@
 // Code blocks as embedded code editors.
 //
-// When the code element (`<tonk-code>` unless the host names another,
-// such as the library's `<code-editor>`) is defined on the page, each
-// code block mounts one as a node view — inheriting its CodeMirror
-// editing, its *lazily-loaded* per-language chunks (the `language`
-// attribute resolves to `tonk-code-lang-<id>.js` on demand), and its
-// theming. When `<tonk-code>` is not defined, the node view falls
-// back to a plain `<pre>` that ProseMirror edits natively, so the
-// block is always editable — the embedded editor is a progressive
-// enhancement, decided per node view at draw time, and the blocks are
-// redrawn as embedded editors if the element is defined later.
+// When the code element (`options.code`; `<prose-editor>` names the
+// library's `<code-editor>`) is defined on the page, each code block
+// mounts one as a node view, inheriting its CodeMirror editing, its
+// languages (the `language` attribute names a language the space has
+// installed), and its theming. When the element is not defined, the
+// node view falls back to a plain `<pre>` that ProseMirror edits
+// natively, so the block is always editable — the embedded editor is
+// a progressive enhancement, decided per node view at draw time, and
+// the blocks are redrawn as embedded editors if the element is
+// defined later.
 //
 // Sync follows the official ProseMirror CodeMirror example: an
 // `updating` flag breaks echo loops, and CodeMirror→ProseMirror
@@ -25,12 +25,11 @@ import { schema } from "./schema";
 
 type GetPos = () => number | undefined;
 
-/** Minimal shape of the `<tonk-code>` element we rely on (the real
- *  type lives in the tonk-code package; duplicating three members
- *  beats a cross-package dependency). */
+/** Minimal shape of the code element we rely on (`<code-editor>`;
+ *  duplicating three members beats a cross-package dependency). */
 type TonkCodeLike = HTMLElement & {
   value: string;
-  /** CodeMirror EditorView — power-user getter `<tonk-code>` exposes. */
+  /** CodeMirror EditorView, the power-user getter the element exposes. */
   readonly view: {
     state: {
       doc: { length: number; lines: number; lineAt(pos: number): { number: number } };
@@ -50,7 +49,7 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   dialog: "dialog-yaml",
 };
 
-/** First word of the fence info string → tonk-code `language` id. */
+/** First word of the fence info string → the code element's `language`. */
 function languageOf(node: Node): string | null {
   const params = (node.attrs.params as string) ?? "";
   const id = params.trim().split(/\s+/)[0];
@@ -84,7 +83,7 @@ function computeChange(
   return { from: start, to: prevEnd, text: next.slice(start, nextEnd) };
 }
 
-/** Node view embedding `<tonk-code>`. */
+/** Node view embedding the code element. */
 class TonkCodeBlockView implements NodeView {
   readonly dom: HTMLElement;
   #node: Node;

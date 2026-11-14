@@ -12,18 +12,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  sourceFingerprint,
-  SOURCE_FINGERPRINT_PREFIX,
-} from "../../tonk-code/scripts/source-fingerprint.mjs";
-
 const HERE = dirname(fileURLToPath(import.meta.url));
 const UI = join(HERE, "..");
 const STAMP = join(UI, "scripts", "stamp-service-worker.sh");
-const TONK_CODE = join(UI, "..", "tonk-code");
 
 function fixtureDist() {
   const dist = mkdtempSync(join(tmpdir(), "tonk-build-artifacts-"));
@@ -186,44 +180,6 @@ test("the Cloudflare browser tree excludes local documentation tools", () => {
   );
 });
 
-test("tonk-code source identity changes when its TypeScript configuration changes", () => {
-  const root = mkdtempSync(join(tmpdir(), "tonk-code-fingerprint-"));
-  try {
-    mkdirSync(join(root, "scripts"));
-    mkdirSync(join(root, "src-js"));
-    writeFileSync(join(root, "package.json"), "{}\n");
-    writeFileSync(join(root, "package-lock.json"), "{}\n");
-    writeFileSync(join(root, "scripts", "build.mjs"), "// build\n");
-    writeFileSync(
-      join(root, "scripts", "source-fingerprint.mjs"),
-      "// fingerprint\n",
-    );
-    writeFileSync(join(root, "src-js", "index.ts"), "export {};\n");
-    writeFileSync(join(root, "tsconfig.json"), '{"compilerOptions":{}}\n');
-    const before = sourceFingerprint(root);
-    writeFileSync(
-      join(root, "src-js", "chunks.generated.ts"),
-      "export const chunks = {};\n",
-    );
-    assert.equal(
-      sourceFingerprint(root),
-      before,
-      "ignored generated output cannot make clean-checkout freshness depend on a prior build",
-    );
-    writeFileSync(
-      join(root, "tsconfig.json"),
-      '{"compilerOptions":{"strict":true}}\n',
-    );
-    assert.notEqual(
-      sourceFingerprint(root),
-      before,
-      "compiler semantics are part of the checked-in production bundle identity",
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
 test("the app's worker carries the build id the version names", () => {
   const dist = fixtureDist();
   try {
@@ -367,113 +323,6 @@ test("the publisher fails when asset enumeration fails upstream", () => {
   } finally {
     rmSync(dist, { recursive: true, force: true });
   }
-});
-
-test("the checked-in tonk-code bundle holds reconnect while an update is pending", () => {
-  const bundleUrl = pathToFileURL(join(TONK_CODE, "assets", "tonk-code.js")).href;
-  const probe = `
-    class FakeElement extends EventTarget {
-      constructor() {
-        super();
-        this.attributes = new Map();
-        this.isConnected = true;
-      }
-      getAttribute(name) { return this.attributes.get(name) ?? null; }
-      setAttribute(name, value) { this.attributes.set(name, String(value)); }
-      attachShadow() { return { append() {}, appendChild() {} }; }
-    }
-    globalThis.HTMLElement = FakeElement;
-    const registry = new Map();
-    globalThis.customElements = {
-      get(name) { return registry.get(name); },
-      define(name, constructor) { registry.set(name, constructor); },
-    };
-    globalThis.document = {
-      baseURI: "https://tonk.test/",
-      documentElement: { style: {} },
-      createElement() { return { textContent: "", append() {} }; },
-    };
-    const serviceWorker = new EventTarget();
-    serviceWorker.ready = Promise.resolve({});
-    serviceWorker.controller = {};
-    // The provider holds its reconnect by listening for \`controllerchange\`
-    // once the stream answers update-pending. Fire the event only after that
-    // listener exists: a fixed delay raced the provider on a loaded machine.
-    let armed;
-    const holding = new Promise((resolve) => { armed = resolve; });
-    const listen = serviceWorker.addEventListener.bind(serviceWorker);
-    serviceWorker.addEventListener = (type, ...rest) => {
-      listen(type, ...rest);
-      if (type === "controllerchange" && streamGets.length > 0) armed();
-    };
-    const until = async (done) => {
-      const deadline = Date.now() + 5_000;
-      while (!done() && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-    };
-    Object.defineProperty(globalThis, "navigator", {
-      configurable: true,
-      value: { serviceWorker, platform: "", userAgent: "", vendor: "" },
-    });
-
-    const streamGets = [];
-    globalThis.fetch = async (url, init = {}) => {
-      const headers = new Headers(init.headers);
-      if (headers.get("accept") === "text/event-stream") {
-        streamGets.push(String(url));
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        return new Response('{"control":"update-pending"}', { status: 503 });
-      }
-      const message = init.body ? JSON.parse(init.body) : null;
-      if (message?.method === "initialize") {
-        return new Response(JSON.stringify({
-          jsonrpc: "2.0",
-          id: message.id,
-          result: { capabilities: {} },
-        }));
-      }
-      return new Response("");
-    };
-
-    await import(${JSON.stringify(`${bundleUrl}?update-pending-probe=1`)});
-    const Provider = registry.get("tonk-diagnostics-provider");
-    if (!Provider) throw new Error("production bundle did not register its provider");
-    const provider = new Provider();
-    provider.connect = () => {};
-    provider.disconnect = () => {};
-    provider.connectedCallback();
-    const connect = new Event("tonk-code-connect");
-    Object.defineProperty(connect, "detail", {
-      value: { source: "tonk-buffer:///artifact-probe" },
-    });
-    provider.dispatchEvent(connect);
-
-    await holding;
-    const beforeControllerChange = streamGets.length;
-    serviceWorker.dispatchEvent(new Event("controllerchange"));
-    await until(() => streamGets.length > beforeControllerChange);
-    const afterControllerChange = streamGets.length;
-    provider.disconnectedCallback();
-    process.stdout.write(JSON.stringify({ beforeControllerChange, afterControllerChange }));
-  `;
-  const result = spawnSync(process.execPath, ["--input-type=module", "-e", probe], {
-    encoding: "utf8",
-  });
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.deepEqual(JSON.parse(result.stdout), {
-    beforeControllerChange: 1,
-    afterControllerChange: 2,
-  });
-});
-
-test("the checked-in tonk-code bundle was generated from the current source", () => {
-  const bundle = readFileSync(join(TONK_CODE, "assets", "tonk-code.js"), "utf8");
-  assert.equal(
-    bundle.split("\n", 1)[0],
-    `// ${SOURCE_FINGERPRINT_PREFIX}${sourceFingerprint(TONK_CODE)}`,
-    "run `npm run build` in rust/tonk-code and commit the complete output graph",
-  );
 });
 
 test("the publisher refuses an overlapping stamp without touching artifacts", () => {

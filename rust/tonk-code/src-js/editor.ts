@@ -1,12 +1,12 @@
-// The CodeMirror editor core, shared by `<tonk-code>` (index.ts) and
-// the library's `<code-editor>` (library.ts).
+// The CodeMirror editor core of the library's `<code-editor>`
+// (library.ts).
 //
 // Everything here is the editor itself: the state and view, the theme,
 // the per-shadow stylesheet, and one compartment per concern a host
 // toggles at runtime (language, read-only, placeholder, gutter, active
 // line, LSP). What it is NOT: a custom element, a language loader, or
-// an LSP client. Each host owns those, because they are what differ
-// between a host bundle with sibling chunks and branch data with none.
+// an LSP client. The element owns those (library.ts and the methods in
+// `library/code-editor/`).
 
 import {
   EditorState,
@@ -49,7 +49,7 @@ import { tags as t } from "@lezer/highlight";
  *  adapt to `prefers-color-scheme`. Consumers wire the element into
  *  their own design system by overriding the variables on the host:
  *
- *      tonk-code {
+ *      code-editor {
  *        --tonk-code-bg: var(--wa-color-surface-default);
  *        --tonk-code-key: var(--wa-color-brand-on-quiet);
  *      }
@@ -298,7 +298,7 @@ function readOnlyExtensions(readOnly: boolean): Extension[] {
  *  Consumers theme the element by setting any of these variables on
  *  the host:
  *
- *      tonk-code {
+ *      code-editor {
  *        --tonk-code-bg: var(--wa-color-surface-default);
  *        --tonk-code-key: var(--wa-color-brand-on-quiet);
  *      }

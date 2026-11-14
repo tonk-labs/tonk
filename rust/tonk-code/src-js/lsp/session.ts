@@ -1,15 +1,13 @@
 // One language-server session per endpoint, shared by every library
 // `<code-editor>` in this realm.
 //
-// `<tonk-code>` gets its LSP client from an ancestor
-// `<tonk-diagnostics-provider>`. The library's `<code-editor>` is branch
-// data with a CodeMirror of its own, so it cannot take that provider's
-// client: an extension built against another `@codemirror/state` is
-// rejected ("Unrecognized extension value"). This module is the same
-// lifecycle the provider runs (lazy connect once the service worker
-// controls the page, rebuild on a closed stream, hold for
-// `controllerchange` while a worker retires), without the element, so
-// the core can hand an editor a client of its own.
+// The library's `<code-editor>` is branch data with a CodeMirror of its
+// own, so it cannot take a client built against another
+// `@codemirror/state`: such an extension is rejected ("Unrecognized
+// extension value"). This module runs the session lifecycle (lazy
+// connect once the service worker controls the page, rebuild on a
+// closed stream, hold for `controllerchange` while a worker retires),
+// so the core can hand an editor a client of its own.
 
 import type { LSPClient } from "@codemirror/lsp-client";
 import { connectLsp } from "./client";

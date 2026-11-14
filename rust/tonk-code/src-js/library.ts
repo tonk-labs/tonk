@@ -18,8 +18,7 @@
 // The language server is the core's too: `languageServer(url)` is the
 // session an editor with a `source` attaches to, and `LSPClient` is the
 // class its clients are, so an editor can refuse a client built against
-// another CodeMirror (the host's `<tonk-diagnostics-provider>` hands out
-// those).
+// another CodeMirror.
 
 import * as state from "@codemirror/state";
 import * as view from "@codemirror/view";
@@ -59,8 +58,7 @@ const packs = new Map<string, Promise<state.Extension>>();
  *
  *  Through a blob module rather than `eval` or `Function`: a page that
  *  forbids string evaluation can still allow `blob:` scripts, which is
- *  what the host already relies on to load `<tonk-code>`'s chunks in a
- *  sealed guest. A failure is not cached, so a corrected record loads. */
+ *  what a sealed guest already relies on to load its modules. A failure is not cached, so a corrected record loads. */
 export function loadPack(source: string): Promise<state.Extension> {
   let pending = packs.get(source);
   if (!pending) {

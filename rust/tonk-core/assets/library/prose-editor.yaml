@@ -85,18 +85,16 @@ rule!:
 # ---------------------------------------------------------------------------
 # Element — the editor, as branch data rather than a host bundle.
 #
-# <tonk-prose> ported to an `element!`: the methods in `prose-editor/` are its
-# custom-element class (text channel, versioned envelope, debounced
-# `change`, deferred teardown, switcher events), and `core` is its
-# ProseMirror editor core, built by `rust/tonk-prose/scripts/build.mjs`
-# into an expression that returns `createEditor`. So the component
-# carries the same editor as the host and installs into a space with
-# nothing from it. Rebuild `core.js` after changing
-# `rust/tonk-prose/src-js/editor`: `npm run build` there.
+# The methods in `prose-editor/` are its custom-element class (text
+# channel, versioned envelope, debounced `change`, deferred teardown,
+# switcher events), and `core` is its ProseMirror editor core, built by
+# `rust/tonk-prose/scripts/build.mjs` into an expression that returns
+# `createEditor`. So the component carries its own editor and installs
+# into a space with nothing from the host. Rebuild `core.js` after
+# changing `rust/tonk-prose/src-js/editor`: `npm run build` there.
 #
-# Not `tonk-prose`: the host owns that name (and the runtime leaves
-# `tonk-` tags to the host), so a page can have both. The interface is
-# the same, and so is the stored envelope.
+# Not `tonk-prose`: the runtime leaves `tonk-` tags to the host. The
+# stored envelope is the one `<tonk-prose>` wrote.
 # ---------------------------------------------------------------------------
 
 element!: &prose-editor

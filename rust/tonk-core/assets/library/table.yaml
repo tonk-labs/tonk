@@ -475,7 +475,7 @@ rule!:
 # ---------------------------------------------------------------------------
 # Element — the grid, as branch data rather than a host bundle.
 #
-# <tonk-table> ported to an `element!`: the methods in `table-editor/` are
+# The spreadsheet as an `element!`: the methods in `table-editor/` are
 # its custom-element class (content channel, claim rows, versioned
 # envelope, debounced `change`, deferred teardown), `core` is its grid
 # (`rust/tonk-table/src-js/library.ts`), and `engine` is the IronCalc
@@ -484,7 +484,7 @@ rule!:
 # The engine is its own method so it changes only on an IronCalc bump.
 #
 # Not `tonk-table`: the runtime leaves `tonk-` tags to the host. The
-# interface is the same, and so are the stored claims and envelope.
+# stored claims and envelope are those `<tonk-table>` wrote.
 #
 # Attributes: subject (claims mode), content, value, readonly,
 # auto-focus, min-rows, min-cols. Properties: `value` (CSV of the active

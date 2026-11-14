@@ -1,10 +1,9 @@
 # tonk-prose
 
-`<tonk-prose>`: a ProseMirror-backed, Typora-style markdown editor
-packaged as a custom element. The same build emits the core of the
-library's `<prose-editor>` component
-(`rust/tonk-core/assets/library/prose-editor.yaml`), which is how a
-space gets a markdown editor: the host ships neither.
+The core of the library's `<prose-editor>`
+(`rust/tonk-core/assets/library/prose-editor.yaml`): a ProseMirror-backed,
+Typora-style markdown editor. A space gets one by installing the
+`prose-editor` component; the host ships none.
 
 The document renders rich; the markdown syntax of the block under
 the caret reveals itself for editing (muted `**`, `# `, `[…](url)`
@@ -31,68 +30,51 @@ follows [allusion](https://github.com/Gozala/allusion), modernized:
 - **Serialization strips markers first**, then regenerates delimiters
   from the marks — so output markdown is always normalized.
 
-## Lazy loading
+## As branch data
 
-The main bundle (`tonk-prose.js`, ~4 kB) is a shell: it registers the
-custom element and nothing else. The ProseMirror machinery lives in
-`tonk-prose-editor.js` (loaded via dynamic import the first time an
-element connects, once per page). Code blocks embed `<tonk-code>`
-when that element is defined, inheriting its lazily-loaded
-per-language chunks; otherwise they fall back to a plain editable
-`<pre>`.
+`<prose-editor>` is an `element!:` in `prose-editor.yaml`. Its methods
+in `library/prose-editor/*.js` are the custom-element class (text
+channel, versioned envelope, debounced `change`, deferred teardown,
+switcher events), and its `core` method,
+`library/prose-editor/core.js`, is built here: `src-js/editor/` as an
+expression returning `createEditor`. Code blocks embed the library's
+`<code-editor>` when the space has it; otherwise they stay a plain
+editable `<pre>`.
 
 ## Layout
 
 | Path | Purpose |
 | --- | --- |
-| `src-js/index.ts` | The shell: registers `tonk-prose`, lazy-loads the core. |
-| `src-js/editor/` | The editor core chunk (schema, markup layer, reparse loop, reveal, input rules, code blocks). |
-| `scripts/build.mjs` | esbuild driver. Produces `assets/tonk-prose.js` + `assets/tonk-prose-editor.js`. |
-| `assets/` | Build output. **Committed** so consumers (and CI) don't need a Node toolchain. |
+| `src-js/editor/` | The editor core (schema, markup layer, reparse loop, reveal, input rules, code blocks, heading switcher). |
+| `src-js/editor/hlc.ts`, `content.ts` | The versioned-content protocol the element's envelope follows. |
+| `scripts/build.mjs` | esbuild driver. Writes `library/prose-editor/core.js`. |
+| `scripts/test.mjs` | Bundles and runs every `*.test.ts` with Node's test runner. |
 
-## Building the bundle
+The element in a real browser is covered by
+`rust/tonk-code/tests/library-element.mjs` (with `<code-editor>` in its
+code blocks) and `rust/tonk-code/tests/notebook-elements.mjs`.
+
+## Building
 
 ```bash
 cd rust/tonk-prose
 npm install
-npm run build      # production build → assets/
+npm run build      # core.js into the library
 npm run watch      # rebuild on source changes
 npm run check      # typecheck only
+npm test           # node tests
 ```
 
-`assets/` is a build artifact but committed: regenerate it whenever
-`src-js/` or any ProseMirror dependency changes, and commit the
-result alongside the source change.
+`core.js` is committed beside `prose-editor.yaml`: regenerate it
+whenever `src-js/editor/` or a ProseMirror dependency changes, and
+commit the result alongside the source change.
 
 ## Element API
 
-```html
-<tonk-prose placeholder="Write something…"
-            value="# Hello&#10;&#10;Some **markdown**."></tonk-prose>
-```
-
-Attributes:
-
-| Name | Type | Notes |
-| --- | --- | --- |
-| `value` | string | Markdown source. Reactive: writes after connect replace the document. |
-| `readonly` | boolean | Presence locks the editor. |
-| `placeholder` | string | Ghost text shown while the document is empty. |
-| `auto-focus` | boolean | Focus the editor once mounted. |
-
-Properties:
-
-| Name | Type |
-| --- | --- |
-| `value` | `string` (round-trips with the document as markdown) |
-| `editor` | live editor handle (`null` until `ready`); `.view` exposes the raw ProseMirror `EditorView` |
-
-Events:
-
-| Name | `detail` |
-| --- | --- |
-| `change` | `{ value: string }` — markdown after every user edit (programmatic writes don't refire). |
-| `ready` | `{ editor }` — fires once, after the lazy core chunk loaded and the view mounted. |
+See `tonk help prose-editor` for attributes, properties and events. In
+short: the element's text content (or `content` / `value`) is the
+document, and `change` carries `{ value, content }`, the markdown and
+its versioned envelope, after each idle edit.
 
 ## Editing behavior
 
@@ -119,16 +101,8 @@ Events:
 ## Theming
 
 All visuals route through `--tonk-prose-*` CSS custom properties set
-on the host (`--tonk-prose-bg`, `--tonk-prose-fg`,
+on the element (`--tonk-prose-bg`, `--tonk-prose-fg`,
 `--tonk-prose-accent`, `--tonk-prose-marker`, `--tonk-prose-code-bg`,
 `--tonk-prose-font`, `--tonk-prose-max-width`, …), with
 GitHub-flavored light/dark defaults. The element imports nothing
 from the consumer's design system; the variables are the contract.
-
-## Serving alongside `<tonk-code>`
-
-Both bundles resolve sibling chunks relative to their own module URL.
-Copy each package's `assets/` to its own directory and load the shell
-with a module script. Load `tonk-code` too to get embedded code
-editors with language highlighting; without it, code blocks stay
-editable as plain text.

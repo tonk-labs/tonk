@@ -1,7 +1,6 @@
-// The heavy chunk: ProseMirror assembly for `<tonk-prose>`. Loaded
-// by the shell (`../index.ts`) via dynamic import on the first
-// element connect — nothing here may be imported *statically* from
-// the shell (types excepted).
+// The editor core: ProseMirror assembly for the library's
+// `<prose-editor>`, built into the element's `core` method by
+// `scripts/build.mjs`.
 
 import { EditorState, Plugin, Selection } from "prosemirror-state";
 import { Slice } from "prosemirror-model";

@@ -17,7 +17,7 @@
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# Element — <tonk-code> ported to an `element!`.
+# Element: the CodeMirror editor, as an `element!`.
 #
 # The methods in `code-editor/` are its custom-element class, and `core` is
 # its CodeMirror core (`rust/tonk-code/src-js/editor.ts`, through
@@ -26,8 +26,6 @@
 # share and `loadPack`. Rebuild after changing `rust/tonk-code/src-js`:
 # `npm run build` there, which also regenerates the languages below and
 # every `language/<id>` component.
-#
-# Not `tonk-code`: the host owns that name, so a page can have both.
 #
 # Attributes: value, language, readonly, placeholder, line-numbers,
 # active-line, auto-focus, source, language-server. Properties: `value`,
@@ -46,9 +44,7 @@
 # claims the event (`preventDefault`) supplies the client by calling
 # `connect`, and otherwise the core's own session does. A client must come
 # from this core (`LSPClient` among its exports): one built on another
-# CodeMirror, such as the host's <tonk-diagnostics-provider> hands to
-# <tonk-code>, is refused, which is why the events are not
-# <tonk-code>'s `tonk-code-connect`.
+# CodeMirror is refused.
 # ---------------------------------------------------------------------------
 
 element!: &code-editor
