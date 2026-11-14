@@ -1,10 +1,19 @@
-//! Command registration and post-commit dispatch.
+//! Command registration and the providers' run after a commit.
 //!
 //! [`command_providers`] builds the two command vocabularies the worker
-//! carries on [`TonkState`] — one for the profile branch, one for space
-//! (content) branches — and [`dispatch`] runs the commands a
-//! freshly-committed transient batch triggers against the vocabulary its
-//! origin selects.
+//! carries on [`TonkState`] — one for the profile branch's session, one
+//! for the space (content) branches' — and [`run_commands`] runs the
+//! commands a dispatch landed in its session's `control:` layer against
+//! the vocabulary its origin selects.
+//!
+//! A command is a claim of a transient concept. A transaction through
+//! the reactor writes it `.at(control_layer())`, so dialog takes it as
+//! the dispatch's stimulus (the branch's rules read it for one tick) and,
+//! once the dispatch has published, lands it in the session's `control:`
+//! layer for one instant. The committing route reads that instant back
+//! ([`Commit::dispatch`](crate::reactor::Commit::dispatch), through
+//! [`Session::arrivals`](dialog_repository::Session::arrivals)) and hands
+//! the rows here; nothing of a command is stored or replicated.
 //!
 //! A command is a [`dialog_capability::Command`] run by a
 //! [`Provider<C>`](dialog_capability::Provider) — there is no handler
@@ -300,12 +309,14 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
 }
 
-/// Run every command the just-committed `transients` triggered.
+/// Run every command among `commands`, the rows a dispatch landed in
+/// its session's `control:` layer.
 ///
 /// Called by a mutation path (e.g. `/transact`) after its commit, with
-/// `AppState` in hand. The transients have already been swept from
-/// durable storage by the commit; we matched them from the pre-commit
-/// buffer, so the trigger fired exactly once.
+/// `AppState` in hand. The rows are the one instant the dispatch left
+/// in `control:`, read under the branch's transactor lock, so each
+/// command reaches its provider exactly once and only from the dispatch
+/// that asserted it.
 ///
 /// Each command's `Provider::execute` runs *concurrently and
 /// independently* — they don't block one another, and a slow or failing
@@ -321,8 +332,8 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
 /// state. The goal is STM-like optimistic concurrency: track the observed
 /// revision/read-set and commit-or-conflict, re-running on conflict. See
 /// the `TODO(stm)` notes on `reactor::command::TypedCommand::run`.
-pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Changes) {
-    // Match commands and build their `'static` run-futures while holding
+pub async fn run_commands(state: &AppState, origin: CommandOrigin, commands: Changes) {
+    // Decode commands and build their `'static` run-futures while holding
     // the read lock — each future owns its decoded command and an env
     // clone, so we can drop the lock before awaiting them. That keeps
     // command IO from ever running under a held lock (a command re-locks
@@ -336,15 +347,15 @@ pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Chang
             // drain below.
             Vec::new()
         } else {
-            let fired = registry.match_transients(&transients);
+            let fired = registry.commands(&commands);
             // The one place a command that decodes as nothing can be
-            // seen: the transient committed, so the page believes it
-            // asked, and nothing else says which attributes reached
-            // the registry. On a space origin this is also where a
+            // seen: the command landed, so the page believes it asked,
+            // and nothing else says which attributes reached the
+            // registry. On a space origin this is also where a
             // profile-only shape (a join, a create, a ceremony)
             // surfaces as contained rather than run.
             if fired.is_empty() {
-                let attributes: std::collections::BTreeSet<String> = transients
+                let attributes: std::collections::BTreeSet<String> = commands
                     .clone()
                     .into_instructions()
                     .into_iter()
@@ -360,8 +371,8 @@ pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Chang
                         format!("space '{}'", origin.repo)
                     };
                     log!(
-                        "commands: no handler in the {surface} vocabulary matched a \
-                         transient over {attributes:?}"
+                        "commands: no provider in the {surface} vocabulary decoded a \
+                         command over {attributes:?}"
                     );
                 }
             }
@@ -418,10 +429,10 @@ pub(crate) mod tests {
     /// tests `drain` it; serialized within the single-threaded test run.
     static PING_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-    /// Take and clear the recorded tags. Only the wasm-gated `run` tests
-    /// read it; the provider writes it on every target.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    fn drain_ping_log() -> Vec<String> {
+    /// Take and clear the recorded tags. The provider writes it on every
+    /// target; the `run` tests here and the transact route's native
+    /// test read it.
+    pub(crate) fn drain_ping_log() -> Vec<String> {
         std::mem::take(&mut *PING_LOG.lock().unwrap())
     }
 
@@ -450,7 +461,7 @@ pub(crate) mod tests {
         let registry = profile_commands().command::<Ping>();
         let changes = ping_transient("did:key:zPing", "hi");
         assert_eq!(
-            registry.match_transients(&changes).len(),
+            registry.commands(&changes).len(),
             1,
             "the registered Ping command should match its trigger"
         );
@@ -511,18 +522,12 @@ pub(crate) mod tests {
             ("member/promote", &promote),
         ] {
             assert!(
-                !providers
-                    .select(&profile)
-                    .match_transients(changes)
-                    .is_empty(),
+                !providers.select(&profile).commands(changes).is_empty(),
                 "`{name}` must match on the profile — a zero here means the \
                  probe shape no longer decodes and this test proves nothing"
             );
             assert!(
-                providers
-                    .select(&space)
-                    .match_transients(changes)
-                    .is_empty(),
+                providers.select(&space).commands(changes).is_empty(),
                 "`{name}` must not exist in a space branch's vocabulary"
             );
         }
@@ -558,10 +563,7 @@ pub(crate) mod tests {
         ] {
             for (surface, origin) in [("profile", &profile), ("space", &space)] {
                 assert!(
-                    !providers
-                        .select(origin)
-                        .match_transients(changes)
-                        .is_empty(),
+                    !providers.select(origin).commands(changes).is_empty(),
                     "`{name}` must be dispatchable from the {surface}"
                 );
             }
@@ -591,7 +593,7 @@ pub(crate) mod tests {
             &'a dyn crate::reactor::CommandHandler<CommandEnv>,
             EntityFacts,
         ) {
-            let mut fired = registry.match_transients(changes);
+            let mut fired = registry.commands(changes);
             assert_eq!(fired.len(), 1, "expected exactly one matched command");
             fired.pop().unwrap()
         }
@@ -622,7 +624,7 @@ pub(crate) mod tests {
             let _ = drain_ping_log();
             let (_state, env) = env().await;
             let registry = CommandRegistry::new().command::<Ping>();
-            let matched = registry.match_transients(&ping_transient("did:key:zP", "t"));
+            let matched = registry.commands(&ping_transient("did:key:zP", "t"));
             let handler = matched[0].0;
 
             let unrelated: EntityFacts = {
@@ -646,10 +648,10 @@ pub(crate) mod tests {
         }
 
         #[dialog_common::test]
-        async fn it_dispatches_every_matched_command_in_a_batch() {
+        async fn it_runs_every_decoded_command_in_a_batch() {
             let _ = drain_ping_log();
             let (state, _env) = env().await;
-            // Install the registry on the state so `dispatch` sees it.
+            // Install the registry on the state so `run_commands` sees it.
             {
                 let mut tonk = state.write().await;
                 tonk.shared_mut().commands = CommandProviders::new(
@@ -665,19 +667,19 @@ pub(crate) mod tests {
                 .is("beta".to_string())
                 .assert(&mut changes);
 
-            dispatch(&state, CommandOrigin::default(), changes).await;
+            run_commands(&state, CommandOrigin::default(), changes).await;
 
             let mut tags = drain_ping_log();
             tags.sort();
             assert_eq!(
                 tags,
                 vec!["alpha".to_string(), "beta".to_string()],
-                "dispatch runs each matched command's provider"
+                "run_commands runs each decoded command's provider"
             );
         }
 
         #[dialog_common::test]
-        async fn it_dispatches_nothing_when_no_command_matches() {
+        async fn it_runs_nothing_when_no_command_decodes() {
             let _ = drain_ping_log();
             let (state, _env) = env().await;
             {
@@ -693,7 +695,7 @@ pub(crate) mod tests {
                 .is("x".to_string())
                 .assert(&mut changes);
 
-            dispatch(&state, CommandOrigin::default(), changes).await;
+            run_commands(&state, CommandOrigin::default(), changes).await;
             assert!(drain_ping_log().is_empty());
         }
     }
@@ -827,7 +829,7 @@ pub(crate) mod tests {
             // names one). The provider mints an identity, seeds the
             // standard library from the embedded assets, and records the
             // replica — all natively.
-            dispatch(
+            run_commands(
                 &state,
                 CommandOrigin::default(),
                 create_space_transient("Command Test Space"),
@@ -850,7 +852,7 @@ pub(crate) mod tests {
                 branch: "main".to_string(),
                 client: None,
             };
-            dispatch(&state, foreign, remove_space_transient(&subject)).await;
+            run_commands(&state, foreign, remove_space_transient(&subject)).await;
             assert_eq!(
                 space_subjects(&state).await.len(),
                 1,
@@ -858,7 +860,7 @@ pub(crate) mod tests {
             );
 
             // From the profile origin the same transient removes it.
-            dispatch(
+            run_commands(
                 &state,
                 CommandOrigin::default(),
                 remove_space_transient(&subject),
@@ -917,7 +919,7 @@ pub(crate) mod tests {
         #[dialog_common::test]
         async fn it_dispatches_duplicate_space_only_from_the_profile() {
             let state = test_state().await;
-            dispatch(
+            run_commands(
                 &state,
                 CommandOrigin::default(),
                 create_space_transient("Original"),
@@ -932,7 +934,7 @@ pub(crate) mod tests {
                     .assert(&mut changes);
                 changes
             };
-            dispatch(
+            run_commands(
                 &state,
                 CommandOrigin {
                     repo: original.repo_key().to_owned(),
@@ -943,7 +945,7 @@ pub(crate) mod tests {
             )
             .await;
             assert_eq!(space_subjects(&state).await.len(), 1);
-            dispatch(&state, CommandOrigin::default(), copy_command()).await;
+            run_commands(&state, CommandOrigin::default(), copy_command()).await;
             let spaces = space_subjects(&state).await;
             assert_eq!(spaces.len(), 2);
             assert!(spaces.contains(&original));
@@ -955,7 +957,7 @@ pub(crate) mod tests {
                 .of("cmd:create".parse::<Entity>().unwrap())
                 .is(false)
                 .assert(&mut invalid);
-            dispatch(&state, CommandOrigin::default(), invalid).await;
+            run_commands(&state, CommandOrigin::default(), invalid).await;
             assert_eq!(space_subjects(&state).await.len(), 2);
         }
 
@@ -987,7 +989,7 @@ pub(crate) mod tests {
                     .of("cmd:create".parse::<Entity>().unwrap())
                     .is(format!("{base}/catalog.json#remote-demo"))
                     .assert(&mut changes);
-                dispatch(&state, CommandOrigin::default(), changes).await;
+                run_commands(&state, CommandOrigin::default(), changes).await;
                 assert_eq!(space_subjects(&state).await.len(), expected);
             }
         }
@@ -999,7 +1001,7 @@ pub(crate) mod tests {
         async fn it_seeds_a_new_space_from_a_url() {
             let base = serve(SEED_FILES);
             let state = test_state().await;
-            dispatch(
+            run_commands(
                 &state,
                 CommandOrigin::default(),
                 seeded_create_transient("Seeded", &format!("{base}/lib/seed.yaml")),
@@ -1041,7 +1043,7 @@ pub(crate) mod tests {
                 "ftp://example.test/seed.yaml".to_owned(),
                 "not a url".to_owned(),
             ] {
-                dispatch(
+                run_commands(
                     &state,
                     CommandOrigin::default(),
                     seeded_create_transient("Refused", &seed),

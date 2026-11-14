@@ -234,17 +234,20 @@ pub async fn evaluate(
             .mark_dirty(&path.repo, super::sync::now_millis());
     }
 
-    // Dispatch the document's transient commands, mirroring `/transact`:
-    // detached so a slow handler never delays the response, with the
-    // origin carrying the branch this commit landed in and the client
-    // that asked.
+    // Run the document's commands, mirroring `/transact`: detached so a
+    // slow handler never delays the response, with the origin carrying
+    // the branch this commit landed in and the client that asked. The
+    // evaluator threads a raw dialog `Transaction` through resolution
+    // and commits it itself, outside the branch's session, so its
+    // commands never reach `control:`: they come from the evaluator's
+    // mirror of what it dispatched (`Evaluated::transients`) instead.
     if let Some(transients) = transients {
         let origin = super::CommandOrigin {
             repo: path.repo,
             branch: path.branch,
             client: client.map(|Extension(id)| id),
         };
-        super::transact::spawn_dispatch(state, origin, transients, lifetime).await;
+        super::transact::run_commands_detached(state, origin, transients, lifetime).await;
     }
     Ok(response)
 }
@@ -355,15 +358,16 @@ pub async fn evaluate_profile(
         (response, transients)
     };
 
-    // Dispatch transient commands with the empty-repo origin profile
-    // commits carry — mirroring `transact_profile`.
+    // Run the document's commands with the empty-repo origin profile
+    // commits carry — mirroring `transact_profile`. As in `evaluate`,
+    // they come from the evaluator's mirror, not from `control:`.
     if let Some(transients) = transients {
         let origin = super::CommandOrigin {
             repo: String::new(),
             branch: path.branch,
             client: client.map(|Extension(id)| id),
         };
-        super::transact::spawn_dispatch(state, origin, transients, lifetime).await;
+        super::transact::run_commands_detached(state, origin, transients, lifetime).await;
     }
     Ok(response)
 }
@@ -2006,10 +2010,10 @@ command!: &counter/+1
     }
 
     /// The evaluate pipeline must surface a committed document's
-    /// transient facts for post-commit command dispatch — the seam
-    /// the route and the bridge hand to `router::command::dispatch`,
-    /// mirroring `/transact`. A durable document and a dry run
-    /// surface none.
+    /// transient facts for the post-commit command providers — the
+    /// seam the route and the bridge hand to
+    /// `router::command::run_commands`, mirroring `/transact`. A
+    /// durable document and a dry run surface none.
     #[dialog_common::test]
     async fn it_returns_transients_for_command_dispatch() {
         let (state, repo) = state_with_repo("test-evaluate-transients").await;

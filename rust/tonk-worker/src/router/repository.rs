@@ -9420,7 +9420,7 @@ mod notebook_creation_tests {
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod rename_repository_tests {
     use super::*;
-    use crate::router::command::{CommandOrigin, dispatch};
+    use crate::router::command::{CommandOrigin, run_commands};
     use dialog_corpus::Statement;
     use dialog_query::the;
     use tonk_schema::RepositoryDescription;
@@ -9562,7 +9562,7 @@ mod rename_repository_tests {
             .of(command)
             .is(key.parse::<dialog_corpus::Entity>().unwrap())
             .assert(&mut changes);
-        dispatch(
+        run_commands(
             &state,
             CommandOrigin {
                 repo: key.clone(),
@@ -11655,7 +11655,7 @@ mod tests {
         // command (the FAB dispatches it routeless on the profile
         // branch); a space-branch dispatch is contained by design.
         let changes = profile_rename_transient("did:key:zRenameCmd", "brave-lynx");
-        crate::router::dispatch(&state, crate::router::CommandOrigin::default(), changes).await;
+        crate::router::run_commands(&state, crate::router::CommandOrigin::default(), changes).await;
 
         // Override is on the profile meta branch.
         {
@@ -11715,7 +11715,7 @@ mod tests {
         // Rename from the profile branch, where the FAB dispatches it
         // routeless; a space-branch dispatch is contained by design.
         let changes = profile_rename_transient("did:key:zRenameAll", "brave-lynx");
-        crate::router::dispatch(&state, crate::router::CommandOrigin::default(), changes).await;
+        crate::router::run_commands(&state, crate::router::CommandOrigin::default(), changes).await;
 
         assert_eq!(
             self_member_name(&state, &key_a).await.as_deref(),
@@ -11742,7 +11742,7 @@ mod tests {
 
         // Realistic origin: a profile-branch rename command has no repo.
         let changes = profile_rename_transient("did:key:zRenameChip", "brave-lynx");
-        crate::router::dispatch(
+        crate::router::run_commands(
             &state,
             crate::router::CommandOrigin {
                 repo: String::new(),
@@ -11797,7 +11797,7 @@ mod tests {
         // Profile origin, like the FAB's routeless dispatch; a
         // space-branch `profile/rename` is contained by design.
         let changes = profile_rename_transient("did:key:zRenameEmpty", "   ");
-        crate::router::dispatch(&state, crate::router::CommandOrigin::default(), changes).await;
+        crate::router::run_commands(&state, crate::router::CommandOrigin::default(), changes).await;
 
         assert_eq!(
             self_member_name(&state, &key).await,
@@ -12738,7 +12738,7 @@ block/insert!:
         }
         let before = content_invitations(&state, &key).await.len();
 
-        crate::router::dispatch(
+        crate::router::run_commands(
             &state,
             crate::router::CommandOrigin::default(),
             fabb_invite_transient("did:key:zJoinedMemberFabbInvite", &subject),
@@ -12847,7 +12847,7 @@ block/insert!:
         // Drive the invite command through the real dispatcher — same path
         // the share modal takes.
         let changes = invite_transient("did:key:zInviteCmd");
-        crate::router::dispatch(
+        crate::router::run_commands(
             &state,
             crate::router::CommandOrigin {
                 repo: key.clone(),
@@ -13568,7 +13568,7 @@ block/insert!:
                 .assert(&mut changes);
         }
 
-        crate::router::dispatch(state, crate::router::CommandOrigin::default(), changes).await;
+        crate::router::run_commands(state, crate::router::CommandOrigin::default(), changes).await;
     }
 
     /// Whether the repo's `main` tracks a remote upstream — the exact condition
@@ -13648,7 +13648,7 @@ block/insert!:
         };
 
         let changes = remove_space_transient("did:key:zRemoveWrongOrigin", &subject);
-        crate::router::dispatch(
+        crate::router::run_commands(
             &state,
             crate::router::CommandOrigin {
                 repo: "somerepo".to_string(),

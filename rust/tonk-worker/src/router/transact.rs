@@ -1,13 +1,16 @@
 //! `/transact` route — accepts a structured
 //! [`TransactRequest`] and drives the reactor's
 //! [`TransactionBuilder`] directly, preserving per-mutation
-//! durable/transient classification through to the effects
-//! evaluator.
+//! durable/transient classification: a transient claim is a command,
+//! written `.at(control_layer())`, and the commit is one dispatch
+//! through the branch's session that lands it in `control:`.
 //!
 //! See `plan/transact-endpoint.md`. Unlike `/evaluate`, this
 //! route bypasses tonk-notation: callers send a typed wire
 //! shape so the reactor's commit pipeline knows what's
 //! transient without re-querying the schema.
+//!
+//! [`TransactionBuilder`]: crate::reactor::TransactionBuilder
 
 use ::axum::{
     Extension, Json,
@@ -99,7 +102,7 @@ pub async fn transact(
     // per-branch transactor lock (taken inside `transact_on_branch`); sync
     // coordinates via the head CAS. So a tab's commit never blocks behind an
     // in-flight sync (the bug that made pause-mid-sync feel dead).
-    let (response, transients) = {
+    let (response, commands) = {
         let tonk_state = state.read().await;
         let tonk_branch = tonk_state
             .reactor
@@ -114,10 +117,10 @@ pub async fn transact(
     // signal, and a transact whose data didn't change has none.
     //
     // This is not hypothetical: every page load fires the transient
-    // `tonk:load` site stamp through this route. Transients are retracted
-    // before the durable write, so the commit lands with an IDENTICAL tree
-    // hash (only the revision's `moment` ticks) — yet it used to enqueue the
-    // repo, so every single reload scheduled a push of nothing.
+    // `tonk:load` site stamp through this route. A command lands in
+    // `control:`, never in the tree, so the commit lands with an IDENTICAL
+    // tree hash (only the revision's `moment` ticks) — yet it used to
+    // enqueue the repo, so every single reload scheduled a push of nothing.
     if response.0.revision_before.as_ref().map(|r| &r.tree)
         != response.0.revision_after.as_ref().map(|r| &r.tree)
     {
@@ -125,28 +128,28 @@ pub async fn transact(
         tonk_state.sync_queue.mark_dirty(&path.repo, now_millis());
     }
     announce_local_commit(&path.branch, &response.0);
-    // Dispatch any transient commands (now that the state lock is
-    // released, so each command's `execute` can re-acquire it) and then
-    // drain the polls this request scheduled. `dispatch` always drains —
-    // even with no commands — so the durable commit's scheduled poll fans
-    // out. The origin is the repo + branch this commit landed in, plus the
-    // client that asked, so a handler can post a page-capability effect
-    // (e.g. navigation) back to it.
+    // Run the commands the dispatch landed in `control:` (now that the
+    // state lock is released, so each command's `execute` can re-acquire
+    // it) and then drain the polls this request scheduled. `run_commands`
+    // always drains — even with no commands — so the durable commit's
+    // scheduled poll fans out. The origin is the repo + branch this commit
+    // landed in, plus the client that asked, so a handler can post a
+    // page-capability effect (e.g. navigation) back to it.
     let origin = super::CommandOrigin {
         repo: path.repo,
         branch: path.branch,
         client: client.map(|Extension(id)| id),
     };
-    // Run the transient command providers (route stamping, invite, join, …) and
-    // the post-commit poll drain WITHOUT blocking this response. A command's
+    // Run the command providers (route stamping, invite, join, …) and the
+    // post-commit poll drain WITHOUT blocking this response. A command's
     // `execute` can be slow — `tonk:load`'s route match + site stamp is ~1s on a
     // cold content branch — and the client (`<tonk-site>`) doesn't read the
     // command's result from this response: it observes the stamp through its live
     // subscription, which the command's scheduled poll broadcasts when it lands.
-    // Awaiting the dispatch here serialized the iframe boot behind the command;
-    // detaching it returns the commit (~40ms) immediately and lets the command
+    // Awaiting the providers here serialized the iframe boot behind the command;
+    // detaching them returns the commit (~40ms) immediately and lets the command
     // finish in the background under the fetch event's `waitUntil` lifetime.
-    spawn_dispatch(state, origin, transients.unwrap_or_default(), lifetime).await;
+    run_commands_detached(state, origin, commands.unwrap_or_default(), lifetime).await;
     Ok(response)
 }
 
@@ -171,7 +174,7 @@ async fn transact_profile(
             ));
         }
     }
-    let (response, transients) = {
+    let (response, commands) = {
         let tonk_state = state.read().await;
         let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
         transact_on_branch(&tonk_state, tonk_branch, body).await?
@@ -179,10 +182,10 @@ async fn transact_profile(
     announce_local_commit(&path.branch, &response.0);
     // Profile-branch commits carry an empty `repo` origin: the profile
     // repository is not in the named-repo namespace, and no command
-    // dispatched here loads an origin repository by name. The originating
+    // landed here loads an origin repository by name. The originating
     // client is carried so the join command can post its navigate message
-    // back to the exact tab that asked. `dispatch` always drains the
-    // scheduled polls, even with no transients, so the durable commit fans
+    // back to the exact tab that asked. `run_commands` always drains the
+    // scheduled polls, even with no commands, so the durable commit fans
     // out.
     let origin = super::CommandOrigin {
         repo: String::new(),
@@ -192,7 +195,7 @@ async fn transact_profile(
     // Detached like the repository-scoped `transact` above: the commit returns
     // now, the command providers + poll drain run in the background and broadcast
     // their writes to subscribers when they land.
-    spawn_dispatch(state, origin, transients.unwrap_or_default(), lifetime).await;
+    run_commands_detached(state, origin, commands.unwrap_or_default(), lifetime).await;
     Ok(response)
 }
 
@@ -214,35 +217,37 @@ fn announce_local_commit(branch: &str, response: &TransactResponse) {
     }
 }
 
-/// Run [`super::dispatch`] as background work so it never blocks the
+/// Run [`super::run_commands`] as background work so it never blocks the
 /// triggering response (shared by the transact and evaluate routes). The
-/// service worker attaches the dispatch promise to the originating fetch
-/// event; native builds run it inline so tests remain deterministic.
-pub(super) async fn spawn_dispatch(
+/// service worker attaches the promise to the originating fetch event;
+/// native builds run it inline so tests remain deterministic.
+pub(super) async fn run_commands_detached(
     state: AppState,
     origin: super::CommandOrigin,
-    transients: dialog_corpus::Changes,
+    commands: dialog_corpus::Changes,
     lifetime: Option<Extension<crate::worker::FetchLifetime>>,
 ) {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     match lifetime {
         Some(Extension(lifetime)) => {
             let promise = wasm_bindgen_futures::future_to_promise(async move {
-                super::dispatch(&state, origin, transients).await;
+                super::run_commands(&state, origin, commands).await;
                 Ok(wasm_bindgen::JsValue::UNDEFINED)
             });
             if let Err(error) = lifetime.extend(&promise) {
-                log!("transact: failed to extend fetch lifetime for command dispatch: {error:?}");
+                log!(
+                    "transact: failed to extend fetch lifetime for the command providers: {error:?}"
+                );
             }
         }
         None => wasm_bindgen_futures::spawn_local(async move {
-            super::dispatch(&state, origin, transients).await;
+            super::run_commands(&state, origin, commands).await;
         }),
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
         let _ = lifetime;
-        super::dispatch(&state, origin, transients).await;
+        super::run_commands(&state, origin, commands).await;
     }
 }
 
@@ -254,9 +259,9 @@ async fn transact_on_branch<'a>(
     let request: TransactRequest = serde_json::from_slice(&body)
         .map_err(|e| TonkWorkerError::Router(format!("invalid TransactRequest body: {e}")))?;
 
-    // A transact carrying ONLY transients writes nothing durable — the
-    // canonical case is `tonk:load`, the site stamp, which lands in the
-    // session overlay (device-local, dies with the worker) and never
+    // A transact carrying ONLY commands writes nothing durable — the
+    // canonical case is `tonk:load`, the site stamp, whose effect lands in
+    // the session overlay (device-local, dies with the worker) and never
     // touches the branch. Failing it because the repository has not been
     // replicated yet is wrong twice over: there is no write to reject,
     // and the page that needs the stamp is exactly the page sitting on a
@@ -266,6 +271,12 @@ async fn transact_on_branch<'a>(
     //
     // Durable claims still require the branch: a write to a repository
     // this device does not hold is a genuine error, not an absence.
+    //
+    // A command on a branch this device does not hold has no session to
+    // land in `control:`, so these two paths hand the command's facts to
+    // the providers directly (`transient_changes`) instead of reading them
+    // back from the layer. That is the one place a command reaches a
+    // provider without going through dialog.
     let all_transient = request
         .claims
         .iter()
@@ -274,8 +285,8 @@ async fn transact_on_branch<'a>(
     let session = match tonk_branch.acquire(&tonk_state.operator).await {
         Ok(session) => session,
         Err(error) if all_transient && !request.claims.is_empty() && is_absence(&error) => {
-            // Emit the transients WITHOUT a branch: they are the payload
-            // the dispatcher needs (this is how `tonk:load` reaches its
+            // Emit the commands WITHOUT a branch: they are the payload
+            // the providers need (this is how `tonk:load` reaches its
             // handler), and none of them writes to storage. Returning an
             // empty `Changes` here instead would answer 200 and still
             // drop the command, which is the same silent loss with a
@@ -300,9 +311,9 @@ async fn transact_on_branch<'a>(
     // `/space/{branch}@{did}` asserts its `tonk:load` here before the
     // branch exists. Committing would publish an empty first revision and
     // make the branch, which only `space/create-branch` may do. With only
-    // transients there is nothing durable to write, and no library on the
-    // branch whose rules could derive anything from them, so dispatch them
-    // as the absent-repository path above does.
+    // commands there is nothing durable to write, and no library on the
+    // branch whose rules could derive anything from them, so hand them to
+    // the providers as the absent-repository path above does.
     if all_transient && revision_before.is_none() && !request.claims.is_empty() {
         let transients = transient_changes(request.claims)?;
         return Ok((
@@ -339,33 +350,30 @@ async fn transact_on_branch<'a>(
         builder = builder.apply(claim);
     }
 
-    // Capture the transient bucket before commit consumes it: the
-    // commit sweeps transients from durable storage, so this snapshot
-    // is the only post-commit view of which commands arrived. Empty →
-    // no command dispatch.
-    let transients = builder.transients.clone();
-    let to_dispatch = (!transients.is_empty()).then_some(transients);
-
     // The per-branch transactor lock that serializes commits is taken INSIDE
-    // the reactor's `commit().perform()` (so no commit path — route or direct
+    // the reactor's `commit().dispatch()` (so no commit path — route or direct
     // handler — can sidestep it). Taking it here too would deadlock: the
-    // mutex is not re-entrant.
-    let revision_after = builder
+    // mutex is not re-entrant. The dispatch answers with the head it left
+    // and the commands it landed in the session's `control:` layer, read
+    // back under that same lock: the post-commit view of which commands
+    // arrived, this dispatch's alone. Empty → nothing to run.
+    let landed = builder
         .commit()
-        .perform(&tonk_state.operator)
+        .dispatch(&tonk_state.operator)
         .await
         .map_err(reactor_to_error)?;
+    let commands = (!landed.commands.is_empty()).then_some(landed.commands);
 
     Ok((
         Json(TransactResponse {
             revision_before,
-            revision_after: Some(revision_after),
+            revision_after: Some(landed.revision),
             commits: CommitSummary {
                 claims: claim_count,
                 entities: Default::default(),
             },
         }),
-        to_dispatch,
+        commands,
     ))
 }
 
@@ -550,5 +558,219 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
         | ReactorError::UnreadableHead { .. }
         | ReactorError::Push(_)
         | ReactorError::Upgrade { .. } => TonkWorkerError::Internal(err.to_string()),
+    }
+}
+
+/// A command asserted through `/transact` reaches its provider by way
+/// of the branch's session: the route writes it `.at(control_layer())`,
+/// the dispatch lands it in `control:` once it has published, and the
+/// route reads that instant back and runs the providers on it. Natively,
+/// against a real space, so the chain is dialog's and not a mirror of
+/// the request.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod control_layer {
+    use axum::body::Bytes;
+    use dialog_corpus::Value;
+
+    use super::transact_on_branch;
+    use crate::reactor::CommandRegistry;
+    use crate::router::command::tests::{Ping, drain_ping_log};
+    use crate::router::command::{CommandOrigin, CommandProviders, run_commands};
+    use crate::router::repository::{
+        BranchConfiguration, RepositoryConfiguration, create_repository,
+    };
+    use tonk_schema::prelude::DidExt as _;
+
+    /// A space with a `main` branch, on a state whose space vocabulary
+    /// is `Ping` alone.
+    async fn space_with_ping() -> (crate::router::AppState, String) {
+        let state = crate::router::command::tests::native::test_state().await;
+        let repo = create_repository(
+            &*state.read().await,
+            "control-layer",
+            &RepositoryConfiguration::default().branch("main", BranchConfiguration::default()),
+        )
+        .await
+        .expect("the space is created")
+        .did()
+        .repo_key()
+        .to_owned();
+        {
+            let mut tonk = state.write().await;
+            tonk.shared_mut().commands = CommandProviders::new(
+                CommandRegistry::new(),
+                CommandRegistry::new().command::<Ping>(),
+            );
+        }
+        (state, repo)
+    }
+
+    /// The wire form of one `Ping` command, carrying `tag`.
+    fn ping_request(tag: &str) -> Bytes {
+        Bytes::from(
+            serde_json::json!({
+                "claims": [{
+                    "op": "assert",
+                    "application": {
+                        "parameters": { "tag": tag },
+                        "predicate": { "kind": "transient", "concept": {
+                            "description": "A command whose provider records its tag.",
+                            "with": {
+                                "tag": { "the": "xyz.tonk.command/ping-tag", "as": "Text" }
+                            }
+                        } }
+                    }
+                }]
+            })
+            .to_string(),
+        )
+    }
+
+    /// The wire form of one durable claim on a concept the branch has
+    /// no rule over.
+    fn durable_request(name: &str) -> Bytes {
+        Bytes::from(
+            serde_json::json!({
+                "claims": [{
+                    "op": "assert",
+                    "application": {
+                        "parameters": { "name": name },
+                        "predicate": { "kind": "durable", "concept": {
+                            "description": "A durable record.",
+                            "with": {
+                                "name": { "the": "xyz.tonk.test/control-name", "as": "Text" }
+                            }
+                        } }
+                    }
+                }]
+            })
+            .to_string(),
+        )
+    }
+
+    #[dialog_common::test]
+    async fn a_command_lands_in_control_and_reaches_its_provider() {
+        let (state, repo) = space_with_ping().await;
+        let _ = drain_ping_log();
+
+        let (response, commands) = {
+            let tonk = state.read().await;
+            let branch = tonk.reactor.repository(&repo).branch("main");
+            transact_on_branch(&tonk, branch, ping_request("through control:"))
+                .await
+                .expect("the command transacts")
+        };
+
+        // A command alone writes nothing durable: the dispatch publishes
+        // nothing and answers the head it began at.
+        assert_eq!(
+            response.0.revision_before, response.0.revision_after,
+            "a command moves no head"
+        );
+        // What came back is what stood in `control:` for this dispatch:
+        // the command's own facts, read through `Session::arrivals`.
+        let commands = commands.expect("the dispatch landed its command in control:");
+        let tags: Vec<Value> = commands
+            .iter()
+            .filter(|(_, the, _)| the.to_string() == "xyz.tonk.command/ping-tag")
+            .filter_map(|(_, _, change)| match change {
+                dialog_corpus::Change::Assert(is, _) => Some(is.clone()),
+                dialog_corpus::Change::Retract(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            tags,
+            vec![Value::String("through control:".to_owned())],
+            "the rows read back from control: are the command's facts"
+        );
+
+        // The route then runs the providers of the origin's vocabulary
+        // on them.
+        run_commands(
+            &state,
+            CommandOrigin {
+                repo: repo.clone(),
+                branch: "main".to_owned(),
+                client: None,
+            },
+            commands,
+        )
+        .await;
+        assert_eq!(
+            drain_ping_log(),
+            vec!["through control:".to_owned()],
+            "the provider ran once with the decoded command"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn a_durable_claim_lands_no_command_and_moves_the_head() {
+        let (state, repo) = space_with_ping().await;
+
+        let (response, commands) = {
+            let tonk = state.read().await;
+            let branch = tonk.reactor.repository(&repo).branch("main");
+            transact_on_branch(&tonk, branch, durable_request("kept"))
+                .await
+                .expect("the claim transacts")
+        };
+
+        assert!(
+            commands.is_none(),
+            "nothing stood in control: for a durable write"
+        );
+        assert_ne!(
+            response.0.revision_before.map(|revision| revision.tree),
+            response.0.revision_after.map(|revision| revision.tree),
+            "a durable claim moves the tree"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn each_dispatch_reads_its_own_commands_once() {
+        let (state, repo) = space_with_ping().await;
+
+        let transact = |body: Bytes| {
+            let state = state.clone();
+            let repo = repo.clone();
+            async move {
+                let tonk = state.read().await;
+                let branch = tonk.reactor.repository(&repo).branch("main");
+                transact_on_branch(&tonk, branch, body)
+                    .await
+                    .expect("the request transacts")
+                    .1
+            }
+        };
+
+        let first = transact(ping_request("first")).await;
+        let second = transact(ping_request("second")).await;
+        let none = transact(durable_request("after")).await;
+
+        let tag = |commands: Option<dialog_corpus::Changes>| -> Vec<String> {
+            commands
+                .map(|commands| {
+                    commands
+                        .iter()
+                        .filter_map(|(_, _, change)| match change {
+                            dialog_corpus::Change::Assert(Value::String(tag), _) => {
+                                Some(tag.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        assert_eq!(tag(first), vec!["first".to_owned()]);
+        assert_eq!(
+            tag(second),
+            vec!["second".to_owned()],
+            "the second dispatch reads its own command and not the first's"
+        );
+        assert!(
+            none.is_none(),
+            "a dispatch with no command reads none left over"
+        );
     }
 }

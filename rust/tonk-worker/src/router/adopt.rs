@@ -311,7 +311,7 @@ impl SeedUpgrades {
 /// worker to try again. On wasm the task is not tied to the fetch
 /// lifetime, so an idling worker may cut it short — the same next-boot
 /// retry covers that. Native (the single-threaded test and host builds,
-/// same as `spawn_dispatch`) runs it inline instead.
+/// same as `run_commands_detached`) runs it inline instead.
 pub(crate) async fn schedule_seed_upgrade(
     tonk: &TonkState,
     state: crate::router::AppState,

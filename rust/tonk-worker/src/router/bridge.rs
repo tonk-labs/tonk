@@ -427,7 +427,7 @@ async fn handle_evaluate(
                     branch: binding.branch,
                     client: Some(client.clone()),
                 };
-                crate::router::dispatch(&state, origin, transients).await;
+                crate::router::run_commands(&state, origin, transients).await;
             }
         }
         Err(e) => {

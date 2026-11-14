@@ -2768,7 +2768,7 @@ mod invite_name_tests {
             .of("cmd:join".parse::<dialog_corpus::Entity>().unwrap())
             .is(short)
             .assert(&mut changes);
-        crate::router::command::dispatch(
+        crate::router::command::run_commands(
             &state,
             crate::router::command::CommandOrigin::default(),
             changes,
@@ -2805,7 +2805,7 @@ mod invite_name_tests {
             .of("cmd:join".parse::<dialog_corpus::Entity>().unwrap())
             .is(page)
             .assert(&mut changes);
-        crate::router::command::dispatch(
+        crate::router::command::run_commands(
             &state,
             crate::router::command::CommandOrigin::default(),
             changes,

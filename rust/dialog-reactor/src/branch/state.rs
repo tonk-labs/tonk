@@ -8,7 +8,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use dialog_corpus::Statement;
 use dialog_query::ConceptQuery;
-use dialog_repository::Branch;
+use dialog_repository::{Branch, Session, SessionEnv};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
@@ -28,6 +28,15 @@ pub struct BranchState {
     /// `Cell<Revision>` keeps this handle current as the branch
     /// advances).
     pub branch: Branch,
+    /// The [`Session`] every commit on this branch goes through: the
+    /// branch as primary with the layers its schema declares, and the
+    /// `control:` loopback a committed command lands in for one tick.
+    /// Opened on the first commit (opening reads the primary's schema
+    /// through a commit-capable env, which [`acquire`] does not have)
+    /// and shared by every writer after; see [`Self::session`].
+    ///
+    /// [`acquire`]: crate::BranchReference::acquire
+    session: tokio::sync::OnceCell<Session>,
     /// Subscriptions on this branch, keyed by query hash, in the order
     /// they were created. [`Self::poll`] walks them lowest level first (see
     /// [`Subscription::level`]), creation order breaking ties.
@@ -63,6 +72,7 @@ impl BranchState {
     pub fn new(branch: Branch) -> Self {
         Self {
             branch,
+            session: tokio::sync::OnceCell::new(),
             subscriptions: Mutex::new(IndexMap::new()),
             transactor: tokio::sync::Mutex::new(()),
             migration_claimed: std::sync::atomic::AtomicBool::new(false),
@@ -91,6 +101,18 @@ impl BranchState {
     /// Whether the migration is running now.
     pub fn is_migrating(&self) -> bool {
         self.migrating.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The session every commit on this branch goes through, opened on
+    /// first use over [`Self::branch`]: it builds a layer for each the
+    /// primary's schema declares and holds the `control:` loopback. A
+    /// clone shares the layers, so the one session serves every writer
+    /// and every reader of what their dispatches land.
+    pub async fn session<Env: SessionEnv>(&self, env: &Env) -> Result<&Session, ReactorError> {
+        self.session
+            .get_or_try_init(|| self.branch.session().perform(env))
+            .await
+            .map_err(ReactorError::from)
     }
 
     /// The per-branch transaction lock. A transaction takes it

@@ -1,29 +1,36 @@
 //! [`TransactionBuilder`] and [`Commit`] — accumulate
-//! assert/retract pairs and commit them through the reactor.
+//! assert/retract pairs and commit them through the branch's
+//! [`Session`](dialog_repository::Session).
 //!
-//! Routes call this instead of `Branch::transaction()`. On a
-//! successful commit, [`Commit::perform`] **schedules** a poll of
+//! Routes call this instead of `Branch::transaction()`. A commit is one
+//! dispatch through the session ([`Session::transact`]): the durable
+//! writes land in the primary; a command (a claim of a transient
+//! concept, written `.at(control_layer())`) is the dispatch's stimulus
+//! and, once the dispatch has published, stands in the session's
+//! `control:` layer for one instant. [`Commit::dispatch`] reads that
+//! instant back ([`Ephemeral::since`] on the session's `control:` layer)
+//! and hands the commands to the caller as [`Landed::commands`], so the
+//! worker's providers run exactly the commands this dispatch landed and
+//! no other writer's.
+//!
+//! On a successful commit, [`Commit::perform`] **schedules** a poll of
 //! the affected branch ([`Reactor::schedule_poll`]) rather than
 //! polling inline — so a commit and a session-overlay write on the
 //! same branch in one turn coalesce into a single re-evaluation.
 //! Every entry point that commits is therefore responsible for
 //! draining the scheduled set once it's done
-//! ([`Reactor::run_scheduled_polls`]); the command dispatcher does
+//! ([`Reactor::run_scheduled_polls`]); the command runner does
 //! this for the transact path, and the create/migration/claim
 //! routes drain explicitly. The builder is lazy; nothing touches
 //! the branch until `Commit::perform`.
 //!
 //! [`Reactor::schedule_poll`]: crate::Reactor::schedule_poll
 //! [`Reactor::run_scheduled_polls`]: crate::Reactor::run_scheduled_polls
-//!
-//! [`Commit::perform`] runs the effects evaluator
-//! ([`super::effects::evaluate_effects`]) between the user's
-//! changes and the durable write, then strips transient facts
-//! ([`super::effects::retract_transients`]) before commit so they
-//! never reach durable storage.
+//! [`Session::transact`]: dialog_repository::Session::transact
+//! [`Ephemeral::since`]: dialog_repository::Ephemeral::since
 
-use dialog_corpus::{Changes, Statement};
-use dialog_repository::{CommitError, Revision};
+use dialog_corpus::{Changes, Pick, Statement, Update as _};
+use dialog_repository::{Revision, control_layer};
 use tonk_schema::claim::{Claim, PredicateApplication};
 use tonk_schema::transact::application_plan_from_predicate;
 
@@ -31,31 +38,22 @@ use super::BranchReference;
 use super::env::{BranchOpenProvider, CommitProvider, LoadProvider, SelectProvider};
 use super::error::ReactorError;
 
-/// Builder — accumulates assertions and retractions into a
+/// Builder — accumulates assertions and retractions into one
 /// [`Changes`] batch. Chain off `TonkBranch::transaction`.
 ///
-/// Claims are bucketed by durability: durable claims go into
-/// [`Self::changes`] and flow through to the dialog commit
-/// untouched; transient claims go into [`Self::transients`] so
-/// [`Commit::perform`] can retract them inside the same
-/// transaction before the durable write (the
-/// assert+retract-cancels-at-commit pattern from
-/// `plan/effects.md`). Routes that don't yet carry transient
-/// classification (e.g. the legacy `/claim/*` path) keep using
-/// the raw [`Self::assert`] / [`Self::retract`] entries, which
-/// default to the durable bucket.
+/// A claim of a transient concept is a command: it is written
+/// `.at(control_layer())`, so the session's commit takes it as the
+/// dispatch's stimulus rather than a write to the primary, and it
+/// reaches `control:` once the dispatch publishes. Routes that don't
+/// carry transient classification (e.g. the legacy `/claim/*` path)
+/// keep using the raw [`Self::assert`] / [`Self::retract`] entries,
+/// which write to the primary.
 pub struct TransactionBuilder<'a> {
     /// The branch the transaction will commit to.
     pub branch: BranchReference<'a>,
-    /// Accumulated durable claims.
+    /// Accumulated claims, durable and commands alike: a command's
+    /// facts are in the `control:` share.
     pub changes: Changes,
-    /// Accumulated transient claims — facts asserted at the
-    /// current timestep that must not survive into durable
-    /// storage. Seeded by [`Self::apply`] for transient-typed
-    /// [`Claim`]s; consumed by [`Commit::perform`] which
-    /// integrates them into the transaction overlay (so effects
-    /// see them) then emits a matching retract before commit.
-    pub transients: Changes,
 }
 
 impl<'a> TransactionBuilder<'a> {
@@ -64,31 +62,28 @@ impl<'a> TransactionBuilder<'a> {
         Self {
             branch,
             changes: Changes::new(),
-            transients: Changes::new(),
         }
     }
 
-    /// Add an assertion to the durable bucket. Used by callers
-    /// that operate on raw dialog [`Statement`] values (legacy
-    /// `/claim/*` and tests) without a durability
-    /// classification — assume durable.
+    /// Add an assertion to the primary. Used by callers that operate
+    /// on raw dialog [`Statement`] values (legacy `/claim/*` and tests)
+    /// without a durability classification — assume durable.
     pub fn assert<S: Statement>(mut self, claim: S) -> Self {
         claim.assert(&mut self.changes);
         self
     }
 
-    /// Add a retraction to the durable bucket. Same fallback
-    /// semantics as [`Self::assert`].
+    /// Add a retraction to the primary. Same fallback semantics as
+    /// [`Self::assert`].
     pub fn retract<S: Statement>(mut self, claim: S) -> Self {
         claim.retract(&mut self.changes);
         self
     }
 
-    /// Apply a typed [`Claim`] from the wire format, routing into
-    /// the durable or transient bucket based on the predicate's
-    /// classification. Each application is planned into raw EAV
-    /// facts (same emitter the asserted-notation planner uses) and
-    /// added to the appropriate batch.
+    /// Apply a typed [`Claim`] from the wire format. Each application
+    /// is planned into raw EAV facts (same emitter the
+    /// asserted-notation planner uses); a transient predicate's land
+    /// in `control:`, a durable one's in the primary.
     pub fn apply(self, claim: Claim) -> Self {
         match claim {
             Claim::Assert(application) => self.apply_assert(application),
@@ -96,31 +91,31 @@ impl<'a> TransactionBuilder<'a> {
         }
     }
 
-    /// Assert a [`PredicateApplication`]. Transient predicates
-    /// land in the transient bucket; durable predicates land in
-    /// the durable bucket.
+    /// Assert a [`PredicateApplication`]. A transient predicate is a
+    /// command, written `.at(control_layer())`.
     pub fn apply_assert(mut self, application: PredicateApplication) -> Self {
-        let bucket = if application.is_transient() {
-            &mut self.transients
+        if application.is_transient() {
+            application_plan_from_predicate(application)
+                .at(control_layer())
+                .assert(&mut self.changes);
         } else {
-            &mut self.changes
-        };
-        application_plan_from_predicate(application).assert(bucket);
+            application_plan_from_predicate(application).assert(&mut self.changes);
+        }
         self
     }
 
-    /// Retract a [`PredicateApplication`]. Routed by the same
-    /// rule as [`Self::apply_assert`] — a retraction of a
-    /// transient predicate goes to the transient bucket so it
-    /// pairs with whatever assertion the same predicate emitted
-    /// earlier in the document.
+    /// Retract a [`PredicateApplication`]. Routed by the same rule as
+    /// [`Self::apply_assert`] — a retraction of a transient predicate
+    /// goes to `control:` so it pairs with whatever assertion the same
+    /// predicate emitted earlier in the document.
     pub fn apply_retract(mut self, application: PredicateApplication) -> Self {
-        let bucket = if application.is_transient() {
-            &mut self.transients
+        if application.is_transient() {
+            application_plan_from_predicate(application)
+                .at(control_layer())
+                .retract(&mut self.changes);
         } else {
-            &mut self.changes
-        };
-        application_plan_from_predicate(application).retract(bucket);
+            application_plan_from_predicate(application).retract(&mut self.changes);
+        }
         self
     }
 
@@ -131,42 +126,76 @@ impl<'a> TransactionBuilder<'a> {
             origin: std::panic::Location::caller(),
             branch: self.branch,
             changes: self.changes,
-            transients: self.transients,
         }
     }
 }
 
-/// Commit effect — performs the dialog commit, then re-polls
-/// every subscription on the branch so changed query results
-/// fan out to subscribers.
+/// Commit effect — performs one dispatch through the branch's session,
+/// then schedules a re-poll of every subscription on the branch so
+/// changed query results fan out to subscribers.
 pub struct Commit<'a> {
     /// Where `.commit()` was called, so the commit log names its caller.
     pub origin: &'static std::panic::Location<'static>,
     /// The branch the commit applies to.
     pub branch: BranchReference<'a>,
-    /// Durable claims — integrated into the transaction and
-    /// kept through to the dialog commit.
+    /// The claims: durable ones for the primary, commands in the
+    /// `control:` share.
     pub changes: Changes,
-    /// Transient claims — integrated into the transaction so
-    /// effects' deductive saturation can see them, then matched
-    /// by inline retractions before the durable write so they
-    /// cancel at commit. See `plan/effects.md`.
-    pub transients: Changes,
+}
+
+/// What a dispatch left behind: the head it left the primary at, and
+/// the commands that landed in the session's `control:` layer for it,
+/// read back from the layer's instants.
+///
+/// The commands are the ones this dispatch wrote `.at(control_layer())`
+/// and the ones its rules dispatched in any tick, as rows: a provider
+/// decodes a command from the facts of its entity, since nothing of a
+/// command stays anywhere a later read could find it.
+#[derive(Debug, Clone)]
+pub struct Landed {
+    /// The revision the dispatch published, or the unchanged head when
+    /// it wrote nothing durable.
+    pub revision: Revision,
+    /// The commands that stood in `control:` for this dispatch, empty
+    /// when it dispatched none.
+    pub commands: Changes,
 }
 
 impl Commit<'_> {
     /// Execute the commit. On success, every subscription on
-    /// the branch is re-evaluated and (if its result changed)
-    /// broadcasts to its subscribers.
-    ///
-    /// The user's durable and transient [`Changes`] are loaded
-    /// into a dialog
-    /// [`Transaction`](dialog_repository::Transaction); the
-    /// effects evaluator runs against it (firing inductive
-    /// rules whose body matches the transaction's overlay
-    /// view), then transient facts are retracted in-place so
-    /// they cancel at commit. Whatever's left lands durably.
+    /// the branch is scheduled for re-evaluation. The commands the
+    /// dispatch landed are dropped: a caller that runs providers wants
+    /// [`dispatch`](Self::dispatch).
     pub async fn perform<Env>(self, env: &Env) -> Result<Revision, ReactorError>
+    where
+        Env: LoadProvider + BranchOpenProvider + CommitProvider + SelectProvider,
+    {
+        self.dispatch(env).await.map(|landed| landed.revision)
+    }
+
+    /// Execute the commit as one dispatch through the branch's session
+    /// and read back what it landed in `control:`.
+    ///
+    /// The session's commit runs induction over the user's claims and
+    /// the branch's rules, routes each write to its layer, publishes
+    /// the primary's share with one compare-and-swap, and re-runs the
+    /// whole dispatch from the new head when a sync moved it meanwhile
+    /// (see [`Invocation`](dialog_repository::Invocation)). Once it has
+    /// published, its commands stand in `control:` for one instant,
+    /// minted on the layer's instant chain; the layer's sequence noted
+    /// before the dispatch and read after it, both under the branch's
+    /// transactor lock, bound exactly that instant.
+    ///
+    /// Read from the instants ([`Ephemeral::since`]) rather than through
+    /// [`Session::arrivals`]: `Arrivals` evaluates a query over what
+    /// arrived, and a provider that decodes a command from the shape of
+    /// its entity's facts wants every row, which no attribute query can
+    /// ask for (one with `the`, `of` and `is` all unbound is refused with
+    /// `EmptySelector`, and a bound `in` alone does not count).
+    ///
+    /// [`Ephemeral::since`]: dialog_repository::Ephemeral::since
+    /// [`Session::arrivals`]: dialog_repository::Session::arrivals
+    pub async fn dispatch<Env>(self, env: &Env) -> Result<Landed, ReactorError>
     where
         Env: LoadProvider + BranchOpenProvider + CommitProvider + SelectProvider,
     {
@@ -183,117 +212,99 @@ impl Commit<'_> {
         // transactor lock — so concurrent writers (the transact route AND the
         // direct handler commits: invite, join, pause, …) line up here rather
         // than racing the head CAS. The lock lives on `.commit()` so no caller
-        // can sidestep it. Held across the whole induce+commit. Sync does NOT
-        // take it — it coordinates via the CAS and retries — so a commit never
-        // waits on a sync.
+        // can sidestep it. Held across the whole induce+commit, and across
+        // the read of `control:` after it, so the commands read are this
+        // dispatch's alone. Sync does NOT take it — it coordinates via the
+        // CAS and retries — so a commit never waits on a sync.
         let _transacting = cached.state.transactor().lock().await;
+        let session = cached.state.session(env).await?;
 
-        // A sync (which doesn't take the lock above) can still advance the head
-        // between our snapshot and our publish; the dialog commit CAS's against
-        // the head it built on, so that surfaces as a version mismatch rather
-        // than a silent loss. Refresh the branch's view of the head and retry —
-        // the changes are idempotent asserts/retracts, so replaying them on the
-        // advanced head is safe.
         let changes = self.changes;
-        let transients = self.transients;
-        let instructions = changes.clone().into_instructions();
-        let claims = instructions.len();
-        // The attributes the claims touch, deduplicated: enough to name
-        // the concept a commit carries without printing its values.
-        let attributes = {
-            let mut names: Vec<String> = instructions
-                .iter()
-                .map(|instruction| match instruction {
-                    dialog_corpus::Instruction::Assert(claim, _)
-                    | dialog_corpus::Instruction::Retract(claim) => claim.the.to_string(),
-                })
-                .collect();
-            names.sort();
-            names.dedup();
-            names.join(",")
-        };
-        let mut attempt = 0;
-        let revision = loop {
-            let branch = cached.handle();
-            let before = branch.revision();
-            // Durable changes are asserted; transients are dispatched
-            // as commands. Commit-time induction (dialog's) fires
-            // installed rules over both and sweeps the transients.
-            let txn = branch
-                .transaction()
-                .integrate(changes.clone())
-                .dispatch(transients.clone());
+        let (claims, attributes) = describe(&changes);
+        let before = session.primary().revision();
 
-            let t_commit = web_time::Instant::now();
-            match txn.commit().publish().perform(env).await {
-                Ok(revision) => {
-                    let commit_ms = t_commit.elapsed().as_millis();
-                    // Name the commit: the branch, the claim count, and
-                    // whether the tree moved. A commit that lands an
-                    // identical tree still mints a revision and publishes
-                    // it, so a caller re-asserting what is already there
-                    // reads as "tree unchanged" here, and that is the one
-                    // to go and find.
-                    let moved =
-                        if before.as_ref().map(|before| &before.tree) == Some(&revision.tree) {
-                            "unchanged"
-                        } else {
-                            "moved"
-                        };
-                    let head = if before.as_ref().map(|before| before.version())
-                        == Some(revision.version())
-                    {
-                        "same"
-                    } else {
-                        "advanced"
-                    };
-                    dialog_common::log!(
-                        "reactor commit timing: commit {commit_ms}ms on {name}@{repo}, \
-                         {claims} claims ({attributes}), tree {moved}, head {head}, from {origin}"
-                    );
-                    break revision;
+        // Noted before the dispatch: `control:` holds nothing between
+        // dispatches, so the instants after this sequence are this
+        // dispatch's commands landing and leaving, and nothing else.
+        let control = session
+            .layer(&control_layer())
+            .expect("every session holds control:")
+            .clone();
+        let sequence = control.revision().sequence;
+
+        let t_commit = web_time::Instant::now();
+        // The session re-runs the dispatch from the new head when a sync
+        // advanced it between the snapshot and the publish: the changes
+        // are idempotent asserts/retracts, so replaying them on the
+        // advanced head is safe.
+        let revision = session.transact(changes).perform(env).await?;
+        let commit_ms = t_commit.elapsed().as_millis();
+
+        // Every assertion the instants since carry: the commands landing
+        // (their leaving in the next instant is a retraction, which is
+        // not news to a provider). `None` means the layer's log moved
+        // past the sequence, which a dispatch under the lock cannot do;
+        // the layer holds nothing between dispatches, so there is
+        // nothing to read in its place.
+        let mut commands = Changes::new();
+        match control.since(sequence) {
+            Some(instants) => {
+                for fact in instants.into_iter().flat_map(|instant| instant.asserted) {
+                    commands.associate(fact.the, fact.of, fact.is, Pick::All);
                 }
-                Err(e) if is_head_moved(&e) && attempt < COMMIT_RETRY_LIMIT => {
-                    attempt += 1;
-                    dialog_common::log!(
-                        "reactor commit raced (attempt {attempt}); refreshing head and retrying"
-                    );
-                    // Refresh the handle's view of the head before retrying. If
-                    // even that fails, give up with the original mismatch.
-                    if let Err(refresh_err) = branch.refresh(env).await {
-                        dialog_common::log!(
-                            "reactor commit refresh after race failed: {refresh_err}"
-                        );
-                        return Err(e.into());
-                    }
-                }
-                Err(e) => return Err(e.into()),
             }
+            None => dialog_common::log!(
+                "reactor commit: control: moved past sequence {sequence} on {name}@{repo}; \
+                 the dispatch's commands were not read"
+            ),
+        }
+
+        // Name the commit: the branch, the claim count, and whether the
+        // tree moved. A commit that lands an identical tree still mints a
+        // revision and publishes it, so a caller re-asserting what is
+        // already there reads as "tree unchanged" here, and that is the
+        // one to go and find.
+        let moved = if before.as_ref().map(|before| &before.tree) == Some(&revision.tree) {
+            "unchanged"
+        } else {
+            "moved"
         };
+        let head = if before.as_ref().map(|before| before.version()) == Some(revision.version()) {
+            "same"
+        } else {
+            "advanced"
+        };
+        dialog_common::log!(
+            "reactor commit timing: commit {commit_ms}ms on {name}@{repo}, \
+             {claims} claims ({attributes}), tree {moved}, head {head}, from {origin}"
+        );
 
         // Schedule the poll rather than running it inline: the request's
-        // dispatcher drains the scheduled set once after its providers run
-        // (`Reactor::run_scheduled_polls`), so a commit and a session-overlay
-        // write on the same branch in one turn coalesce into a single
-        // re-evaluation. Every entry point that commits must drain.
+        // command runner drains the scheduled set once after its providers
+        // run (`Reactor::run_scheduled_polls`), so a commit and a
+        // session-overlay write on the same branch in one turn coalesce
+        // into a single re-evaluation. Every entry point that commits must
+        // drain.
         self.branch
             .reactor()
             .schedule_poll(std::sync::Arc::clone(&cached.state));
 
-        Ok(revision)
+        Ok(Landed { revision, commands })
     }
 }
 
-/// How many times a reactor commit refreshes-and-retries when a sync advanced
-/// the head under it. Transactions serialize via the transactor lock, so the
-/// only racer is sync; one retry settles it in practice.
-const COMMIT_RETRY_LIMIT: usize = 4;
-
-/// Whether a commit error is the "head moved under us" version mismatch (a sync
-/// advanced the head between this commit's snapshot and its publish) — the
-/// signal to refresh and retry. Matched on the rendered error so the reactor
-/// need not import the dialog error hierarchy; the `VersionMismatch` leaf
-/// renders its distinctive text through the chain.
-fn is_head_moved(error: &CommitError) -> bool {
-    error.to_string().contains("Version mismatch")
+/// How many claims a batch carries and the attributes they touch,
+/// deduplicated: enough to name the concept a commit carries without
+/// printing its values. Counts the writes to every layer, the
+/// commands included.
+fn describe(changes: &Changes) -> (usize, String) {
+    let mut names: Vec<String> = changes
+        .iter()
+        .map(|(_, the, _)| the.to_string())
+        .chain(changes.iter_in().map(|(_, _, the, _)| the.to_string()))
+        .collect();
+    let claims = names.len();
+    names.sort();
+    names.dedup();
+    (claims, names.join(","))
 }
