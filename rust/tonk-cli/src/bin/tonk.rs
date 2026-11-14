@@ -218,11 +218,15 @@ enum Command {
     /// Read instances of a concept, every field bound
     ///
     /// Reads matching instances through a dialog query — nothing commits.
+    ///
+    /// Document history formulas take their inputs as `--term`.
+    /// Without terms, `document/content` reads the current mirrored concept.
+    /// The rows are the ones the web's `tonk.query` returns, as JSON.
     #[command(
-        after_help = "Examples:\n  tonk query task\n  tonk query task --where 'title=Draft launch email' --where done=false\n  tonk query task --json"
+        after_help = "Examples:\n  tonk query task\n  tonk query task --where done=false\n  tonk query task --json\n  tonk query document/versions --term document=id:prose/doc\n  tonk query document/content --term document=id:prose/doc --term heads=<heads>\n  tonk query document/diff --term document=id:prose/doc --term from=<heads> --term to=<heads>"
     )]
     Query {
-        /// Name of the concept to query.
+        /// Name of the concept to query, or a `document/*` formula.
         #[arg(value_name = "CONCEPT")]
         concept: String,
         /// Exact text/boolean equality; repeat for AND. Many fields match a value.
@@ -231,6 +235,10 @@ enum Command {
         /// Emit matching instances as a JSON array instead of notation.
         #[arg(long)]
         json: bool,
+        /// An input of a `document/*` formula, as NAME=VALUE. Repeatable.
+        /// Refused for a concept query, which takes no inputs.
+        #[arg(long = "term", value_name = "NAME=VALUE")]
+        terms: Vec<String>,
     },
 
     /// Retract a field, or a whole instance
@@ -1229,7 +1237,8 @@ async fn main() {
             concept,
             json,
             filters,
-        } => query_op(concept, json, filters, space.as_deref()).await,
+            terms,
+        } => query_op(concept, json, filters, terms, space.as_deref()).await,
         Command::Assert { concept, rest } => assert_cmd(concept, rest, space.as_deref()).await,
         Command::Retract {
             concept,
@@ -3059,12 +3068,52 @@ async fn query_op(
     concept: String,
     json: bool,
     filters: Vec<String>,
+    terms: Vec<String>,
     space: Option<&str>,
 ) -> ExitCode {
     let (_, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
+
+    // With no formula inputs, document/content is the ordinary mirror
+    // concept (and accepts the same filters as any other concept).
+    let formula = tonk_document::formula::handles(&concept)
+        && (concept != "document/content" || !terms.is_empty());
+    if !formula && !terms.is_empty() {
+        return print_error(format!(
+            "`--term` is an input of a document/* formula; `{concept}` is a concept and takes none"
+        ));
+    }
+    if formula {
+        if !filters.is_empty() {
+            return print_error("document formulas take --term, not --where");
+        }
+        let mut parsed = Vec::new();
+        for term in &terms {
+            match term.split_once('=') {
+                Some((name, value)) if !name.is_empty() => {
+                    parsed.push((name.to_string(), value.to_string()));
+                }
+                _ => return print_error(format!("`--term {term}` is not NAME=VALUE")),
+            }
+        }
+        // A document may have changed elsewhere: bring its bytes in the
+        // way a write's pull-before does.
+        if tonk_cli::auto_sync::enabled(false) {
+            tonk_cli::document::sync_all(&site).await;
+        }
+        return match tonk_cli::document::query_formula(&site, &concept, &parsed).await {
+            Ok(text) => {
+                let mut stdout = std::io::stdout().lock();
+                if let Err(e) = stdout.write_all(text.as_bytes()) {
+                    return print_error(format!("failed to write stdout: {e}"));
+                }
+                ExitCode::Success
+            }
+            Err(error) => print_error(error),
+        };
+    }
 
     match data_ops::query_filtered(&site, &concept, json, &filters).await {
         Ok(text) => {

@@ -49,6 +49,7 @@ watch = [
     "../tonk-common",
     "../tonk-core",
     "../tonk-worker",
+    "../tonk-document",
     "../tonk-worker-api",
     "../tonk-identity",
     "../tonk-account",

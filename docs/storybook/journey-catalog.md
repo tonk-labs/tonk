@@ -133,6 +133,7 @@ the most important gaps, not the only variants required.
 | `DATA-10` | Add/list/read a content-addressed blob. | Inferred/explicit type; dry-run; missing/corrupt file/blob; stdout pipe. | Ten blob integration tests. | Large stream/disk full, signal, content changed mid-read, broken pipe. |
 | `DATA-11` | Export or import CSV. | stdout/file; branch; empty/malformed/duplicate rows; write flags. | Transfer integration tests. | Atomic output/import, partial row failure/retry, escaping/large file, concurrent branch. |
 | `DATA-12` | Define a custom element and have the browser resolve it on use. | List/empty; inline/file method source; attribute defaults; re-authoring one method or one default; notation; write flags. | Seventeen authoring integration tests against a real branch, thirty-six browser tests of the runtime, four full-stack wasm tests through the real host. | Malformed method source, a tag another module already defined, a definition swapped while instances are live in several open tabs. |
+| `DATA-14` | Edit and recover shared Automerge prose and workbooks. | Concurrent writers; branch-specific versions; lost reply; offline restart; newer format; size limit; CSV round-trip; explicit CLI push/pull. | Shared document, worker-route, editor and CLI regression suites; two-browser access-service journey. | Preview deployment and scoped agent grants for document cells; the existing agent grant only covers branch revisions and archives. |
 
 ## CLI setup and maintenance
 

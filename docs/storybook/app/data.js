@@ -745,6 +745,14 @@ window.STORYBOOK_DATA = {
       "variants": "List/empty; inline/file method source; attribute defaults; re-authoring one method or one default; notation; write flags."
     },
     {
+      "evidence": "Shared document, worker-route, editor and CLI regression suites; two-browser access-service journey.",
+      "gaps": "Preview deployment and scoped agent grants for document cells; the existing agent grant only covers branch revisions and archives.",
+      "group": "Authoring, data, rendering, and transfer",
+      "id": "DATA-14",
+      "title": "Edit and recover shared Automerge prose and workbooks.",
+      "variants": "Concurrent writers; branch-specific versions; lost reply; offline restart; newer format; size limit; CSV round-trip; explicit CLI push/pull."
+    },
+    {
       "evidence": "Parser/unit and process coverage.",
       "gaps": "Snapshot of every help route, width/color/broken pipe, hidden-command discoverability.",
       "group": "CLI setup and maintenance",
@@ -1420,7 +1428,8 @@ window.STORYBOOK_DATA = {
         "DATA-06",
         "DATA-08",
         "DATA-09",
-        "DATA-12"
+        "DATA-12",
+        "DATA-14"
       ],
       "name": "Concepts, views, and data verbs",
       "source_paths": [
@@ -2405,6 +2414,14 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
+      "claim": "Shared document edits converge and remain recoverable (Shared documents).",
+      "device": "cli + two browsers + restart",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "DATA-14",
+      "priority": "P1",
+      "result": "Regression suites are listed in the PR validation record; preview deployment and scoped agent document grants remain outside this pass."
+    },
+    {
       "claim": "Every route family mounts exactly one correct top-level element (Resolve).",
       "device": "fresh-browser",
       "file": "verification/cli-spaces-ui.md",
@@ -2504,7 +2521,7 @@ window.STORYBOOK_DATA = {
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 15,
+    "other": 16,
     "pass": 3,
     "unrun": 107
   },

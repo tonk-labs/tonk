@@ -2086,3 +2086,60 @@ mod when_reading {
         }));
     }
 }
+
+#[dialog_common::test]
+fn document_formulas_and_filtered_concepts_work_across_cli_processes() {
+    let state = tempfile::tempdir().unwrap();
+    let invoke = |args: &[&str]| {
+        let output = run(
+            state.path(),
+            args,
+            &[("TONK_SPACE", "documents"), ("TONK_NO_SYNC", "1")],
+        );
+        assert!(output.status.success(), "{args:?}: {}", stderr_of(&output));
+        output
+    };
+    invoke(&["space", "new", "documents"]);
+    let library = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tonk-core/assets/library");
+    invoke(&[
+        "eval",
+        library.join("document.yaml").to_str().unwrap(),
+        library.join("prose-editor.yaml").to_str().unwrap(),
+    ]);
+    invoke(&[
+        "eval",
+        "-c",
+        "prose/seed!:\n  this: id:review/cli-document\n  format: automerge/text@1\n  content: hello world\n",
+    ]);
+    invoke(&[
+        "eval",
+        "-c",
+        "document/replace!:\n  document: id:review/cli-document\n  find: \"world\"\n  with: \"there\"\n",
+    ]);
+    let formula = invoke(&[
+        "query",
+        "document/content",
+        "--term",
+        "document=id:review/cli-document",
+    ]);
+    let rows: serde_json::Value = serde_json::from_slice(&formula.stdout).unwrap();
+    assert_eq!(rows[0]["fields"]["text"], "hello there");
+    let mirror = invoke(&[
+        "query",
+        "document/content",
+        "--where",
+        "text=hello there",
+        "--json",
+    ]);
+    let rows: serde_json::Value = serde_json::from_slice(&mirror.stdout).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(rows[0]["text"], "hello there");
+    let versions = invoke(&[
+        "query",
+        "document/versions",
+        "--term",
+        "document=id:review/cli-document",
+    ]);
+    let rows: serde_json::Value = serde_json::from_slice(&versions.stdout).unwrap();
+    assert!(rows.as_array().unwrap().len() >= 2);
+}

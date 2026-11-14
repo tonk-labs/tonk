@@ -92,6 +92,7 @@ and this contract are delivered together on base `90ba1f90d`.
 | `element`, `element --json`, `element add` | `DATA-12` | Empty/list, inline/file method source, attribute defaults, description required, re-authoring one method or one default, legacy `component` rows alongside, notation, write modifiers. |
 | `assert [CONCEPT] [ENTITY] ...` | `DATA-03`, `DATA-04` | Dynamic help, create/update/no-op, schema flags, JSON commit/verification/push receipt, notation/dry-run/no-sync/quiet. |
 | `query CONCEPT [--where FIELD=VALUE]` | `DATA-05` | Empty/many/ambiguous, typed equality and repeated AND filters, human/JSON, invalid/missing concept or field, broken pipe. |
+| `query document/{versions,changes,content,diff} --term NAME=VALUE` | `DATA-14` | Bound document entity, optional past heads, branch history, invalid inputs; `document/content` without terms remains the mirrored concept and supports `--where`. |
 | `retract CONCEPT ENTITY [--field]` | `DATA-06` | Whole/field/many field, notation/dry-run/no-sync/quiet, already retracted. |
 | `eval` | `DATA-07` | `-c`, one file or several (evaluated in the order given as one commit; a later file sees an earlier one's declarations; a rejected file named, nothing committed; `-` refused among paths), explicit `-`, implicit piped stdin, query/write/mixed, JSON/quiet/home/dry-run/no-sync; a file resolves `!include` / `!include/text` / `!include/asset` next to itself, other sources refuse them. |
 | `render ROUTE [--out PATH]` | `DATA-09` | Directory/detail/explicit view, every matching view once in entity order, frame-wide portal mode, default fallback only for an empty renderable match, stdout/file, missing route/view, output failure. |
@@ -399,3 +400,22 @@ that may embed secrets.
 
 Source audit pinned to Tonk commit `a3f8670b1`.
 Onboarding-account addendum pinned to Tonk commit `b564e83b1`.
+
+## Shared documents (DATA-14)
+
+A prose or workbook document keeps its body in one replaceable memory cell.
+Branches retain the heads that select their version. Concurrent edits merge;
+restoring past content adds a change and keeps history. The same commands work
+through the worker and CLI. Explicit push/pull transfer bodies as well as branch
+pointers, so an offline edit can be published without repeating it.
+
+The editor retains unsent work during a request, retries with the same gesture
+identity after a lost response, and opens a past version read-only. Unknown
+newer formats are read-only; edits exceeding 8 MiB are refused. CSV export and
+import carry document bytes separately from durable claims.
+
+Verification lives in `tonk-document`, the worker's document routes, the prose
+and table suites, `cli/document.rs`, and the two-browser Automerge account test.
+The CLI-08 screenshot predates document queries; it is not a capture of them.
+Current scoped agent invitations grant branch revision and archive access only;
+this PR does not widen that authority to document cells.

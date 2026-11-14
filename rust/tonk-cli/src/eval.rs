@@ -200,10 +200,16 @@ pub async fn run_documents(
         .await
         .map_err(|e| EvalError::Io(format!("acquire branch: {e}")))?;
     let branch = session.handle();
+
+    // Queries in this document may read document text or table cells.
+    // The worker keeps that mirror current; a CLI process derives it now.
+    crate::document::mirror_all(site, branch).await;
+
     let revision_before = branch.revision();
 
     let mut txn = branch.transaction();
     let mut writes = false;
+    let mut transients = dialog_artifacts::Changes::new();
     let mut matches_before = Vec::new();
     let mut matches_after = Vec::new();
     let mut commits = CommitSummary::default();
@@ -242,6 +248,7 @@ pub async fn run_documents(
                 .await
                 .map_err(|e| named(map_evaluate_error(e)))?,
         );
+        transients.assert(evaluated.transients);
         writes |= evaluated.analysis.analysis.has_statements();
         matches_before.extend(evaluated.matches);
         commits.claims += evaluated.commits.claims;
@@ -259,6 +266,16 @@ pub async fn run_documents(
             .perform(&site.operator)
             .await
             .map_err(|e| EvalError::Io(format!("commit failed: {e}")))?;
+        // Run the document commands among them, as the worker's command
+        // dispatcher does after `/transact`. This sits inside the caller's
+        // auto-sync window, so what a handler writes is pushed.
+        crate::document::adopt_legacy(site, branch).await;
+        for refusal in crate::document::dispatch(site, branch, &transients).await {
+            eprintln!("warning: document command refused, nothing changed: {refusal}");
+        }
+        // A document command may have committed its new heads after the
+        // notation transaction; the receipt must name the saved result.
+        let revision_after = branch.revision().unwrap_or(revision_after);
         // Re-poll the branch's subscriptions so the reactor's
         // commit contract holds. Tonk opens none, so this is a
         // no-op today, kept for parity with the worker's path.
