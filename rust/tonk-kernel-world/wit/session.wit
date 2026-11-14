@@ -1,0 +1,38 @@
+package sapling:kernel@0.1.0;
+
+interface session {
+  use types.{did};
+  use credential.{credential, representative, persona};
+
+  /// The standing of a worker: the key it acts under, the representative it
+  /// acts through, and the persona it acts for. The embedder makes it and
+  /// hands it to the guest kernel at boot.
+  ///
+  /// A guest kernel asks its representative for the delegations it needs
+  /// (`representative.delegate`), and keeps them in its space.
+  variant session {
+    /// The persona's own worker, which may ask to act as the persona.
+    persona(persona-session),
+    /// The worker of a space, which knows its persona by DID only.
+    space(space-session),
+  }
+
+  resource persona-session {
+    /// The key this worker acts under. It never leaves the embedder.
+    credential: func() -> credential;
+    /// What this worker acts through, such as a device.
+    representative: func() -> representative;
+    /// The persona, as it stands now: a provisional persona becomes
+    /// permanent once it merges.
+    persona: func() -> persona;
+  }
+
+  resource space-session {
+    /// The key this worker acts under. It never leaves the embedder.
+    credential: func() -> credential;
+    /// What this worker acts through, such as a device.
+    representative: func() -> representative;
+    /// The persona this worker acts for.
+    persona: func() -> did;
+  }
+}

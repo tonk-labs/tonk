@@ -1,0 +1,20 @@
+dinner-task!:
+  this: id:dinner-ingredients
+  title: "Shop for ingredients"
+
+dinner-task!:
+  this: id:dinner-drinks
+  title: "Chill drinks"
+  completed: false
+
+view!:
+  this: dinner-task
+  show:
+    directory: |
+      <main style="max-width:480px;margin:40px auto;padding:24px">
+        <h1>Dinner checklist</h1>
+        <tonk-display entity="id:dinner-menu" model=dinner-task></tonk-display>
+        <tonk-display entity="id:dinner-ingredients" model=dinner-task></tonk-display>
+        <tonk-display entity="id:dinner-table" model=dinner-task></tonk-display>
+        <tonk-display entity="id:dinner-drinks" model=dinner-task></tonk-display>
+      </main>

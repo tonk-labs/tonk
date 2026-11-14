@@ -5,7 +5,7 @@
 //! in isolation. These cover what only the wired service can answer: that
 //! the address a caller holds finds the row enrollment wrote, that the
 //! registration state picks the status code, and that the path survives
-//! the segments `did:web` resolution hands over.
+//! the segments `did:web` resolution hands over, encoded or raw.
 //!
 //! Run with:
 //! ```bash
@@ -201,10 +201,25 @@ async fn it_resolves_an_address_whatever_its_casing(
     Ok(())
 }
 
-/// A local part containing `+` survives the round trip. `did:web`
-/// resolution percent-decodes each path segment, so `tag%2Balice` arrives
-/// as `tag+alice`, and reading it as anything but a raw segment would
-/// turn that `+` into a space and miss the row.
+/// Resolve a `{domain}` and `{local}` segment pair spelled exactly as
+/// given, answering the status and body.
+async fn lookup_segments(
+    env: &AccessServiceAddress,
+    domain: &str,
+    local: &str,
+) -> anyhow::Result<(u16, serde_json::Value)> {
+    let response = reqwest::Client::new()
+        .get(format!("{}/customer/{domain}/{local}/did.json", base(env)))
+        .send()
+        .await?;
+    let status = response.status().as_u16();
+    Ok((status, response.json().await?))
+}
+
+/// A local part containing `+` resolves whether the segment arrives
+/// percent-encoded, as a standard `did:web` resolver sends it, or raw.
+/// Neither spelling may be read as form data, which would turn the `+`
+/// into a space and miss the row.
 #[dialog_common::test]
 async fn it_resolves_a_local_part_that_needs_encoding(
     env: AccessServiceAddress,
@@ -213,14 +228,44 @@ async fn it_resolves_a_local_part_that_needs_encoding(
     env.activate_customer(&customer, "tag+alice@web.mail")
         .await?;
 
-    let (status, document) = lookup(&env, "tag+alice@web.mail").await?;
-    assert_eq!(status, 200, "a + in the local part resolves");
+    for local in ["tag%2Balice", "tag+alice", "TAG%2BAlice", "tag%2balice"] {
+        let (status, document) = lookup_segments(&env, "web.mail", local).await?;
+        assert_eq!(status, 200, "{local} resolves");
+        assert_eq!(
+            document["alsoKnownAs"][0],
+            customer.did().to_string(),
+            "{local} reaches the customer"
+        );
+        assert_eq!(
+            document["id"],
+            format!("did:web:{}:customer:web.mail:tag%2Balice", did_host(&env)),
+            "and the DID {local} names carries the encoded form"
+        );
+    }
+    Ok(())
+}
+
+/// A non-ASCII local part resolves from its percent-encoded UTF-8.
+#[dialog_common::test]
+async fn it_resolves_a_non_ascii_local_part(env: AccessServiceAddress) -> anyhow::Result<()> {
+    let customer = Ed25519Signer::generate().await?;
+    env.activate_customer(&customer, "jos\u{e9}@example.com")
+        .await?;
+
+    let (status, document) = lookup_segments(&env, "example.com", "jos%C3%A9").await?;
+    assert_eq!(status, 200, "an encoded non-ASCII local part resolves");
     assert_eq!(document["alsoKnownAs"][0], customer.did().to_string());
-    assert_eq!(
-        document["id"],
-        format!("did:web:{}:customer:web.mail:tag%2Balice", did_host(&env)),
-        "and the DID it names carries the encoded form"
-    );
+    Ok(())
+}
+
+/// A segment that decodes to an `@` is refused rather than resolved:
+/// it would make the split between local part and domain ambiguous.
+#[dialog_common::test]
+async fn it_refuses_a_segment_that_decodes_to_a_separator(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    let (status, _) = lookup_segments(&env, "example.com", "a%40b").await?;
+    assert_eq!(status, 404);
     Ok(())
 }
 

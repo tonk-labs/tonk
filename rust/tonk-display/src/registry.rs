@@ -31,17 +31,18 @@
 //!    method, and a wholesale swap alike through to instances already
 //!    on the page.
 //!
-//! Each frame re-reads rather than merging the delta it was handed: a
-//! subscription is used as a change notification, and the truth comes
-//! from a fresh read. Method dictionaries are small, and it keeps this
-//! code from having to agree with the wire's delta shape.
+//! A subscription's first frame is a snapshot of its query, and that is
+//! what the registry reads. A later frame, a delta, is used as a change
+//! notification instead: the stream it came on is read afresh, which keeps
+//! this code from having to agree with the wire's delta shape. So a tag
+//! costs its five subscriptions and nothing more until something changes.
 //!
 //! A tag that resolves to nothing is left alone — the element stays
 //! inert, exactly as before it announced — but its subscriptions stay
 //! open, which is what makes "define it later" work.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use js_sys::Reflect;
@@ -78,6 +79,13 @@ struct Watch {
     /// The entity the tag currently names, so a name frame that does
     /// not actually move it does not churn the methods subscription.
     entity: Option<String>,
+    /// What each of the entity's dictionaries holds, as its stream last
+    /// said: the definition the module is rendered from.
+    definition: ElementDefinition,
+    /// The dictionaries whose streams have said what they hold. The module
+    /// is first rendered once every one has, so an element is defined once
+    /// with all of it rather than again as each part arrives.
+    reported: BTreeSet<String>,
     /// The last module source applied, so an unchanged frame does not
     /// re-run every instance's `connected`.
     applied: Option<String>,
@@ -139,9 +147,10 @@ pub fn install() {
 
 /// Begin watching `tag`, if not already.
 ///
-/// The consumer element is parked next to whatever announced the tag so
-/// it shares that element's `with` ancestry, and stays in the document
-/// for as long as the realm cares about the tag. A tag is watched once
+/// The consumer element carries the routing context of whatever
+/// announced the tag and is parked at the document root, so it stays in
+/// the document for as long as the realm cares about the tag, however
+/// long the announcing element itself stays. A tag is watched once
 /// per realm because `customElements` is realm-global: the first
 /// announcement's routing context is the one that governs.
 async fn watch(source: &Element, tag: &str) {
@@ -173,13 +182,14 @@ async fn watch(source: &Element, tag: &str) {
     {
         let _ = consumer.set_attribute("with", &context);
     }
-    // Alongside the announcing element rather than inside it: an author
-    // element's children are its own business, and a sibling shares the
-    // same `with` ancestry.
-    let parent = source
-        .parent_element()
-        .or_else(|| document.document_element());
-    let Some(parent) = parent else {
+    // At the document root rather than beside the announcing element. The
+    // watch serves the tag for the whole realm, and the tag is announced
+    // only once, so a watch parked beside its first element would leave
+    // with it: removed before the definition arrived, that element would
+    // take with it the only thing able to define any later one. The
+    // routing context is on the watch itself (above), and the host's
+    // listeners sit on the document, so the root serves both.
+    let Some(parent) = document.document_element() else {
         return;
     };
     if parent.append_child(&consumer).is_err() {
@@ -191,6 +201,8 @@ async fn watch(source: &Element, tag: &str) {
         _name: None,
         dictionaries: Vec::new(),
         entity: None,
+        definition: ElementDefinition::default(),
+        reported: BTreeSet::new(),
         applied: None,
     }));
     WATCHED.with(|watched| {
@@ -203,7 +215,8 @@ async fn watch(source: &Element, tag: &str) {
 
     // Subscribe to the NAME first and keep it open even when it
     // resolves to nothing: that open subscription is what turns "this
-    // tag has no definition" into "not yet".
+    // tag has no definition" into "not yet". Its first frame says what
+    // the name means now.
     let Ok(body) = serde_wasm_bindgen::to_value(&name_query(tag)) else {
         return;
     };
@@ -215,31 +228,29 @@ async fn watch(source: &Element, tag: &str) {
             );
         }
     }
-
-    // Resolve once now rather than waiting to be told. A host may or
-    // may not open a subscription with a frame carrying current state;
-    // depending on that would make first registration a race against a
-    // detail of the transport. From here on the subscription carries
-    // changes, which is all it is needed for.
-    refresh(tag, "name").await;
 }
 
 /// Attach the `reset` / `update` / `error` methods the host calls on a
-/// consumer. Every frame means the same thing here — something under
-/// this tag changed — so all three route to one re-read.
+/// consumer. A `reset` carries the stream's rows, which are read as they
+/// are; an `update` says only that the stream changed, so it is read
+/// afresh.
 fn install_frame_handlers(consumer: &Element, tag: &str) {
     for method in ["reset", "update"] {
         let tag = tag.to_owned();
-        let handler = Closure::<dyn Fn(JsValue, JsValue)>::new(move |_payload, opts: JsValue| {
-            let stream = Reflect::get(&opts, &"tag".into())
-                .ok()
-                .and_then(|value| value.as_string())
-                .unwrap_or_default();
-            let tag = tag.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                refresh(&tag, &stream).await;
+        let handler =
+            Closure::<dyn Fn(JsValue, JsValue)>::new(move |payload: JsValue, opts: JsValue| {
+                let stream = Reflect::get(&opts, &"tag".into())
+                    .ok()
+                    .and_then(|value| value.as_string())
+                    .unwrap_or_default();
+                let rows = (method == "reset")
+                    .then(|| payload.dyn_into::<js_sys::Array>().ok())
+                    .flatten();
+                let tag = tag.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    refresh(&tag, &stream, rows).await;
+                });
             });
-        });
         let _ = Reflect::set(consumer, &method.into(), handler.as_ref().unchecked_ref());
         handler.forget();
     }
@@ -263,28 +274,38 @@ fn install_frame_handlers(consumer: &Element, tag: &str) {
     on_error.forget();
 }
 
-/// Re-read after a frame on `stream` and apply whatever is current.
-async fn refresh(tag: &str, stream: &str) {
+/// Apply a frame on `stream`: its `rows` where it carries them, or else what
+/// a fresh read of that stream says.
+async fn refresh(tag: &str, stream: &str, rows: Option<js_sys::Array>) {
     let Some(watch) = WATCHED.with(|watched| watched.borrow().get(tag).map(Rc::clone)) else {
         return;
     };
     let consumer = watch.borrow().consumer.clone();
 
     if stream == "name" {
-        let entity = named_entity(&consumer, tag).await;
+        let entity = match rows {
+            Some(rows) => first_field(&rows, "entity"),
+            None => named_entity(&consumer, tag).await,
+        };
         let unchanged = watch.borrow().entity == entity;
         if unchanged {
             return;
         }
-        watch.borrow_mut().entity = entity.clone();
-        // Drop the old streams before opening the new ones: the tag now
-        // means something else, and frames from the old entity would
-        // otherwise keep re-registering it.
-        watch.borrow_mut().dictionaries.clear();
-        watch.borrow_mut().applied = None;
+        {
+            let mut watch = watch.borrow_mut();
+            watch.entity = entity.clone();
+            // Drop the old streams before opening the new ones: the tag
+            // now means something else, and frames from the old entity
+            // would otherwise keep re-registering it.
+            watch.dictionaries.clear();
+            watch.definition = ElementDefinition::default();
+            watch.reported.clear();
+            watch.applied = None;
+        }
         let Some(entity) = entity else {
             return;
         };
+        // Each stream's first frame brings what its dictionary holds.
         for (field, domain) in ELEMENT_DICTIONARIES {
             let Some(body) = dictionary_query(&entity, field, domain) else {
                 continue;
@@ -295,32 +316,69 @@ async fn refresh(tag: &str, stream: &str) {
                     web_sys::console::warn_1(
                         &format!("<{tag}>: {field} subscription failed: {}", error.message).into(),
                     );
+                    // A stream that will say nothing reads as declaring
+                    // none, so the rest still define the element.
+                    Box::pin(refresh(tag, field, Some(js_sys::Array::new()))).await;
                 }
             }
         }
-        // Same reason as the name hop: read now rather than waiting for
-        // the subscriptions to volunteer. One re-read covers every
-        // dictionary, since the module is rendered from all of them.
-        Box::pin(refresh(tag, "method")).await;
         return;
     }
 
     let Some(entity) = watch.borrow().entity.clone() else {
         return;
     };
-    // Any stream re-reads every dictionary: the module is rendered
-    // from all of them together, and `applied` below is what keeps the
-    // extra reads from costing a re-registration.
-    let definition = definition_of(&consumer, &entity).await;
-    if definition.methods.is_empty() {
+    let Some(domain) = ELEMENT_DICTIONARIES
+        .iter()
+        .find(|(field, _)| *field == stream)
+        .map(|(_, domain)| *domain)
+    else {
         return;
-    }
-    let source = element_module(tag, &definition);
-    let already = watch.borrow().applied.as_deref() == Some(source.as_str());
-    if already {
-        return;
-    }
-    watch.borrow_mut().applied = Some(source.clone());
+    };
+    let rows = match rows {
+        Some(rows) => rows,
+        None => {
+            let Some(body) = dictionary_query(&entity, stream, domain) else {
+                return;
+            };
+            match consumer::query(&consumer, &body)
+                .await
+                .map(JsCast::dyn_into)
+            {
+                Ok(Ok(rows)) => rows,
+                _ => return,
+            }
+        }
+    };
+    let entries = dictionary_of(&rows, stream);
+    let source = {
+        let mut watch = watch.borrow_mut();
+        let definition = &mut watch.definition;
+        match stream {
+            "method" => definition.methods = entries,
+            "attribute" => definition.attributes = entries,
+            "getter" => definition.getters = entries,
+            "setter" => definition.setters = entries,
+            // Unreachable while the list and this match agree; a new
+            // dictionary added to one and not the other reads as
+            // "declares none" rather than as a panic in a browser.
+            _ => {}
+        }
+        watch.reported.insert(stream.to_owned());
+        if watch.reported.len() < ELEMENT_DICTIONARIES.len() {
+            return;
+        }
+        let definition = &watch.definition;
+        if definition.methods.is_empty() {
+            return;
+        }
+        let source = element_module(tag, definition);
+        if watch.applied.as_deref() == Some(source.as_str()) {
+            return;
+        }
+        watch.applied = Some(source.clone());
+        source
+    };
     if let Some(document) = consumer.owner_document() {
         // Keyed by tag, not by content hash: a definition reverted to
         // one already seen must still take effect.
@@ -356,50 +414,13 @@ fn dictionary_query(entity: &str, field: &str, domain: &str) -> Option<JsValue> 
     serde_wasm_bindgen::to_value(&query).ok()
 }
 
-/// Hop two: every dictionary the entity carries, each folded to
-/// `(key, value)` in key order.
-///
-/// A dictionary an element declares none of reads empty, which is the
-/// common case for all but `method` and is not an error.
-async fn definition_of(consumer: &Element, entity: &str) -> ElementDefinition {
-    let mut out = ElementDefinition::default();
-    for (field, domain) in ELEMENT_DICTIONARIES {
-        let Some(body) = dictionary_query(entity, field, domain) else {
-            continue;
-        };
-        let entries = dictionary_of(consumer, &body, field).await;
-        match *field {
-            "method" => out.methods = entries,
-            "attribute" => out.attributes = entries,
-            "getter" => out.getters = entries,
-            "setter" => out.setters = entries,
-            // Unreachable while the list and this match agree; a new
-            // dictionary added to one and not the other reads as
-            // "declares none" rather than as a panic in a browser.
-            _ => {}
-        }
-    }
-    out
-}
-
-/// Run `body` and fold `field` — a keyed dictionary — out of the
-/// response.
+/// Fold `field`, a keyed dictionary, out of a dictionary query's `rows`.
 ///
 /// A dictionary query answers one flat row per ENTRY, each carrying a
 /// one-entry `{key: value}` map under the field, so reading the first
 /// row would see one entry and call it the whole map. Merge them.
-async fn dictionary_of(
-    consumer: &Element,
-    body: &JsValue,
-    field: &str,
-) -> BTreeMap<String, String> {
+fn dictionary_of(rows: &js_sys::Array, field: &str) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
-    let Ok(rows) = consumer::query(consumer, body).await else {
-        return out;
-    };
-    let Ok(rows) = rows.dyn_into::<js_sys::Array>() else {
-        return out;
-    };
     for row in rows.iter() {
         let Ok(fields) = Reflect::get(&row, &"fields".into()) else {
             continue;
@@ -438,6 +459,9 @@ mod tests {
     use web_sys::Document;
 
     wasm_bindgen_test_configure!(run_in_browser);
+
+    /// The bar and its family, registered from the profile library.
+    mod fab;
 
     /// A mutable stand-in for the branch: the name bindings, method
     /// dictionaries and attribute defaults the fake host answers from.
@@ -579,7 +603,9 @@ mod tests {
                 return;
             }
             // A subscription handle with a no-op cancel is all the
-            // consumer contract requires; frames are pushed by `notify`.
+            // consumer contract requires. Its first frame is a snapshot of
+            // the query, as the host opens every subscription with; later
+            // frames are pushed by `notify`.
             let subscription = js_sys::Object::new();
             let _ = Reflect::set(
                 &subscription,
@@ -588,6 +614,20 @@ mod tests {
             );
             let _ = Reflect::set(&detail, &"subscription".into(), &subscription);
             event.prevent_default();
+            let consumer = event.target();
+            let opts = js_sys::Object::new();
+            if let Ok(tag) = Reflect::get(&detail, &"tag".into()) {
+                let _ = Reflect::set(&opts, &"tag".into(), &tag);
+            }
+            let rows = answer(&body);
+            wasm_bindgen_futures::spawn_local(async move {
+                let Some(consumer) = consumer else { return };
+                if let Ok(reset) = Reflect::get(&consumer, &"reset".into())
+                    && let Ok(reset) = reset.dyn_into::<js_sys::Function>()
+                {
+                    let _ = reset.call2(&consumer, &rows, &opts);
+                }
+            });
         });
         let _ = document().add_event_listener_with_callback(
             tonk_host::events::SUBSCRIBE,
@@ -729,6 +769,17 @@ mod tests {
         host
     }
 
+    /// A `<tonk-display>` that stays a plain ancestor, for the elements
+    /// that read `closest('tonk-display')`. Outside the HTML namespace, so
+    /// it is never upgraded, not even after another test of this realm
+    /// has registered the real display: a real one with nothing to show
+    /// fails and clears what it holds.
+    fn inert_display() -> Element {
+        document()
+            .create_element_ns(Some("urn:tonk:test"), "tonk-display")
+            .expect("display")
+    }
+
     fn defined(tag: &str) -> bool {
         !window()
             .expect("window")
@@ -777,6 +828,51 @@ mod tests {
             host.text_content().as_deref(),
             Some("arrived"),
             "the element already on the page should upgrade in place",
+        );
+    }
+
+    /// The first element of a tag is removed before its definition
+    /// arrives. The tag stays announced, so a later element of it is never
+    /// announced again: only the watch the first one opened can define it.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_defines_a_tag_whose_first_element_left_before_its_definition() {
+        install_fake_host();
+        install();
+        let holder = document().create_element("div").expect("holder");
+        let first = document()
+            .create_element("probe-orphan")
+            .expect("first element");
+        holder.append_child(&first).expect("nest");
+        document()
+            .body()
+            .expect("body")
+            .append_child(&holder)
+            .expect("attach");
+        let selector = "tonk-element-watch[data-tag=\"probe-orphan\"]";
+        settle_until(|| document().query_selector(selector).ok().flatten().is_some()).await;
+        holder.remove();
+        assert!(!defined("probe-orphan"), "nothing defines it yet");
+
+        define(
+            "probe-orphan",
+            "did:key:zOrphan",
+            &[("connected", "(self) => { self.textContent = 'arrived'; }")],
+        );
+        notify("probe-orphan", "name");
+        let later = document()
+            .create_element("probe-orphan")
+            .expect("later element");
+        document()
+            .body()
+            .expect("body")
+            .append_child(&later)
+            .expect("attach");
+
+        settle_until(|| later.text_content().as_deref() == Some("arrived")).await;
+        assert_eq!(
+            later.text_content().as_deref(),
+            Some("arrived"),
+            "a later element of the tag must upgrade",
         );
     }
 
@@ -1058,6 +1154,38 @@ mod tests {
         );
     }
 
+    /// An element whose dictionaries arrive on streams of their own is
+    /// defined once, with all of them: a definition from the methods alone,
+    /// replaced as its defaults arrive, would run its hooks twice.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_defines_an_element_once_with_every_dictionary() {
+        define_with_defaults(
+            "probe-once",
+            "did:key:zOnce",
+            &[(
+                "connected",
+                "(self) => { globalThis.__onceRuns = (globalThis.__onceRuns || 0) + 1; \
+                 self.dataset.tone = self.getAttribute('tone'); }",
+            )],
+            &[("tone", "warm")],
+        );
+        let host = render("probe-once").await;
+        let runs = || {
+            Reflect::get(&js_sys::global(), &"__onceRuns".into())
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+        };
+        settle_until(|| runs() >= 1.0).await;
+        settle_briefly().await;
+        assert_eq!(runs(), 1.0, "it is defined once");
+        assert_eq!(
+            host.get_attribute("data-tone").as_deref(),
+            Some("warm"),
+            "with its defaults from the start",
+        );
+    }
+
     /// The swap hooks fire on a real branch-driven replacement, not
     /// just when `defineTonkElement` is called by hand: the outgoing
     /// definition tears down, the incoming one takes over.
@@ -1261,15 +1389,6 @@ mod tests {
     }
 
     /// A host function on the bridge that records what it is called with.
-    /// The host moved the page: the context changes and the bootstrap
-    /// announces it, the way a pushState navigation reaches the guest.
-    fn move_context(path: &str) {
-        set_context(&[("origin", "https://tonk.test"), ("path", path)]);
-        let announce =
-            js_sys::Function::new_no_args("window.dispatchEvent(new CustomEvent('tonk:context'));");
-        let _ = announce.call0(&JsValue::NULL);
-    }
-
     fn record_bridge_calls(name: &str) -> js_sys::Array {
         let calls = js_sys::Array::new();
         let recorded = calls.clone();
@@ -1543,7 +1662,7 @@ mod tests {
         define_from_library(CORE_LIBRARY, "page-mount");
         install_fake_host();
         install();
-        let display = document().create_element("tonk-display").expect("display");
+        let display = inert_display();
         let page = document().create_element("page-mount").expect("page");
         display.append_child(&page).expect("nest");
         let mounts = js_sys::Array::new();
@@ -2058,265 +2177,6 @@ mod tests {
         );
     }
 
-    /// An account page opened by a browser with no account raises the
-    /// ceremony itself once the registration resolves empty: the bar's
-    /// cells are links, so that page is the door.
-    #[dialog_common::test]
-    async fn it_raises_the_ceremony_on_an_unlinked_account_page() {
-        install_fake_host();
-        install();
-        let heard = record_triggers();
-        set_context(&[("origin", "https://tonk.test"), ("path", "/account")]);
-        // The bar beside the panel carries the link display the door reads.
-        let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
-        bar.set_inner_html(
-            r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
-        );
-        document()
-            .body()
-            .expect("body")
-            .append_child(&bar)
-            .expect("attach");
-        let host = account_settings(
-            r#"<div class="pane" data-pane="account"></div><span hidden data-open-registration></span><span hidden data-open-sign-in-via></span><span hidden data-leave-registration></span>"#,
-        );
-        settle_briefly().await;
-        let before = heard.length();
-        let registration = bar
-            .query_selector("[data-account-link]")
-            .expect("query")
-            .expect("the link display");
-        let _ = registration.set_attribute("data-state", "empty");
-        settle_until(|| heard.length() > before).await;
-        assert_eq!(
-            heard.get(before).as_string().as_deref(),
-            Some("tonk-open-registration")
-        );
-        assert_eq!(host.get_attribute("data-linking").as_deref(), Some("true"));
-        // The fake host is shared by every test on this page; leave it
-        // on the spaces path the others expect.
-        set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
-        host.remove();
-        bar.remove();
-    }
-
-    /// Option on "add an account" asks which Tonk to sign in through: the
-    /// account page reached with a bare `?via` raises that ceremony rather
-    /// than the email one.
-    #[dialog_common::test]
-    async fn it_asks_which_tonk_on_an_account_page_reached_with_option() {
-        install_fake_host();
-        install();
-        let heard = record_triggers();
-        set_context(&[
-            ("origin", "https://tonk.test"),
-            ("path", "/account"),
-            ("search", "?via"),
-        ]);
-        let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
-        bar.set_inner_html(
-            r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
-        );
-        document()
-            .body()
-            .expect("body")
-            .append_child(&bar)
-            .expect("attach");
-        let host = account_settings(
-            r#"<div class="pane" data-pane="account"></div><span hidden data-open-registration></span><span hidden data-open-sign-in-via></span><span hidden data-leave-registration></span>"#,
-        );
-        settle_briefly().await;
-        let before = heard.length();
-        let registration = bar
-            .query_selector("[data-account-link]")
-            .expect("query")
-            .expect("the link display");
-        let _ = registration.set_attribute("data-state", "empty");
-        settle_until(|| heard.length() > before).await;
-        assert_eq!(
-            heard.get(before).as_string().as_deref(),
-            Some("tonk-open-sign-in-via")
-        );
-        // Close the ceremony the way the top page does, and let the panel
-        // settle, so nothing it raised is still up to be suspended into
-        // whichever test records next.
-        let closed = js_sys::Function::new_no_args(
-            "window.dispatchEvent(new CustomEvent('tonk:registration-closed'));",
-        );
-        let _ = closed.call0(&JsValue::NULL);
-        settle_until(|| host.get_attribute("data-linking").as_deref() != Some("true")).await;
-        settle_briefly().await;
-        host.remove();
-        bar.remove();
-        set_context(&[
-            ("origin", "https://tonk.test"),
-            ("path", "/"),
-            ("search", ""),
-        ]);
-    }
-
-    /// The account page asks for the face each visit wants, even with a
-    /// ceremony already up. Option after a plain click, whose ceremony a
-    /// route change left suspended, asks for the face that names a Tonk
-    /// instead of bringing the email back; a plain visit after Option asks
-    /// for the email again.
-    #[dialog_common::test]
-    async fn it_asks_for_the_face_each_visit_wants_with_a_ceremony_up() {
-        install_fake_host();
-        install();
-        let heard = record_triggers();
-        let visit = |path: &str, search: &str| {
-            set_context(&[
-                ("origin", "https://tonk.test"),
-                ("path", path),
-                ("search", search),
-            ]);
-            let moved = js_sys::Function::new_no_args(
-                "window.dispatchEvent(new CustomEvent('tonk:context'));",
-            );
-            let _ = moved.call0(&JsValue::NULL);
-        };
-        let heard_since = |from: u32| -> Vec<String> {
-            (from..heard.length())
-                .filter_map(|at| heard.get(at).as_string())
-                .collect()
-        };
-        set_context(&[
-            ("origin", "https://tonk.test"),
-            ("path", "/account"),
-            ("search", ""),
-        ]);
-        let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
-        bar.set_inner_html(
-            r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
-        );
-        document()
-            .body()
-            .expect("body")
-            .append_child(&bar)
-            .expect("attach");
-        let host = account_settings(
-            r#"<div class="pane" data-pane="account"></div><span hidden data-open-registration></span><span hidden data-open-sign-in-via></span><span hidden data-leave-registration></span>"#,
-        );
-        settle_briefly().await;
-        let registration = bar
-            .query_selector("[data-account-link]")
-            .expect("query")
-            .expect("the link display");
-        let plain = heard.length();
-        let _ = registration.set_attribute("data-state", "empty");
-        settle_until(|| {
-            heard_since(plain)
-                .iter()
-                .any(|reason| reason == "tonk-open-registration")
-        })
-        .await;
-
-        visit("/", "");
-        settle_briefly().await;
-        let option = heard.length();
-        visit("/account", "?via");
-        settle_until(|| {
-            heard_since(option)
-                .iter()
-                .any(|reason| reason == "tonk-open-sign-in-via")
-        })
-        .await;
-
-        let again = heard.length();
-        visit("/account", "");
-        settle_until(|| {
-            heard_since(again)
-                .iter()
-                .any(|reason| reason == "tonk-open-registration")
-        })
-        .await;
-
-        host.remove();
-        bar.remove();
-        set_context(&[
-            ("origin", "https://tonk.test"),
-            ("path", "/"),
-            ("search", ""),
-        ]);
-    }
-
-    /// Option on "add an account" points the link at the ask for another
-    /// Tonk for that one click: the guest's relay, which reads the link at
-    /// the document, sees `/account?via`, and the link is put back after.
-    /// Without Option, or on a cell that is not offering to add an account,
-    /// the relay reads the link as it is.
-    #[dialog_common::test]
-    async fn it_points_the_account_link_at_another_tonk_while_option_is_held() {
-        install_fake_host();
-        install();
-        define_from_library(PROFILE_LIBRARY, "hub-bar");
-        let bar = document().create_element("hub-bar").expect("bar");
-        bar.set_inner_html(
-            r#"<nav><a data-account-trigger href="/account">add an account</a></nav>"#,
-        );
-        document()
-            .body()
-            .expect("body")
-            .append_child(&bar)
-            .expect("attach");
-        settle_until(|| defined("hub-bar")).await;
-        settle_briefly().await;
-        let trigger = bar
-            .query_selector("[data-account-trigger]")
-            .expect("query")
-            .expect("the account cell");
-        // Stands in for the guest's relay: it takes every link click at
-        // the document, capturing, and follows the link as it reads then.
-        let relay = js_sys::Function::new_with_args(
-            "add",
-            "if (add) {
-               globalThis.__tonkRelayed = [];
-               globalThis.__tonkRelay = (event) => {
-                 event.preventDefault();
-                 globalThis.__tonkRelayed.push(event.target.closest('a')?.getAttribute('href'));
-               };
-               document.addEventListener('click', globalThis.__tonkRelay, true);
-             } else {
-               document.removeEventListener('click', globalThis.__tonkRelay, true);
-             }
-             return globalThis.__tonkRelayed;",
-        );
-        let relayed: js_sys::Array = relay
-            .call1(&JsValue::NULL, &JsValue::TRUE)
-            .expect("the relay")
-            .unchecked_into();
-        let click = js_sys::Function::new_with_args(
-            "target, alt",
-            "target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, altKey: alt }));",
-        );
-        let press = |alt: bool| {
-            let _ = click.call2(&JsValue::NULL, &trigger, &alt.into());
-        };
-        let followed = |at: u32| relayed.get(at).as_string();
-
-        press(false);
-        assert_eq!(followed(0).as_deref(), Some("/account"));
-        press(true);
-        assert_eq!(followed(1).as_deref(), Some("/account?via"));
-        settle_briefly().await;
-        assert_eq!(
-            trigger.get_attribute("href").as_deref(),
-            Some("/account"),
-            "the link is put back once the click has been followed"
-        );
-        // A signed-in cell goes to the account's settings, Option or not.
-        let _ = trigger.set_attribute("href", "/settings");
-        press(true);
-        assert_eq!(followed(2).as_deref(), Some("/settings"));
-
-        let _ = relay.call1(&JsValue::NULL, &JsValue::FALSE);
-        bar.remove();
-    }
-
     /// A bare settings page with no account here goes to the account
     /// page, where signing up happens, instead of raising the ceremony.
     #[dialog_common::test]
@@ -2354,41 +2214,6 @@ mod tests {
         );
         assert_eq!(heard.length(), opened, "no panel on a bare settings page");
         assert_ne!(host.get_attribute("data-linking").as_deref(), Some("true"));
-        set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
-        host.remove();
-        bar.remove();
-    }
-
-    /// Leaving the account page puts the panel away, and coming back opens
-    /// it again.
-    #[dialog_common::test]
-    async fn it_puts_the_panel_away_off_the_account_page_and_opens_it_on_return() {
-        install_fake_host();
-        install();
-        let heard = record_triggers();
-        set_context(&[("origin", "https://tonk.test"), ("path", "/account")]);
-        let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
-        bar.set_inner_html(
-            r#"<a data-account-trigger><span data-account-link data-state="empty"></span></a>"#,
-        );
-        document()
-            .body()
-            .expect("body")
-            .append_child(&bar)
-            .expect("attach");
-        let host = account_settings(
-            r#"<div class="pane" data-pane="account"></div><span hidden data-open-registration></span><span hidden data-open-sign-in-via></span><span hidden data-leave-registration></span>"#,
-        );
-        settle_until(|| host.get_attribute("data-linking").as_deref() == Some("true")).await;
-        let last = || heard.get(heard.length() - 1).as_string();
-        move_context("/");
-        settle_until(|| last().as_deref() == Some("tonk-leave-registration")).await;
-        assert_eq!(last().as_deref(), Some("tonk-leave-registration"));
-        assert_eq!(host.get_attribute("data-linking").as_deref(), Some("false"));
-        move_context("/account");
-        settle_until(|| last().as_deref() == Some("tonk-open-registration")).await;
-        assert_eq!(last().as_deref(), Some("tonk-open-registration"));
         set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
         host.remove();
         bar.remove();
@@ -2578,7 +2403,7 @@ mod tests {
             ("search", "?via=https%3A%2F%2Ftonk.network&request=r1"),
             ("hash", "#authorize=abc"),
         ]);
-        let display = document().create_element("tonk-display").expect("display");
+        let display = inert_display();
         let host = document().create_element("account-settings").expect("host");
         host.set_inner_html(
             r#"<div class="pane" data-pane="account"></div><div class="pane" data-pane="via" hidden><b data-via-origin></b><button type="button" data-via-continue data-via="">continue</button><span hidden data-via-return></span></div><p data-ceremony-status hidden></p>"#,
@@ -2778,5 +2603,320 @@ mod tests {
             "Adding the passkey did not finish: no passkey",
             "a refusal stays on screen after the cluster closes"
         );
+    }
+
+    const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/notebook.yaml");
+
+    /// A `<notebook-save>` from the notebook library, wrapped around a
+    /// stand-in notebook whose `<prose-editor>` shows `markdown`.
+    ///
+    /// The stand-in carries only what the element reads: a `<prose-editor>`
+    /// inside a `<notebook-editor>`, with the editor's live text as its
+    /// `value` property. Returns the element and the editor.
+    async fn notebook_save(markdown: &str) -> (Element, Element) {
+        define_from_library(NOTEBOOK_LIBRARY, "notebook-save");
+        let host = render("notebook-save").await;
+        settle_until(|| {
+            Reflect::get(&host, &"__keydown".into()).is_ok_and(|listener| listener.is_function())
+        })
+        .await;
+        assert!(
+            defined("notebook-save"),
+            "the library definition of <notebook-save> was never installed"
+        );
+        host.set_inner_html("<notebook-editor><prose-editor></prose-editor></notebook-editor>");
+        let prose = host
+            .query_selector("prose-editor")
+            .expect("query")
+            .expect("the editor");
+        let _ = Reflect::set(&prose, &"value".into(), &markdown.into());
+        (host, prose)
+    }
+
+    /// Press S with a modifier on `target`, and say whether the press was
+    /// claimed (`defaultPrevented`). `platform` picks the platform's own
+    /// save modifier (Cmd on macOS, Ctrl elsewhere); `false` picks the
+    /// other one. `shift` adds Shift.
+    fn press_s(target: &Element, platform: bool, shift: bool) -> bool {
+        let press = js_sys::Function::new_with_args(
+            "target, platform, shift",
+            "const name = navigator.userAgentData?.platform || navigator.platform || '';
+             const mac = /mac|iphone|ipad|ipod/i.test(name);
+             const meta = platform === mac;
+             const event = new KeyboardEvent('keydown', {
+               key: 's', metaKey: meta, ctrlKey: !meta, shiftKey: shift,
+               bubbles: true, cancelable: true, composed: true,
+             });
+             target.dispatchEvent(event);
+             return event.defaultPrevented;",
+        );
+        press
+            .call3(&JsValue::NULL, target, &platform.into(), &shift.into())
+            .expect("press")
+            .is_truthy()
+    }
+
+    /// Replace `window.showSaveFilePicker` with a recorder that accepts
+    /// every save, and return the list of saves it has seen: each the
+    /// `suggestedName`, the accepted extensions, and the text written.
+    fn accept_picker() -> js_sys::Array {
+        js_sys::Function::new_no_args(
+            "const saves = [];
+             window.showSaveFilePicker = async (options) => {
+               const save = {
+                 name: options.suggestedName,
+                 accept: Object.values(options.types?.[0]?.accept ?? {}).flat().join(','),
+                 text: null,
+                 closed: false,
+               };
+               saves.push(save);
+               return {
+                 name: options.suggestedName,
+                 createWritable: async () => ({
+                   write: async (blob) => { save.text = await blob.text(); },
+                   close: async () => { save.closed = true; },
+                 }),
+               };
+             };
+             return saves;",
+        )
+        .call0(&JsValue::NULL)
+        .expect("install picker")
+        .unchecked_into()
+    }
+
+    /// Replace `window.showSaveFilePicker` with one that refuses with a
+    /// `DOMException` named `name`: `AbortError` is the person cancelling,
+    /// `SecurityError` a frame the picker is not allowed in. An empty name
+    /// removes the picker, as in a browser that has none.
+    fn refuse_picker(name: &str) {
+        js_sys::Function::new_with_args(
+            "name",
+            "window.showSaveFilePicker = name
+               ? async () => { throw new DOMException('refused', name); }
+               : undefined;",
+        )
+        .call1(&JsValue::NULL, &name.into())
+        .expect("install picker");
+    }
+
+    /// Catch every `<a download>` clicked from now on, before the browser
+    /// acts on it, and return the downloads: each the file name, the text
+    /// its Blob URL holds, and whether the link was in the document.
+    ///
+    /// The element clicks a DETACHED link (a guest relays clicks on links in
+    /// its document as navigation), so the click is caught on the anchor's
+    /// own `click`, not by a listener somewhere up a tree it is not in.
+    fn catch_downloads() -> js_sys::Array {
+        js_sys::Function::new_no_args(
+            "const downloads = [];
+             const native = HTMLAnchorElement.prototype.__nativeClick
+               ??= HTMLAnchorElement.prototype.click;
+             HTMLAnchorElement.prototype.click = function () {
+               if (!this.download) return native.call(this);
+               const download = { name: this.download, text: null, attached: this.isConnected };
+               downloads.push(download);
+               fetch(this.href).then((r) => r.text()).then((text) => { download.text = text; });
+             };
+             return downloads;",
+        )
+        .call0(&JsValue::NULL)
+        .expect("catch downloads")
+        .unchecked_into()
+    }
+
+    /// Whether the `index`th download was clicked from inside the document.
+    fn attached(list: &js_sys::Array, index: u32) -> bool {
+        Reflect::get(&list.get(index), &"attached".into()).is_ok_and(|value| value.is_truthy())
+    }
+
+    /// A string field of the `index`th entry of `list`.
+    fn entry(list: &js_sys::Array, index: u32, field: &str) -> Option<String> {
+        Reflect::get(&list.get(index), &field.into())
+            .ok()
+            .and_then(|value| value.as_string())
+    }
+
+    /// The element's `fileName` method applied to `markdown`.
+    fn file_name(host: &Element, markdown: &str) -> String {
+        let method: js_sys::Function = Reflect::get(host, &"fileName".into())
+            .expect("fileName")
+            .dyn_into()
+            .expect("fileName is a method");
+        method
+            .call1(host, &markdown.into())
+            .expect("call fileName")
+            .as_string()
+            .expect("a file name")
+    }
+
+    /// The suggested file name is the notebook's leading heading, made
+    /// safe to write on the common file systems, and `notebook.md` when
+    /// there is no usable heading.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_names_the_saved_file_from_the_notebook_heading_from_the_library() {
+        let (host, _) = notebook_save("").await;
+        let cases = [
+            ("# Plans for Q3\n\nThe body.", "Plans for Q3.md"),
+            ("\n\n  ## Closing hashes ##\nbody", "Closing hashes.md"),
+            ("###### Six is a heading", "Six is a heading.md"),
+            ("####### Seven is not", "notebook.md"),
+            ("A paragraph first\n# Late heading", "notebook.md"),
+            ("", "notebook.md"),
+            ("#", "notebook.md"),
+            ("# a/b: c*d?", "a b c d.md"),
+            (
+                "# <tag> \"quoted\" back\\slash|pipe",
+                "tag quoted back slash pipe.md",
+            ),
+            ("# tab\there", "tab here.md"),
+            ("# ..hidden..", "hidden.md"),
+            ("# ///", "notebook.md"),
+            ("# CON", "CON_.md"),
+            ("# com1", "com1_.md"),
+            ("# Café — notes", "Café — notes.md"),
+        ];
+        for (markdown, expected) in cases {
+            assert_eq!(file_name(&host, markdown), expected, "for {markdown:?}");
+        }
+        assert_eq!(
+            file_name(&host, &format!("# {}", "a".repeat(200))),
+            format!("{}.md", "a".repeat(120)),
+            "a long heading is cut to 120 characters"
+        );
+    }
+
+    /// The save chord writes the editor's live text, exactly as shown,
+    /// including an edit not yet committed, through the picker, under the
+    /// heading's name. Only the platform's own modifier saves.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_saves_the_editors_live_markdown_on_the_save_chord_from_the_library() {
+        let shown = "# Plans\n\nFirst paragraph.\n\n```dialog-yaml\nconcept:\n```\n";
+        let (_host, prose) = notebook_save(shown).await;
+        let saves = accept_picker();
+
+        assert!(press_s(&prose, true, false), "the save chord is claimed");
+        settle_until(|| entry(&saves, 0, "text").is_some()).await;
+        assert_eq!(saves.length(), 1, "one press, one save");
+        assert_eq!(entry(&saves, 0, "name").as_deref(), Some("Plans.md"));
+        assert_eq!(entry(&saves, 0, "accept").as_deref(), Some(".md"));
+        assert_eq!(
+            entry(&saves, 0, "text").as_deref(),
+            Some(shown),
+            "the file holds the editor's text exactly"
+        );
+        settle_until(|| Reflect::get(&saves.get(0), &"closed".into()).is_ok_and(|v| v.is_truthy()))
+            .await;
+        assert!(
+            Reflect::get(&saves.get(0), &"closed".into())
+                .expect("closed")
+                .is_truthy(),
+            "the file is closed, so the write lands"
+        );
+
+        // Typing that has not been committed is in the editor's `value`
+        // and nowhere else; the save reads it at the press.
+        let edited = "# Plans, revised\n\nTyped but not committed.";
+        let _ = Reflect::set(&prose, &"value".into(), &edited.into());
+        assert!(press_s(&prose, true, false));
+        settle_until(|| entry(&saves, 1, "text").is_some()).await;
+        assert_eq!(
+            entry(&saves, 1, "name").as_deref(),
+            Some("Plans, revised.md")
+        );
+        assert_eq!(entry(&saves, 1, "text").as_deref(), Some(edited));
+
+        assert!(
+            !press_s(&prose, false, false),
+            "the other platform's modifier is not the save chord"
+        );
+        assert!(
+            !press_s(&prose, true, true),
+            "Shift turns it into a different chord"
+        );
+        settle_briefly().await;
+        assert_eq!(saves.length(), 2, "neither of those saved");
+    }
+
+    /// Without a usable picker (none at all, or one the frame is refused,
+    /// as the sandboxed guest is) the save is a download of the same text
+    /// under the same name, from a link that is not in the document, where
+    /// the guest's link relay would take the click for navigation.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_downloads_the_markdown_when_the_picker_is_unavailable_from_the_library() {
+        let shown = "# Field notes\n\nStill typing";
+        let (host, prose) = notebook_save(shown).await;
+        let downloads = catch_downloads();
+
+        refuse_picker("");
+        assert!(press_s(&prose, true, false));
+        settle_until(|| entry(&downloads, 0, "text").is_some()).await;
+        assert_eq!(
+            entry(&downloads, 0, "name").as_deref(),
+            Some("Field notes.md")
+        );
+        assert_eq!(entry(&downloads, 0, "text").as_deref(), Some(shown));
+        assert!(!attached(&downloads, 0), "the link is clicked detached");
+
+        refuse_picker("SecurityError");
+        assert!(press_s(&prose, true, false));
+        settle_until(|| entry(&downloads, 1, "text").is_some()).await;
+        assert_eq!(
+            entry(&downloads, 1, "name").as_deref(),
+            Some("Field notes.md")
+        );
+        assert_eq!(entry(&downloads, 1, "text").as_deref(), Some(shown));
+        assert!(!attached(&downloads, 1));
+        assert!(
+            host.query_selector("a").expect("query").is_none(),
+            "no link is left in the notebook"
+        );
+    }
+
+    /// Cancelling the picker is the person's choice: nothing is saved and
+    /// no download follows.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_saves_nothing_when_the_picker_is_cancelled_from_the_library() {
+        let (_host, prose) = notebook_save("# Kept to myself").await;
+        let downloads = catch_downloads();
+        refuse_picker("AbortError");
+        assert!(press_s(&prose, true, false), "the chord is still claimed");
+        settle_briefly().await;
+        assert_eq!(downloads.length(), 0, "a cancel downloads nothing");
+    }
+
+    /// The chord is the notebook's only while the key reaches it: a press
+    /// elsewhere on the page keeps the browser's own behaviour, and a press
+    /// something inside already handled is left to that handler.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_leaves_the_save_chord_alone_outside_the_notebook_from_the_library() {
+        let (_host, prose) = notebook_save("# Mine").await;
+        let saves = accept_picker();
+
+        let outside = document().create_element("textarea").expect("textarea");
+        document()
+            .body()
+            .expect("body")
+            .append_child(&outside)
+            .expect("attach");
+        assert!(
+            !press_s(&outside, true, false),
+            "a press outside the notebook is not claimed"
+        );
+
+        let claim = Closure::<dyn FnMut(web_sys::Event)>::new(|event: web_sys::Event| {
+            event.prevent_default();
+        });
+        let _ = prose.add_event_listener_with_callback("keydown", claim.as_ref().unchecked_ref());
+        assert!(press_s(&prose, true, false), "the inner handler claimed it");
+        settle_briefly().await;
+        assert_eq!(
+            saves.length(),
+            0,
+            "neither press saved: one was outside, one was the editor's"
+        );
+        let _ =
+            prose.remove_event_listener_with_callback("keydown", claim.as_ref().unchecked_ref());
+        outside.remove();
     }
 }

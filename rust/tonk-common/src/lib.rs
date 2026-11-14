@@ -2,6 +2,7 @@
 //! Cross-platform utilities for the Tonk project.
 
 pub mod device_label;
+pub mod diagnostics;
 
 /// Cross-platform logging macro that uses `console.log` on web and `println!` on native.
 ///
@@ -22,6 +23,12 @@ macro_rules! log {
             web_sys::console::log_1(&format!($($arg)*).into());
         }
         #[cfg(not(target_arch = "wasm32"))]
+        {
+            println!($($arg)*);
+        }
+        // A kernel on WASI: its host shows what it writes to standard out
+        // as a log, and keeps standard error for what went wrong.
+        #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
         {
             println!($($arg)*);
         }

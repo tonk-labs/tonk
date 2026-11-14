@@ -1,0 +1,15 @@
+<script>
+window.probe=(async()=>{
+await navigator.serviceWorker.register('./worker.js');await navigator.serviceWorker.ready;
+if(!navigator.serviceWorker.controller)await new Promise(r=>navigator.serviceWorker.addEventListener('controllerchange',r,{once:true}));
+const results=[];
+for(let trial=0;trial<4;trial++)for(const mode of ['separate','combined','pull0']){
+const abort=new AbortController(),response=await fetch('./stream?mode='+mode,{signal:abort.signal});
+const reader=response.body.getReader(),frames=[];
+const read=(async()=>{while(!frames.join('').includes('checkpoint')){const v=await reader.read();if(v.done)break;frames.push(new TextDecoder().decode(v.value));}})();
+await Promise.race([read,new Promise(r=>setTimeout(r,1000))]);
+results.push({trial,mode,frames:frames.slice(),passed:frames.join('').includes('checkpoint')});abort.abort();reader.cancel().catch(()=>{});read.catch(()=>{});
+}
+return results;
+})();
+</script>

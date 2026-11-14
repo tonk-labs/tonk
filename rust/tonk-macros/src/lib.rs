@@ -119,3 +119,62 @@ fn build(lit: &LitStr) -> Result<TokenStream, String> {
     };
     Ok(expanded.into())
 }
+
+/// Make an async request handler one axum takes on every target.
+///
+/// axum asks a handler for a `Send` future, and Dialog DB's futures are not
+/// `Send` on `wasm32`. In a browser the handler's body runs as a local task
+/// whose result comes back over a channel. In a component on WASI there are
+/// no threads, so nothing can send the future anywhere: the body is wrapped
+/// in `crate::r#async::Unthreaded`, which says so. Natively the body is
+/// boxed as a `dyn Future + Send`, so it is proven `Send` once, where it is
+/// boxed, instead of again for each trait query axum's routing makes of the
+/// handler's whole state machine.
+///
+/// ```ignore
+/// #[tonk_macros::handler]
+/// pub async fn health() -> &'static str {
+///     "ok"
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn handler(_attribute: TokenStream, item: TokenStream) -> TokenStream {
+    let syn::ItemFn {
+        attrs,
+        vis,
+        sig,
+        block,
+    } = parse_macro_input!(item as syn::ItemFn);
+    let statements = &block.stmts;
+    let output = match &sig.output {
+        syn::ReturnType::Default => quote! { () },
+        syn::ReturnType::Type(_, ty) => quote! { #ty },
+    };
+    quote! {
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        #(#attrs)* #vis #sig {
+            let (sender, receiver) = ::tokio::sync::oneshot::channel();
+            ::wasm_bindgen_futures::spawn_local(async move {
+                let result = (|| async move { #(#statements)* })().await;
+                let _ = sender.send(result);
+            });
+            receiver.await.expect("a handler's task always answers")
+        }
+
+        #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+        #(#attrs)* #vis #sig {
+            crate::r#async::Unthreaded(async move { #(#statements)* }).await
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        #(#attrs)* #vis #sig {
+            let future: ::std::pin::Pin<
+                ::std::boxed::Box<
+                    dyn ::std::future::Future<Output = #output> + ::std::marker::Send,
+                >,
+            > = ::std::boxed::Box::pin(async move { #(#statements)* });
+            future.await
+        }
+    }
+    .into()
+}

@@ -1,7 +1,6 @@
-// The heavy chunk: the IronCalc engine + a framework-free DOM grid for
-// `<tonk-table>`. Loaded by the shell (`../index.ts`) via dynamic
-// import on the first element connect — nothing here may be imported
-// *statically* from the shell (types excepted).
+// The IronCalc engine + a framework-free DOM grid: the core of the
+// library's `<table-editor>`, built into its `core` method through
+// `../library.ts`.
 //
 // Division of labor: the ENGINE is the spreadsheet — formula
 // evaluation, dependency graph, formatting, undo/redo, selection
@@ -14,21 +13,17 @@
 // Two document modes (see `GridMode` in api.ts):
 //
 // - STANDALONE — the element's content channel carries the whole
-//   workbook; edits signal `onChange` and the shell round-trips the
+//   workbook; edits signal `onChange` and the element round-trips the
 //   envelope.
 // - CLAIMS — the workbook lives in the dialog store as individuated
-//   claims. The shell feeds parsed data rows in (`applyRows`); every
+//   claims. The element feeds parsed data rows in (`applyRows`); every
 //   user mutation flows out as a typed event (`emit`) that a tonk
 //   view binds to a command. One commit path (`#commitAt`) serves
 //   gestures, paste, undo diffs, and the public `setCell` — so
 //   programmatic control is indistinguishable from typing.
 //
-// The engine wasm arrives as BYTES from the sibling
-// `tonk-table-engine.js` data leaf (see `../engine.ts`), never via a
-// URL fetch — which is what lets this chunk come up inside a sealed,
-// opaque-origin portal guest where relative fetches are dead. The
-// relative import below is rewritten to a blob URL by tonk-portal's
-// injector in that environment.
+// The engine wasm arrives as BYTES from the caller (the library
+// element's `engine` method), never via a URL fetch.
 
 import init, { Model, columnNameFromNumber } from "@ironcalc/wasm";
 import type {
@@ -57,20 +52,13 @@ import {
 
 /** Single in-flight / resolved instantiation of the engine wasm,
  *  shared by every grid on the page. Cleared on failure so a later
- *  connect can retry after e.g. a network blip. */
+ *  mount can retry. */
 let enginePromise: Promise<void> | null = null;
 
-function ensureEngine(): Promise<void> {
+function ensureEngine(engine: () => Uint8Array): Promise<void> {
   if (!enginePromise) {
     enginePromise = (async () => {
-      // Resolve the bytes leaf next to this chunk. In sealed guests the
-      // literal below is rewritten to a blob URL at injection time, and
-      // an absolute blob URL wins over the (dead) import.meta.url base.
-      const url = new URL("./tonk-table-engine.js", import.meta.url).href;
-      const mod = (await import(/* @vite-ignore */ url)) as {
-        default: Uint8Array;
-      };
-      await init({ module_or_path: mod.default });
+      await init({ module_or_path: engine() });
     })();
     enginePromise.catch(() => {
       enginePromise = null;
@@ -80,12 +68,13 @@ function ensureEngine(): Promise<void> {
 }
 
 /** Mount a grid into `parent`. The first call also instantiates the
- *  engine wasm, once per page. */
+ *  engine wasm from the bytes `engine` returns, once per page. */
 export async function createGrid(
   parent: HTMLElement,
   options: GridOptions,
+  engine: () => Uint8Array,
 ): Promise<TableGrid> {
-  await ensureEngine();
+  await ensureEngine(engine);
   return new Grid(parent, options);
 }
 
@@ -242,7 +231,7 @@ class Grid implements TableGrid {
     // --- DOM scaffold -------------------------------------------------
     // Every structural element carries a `part` name (plus state
     // tokens toggled by the painters), so outside CSS can restyle any
-    // piece with full power: `tonk-table::part(cell selected) { … }`.
+    // piece with full power: `table-editor::part(cell selected) { … }`.
     // The part names — frame, formula-bar, cell-reference,
     // formula-input, body, grid, corner, column-header, row-header,
     // row, cell (tokens: number/error/selected/range), tab-strip, tab
@@ -367,7 +356,7 @@ class Grid implements TableGrid {
           try {
             this.#model.renameSheet(known, row.name);
           } catch (err) {
-            console.warn("[tonk-table] remote rename rejected:", err);
+            console.warn("[table-editor] remote rename rejected:", err);
           }
         }
         continue;
@@ -397,7 +386,7 @@ class Grid implements TableGrid {
       try {
         this.#model.renameSheet(index, row.name);
       } catch (err) {
-        console.warn("[tonk-table] sheet name rejected:", err);
+        console.warn("[table-editor] sheet name rejected:", err);
       }
       this.#mapSheet(row.id, index);
     }
@@ -460,7 +449,7 @@ class Grid implements TableGrid {
       try {
         this.#model.setUserInput(engineIndex, pos.row, pos.column, delta.content);
       } catch (err) {
-        console.warn("[tonk-table] remote cell rejected:", err);
+        console.warn("[table-editor] remote cell rejected:", err);
       }
     }
 
@@ -484,7 +473,7 @@ class Grid implements TableGrid {
         try {
           this.#model.setColumnsWidth(engineIndex, n, n, want);
         } catch (err) {
-          console.warn("[tonk-table] remote column width rejected:", err);
+          console.warn("[table-editor] remote column width rejected:", err);
         }
       }
     }
@@ -504,7 +493,7 @@ class Grid implements TableGrid {
         try {
           this.#model.setRowsHeight(engineIndex, n, n, want);
         } catch (err) {
-          console.warn("[tonk-table] remote row height rejected:", err);
+          console.warn("[table-editor] remote row height rejected:", err);
         }
       }
     }
@@ -547,6 +536,12 @@ class Grid implements TableGrid {
     if (!pos) return;
     const engineSheet = this.#sheetIndexByName(sheetName);
     if (engineSheet === null) return;
+    try {
+      this.#model.setUserInput(engineSheet, pos.row, pos.column, content);
+    } catch (err) {
+      console.warn("[table-editor] input rejected:", err);
+      return;
+    }
     this.#commitMany([
       { engineSheet, row: pos.row, column: pos.column, content },
     ]);
@@ -585,7 +580,7 @@ class Grid implements TableGrid {
     try {
       this.#model.setColumnsWidth(engineSheet, n, n, px);
     } catch (err) {
-      console.warn("[tonk-table] column width rejected:", err);
+      console.warn("[table-editor] column width rejected:", err);
       return;
     }
     this.#emitColumnSize(engineSheet, n);
@@ -606,7 +601,7 @@ class Grid implements TableGrid {
     try {
       this.#model.setRowsHeight(engineSheet, row, row, px);
     } catch (err) {
-      console.warn("[tonk-table] row height rejected:", err);
+      console.warn("[table-editor] row height rejected:", err);
       return;
     }
     this.#emitRowSize(engineSheet, row);
@@ -707,7 +702,7 @@ class Grid implements TableGrid {
     try {
       mutate();
     } catch (err) {
-      console.warn("[tonk-table] mutation rejected:", err);
+      console.warn("[table-editor] mutation rejected:", err);
       this.#refresh();
       return;
     }
@@ -1182,7 +1177,7 @@ class Grid implements TableGrid {
       try {
         this.#model.renameSheet(index, name);
       } catch (err) {
-        console.warn("[tonk-table] sheet name rejected:", err);
+        console.warn("[table-editor] sheet name rejected:", err);
       }
     }
     this.#model.setSelectedSheet(index);
@@ -1257,7 +1252,7 @@ class Grid implements TableGrid {
     try {
       this.#model.deleteSheet(engineIndex);
     } catch (err) {
-      console.warn("[tonk-table] delete sheet rejected:", err);
+      console.warn("[table-editor] delete sheet rejected:", err);
       this.#paintTabs();
       return;
     }
@@ -1304,7 +1299,7 @@ class Grid implements TableGrid {
           this.#refresh();
           return;
         } catch (err) {
-          console.warn("[tonk-table] rename rejected:", err);
+          console.warn("[table-editor] rename rejected:", err);
         }
       }
       this.#paintTabs();
@@ -1418,7 +1413,7 @@ class Grid implements TableGrid {
     try {
       this.#model.setUserInput(sheet, editor.row, editor.column, value);
     } catch (err) {
-      console.warn("[tonk-table] input rejected:", err);
+      console.warn("[table-editor] input rejected:", err);
       this.#afterEditorClosed();
       return;
     }
@@ -1526,7 +1521,7 @@ class Grid implements TableGrid {
         try {
           pasteText(this.#model, view.sheet, row, column, text);
         } catch (err) {
-          console.warn("[tonk-table] paste rejected:", err);
+          console.warn("[table-editor] paste rejected:", err);
           return;
         }
         const commits: Commit[] = [];
@@ -1562,7 +1557,7 @@ class Grid implements TableGrid {
               this.#fx.value,
             );
           } catch (err) {
-            console.warn("[tonk-table] input rejected:", err);
+            console.warn("[table-editor] input rejected:", err);
             return;
           }
           this.#scroller.focus();

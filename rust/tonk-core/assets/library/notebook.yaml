@@ -1,9 +1,15 @@
 # ===========================================================================
-# notebook — a <tonk-notebook> document whose ```dialog-yaml fences are live cells.
+# notebook — a <notebook-editor> document whose ```dialog-yaml fences are live cells.
 # ===========================================================================
 # A notebook IS a prose document. What makes it a notebook is that its fenced
 # `dialog` code blocks are evaluated against the branch and their results
 # rendered beneath them, which is the element's business, not the model's.
+#
+# Requires prose-editor and code-editor: the document is a <prose-editor>,
+# and each of its code blocks a <code-editor>. A library component cannot
+# install another, so install those two as well; until the space has them
+# the notebook says so in place of its editor, and becomes one the moment
+# they arrive.
 #
 # Blocks are the STORED unit: the document the editor shows is the blocks
 # projected (joined with a blank line), and an edit writes back only the
@@ -92,6 +98,45 @@ concept!: &block/position
       the: xyz.tonk.notebook.block/at
       as: text
 
+# An entry of a block that is not the block's FIRST: some entry of the same
+# block sorts before it.
+#
+# The placement rules keep one entry per block, but a sequence written before
+# they did can hold a block twice. The page shows such a block at its first
+# entry, so the position the rules derive from must be that one too. Read
+# under the default `last` pick, the derivation took the stray entry instead:
+# a paragraph typed after the first one was positioned against an entry near
+# the end of the document and landed far below where it was typed.
+#
+# A separate concept rather than a `min` pick on `block/position`, because
+# the position rules recurse through `block/position`, and an aggregate inside
+# that recursion is unstratified: inserts derived nothing at all.
+concept!: &block/stray-entry
+  description: A position a block holds besides its first.
+  with:
+    at:
+      description: The later position.
+      the: xyz.tonk.notebook.block/stray-at
+      as: text
+      pick: :all
+
+rule!:
+  description: A block's entry is stray when another of its entries sorts first.
+  assert: block/stray-entry
+  when:
+    - assert: notebook/blocks
+      where:
+        this: ?notebook
+        block: {?first: ?this}
+    - assert: notebook/blocks
+      where:
+        this: ?notebook
+        block: {?at: ?this}
+    - assert: "<"
+      where:
+        of: ?first
+        with: ?at
+
 # One block of a notebook. Carries a pointer back to its notebook so the
 # block rows the element reads can be scoped, and so a block written before
 # its placement lands still belongs somewhere.
@@ -141,14 +186,218 @@ concept!: &block/chain
 # landing page re-points the alias themselves, which is what that slot is for.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Saving a notebook as a Markdown file
+# ---------------------------------------------------------------------------
+
+# Cmd+S on macOS, Ctrl+S elsewhere, saves what the editor shows.
+#
+# It wraps the `<notebook-editor>` rather than sitting beside it, so "focus
+# is in the notebook" is just "the key reached this element": a press
+# anywhere else on the page never gets here, and the browser's own Cmd+S
+# still behaves normally there. It listens in the BUBBLE phase and steps
+# aside for a press something inside already handled: neither prose's keymap
+# nor a `<code-editor>` cell's binds Mod-S today, but if one ever does, the
+# editor keeps it.
+#
+# The text is the `<prose-editor>`'s live `value`, the same string the
+# notebook commits from, read at the moment of the press: typing that has
+# not been committed yet is saved as shown, not re-read from the store.
+#
+# The file name is the leading heading, the way the notebook takes its
+# title from it, made safe for the common file systems.
+#
+# Where it is written: `showSaveFilePicker` when the realm can use it, and
+# otherwise an `<a download>` over a Blob URL (Firefox and Safari have no
+# picker, and a sandboxed or cross-origin frame such as the guest the
+# notebook renders in is refused one). The guest's sandbox grants
+# `allow-downloads`, and a browser set to ask where to save shows its own
+# save dialog for the download. A cancelled picker is a choice, not a
+# failure, so nothing is downloaded after it.
+element!: &notebook-save
+  description: "Saves the notebook it wraps as a Markdown file on Cmd+S / Ctrl+S."
+  method:
+    connected: |
+      (self) => {
+        self.__keydown ??= (event) => self.keydown(event);
+        self.addEventListener('keydown', self.__keydown);
+      }
+    disconnected: |
+      (self) => {
+        if (self.__keydown) self.removeEventListener('keydown', self.__keydown);
+      }
+    released: |
+      (self) => {
+        if (self.__keydown) self.removeEventListener('keydown', self.__keydown);
+        self.__keydown = null;
+      }
+    keydown: |
+      (self, event) => {
+        if (event.defaultPrevented || event.isComposing) return;
+        if (!self.isSaveChord(event)) return;
+        event.preventDefault();
+        self.save();
+      }
+    is-save-chord: |
+      (self, event) => {
+        if ((event.key || '').toLowerCase() !== 's') return false;
+        if (event.altKey || event.shiftKey) return false;
+        const platform = navigator.userAgentData?.platform || navigator.platform || '';
+        const mac = /mac|iphone|ipad|ipod/i.test(platform);
+        return mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+      }
+    markdown: |
+      (self) => {
+        const prose = self.querySelector('notebook-editor prose-editor');
+        const value = prose?.value;
+        return typeof value === 'string' ? value : '';
+      }
+    heading: |
+      (self, markdown) => {
+        const first = String(markdown ?? '').trimStart().split('\n')[0] ?? '';
+        const line = first.replace(/^ +/, '');
+        const hashes = line.match(/^#*/)[0].length;
+        if (hashes < 1 || hashes > 6) return '';
+        return line.slice(hashes).trim().replace(/#+$/, '').trim();
+      }
+    file-name: |
+      (self, markdown) => {
+        let name = self.heading(markdown)
+          .replace(/[\u0000-\u001f\u007f<>:"/\\|?*]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .replace(/^[\s.]+|[\s.]+$/g, '');
+        if (name.length > 120) name = name.slice(0, 120).replace(/[\s.]+$/, '');
+        if (/^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(name)) name = `${name}_`;
+        return `${name || 'notebook'}.md`;
+      }
+    save: |
+      async (self) => {
+        const markdown = self.markdown();
+        const name = self.fileName(markdown);
+        const type = 'text/markdown';
+        if (typeof window.showSaveFilePicker === 'function') {
+          try {
+            const handle = await window.showSaveFilePicker({
+              suggestedName: name,
+              types: [{ description: 'Markdown', accept: { [type]: ['.md'] } }],
+            });
+            const writable = await handle.createWritable();
+            await writable.write(new Blob([markdown], { type }));
+            await writable.close();
+            self.dispatchEvent(new CustomEvent('notebook-saved',
+              { bubbles: true, detail: { name: handle.name, via: 'picker' } }));
+            return;
+          } catch (error) {
+            if (error?.name === 'AbortError') return;
+          }
+        }
+        // The link is never attached. A guest catches every click on an
+        // `<a href>` at its document to relay navigation to the host, and a
+        // `blob:` URL reads to it as an external link to open, so a link in
+        // the document would never download. Clicked detached, the click
+        // reaches no document and the browser downloads it.
+        const url = URL.createObjectURL(new Blob([markdown], { type: `${type};charset=utf-8` }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = name;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        self.dispatchEvent(new CustomEvent('notebook-saved',
+          { bubbles: true, detail: { name, via: 'download' } }));
+      }
+
+# ---------------------------------------------------------------------------
+# <notebook-editor with="branch@repo"> — one notebook, as a <prose-editor>.
+#
+# The view renders the notebook's rows into it, hidden: its `block`
+# sequence (`.notebook-order__item`, an entry's block and key, in position
+# order) and every block's source (`.notebook-block-row`). The element
+# projects them into the editor's document, and commits an edit as ONE
+# evaluated document of the commands below: the blocks it changed, moved,
+# removed or inserted, and a rename when the heading changed (the heading IS
+# the title). It reads and writes the branch its `with` names, over the
+# worker's `/evaluate`.
+#
+# Each ```dialog-yaml fence (or `dialog`, or untagged) is a cell: its
+# <code-editor> is put on the language server, a clean query runs as a dry
+# run as it is typed, and its result renders under it; a cell that asserts
+# runs only on the bolt or Cmd/Ctrl+Enter, and commits.
+#
+# `draft` makes it the index's: nothing behind it, and its heading the
+# switcher <notebook-index> answers. Attributes: `with`, `draft`, `title`
+# (the title it has), `data-notebook` (whose blocks it shows and writes).
+# Methods worth calling from outside: `blocks()`, `positions()` and
+# `notation()` (the pure halves, returned as functions), `evaluate(notation,
+# transact)`.
+# ---------------------------------------------------------------------------
+
+element!: &notebook-editor
+  description: "A notebook over the branch its `with` names: its blocks projected into a <prose-editor>, edits committed block by block, and its dialog fences live query cells."
+  method:
+    connected: !include/text ./notebook/connected.js
+    disconnected: !include/text ./notebook/disconnected.js
+    attribute-changed: !include/text ./notebook/attribute-changed.js
+    start: !include/text ./notebook/start.js
+    context: !include/text ./notebook/context.js
+    mount: !include/text ./notebook/mount.js
+    require: !include/text ./notebook/require.js
+    attach: !include/text ./notebook/attach.js
+    listen: !include/text ./notebook/listen.js
+    observe: !include/text ./notebook/observe.js
+    refresh: !include/text ./notebook/refresh.js
+    later: !include/text ./notebook/later.js
+    rows: !include/text ./notebook/rows.js
+    live: !include/text ./notebook/live.js
+    project: !include/text ./notebook/project.js
+    land: !include/text ./notebook/land.js
+    overlay: !include/text ./notebook/overlay.js
+    settle: !include/text ./notebook/settle.js
+    commit: !include/text ./notebook/commit.js
+    write: !include/text ./notebook/write.js
+    evaluate: !include/text ./notebook/evaluate.js
+    mark: !include/text ./notebook/mark.js
+    band: !include/text ./notebook/band.js
+    fences: !include/text ./notebook/fences.js
+    cell: !include/text ./notebook/cell.js
+    asserts: !include/text ./notebook/asserts.js
+    result: !include/text ./notebook/result.js
+    stylesheet: !include/text ./notebook/stylesheet.js
+    blocks: !include/text ./notebook/blocks.js
+    positions: !include/text ./notebook/positions.js
+    notation: !include/text ./notebook/notation.js
+
+# ---------------------------------------------------------------------------
+# <notebook-index> — the index page, around a draft <notebook-editor>.
+#
+# Its draft's heading is the switcher: the element hands the editor the
+# notebooks the directory rendered inside it (`.notebook-index__item`
+# links), draws the suggestions the editor ranks, opens the one picked and
+# creates the one named, minting its entity and writing its title and the
+# draft's blocks in one commit before opening it.
+# ---------------------------------------------------------------------------
+
+element!: &notebook-index
+  description: "The notebook index: a draft notebook whose heading suggests, opens and creates notebooks."
+  method:
+    connected: !include/text ./notebook/index-connected.js
+    publish: !include/text ./notebook/index-publish.js
+    panel: !include/text ./notebook/index-panel.js
+    create: !include/text ./notebook/index-create.js
+    navigate: !include/text ./notebook/index-navigate.js
+    stylesheet: !include/text ./notebook/index-stylesheet.js
+
 # ONE notebook. The element reads two hidden row sets: the notebook's own
 # `block` sequence, one `.notebook-order__item` per entry in position order
 # carrying the entry's key, and the block rows carrying each block's source.
+#
+# Wrapped in `<notebook-save>` (above) so Cmd/Ctrl+S saves it.
 view!:
   this: notebook
   show:
     ui: |
-      <tonk-notebook
+      <notebook-save style="display: block;">
+      <notebook-editor
+        data-tonk-with
         data-subject={this}
         data-notebook={this}
         title={title}
@@ -164,14 +413,15 @@ view!:
           </div>
           <tonk-display model=notebook/block></tonk-display>
         </div>
-      </tonk-notebook>
+      </notebook-editor>
+      </notebook-save>
 
 # EVERY notebook — the directory view, which is what core's `/{*model}` route
 # renders at `/space/{repo}/notebook`. A list of links, one per notebook.
 # EVERY notebook — the rows the switcher reads.
 #
 # There is no search form here any more. The index page mounts an empty
-# notebook whose HEADING is the switcher (see `heading-switcher.ts`): typing
+# notebook whose HEADING is the switcher (see <notebook-index>): typing
 # a title suggests the notebooks that match, and the list carries an
 # explicit "create this" row so Enter always has a visible target.
 #
@@ -218,11 +468,18 @@ view!:
 # "Concept mismatch: required attribute missing" beside the working list.
 # A literal path wins over `/{*model}` under the router's specificity rules
 # (fewer broad params first), so this claims the URL outright.
+#
+# Both notebook route models are pinned with `this:`, as every route model
+# should be. A concept's identity comes from its fields alone, and a route
+# model's fields are the few site fields every page reads, so an unpinned one
+# would be the very concept a space's own `{repo, branch}` page declares,
+# share its `ui` view, and one page would replace the other.
 route!:
   path: "/notebook"
-  concept: notebook/index-route
+  concept: tonk:notebook/index-route
 
 concept!: &notebook/index-route
+  this: tonk:notebook/index-route
   description: The notebook index (`/space/{repo}/notebook`).
   with:
     repo:
@@ -237,7 +494,7 @@ concept!: &notebook/index-route
 # The index IS a notebook — a DRAFT one.
 #
 # Not a search page that happens to contain an editor: the same
-# `<tonk-notebook>` you land in, opened on nothing. Its heading is the
+# `<notebook-editor>` you land in, opened on nothing. Its heading is the
 # switcher (type a title, get suggestions, Enter opens or creates), and the
 # body below it is the notebook's real body. Nothing changes shape under
 # the author when the draft becomes a notebook — that is the whole point,
@@ -246,11 +503,12 @@ concept!: &notebook/index-route
 # The nested display renders the notebook rows the switcher matches
 # against; they are its data and the no-script fallback both.
 view!:
-  this: notebook/index-route
+  this: tonk:notebook/index-route
   show:
     ui: |
-      <tonk-notebook-index class="notebook-index">
-        <tonk-notebook
+      <notebook-index class="notebook-index">
+        <notebook-save style="display: block;">
+        <notebook-editor
           draft
           with="{branch}@{repo}"
           on:block-edit=block/edit
@@ -258,15 +516,17 @@ view!:
           on:block-remove=block/remove
           on:notebook-retitle=notebook/retitle
           style="display: block;"
-        ></tonk-notebook>
+        ></notebook-editor>
+        </notebook-save>
         <tonk-display with="{branch}@{repo}" model=notebook></tonk-display>
-      </tonk-notebook-index>
+      </notebook-index>
 
 route!:
   path: "/notebook/{*entity}"
-  concept: notebook/route
+  concept: tonk:notebook/route
 
 concept!: &notebook/route
+  this: tonk:notebook/route
   description: A single notebook page (`/space/{repo}/notebook/{entity}`).
   with:
     entity:
@@ -283,7 +543,7 @@ concept!: &notebook/route
       as: text
 
 view!:
-  this: notebook/route
+  this: tonk:notebook/route
   show:
     ui: |
       <div class="notebook-space">
@@ -341,7 +601,7 @@ command!: &block/insert
 # author types into the body, so a notebook begins as a name and nothing
 # else.
 # ---------------------------------------------------------------------------
-# Events — how `<tonk-notebook>`'s CustomEvents fill the commands.
+# Events — how `<notebook-editor>`'s CustomEvents fill the commands.
 #
 # The commands above used to give near-identical fields their own
 # attributes (`created-title` rather than `title`, `removed` rather than
@@ -428,7 +688,7 @@ rule!:
     - assert: site
       where:
         this: ?site
-        concept: notebook/route
+        concept: tonk:notebook/route
     - assert: notebook/route
       where:
         this: ?site
@@ -474,6 +734,34 @@ command!: &block/place
       the: xyz.tonk.block.place/key
       as: text
 
+# A move re-keys a block that already has an entry: its entries go and one
+# under `key` takes their place, in the same commit. Placing the new key alone
+# left the old entry behind, so the block sat in the sequence twice and the
+# earlier key put it back where it had been moved from.
+#
+# `from` names the entry the element read. The rules do not rely on it: they
+# retract every entry the block holds, so an entry the element never saw goes
+# too. It stays on the command because the element writes it.
+command!: &block/move
+  description: Move one block to another position in its notebook's sequence.
+  with:
+    subject:
+      description: The block entity.
+      the: xyz.tonk.block.move/subject
+      as: entity
+    notebook:
+      description: The notebook whose sequence the block moves in.
+      the: xyz.tonk.block.move/notebook
+      as: entity
+    from:
+      description: The position the block held.
+      the: xyz.tonk.block.move/from
+      as: text
+    key:
+      description: The position the block moves to.
+      the: xyz.tonk.block.move/key
+      as: text
+
 command!: &block/remove
   description: Take one block out of its notebook's sequence.
   with:
@@ -504,8 +792,9 @@ rule!:
         notebook: ?notebook
         source: ?source
 
-# A block already in the sequence is at the position it is stored under.
-# This is what gives the derivation rule its neighbours.
+# A block already in the sequence is at the position it is stored under, the
+# first one when it is stored under several (see `block/stray-entry`). This is
+# what gives the derivation rule its neighbours.
 rule!:
   description: A placed block's position.
   assert: block/position
@@ -518,6 +807,11 @@ rule!:
       where:
         this: ?at
         is: ?block/key
+  unless:
+    - assert: block/stray-entry
+      where:
+        this: ?this
+        at: ?at
 
 # An inserted block's successor, kept as a fact so the position rules can
 # recurse over it. `case:none` at the tail is an ordinary sentinel entity —
@@ -664,15 +958,79 @@ rule!:
         notebook: ?this
         key: ?block/key
 
+# A placement leaves the block with ONE entry: the placed one.
+#
+# The element places a block it reads as having no entry. It can read that
+# while an entry exists, because the entries and the block rows are separate
+# renders that do not update together, and the placement then wrote a second
+# entry beside the first. So the rule does not take the element's word for
+# what the block holds: it retracts every other entry the block has, read from
+# the sequence itself. The entry under the placed key is left alone, so
+# placing a block where it already is changes nothing.
 rule!:
-  description: Retract a block's entry from the notebook's sequence.
+  description: A placed block leaves every other entry it held.
+  retract!: notebook/blocks
+  when:
+    - assert: block/place
+      where:
+        subject: ?block
+        notebook: ?this
+        key: ?key
+    - assert: notebook/blocks
+      where:
+        this: ?this
+        block: {?block/key: ?block}
+  unless:
+    - assert: "=="
+      where:
+        this: ?block/key
+        is: ?key
+
+rule!:
+  description: Enter a moved block under its new position.
+  assert!: notebook/blocks
+  when:
+    - assert: block/move
+      where:
+        subject: ?block
+        notebook: ?this
+        key: ?block/key
+
+# Every entry the block held goes, not just `from`: a block entered twice is
+# repaired by its next move instead of keeping the stray.
+rule!:
+  description: A moved block leaves every other entry it held.
+  retract!: notebook/blocks
+  when:
+    - assert: block/move
+      where:
+        subject: ?block
+        notebook: ?this
+        key: ?key
+    - assert: notebook/blocks
+      where:
+        this: ?this
+        block: {?block/key: ?block}
+  unless:
+    - assert: "=="
+      where:
+        this: ?block/key
+        is: ?key
+
+# Every entry the block holds, read from the sequence rather than the `key`
+# the element names: a stray entry would otherwise bring the block back.
+rule!:
+  description: Retract a removed block's every entry from the notebook's sequence.
   retract!: notebook/blocks
   when:
     - assert: block/remove
       where:
         subject: ?block
         notebook: ?this
-        key: ?block/key
+    - assert: notebook/blocks
+      where:
+        this: ?this
+        block: {?block/key: ?block}
 
 # The block's own facts go too. Retracting only the entry leaves the block
 # behind with its source, and a block that has a source but no entry is

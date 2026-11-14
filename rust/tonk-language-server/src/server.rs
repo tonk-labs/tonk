@@ -1246,7 +1246,7 @@ const PROFILE_PREFIX: &str = "profile:";
 
 /// Pull `(repo, branch)` out of a
 /// `tonk-buffer:///<repo>/<branch>/<cell-suffix>` URI — the shape
-/// the editor's `<tonk-code source>` sets.
+/// the editor's `<code-editor source>` sets.
 ///
 /// A `profile:<name>` repo segment names the profile-as-repository
 /// rather than a repository called that; anything else is a named
@@ -1427,7 +1427,7 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     impl<Op> EnvProvider for TestEnv<Op>
     where
-        Op: QueryEnv,
+        Op: QueryEnv + dialog_common::ConditionalSend,
     {
         type Opened = TestOpened<Op>;
         async fn open(&self, _repo: &Repo, _branch: &str) -> Option<Self::Opened> {

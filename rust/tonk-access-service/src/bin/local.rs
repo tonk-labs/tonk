@@ -11,8 +11,12 @@ async fn main() -> anyhow::Result<()> {
     let public_origin = std::env::var("ACCESS_PUBLIC_ORIGIN").ok();
     // Sites render under the page's own authority: `*.localhost` resolves to
     // loopback in the browser, so `{label}.localhost:{port}` reaches the same
-    // dev server with no DNS or certificate.
-    let sites = public_origin
+    // dev server with no DNS or certificate. The page is at the public origin
+    // unless the service is reached elsewhere, as behind a shaped link.
+    let page_origin = std::env::var("ACCESS_PAGE_ORIGIN")
+        .ok()
+        .or_else(|| public_origin.clone());
+    let sites = page_origin
         .as_deref()
         .and_then(|origin| url::Url::parse(origin).ok())
         .and_then(|origin| {
@@ -48,6 +52,9 @@ async fn main() -> anyhow::Result<()> {
         state_dir: std::env::var("ACCESS_STATE_DIR")
             .ok()
             .map(std::path::PathBuf::from),
+        // Behind a shaped link (`tonk-perf link`) the permits must name
+        // the link, so block reads and writes cross it too.
+        public_endpoint: std::env::var("ACCESS_PUBLIC_ENDPOINT").ok(),
         ..Default::default()
     })
     .await?;

@@ -15,32 +15,52 @@
 //! The space worker stores it and publishes that revision ([`seed`]), so the
 //! replica holds the same history the host did, and syncs on from there.
 
+use axum::Json;
+use axum::extract::{Path, State};
+#[cfg(target_arch = "wasm32")]
+use dialog_artifacts::Asset;
+#[cfg(feature = "persona")]
 use dialog_capability::Subject;
 use dialog_common::Blake3Hash;
 use dialog_credentials::DidKeyResolver;
-use dialog_effects::Use;
-use dialog_repository::{RepositoryExt as _, Revision, Upstream, codec};
+#[cfg(feature = "persona")]
+use dialog_effects::{Use, method};
+use dialog_repository::{RepositoryExt as _, Upstream, codec};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::{
-    Delegation, DelegationChain,
+    Container, Delegation, DelegationChain,
     time::{TimeRange, Timestamp},
 };
 use dialog_varsig::Did;
 use dialog_varsig::signature::AnySignature;
-use futures_util::stream;
 use ipld_core::ipld::Ipld;
+use serde::Deserialize;
+use serde_json::{Value, json};
+#[cfg(feature = "persona")]
 use std::collections::BTreeMap;
 use tonk_common::log;
-use tonk_invite::{HOME_ADDRESS, home_address_meta};
+use tonk_invite::HOME_ADDRESS;
+#[cfg(feature = "persona")]
+use tonk_invite::home_address_meta;
+use tonk_macros::handler;
+#[cfg(target_arch = "wasm32")]
+use tonk_schema::SpaceKernel;
 use tonk_schema::prelude::DidExt as _;
+#[cfg(feature = "persona")]
 use url::Url;
 
-use super::account::{act_for, acts_for, member_did};
+use super::AppState;
+#[cfg(feature = "persona")]
+use super::account::member_did;
+use super::account::{act_for, acts_for};
+#[cfg(feature = "persona")]
 use super::adopt::ensure_space_mounted;
-use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url};
+#[cfg(feature = "persona")]
+use super::create_invite::{
+    ConfiguredRemoteRequirement, resolve_configured_remote_url, resolve_configured_remote_url_with,
+};
 use super::join::mount_replica;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use super::profile_name::project_member_name;
+#[cfg(feature = "persona")]
 use super::profile_name::resolve_display_name;
 use super::repository::{CONTENT_BRANCH, record_initialized_replica_in_profile};
 use super::sync::publish_session_account;
@@ -48,15 +68,15 @@ use crate::{TonkWorkerError, worker::TonkState};
 
 /// How long a space worker's delegation lasts. It asks for a new one before
 /// this runs out, so a lapsed grant costs at most one boot's request.
+#[cfg(feature = "persona")]
 pub(crate) const DELEGATION_TTL_SECONDS: u64 = 12 * 60 * 60;
 
 /// A delegation for a space worker: the chain from the space to its profile.
 /// Where the space syncs and which account it is for are signed into it.
+#[cfg(feature = "persona")]
 pub(crate) struct Grant {
     /// The encoded chain, from the space down to the space worker's profile.
     pub(crate) chain: Vec<u8>,
-    /// When the leaf lapses, in unix seconds.
-    pub(crate) expires: u64,
 }
 
 /// Issue the worker whose profile is `audience` a delegation to use `space`,
@@ -67,6 +87,7 @@ pub(crate) struct Grant {
 /// is handed this by a page on its own origin, where the space's author code
 /// runs too, so what tells it where to sync has to be something that code
 /// cannot make: only the person's profile can sign for the space.
+#[cfg(feature = "persona")]
 pub(crate) async fn delegate(
     tonk: &TonkState,
     space: &Did,
@@ -77,21 +98,42 @@ pub(crate) async fn delegate(
     let until = Timestamp::try_from(expires as i128)
         .map_err(|e| TonkWorkerError::Internal(format!("delegation expiry: {e:?}")))?;
     let terms = terms(tonk, space).await?;
-    let delegation: UcanDelegation = tonk
+    let meta = terms.signed()?;
+    let using = tonk
         .profile
         .access()
         .claim(Subject::from(space.clone()).attenuate(Use))
         .expires(until)
         .delegate(audience.clone())
-        .meta(terms.signed()?)
+        .meta(meta.clone())
         .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to delegate {space}: {e}")))?;
+        .await;
+    // A space the person only observes, as a published one, is theirs to
+    // read and no more: its worker is delegated that.
+    let delegation: UcanDelegation = match using {
+        Ok(delegation) => delegation,
+        Err(error) => tonk
+            .profile
+            .access()
+            .claim(
+                Subject::from(space.clone())
+                    .attenuate(Use)
+                    .attenuate(method::Get),
+            )
+            .expires(until)
+            .delegate(audience.clone())
+            .meta(meta)
+            .perform(&tonk.operator)
+            .await
+            .map_err(|_| {
+                TonkWorkerError::Internal(format!("failed to delegate {space}: {error}"))
+            })?,
+    };
     let chain = delegation
         .into_chain()
         .to_bytes()
         .map_err(|e| TonkWorkerError::Internal(format!("failed to encode delegation: {e}")))?;
-    Ok(Grant { chain, expires })
+    Ok(Grant { chain })
 }
 
 /// What a space's worker is told with its delegation, and has to take up
@@ -118,6 +160,7 @@ impl Terms {
     /// These terms as the meta of the delegation that carries them: the
     /// remote where an invite names a space's endpoint, so a chain says where
     /// its space syncs the same way whoever it was minted for.
+    #[cfg(feature = "persona")]
     fn signed(&self) -> Result<BTreeMap<String, Ipld>, TonkWorkerError> {
         let mut meta =
             BTreeMap::from([(ACTS_FOR.to_owned(), Ipld::String(self.account.to_string()))]);
@@ -165,6 +208,7 @@ impl Terms {
 }
 
 /// The [`Terms`] the person's profile holds for `space` now.
+#[cfg(feature = "persona")]
 pub(crate) async fn terms(tonk: &TonkState, space: &Did) -> Result<Terms, TonkWorkerError> {
     let remote = match where_it_syncs(tonk, space).await? {
         ConfiguredRemoteRequirement::Ready(remote) => Some(remote.access_url.to_string()),
@@ -184,16 +228,31 @@ pub(crate) async fn terms(tonk: &TonkState, space: &Did) -> Result<Terms, TonkWo
 /// Where each space has a worker of its own, the profile mounts nothing of a
 /// space: the account's directory lists every space the person has with
 /// where it syncs, one made here, one joined, and one of the account's that
-/// this device has not opened yet. A host with one database reads it from
-/// the space it has mounted, mounting it from the directory first if it has
-/// not.
+/// this device has not opened yet. A space the person only reads, as a
+/// published one, is in no directory: the profile mounts it to read it, and
+/// its mount says. A host with one database reads it from the space it has
+/// mounted, mounting it from the directory first if it has not.
+#[cfg(feature = "persona")]
 async fn where_it_syncs(
     tonk: &TonkState,
     space: &Did,
 ) -> Result<ConfiguredRemoteRequirement, TonkWorkerError> {
     if tonk.spaces_elsewhere() {
         let repository = super::space_directory::held(tonk, space.as_str()).await?;
-        return resolve_configured_remote_url(tonk, &repository).await;
+        let listed = resolve_configured_remote_url(tonk, &repository).await?;
+        if matches!(listed, ConfiguredRemoteRequirement::Ready(_)) {
+            return Ok(listed);
+        }
+        return match tonk
+            .profile
+            .space(space.repo_key())
+            .load()
+            .perform(&tonk.operator)
+            .await
+        {
+            Ok(mounted) => resolve_configured_remote_url_with(&mounted, &tonk.operator).await,
+            Err(_) => Ok(listed),
+        };
     }
     if let Err(error) = ensure_space_mounted(tonk, space.repo_key()).await {
         log!("space {space} was not taken up from the directory: {error}");
@@ -217,7 +276,10 @@ async fn verified<'a>(
     space: &Did,
     chain: &'a DelegationChain,
 ) -> Result<&'a Delegation<AnySignature>, TonkWorkerError> {
-    if chain.subject() != Some(space) {
+    // A chain of any subject is the space's when the space issued it, as an
+    // agent space delegates itself to its session: that it starts at the
+    // space is checked below.
+    if chain.subject().is_some_and(|subject| subject != space) {
         return Err(TonkWorkerError::Forbidden(format!(
             "delegation is not for {space}"
         )));
@@ -246,6 +308,43 @@ async fn verified<'a>(
         .proofs()
         .last()
         .ok_or_else(|| TonkWorkerError::Forbidden("delegation is empty".into()))
+}
+
+/// More of a space's chains down to this worker, each a base64url container:
+/// a grant per scope, where its take-up held one.
+#[derive(Debug, Deserialize)]
+pub struct Delegations {
+    chains: Vec<String>,
+}
+
+/// `POST /api/repository/{repo}/delegations`: keep each chain, checked as a
+/// take-up checks its own ([`verified`]), in this worker's profile, where
+/// every proof is looked up. A chain to this worker adds no authority beyond
+/// what the space granted down it.
+#[handler]
+pub async fn keep_delegations(
+    State(state): State<AppState>,
+    Path(repo): Path<String>,
+    Json(delegations): Json<Delegations>,
+) -> Result<Json<Value>, TonkWorkerError> {
+    let space: Did = repo
+        .parse()
+        .map_err(|_| TonkWorkerError::Router(format!("'{repo}' names no space")))?;
+    let tonk = state.read().await.clone();
+    for encoded in &delegations.chains {
+        let chain = Container::decode(encoded.as_bytes())
+            .ok()
+            .and_then(|container| DelegationChain::try_from(container).ok())
+            .ok_or_else(|| TonkWorkerError::Router("a chain is not a delegation chain".into()))?;
+        verified(&tonk, &space, &chain).await?;
+        tonk.profile
+            .access()
+            .save(UcanDelegation(chain))
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| TonkWorkerError::Internal(format!("failed to save delegation: {e}")))?;
+    }
+    Ok(Json(json!({})))
 }
 
 /// Take up a delegation for `space`: save its chain to this worker's profile,
@@ -282,6 +381,74 @@ pub(crate) async fn adopt(
     Ok(terms)
 }
 
+/// Give `space`, which this worker holds, its first commit, if it has none
+/// yet: the kernel it runs, as the asset `kernel`, which the space's store
+/// already holds, and the space's pin to it. Nothing is written over a `main`
+/// that has a revision. The space then holds what it needs to start wherever
+/// it syncs.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn found(
+    tonk: &TonkState,
+    space: &Did,
+    kernel: Asset,
+) -> Result<(), TonkWorkerError> {
+    let key = space.repo_key();
+    // A space this worker has not taken up yet has nothing to found: it is
+    // founded as it is taken up.
+    if tonk
+        .profile
+        .space(key)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .is_err()
+    {
+        return Ok(());
+    }
+    let main = tonk
+        .reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("open '{key}': {e}")))?;
+    if main.handle().revision().is_some() {
+        return Ok(());
+    }
+    // A space joined, or only read, lands the head its remote holds, as the
+    // first boot after a join does: it commits nothing of its own.
+    if tonk_account::peer::upstream(main.handle()).is_some() {
+        return Ok(());
+    }
+    pin(tonk, space, kernel).await
+}
+
+/// Record on `space`'s `main` the kernel it runs, the asset `kernel`, and the
+/// pin to it.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn pin(
+    tonk: &TonkState,
+    space: &Did,
+    kernel: Asset,
+) -> Result<(), TonkWorkerError> {
+    let key = space.repo_key();
+    let asset = kernel
+        .entity()
+        .map_err(|e| TonkWorkerError::Internal(format!("the kernel's asset: {e}")))?;
+    tonk.reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .transaction()
+        .assert(kernel)
+        .assert(SpaceKernel::new(space.this(), asset))
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("the first commit of {space}: {e}")))?;
+    log!("space worker: founded {space} on its kernel");
+    Ok(())
+}
+
 /// Put back what a restart of this worker lost about `space`: the account
 /// this session acts for, in the session overlay, where a view reads who is
 /// looking at it. An overlay lives only as long as the worker, so this runs
@@ -292,43 +459,6 @@ pub(crate) async fn resume(tonk: &TonkState, space: &Did) -> Result<(), TonkWork
         return Ok(());
     }
     publish_session_account(tonk, space.repo_key(), CONTENT_BRANCH).await
-}
-
-/// Put `name` on the roster entry of the account this worker acts for: the
-/// name the person goes by, as their profile's delegation says it. Written
-/// here because this worker holds the space. Each start asks, and writes only
-/// a name the roster does not show yet. A space with nothing on `main` is
-/// left alone: it is still to be filled, and a write would stand in the way.
-///
-/// Answers whether anything was written.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn name_member(
-    tonk: &TonkState,
-    space: &Did,
-    name: &str,
-) -> Result<bool, TonkWorkerError> {
-    let Some(account) = acts_for(tonk).await? else {
-        return Ok(false);
-    };
-    let key = space.repo_key();
-    let filled = tonk
-        .reactor
-        .repository(key)
-        .branch(CONTENT_BRANCH)
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::NotFound(format!("{space} main: {e}")))?
-        .handle()
-        .revision()
-        .is_some();
-    if !filled {
-        return Ok(false);
-    }
-    let named = project_member_name(tonk, key, &account, name).await?;
-    if named {
-        tonk.sync_queue.mark_dirty(key, js_sys::Date::now());
-    }
-    Ok(named)
 }
 
 /// A space's `main` as the host holds it: the snapshot of everything its
@@ -374,53 +504,8 @@ pub(crate) async fn snapshot(
     Ok(Some(Snapshot { content, revision }))
 }
 
-/// Seed the freshly mounted replica of `space` from the host's snapshot: store
-/// its content, then publish its revision on `main`. A replica that already
-/// has a revision is left alone, so a repeated seed never rewinds it.
-pub(crate) async fn seed(
-    tonk: &TonkState,
-    space: &Did,
-    content: &[u8],
-    revision: &[u8],
-) -> Result<(), TonkWorkerError> {
-    let repository = tonk
-        .profile
-        .space(space.as_str())
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::NotFound(format!("space {space}: {e}")))?;
-    let branch = repository
-        .branch("main")
-        .open()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::NotFound(format!("{space} main: {e}")))?;
-    if branch.revision().is_some() {
-        return Ok(());
-    }
-    let revision: Revision = serde_json::from_slice(revision)
-        .map_err(|e| TonkWorkerError::Router(format!("malformed revision: {e}")))?;
-    let items = codec::decode(content)
-        .map_err(|e| TonkWorkerError::Router(format!("malformed snapshot: {e}")))?;
-    let imported = repository
-        .import(stream::iter(items))
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to store {space}: {e}")))?;
-    branch
-        .reset(revision)
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to publish {space}: {e}")))?;
-    log!("space worker: seeded {space} ({imported:?})");
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    wasm_bindgen_test_configure!(run_in_service_worker);
 
     use ::axum::body::Body;
     use ::axum::http::{Request, StatusCode};

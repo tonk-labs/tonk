@@ -1,0 +1,314 @@
+<style>
+  space-inspector {
+    display: flex;
+    flex-direction: column;
+    gap: var(--wa-space-m, 16px);
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 1080px;
+    min-height: 100dvh;
+    margin: 0 auto;
+    /* Clear the space chrome pinned over the page's top edge. */
+    padding: 88px 16px 48px;
+    color: var(--wa-color-text-normal);
+  }
+  space-inspector [hidden] { display: none !important; }
+  space-inspector > .error { color: var(--wa-color-text-quiet); font-style: italic; }
+
+  /* The cells and the result views share the Dialog YAML palette, so a
+     result reads like the notation that would write it. */
+  space-inspector code-editor,
+  space-inspector .query-tree,
+  space-inspector .query-notation {
+    --tonk-triangle: #c89a2b;
+    --tonk-square: #b94a3d;
+    --tonk-circle: #3d6da8;
+    --tonk-closure: #7a7268;
+    --tonk-alarm: #a8302a;
+    --tonk-code-bg: var(--wa-form-control-background-color);
+    --tonk-code-fg: var(--wa-color-text-normal);
+    --tonk-code-fg-muted: var(--wa-color-text-quiet);
+    --tonk-code-border: transparent;
+    --tonk-code-active-line: color-mix(in srgb, var(--wa-color-text-normal) 2%, transparent);
+    --tonk-code-gutter-bg: color-mix(in srgb, var(--wa-color-text-normal) 4%, transparent);
+    --tonk-code-cursor: var(--wa-color-brand-fill-loud);
+    --tonk-code-selection: color-mix(in srgb, var(--wa-color-brand-fill-loud) 25%, transparent);
+    --tonk-code-bracket-match-bg: color-mix(in srgb, var(--wa-color-brand-fill-loud) 18%, transparent);
+    --tonk-code-bracket-match-border: var(--wa-color-brand-border-loud);
+    --tonk-code-focus-ring: transparent;
+    --tonk-code-tooltip-bg: color-mix(in srgb, var(--wa-color-text-normal) 12%, var(--wa-form-control-background-color));
+    --tonk-code-tooltip-fg: var(--wa-color-text-normal);
+    --tonk-code-tooltip-border: color-mix(in srgb, var(--wa-color-text-normal) 18%, transparent);
+    --tonk-code-key: var(--tonk-triangle);
+    --tonk-code-string: var(--tonk-square);
+    --tonk-code-number: var(--tonk-circle);
+    --tonk-code-comment: var(--tonk-closure);
+    --tonk-code-punctuation: var(--wa-color-text-normal);
+    --tonk-code-error: var(--tonk-alarm);
+    --tonk-code-variable: var(--tonk-circle);
+    --tonk-code-entity: var(--wa-color-text-quiet);
+    --tonk-code-name: var(--tonk-triangle);
+    --tonk-code-name-sigil: var(--wa-color-text-quiet);
+    --tonk-code-effect: var(--tonk-alarm);
+    --tonk-code-font: var(--wa-font-family-code, ui-monospace, monospace);
+    --tonk-code-font-size: var(--wa-font-size-s, 0.875rem);
+    --tonk-code-radius: 0;
+  }
+
+  /* Cells: sealed ones recede, the active one at the bottom stays at
+     full contrast. */
+  space-inspector .branch-cells { display: flex; flex-direction: column; gap: var(--wa-space-s, 12px); }
+  space-inspector .branch-yaml-query { display: flex; flex-direction: column; gap: var(--wa-space-xs, 8px); }
+  space-inspector .branch-yaml-query.cell-sealed { opacity: 0.7; }
+  space-inspector .branch-yaml-query.cell-sealed:hover { opacity: 1; }
+  space-inspector .evaluate-editor { position: relative; margin-block-end: var(--wa-space-l, 24px); }
+  space-inspector .evaluate-editor code-editor { display: block; width: 100%; }
+  /* The bolt half-overlaps the editor's bottom edge, shown only while the
+     cell would commit something. */
+  space-inspector .evaluate-play {
+    position: absolute;
+    bottom: calc(-1 * var(--wa-space-m, 16px));
+    right: var(--wa-space-s, 12px);
+    z-index: 1;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease-out;
+  }
+  space-inspector .evaluate-play.is-visible { opacity: 1; pointer-events: auto; }
+
+  /* Results. */
+  space-inspector .query-tree,
+  space-inspector .query-notation {
+    font-family: var(--tonk-code-font);
+    font-size: var(--tonk-code-font-size);
+    line-height: 1.5;
+    color: var(--tonk-code-fg);
+  }
+  space-inspector .query-tree { --indent-guide-width: 1px; }
+  space-inspector .query-tree wa-tree-item::part(label) { user-select: text; min-width: 0; overflow-wrap: anywhere; }
+  space-inspector .tonk-cm-key { color: var(--tonk-code-key); }
+  space-inspector .tonk-cm-effect { color: var(--tonk-code-effect); font-weight: bold; }
+  space-inspector .tonk-cm-name { color: var(--tonk-code-name); }
+  space-inspector .tonk-cm-entity {
+    color: var(--tonk-code-entity);
+    text-decoration: underline;
+    text-decoration-color: var(--tonk-code-entity);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+  }
+  space-inspector .tonk-cm-variable { color: var(--tonk-code-variable); font-style: italic; }
+  space-inspector .tonk-cm-string { color: var(--tonk-code-string); }
+  space-inspector .tonk-cm-number { color: var(--tonk-code-number); }
+  space-inspector .tonk-cm-plain { color: var(--tonk-code-fg-muted); }
+  /* Rows are plain blocks with literal-space indents, so a selection
+     copied out of a result keeps its structure. */
+  space-inspector .notation-record + .notation-record { margin-block-start: var(--wa-space-s, 12px); }
+  space-inspector .notation-row { user-select: text; }
+  space-inspector .notation-field,
+  space-inspector .notation-value-line { overflow-wrap: anywhere; }
+  space-inspector .notation-indent { white-space: pre; }
+  space-inspector .evaluate-revision { margin-block-end: var(--wa-space-2xs, 4px); }
+  space-inspector .evaluate-tabs { --indicator-color: var(--wa-color-text-normal); }
+  space-inspector .evaluate-tabs wa-tab[active]::part(base) { color: var(--wa-color-text-normal); }
+  space-inspector .query-tables { width: 100%; }
+  space-inspector .query-table table { border-collapse: collapse; width: 100%; font-size: var(--wa-font-size-s, 0.875rem); }
+  space-inspector .query-table th,
+  space-inspector .query-table td {
+    padding: var(--wa-space-2xs, 4px) var(--wa-space-s, 12px);
+    text-align: start;
+    border-block-end: 1px solid var(--wa-color-surface-border);
+    word-break: break-word;
+  }
+  space-inspector .query-table th { font-weight: 700; }
+  space-inspector .query-table th.query-table-this > span {
+    background: var(--wa-color-text-normal);
+    color: var(--wa-color-neutral-fill-quiet);
+    font-size: var(--wa-font-size-l);
+    padding: var(--wa-space-3xs) var(--wa-space-2xs);
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+  }
+  /* The entity cell shows the URI's last 8 characters; a click copies it
+     whole. */
+  space-inspector .query-table td.query-table-this { font-family: var(--wa-font-family-code, ui-monospace, monospace); }
+  space-inspector .query-table td.query-table-this wa-copy-button { cursor: pointer; }
+  space-inspector .query-table td.query-table-this span {
+    display: inline-block;
+    width: 8ch;
+    overflow: hidden;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: start;
+    vertical-align: bottom;
+  }
+  space-inspector .query-table td.query-table-this span::before { content: "\200E"; }
+  space-inspector .evaluate-comparison {
+    --wa-color-surface-default: var(--wa-color-neutral-fill-quiet);
+    --wa-color-surface-raised: var(--wa-color-neutral-fill-normal);
+    display: block;
+    min-height: 18rem;
+    background: var(--wa-color-surface-default);
+    border: 1px solid var(--wa-color-surface-border);
+    border-radius: var(--wa-border-radius-s);
+  }
+  space-inspector .evaluate-comparison::part(handle) {
+    background: var(--wa-color-text-normal);
+    color: var(--wa-color-neutral-fill-quiet);
+  }
+  space-inspector .evaluate-comparison::part(divider) { background: var(--wa-color-text-normal); }
+  space-inspector .evaluate-side {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    padding: var(--wa-space-s, 12px);
+    background: var(--wa-color-surface-default);
+    color: var(--wa-color-text-normal);
+    overflow: auto;
+  }
+  space-inspector .evaluate-side-before {
+    color: var(--wa-color-text-quiet);
+    background: var(--wa-color-surface-lowered, var(--wa-color-neutral-fill-quiet));
+  }
+
+  /* Branch diagnostics. */
+  space-inspector .inspector-debug { width: 100%; color: var(--ink, var(--wa-color-text-normal)); font-family: var(--sans, inherit); }
+  space-inspector .inspector-debug__disclosure {
+    background: var(--frost-solid, var(--wa-color-surface-raised));
+    box-shadow: 0 0 0 1px var(--ring, var(--wa-color-surface-border));
+  }
+  space-inspector .inspector-debug__summary {
+    min-height: 44px;
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto 18px;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px;
+    cursor: pointer;
+    list-style: none;
+  }
+  space-inspector .inspector-debug__summary:hover { background: var(--wash, var(--wa-color-neutral-fill-quiet)); }
+  space-inspector .inspector-debug__summary:focus-visible { outline: 0; box-shadow: inset 0 0 0 2px var(--ring, currentColor); }
+  space-inspector .inspector-debug__summary::-webkit-details-marker { display: none; }
+  space-inspector .inspector-debug__summary::after {
+    content: "⌄";
+    width: 18px;
+    justify-self: center;
+    color: var(--soft, var(--wa-color-text-quiet));
+    font: 18px/1 var(--sans, inherit);
+    text-align: center;
+  }
+  space-inspector .inspector-debug__disclosure[open] > .inspector-debug__summary::after { content: "⌃"; }
+  space-inspector .inspector-debug__summary span,
+  space-inspector .inspector-debug__summary strong,
+  space-inspector .inspector-debug__summary small,
+  space-inspector .inspector-debug__actions button,
+  space-inspector .inspector-debug__copy,
+  space-inspector .inspector-debug__row dt,
+  space-inspector .inspector-debug__probe-error dt {
+    font-family: var(--cond, inherit);
+    font-size: 13px;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    text-transform: lowercase;
+  }
+  space-inspector .inspector-debug__summary span,
+  space-inspector .inspector-debug__summary small { color: var(--soft, var(--wa-color-text-quiet)); font-weight: 500; }
+  space-inspector .inspector-debug__summary strong { font-weight: 600; }
+  space-inspector .inspector-debug__summary code,
+  space-inspector .inspector-debug__row code {
+    min-width: 0;
+    font: 11px/1.45 var(--mono, ui-monospace, monospace);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+  space-inspector .inspector-debug__summary small { white-space: nowrap; }
+  space-inspector .inspector-debug__body { border-block-start: 1px solid var(--sep, var(--wa-color-surface-border)); padding: 6px 12px 10px; }
+  space-inspector .inspector-debug__actions { display: flex; justify-content: flex-end; gap: 4px; min-height: 40px; margin-block-end: 4px; }
+  space-inspector .inspector-debug__actions:empty { display: none; }
+  space-inspector .inspector-debug__actions button,
+  space-inspector .inspector-debug__copy {
+    position: relative;
+    min-width: 44px;
+    min-height: 40px;
+    border: 0;
+    border-radius: 0;
+    padding: 0 10px;
+    background: transparent;
+    color: var(--ink, var(--wa-color-text-normal));
+    cursor: pointer;
+    font-weight: 600;
+  }
+  space-inspector .inspector-debug__actions button:hover,
+  space-inspector .inspector-debug__copy:hover { background: var(--wash, var(--wa-color-neutral-fill-quiet)); }
+  space-inspector .inspector-debug__actions button:focus-visible,
+  space-inspector .inspector-debug__copy:focus-visible { outline: 2px solid currentColor; outline-offset: -3px; }
+  space-inspector .inspector-debug__actions button:disabled { cursor: wait; opacity: 0.55; }
+  space-inspector .inspector-debug__rows { display: grid; grid-template-columns: minmax(0, 1fr); margin: 0; }
+  space-inspector .inspector-debug__row,
+  space-inspector .inspector-debug__probe-error {
+    min-height: 40px;
+    display: grid;
+    grid-template-columns: 120px minmax(0, 1fr);
+    align-items: stretch;
+    border-block-end: 1px solid var(--sep, var(--wa-color-surface-border));
+  }
+  space-inspector .inspector-debug__row dt,
+  space-inspector .inspector-debug__probe-error dt {
+    display: flex;
+    align-items: center;
+    margin: 0;
+    padding-inline-end: 8px;
+    color: var(--soft, var(--wa-color-text-quiet));
+    font-weight: 500;
+  }
+  space-inspector .inspector-debug__row dd,
+  space-inspector .inspector-debug__probe-error dd {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    margin: 0;
+    padding-inline-start: 8px;
+  }
+  space-inspector .inspector-debug__probe-error dd {
+    display: flex;
+    padding-inline-end: 8px;
+    color: var(--soft, var(--wa-color-text-quiet));
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  space-inspector .inspector-debug__copy {
+    align-self: stretch;
+    width: 56px;
+    min-width: 56px;
+    margin-inline-start: 8px;
+    padding-inline: 8px;
+    color: var(--soft, var(--wa-color-text-quiet));
+  }
+  space-inspector .inspector-debug__copy.is-copied { background: var(--wash, var(--wa-color-neutral-fill-quiet)); color: var(--ink, var(--wa-color-text-normal)); }
+  space-inspector .inspector-debug__notice {
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    color: var(--soft, var(--wa-color-text-quiet));
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  space-inspector .inspector-debug__notice.is-error,
+  space-inspector .inspector-debug__transient.is-error { color: var(--ink, var(--wa-color-text-normal)); }
+  space-inspector .inspector-debug__transient {
+    min-height: 20px;
+    padding-block-start: 6px;
+    color: var(--soft, var(--wa-color-text-quiet));
+    font: 500 12px/1.4 var(--cond, inherit);
+  }
+  @media (max-width: 720px) {
+    space-inspector .inspector-debug__summary { grid-template-columns: auto auto minmax(0, 1fr) 18px; padding-block: 7px; }
+    space-inspector .inspector-debug__summary small { grid-column: 1 / 4; grid-row: 2; }
+    space-inspector .inspector-debug__summary::after { grid-column: 4; grid-row: 1 / span 2; }
+    space-inspector .inspector-debug__actions button { flex: 1; }
+    space-inspector .inspector-debug__row,
+    space-inspector .inspector-debug__probe-error { grid-template-columns: 84px minmax(0, 1fr); }
+  }
+</style>
+<space-inspector with="{branch}@{repo}"></space-inspector>

@@ -1,10 +1,9 @@
 // LSP client construction.
 //
-// `<tonk-diagnostics-provider>` owns the `LSPClient` and
-// shares it across every `<tonk-code>` descendant that
-// announces itself via `tonk-code-connect`. Each editor
-// becomes one open document on the same client — diagnostics,
-// hover, completion etc. all flow through the provider's
+// A session (session.ts) owns the `LSPClient` and shares it
+// across every `<code-editor>` on its endpoint. Each editor
+// becomes one open document on the same client: diagnostics,
+// hover, completion etc. all flow through the session's
 // single transport.
 
 import {

@@ -13,13 +13,15 @@
 use dialog_artifacts::{Preload, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::{ConditionalSync, Holds};
+use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
+use dialog_effects::blob::Load as BlobLoad;
 use dialog_effects::blob::{Import as BlobImport, Read as BlobRead};
 use dialog_effects::memory::{List, Publish, Resolve};
 use dialog_effects::space::Load;
 use dialog_repository::registry::RegistryEnv;
-use dialog_repository::{Hydrate, PeersEnv, RemoteSite, ResolveEnv};
+use dialog_repository::{PeersEnv, RemoteSite, ResolveEnv};
 
 /// Bound needed to load a repository via the profile: loading opens the
 /// repository's branch registry and upgrades its storage.
@@ -30,9 +32,9 @@ impl<T> LoadProvider for T where T: Provider<Load> + Provider<List> + RegistryEn
 pub trait BranchOpenProvider: Provider<Resolve> + ConditionalSync + 'static {}
 impl<T> BranchOpenProvider for T where T: Provider<Resolve> + ConditionalSync + 'static {}
 
-/// Bound needed for raw content-addressed block access — a
-/// `LocalIndex` over the branch archive, reading tree nodes by
-/// hash. `Put` is part of the `StorageBackend` bound even though
+/// Bound needed for raw content-addressed block access to the branch
+/// archive, reading tree nodes by hash. `Put` is part of the
+/// `StorageBackend` bound even though
 /// tree introspection only reads.
 pub trait GetPutProvider: Provider<Get> + Provider<Put> + ConditionalSync + 'static {}
 impl<T> GetPutProvider for T where T: Provider<Get> + Provider<Put> + ConditionalSync + 'static {}
@@ -45,7 +47,8 @@ pub trait SelectProvider:
     + Provider<Put>
     + Provider<Resolve>
     + Provider<Identify>
-    + Provider<Hydrate>
+    + Provider<ArchiveLoad>
+    + Provider<BlobLoad>
     + Provider<Preload>
     + Provider<Speculation>
     + Provider<Fork<RemoteSite, Get>>
@@ -61,7 +64,8 @@ impl<T> SelectProvider for T where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<BlobLoad>
         + Provider<Preload>
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
@@ -84,7 +88,8 @@ pub trait CommitProvider:
     + Provider<Publish>
     + Provider<Identify>
     + Provider<Attest>
-    + Provider<Hydrate>
+    + Provider<ArchiveLoad>
+    + Provider<BlobLoad>
     + Provider<Preload>
     + Provider<Speculation>
     + Provider<Fork<RemoteSite, Get>>
@@ -105,7 +110,8 @@ impl<T> CommitProvider for T where
         + Provider<Publish>
         + Provider<Identify>
         + Provider<Attest>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<BlobLoad>
         + Provider<Preload>
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>

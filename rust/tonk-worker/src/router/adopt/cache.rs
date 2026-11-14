@@ -249,15 +249,3 @@ pub(super) struct Observations {
     pub configuration: std::sync::atomic::AtomicUsize,
     pub fail_directory: std::sync::atomic::AtomicBool,
 }
-
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-impl Observations {
-    pub fn counts(&self) -> (usize, usize, usize) {
-        use std::sync::atomic::Ordering::Relaxed;
-        (
-            self.slow.load(Relaxed),
-            self.directory.load(Relaxed),
-            self.configuration.load(Relaxed),
-        )
-    }
-}

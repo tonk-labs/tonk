@@ -8,8 +8,12 @@
 # Pre-release (staging channel):
 #   curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | TONK_CHANNEL=staging sh
 #
+# Latest main (dev channel):
+#   curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | TONK_CHANNEL=dev sh
+#
 # Environment:
 #   TONK_CHANNEL=staging   install the pre-release channel (default: stable)
+#   TONK_CHANNEL=dev       install the latest build of main
 #   TONK_RELEASE=<tag>     pin an explicit release tag (wins over TONK_CHANNEL)
 #   TONK_INSTALL_DIR       where to install (default: /usr/local/bin if
 #                          writable, else $HOME/.local/bin)
@@ -33,18 +37,20 @@ else
   INSTALL_DIR="$HOME/.local/bin"
 fi
 
-# Channel selection. Only the exact value `staging` opts into the
-# pre-release; TONK_RELEASE pins an explicit tag and wins over the channel.
-if [ "${TONK_CHANNEL:-}" = "staging" ]; then
-  channel="staging"
-else
-  channel="stable"
-fi
+# Channel selection. Only the exact values `staging` and `dev` opt out of
+# stable; TONK_RELEASE pins an explicit tag and wins over the channel.
+case "${TONK_CHANNEL:-}" in
+  staging) channel="staging" ;;
+  dev) channel="dev" ;;
+  *) channel="stable" ;;
+esac
 
 if [ -n "${TONK_RELEASE:-}" ]; then
   RELEASE="$TONK_RELEASE"
 elif [ "$channel" = "staging" ]; then
   RELEASE="tonk-staging"
+elif [ "$channel" = "dev" ]; then
+  RELEASE="tonk-dev"
 else
   RELEASE="latest"
 fi

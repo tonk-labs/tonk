@@ -41,7 +41,8 @@ impl RecordedRemote {
     /// Whether `replica` is this remote: the same repository, at a peer
     /// reached at this remote's address.
     pub(crate) fn is(&self, replica: &ConnectedReplica) -> bool {
-        replica.did() == self.subject && replica.addresses().contains(&self.address)
+        replica.did() == self.subject
+            && tonk_account::peer::reaches(replica.addresses(), &self.address)
     }
 }
 
@@ -105,34 +106,4 @@ pub(crate) async fn load<R: Principal>(
         .ok_or_else(|| TonkWorkerError::NotFound(format!("no remote named '{name}'")))?
         .connect(operator)
         .await
-}
-
-/// Whether `branch` of the repository `repo` pulls from the branch
-/// `remote_branch` of the remote the repository names `remote`.
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn tracks(
-    tonk: &crate::worker::TonkState,
-    repo: &str,
-    branch: &dialog_repository::Branch,
-    remote: &str,
-    remote_branch: &str,
-) -> bool {
-    use dialog_repository::{RepositoryExt as _, Upstream};
-
-    let Ok(repository) = tonk
-        .profile
-        .space(repo)
-        .load()
-        .perform(&tonk.operator)
-        .await
-    else {
-        return false;
-    };
-    let Ok(Some(recorded)) = find(&repository, remote, &tonk.operator).await else {
-        return false;
-    };
-    branch.pulls().iter().any(|upstream| {
-        matches!(upstream, Upstream::Remote { remote, branch, .. }
-            if recorded.is(remote) && branch == remote_branch)
-    })
 }

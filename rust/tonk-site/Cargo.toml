@@ -1,0 +1,71 @@
+[package]
+name = "tonk-site"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+description = "<tonk-site> custom element and the bridge to the guest it frames."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+custom-elements = { workspace = true }
+js-sys = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tonk-common = { workspace = true }
+tonk-host = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = [
+    "console",
+    "CssStyleDeclaration",
+    "CustomEvent",
+    "CustomEventInit",
+    "CustomElementRegistry",
+    "Document",
+    "DomRect",
+    "Element",
+    "HtmlElement",
+    "HtmlIFrameElement",
+    "KeyboardEvent",
+    "KeyboardEventInit",
+    "Location",
+    "MessageChannel",
+    "MessageEvent",
+    "MessageEventInit",
+    "MessagePort",
+    "Navigator",
+    "Node",
+    "NodeList",
+    "Headers",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "AbortController",
+    "AbortSignal",
+    "AddEventListenerOptions",
+    "Event",
+    "EventTarget",
+    "Request",
+    "RequestInit",
+    "RequestCache",
+    "Response",
+    "ResponseInit",
+    "ServiceWorker",
+    "ServiceWorkerContainer",
+    "Url",
+    "Window",
+] }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+tonk-display = { workspace = true }
+wasm-bindgen-test = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }

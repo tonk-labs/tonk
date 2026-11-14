@@ -19,7 +19,8 @@ const PAGE = new URL("/", self.location.origin).href;
 const CONFIG = new URL("/.well-known/tonk", self.location.origin).href;
 
 // What the server answers itself: the access service's routes, a short
-// link, the agent's static pages, and what names the latest build.
+// link, the agent's static pages, the OAuth server an LLM host opens in this
+// browser for `/mcp`, and what names the latest build.
 const SERVED = [
     "/.well-known/",
     "/ucan",
@@ -31,8 +32,12 @@ const SERVED = [
     "/version.json",
 ];
 
+// Addresses the server answers exactly, with their own paths beneath them.
+const SERVED_EXACTLY = ["/@", "/authorize", "/token", "/register"];
+
 function served(path) {
-    return path === "/@" || path.startsWith("/@/") || SERVED.some(prefix => path.startsWith(prefix));
+    return SERVED_EXACTLY.some(exact => path === exact || path.startsWith(`${exact}/`)) ||
+        SERVED.some(prefix => path.startsWith(prefix));
 }
 
 // A navigation is for the page unless the server answers that address
@@ -68,19 +73,34 @@ self.onactivate = event => {
     })());
 };
 
+// How long the page waits on the server before it opens from what is kept.
+const NETWORK_MS = 15_000;
+
 // The page or the configuration at `url`, from the server when it answers
-// and from what is kept when it does not.
+// and from what is kept when it does not. A server that does not answer at
+// all is waited on only so long when something is kept: the fetch goes on
+// and keeps what it gets for the next load.
 async function latest(url) {
-    try {
-        const fresh = await fetch(url, { cache: "no-store" });
-        if (fresh.ok) {
-            if (KEEPS) (await caches.open(CACHE)).put(url, fresh.clone());
-            return fresh;
+    const fetched = (async () => {
+        try {
+            const fresh = await fetch(url, { cache: "no-store" });
+            if (fresh.ok) {
+                if (KEEPS) await (await caches.open(CACHE)).put(url, fresh.clone());
+                return fresh;
+            }
+        } catch {
+            // Offline: what is kept answers below.
         }
-    } catch {
-        // Offline: what is kept answers below.
-    }
-    return (await caches.match(url, { cacheName: CACHE })) ?? Response.error();
+        return null;
+    })();
+    const kept = await caches.match(url, { cacheName: CACHE });
+    let timer;
+    const waited = kept
+        ? new Promise(resolve => { timer = setTimeout(() => resolve(null), NETWORK_MS); })
+        : new Promise(() => {});
+    const fresh = await Promise.race([fetched, waited]);
+    clearTimeout(timer);
+    return fresh ?? kept ?? Response.error();
 }
 
 // A file the page loads: kept once fetched, and answered from what is kept.

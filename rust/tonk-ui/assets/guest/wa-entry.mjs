@@ -1,8 +1,8 @@
 // Synthetic entry: the Web Awesome components the sealed guest needs, bundled by
 // esbuild into a single self-contained ESM (wa.js) the portal injects. Importing
 // a component's module registers its `<wa-*>` element. Keep in sync with the
-// `<wa-*>` tags guest-rendered views use (tonk-display views, tonk-inspector
-// result rendering, tonk-tree). A missing entry = an inert unknown element = no
+// `<wa-*>` tags guest-rendered views use (tonk-display views, and the library's
+// console inspector and tree). A missing entry = an inert unknown element = no
 // visible output. Rebuild with scripts/build-wa-guest.mjs.
 import "../webawesome/components/button/button.js";
 import "../webawesome/components/callout/callout.js";

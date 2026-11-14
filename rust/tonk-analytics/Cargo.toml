@@ -7,9 +7,9 @@ description = "Shared PostHog event vocabulary and capture clients for the Tonk 
 license = { workspace = true }
 
 [dependencies]
+dialog-common = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
-rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2_0_10 = { workspace = true }

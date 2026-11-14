@@ -762,6 +762,17 @@ concept!: &agent-connection
       the: xyz.tonk.agent-connection/status
       as: text
 
+# The receipt an agent connecting with this device's last handoff will carry,
+# on the space's subject in the session overlay. The bar's agent drawer
+# watches for it among the durable receipts above to say "agent connected".
+concept!: &agent-handoff/receipt
+  description: The receipt the last agent handoff from this device will carry (overlay-only).
+  with:
+    receipt:
+      description: The `agent-connection` entity the handed-off link will acknowledge with.
+      the: xyz.tonk.agent-handoff/receipt
+      as: text
+
 # Receipts are durable access-management data. Connection feedback belongs to
 # the initiating session's FAB, never to the shared space's rendered content.
 view!:
@@ -795,6 +806,50 @@ concept!: &member
     name:
       description: The member's self-asserted display name for this space
       the: xyz.tonk.membership/name
+      as: text
+
+# How a membership came to be: the invitation it was claimed through. A
+# stamp beside the membership rather than a field of `member`, so the
+# roster reads founders (no stamp) and claimers alike; the bar's roster
+# joins it to the invitation's inviter to draw who invited whom.
+concept!: &member/invited
+  description: The invitation a membership was claimed through.
+  with:
+    invitation:
+      description: The invitation the member claimed, an `invitation/record` entity.
+      the: xyz.tonk.membership/invitation
+      as: entity
+
+# A durable invitation to this space, keyed by its leaf delegation. It repeats
+# what the chain says as queryable attributes; the delegation itself is
+# retained on the branch, which is the copy a proof search reads.
+concept!: &invitation/record
+  description: A durable invitation to this space, keyed by its leaf delegation.
+  with:
+    subject:
+      description: The space the invitation grants access to.
+      the: xyz.tonk.invitation/subject
+      as: entity
+    inviter:
+      description: The account that minted the invitation.
+      the: xyz.tonk.invitation/inviter
+      as: entity
+    audience:
+      description: >
+        The chain's tail audience: an ephemeral key for an open invite, the
+        recipient for a scoped one. Revocation proves from it back to the space.
+      the: xyz.tonk.invitation/audience
+      as: entity
+
+# How an invitation is executed, beside the invitation record. A published
+# space records one of kind `public`, which is what the bar reads to offer
+# making it private.
+concept!: &invitation/execution
+  description: An invitation's audience mode.
+  with:
+    kind:
+      description: "`open`, `scoped`, or `public` for the ticket a published space leaves its readers."
+      the: xyz.tonk.invitation-execution/kind
       as: text
 
 # A single roster row — the default view for `model: tonk:member`. Each
@@ -1027,6 +1082,21 @@ concept!: &tonk/repository
       the: xyz.tonk.repo/description
       as: text
 
+# The kernel a space runs. A space created on a kernel starts with one
+# commit on `main`: the kernel's wasm as an asset, and this pin to it. The
+# space then holds what it needs to start wherever it syncs, and a new kernel
+# is a new asset and a moved pin, in one commit.
+concept!: &tonk/space-kernel
+  this: tonk:space/kernel
+  description: The kernel a space runs, pinned on the space's own main.
+  with:
+    kernel:
+      description: >
+        The asset of the kernel's wasm, `asset:<hash>`, where the hash is
+        the BLAKE3 digest the kernel's content identifier names.
+      the: xyz.tonk.space/kernel
+      as: entity
+
 # Agent working context carried by the repository itself. The instance is keyed
 # by the same stable repository subject DID as `tonk/repository`, so it syncs
 # with the space rather than belonging to one filesystem checkout or replica.
@@ -1043,6 +1113,94 @@ concept!: &tonk/agents
   description: AGENTS.md context attached to the repository subject DID.
   with:
     markdown: tonk/agents-markdown
+
+# ── Agent spaces ────────────────────────────────────────────────────
+
+# What kind of space a repository is, when it is a special one. Keyed by
+# the repository's subject DID, like `tonk/repository`, so the mark
+# travels with the space's content rather than living in one account's
+# directory.
+#
+# An agent space is an ordinary space an account provisioned and keeps
+# the key of; the mark is the only thing that tells it apart. Its DID is
+# what invites, contacts and attribution name for the agent, and the
+# sessions below act for it.
+#
+# An entity label rather than a boolean, for the reason
+# `account/device-link`'s `reason` is one: a typo cannot silently read as
+# a different kind, and a second kind needs no new attribute.
+concept!: &tonk/agent-space
+  this: tonk:agent-space
+  description: A space that is an agent's identity.
+  # ENTITY: the repository's subject DID.
+  with:
+    kind:
+      description: >
+        What kind of space this is — `case:agent` for an agent space.
+      the: xyz.tonk.repo/kind
+      as: entity
+
+# Which LLM provider's apps an agent space is for (`claude`, `chatgpt`),
+# on the same subject DID as the mark. An agent is only offered again to
+# an app of the same provider, so Claude and ChatGPT never share one.
+concept!: &tonk/agent-provider
+  this: tonk:agent-provider
+  description: Which LLM provider's apps an agent space is for.
+  with:
+    provider:
+      description: The provider, `claude` or `chatgpt`.
+      the: xyz.tonk.agent-space/provider
+      as: text
+
+# One session of an agent: the authorization one session key holds to
+# act for the agent space, and what a session list renders.
+#
+# The same shape as `account/device-link`, for the same reasons: `this`
+# IS THE DELEGATION — the agent space's powerline to the session key,
+# keyed by its blob hash as dialog keyed it when the chain was retained.
+# Dialog decomposes issuer, audience, subject and command onto that same
+# entity, so there is no `proof:` field and no session DID field; the
+# delegation's own `dialog.ucan/audience` is the session. Revoking the
+# powerline takes this row with it.
+#
+# The powerline never expires. A session reaches other spaces only
+# through invites, which do, so its expiry would bound nothing that
+# revocation does not; and renewing it would need the account, which
+# holds the agent space's key.
+#
+# The attributes are `xyz.tonk.agent-session/*` rather than reusing
+# `xyz.tonk.device/*`: a concept's identity is the attributes it
+# reads, so sharing them would make every session row a device link
+# and every device link a session.
+#
+# The session's private key is never recorded here. The token that
+# carries it holds this powerline as a proof, but only the powerline is
+# retained.
+concept!: &agent/session
+  this: tonk:agent/session
+  description: One session key's authorization to act for this agent.
+  # ENTITY: THE DELEGATION — its blob hash, as dialog keyed it when the
+  # chain was retained. Not a session DID and not an id of ours.
+  with:
+    created-at:
+      description: >
+        When the session was minted, unix seconds. The delegation has no
+        validity window to read this from: it records the act.
+      the: xyz.tonk.agent-session/created-at
+      as: natural:64
+    title:
+      description: >
+        Human label for the session — the client it was minted for, e.g.
+        "Claude". Kept here so a list renders offline.
+      the: xyz.tonk.agent-session/title
+      as: text
+    reason:
+      description: >
+        Why the delegation exists — `case:agent-session`. An entity
+        label rather than text, so a typo cannot silently read as a
+        different reason. Lets a list filter without opening envelopes.
+      the: xyz.tonk.agent-session/reason
+      as: entity
 
 # Rename the current repository. The editable banner input dispatches
 # this on commit (blur/enter); `name` reads the input's value and
@@ -1175,57 +1333,11 @@ view!:
     title: |
       <tab-title text="{name} — Tonk"></tab-title>
 
-concept!: &inspector
-  description: An inspector tile body — renders <tonk-inspector source="…">
-  with:
-    source:
-      description: Space name to inspect (passed through as the source attribute)
-      the: xyz.tonk.inspector/source
-      as: text
-
-# The imperative escape hatch: `<tonk-portal>` writes an
-# author-supplied HTML document into a sandboxed iframe, for work the
-# declarative template stack can't express (canvas, WebGL, widgets).
-# The `content` is first-class dialog data, fetched by a nested
-# `<tonk-display model=portal>` like any other concept.
-concept!: &portal
-  description: Imperative HTML rendered in an isolated iframe
-  with:
-    content:
-      description: HTML document written into the portal iframe
-      the: xyz.tonk.portal/content
-      as: text
-
 # One view per concept, keyed by `model`. Each nested
 # `<tonk-display>` passes only `model=…` (and `entity=…`); with no
 # `view` attribute it resolves the view whose `model` matches. The
 # chain iterates one level of the hierarchy per template via
 # `subject={field}` and bottoms out in the tile's content display.
-
-view!:
-  this: inspector
-  show:
-    ui: |
-      <tonk-inspector source={source} />
-
-
-
-view!:
-  this: inspector
-  show:
-    directory: |
-      <tonk-inspector />
-
-# The canonical bridge from the `portal` concept to the
-# `<tonk-portal>` element. `html:` forces the binding through
-# setAttribute so `attributeChangedCallback` fires. Users never write
-# this; nesting a `<tonk-display model=portal>` over a portal entity
-# resolves it by model and renders it.
-view!:
-  this: portal
-  show:
-    ui: |
-      <tonk-portal html:content={content} />
 
 # An author-defined custom element carried as branch data.
 #
@@ -1770,6 +1882,23 @@ concept!: &route/http
       pick: :all
       as: {[symbol]: text}
 
+# A route answered with an asset the space keeps: a request for a matching
+# path gets the asset's bytes, under its media type. This is how a space
+# keeps the renderer it was created with, such as the element runtime's
+# wasm, at the paths its page loads them from.
+concept!: &route/asset
+  this: tonk:route/asset
+  description: A route answered with an asset, a path pattern and the asset to give.
+  with:
+    path:
+      description: The path pattern, in the syntax a `route` uses.
+      the: xyz.tonk.route.asset/path
+      as: text
+    asset:
+      description: The asset whose bytes answer the request, a blob of this space.
+      the: xyz.tonk.route.asset/asset
+      as: entity
+
 # The routes this library ships are `seed/route` commands, not routes. The
 # rule writes a route for each one whose path no route claims yet, and
 # nothing of the command stays. An upgrade reverts everything the previous
@@ -1924,19 +2053,15 @@ view!:
     ui: |
       <tonk-display with="{branch}@{repo}" entity={replica} model=tonk/space />
 
-# The workspace shell — the declarative two-portal composition the space route
-# resolves to. It renders OUTER-side (the top document mounts
-# `<tonk-display model=tonk:site>`, whose site view nests `{concept}` =
-# `tonk:workspace/shell` on the same site entity). The shell owns the page
-# layout and mounts the CONTENT portal: a sealed `<tonk-portal runtime>` whose
-# guest renders the space's content. The FAB portal is a later task — a slot
-# comment for now.
+# The workspace shell the space route resolves to: the site's view nests
+# `{concept}` = `tonk:workspace/shell` on the same site entity. The shell owns
+# the page layout and mounts a `<tonk-display>` for the space's content.
 #
 # It renders on the site entity, so it reuses the site's `space`/`replica`
 # fields (`space` names the routing context, picked off the site).
 concept!: &workspace/shell
   this: tonk:workspace/shell
-  description: Two-portal workspace shell — content portal plus FAB overlay.
+  description: The space page layout that shows the active replica's content.
   with:
     space:
       description: The active space (repository name), picked off the site.
@@ -1978,7 +2103,7 @@ view!:
 # The directory page — `/space/{name}/{model}`. The `{model}` path param is
 # stamped on the site entity (`xyz.tonk.site/model`) and picked here; the view
 # mounts a directory `<tonk-display model={model}>` (no entity → the model's
-# `view/directory` renders, e.g. the board strip, the inspector, the tree). The
+# `view/directory` renders, e.g. the board strip). The
 # param uses the slash-tolerant `path` extent in its route pattern so a
 # namespaced model (`tonk/person`) is captured whole.
 concept!: &directory/route
@@ -1999,7 +2124,7 @@ concept!: &directory/route
       as: text
 
 # The directory display carries its own `with` so its view's content
-# (`<tonk-tree>`, `<tonk-inspector>`) resolves the route's target space —
+# (a `<notebook-editor>`, a `<ui-sync-status>`) resolves the route's target space —
 # `<tonk-display>` forwards this context onto the view it mounts, so no
 # routing wrapper element is needed.
 view!:
@@ -2075,11 +2200,13 @@ view!:
 #
 # The routes every space starts with, shipped as `seed/route` commands: the
 # rule above writes each one where no route claims its path. Patterns
-# use the route grammar: `{name}` is one segment, `{name:path}` is slash-tolerant
-# (so a namespaced `{model:path}` captures `tonk/person` whole), `@` and `!` are
-# literal delimiters between params. The SW matches most-specific-first, so the
-# bare `/`, the `@`/`!` artifact patterns, and the plain `{model}` directory never
-# shadow one another.
+# use the route grammar: `{name}` captures one segment (it stops at `/`),
+# `{*name}` captures a span that may contain `/` up to the next literal or
+# the end (so `{*model}` captures a namespaced `tonk/person` whole), and
+# several params may share a segment separated by literals (`@` and `!`
+# below). The SW matches most-specific-first, so the bare `/`, the `@`/`!`
+# artifact patterns, and the plain `{*model}` directory never shadow one
+# another.
 #
 # The bare `/` route resolves the declarative workspace shell (the site's
 # `{concept}` indirection mounts it on the site entity); the sub-routes resolve
@@ -2127,35 +2254,6 @@ view!:
         title="asset:{hash}"
         style="display: block; width: 100%; height: 100vh; border: 0;"
       ></iframe>
-
-# ============================================================
-# Tree inspector — `<tonk-tree>` over the branch's search-tree
-# index. Visit `/space/{repo}/dialog:diagnose` to explore the
-# dialog-search-tree state under the DB: index/segment nodes,
-# their keys (color-coded components, shared prefixes dimmed),
-# byte sizes, and entries. The view renders `<tonk-tree>`, which
-# resolves its repository from the `with` routing
-# ancestor and drives itself from the worker's `tree/*` query
-# formulas — no entity needed (it inspects the whole branch).
-# ============================================================
-concept!: &diagnose
-  this: dialog:diagnose
-  description: Marker model for the search-tree inspector view.
-  with:
-    name:
-      description: A label for the inspector (unused; satisfies the concept shape).
-      the: db.diagnose/name
-      as: text
-
-# A directory-kind view (not a plain `view!`): a `/space/{repo}/dialog:diagnose`
-# URL carries no entity, so `<tonk-display>` resolves a `view/directory`
-# for the model. The inspector needs no entity — it renders the whole
-# branch's tree — so the directory view is the right kind.
-view!:
-  this: dialog:diagnose
-  show:
-    directory: |
-      <tonk-tree></tonk-tree>
 
 # ============================================================
 # BLOB
@@ -2783,9 +2881,13 @@ view!:
       {name}
 
 # The library's components a space can install, each beside the others
-# and beside the space's seed: issue, meta, notebook, prose, table, tonk (every
-# library file but `core.yaml`, which every space runs, and `profile.yaml`,
-# the profile's). An install is recorded like the seed's and brought up to
+# and beside the space's seed: code-editor, inspector, issue, meta,
+# notebook, prose-editor, table, tonk, tree, version-control (every library
+# file but `core.yaml`, which every space runs, and `profile.yaml`, the
+# profile's). The inspector edits in <code-editor>, and a component cannot
+# install another, so it needs code-editor installed beside it. The
+# <code-editor> languages are components too, `language/<id>`, listed by
+# code-editor.yaml once it is installed. An install is recorded like the seed's and brought up to
 # date the same way when the space mounts; installing one already there
 # updates it, or does nothing when it is current.
 concept!: &library/component
@@ -2803,6 +2905,14 @@ view!:
       {name}
 
 library/component!:
+  this: tonk:library/code-editor
+  name: "code-editor"
+
+library/component!:
+  this: tonk:library/inspector
+  name: "inspector"
+
+library/component!:
   this: tonk:library/issue
   name: "issue"
 
@@ -2815,8 +2925,8 @@ library/component!:
   name: "notebook"
 
 library/component!:
-  this: tonk:library/prose
-  name: "prose"
+  this: tonk:library/prose-editor
+  name: "prose-editor"
 
 library/component!:
   this: tonk:library/table
@@ -2825,6 +2935,14 @@ library/component!:
 library/component!:
   this: tonk:library/tonk
   name: "tonk"
+
+library/component!:
+  this: tonk:library/tree
+  name: "tree"
+
+library/component!:
+  this: tonk:library/version-control
+  name: "version-control"
 
 attribute!: &install-component/component
   description: Which component to install, `tonk:library/<name>`.

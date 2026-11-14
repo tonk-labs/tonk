@@ -28,7 +28,7 @@ to generate thumbnails. The screenshot artifact only documents the outputs.
 
 ## Boundary and measurements
 
-The iframe copies the sandbox flags from `rust/tonk-portal/src/shared.rs`:
+The iframe copies the sandbox flags from `rust/tonk-site/src/shared.rs`:
 `allow-scripts allow-forms allow-downloads`, without `allow-same-origin`.
 Access to the parent document correctly throws SecurityError. Capture executes
 inside the guest, serializes DOM into SVG foreignObject, draws it onto canvas,

@@ -580,3 +580,9 @@ pub mod sqlite;
 
 #[cfg(target_arch = "wasm32")]
 pub mod d1;
+
+/// Atomic email invitation storage.
+pub mod invitation;
+
+/// OAuth authorizations awaiting approval or redemption.
+pub mod oauth;

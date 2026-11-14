@@ -1,7 +1,9 @@
 //! KV-backed revocation index.
 //!
-//! Writes are a bare `put` of an empty value: the key carries the whole
-//! fact, so there is nothing to merge and no read to race against.
+//! Writes are a bare `put`: the key carries the whole fact, so there is
+//! nothing to merge and no read to race against. The value is the signed
+//! revocation, base64url-encoded so the bulk text read still answers
+//! presence; an empty value is a fact recorded before documents were kept.
 //!
 //! Reads take one of two shapes, chosen by how many keys the question
 //! needs. The presign path knows both halves of every key it cares
@@ -12,6 +14,8 @@
 use std::collections::BTreeSet;
 
 use async_trait::async_trait;
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use worker::kv::KvStore;
 
 use super::{IndexError, RevocationIndex, revocation_key, target_prefix};
@@ -38,12 +42,17 @@ fn failed(context: &str, error: impl std::fmt::Display) -> IndexError {
 
 #[async_trait(?Send)]
 impl RevocationIndex for KvRevocationIndex {
-    async fn record(&self, target: &str, subject: &str) -> Result<bool, IndexError> {
+    async fn record(
+        &self,
+        target: &str,
+        subject: &str,
+        document: &[u8],
+    ) -> Result<bool, IndexError> {
         let key = revocation_key(target, subject);
         // Answer whether this call is what recorded it. The read is not
         // load-bearing: two writers racing here both write the same key
-        // with the same empty value, so the worst case is both reporting
-        // `true` for one fact, never a lost revocation.
+        // with a revocation of the same fact, so the worst case is both
+        // reporting `true` for one fact, never a lost revocation.
         let existed = self
             .store
             .get(&key)
@@ -52,12 +61,31 @@ impl RevocationIndex for KvRevocationIndex {
             .map_err(|error| failed("revocation index read failed", error))?
             .is_some();
         self.store
-            .put(&key, "")
+            .put(&key, URL_SAFE_NO_PAD.encode(document))
             .map_err(|error| failed("revocation index write failed", error))?
             .execute()
             .await
             .map_err(|error| failed("revocation index write failed", error))?;
         Ok(!existed)
+    }
+
+    async fn document(&self, target: &str, subject: &str) -> Result<Option<Vec<u8>>, IndexError> {
+        let Some(encoded) = self
+            .store
+            .get(&revocation_key(target, subject))
+            .text()
+            .await
+            .map_err(|error| failed("revocation index read failed", error))?
+        else {
+            return Ok(None);
+        };
+        if encoded.is_empty() {
+            return Ok(None);
+        }
+        URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map(Some)
+            .map_err(|error| failed("revocation document does not decode", error))
     }
 
     async fn subjects(&self, target: &str) -> Result<BTreeSet<String>, IndexError> {
@@ -113,8 +141,8 @@ impl RevocationIndex for KvRevocationIndex {
             .await
             .map_err(|error| failed("revocation index bulk read failed", error))?;
         // The map carries an entry per requested key, `None` where the
-        // key is absent. A present entry is the revocation; its value is
-        // empty by design, so presence is the whole signal.
+        // key is absent. A present entry is the revocation whatever its
+        // value, so presence is the whole signal.
         Ok(keys
             .iter()
             .any(|key| found.get(key).is_some_and(Option::is_some)))

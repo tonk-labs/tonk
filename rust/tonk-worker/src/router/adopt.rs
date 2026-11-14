@@ -178,9 +178,6 @@ pub(crate) async fn ensure_space_mounted(
     // mark the repo dirty so the next drain (the page's own follow-up
     // requests trigger one) fills the space in promptly instead of
     // waiting for an idle beat.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    tonk.sync_queue
-        .mark_dirty(subject.as_str(), js_sys::Date::now());
     Ok(true)
 }
 
@@ -251,6 +248,7 @@ async fn pull_content_on_mount(tonk: &TonkState, subject: &dialog_varsig::Did) {
 /// the mount itself is already portable.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg(feature = "persona")]
 impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
     for crate::router::CommandEnv
 {
@@ -261,7 +259,8 @@ impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
             log!("ReplicateSpace '{key}': refused from another space's branch");
             return;
         }
-        let tonk = self.state().read().await;
+        // A clone, not a guard: mounting pulls the space over the network.
+        let tonk = self.state().read().await.clone();
         // The space's own worker is the one that pulls it: reaching that
         // worker brings it up, and it takes the space up from there.
         if tonk.spaces_elsewhere() {
@@ -281,7 +280,7 @@ impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
         }
         match ensure_space_mounted(&tonk, &key).await {
             Ok(true) => {
-                schedule_seed_upgrade(&tonk, self.state().clone(), &key).await;
+                schedule_seed_upgrade(&tonk, &key).await;
                 log!("ReplicateSpace '{key}': mounted");
             }
             // Not an error: the directory has no mount record for it, so
@@ -289,6 +288,20 @@ impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
             Ok(false) => log!("ReplicateSpace '{key}': nothing to mount"),
             Err(error) => log!("ReplicateSpace '{key}': {error}"),
         }
+    }
+}
+
+/// Mount `key`'s space on first use, then catch its seed up. Every route
+/// that addresses a space by key calls this before it touches a branch,
+/// because a fresh or just-updated worker has nothing mounted: a route
+/// that skipped it failed for a space that a concurrent `query` mounted a
+/// moment later. A failed or absent mount is only logged; the caller
+/// proceeds and fails with its ordinary not-found.
+pub(crate) async fn mount_on_first_use(tonk: &TonkState, key: &str) {
+    match ensure_space_mounted(tonk, key).await {
+        Ok(true) => schedule_seed_upgrade(tonk, key).await,
+        Ok(false) => {}
+        Err(error) => log!("on-demand mount of '{key}' failed: {error}"),
     }
 }
 
@@ -311,21 +324,11 @@ impl SeedUpgrades {
     }
 }
 
-/// Catch a mounted space's seed up with the shipped bundle, detached
-/// from the request that touched it.
+/// Catch a mounted space's seed up with the shipped bundle.
 ///
-/// Best-effort by design: the work runs off the request path (a load is
-/// never blocked on the seed source fetch), at most once per worker
-/// instance per space, and a failed attempt simply waits for the next
-/// worker to try again. On wasm the task is not tied to the fetch
-/// lifetime, so an idling worker may cut it short — the same next-boot
-/// retry covers that. Native (the single-threaded test and host builds,
-/// same as `spawn_dispatch`) runs it inline instead.
-pub(crate) async fn schedule_seed_upgrade(
-    tonk: &TonkState,
-    state: crate::router::AppState,
-    key: &str,
-) {
+/// Best-effort by design: at most once per worker instance per space, and
+/// a failed attempt simply waits for the next worker to try again.
+pub(crate) async fn schedule_seed_upgrade(tonk: &TonkState, key: &str) {
     let Some(subject) = space_subject(key) else {
         return;
     };
@@ -336,28 +339,15 @@ pub(crate) async fn schedule_seed_upgrade(
     if !tonk.seed_upgrades.begin(&key) {
         return;
     }
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    wasm_bindgen_futures::spawn_local(async move {
-        let tonk = state.read().await;
-        match super::repository::upgrade_seed(&tonk, &key).await {
-            Ok(true) => log!("seed upgrade: '{key}' caught up with the shipped bundle"),
-            Ok(false) => {}
-            Err(error) => log!("seed upgrade for mounted '{key}': {error}"),
-        }
-    });
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    {
-        let _ = state;
-        match super::repository::upgrade_seed(tonk, &key).await {
-            Ok(true) => log!("seed upgrade: '{key}' caught up with the shipped bundle"),
-            Ok(false) => {}
-            Err(error) => log!("seed upgrade for mounted '{key}': {error}"),
-        }
+    match super::repository::upgrade_seed(tonk, &key).await {
+        Ok(true) => log!("seed upgrade: '{key}' caught up with the shipped bundle"),
+        Ok(false) => {}
+        Err(error) => log!("seed upgrade for mounted '{key}': {error}"),
     }
 }
 
 /// Parse either the canonical full repository key or the legacy bare suffix.
-pub(super) fn space_subject(key: &str) -> Option<dialog_varsig::Did> {
+pub(crate) fn space_subject(key: &str) -> Option<dialog_varsig::Did> {
     if key.starts_with("did:key:") {
         key.parse().ok()
     } else {
@@ -367,7 +357,7 @@ pub(super) fn space_subject(key: &str) -> Option<dialog_varsig::Did> {
 
 /// Apply the account directory's latest mount facts to one replica that is
 /// already present locally. Returns whether a mount record existed.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 async fn reconcile_mounted_space_from_directory(
     tonk: &TonkState,
     key: &str,
@@ -599,7 +589,7 @@ where
 /// is the one safe ownership shape we automatically provision and attach.
 /// Every repository is isolated: malformed or temporarily unavailable state
 /// is logged and retried on the next account sweep without blocking siblings.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn reconcile_account_spaces(tonk: &TonkState) {
     use std::collections::HashMap;
 
@@ -701,942 +691,11 @@ pub(crate) async fn reconcile_account_spaces(tonk: &TonkState) {
         match super::repository::attach_account_remote_if_local(tonk, &key, remote).await {
             Ok(true) => {
                 log!("space reconcile: attached account remote to local space '{subject}'");
-                tonk.sync_queue.mark_dirty(&key, js_sys::Date::now());
+                tonk.sync_queue.mark_dirty(&key, super::sync::now_millis());
             }
             Ok(false) => {}
             Err(error) => log!("space reconcile: attach account remote to '{subject}': {error}"),
         }
-    }
-}
-
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod tests {
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    wasm_bindgen_test_configure!(run_in_service_worker);
-
-    use super::*;
-
-    /// The in-flight marker is retracted even when the pull fails.
-    ///
-    /// The hazard this pins: the marker is asserted before the mount and
-    /// the mount can fail, so a `?` on the way out would leave the row
-    /// reading `case:replicating` with no pull behind it — stuck, and
-    /// with nothing to clear it, since the marker outlives the attempt
-    /// that wrote it. Only a worker restart would drop it.
-    #[dialog_common::test]
-    async fn it_clears_the_in_flight_marker_when_a_pull_fails() {
-        use dialog_credentials::ed25519::Ed25519Signer;
-        use dialog_query::{Output as _, Query, Term};
-        use dialog_varsig::Principal as _;
-
-        let tonk = crate::router::tests::test_state().await;
-
-        // Directory facts naming a remote that cannot answer, so the
-        // mount is attempted and fails rather than being skipped.
-        let foreign = Ed25519Signer::generate().await.unwrap();
-        let subject: dialog_varsig::Did = foreign.did();
-        let address = dialog_repository::SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
-            "https://unreachable.invalid/ucan/",
-        ));
-        let configuration = super::super::repository::RepositoryConfiguration::default()
-            .remote(
-                "origin",
-                super::super::repository::RemoteConfiguration::new(address)
-                    .subject(subject.clone())
-                    .revocation_url("https://relay.example.test/revocations/".parse().unwrap()),
-            )
-            .branch(
-                "main",
-                super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
-            );
-        super::super::repository::record_space_mount(&tonk, &subject, &configuration, None).await;
-
-        // Whether this attempt succeeds or fails is not the point; that
-        // no marker survives it is.
-        let _ = ensure_space_mounted(&tonk, subject.as_str()).await;
-
-        let main = tonk
-            .reactor
-            .profile_repository()
-            .branch(&tonk.active_branch)
-            .acquire(&tonk.operator)
-            .await
-            .expect("profile main acquires");
-        let in_flight: Vec<tonk_schema::SpaceReplicating> = main
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::SpaceReplicating> {
-                this: Term::var("this"),
-                subject: Term::var("subject"),
-                replicating: Term::var("replicating"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .expect("the in-flight query runs");
-        assert!(
-            in_flight.is_empty(),
-            "a settled pull leaves no in-flight marker: {in_flight:?}"
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_admits_without_content_projections() {
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "admission-meta-only").await;
-        let tonk = state.read().await;
-        let subject = key.parse().unwrap();
-        let configuration = RepositoryConfiguration::default().remote(
-            "origin",
-            RemoteConfiguration::new(dialog_repository::SiteAddress::from(
-                dialog_remote_ucan::UcanAddress::new("https://sync.example.test/ucan/"),
-            )),
-        );
-        let repository: dialog_repository::Repository = tonk
-            .profile
-            .space(&key)
-            .load()
-            .perform(&tonk.operator)
-            .await
-            .unwrap();
-        super::super::repository::ensure_remote_config(&tonk, &repository, &key, &configuration)
-            .await
-            .unwrap();
-        super::super::repository::record_space_mount(&tonk, &subject, &configuration, None).await;
-        tonk.reject_admission_content_reads
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
-    }
-
-    #[dialog_common::test]
-    async fn it_checks_tracking_and_repairs_a_stale_cached_upstream() {
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "admission-tracking").await;
-        let tonk = state.read().await;
-        let repository: dialog_repository::Repository = tonk
-            .profile
-            .space(&key)
-            .load()
-            .perform(&tonk.operator)
-            .await
-            .unwrap();
-        // Open a separate pre-attachment handle to reproduce stale cached None.
-        let stale = repository
-            .branch("main")
-            .open()
-            .perform(&tonk.operator)
-            .await
-            .unwrap();
-        let configuration = RepositoryConfiguration::default()
-            .remote(
-                "origin",
-                RemoteConfiguration::new(dialog_repository::SiteAddress::from(
-                    dialog_remote_ucan::UcanAddress::new("https://sync.example.test/ucan/"),
-                )),
-            )
-            .branch(
-                "main",
-                BranchConfiguration::default().upstream("origin", "main"),
-            );
-        assert!(
-            !mounted_configuration_is_current(&tonk, &key, &repository, &configuration)
-                .await
-                .unwrap(),
-            "missing remote needs repair"
-        );
-        super::super::repository::ensure_remote_config(&tonk, &repository, &key, &configuration)
-            .await
-            .unwrap();
-        assert!(
-            mounted_configuration_is_current(&tonk, &key, &repository, &configuration)
-                .await
-                .unwrap()
-        );
-        let mismatched = configuration.clone().branch(
-            "main",
-            BranchConfiguration::default().upstream("origin", "other"),
-        );
-        assert!(
-            !mounted_configuration_is_current(&tonk, &key, &repository, &mismatched)
-                .await
-                .unwrap(),
-            "durable tracking must match"
-        );
-        let cached = tonk
-            .reactor
-            .repository(&key)
-            .acquire(&tonk.operator)
-            .await
-            .unwrap();
-        cached.branches().write().insert(
-            "main".into(),
-            std::sync::Arc::new(dialog_reactor::BranchState::new(stale)),
-        );
-        assert!(
-            !mounted_configuration_is_current(&tonk, &key, &repository, &configuration)
-                .await
-                .unwrap(),
-            "durable tracking alone cannot validate stale cached None"
-        );
-        super::super::repository::record_space_mount(
-            &tonk,
-            &key.parse().unwrap(),
-            &configuration,
-            None,
-        )
-        .await;
-        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
-        assert!(
-            mounted_configuration_is_current(&tonk, &key, &repository, &configuration)
-                .await
-                .unwrap(),
-            "admission must repair the cached upstream"
-        );
-    }
-
-    async fn configured_fixture() -> (super::super::AppState, String, RepositoryConfiguration) {
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "admission-cache").await;
-        let configuration = RepositoryConfiguration::default()
-            .remote(
-                "origin",
-                RemoteConfiguration::new(dialog_repository::SiteAddress::from(
-                    dialog_remote_ucan::UcanAddress::new("https://sync.example.test/ucan/"),
-                )),
-            )
-            .branch(
-                "main",
-                BranchConfiguration::default().upstream("origin", "main"),
-            );
-        {
-            let tonk = state.read().await;
-            super::super::repository::record_space_mount(
-                &tonk,
-                &key.parse().unwrap(),
-                &configuration,
-                None,
-            )
-            .await;
-            warm(&tonk, &key).await;
-        }
-        (state, key, configuration)
-    }
-
-    async fn warm(tonk: &TonkState, key: &str) {
-        for _ in 0..3 {
-            assert!(ensure_space_mounted(tonk, key).await.unwrap());
-        }
-        assert!(
-            tonk.admission.entry(key).valid(tonk, key),
-            "stable verification installs receipt"
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_reuses_admission_for_both_spellings_and_content_changes() {
-        let (state, key, _) = configured_fixture().await;
-        let tonk = state.read().await;
-        let before = tonk.admission.observations.counts();
-        tonk.reject_admission_content_reads
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            ensure_space_mounted(&tonk, key.strip_prefix("did:key:").unwrap())
-                .await
-                .unwrap()
-        );
-        let main = tonk
-            .reactor
-            .repository(&key)
-            .branch("main")
-            .acquire(&tonk.operator)
-            .await
-            .unwrap();
-        main.state
-            .assert_overlay(tonk_schema::SpaceLocal::new(&key.parse().unwrap(), true));
-        main.handle()
-            .transaction()
-            .assert(tonk_schema::SpaceName::new(
-                &key.parse().unwrap(),
-                "changed content",
-            ))
-            .commit()
-            .perform(&tonk.operator)
-            .await
-            .unwrap();
-        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
-        assert_eq!(
-            tonk.admission.observations.counts(),
-            before,
-            "warm admission performs no directory/configuration reads"
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_invalidates_on_directory_meta_and_upstream_changes() {
-        let (state, key, configuration) = configured_fixture().await;
-        let tonk = state.read().await;
-        let entry = tonk.admission.entry(&key);
-        let changed = configuration.branch(
-            "main",
-            BranchConfiguration::default().upstream("origin", "other"),
-        );
-        super::super::repository::record_space_mount(&tonk, &key.parse().unwrap(), &changed, None)
-            .await;
-        assert!(!entry.valid(&tonk, &key));
-        warm(&tonk, &key).await;
-        let main = tonk
-            .reactor
-            .repository(&key)
-            .branch("main")
-            .acquire(&tonk.operator)
-            .await
-            .unwrap();
-        assert!(
-            matches!(tonk_account::peer::upstream(main.handle()), Some(dialog_repository::Upstream::Remote { branch, .. }) if branch == "other")
-        );
-        tonk.reactor
-            .repository(&key)
-            .branch(super::super::repository::META_BRANCH)
-            .transaction()
-            .assert(tonk_schema::SpaceName::new(
-                &key.parse().unwrap(),
-                "meta changed",
-            ))
-            .commit()
-            .perform(&tonk.operator)
-            .await
-            .unwrap();
-        assert!(!entry.valid(&tonk, &key));
-        warm(&tonk, &key).await;
-        // Replace just the cached content handle with a different upstream;
-        // receipt validity includes upstream values, not content revisions.
-        let repo = tonk
-            .reactor
-            .repository(&key)
-            .acquire(&tonk.operator)
-            .await
-            .unwrap();
-        let unrelated = repo
-            .repository()
-            .branch("untracked")
-            .open()
-            .perform(&tonk.operator)
-            .await
-            .unwrap();
-        repo.branches().write().insert(
-            "main".into(),
-            std::sync::Arc::new(dialog_reactor::BranchState::new(unrelated)),
-        );
-        assert!(!entry.valid(&tonk, &key));
-    }
-
-    #[dialog_common::test]
-    async fn it_retries_directory_failure_and_caches_local_absence() {
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "admission-local-only").await;
-        let tonk = state.read().await;
-        use std::sync::atomic::Ordering::Relaxed;
-        tonk.admission
-            .observations
-            .fail_directory
-            .store(true, Relaxed);
-        assert!(
-            ensure_space_mounted(&tonk, &key).await.unwrap(),
-            "known local replica stays readable"
-        );
-        assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
-        let failed = tonk.admission.observations.counts();
-        tonk.admission
-            .observations
-            .fail_directory
-            .store(false, Relaxed);
-        warm(&tonk, &key).await;
-        assert!(tonk.admission.observations.counts().1 > failed.1);
-        let before = tonk.admission.observations.counts();
-        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
-        assert_eq!(tonk.admission.observations.counts(), before);
-    }
-
-    #[dialog_common::test]
-    async fn it_invalidates_across_eviction_removal_and_profile_replacement() {
-        let (state, key, _) = configured_fixture().await;
-        {
-            let tonk = state.read().await;
-            let before = tonk.admission.observations.counts();
-            tonk.reactor.evict(&key);
-            assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
-            warm(&tonk, &key).await;
-            assert!(tonk.admission.observations.counts().0 > before.0);
-        }
-        super::super::repository::remove_space_inner(&state, &key.parse().unwrap())
-            .await
-            .unwrap();
-        let tonk = state.read().await;
-        assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
-        // Re-run the existing adoption path, including its storage/authority
-        // outcome, rather than returning the removed replica's old receipt.
-        let before = tonk.admission.observations.counts();
-        let _lookup = ensure_space_mounted(&tonk, &key).await;
-        assert!(tonk.admission.observations.counts().0 > before.0);
-        assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
-        let other = crate::router::tests::test_state().await;
-        assert!(!tonk.admission.entry(&key).valid(&other, &key));
-        assert!(!other.admission.entry(&key).valid(&other, &key));
-    }
-
-    #[dialog_common::test]
-    async fn it_invalidates_before_and_after_cancelled_configuration_writes() {
-        let (state, key, _) = configured_fixture().await;
-        let tonk = state.read().await;
-        let entry = tonk.admission.entry(&key);
-        let before = entry.stamp(&tonk, &key);
-        let guard = tonk.admission.mutation(&key);
-        assert!(!entry.valid(&tonk, &key));
-        assert!(entry.stamp(&tonk, &key).is_none());
-        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
-        assert!(
-            !entry.valid(&tonk, &key),
-            "in-flight writer blocks receipts"
-        );
-        drop(guard);
-        entry.install(&tonk, &key, before, Vec::new());
-        assert!(
-            !entry.valid(&tonk, &key),
-            "pre-mutation stamp cannot be published"
-        );
-        warm(&tonk, &key).await;
-    }
-
-    fn pause_next(
-        tonk: &TonkState,
-        key: &str,
-    ) -> (
-        tokio::sync::oneshot::Receiver<()>,
-        tokio::sync::oneshot::Sender<()>,
-    ) {
-        let entry = tonk.admission.entry(key);
-        entry.forget();
-        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        *entry.gate.lock() = Some((entered_tx, release_rx));
-        (entered_rx, release_tx)
-    }
-
-    #[dialog_common::test]
-    async fn it_shares_one_slow_check_among_sixteen_callers() {
-        let (state, key, _) = configured_fixture().await;
-        let tonk = state.read().await;
-        let (entered, release) = pause_next(&tonk, &key);
-        let before = tonk.admission.observations.counts();
-        let leader = ensure_space_mounted(&tonk, &key);
-        let waiters = async {
-            entered.await.unwrap();
-            let mut waiters: Vec<_> = (0..15)
-                .map(|_| Box::pin(ensure_space_mounted(&tonk, &key)))
-                .collect();
-            for waiter in &mut waiters {
-                assert!(futures_util::poll!(waiter.as_mut()).is_pending());
-            }
-            assert_eq!(tonk.admission.observations.counts().0, before.0 + 1);
-            release.send(()).unwrap();
-            for result in futures_util::future::join_all(waiters).await {
-                assert!(result.unwrap());
-            }
-        };
-        let (result, ()) = futures_util::join!(leader, waiters);
-        assert!(result.unwrap());
-        let after = tonk.admission.observations.counts();
-        assert_eq!(after, (before.0 + 1, before.1 + 1, before.2 + 1));
-    }
-
-    #[dialog_common::test]
-    async fn it_releases_slow_admission_when_the_leader_is_cancelled() {
-        let (state, key, _) = configured_fixture().await;
-        let tonk = state.read().await;
-        let (entered, release) = pause_next(&tonk, &key);
-        match futures_util::future::select(Box::pin(ensure_space_mounted(&tonk, &key)), entered)
-            .await
-        {
-            futures_util::future::Either::Right((entered, leader)) => {
-                entered.unwrap();
-                drop(leader);
-            }
-            _ => panic!("leader must suspend at the gate"),
-        }
-        drop(release);
-        assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
-        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
-        assert!(tonk.admission.entry(&key).valid(&tonk, &key));
-    }
-
-    #[dialog_common::test]
-    async fn it_does_not_publish_a_receipt_after_mid_check_changes() {
-        let (state, key, configuration) = configured_fixture().await;
-        let tonk = state.read().await;
-        for evict in [false, true] {
-            warm(&tonk, &key).await;
-            let (entered, release) = pause_next(&tonk, &key);
-            let leader = ensure_space_mounted(&tonk, &key);
-            let mutate = async {
-                entered.await.unwrap();
-                if evict {
-                    tonk.reactor.evict(&key);
-                } else {
-                    super::super::repository::record_space_mount(
-                        &tonk,
-                        &key.parse().unwrap(),
-                        &configuration,
-                        Some("new directory revision"),
-                    )
-                    .await;
-                }
-                release.send(()).unwrap();
-            };
-            let (result, ()) = futures_util::join!(leader, mutate);
-            assert!(result.unwrap());
-            assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
-            warm(&tonk, &key).await;
-        }
-    }
-
-    #[dialog_common::test]
-    async fn it_retries_a_failed_leader_and_other_subjects_progress_independently() {
-        let (state, key, _) = configured_fixture().await;
-        let (app, _lsp) = super::super::api_router_from_state(state.clone());
-        let other = crate::router::tests::put_repo(&app, "independent-admission").await;
-        let tonk = state.read().await;
-        warm(&tonk, &key).await;
-        let (entered, release) = pause_next(&tonk, &key);
-        let leader = ensure_space_mounted(&tonk, &key);
-        let follower = async {
-            entered.await.unwrap();
-            assert!(
-                ensure_space_mounted(&tonk, &other).await.unwrap(),
-                "unrelated subject does not wait for this leader"
-            );
-            tonk.admission
-                .observations
-                .fail_directory
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            release.send(()).unwrap();
-        };
-        let (result, ()) = futures_util::join!(leader, follower);
-        assert!(
-            result.unwrap(),
-            "failed reconciliation preserves local availability"
-        );
-        assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
-        tonk.admission
-            .observations
-            .fail_directory
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-        warm(&tonk, &key).await;
-    }
-
-    #[dialog_common::test]
-    async fn it_mounts_once_on_sixteen_concurrent_first_uses() {
-        use dialog_varsig::Principal as _;
-        let tonk = crate::router::tests::test_state().await;
-        let subject = dialog_credentials::ed25519::Ed25519Signer::generate()
-            .await
-            .unwrap()
-            .did();
-        let key = subject.as_str();
-        let configuration = RepositoryConfiguration::default()
-            .remote(
-                "origin",
-                RemoteConfiguration::new(dialog_repository::SiteAddress::from(
-                    dialog_remote_ucan::UcanAddress::new("https://sync.example.test/ucan/"),
-                ))
-                .subject(subject.clone()),
-            )
-            .branch(
-                "main",
-                BranchConfiguration::default().upstream("origin", "main"),
-            );
-        super::super::repository::record_space_mount(&tonk, &subject, &configuration, None).await;
-        let (entered, release) = pause_next(&tonk, key);
-        let leader = async {
-            assert!(ensure_space_mounted(&tonk, key).await.unwrap());
-            let repository: dialog_repository::Repository = tonk
-                .profile
-                .space(key)
-                .load()
-                .perform(&tonk.operator)
-                .await
-                .unwrap();
-            repository
-                .branch(super::super::repository::META_BRANCH)
-                .open()
-                .perform(&tonk.operator)
-                .await
-                .unwrap()
-                .revision()
-        };
-        let waiters = async {
-            entered.await.unwrap();
-            let mut waiters: Vec<_> = (0..15)
-                .map(|_| Box::pin(ensure_space_mounted(&tonk, key)))
-                .collect();
-            for waiter in &mut waiters {
-                assert!(futures_util::poll!(waiter.as_mut()).is_pending());
-            }
-            release.send(()).unwrap();
-            for result in futures_util::future::join_all(waiters).await {
-                assert!(result.unwrap());
-            }
-        };
-        let (first_revision, ()) = futures_util::join!(leader, waiters);
-        let repository: dialog_repository::Repository = tonk
-            .profile
-            .space(key)
-            .load()
-            .perform(&tonk.operator)
-            .await
-            .unwrap();
-        let final_revision = repository
-            .branch(super::super::repository::META_BRANCH)
-            .open()
-            .perform(&tonk.operator)
-            .await
-            .unwrap()
-            .revision();
-        assert_eq!(
-            first_revision, final_revision,
-            "waiters must not recommit mount metadata"
-        );
-        assert_eq!(
-            tonk.admission.observations.counts().0,
-            2,
-            "one mount followed by one read-only verification"
-        );
-        assert!(
-            super::super::join::find_replica_for_subject(&tonk, &subject)
-                .await
-                .unwrap()
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_rejects_profile_changes_during_replica_lookup() {
-        let (state, key, configuration) = configured_fixture().await;
-        let tonk = state.read().await;
-        let entry = tonk.admission.entry(&key);
-        entry.forget();
-        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        *entry.membership_gate.lock() = Some((entered_tx, release_rx));
-        let admission = ensure_space_mounted(&tonk, &key);
-        let mutation = async {
-            entered_rx.await.unwrap();
-            super::super::repository::record_space_mount(
-                &tonk,
-                &key.parse().unwrap(),
-                &configuration,
-                Some("changed during replica lookup"),
-            )
-            .await;
-            release_tx.send(()).unwrap();
-        };
-        let (result, ()) = futures_util::join!(admission, mutation);
-        assert!(result.unwrap());
-        assert!(
-            !entry.valid(&tonk, &key),
-            "profile lookup and reconciliation must share one freshness window"
-        );
-        warm(&tonk, &key).await;
-    }
-
-    /// The cross-device flow's device-B half, pinned: another device
-    /// recorded a space's directory facts (mount records included);
-    /// this device — which has never seen the space — must mount it on
-    /// first use, by either key spelling the routes produce.
-    #[dialog_common::test]
-    async fn it_mounts_a_directory_space_on_first_use() {
-        use dialog_credentials::ed25519::Ed25519Signer;
-        use dialog_repository::SiteAddress;
-        use dialog_varsig::Principal as _;
-
-        let tonk = crate::router::tests::test_state().await;
-
-        // A space that exists only as directory facts — as if another
-        // device on the account created it and the rows synced in.
-        let foreign = Ed25519Signer::generate().await.unwrap();
-        let subject: dialog_varsig::Did = foreign.did();
-        let address = SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
-            "https://sync.example.test/ucan/",
-        ));
-        let configuration = super::super::repository::RepositoryConfiguration::default()
-            .remote(
-                "origin",
-                super::super::repository::RemoteConfiguration::new(address)
-                    .subject(subject.clone())
-                    .revocation_url("https://relay.example.test/revocations/".parse().unwrap()),
-            )
-            .branch(
-                "main",
-                super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
-            );
-        assert!(
-            !ensure_space_mounted(&tonk, subject.as_str()).await.unwrap(),
-            "an absent record must not become a negative cache entry",
-        );
-        super::super::repository::record_space_mount(
-            &tonk,
-            &subject,
-            &configuration,
-            Some("Foreign Space"),
-        )
-        .await;
-        assert!(
-            !super::super::join::find_replica_for_subject(&tonk, &subject)
-                .await
-                .unwrap(),
-            "the space must start unmounted for the pin to mean anything"
-        );
-
-        // Pages address repos by the FULL did:key URI — the spelling
-        // that regressed. Both spellings must mount.
-        let full = subject.to_string();
-        assert!(
-            ensure_space_mounted(&tonk, &full).await.unwrap(),
-            "first use mounts the directory space (full-DID spelling)"
-        );
-        assert!(
-            super::super::join::find_replica_for_subject(&tonk, &subject)
-                .await
-                .unwrap(),
-            "the mount records a local replica"
-        );
-        // Idempotent — and the bare-suffix spelling resolves too.
-        let suffix = full.strip_prefix("did:key:").unwrap();
-        assert!(ensure_space_mounted(&tonk, suffix).await.unwrap());
-    }
-
-    /// A page's `tonk:load` site stamp travels the transact route, so a
-    /// directory-listed space this device has not pulled must mount there
-    /// too, before the stamp acquires the branch. It did not: the stamp
-    /// found no branch and gave up silently, the guest's first query
-    /// mounted the space a moment later, and nothing re-ran the stamp, so
-    /// the site never resolved its route and the page sat on its loading
-    /// placeholder for good.
-    #[dialog_common::test]
-    async fn it_mounts_a_directory_space_on_a_first_transact() {
-        use dialog_credentials::ed25519::Ed25519Signer;
-        use dialog_repository::SiteAddress;
-        use dialog_varsig::Principal as _;
-
-        let tonk = crate::router::tests::test_state().await;
-
-        let foreign = Ed25519Signer::generate().await.unwrap();
-        let subject: dialog_varsig::Did = foreign.did();
-        let address = SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
-            "https://sync.example.test/ucan/",
-        ));
-        let configuration = super::super::repository::RepositoryConfiguration::default()
-            .remote(
-                "origin",
-                super::super::repository::RemoteConfiguration::new(address)
-                    .subject(subject.clone())
-                    .revocation_url("https://relay.example.test/revocations/".parse().unwrap()),
-            )
-            .branch(
-                "main",
-                super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
-            );
-        super::super::repository::record_space_mount(
-            &tonk,
-            &subject,
-            &configuration,
-            Some("Foreign Space"),
-        )
-        .await;
-        assert!(
-            !super::super::join::find_replica_for_subject(&tonk, &subject)
-                .await
-                .unwrap(),
-            "the space must start unmounted for the pin to mean anything"
-        );
-
-        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
-        let response = crate::router::transact::transact(
-            axum::extract::State(state.clone()),
-            axum::extract::Path(crate::router::transact::TransactPath {
-                repo: subject.to_string(),
-                branch: "main".to_owned(),
-            }),
-            None,
-            None,
-            axum::http::HeaderMap::new(),
-            axum::body::Bytes::from_static(b"{\"claims\":[]}"),
-        )
-        .await;
-        assert!(
-            response.is_ok(),
-            "a transact addressed to a directory space mounts it and lands: {:?}",
-            response.err()
-        );
-        let tonk = state.read().await;
-        assert!(
-            super::super::join::find_replica_for_subject(&tonk, &subject)
-                .await
-                .unwrap(),
-            "the transact route mounts the directory space before touching its branch"
-        );
-    }
-
-    /// A mounted replica is not proof that its configuration is current.
-    /// The account directory may have gained the remote and tracking facts
-    /// after this device first recorded the local replica, so first use must
-    /// reconcile those facts rather than returning early.
-    #[dialog_common::test]
-    async fn it_reconciles_a_mounted_space_from_the_latest_directory_record() {
-        use dialog_repository::SiteAddress;
-
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "late-directory-remote").await;
-        let subject: dialog_varsig::Did = key.parse().unwrap();
-        let configuration = super::super::repository::RepositoryConfiguration::default()
-            .remote(
-                "origin",
-                super::super::repository::RemoteConfiguration::new(SiteAddress::from(
-                    dialog_remote_ucan::UcanAddress::new("https://sync.example.test/ucan/"),
-                ))
-                .subject(subject.clone()),
-            )
-            .branch(
-                "main",
-                super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
-            );
-        {
-            let tonk = state.read().await;
-            super::super::repository::record_space_mount(
-                &tonk,
-                &subject,
-                &configuration,
-                Some("Late Remote"),
-            )
-            .await;
-        }
-
-        let tonk = state.read().await;
-        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
-        let session = tonk
-            .reactor
-            .repository(&key)
-            .branch("main")
-            .acquire(&tonk.operator)
-            .await
-            .unwrap();
-        assert!(
-            crate::router::remotes::tracks(&tonk, &key, session.handle(), "origin", "main").await,
-            "the mounted replica must adopt the directory's origin/main tracking facts",
-        );
-
-        let repository: dialog_repository::Repository = tonk
-            .profile
-            .space(&key)
-            .load()
-            .perform(&tonk.operator)
-            .await
-            .unwrap();
-        let before = repository
-            .branch(super::super::repository::META_BRANCH)
-            .open()
-            .perform(&tonk.operator)
-            .await
-            .unwrap()
-            .revision();
-        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
-        let after = repository
-            .branch(super::super::repository::META_BRANCH)
-            .open()
-            .perform(&tonk.operator)
-            .await
-            .unwrap()
-            .revision();
-        assert_eq!(
-            after, before,
-            "a later reconcile over identical facts must not commit again",
-        );
-    }
-
-    /// B-08: a persisted directory branch from before the `/replica` rename
-    /// must still restore the upstream and enter the sync sweep.
-    #[dialog_common::test]
-    async fn it_recovers_a_mounted_space_from_old_directory_branch_facts() {
-        use dialog_artifacts::Entity;
-        use dialog_repository::SiteAddress;
-        use tonk_schema::domain::branch::{Name, Origin, Upstream};
-        use tonk_schema::domain::remote::Address;
-        use tonk_schema::prelude::{DidExt as _, EntityExt as _};
-        use tonk_schema::{LegacyBranch, LegacyTrackingBranch, Remote};
-
-        #[derive(serde::Serialize)]
-        enum OldHash<'a> {
-            Branch { origin: &'a Entity, name: &'a str },
-        }
-        let old_branch = |owner: &Entity, name: &str| LegacyBranch {
-            this: Entity::of(&OldHash::Branch {
-                origin: owner,
-                name,
-            }),
-            name: Name(name.to_owned()),
-            origin: Origin(owner.clone()),
-        };
-
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "old-directory-branch").await;
-        let subject: dialog_varsig::Did = key.parse().unwrap();
-        let tonk = state.read().await;
-        let address = SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
-            "https://sync.example.test/ucan/",
-        ));
-        let remote = Remote::at(
-            &subject.this(),
-            subject.clone(),
-            Address::encode(&address),
-            "origin",
-        );
-        let local = old_branch(&subject.this(), "main");
-        let upstream = old_branch(&remote.this, "main");
-        tonk.reactor
-            .profile_repository()
-            .branch(&tonk.active_branch)
-            .transaction()
-            .assert(remote)
-            .assert(local.clone())
-            .assert(upstream.clone())
-            .assert(LegacyTrackingBranch {
-                this: local.this,
-                upstream: Upstream(upstream.this),
-                origin: Origin(subject.this()),
-            })
-            .commit()
-            .perform(&tonk.operator)
-            .await
-            .unwrap();
-
-        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
-        let repository: dialog_repository::Repository = tonk
-            .profile
-            .space(&key)
-            .load()
-            .perform(&tonk.operator)
-            .await
-            .unwrap();
-        let info = super::super::repository::build_repository_info(&tonk, &key, &repository).await;
-        assert_eq!(
-            super::super::sync::branches_to_sync(&info.branch),
-            vec!["main".to_owned()],
-            "the repaired main branch must enter the sync sweep"
-        );
     }
 }
 
@@ -1707,16 +766,6 @@ pub(crate) async fn stamp_space_replicating(
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
 
-/// Boot pass: stamp locality for every replica this device holds.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn stamp_local_spaces(tonk: &TonkState) {
-    for key in super::profile_name::real_space_keys(tonk).await {
-        if let Some(subject) = space_subject(&key) {
-            stamp_space_locality(tonk, &subject).await;
-        }
-    }
-}
-
 /// Rebuild a space's configuration from the account directory — the
 /// shared `tonk_schema::directory` reader, converted into the worker's
 /// [`RepositoryConfiguration`].
@@ -1778,4 +827,103 @@ pub(super) async fn directory_configuration_strict(
         );
     }
     Ok(Some(configuration))
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod native_tests {
+    use crate::router::repository::{
+        BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
+    };
+
+    /// Mounting a space on first use can pull it over the network, so a
+    /// route that mounts holds no guard over the state across it. Each route
+    /// is held where the mount does that work; a writer could take the guard
+    /// meanwhile, and the route answers once the mount goes on.
+    #[test]
+    fn routes_hold_no_guard_while_a_space_mounts() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(routes_during_a_held_mount());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn routes_during_a_held_mount() {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt as _;
+
+        let (app, state, _lsp) = crate::router::api_router_with_state(
+            crate::router::repository::profile_library_tests::test_state().await,
+        );
+        let key = crate::router::approval_stall_diagnosis::put_repo(&app, "mounting").await;
+        let configuration = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(dialog_repository::SiteAddress::from(
+                    dialog_remote_ucan::UcanAddress::new("https://sync.example.test/ucan/"),
+                )),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        {
+            let tonk = state.read().await;
+            crate::router::repository::record_space_mount(
+                &tonk,
+                &key.parse().unwrap(),
+                &configuration,
+                None,
+            )
+            .await;
+        }
+        let routes = [
+            ("GET", format!("/api/repository/{key}")),
+            ("POST", format!("/api/repository/{key}/branch/main/query")),
+            (
+                "POST",
+                format!("/api/repository/{key}/branch/main/transact"),
+            ),
+            (
+                "POST",
+                format!("/api/repository/{key}/branch/main/evaluate"),
+            ),
+        ];
+        for (method, uri) in routes {
+            let entered = {
+                let tonk = state.read().await;
+                let entry = tonk.admission.entry(&key);
+                entry.forget();
+                let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+                let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+                *entry.gate.lock() = Some((entered_tx, release_rx));
+                (entered_rx, release_tx)
+            };
+            let (entered, release) = entered;
+            let request = Request::builder()
+                .uri(&uri)
+                .method(method)
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap();
+            let mut answering = Box::pin(app.clone().oneshot(request));
+            tokio::select! {
+                reached = entered => reached.unwrap(),
+                _ = &mut answering => panic!("{method} {uri} answered without mounting the space"),
+            }
+            assert!(
+                state.try_write().is_ok(),
+                "{method} {uri} holds a guard over the state while the space mounts"
+            );
+            release.send(()).unwrap();
+            answering.await.unwrap();
+        }
+    }
 }

@@ -1,8 +1,8 @@
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { createTonkServer } from './core.mjs';
 
-// Resolve authority before constructing the backend. Production supplies an
-// OAuth-authenticated, account-scoped resolver; no singleton personal account.
+// Hosts supply an authorized backend or one that validates scoped credentials
+// on every invocation. Never publish a singleton personal account worker.
 export function createTonkHTTP(resolveBackend, { registerUI } = {}) {
   const handler = createMcpHandler(
     async (context) => {

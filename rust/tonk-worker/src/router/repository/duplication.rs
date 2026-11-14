@@ -1,7 +1,7 @@
 //! Copy current content into a new identity, without adopting source history.
 use super::*;
 use dialog_artifacts::{ArtifactSelector, BlobIndexExt as _, Changes, Update};
-use dialog_repository::{Blob, Index, NetworkedIndex, RemoteFallback, Snapshot};
+use dialog_repository::{Blob, Index, Snapshot};
 use futures_util::StreamExt as _;
 
 fn error(error: impl std::fmt::Display) -> RepositoryError {
@@ -42,6 +42,7 @@ fn is_metadata(attribute: &str) -> bool {
         .any(|prefix| attribute.starts_with(prefix))
 }
 
+#[cfg(feature = "persona")]
 pub(super) async fn prepare(tonk: &TonkState, source: &str) -> Result<Copy, RepositoryError> {
     // Loading an existing repository must succeed; do not manufacture an empty
     // source for a typo, an unmounted space, or an inaccessible subject.
@@ -113,12 +114,14 @@ pub(super) async fn collect(
             );
         }
     }
-    let store = NetworkedIndex::new(
-        &tonk.operator,
+    // A snapshot's content is what this replica holds: the walk reads
+    // locally and never hydrates.
+    let stream = Index::at(
         snapshot.archive().index(),
-        RemoteFallback::None,
-    );
-    let stream = Index::from_hash((*snapshot.revision().tree.hash()).into()).list_blobs(store);
+        (*snapshot.revision().tree.hash()).into(),
+    )
+    .locally()
+    .list_blobs(&tonk.operator);
     tokio::pin!(stream);
     while let Some(blob) = stream.next().await {
         let (hash, _) = blob.map_err(error)?;
@@ -134,6 +137,7 @@ pub(super) async fn collect(
     })
 }
 
+#[cfg(feature = "persona")]
 pub(super) async fn create(
     state: &AppState,
     name: &str,
@@ -147,7 +151,13 @@ pub(super) async fn create(
     let key = subject.repo_key();
     write(&tonk, &subject, name, copy).await?;
     write_replica_status(&tonk, &subject, Replica::initialized_status(), None).await?;
-    Ok(key.to_owned())
+    let key = key.to_owned();
+    // Provisioning is a round trip to the access service: no guard is held
+    // across it.
+    let created = (*tonk).clone();
+    drop(tonk);
+    provision_created_space(&created, &subject).await;
+    Ok(key)
 }
 
 /// Write `copy` onto `subject`'s content branch, under `name`: its blobs,

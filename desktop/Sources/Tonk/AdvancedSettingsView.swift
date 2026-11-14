@@ -1,0 +1,87 @@
+import HarnessCore
+import SwiftUI
+
+struct AdvancedSettingsView: View {
+  @Environment(\.dismiss) private var dismiss
+  let embedded: Bool
+  @State private var custom: String
+  @State private var error: String?
+  @State private var saved = false
+
+  private static let defaultHome = RuntimeLocation.Channel.current.defaultRemote.home
+
+  init(embedded: Bool = false) {
+    self.embedded = embedded
+    let remote = RuntimeLocation.resolve(arguments: [], defaults: .standard)
+    _custom = State(initialValue: remote.home.absoluteString)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 20) {
+      Text("Advanced settings").font(.title2.weight(.semibold))
+      HStack(spacing: 12) {
+        TextField("Remote URL", text: $custom, prompt: Text(Self.defaultHome.absoluteString))
+          .textFieldStyle(.roundedBorder).autocorrectionDisabled()
+        Button("Reset") {
+          custom = Self.defaultHome.absoluteString
+        }
+        .help("Reset to \(Self.defaultHome.host ?? "the default remote")")
+      }
+      Text(
+        "Each remote has its own account, spaces, and chats on this Mac. Quit and reopen Tonk to use the selected remote."
+      )
+      .font(.callout).foregroundStyle(.secondary)
+      if ProcessInfo.processInfo.arguments.contains("--local-runtime") {
+        Text(
+          "This launch uses a command-line override. Open Tonk without that flag to use this setting."
+        )
+        .font(.caption).foregroundStyle(.secondary)
+      }
+      UsageDataToggle()
+      if let error { Text(error).foregroundStyle(.red) }
+      if saved {
+        Text("Remote saved. Quit and reopen Tonk to apply it.").foregroundStyle(.secondary)
+      }
+      HStack {
+        Spacer()
+        if !embedded {
+          Button(saved ? "Done" : "Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+        }
+        Button("Save") {
+          do {
+            let remote = try RuntimeLocation.remote(custom)
+            UserDefaults.standard.set(
+              remote.home.absoluteString, forKey: RuntimeLocation.preferenceKey)
+            error = nil
+            saved = true
+          } catch { self.error = error.localizedDescription }
+        }.buttonStyle(.borderedProminent).keyboardShortcut(
+          .return, modifiers: embedded ? [.command] : []
+        ).disabled(saved)
+      }
+    }
+    .padding(embedded ? 0 : 24).frame(width: embedded ? nil : 540)
+    .onChange(of: custom) { _, _ in
+      saved = false
+      error = nil
+    }
+  }
+}
+
+/// Turns desktop analytics on or off. Shown only in builds that can send any.
+struct UsageDataToggle: View {
+  @State private var enabled = Telemetry.shared.isEnabled
+
+  var body: some View {
+    if Telemetry.shared.isAvailable {
+      VStack(alignment: .leading, spacing: 6) {
+        Toggle("Share anonymous usage data", isOn: $enabled)
+          .onChange(of: enabled) { _, value in Telemetry.shared.setEnabled(value) }
+        Text(
+          "Counts which features are used and whether they work. Never sends names, messages, links, or anything in your spaces."
+        )
+        .font(.callout).foregroundStyle(.secondary)
+      }
+    }
+  }
+}

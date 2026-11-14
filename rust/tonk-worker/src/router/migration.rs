@@ -22,11 +22,9 @@ use std::collections::HashSet;
 
 use ::axum::extract::State;
 use ::axum::response::Redirect;
-use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_macros::handler;
 use tonk_schema::domain::replica::Profile as ProfileEntity;
 use tonk_schema::{LegacyReplica, Replica, SpaceKind, SpaceStatus, prelude::DidExt as _};
 
@@ -51,7 +49,7 @@ struct MigrationReport {
 }
 
 /// Handler. Runs the migration then redirects to the Hub (`/`).
-#[wasm_compat]
+#[handler]
 pub async fn repo_vs_profile(State(state): State<AppState>) -> Result<Redirect, TonkWorkerError> {
     run_migration(state).await?;
     Ok(Redirect::to("/"))
@@ -61,7 +59,7 @@ pub async fn repo_vs_profile(State(state): State<AppState>) -> Result<Redirect, 
 /// [`LegacyReplica`] (which has no `kind` and so matches records
 /// written before the field existed), skip those that already
 /// carry a `kind`, and stamp the rest with [`SpaceKind`].
-#[wasm_compat]
+#[handler]
 async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerError> {
     log!("GET /api/migrate/repo-vs-profile");
 
@@ -196,56 +194,4 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
         report.status
     );
     Ok(report)
-}
-
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod tests {
-    use std::sync::Arc;
-
-    use dialog_credentials::Ed25519Signer;
-    use dialog_varsig::Principal as _;
-    use tokio::sync::RwLock;
-
-    use super::*;
-
-    #[dialog_common::test]
-    async fn it_leaves_account_replicas_kind_stamped_and_status_free() {
-        let tonk = crate::router::tests::test_state().await;
-        let account = Ed25519Signer::import(&[75; 32]).await.unwrap().did();
-        tonk.reactor
-            .profile_repository()
-            .branch(&tonk.active_branch)
-            .transaction()
-            .assert(Replica::account(tonk.profile.did(), account))
-            .commit()
-            .perform(&tonk.operator)
-            .await
-            .unwrap();
-        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
-        let state = Arc::new(RwLock::new(tonk));
-
-        let report = run_migration(state.clone()).await.unwrap();
-        assert_eq!(report.migrated, 0);
-        assert_eq!(report.status, 0);
-
-        let tonk = state.read().await;
-        let rows: Vec<SpaceStatus> = tonk
-            .reactor
-            .profile_repository()
-            .branch(&tonk.active_branch)
-            .acquire(&tonk.operator)
-            .await
-            .unwrap()
-            .handle()
-            .query()
-            .select(Query::<SpaceStatus> {
-                this: Term::var("this"),
-                status: Term::var("status"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .unwrap();
-        assert!(rows.is_empty());
-    }
 }

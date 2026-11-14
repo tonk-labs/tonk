@@ -239,7 +239,8 @@ The relevant source locations are:
 - [`rust/tonk-ui/src/bin/ui.rs`](../../rust/tonk-ui/src/bin/ui.rs): top-document
   route selection.
 - [`rust/tonk-core/assets/library/profile.yaml`](../../rust/tonk-core/assets/library/profile.yaml):
-  the hub and account-settings views and element declarations. Account settings
+  the hub and account-settings views, and the element declarations behind the
+  in-space bar (navigation, share, switching, sync, and appearance). Account settings
   fixture captures predate the account-view refactor; their source paths identify
   the successor view and ceremony implementations.
 - [`rust/tonk-ui/src/register_dialog.rs`](../../rust/tonk-ui/src/register_dialog.rs):
@@ -248,7 +249,5 @@ The relevant source locations are:
   activation-link surface.
 - [`rust/tonk-ui/src/account_flow.rs`](../../rust/tonk-ui/src/account_flow.rs):
   real-browser account and browser/CLI integration tests.
-- [`rust/tonk-fab`](../../rust/tonk-fab): rendered-space navigation, share,
-  switching, sync, and appearance controls.
-- [`rust/tonk-portal`](../../rust/tonk-portal): rendered-space host and routing.
+- [`rust/tonk-site`](../../rust/tonk-site): rendered-space host and routing.
 - [`flake.nix`](../../flake.nix): repository-defined E2E command.

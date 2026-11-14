@@ -1,11 +1,10 @@
-// Contract between the `<tonk-prose>` shell (`../index.ts`) and the
-// lazily-loaded editor core (`./index.ts`). The shell imports ONLY
-// types from this module — anything with a runtime footprint must
-// stay out of it, or the shell chunk stops being tiny.
+// Contract between the library's `<prose-editor>` element (its methods
+// in `library/prose-editor/`) and the editor core (`./index.ts`), which
+// the build turns into the element's `core` method. Types only.
 
 import type { EditorView } from "prosemirror-view";
 
-/** Options the shell hands to `createEditor`. */
+/** Options the element hands to `createEditor`. */
 export type EditorOptions = {
   /** Initial document, as markdown source. */
   doc: string;
@@ -16,6 +15,9 @@ export type EditorOptions = {
   /** Called after every user edit with the markdown serialization
    *  of the new document. Not called for programmatic writes. */
   onChange: (markdown: string) => void;
+  /** The custom element code blocks embed, `tonk-code` when omitted.
+   *  Until it is defined they are plain editable `<pre>`s. */
+  code?: string;
   /** Turn the leading heading into a document switcher.
    *
    *  Opt-in per editor, and deliberately not a runtime condition: on an

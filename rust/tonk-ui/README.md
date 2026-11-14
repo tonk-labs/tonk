@@ -76,20 +76,15 @@ background account operations use the persisted provider URL.
 
 ## Binaries
 
-The crate produces two Wasm bin targets, both referenced from `index.html` by a
+The crate produces one Wasm bin target, referenced from `index.html` by a
 `data-bin` Trunk `rel="rust"` link:
 
 - **`ui`** ([`src/bin/ui.rs`](./src/bin/ui.rs), `data-type="main"`): the page
   entry point. It installs the panic hook, registers every custom element the app
-  uses (`tonk-sigil`, `tonk-host`, `tonk-display`, `tonk-board`, `tonk-portal`,
-  `tonk-fab`, the inspector, the `<tonk-code>` JS bundle, and `<tonk-tree>`),
+  uses (`tonk-sigil`, `tonk-host`, `tonk-display`, `tonk-board`, `tonk-site`),
   then mounts the `TonkShell` Leptos component into the document body. Under debug
   builds (`trunk serve`) it also injects the dev-only `hot-swap.js` reload client;
   release builds never load it.
-- **`worker`** ([`src/bin/worker.rs`](./src/bin/worker.rs), `data-type="worker"`,
-  `data-bindgen-target="web"`): the service-worker module. It exposes an
-  `activate()` entry that constructs `tonk_worker::TonkServiceWorker`. The static
-  [`assets/service_worker.js`](./assets) imports and drives this Wasm.
 
 ## How the SPA and service worker compose
 
@@ -108,14 +103,15 @@ The load lifecycle has four cases:
 - A real warm replacement activates through `skipWaiting()`. Activation
   replaces the controller of already-controlled documents, and each
   update-aware page observes `controllerchange`. A page whose
-  `tonk-page-build` matches the successor's `/api/health` `page` keeps running
-  and remounts each top-level `<tonk-site>`, so its guest boots from the new
-  worker. Any other page reloads once, so the document, shell, and controller
-  agree. A first-install document adopts later successors the same way.
+  `tonk-page-build` matches the successor's `/api/health` `page` keeps running,
+  and so does every guest in it: their subscriptions reconnect to the new
+  worker, and a guest runs the new guest code the next time a navigation or a
+  load builds it. Any other page reloads once, so the document, shell, and
+  controller agree. A first-install document adopts later successors the same way.
 
 The page build is stamped over every published resource except the guest
 runtime, the lazily fetched editor bundles, and library data. Two builds with
-the same page build therefore differ only in worker and guest code. The host
+the same page build therefore differ only in what the sites and guests run. The host
 side of the host/guest bridge is compiled into the top page, so an unchanged
 page build also means an unchanged bridge.
 - An offline warm load keeps its existing controller and cached shell. A failed
@@ -212,7 +208,7 @@ The crate's library side (see [`src/lib.rs`](./src/lib.rs)) provides the pieces 
 
 The worker resolves paths through the profile library's `route!` records and
 mounts the selected model in `<tonk-site>`. The profile branch owns `/`,
-`/settings`, `/settings/link`, `/join`, `/inspector`, and `/diagnose`. Space paths
+`/settings`, `/settings/link`, and `/join`. Space paths
 mount the selected repository and branch, with `/space/:space/*subject`
 preserving entity URIs containing `/`. The Rust shell owns the sealed guest,
 navigation bridge, and top-document ceremonies; the schema-owned views own Hub

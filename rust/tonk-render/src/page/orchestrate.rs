@@ -4,9 +4,7 @@
 //! component runs, against a [`QueryBackend`], then feeds the result
 //! through the shared `tonk-template` planner and this crate's pure
 //! headless renderer ([`crate::render`]). Nested `<tonk-display>`
-//! elements inside a view are rendered recursively; a model whose
-//! `show` dictionary carries `type: text/html` (portal mode) is
-//! emitted as an isolated `<iframe srcdoc>`.
+//! elements inside a view are rendered recursively.
 
 use std::collections::BTreeMap;
 
@@ -15,8 +13,8 @@ use tonk_schema::conclusion::Conclusion;
 use tonk_template::fold::{select_rows, show_template};
 use tonk_template::resolve::scalar_field_names;
 use tonk_template::resolve::{
-    DETAIL_FACET, DIRECTORY_FACET, TYPE_FACET, entity_query, instances_query, looks_like_uri,
-    name_query, parse_source, phase1_query, view_query,
+    DETAIL_FACET, DIRECTORY_FACET, entity_query, instances_query, looks_like_uri, name_query,
+    parse_source, phase1_query, view_query,
 };
 use tonk_template::{split_plan_with_scalars, this_repeat_root};
 
@@ -32,30 +30,147 @@ pub async fn render<B: QueryBackend>(
     backend: &B,
     route: &RenderRoute,
 ) -> Result<String, RenderError> {
-    let mut visited = Vec::new();
-    render_guarded(backend, route, 0, &mut visited).await
+    let mut walk = Walk::default();
+    render_guarded(backend, route, 0, &mut walk, &mut Vec::new()).await
+}
+
+/// Walk the `<tonk-display>` elements that rendering `route` mounts and
+/// return them as a tree, without the markup.
+///
+/// Each node is a display that can be rendered on its own: its
+/// [`Outline::route`] parses back into a [`RenderRoute`]. A nested
+/// display that fails to render keeps its place in the tree with the
+/// error, so one broken view does not hide its siblings. The root
+/// failing is an error.
+pub async fn outline<B: QueryBackend>(
+    backend: &B,
+    route: &RenderRoute,
+) -> Result<Outline, RenderError> {
+    let mut walk = Walk {
+        lenient: true,
+        ..Walk::default()
+    };
+    let mut roots = Vec::new();
+    render_guarded(backend, route, 0, &mut walk, &mut roots).await?;
+    Ok(roots.pop().expect("a rendered route records its own node"))
+}
+
+/// One `<tonk-display>` mounted while rendering a route.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Outline {
+    /// The display as `entity@model!view`, which [`RenderRoute::parse`]
+    /// reads back to render this node alone.
+    pub route: String,
+    /// The model as the display named it (a name or a concept URI).
+    pub model: String,
+    /// The concept the model resolved to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concept: Option<String>,
+    /// The concept's name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The concept's description.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The entity shown; absent for a directory of every instance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity: Option<String>,
+    /// The `show` facet, when the display named one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view: Option<String>,
+    /// How many records the view rendered.
+    pub records: usize,
+    /// Why this display did not render.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The displays this one nests, in document order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<Outline>,
+    /// For a display of every instance, the records it rendered in
+    /// place, each with a route that shows that one record through the
+    /// same facet, so it looks and acts as it does in the list. Records
+    /// a nested display already shows are left out: that display's node
+    /// is their route. At most [`ITEM_LIMIT`]; `records` says how many
+    /// there are.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<OutlineItem>,
+}
+
+/// One record a display of every instance rendered.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct OutlineItem {
+    /// The record as `entity@model!facet`, which renders it alone.
+    pub route: String,
+    /// The record's entity URI.
+    pub entity: String,
+    /// The record's scalar fields, to tell records apart. Long text is
+    /// cut short.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, serde_json::Value>,
+}
+
+/// Most records an outline node lists as items.
+pub const ITEM_LIMIT: usize = 100;
+
+/// Longest text an item field keeps, in characters.
+const FIELD_TEXT_LIMIT: usize = 120;
+
+impl Outline {
+    fn new(route: &RenderRoute) -> Self {
+        Outline {
+            route: route.to_string(),
+            model: route.model.clone(),
+            concept: None,
+            name: None,
+            description: None,
+            entity: route.entity.clone(),
+            view: route.view.clone(),
+            records: 0,
+            error: None,
+            children: Vec::new(),
+            items: Vec::new(),
+        }
+    }
+}
+
+/// State shared across one recursive render.
+#[derive(Default)]
+struct Walk {
+    /// The routes being rendered, outermost first, to catch a view
+    /// that nests itself with the same parameters.
+    visited: Vec<RenderRoute>,
+    /// Record a nested display's error on its node and continue,
+    /// instead of failing the whole render.
+    lenient: bool,
 }
 
 /// Render with both a depth backstop and a `(model, entity, view)`
 /// visited-set: the depth cap catches runaway recursion, while the
 /// visited-set distinguishes a genuine cycle (a view that nests
 /// itself with the same parameters) from legitimately deep but finite
-/// nesting.
+/// nesting. The display's node is appended to `siblings`.
 async fn render_guarded<B: QueryBackend>(
     backend: &B,
     route: &RenderRoute,
     depth: usize,
-    visited: &mut Vec<RenderRoute>,
+    walk: &mut Walk,
+    siblings: &mut Vec<Outline>,
 ) -> Result<String, RenderError> {
-    if depth >= MAX_DEPTH {
-        return Err(RenderError::RecursionDepth(MAX_DEPTH));
+    let mut node = Outline::new(route);
+    let out = if depth >= MAX_DEPTH {
+        Err(RenderError::RecursionDepth(MAX_DEPTH))
+    } else if walk.visited.contains(route) {
+        Err(RenderError::RenderCycle(route.model.clone()))
+    } else {
+        walk.visited.push(route.clone());
+        let out = render_at_depth(backend, route, depth, walk, &mut node).await;
+        walk.visited.pop();
+        out
+    };
+    if let Err(error) = &out {
+        node.error = Some(error.to_string());
     }
-    if visited.contains(route) {
-        return Err(RenderError::RenderCycle(route.model.clone()));
-    }
-    visited.push(route.clone());
-    let out = render_at_depth(backend, route, depth, visited).await;
-    visited.pop();
+    siblings.push(node);
     out
 }
 
@@ -63,10 +178,15 @@ async fn render_at_depth<B: QueryBackend>(
     backend: &B,
     route: &RenderRoute,
     depth: usize,
-    visited: &mut Vec<RenderRoute>,
+    walk: &mut Walk,
+    node: &mut Outline,
 ) -> Result<String, RenderError> {
     // 1. Resolve the model concept to its entity URI + descriptor.
-    let (model_entity, descriptor_json) = resolve_model(backend, &route.model).await?;
+    let model = resolve_model(backend, &route.model).await?;
+    node.concept = Some(model.entity.clone());
+    node.name = model.name;
+    node.description = model.description;
+    let (model_entity, descriptor_json) = (model.entity, model.descriptor);
 
     // 2. Resolve the target entity, if any (bookmark name -> URI).
     let entity_uri = match &route.entity {
@@ -88,12 +208,7 @@ async fn render_at_depth<B: QueryBackend>(
         return Err(RenderError::NoView(route.model.clone()));
     };
 
-    // 4. Portal views (a `type: text/html` entry) render as an isolated iframe.
-    if view.is_portal {
-        return Ok(render_portal(&view.display));
-    }
-
-    // 5. Query the entity (detail) or all instances (directory), then
+    // 4. Query the entity (detail) or all instances (directory), then
     //    fold flat rows into one conclusion per subject.
     let rows = if let Some(entity) = &entity_uri {
         run_query(backend, entity_query(&descriptor_json, entity)?).await?
@@ -101,8 +216,9 @@ async fn render_at_depth<B: QueryBackend>(
         run_query(backend, instances_query(&descriptor_json)?).await?
     };
     let folded = select_rows(rows);
+    node.records = folded.len();
 
-    // 6. Parse, plan, and render each sibling against the same entity query.
+    // 5. Parse, plan, and render each sibling against the same entity query.
     //    Inject the host attributes (model/entity/view) as `dom.host/*`
     //    fields so nested displays resolve like the browser's
     //    `with_host_attributes` path.
@@ -116,15 +232,77 @@ async fn render_at_depth<B: QueryBackend>(
         .iter()
         .map(|c| to_render_conclusion(c, &host_fields))
         .collect();
-    let mut roots = crate::parse_fragment(&view.display);
+    let mut roots = crate::parse_fragment(&view);
     let bindings = crate::collect_bindings(&mut roots);
     let repeat_root = this_repeat_root(&bindings);
+    // A list repeats part of its template once per record; those are
+    // the records an outline lists. A template with no repeat renders
+    // once, so its records are not shown in place.
+    if walk.lenient && entity_uri.is_none() && repeat_root.is_some() {
+        node.items = items(route, facet, &folded);
+    }
     let plan = split_plan_with_scalars(bindings, repeat_root, &scalar_fields);
     let html = crate::render(&roots, &plan, &conclusions);
 
-    // 7. Recursively render nested <tonk-display> elements before
-    //    returning.
-    expand_nested(backend, html, depth, visited).await
+    // 6. Recursively render nested <tonk-display> elements before
+    //    returning. A record a nested display shows has that node as
+    //    its route, so it is not listed again as an item; a nested
+    //    display that failed shows nothing, so the item stays.
+    let html = expand_nested(backend, html, depth, walk, &mut node.children).await?;
+    let concept = node.concept.clone();
+    let children = &node.children;
+    node.items.retain(|item| {
+        !children.iter().any(|child| {
+            child.error.is_none()
+                && child.entity.as_deref() == Some(&item.entity)
+                && child.concept == concept
+        })
+    });
+    Ok(html)
+}
+
+/// The records a display of every instance rendered, each routed to
+/// `facet` with its own entity. A record whose route would not read
+/// back as itself (an entity URI holding `@` or `!`) is left out.
+fn items(route: &RenderRoute, facet: &str, folded: &[Conclusion]) -> Vec<OutlineItem> {
+    folded
+        .iter()
+        .take(ITEM_LIMIT)
+        .filter_map(|record| {
+            let item = RenderRoute {
+                model: route.model.clone(),
+                entity: Some(record.this.clone()),
+                view: Some(facet.to_owned()),
+            };
+            let text = item.to_string();
+            (RenderRoute::parse(&text).ok()? == item).then(|| OutlineItem {
+                route: text,
+                entity: record.this.clone(),
+                fields: record
+                    .fields
+                    .iter()
+                    .filter_map(|(name, value)| Some((name.clone(), scalar(value)?)))
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
+/// A scalar field value as JSON, text cut to [`FIELD_TEXT_LIMIT`].
+fn scalar(value: &Ipld) -> Option<serde_json::Value> {
+    Some(match value {
+        Ipld::String(text) if text.chars().count() > FIELD_TEXT_LIMIT => {
+            let cut: String = text.chars().take(FIELD_TEXT_LIMIT).collect();
+            serde_json::Value::String(format!("{cut}..."))
+        }
+        Ipld::String(text) => serde_json::Value::String(text.clone()),
+        Ipld::Bool(flag) => serde_json::Value::Bool(*flag),
+        Ipld::Integer(number) => i64::try_from(*number)
+            .map(serde_json::Value::from)
+            .unwrap_or_else(|_| serde_json::Value::String(number.to_string())),
+        Ipld::Float(number) => serde_json::Number::from_f64(*number)?.into(),
+        _ => return None,
+    })
 }
 
 /// The host attributes a `<tonk-display>` would carry, as
@@ -145,13 +323,6 @@ fn host_fields(route: &RenderRoute) -> BTreeMap<String, Ipld> {
     fields
 }
 
-/// View resolution result: the facet's template and whether the
-/// model's views are portals (a `type: text/html` entry).
-struct ResolvedView {
-    display: String,
-    is_portal: bool,
-}
-
 /// Resolve a model/view concept name (or URI) to `(entity_uri,
 /// descriptor_json)`. Mirrors the browser's `resolve_model_query`: a
 /// non-URI source is first resolved through the Name concept (so a
@@ -162,7 +333,7 @@ struct ResolvedView {
 async fn resolve_model<B: QueryBackend>(
     backend: &B,
     name_or_uri: &str,
-) -> Result<(String, String), RenderError> {
+) -> Result<ResolvedModel, RenderError> {
     let mut parsed = parse_source(name_or_uri);
     if !parsed.is_uri() {
         // Try the Name concept first; on a hit, query Phase-1 by URI.
@@ -185,7 +356,22 @@ async fn resolve_model<B: QueryBackend>(
             "concept `{name_or_uri}` has no `source` descriptor"
         ))
     })?;
-    Ok((row.this, descriptor))
+    Ok(ResolvedModel {
+        name: ipld_string(row.fields.get("name")),
+        description: serde_json::from_str::<serde_json::Value>(&descriptor)
+            .ok()
+            .and_then(|source| source.get("description")?.as_str().map(str::to_owned)),
+        entity: row.this,
+        descriptor,
+    })
+}
+
+/// A model resolved to its concept.
+struct ResolvedModel {
+    entity: String,
+    descriptor: String,
+    name: Option<String>,
+    description: Option<String>,
 }
 
 /// Resolve a bookmark name to its entity URI via `db.name/referent`.
@@ -213,7 +399,7 @@ async fn resolve_view<B: QueryBackend>(
     backend: &B,
     facet: &str,
     model_entity: &str,
-) -> Result<Option<ResolvedView>, RenderError> {
+) -> Result<Option<String>, RenderError> {
     if let Some(view) = query_view(backend, facet, model_entity).await? {
         return Ok(Some(view));
     }
@@ -222,13 +408,12 @@ async fn resolve_view<B: QueryBackend>(
 }
 
 /// Run the view query for one model entity, fold the entry rows into
-/// the `show` dictionary, and read the facet's template (plus the
-/// portal marker).
+/// the `show` dictionary, and read the facet's template.
 async fn query_view<B: QueryBackend>(
     backend: &B,
     facet: &str,
     model_entity: &str,
-) -> Result<Option<ResolvedView>, RenderError> {
+) -> Result<Option<String>, RenderError> {
     let query = view_query(model_entity)
         .map_err(|e| RenderError::QueryConstruction(format!("view query: {e}")))?;
     let rows = run_query(backend, query).await?;
@@ -239,11 +424,7 @@ async fn query_view<B: QueryBackend>(
     let Some(display) = show_template(row, facet) else {
         return Ok(None);
     };
-    let is_portal = show_template(row, TYPE_FACET) == Some("text/html");
-    Ok(Some(ResolvedView {
-        display: display.to_owned(),
-        is_portal,
-    }))
+    Ok(Some(display.to_owned()))
 }
 
 /// Lower a `tonk_schema::query::Query` to a concept query and run it
@@ -266,7 +447,8 @@ async fn expand_nested<B: QueryBackend>(
     backend: &B,
     html: String,
     depth: usize,
-    visited: &mut Vec<RenderRoute>,
+    walk: &mut Walk,
+    tree: &mut Vec<Outline>,
 ) -> Result<String, RenderError> {
     if !html.contains("<tonk-display") {
         return Ok(html);
@@ -274,7 +456,7 @@ async fn expand_nested<B: QueryBackend>(
     // Re-parse the rendered output, walk it, and replace each
     // <tonk-display> element's contents with its recursive render.
     let mut roots = crate::parse_fragment(&html);
-    expand_nested_nodes(backend, &mut roots, depth, visited).await?;
+    expand_nested_nodes(backend, &mut roots, depth, walk, tree).await?;
     Ok(crate::serialize_nodes(&roots))
 }
 
@@ -283,7 +465,8 @@ fn expand_nested_nodes<'a, B: QueryBackend>(
     backend: &'a B,
     nodes: &'a mut [crate::Node],
     depth: usize,
-    visited: &'a mut Vec<RenderRoute>,
+    walk: &'a mut Walk,
+    tree: &'a mut Vec<Outline>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), RenderError>> + 'a>> {
     Box::pin(async move {
         for node in nodes.iter_mut() {
@@ -292,11 +475,15 @@ fn expand_nested_nodes<'a, B: QueryBackend>(
             };
             if el.tag == "tonk-display" {
                 if let Some(route) = route_from_attrs(&el.attrs) {
-                    let inner = render_guarded(backend, &route, depth + 1, visited).await?;
-                    el.children = crate::parse_fragment(&inner);
+                    match render_guarded(backend, &route, depth + 1, walk, tree).await {
+                        Ok(inner) => el.children = crate::parse_fragment(&inner),
+                        // The error is on the display's node; keep walking.
+                        Err(_) if walk.lenient => {}
+                        Err(error) => return Err(error),
+                    }
                 }
             } else {
-                expand_nested_nodes(backend, &mut el.children, depth, visited).await?;
+                expand_nested_nodes(backend, &mut el.children, depth, walk, tree).await?;
             }
         }
         Ok(())
@@ -324,31 +511,6 @@ fn route_from_attrs(attrs: &[(String, String)]) -> Option<RenderRoute> {
         entity: get("entity"),
         view: get("view"),
     })
-}
-
-/// Wrap a portal view's HTML document in an isolated, sandboxed
-/// `<iframe srcdoc>`.
-///
-/// A `text/html` portal `display` is NOT a template: it is an
-/// author-written document that runs its own JS against the
-/// `window.tonk` bridge to fetch what it needs. The browser loads it
-/// verbatim (no `{field}` interpolation) and prepends a bridge
-/// bootstrap script. We inline the same verbatim content but omit the
-/// bootstrap, which can't function headlessly (no service worker, no
-/// message-channel peer) — so the portal's own queries don't run under
-/// SSR. Inlining the content verbatim is the faithful match to the
-/// browser's `content` attribute; substituting placeholders would
-/// diverge from it.
-fn render_portal(document: &str) -> String {
-    format!(
-        "<iframe sandbox=\"allow-scripts\" srcdoc=\"{}\"></iframe>",
-        escape_attr(document)
-    )
-}
-
-/// Escape a double-quoted attribute value.
-fn escape_attr(s: &str) -> String {
-    s.replace('&', "&amp;").replace('"', "&quot;")
 }
 
 /// Convert a schema conclusion to a `tonk_render` conclusion, merging

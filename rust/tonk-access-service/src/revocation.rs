@@ -129,7 +129,7 @@ mod tests {
         // the capability, so the artifact itself is sound.
         let revocations = MemoryRevocationIndex::default();
         revocations
-            .record(&to_bob.to_cid().to_string(), alice.did().as_ref())
+            .record(&to_bob.to_cid().to_string(), alice.did().as_ref(), b"")
             .await
             .expect("recorded");
 
@@ -141,7 +141,7 @@ mod tests {
         // And the profile, which DID issue that hop, cuts Bob off, so the
         // assertion above is about authority rather than an unmatchable CID.
         revocations
-            .record(&to_bob.to_cid().to_string(), profile.did().as_ref())
+            .record(&to_bob.to_cid().to_string(), profile.did().as_ref(), b"")
             .await
             .expect("recorded");
         assert!(
@@ -196,7 +196,7 @@ mod tests {
         // was never a party to.
         let revocations = MemoryRevocationIndex::default();
         revocations
-            .record(&root.to_cid().to_string(), bob.did().as_ref())
+            .record(&root.to_cid().to_string(), bob.did().as_ref(), b"")
             .await
             .expect("recorded");
         assert!(
@@ -207,7 +207,7 @@ mod tests {
         // The space issued that hop, so its revocation does bite. Same
         // target, same chain, different revoker.
         revocations
-            .record(&root.to_cid().to_string(), space.did().as_ref())
+            .record(&root.to_cid().to_string(), space.did().as_ref(), b"")
             .await
             .expect("recorded");
         assert!(
@@ -244,7 +244,7 @@ mod tests {
         );
 
         revocations
-            .record(&to_bob.to_cid().to_string(), bob.did().as_ref())
+            .record(&to_bob.to_cid().to_string(), bob.did().as_ref(), b"")
             .await
             .expect("recorded");
         assert!(
@@ -302,7 +302,11 @@ mod tests {
         // The issuing profile withdraws this one session.
         let by_profile = MemoryRevocationIndex::default();
         by_profile
-            .record(&session_hop.to_cid().to_string(), profile.did().as_ref())
+            .record(
+                &session_hop.to_cid().to_string(),
+                profile.did().as_ref(),
+                b"",
+            )
             .await
             .expect("recorded");
         assert!(
@@ -313,7 +317,7 @@ mod tests {
         // And withdrawing the powerline takes every session with it.
         let by_space = MemoryRevocationIndex::default();
         by_space
-            .record(&powerline.to_cid().to_string(), space.did().as_ref())
+            .record(&powerline.to_cid().to_string(), space.did().as_ref(), b"")
             .await
             .expect("recorded");
         assert!(
@@ -341,7 +345,7 @@ mod tests {
 
         let revocations = MemoryRevocationIndex::default();
         revocations
-            .record("bafySomethingElse", space.did().as_ref())
+            .record("bafySomethingElse", space.did().as_ref(), b"")
             .await
             .expect("recorded");
         assert!(

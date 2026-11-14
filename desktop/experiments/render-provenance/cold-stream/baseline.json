@@ -1,0 +1,100 @@
+[
+  {
+    "frames" : [
+      "data: snapshot\n\n"
+    ],
+    "mode" : "separate",
+    "passed" : false,
+    "trial" : 0
+  },
+  {
+    "frames" : [
+      "data: snapshot\n\ndata: checkpoint\n\n"
+    ],
+    "mode" : "combined",
+    "passed" : true,
+    "trial" : 0
+  },
+  {
+    "frames" : [
+      "data: snapshot\n\n"
+    ],
+    "mode" : "pull0",
+    "passed" : false,
+    "trial" : 0
+  },
+  {
+    "frames" : [
+      "data: snapshot\n\n",
+      "data: checkpoint\n\n"
+    ],
+    "mode" : "separate",
+    "passed" : true,
+    "trial" : 1
+  },
+  {
+    "frames" : [
+      "data: snapshot\n\ndata: checkpoint\n\n"
+    ],
+    "mode" : "combined",
+    "passed" : true,
+    "trial" : 1
+  },
+  {
+    "frames" : [
+      "data: snapshot\n\n",
+      "data: checkpoint\n\n"
+    ],
+    "mode" : "pull0",
+    "passed" : true,
+    "trial" : 1
+  },
+  {
+    "frames" : [
+      "data: snapshot\n\n"
+    ],
+    "mode" : "separate",
+    "passed" : false,
+    "trial" : 2
+  },
+  {
+    "frames" : [
+      "data: snapshot\n\ndata: checkpoint\n\n"
+    ],
+    "mode" : "combined",
+    "passed" : true,
+    "trial" : 2
+  },
+  {
+    "frames" : [
+      "data: snapshot\n\n"
+    ],
+    "mode" : "pull0",
+    "passed" : false,
+    "trial" : 2
+  },
+  {
+    "frames" : [
+      "data: snapshot\n\ndata: checkpoint\n\n"
+    ],
+    "mode" : "separate",
+    "passed" : true,
+    "trial" : 3
+  },
+  {
+    "frames" : [
+      "data: snapshot\n\ndata: checkpoint\n\n"
+    ],
+    "mode" : "combined",
+    "passed" : true,
+    "trial" : 3
+  },
+  {
+    "frames" : [
+      "data: snapshot\n\ndata: checkpoint\n\n"
+    ],
+    "mode" : "pull0",
+    "passed" : true,
+    "trial" : 3
+  }
+]

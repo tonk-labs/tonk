@@ -84,6 +84,8 @@ pub mod registry;
 #[cfg(target_arch = "wasm32")]
 mod render;
 #[cfg(target_arch = "wasm32")]
+mod shown;
+#[cfg(target_arch = "wasm32")]
 mod upload;
 // `state::State` and its `as_str` mapping are target-independent
 // — DOM-touching helpers in this module are individually gated
@@ -103,6 +105,9 @@ mod view;
 /// Idempotent.
 #[cfg(target_arch = "wasm32")]
 pub fn register() {
+    // Expose this realm's counters as `globalThis.__tonkDiagnostics`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    tonk_common::diagnostics::install_global();
     // Installed first: a tag announced while the other elements are
     // still registering is queued as a DOM mutation, not lost, but the
     // listener has to exist before the first sweep.

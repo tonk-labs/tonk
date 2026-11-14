@@ -108,8 +108,8 @@ html::-webkit-scrollbar { width: 0; height: 0; display: none; }
    every `<button>`. An author `display` declaration beats the UA's
    `[hidden] { display: none }` whatever its specificity or layer, so the
    attribute silently stops working on a bare button wherever that sheet
-   loads. A sealed `<tonk-portal>` guest concatenates it ahead of this file
-   (`tonk-portal`'s `build_inject_payload`), which is where it first bit: a
+   loads. A sealed guest concatenates it ahead of this file (the bridge's
+   `build_inject_payload`), which is where it first bit: a
    `hidden` bare button rendered anyway, and hiding it again was equally
    inert.
 
@@ -127,8 +127,14 @@ html::-webkit-scrollbar { width: 0; height: 0; display: none; }
    is upgraded it renders as an undefined element: a `<wa-button>` shows
    as bare text, and a `<wa-dialog>` dumps its slotted form inline
    instead of hiding in a modal. Hide them until `:defined` so they
-   appear already styled rather than flashing. Tonk's own custom
-   elements register synchronously at boot, so they are not affected. */
+   appear already styled rather than flashing. The bar's family is the
+   same: the profile library defines it, so it registers when the
+   library answers, a moment after it first renders. */
+tonk-fab:not(:defined),
+tonk-dialog:not(:defined),
+tonk-cluster:not(:defined) {
+    display: none !important;
+}
 wa-button:not(:defined),
 wa-button-group:not(:defined),
 wa-badge:not(:defined),
@@ -493,22 +499,6 @@ tonk-display > .site-pending:not([hidden]) {
 }
 .display-view-slot .workspace {
     height: 100dvh;
-    min-height: 0;
-}
-
-/* The tree inspector is a two-pane explorer whose panes scroll
-   INDEPENDENTLY, so it needs a definite height to scroll within — with
-   the slot's default `min-height: 100dvh` the panes grow to fit their
-   content and the whole page scrolls instead, pushing the right pane
-   past the bottom edge. Same shape as the workspace rule above: swap
-   the slot to a hard `height` when it contains the element, so the
-   height is fixed at the viewport rather than floored by it. Keyed on
-   the element (not on `tonk-view > *`, which would clobber sibling
-   views' layout). */
-.display-view-slot:has(tonk-tree) {
-    height: 100dvh;
-}
-.display-view-slot:has(tonk-tree) tonk-tree {
     min-height: 0;
 }
 
@@ -1376,107 +1366,6 @@ tonk-notation .tonk-notation-error {
     cursor: help;
 }
 
-/* Evaluate results — two views over the same data:
-   `.query-tree` (grouped `<wa-tree>`, concept → entity → field →
-   value) and `.query-notation` (listed, notation-shaped records).
-   Both reuse the dialog-yaml `tonk-cm-*` decoration palette and
-   the editor typography (from the shared `tonk-notation,
-   .query-tree, .query-notation` palette block above) so the two
-   views and the editor read identically. */
-.query-tree,
-.query-notation {
-    font-family: var(--tonk-code-font);
-    font-size: var(--tonk-code-font-size);
-    line-height: 1.5;
-    color: var(--tonk-code-fg);
-}
-.query-tree {
-    --indent-guide-width: 1px;
-}
-/* Tree labels are not interactive content — let the user select
-   and copy entity URIs and values out of the result. */
-.query-tree wa-tree-item::part(label) {
-    user-select: text;
-}
-
-/* `tonk-cm-*` decoration classes — shared by both result views.
-   Mirror the typography in `dialog-yaml.ts`'s `dialectTheme`. */
-.query-tree .tonk-cm-key,
-.query-notation .tonk-cm-key {
-    color: var(--tonk-code-key);
-}
-.query-tree .tonk-cm-effect,
-.query-notation .tonk-cm-effect {
-    color: var(--tonk-code-effect);
-    font-weight: bold;
-}
-.query-tree .tonk-cm-name,
-.query-notation .tonk-cm-name {
-    color: var(--tonk-code-name);
-}
-.query-tree .tonk-cm-entity,
-.query-notation .tonk-cm-entity {
-    color: var(--tonk-code-entity);
-    text-decoration: underline;
-    text-decoration-color: var(--tonk-code-entity);
-    text-decoration-thickness: 1px;
-    text-underline-offset: 2px;
-}
-.query-tree .tonk-cm-variable,
-.query-notation .tonk-cm-variable {
-    color: var(--tonk-code-variable);
-    font-style: italic;
-}
-.query-tree .tonk-cm-string,
-.query-notation .tonk-cm-string {
-    color: var(--tonk-code-string);
-}
-.query-tree .tonk-cm-number,
-.query-notation .tonk-cm-number {
-    color: var(--tonk-code-number);
-}
-/* Plain — separators and arrays/objects shown as compact JSON. */
-.query-tree .tonk-cm-plain,
-.query-notation .tonk-cm-plain {
-    color: var(--tonk-code-fg-muted);
-}
-
-/* Listed view — each result is a `notation-record`; every row
-   (head, field, value line) is its own block so lines stay
-   independently selectable. Rows are plain blocks with inline
-   children — not flex — so a selection copied out of the result
-   reads as one line per row. Indentation is a literal-space
-   `.notation-indent` span the renderer prepends, not CSS padding,
-   so the copied text keeps its structure when pasted elsewhere. */
-.notation-record + .notation-record {
-    margin-block-start: var(--wa-space-s);
-}
-.notation-row {
-    user-select: text;
-}
-/* Field/value rows wrap on overflow rather than truncating, so a
-   long value stays fully visible and fully copyable. */
-.notation-field,
-.notation-value-line {
-    overflow-wrap: anywhere;
-}
-/* The indent prefix carries real spaces; `pre` keeps them from
-   collapsing so each row's content starts at a consistent column,
-   on screen and in copied text. */
-.notation-indent {
-    white-space: pre;
-}
-
-/* A `<wa-tree-item>`'s `label` part is a flex item; its default
-   `min-width: auto` lets it grow to the value's intrinsic width,
-   so a long value would run the row off-screen. `min-width: 0`
-   lets the label shrink to its flex container, and the value
-   (rendered uncollapsed in the tree) wraps within it. */
-.query-tree wa-tree-item::part(label) {
-    min-width: 0;
-    overflow-wrap: anywhere;
-}
-
 /* Banner header: the space name as a large display title, sized
    to match the sidebar column. Transparent background so the banner
    and the main body read as one continuous surface — the name
@@ -2261,6 +2150,131 @@ account-settings [data-link-approval] .m-go:focus-visible { outline-color: var(-
     account-settings [data-link-approval] .link-foot button { padding: 14px 12px; }
     .hub-page account-settings .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) { padding: 20px; }
 }
+/* The agent approval is a run of FABB task dialogs, the card the
+   "add an account" sign-in uses: a washed head with its disc and title,
+   flush rows, and a foot split between the way out and the way on. */
+account-settings .s-body:has([data-agent-approval]:not([hidden])) {
+    min-height: 0; max-height: none; overflow: visible; padding: 0;
+    background: none; border: 0; width: 100%; max-width: 560px;
+}
+account-settings [data-agent-approval] [hidden] { display: none; }
+account-settings .agent-dlg {
+    display: flex; flex-direction: column; overflow: hidden;
+    border: 1.5px solid var(--ink); border-radius: 25px;
+    background: var(--card); color: var(--ink); font-family: var(--cond);
+}
+account-settings .agent-head {
+    box-sizing: border-box; display: flex; align-items: center; gap: 16px;
+    height: 48px; padding: 0 18px; background: var(--wash);
+}
+account-settings .agent-disc {
+    display: block; box-sizing: border-box; width: 18px; height: 18px; flex: 0 0 18px;
+    border: 2px solid var(--ink); border-radius: 50%;
+}
+account-settings .agent-title {
+    margin: 0 0 0 auto; text-align: right; font: 600 17px/1.1 var(--cond);
+    text-transform: none; letter-spacing: 0;
+}
+account-settings .agent-step { display: flex; flex-direction: column; }
+account-settings .agent-row {
+    box-sizing: border-box; display: grid; grid-template-columns: 7.5rem minmax(0, 1fr);
+    align-items: center; gap: 12px; min-height: 48px; padding: 12px 18px 9px;
+    background: var(--wash); font: 400 18px/1.4 var(--cond); text-transform: none;
+}
+account-settings .agent-row .k { color: var(--soft); min-width: 0; overflow-wrap: anywhere; }
+account-settings .agent-row .v { min-width: 0; overflow-wrap: anywhere; }
+account-settings .agent-exp {
+    box-sizing: border-box; margin: 0; padding: 10px 18px 18px; background: var(--wash);
+    font: 400 18px/1.5 var(--cond); color: var(--soft); text-transform: none; text-wrap: pretty;
+}
+account-settings .agent-exp strong { color: var(--ink); font-weight: 500; }
+account-settings [data-agent-warning], account-settings [data-agent-error] { color: var(--ink); }
+account-settings .agent-label {
+    box-sizing: border-box; padding: 16px 18px 8px; background: var(--wash);
+    font: 600 17px/1.1 var(--cond);
+}
+account-settings .agent-options { display: flex; flex-direction: column; }
+account-settings button.agent-opt {
+    box-sizing: border-box; display: flex; align-items: center; gap: 14px;
+    width: 100%; min-height: 48px; margin: 0; padding: 12px 18px 9px;
+    border: 0; border-top: 1px solid var(--sep); border-radius: 0; box-shadow: none;
+    background: var(--wash); color: var(--ink); cursor: pointer; text-align: left;
+    font: 400 18px/1.4 var(--cond); letter-spacing: 0; text-transform: none;
+}
+account-settings button.agent-opt:hover { background: var(--wash-2); }
+account-settings .agent-opt .agent-disc { width: 16px; height: 16px; flex-basis: 16px; }
+account-settings .agent-opt[aria-checked="true"] .agent-disc { background: var(--ink); }
+account-settings .agent-edit {
+    box-sizing: border-box; display: grid; gap: 8px; padding: 18px 18px 14px; background: var(--wash);
+}
+account-settings .agent-edit .k { font: 600 17px/1.1 var(--cond); }
+account-settings .agent-input {
+    appearance: none; -webkit-appearance: none; box-sizing: border-box;
+    height: 48px; margin: 0; padding: 12px 14px 9px; border: 1.5px solid var(--ink); border-radius: 0;
+    background: var(--wash); color: var(--ink); caret-color: var(--ink);
+    font: 400 18px/1.4 var(--cond); letter-spacing: .02em; text-transform: none;
+}
+account-settings .agent-input:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; box-shadow: none; }
+account-settings .agent-spaces { display: flex; flex-direction: column; }
+account-settings .agent-space {
+    box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center; gap: 12px; padding: 10px 18px; background: var(--wash);
+    border-top: 1px solid var(--sep); font: 400 18px/1.4 var(--cond);
+}
+account-settings .agent-space:first-child { border-top: 0; }
+account-settings .agent-space-name { min-width: 0; overflow-wrap: anywhere; text-transform: none; }
+account-settings .agent-seg { display: inline-grid; grid-auto-flow: column; border: 1.5px solid var(--ink); }
+account-settings .agent-seg button {
+    min-width: 0; min-height: 32px; height: auto; margin: 0; padding: 5px 10px 3px;
+    border: 0; border-radius: 0; box-shadow: none; background: none; color: var(--ink);
+    cursor: pointer; font: 500 15px/1.2 var(--cond); letter-spacing: 0; text-transform: none;
+}
+account-settings .agent-seg button + button { border-left: 1.5px solid var(--ink); }
+account-settings .agent-seg button:hover:not(:disabled):not([aria-checked="true"]) { background: var(--wash-2); }
+account-settings .agent-seg button[aria-checked="true"] { background: var(--ink); color: var(--card); }
+account-settings .agent-seg button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+account-settings .agent-space.off { color: var(--soft); }
+account-settings .agent-space.off .agent-seg { opacity: .4; }
+account-settings .agent-space.off .agent-seg button { cursor: not-allowed; }
+account-settings .agent-space-why { grid-column: 1 / -1; margin-top: -4px; font-size: 14px; color: var(--soft); }
+account-settings .agent-foot { display: grid; grid-template-columns: 1fr 1fr; }
+account-settings button.agent-btn {
+    box-sizing: border-box; display: flex; align-items: center; justify-content: flex-start; min-width: 0;
+    height: 48px; margin: 0; padding: 4px 18px; border: 0; border-radius: 0; box-shadow: none;
+    background: color-mix(in srgb, var(--page, var(--card)) 35%, var(--card)); color: var(--ink);
+    cursor: pointer; text-align: left; font: 600 17px/1.1 var(--cond); letter-spacing: 0; text-transform: none;
+}
+account-settings button.agent-btn:hover:not(:disabled) { background: var(--wash-2); }
+account-settings button.agent-btn.go { justify-content: flex-end; text-align: right; background: var(--ink); color: var(--on-ink); }
+account-settings button.agent-btn.go:hover:not(:disabled) { background: var(--ink); opacity: .9; }
+account-settings button.agent-btn:disabled { opacity: .45; cursor: default; }
+account-settings button.agent-btn.wide { grid-column: 1 / -1; }
+account-settings button.agent-btn:focus-visible { outline: 2px solid var(--ink); outline-offset: -4px; }
+account-settings button.agent-btn.go:focus-visible { outline-color: var(--on-ink); }
+account-settings [data-agent-step="passkey"] [data-agent-panel="passkey"] .agent-exp strong { animation: agent-wait 2.4s ease-in-out infinite; }
+@keyframes agent-wait { 50% { opacity: .55; } }
+/* Progress after the passkey: ✓ done, ● running (pulsing), ○ still to come. */
+account-settings [data-agent-step="passkey"] .agent-disc,
+account-settings [data-agent-step="working"] .agent-disc { background: var(--ink); animation: agent-wait 2.4s ease-in-out infinite; }
+account-settings [data-agent-step="done"] .agent-disc { background: var(--ink); }
+account-settings .agent-phase .k::before { display: inline-block; width: 1.2em; }
+account-settings .agent-phase[data-state="done"] .k::before { content: "✓"; }
+account-settings .agent-phase[data-state="now"] .k::before { content: "●"; }
+account-settings .agent-phase[data-state="todo"] .k::before { content: "○"; }
+account-settings .agent-phase[data-state="now"] { animation: agent-wait 2.4s ease-in-out infinite; }
+account-settings .agent-phase[data-state="now"] .k { color: var(--ink); }
+account-settings .agent-phase[data-state="todo"] { color: var(--soft); }
+@media (prefers-reduced-motion: reduce) {
+    account-settings [data-agent-step="passkey"] [data-agent-panel="passkey"] .agent-exp strong,
+    account-settings [data-agent-step="passkey"] .agent-disc,
+    account-settings [data-agent-step="working"] .agent-disc,
+    account-settings .agent-phase[data-state="now"] { animation: none; }
+}
+@media (max-width: 600px) {
+    account-settings .agent-row { grid-template-columns: 1fr; gap: 2px; }
+    account-settings .agent-space { grid-template-columns: 1fr; gap: 8px; }
+    account-settings .agent-seg { justify-self: start; }
+}
 account-settings [data-custody-seat] { display: none; }
 account-settings[data-passkey-screen] [data-link-approval],
 account-settings[data-passkey-screen] .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) { display: none; }
@@ -2292,13 +2306,9 @@ account-settings[data-passkey-screen] [data-custody-seat] {
    lives where the editor expects it, and consumers opt in by
    adding their selector to this group. */
 tonk-code,
-tonk-notation,
-.query-tree,
-.query-notation {
-    /* Both evaluate-result views (listed `.query-notation` and
-       grouped `.query-tree`) and the `<tonk-notation>` inspector
-       slide share the dialog-yaml editor palette so they read
-       identically to each other and to the editor. Match
+tonk-notation {
+    /* The `<tonk-notation>` inspector slide shares the dialog-yaml
+       editor palette so it reads identically to the editor. Match
        `wa-input` so the surface reads as a form field rather than
        a panel. The form-control tokens are the right semantic —
        they describe "what an input surface looks like" and stay
@@ -2452,283 +2462,6 @@ tonk-code:focus-within {
    `is-visible` class is toggled by Leptos when the buffer parses
    cleanly; we animate opacity so the button doesn't pop in/out
    abruptly while the user types. */
-/* Notebook cells live in a vertical stack. Each cell is its
-   own `<form>` (`.branch-yaml-query`); sealed cells dim back
-   so the eye lands on the active one at the bottom — same idea
-   as Observable's notebook layout. */
-.inspector-debug {
-    width: 100%;
-    color: var(--ink);
-    font-family: var(--sans);
-}
-
-.inspector-debug__disclosure {
-    background: var(--frost-solid);
-    box-shadow: 0 0 0 1px var(--ring);
-}
-
-.inspector-debug__summary {
-    min-height: 44px;
-    display: grid;
-    grid-template-columns: auto auto minmax(0, 1fr) auto 18px;
-    align-items: center;
-    gap: 8px;
-    padding: 0 12px;
-    cursor: pointer;
-    list-style: none;
-    transition-property: background-color;
-    transition-duration: 150ms;
-    transition-timing-function: var(--ease);
-}
-
-.inspector-debug__summary:hover {
-    background: var(--wash);
-}
-
-.inspector-debug__summary:focus-visible {
-    outline: 0;
-    box-shadow: inset 0 0 0 2px var(--ring);
-}
-
-.inspector-debug__summary::-webkit-details-marker {
-    display: none;
-}
-
-.inspector-debug__summary::after {
-    content: "⌄";
-    width: 18px;
-    justify-self: center;
-    color: var(--soft);
-    font: 18px/1 var(--sans);
-    text-align: center;
-}
-
-.inspector-debug__disclosure[open] > .inspector-debug__summary::after {
-    content: "⌃";
-}
-
-.inspector-debug__summary span,
-.inspector-debug__summary strong,
-.inspector-debug__summary small,
-.inspector-debug__actions button,
-.inspector-debug__copy,
-.inspector-debug__row dt,
-.inspector-debug__probe-error dt {
-    font-family: var(--cond);
-    font-size: 13px;
-    line-height: 1;
-    letter-spacing: 0.02em;
-    text-transform: lowercase;
-}
-
-.inspector-debug__summary span,
-.inspector-debug__summary small {
-    color: var(--soft);
-    font-weight: 500;
-}
-
-.inspector-debug__summary strong {
-    font-weight: 600;
-}
-
-.inspector-debug__summary code,
-.inspector-debug__row code {
-    min-width: 0;
-    font: 11px/1.45 var(--mono);
-    font-variant-numeric: tabular-nums;
-    overflow-wrap: anywhere;
-}
-
-.inspector-debug__summary small {
-    white-space: nowrap;
-}
-
-.inspector-debug__body {
-    border-block-start: 1px solid var(--sep);
-    padding: 6px 12px 10px;
-}
-
-.inspector-debug__actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 4px;
-    min-height: 40px;
-    margin-block-end: 4px;
-}
-
-.inspector-debug__actions:empty {
-    display: none;
-}
-
-.inspector-debug__actions button,
-.inspector-debug__copy {
-    position: relative;
-    min-width: 44px;
-    min-height: 40px;
-    border: 0;
-    border-radius: 0;
-    padding: 0 10px;
-    background: transparent;
-    color: var(--ink);
-    cursor: pointer;
-    font-weight: 600;
-    transition-property: background-color, scale;
-    transition-duration: 150ms;
-    transition-timing-function: var(--ease);
-}
-
-.inspector-debug__actions button:hover,
-.inspector-debug__copy:hover {
-    background: var(--wash);
-}
-
-.inspector-debug__actions button:focus-visible,
-.inspector-debug__copy:focus-visible {
-    outline: 2px solid var(--ink);
-    outline-offset: -3px;
-}
-
-.inspector-debug__actions button:active,
-.inspector-debug__copy:active {
-    scale: 0.96;
-}
-
-.inspector-debug__actions button:disabled {
-    cursor: wait;
-    opacity: 0.55;
-}
-
-.inspector-debug__rows {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    margin: 0;
-}
-
-.inspector-debug__row,
-.inspector-debug__probe-error {
-    min-height: 40px;
-    display: grid;
-    grid-template-columns: 120px minmax(0, 1fr);
-    align-items: stretch;
-    border-block-end: 1px solid var(--sep);
-}
-
-.inspector-debug__row dt,
-.inspector-debug__probe-error dt {
-    display: flex;
-    align-items: center;
-    margin: 0;
-    padding-inline-end: 8px;
-    color: var(--soft);
-    font-weight: 500;
-}
-
-.inspector-debug__row dd,
-.inspector-debug__probe-error dd {
-    min-width: 0;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    margin: 0;
-    padding-inline-start: 8px;
-}
-
-.inspector-debug__probe-error dd {
-    display: flex;
-    padding-inline-end: 8px;
-    color: var(--soft);
-    font-size: 12px;
-    line-height: 1.45;
-    text-wrap: pretty;
-}
-
-.inspector-debug__copy {
-    align-self: stretch;
-    width: 56px;
-    min-width: 56px;
-    margin-inline-start: 8px;
-    padding-inline: 8px;
-    color: var(--soft);
-}
-
-.inspector-debug__copy.is-copied {
-    background: var(--wash);
-    color: var(--ink);
-}
-
-.inspector-debug__notice {
-    min-height: 40px;
-    display: flex;
-    align-items: center;
-    color: var(--soft);
-    font-size: 12px;
-    line-height: 1.45;
-    text-wrap: pretty;
-}
-
-.inspector-debug__notice.is-error,
-.inspector-debug__transient.is-error {
-    color: var(--ink);
-}
-
-.inspector-debug__transient {
-    min-height: 20px;
-    padding-block-start: 6px;
-    color: var(--soft);
-    font: 500 12px/1.4 var(--cond);
-}
-
-@media (max-width: 720px) {
-    .inspector-debug__summary {
-        grid-template-columns: auto auto minmax(0, 1fr) 18px;
-        padding-block: 7px;
-    }
-
-    .inspector-debug__summary small {
-        grid-column: 1 / 4;
-        grid-row: 2;
-    }
-
-    .inspector-debug__summary::after {
-        grid-column: 4;
-        grid-row: 1 / span 2;
-    }
-
-    .inspector-debug__actions button {
-        flex: 1;
-    }
-
-    .inspector-debug__row,
-    .inspector-debug__probe-error {
-        grid-template-columns: 84px minmax(0, 1fr);
-    }
-}
-
-.branch-cells {
-    display: flex;
-    flex-direction: column;
-}
-.branch-yaml-query.cell-sealed {
-    /* Sealed cells visually recede — they're history, not
-       affordance. Active cell stays at full contrast. */
-    opacity: 0.7;
-}
-.branch-yaml-query.cell-sealed:hover {
-    /* Restore on hover so the user can read the source clearly
-       when reviewing past commits. */
-    opacity: 1;
-}
-
-.evaluate-editor {
-    position: relative;
-    /* Reserve space so the floating button doesn't overlap
-       whatever follows (the result callout). */
-    margin-block-end: var(--wa-space-l);
-}
-.evaluate-editor tonk-code {
-    display: block;
-    width: 100%;
-}
 .evaluate-play {
     position: absolute;
     /* Half-overlap the editor's bottom edge. */
@@ -2771,135 +2504,6 @@ tonk-code:focus-within {
    own injected styles, since this stylesheet does not cross into the
    editor's shadow root where cells render. */
 
-/* Result-view switcher — a `<wa-tab-group>` with the tab strip
-   on the inline-end side. The active-tab indicator and the
-   selected tab itself follow the page foreground (black in
-   light mode, white in dark) rather than WA's default brand
-   blue, so the switcher reads as neutral chrome. */
-.evaluate-tabs {
-    --indicator-color: var(--wa-color-text-normal);
-}
-.evaluate-tabs wa-tab[active]::part(base) {
-    color: var(--wa-color-text-normal);
-}
-
-/* Table view — one `<table>` per query block. */
-.query-tables {
-    width: 100%;
-}
-.query-table table {
-    border-collapse: collapse;
-    width: 100%;
-    font-size: var(--tonk-code-font-size);
-}
-.query-table th,
-.query-table td {
-    padding: var(--wa-space-2xs) var(--wa-space-s);
-    text-align: start;
-    border-block-end: 1px solid var(--wa-color-surface-border);
-    word-break: break-word;
-}
-/* Headers stand clearly apart from the body — bolder, kept in
-   their natural case. */
-.query-table th {
-    font-weight: 700;
-}
-
-/* The concept-name header sits in a span painted in inverse
-   colors (page foreground as background) — the same
-   headline-cover treatment the page's `h1` uses. The cover hugs
-   the text, not the whole cell. It is the table's title, so it
-   reads a notch larger than the plain field headers. */
-.query-table th.query-table-this > span {
-    background: var(--wa-color-text-normal);
-    color: var(--wa-color-neutral-fill-quiet);
-    font-size: var(--wa-font-size-l);
-    padding: var(--wa-space-3xs) var(--wa-space-2xs);
-    -webkit-box-decoration-break: clone;
-    box-decoration-break: clone;
-}
-/* The entity URI is monospaced and hard-clipped to its last 8
-   characters (the unique suffix; the `did:key:z6Mk…` prefix is
-   boilerplate). The cell is a `<wa-copy-button>` whose trigger
-   span does the clip — clicking it copies the full URI.
-   `direction: rtl` clips from the start with no ellipsis; a
-   leading LRM keeps the glyphs left-to-right. */
-.query-table td.query-table-this {
-    font-family: var(--wa-font-family-code, ui-monospace, monospace);
-}
-.query-table td.query-table-this wa-copy-button {
-    cursor: pointer;
-}
-.query-table td.query-table-this span {
-    display: inline-block;
-    width: 8ch;
-    overflow: hidden;
-    white-space: nowrap;
-    direction: rtl;
-    text-align: start;
-    vertical-align: bottom;
-}
-.query-table td.query-table-this span::before {
-    content: "\200E"; /* LRM — preserves left-to-right glyph order */
-}
-
-/* The evaluate-result comparison panel.
-   `.branch-row` re-defines `--wa-color-surface-default` /
-   `--wa-color-surface-raised` as transparent so the row blends
-   into the page; that cascade reaches the `<wa-comparison>`
-   inside, leaving its panels and handle invisible. Restore
-   solid surfaces here. */
-.evaluate-comparison {
-    /* Reset the surface vars to the page-level defaults so the
-       comparison's slot panels render with a real fill. */
-    --wa-color-surface-default: var(--wa-color-neutral-fill-quiet);
-    --wa-color-surface-raised: var(--wa-color-neutral-fill-normal);
-
-    display: block;
-    /* Comparison panels are absolute inside the slider; without
-       a height on the host the whole thing collapses to 0. */
-    min-height: 18rem;
-    background: var(--wa-color-surface-default);
-    border: 1px solid var(--wa-color-surface-border);
-    border-radius: var(--wa-border-radius-s);
-}
-.evaluate-comparison::part(handle) {
-    /* Force a visible handle — without an explicit fill the
-       SVG inside renders against whatever happens to be behind
-       it, which is often the same color as the comparison panel. */
-    background: var(--wa-color-text-normal);
-    color: var(--wa-color-neutral-fill-quiet);
-}
-.evaluate-comparison::part(divider) {
-    background: var(--wa-color-text-normal);
-}
-.evaluate-side {
-    /* Each slot fills its slider half. Padding gives the
-       contents breathing room from the divider. */
-    box-sizing: border-box;
-    width: 100%;
-    height: 100%;
-    padding: var(--wa-space-s);
-    background: var(--wa-color-surface-default);
-    color: var(--wa-color-text-normal);
-    overflow: auto;
-}
-.evaluate-side-before {
-    /* Dim the pre-commit side so the user can tell at a glance
-       which is "old". Slightly desaturated + lower opacity
-       reads as "previous" without making the text hard to
-       read. */
-    color: var(--wa-color-text-quiet);
-    background: var(
-        --wa-color-surface-lowered,
-        var(--wa-color-neutral-fill-quiet)
-    );
-}
-.evaluate-revision {
-    /* Sits above the match list as a one-line tag. */
-    margin-block-end: var(--wa-space-2xs);
-}
-
 /* ── Board route height anchor ────────────────────────────────
  * The board's strip/column/tile layout lives WITH the view, in
  * the `board-view` / `column-view` `display:` templates (see
@@ -2937,651 +2541,3 @@ tonk-code:focus-within {
     block-size: 100%;
     min-block-size: 0;
 }
-
-
-/* ── Notebook index ─────────────────────────────────────────────────────
-   `/space/{repo}/notebook` — every notebook in the space. A list of links,
-   not cards: the index is a way through to a notebook, not a place to
-   linger, so it should read in one glance. */
-.notebook-index {
-  max-width: 48rem;
-  margin: 0 auto;
-  padding: var(--wa-space-l, 1.5rem);
-}
-.notebook-index h1 {
-  font-size: var(--wa-font-size-xl, 1.5rem);
-  margin: 0 0 var(--wa-space-m, 1rem);
-}
-/* The row this draws is the same one the notebook page hides in its data
-   pane (`.notebook-data[hidden]`), so the link is invisible there and shown
-   only here, where the index gives it a home. */
-.notebook-index .notebook-row { display: block; }
-.notebook-index__item {
-  display: block;
-  padding: var(--wa-space-s, 0.75rem) var(--wa-space-m, 1rem);
-  border-radius: var(--wa-border-radius-m, 0.375rem);
-  color: var(--wa-color-text-normal);
-  text-decoration: none;
-}
-.notebook-index__item:hover {
-  background: var(--wa-color-neutral-fill-quiet);
-}
-.notebook-index__title { font-weight: 500; }
-.notebook-index .notebook-block-rows { display: none; }
-
-/* The switcher. The heading IS the control: an empty document showing
-   `# `, with the suggestion list under it. No field, no button — what you
-   type is the title, and the list says what pressing Enter will do. */
-/* The rows are DATA, not a list.
-   `<tonk-display model=tonk:notebook>` renders one link per notebook inside
-   the switcher; those links are what the suggestions are built from, and
-   what the page falls back to if the script never loads. Once the switcher
-   is running they must not also render as a list above the input, which is
-   the "why am I looking at Scratch" of it. */
-/* The rows are the switcher's DATA, not a list to read: they feed the
-   suggestions and are the no-script fallback. Hidden once the draft
-   notebook mounts — keyed on the notebook, since that is what the view
-   renders. */
-tonk-notebook-index:has(tonk-notebook[draft]) .notebook-index,
-tonk-notebook-index:has(tonk-notebook[draft]) .notebook-index__item {
-  display: none;
-}
-tonk-notebook-index {
-  display: block;
-  max-width: 48rem;
-  margin: 0 auto;
-  padding: var(--wa-space-l, 1.5rem);
-}
-
-.notebook-switcher__input {
-  display: block;
-  margin: 0 0 var(--wa-space-s, 0.75rem);
-  font-size: var(--wa-font-size-xl, 1.5rem);
-}
-.notebook-switcher__panel {
-  margin: 0 0 var(--wa-space-l, 1.5rem);
-  border: 1px solid var(--wa-color-surface-border);
-  border-radius: var(--wa-border-radius-m, 0.375rem);
-  overflow: hidden;
-}
-.notebook-switcher__row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--wa-space-m, 1rem);
-  padding: var(--wa-space-s, 0.75rem) var(--wa-space-m, 1rem);
-  cursor: pointer;
-}
-.notebook-switcher__name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* What Enter will do, quiet and out of the way: the name is what you
-   read, the verb only says which of the two things happens. */
-.notebook-switcher__verb {
-  flex: 0 0 auto;
-  color: var(--wa-color-text-quiet);
-  font-size: var(--wa-font-size-xs, 0.75rem);
-}
-.notebook-switcher__row--active {
-  background: var(--wa-color-neutral-fill-quiet);
-}
-/* The matched characters, so the reason a row is here is visible. */
-.notebook-switcher__row mark {
-  background: none;
-  color: var(--wa-color-brand-fill-loud, currentColor);
-  font-weight: 600;
-}
-/* The create row is an ordinary row: same shape, same weight. Only its
-   verb differs, which is the point — creating is a pick, not a special
-   case parked at the bottom. */
-
-/* Rows read as a list, separated rather than boxed: the index is a way
-   through to a notebook, not a place to linger. */
-.notebook-index__item + .notebook-index__item {
-  border-top: 1px solid var(--wa-color-surface-border);
-}
-.notebook-index__empty {
-  margin: 0;
-  padding: var(--wa-space-m, 1rem);
-  color: var(--wa-color-text-quiet);
-  font-size: var(--wa-font-size-s, 0.875rem);
-}
-.notebook-index__empty kbd {
-  font-family: var(--wa-font-family-code, monospace);
-  font-size: 0.9em;
-  padding: 0.1em 0.35em;
-  border: 1px solid var(--wa-color-surface-border);
-  border-radius: var(--wa-border-radius-s, 0.25rem);
-}
-/* ── The ceremony cluster ──────────────────────────────────────────
- *
- * A column of blocks over a dimmed page, from `fabb/onboard.html`:
- * "the page dims, the surface never". Rows settle into records as
- * their step completes, so what has been answered stays legible above
- * what is being answered now.
- *
- * Written as classes rather than against one element's id: the
- * registration cluster is the first surface built this way, not the
- * only one it suits. `.ed` in particular is a bare input wearing the
- * row's own type, and any row that takes a value wants it.
- */
-  /* The cluster, from `fabb/onboard.html`: rows stack over a dimmed
-     page and the surface itself never dims. Each row settles into a
-     record as its step completes, so what you have already answered
-     stays legible above what you are answering now.
-
-     Not a `wa-dialog`: this is a column of blocks, and the way out is a
-     bare word at the foot rather than a titlebar close. */
-  /* The dim carries the whole separation — the surface never dims — so
-     it has to actually hide what is behind it. A light-theme value
-     hardcoded here read as nearly transparent against the dark theme,
-     and the page showed through and collided with the rows. */
-  #tonk-register {
-    position: fixed; inset: 0; z-index: 21;
-    box-sizing: border-box;
-    inline-size: auto; max-inline-size: none;
-    block-size: auto; max-block-size: none;
-    margin: 0; padding: 0; overflow: auto;
-    border: 0; border-radius: 0;
-    background: transparent; box-shadow: none;
-    color: inherit;
-  }
-  #tonk-register[open] { display: block; }
-  /* Suspended = the account tab it is a page of went to the background:
-     hidden with its state intact, shown again on the switch back. After
-     the [open] rule so it wins their specificity tie. */
-  #tonk-register[data-suspended] { display: none; }
-  #tonk-register::backdrop { background: var(--dim); backdrop-filter: blur(3px); }
-  /* Hub account work is a trusted modal over the spaces collection. */
-  html:has(#tonk-register[data-anchored][open]:not([data-suspended])),
-  body:has(#tonk-register[data-anchored][open]:not([data-suspended])) {
-    overflow: hidden;
-  }
-  #tonk-register[data-anchored] {
-    overflow: hidden;
-    overscroll-behavior: none;
-  }
-  #tonk-register[data-anchored]::backdrop { backdrop-filter: none; }
-  #tonk-register[data-anchored] .ocol {
-    position: absolute; left: auto; top: var(--anchor-top, 86px);
-    right: max(16px, calc(100vw - var(--anchor-left, 0px) - var(--anchor-width, 0px)));
-    bottom: auto; margin: 0;
-    width: min(360px, calc(100vw - 32px));
-    max-height: calc(100dvh - 110px); overflow: auto;
-    overscroll-behavior: none;
-    display: flex; flex-flow: row wrap; align-content: flex-start;
-    border: 1.5px solid var(--ink); border-radius: 25px;
-    background: var(--modal, var(--card));
-  }
-  #tonk-register[data-anchored] .ostack { display: contents; }
-  #tonk-register[data-anchored] .mblk { box-shadow: none; }
-  #tonk-register[data-anchored] .m-head {
-    box-sizing: border-box; flex: 0 0 100%;
-    min-height: 48px; height: 48px; padding: 0 18px;
-    align-items: center; gap: 16px;
-    background: var(--wash); font-size: 17px;
-  }
-  #tonk-register[data-anchored] .fabb-task-disc {
-    display: block; box-sizing: border-box;
-    width: 18px; height: 18px; flex: 0 0 18px;
-    background: var(--ink); border-radius: 50%;
-  }
-  #tonk-register[data-anchored] .fabb-task-title {
-    margin-left: auto; text-align: right;
-  }
-  #tonk-register[data-anchored] .orow {
-    box-sizing: border-box; flex: 0 0 100%;
-    min-height: 48px; height: auto; padding: 18px 18px 14px;
-    grid-template-rows: auto 48px; gap: 8px;
-    background: var(--wash);
-  }
-  #tonk-register[data-anchored] .orow.editing { min-height: 104px; }
-  #tonk-register[data-anchored] .orow.pre,
-  #tonk-register[data-anchored] .obtn.pre {
-    min-height: 0; height: 0; padding-top: 0; padding-bottom: 0;
-  }
-  #tonk-register[data-anchored] .orow.editing .k {
-    color: var(--ink); font: 600 17px/1.1 var(--cond);
-  }
-  #tonk-register[data-anchored] .orow.editing .v { align-items: stretch; }
-  #tonk-register[data-anchored] .orow.editing .ed {
-    box-sizing: border-box; min-height: 48px; height: 48px;
-    padding: 12px 14px 9px; border: 0;
-    background: var(--wash); font: 400 18px/1.5 var(--cond);
-  }
-  #tonk-register[data-anchored] .orow.editing .ed:focus-visible {
-    outline: 2px solid var(--ink); outline-offset: -2px;
-  }
-  #tonk-register[data-anchored] .oexp {
-    order: 90; box-sizing: border-box; flex: 0 0 100%;
-    min-height: 105px; margin: 0; padding: 10px 18px 18px;
-    border-top: 0; background: var(--wash);
-  }
-  #tonk-register[data-anchored] .oexp p {
-    font: 400 18px/1.5 var(--cond); letter-spacing: 0;
-    text-transform: none;
-  }
-  #tonk-register[data-anchored] .ghost,
-  #tonk-register[data-anchored] .obtn {
-    box-sizing: border-box; flex: 0 0 50%;
-    min-height: 48px; height: 48px; margin: 0;
-    padding: 12px 18px; border: 0;
-    font: 600 17px/1.1 var(--cond); letter-spacing: 0;
-    text-decoration: none;
-  }
-  #tonk-register[data-anchored] .ghost { order: 100; justify-content: flex-start; text-align: left; }
-  #tonk-register[data-anchored] .obtn {
-    order: 101; align-items: center; justify-content: flex-end;
-    opacity: 1;
-  }
-  @media (max-width: 600px) {
-    #tonk-register[data-anchored] .ocol {
-      top: auto; right: 16px; bottom: calc(82px + env(safe-area-inset-bottom, 0px));
-      max-height: calc(100dvh - 110px - env(safe-area-inset-bottom, 0px));
-    }
-  }
-
-  /* In-space account work is a trusted modal occupying the FABB's translated
-     seat. The guest chrome remains mounted for restoration but is hidden. */
-  #tonk-register[data-fabb-task] {
-    overflow: hidden;
-    /* It stands in for the FABB, so it wears the FABB's twin: the bright
-       one, over a dark space as over a light page. The ceremony's rules read
-       the page's names, which the dark swap repoints, so they are pinned
-       here to the `--fabb-*` light column. The washes are restated because
-       `:root` already resolved them against the page's ink. `--dim` is left
-       alone: the backdrop dims the page in the page's own scheme. */
-    color-scheme: light;
-    --ink: var(--fabb-ink);
-    --on-ink: var(--fabb-on-ink);
-    --soft: var(--fabb-ink-soft);
-    --ring: var(--fabb-ring);
-    --sep: var(--fabb-sep);
-    --wash: var(--fabb-hover);
-    --wash-2: var(--fabb-press);
-    --wash-p: color-mix(in srgb, var(--fabb-on-ink) 16%, transparent);
-    --page: #e8e6e4;
-    --card: #fcfbfb;
-    --modal: var(--fabb-panel);
-  }
-  #tonk-register[data-fabb-task] .ocol {
-    position: absolute;
-    margin: 0;
-    max-height: calc(100dvh - 32px);
-    overflow: auto;
-    border: 1.5px solid var(--ink);
-    border-radius: 25px;
-    background: var(--page);
-  }
-  #tonk-register[data-fabb-task] .ostack { gap: 0; }
-  #tonk-register[data-fabb-task] .mblk,
-  #tonk-register[data-fabb-task] .obtn { min-height: 48px; border-radius: 0; }
-  #tonk-register[data-fabb-task] .ghost { margin: 0; min-height: 48px; }
-
-  /* The study's chrome type: condensed, 600, 13px, slightly tracked and
-     lowercased. Inheriting the page's body font instead made everything
-     read thin and a size too large. */
-  .tonk-ceremony {
-    font-family: var(--cond);
-    font-weight: 600;
-    font-size: 13px;
-    line-height: 1;
-    letter-spacing: .02em;
-    text-transform: lowercase;
-    color: var(--ink);
-  }
-  .tonk-ceremony ::selection {
-    background: var(--ink);
-    color: var(--on-ink);
-  }
-  .tonk-ceremony .ocol {
-    width: min(576px, calc(100vw - 32px));
-    margin: 22vh auto 80px;
-    display: flex; flex-direction: column;
-  }
-  .tonk-ceremony .ostack { display: flex; flex-direction: column; gap: 7px; }
-
-  /* The dim does the separating, so the blocks need no blur of their own. */
-  /* `--ring` is the study's edge: translucent ink, not a grey border
-     token. Reaching for the app's `--wa-color-*` set instead put a
-     near-white ring around every block in the dark theme, which nothing
-     else in the design has. */
-  .tonk-ceremony .mblk {
-    background: var(--modal, var(--card));
-    color: var(--ink);
-    box-shadow: 0 0 0 1px var(--ring);
-  }
-
-  .tonk-ceremony .m-head {
-    height: 36px; display: flex; align-items: flex-end;
-    padding: 0 16px 9px; font-size: 13px; white-space: nowrap;
-  }
-  .tonk-ceremony .fabb-task-disc { display: none; }
-
-  /* One row per step. `pre` is the folded state a row unfolds out of. */
-  .tonk-ceremony .orow {
-    position: relative; height: 36px;
-    display: flex; align-items: flex-end; justify-content: space-between;
-    gap: 16px; padding: 0 10px 9px 16px; overflow: hidden;
-    transition: height .4s var(--ease),
-                opacity .4s var(--ease),
-                padding-top .4s var(--ease),
-                padding-bottom .4s var(--ease);
-  }
-  .tonk-ceremony .orow.pre,
-  .tonk-ceremony .obtn.pre {
-    height: 0 !important; opacity: 0;
-    padding-top: 0; padding-bottom: 0; pointer-events: none;
-  }
-  .tonk-ceremony .orow .k {
-    color: var(--soft);
-    white-space: nowrap; display: flex; align-items: flex-end; gap: 8px;
-  }
-  .tonk-ceremony .orow .v {
-    min-width: 0; overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; text-align: right;
-    display: flex; align-items: flex-end; justify-content: flex-end;
-    flex: 1;
-  }
-  /* Descender room for the clip, handed straight back so the seat holds. */
-  .tonk-ceremony .orow .v,
-  .tonk-ceremony .orow .k { padding-bottom: 4px; margin-bottom: -4px; }
-
-  /* An active editor opens into a two-line workspace. The noun remains
-     visible at the upper left while the value gets the full row below;
-     settling the answer removes `editing` and restores the compact record. */
-  .tonk-ceremony .orow.editing {
-    box-sizing: border-box;
-    height: 60px;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 13px 20px;
-    align-items: stretch;
-    gap: 7px;
-    padding-top: 10px;
-    padding-bottom: 10px;
-  }
-  .tonk-ceremony .orow.editing .k,
-  .tonk-ceremony .orow.editing .v {
-    width: 100%;
-    padding-bottom: 0;
-    margin-bottom: 0;
-  }
-  .tonk-ceremony .orow.editing .k { align-items: flex-start; }
-  .tonk-ceremony .orow.editing .v {
-    align-items: flex-end;
-    justify-content: flex-start;
-    text-align: left;
-  }
-
-  /* The editor: inline text with the browser's native caret. A real
-     input wearing the study's editor, with native text-entry behavior
-     and no extra control chrome. */
-  .tonk-ceremony .ed {
-    appearance: none; -webkit-appearance: none;
-    box-sizing: border-box;
-    background: none; border: 0; outline: none; margin: 0;
-    padding: 0;
-    font: inherit; letter-spacing: inherit; text-transform: none;
-    color: var(--ink); caret-color: var(--ink);
-    text-align: right; width: 100%; min-width: 0;
-    /* The row is `align-items: flex-end`, so the input has to sit on the
-       same baseline as the noun beside it rather than centring itself in
-       whatever height it claims. */
-    height: 1em; line-height: 1;
-  }
-  .tonk-ceremony .orow.editing .ed {
-    display: block;
-    inline-size: 100%;
-    max-inline-size: none;
-    height: 20px;
-    line-height: 20px;
-    text-align: left;
-  }
-  .tonk-ceremony .ed::placeholder {
-    color: var(--soft); opacity: .55; text-transform: none;
-  }
-
-  /* Autofill (an address fill or a passkey's) otherwise repaints the
-     field yellow with the vendor's own ink. */
-  .tonk-ceremony .ed:-webkit-autofill,
-  .tonk-ceremony .ed:-webkit-autofill:focus {
-    -webkit-text-fill-color: var(--ink);
-    box-shadow: 0 0 0 100px var(--card) inset;
-  }
-
-  /* An action step: solid ink, full rung, the word bottom-right. While a
-     ceremony is out of our hands the block blinks rather than spins. */
-  .tonk-ceremony .obtn {
-    display: flex; align-items: flex-end; justify-content: flex-end; gap: 6px;
-    height: 36px; padding: 0 10px 9px 24px; overflow: hidden;
-    background: var(--ink);
-    color: var(--on-ink);
-    box-shadow: 0 0 0 1px var(--ink);
-    font-size: 13px; cursor: pointer; white-space: nowrap; border: 0;
-    transition: height .4s var(--ease),
-                opacity .4s var(--ease);
-  }
-  .tonk-ceremony .obtn.wait {
-    cursor: default;
-    animation: tonk-register-wait 2.4s var(--ease) infinite;
-  }
-  @keyframes tonk-register-wait { 0%, 100% { opacity: 1 } 50% { opacity: .72 } }
-
-  /* A mistake flashes rather than colouring: attention is earned by
-     blinking, never by hue. */
-  .tonk-ceremony .flash { animation: tonk-register-flash .45s var(--ease) 2; }
-  @keyframes tonk-register-flash { 50% { opacity: .55 } }
-
-  /* The narrator: one block whose sentence changes with the step. */
-  .tonk-ceremony .oexp {
-    margin-top: 7px; min-height: 36px; padding: 10px 16px 11px;
-    display: flex; flex-direction: column; gap: 2px;
-  }
-  .tonk-ceremony .oexp p {
-    margin: 0; font-size: 13px; line-height: 1.55;
-    color: var(--soft);
-  }
-  .tonk-ceremony .oexp p b {
-    font-weight: 600; color: var(--ink);
-  }
-  .tonk-ceremony .oexp a {
-    color: var(--ink);
-    text-decoration: underline; text-underline-offset: 3px;
-  }
-  .tonk-ceremony .oexp a:focus-visible {
-    outline: 2px solid var(--ink); outline-offset: 3px;
-  }
-
-  /* The way out: the quietest thing on screen. */
-  .tonk-ceremony .ghost {
-    align-self: flex-end; margin-top: 10px; background: none; border: 0;
-    padding: 0; display: block;
-    font-size: 13px; cursor: pointer;
-    color: var(--ink);
-    text-decoration: underline; text-underline-offset: 3px;
-  }
-
-  /* The in-space account ceremony uses the current FABB task shell while the
-     same DOM continues to drive the real email lookup and WebAuthn ceremony. */
-  #tonk-register[data-fabb-task] .ocol {
-    display: flex;
-    flex-flow: row wrap;
-    overflow: hidden;
-    background: var(--modal, var(--card));
-  }
-  #tonk-register[data-fabb-task] .ostack { display: contents; }
-  #tonk-register[data-fabb-task] .mblk { box-shadow: none; }
-  #tonk-register[data-fabb-task] .m-head {
-    box-sizing: border-box;
-    flex: 0 0 100%;
-    min-height: 48px;
-    height: 48px;
-    padding: 0 18px;
-    align-items: center;
-    gap: 16px;
-    border-bottom: 0;
-    background: var(--wash);
-    font-size: 17px;
-  }
-  #tonk-register[data-fabb-task] .fabb-task-disc {
-    display: block;
-    box-sizing: border-box;
-    width: 18px;
-    height: 18px;
-    flex: 0 0 18px;
-    border: 2px solid var(--ink);
-    border-radius: 50%;
-  }
-  #tonk-register[data-fabb-task] .fabb-task-title {
-    margin-left: auto;
-    text-align: right;
-  }
-  #tonk-register[data-fabb-task] .orow {
-    box-sizing: border-box;
-    flex: 0 0 100%;
-    min-height: 48px;
-    height: 48px;
-    padding: 12px 18px 9px;
-    align-items: center;
-    font: 400 18px/1.5 var(--cond);
-    letter-spacing: 0;
-    text-transform: none;
-    background: var(--wash);
-  }
-  /* Keep these rows in the DOM for the activation wait, but let the
-     instruction below the saved email and name carry the visible message. */
-  #tonk-register[data-fabb-task] #tonk-register-passkey-row,
-  #tonk-register[data-fabb-task] #tonk-register-confirm-row {
-    display: none;
-  }
-  #tonk-register[data-fabb-task] .orow.editing {
-    min-height: 104px;
-    height: auto;
-    grid-template-rows: auto 48px;
-    gap: 8px;
-    padding: 18px 18px 14px;
-  }
-  #tonk-register[data-fabb-task] .orow.editing .k {
-    color: var(--ink);
-    font: 600 17px/1.1 var(--cond);
-    letter-spacing: 0;
-  }
-  #tonk-register[data-fabb-task] .orow.editing .v {
-    align-items: stretch;
-  }
-  #tonk-register[data-fabb-task] .orow.editing .ed {
-    box-sizing: border-box;
-    min-height: 48px;
-    height: 48px;
-    padding: 12px 14px 9px;
-    border: 0;
-    background: var(--wash);
-    font: 400 18px/1.5 var(--cond);
-    letter-spacing: .02em;
-  }
-  #tonk-register[data-fabb-task] .orow.editing .ed:hover {
-    background: var(--wash-p);
-  }
-  #tonk-register[data-fabb-task] .orow.editing .ed:focus-visible {
-    outline: 2px solid currentColor;
-    outline-offset: -2px;
-  }
-  #tonk-register[data-fabb-task] .obtn {
-    order: 101;
-    box-sizing: border-box;
-    flex: 0 0 50%;
-    min-height: 48px;
-    height: 48px;
-    padding: 4px 12px;
-    align-items: center;
-    justify-content: flex-end;
-    border-top: 0;
-    font: 600 17px/1.1 var(--cond);
-    letter-spacing: 0;
-    text-align: right;
-    white-space: normal;
-    opacity: 1;
-  }
-  #tonk-register[data-fabb-task] .oexp {
-    order: 90;
-    box-sizing: border-box;
-    flex: 0 0 100%;
-    min-height: 105px;
-    margin: 0;
-    padding: 10px 18px 18px;
-    border-top: 0;
-    background: var(--wash);
-  }
-  #tonk-register[data-fabb-task] .oexp p {
-    font: 400 18px/1.5 var(--cond);
-    letter-spacing: 0;
-    text-transform: none;
-  }
-  #tonk-register[data-fabb-task] .ghost {
-    order: 100;
-    box-sizing: border-box;
-    flex: 0 0 50%;
-    min-height: 48px;
-    margin: 0;
-    padding: 12px 18px;
-    border-top: 0;
-    text-align: left;
-    text-decoration: none;
-    font: 600 17px/1.1 var(--cond);
-  }
-  #tonk-register[data-fabb-task] .ocol:has(#tonk-register-action[hidden]) .ghost {
-    flex-basis: 100%;
-  }
-  /* Logging in with a passkey picked without an address: a row of its
-     own under the address, ahead of what the dialog says. */
-  #tonk-register[data-anchored] #tonk-register-passkey,
-  #tonk-register[data-fabb-task] #tonk-register-passkey {
-    order: 80;
-    flex-basis: 100%;
-  }
-
-  @media (max-width: 519px) {
-    .tonk-ceremony .m-head,
-    .tonk-ceremony .orow,
-    .tonk-ceremony .obtn {
-      min-height: 44px;
-      height: 44px;
-    }
-    .tonk-ceremony .orow {
-      align-items: center;
-      padding-top: 0;
-      padding-bottom: 0;
-    }
-    .tonk-ceremony .orow .v,
-    .tonk-ceremony .orow .k {
-      align-items: center;
-      padding-bottom: 0;
-      margin-bottom: 0;
-    }
-    .tonk-ceremony .ed {
-      height: 44px;
-      font-size: 16px;
-      line-height: 44px;
-    }
-    .tonk-ceremony .ghost {
-      min-height: 44px;
-      display: flex;
-      align-items: center;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    #tonk-register,
-    .tonk-ceremony .orow,
-    .tonk-ceremony .obtn {
-      transition: none;
-    }
-    .tonk-ceremony .obtn.wait,
-    .tonk-ceremony .flash {
-      animation: none;
-    }
-  }

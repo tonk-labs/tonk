@@ -31,9 +31,8 @@
 //!
 //! Both checks work by *mirroring the renderer*, which is where the
 //! subtlety lives. The renderer will not read a `<style>` or
-//! `<script>` body (their braces are CSS and JS), will not read an
-//! HTML comment, and will not interpolate a portal document at all.
-//! Miss any of those and the check rejects the library it is meant to
+//! `<script>` body (their braces are CSS and JS), and will not read an
+//! HTML comment. Miss any of those and the check rejects the library it is meant to
 //! protect. That is why the scan is shared with the binding scan
 //! ([`tonk_template::scan`]) rather than written twice.
 
@@ -224,17 +223,6 @@ pub(crate) fn compile_bindings(
     assertion: &SyntaxApplication,
     scope: &Scope,
 ) -> Result<Compiled, AnalyzeError> {
-    // A portal view's templates are full HTML documents mounted into
-    // a `<tonk-portal>` verbatim — the display checks the same `type`
-    // entry and takes a different path entirely. Nothing interpolates
-    // them and nothing delegates their events, so a `{` in one is a
-    // brace and an `on:` in one is an attribute. Reading either as a
-    // reference would fail the lowering over a document the renderer
-    // never looks inside.
-    if is_portal(assertion) {
-        return Ok(Compiled::default());
-    }
-
     // The concept the view renders. Without it neither interpolation
     // check has anything to check against, so both are skipped: a view
     // whose `this:` is a variable, or names something that is not a
@@ -376,33 +364,6 @@ fn offset_range(
     }
     lsp_types::Range { start, end }
 }
-
-/// Whether the view's `show:` declares a portal document: a `type`
-/// entry reading `text/html`.
-///
-/// The same entry the display checks — see `handle_view_frame` in
-/// `tonk-display` — so the two agree on which templates are markup to
-/// read and which are documents to hand over untouched.
-fn is_portal(assertion: &SyntaxApplication) -> bool {
-    use tonk_template::resolve::TYPE_FACET;
-
-    assertion
-        .fields
-        .iter()
-        .filter(|field| field.name == SHOW_FIELD)
-        .filter_map(|field| match &field.value {
-            FieldValue::Nested(entries) => Some(entries),
-            _ => None,
-        })
-        .flatten()
-        .any(|entry| {
-            entry.name == TYPE_FACET
-                && field_text(&entry.value).as_deref() == Some(PORTAL_CONTENT_TYPE)
-        })
-}
-
-/// The `type` value that marks a portal document.
-const PORTAL_CONTENT_TYPE: &str = "text/html";
 
 /// The concept a view renders, named by its `this:` field.
 ///
@@ -1058,26 +1019,6 @@ view!:
         );
     }
 
-    /// A portal view's templates are whole HTML documents mounted
-    /// verbatim, so nothing in them is a reference — a `with:src` there
-    /// is an attribute, not an embed.
-    #[dialog_common::test]
-    fn a_portal_view_compiles_no_embeds() {
-        let source = r#"
-view!:
-  this: tonk:demo
-  show:
-    type: "text/html"
-    ui: |
-      <html><head><link rel=stylesheet with:src=base></head></html>
-"#;
-        let statements = lower(source).expect("the portal view lowers");
-        assert!(
-            embeds(&statements).is_none(),
-            "a portal document is mounted verbatim; nothing in it is resolved",
-        );
-    }
-
     /// A reference carrying an entity reads ANOTHER view's map. The
     /// KEY is not checkable here — it lives on the branch — but the
     /// view holding it must resolve, or the embed reads content that
@@ -1550,16 +1491,6 @@ view!: &counter/view
             descriptor.sources.get("subject"),
             Some(&tonk_template::event::Source::Literal("draft".into())),
         );
-    }
-
-    /// A portal document is mounted verbatim, so its braces are not
-    /// interpolations and its `on:` attributes are not bindings. The
-    /// display decides this from the same `type` entry.
-    #[dialog_common::test]
-    fn a_portal_documents_braces_are_not_interpolations() {
-        let source = modelled("<p>{counter}</p>", "{this}")
-            .replace("  show:\n", "  show:\n    type: \"text/html\"\n");
-        lower(&source).expect("a portal document is not read as a template");
     }
 
     /// The report points at the attribute, not at the template.

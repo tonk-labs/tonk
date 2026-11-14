@@ -10,7 +10,7 @@ const SOURCE = readFileSync(join(HERE, "..", "assets", "service_worker.js"), "ut
 
 // Run the worker script against stand-ins for a service worker's globals.
 // `build` is what the stamp writes; `fetched` answers the network.
-function worker({ origin = "https://tonk.test", build = "0123456789abcdef", fetched } = {}) {
+function worker({ origin = "https://tonk.test", build = "0123456789abcdef", fetched, networkMs } = {}) {
   const stores = new Map();
   const open = async (name) => {
     if (!stores.has(name)) stores.set(name, new Map());
@@ -30,6 +30,8 @@ function worker({ origin = "https://tonk.test", build = "0123456789abcdef", fetc
   };
   const context = vm.createContext({
     self,
+    setTimeout,
+    clearTimeout,
     URL,
     Request,
     Response,
@@ -41,7 +43,11 @@ function worker({ origin = "https://tonk.test", build = "0123456789abcdef", fetc
       match: async (request, { cacheName }) => (await open(cacheName)).match(request),
     },
   });
-  vm.runInContext(SOURCE.replace(/^const BUILD_ID = .*$/m, `const BUILD_ID = "${build}";`), context);
+  let source = SOURCE.replace(/^const BUILD_ID = .*$/m, `const BUILD_ID = "${build}";`);
+  if (networkMs != null) {
+    source = source.replace(/^const NETWORK_MS = .*$/m, `const NETWORK_MS = ${networkMs};`);
+  }
+  vm.runInContext(source, context);
   const settle = async (handler, event = {}) => {
     let done;
     handler({ ...event, waitUntil: (promise) => { done = promise; } });
@@ -75,7 +81,10 @@ test("it answers every address of the app with the one page", async () => {
 
 test("it leaves what the server answers itself to the server", () => {
   const { asked } = worker();
-  for (const path of ["/@", "/@/abc", "/.well-known/tonk", "/ucan/", "/customer/x", "/agent/", "/images/a.png"]) {
+  for (const path of [
+    "/@", "/@/abc", "/.well-known/tonk", "/ucan/", "/customer/x", "/agent/", "/images/a.png",
+    "/authorize", "/authorize/approve", "/token", "/register", "/.well-known/oauth-authorization-server",
+  ]) {
     assert.equal(asked(path, "navigate"), undefined, `${path} goes to the server`);
   }
   assert.equal(asked("/version.json", "cors"), undefined);
@@ -92,6 +101,22 @@ test("it opens the page with no network from what it kept", async () => {
   await settle(self.oninstall);
   online = false;
   assert.equal(await (await asked("/account", "navigate")).text(), "page");
+});
+
+test("it opens the page from what it kept when the network stalls", async () => {
+  let stalled = false;
+  const { self, settle, asked } = worker({
+    networkMs: 50,
+    fetched: async () => (stalled ? new Promise(() => {}) : new Response("page", { status: 200 })),
+  });
+  await settle(self.oninstall);
+  stalled = true;
+  const answer = await Promise.race([
+    asked("/account", "navigate"),
+    new Promise(resolve => setTimeout(() => resolve(null), 1_000)),
+  ]);
+  assert.ok(answer, "the navigation waited on a stalled network for a page it kept");
+  assert.equal(await answer.text(), "page");
 });
 
 test("it keeps a file the page loads and answers with it afterwards", async () => {

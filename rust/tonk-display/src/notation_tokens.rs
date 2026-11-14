@@ -184,6 +184,31 @@ fn walk_value(
     line_starts: &[usize],
     out: &mut Vec<Mark>,
 ) {
+    // Nested values are walked through their own fields' ranges. A
+    // mapping's range can run past what maps to bytes (it ends where the
+    // YAML block does), and bailing on it first left every key under a
+    // definition's `with:` unpainted.
+    match value {
+        FieldValue::Nested(fields) => {
+            for field in fields {
+                walk_field(field, text, line_starts, out);
+            }
+            return;
+        }
+        FieldValue::Premises(premises) => {
+            // A premise's `where:` bindings paint as ordinary
+            // field values; the `assert: <concept>` key paints as
+            // a key. The premise mapping's own range is its
+            // structure, no extra mark for the list itself.
+            for premise in premises {
+                for binding in &premise.bindings {
+                    walk_field(binding, text, line_starts, out);
+                }
+            }
+            return;
+        }
+        _ => {}
+    }
     let Some((from, to)) = range_to_bytes(value_range, line_starts) else {
         return;
     };
@@ -204,22 +229,7 @@ fn walk_value(
             to,
             decoration: Decoration::Entity,
         }),
-        FieldValue::Nested(fields) => {
-            for field in fields {
-                walk_field(field, text, line_starts, out);
-            }
-        }
-        FieldValue::Premises(premises) => {
-            // A premise's `where:` bindings paint as ordinary
-            // field values; the `assert: <concept>` key paints as
-            // a key. The premise mapping's own range is its
-            // structure, no extra mark for the list itself.
-            for premise in premises {
-                for binding in &premise.bindings {
-                    walk_field(binding, text, line_starts, out);
-                }
-            }
-        }
+        FieldValue::Nested(_) | FieldValue::Premises(_) => {}
         // A list's items share the list's range (a ranked `the:` or
         // `as:`, a command's `action:` names): the list paints as one
         // value.
@@ -273,6 +283,21 @@ fn range_to_bytes(range: &Range, line_starts: &[usize]) -> Option<(usize, usize)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A definition's nested `with:` mapping is keys all the way down,
+    /// as a notebook cell shows a `concept:` row.
+    #[test]
+    fn it_decorates_keys_inside_a_nested_mapping() {
+        let text = "concept!:\n  this: db:person\n  description: \"A person.\"\n  with:\n    name:\n      as: text\n      the: xyz.person/name";
+        let keys: Vec<&str> = collect_marks(text)
+            .into_iter()
+            .filter(|m| m.decoration == Decoration::Key)
+            .map(|m| &text[m.from..m.to])
+            .collect();
+        for key in ["this", "description", "with", "name", "as", "the"] {
+            assert!(keys.contains(&key), "{key} is a key: {keys:?}");
+        }
+    }
 
     #[test]
     fn it_decorates_an_assertion_head() {

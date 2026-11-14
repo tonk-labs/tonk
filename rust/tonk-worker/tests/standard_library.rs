@@ -36,10 +36,15 @@ const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profi
 /// `table.yaml` reached the seed before anything complained.
 const TABLE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/table.yaml");
 const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/notebook.yaml");
-const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose.yaml");
+const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose-editor.yaml");
+const CODE_EDITOR_LIBRARY: &str = include_str!("../../tonk-core/assets/library/code-editor.yaml");
 const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
 const META_LIBRARY: &str = include_str!("../../tonk-core/assets/library/meta.yaml");
 const TONK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/tonk.yaml");
+const VERSION_CONTROL_LIBRARY: &str =
+    include_str!("../../tonk-core/assets/library/version-control.yaml");
+const INSPECTOR_LIBRARY: &str = include_str!("../../tonk-core/assets/library/inspector.yaml");
+const TREE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/tree.yaml");
 
 /// Lower a library document the same way the seed does, asserting it
 /// parses, analyzes with no running system, and lowers to claims. Like
@@ -240,12 +245,12 @@ fn it_raises_the_signup_from_an_unlinked_account_cell() {
         "the panel must be able to tell whether an account is linked",
     );
     assert!(
-        panel.contains("else self.openRegistration();"),
-        "and open the panel that adds an account when none is",
+        panel.contains("self.signIn();"),
+        "and ask the host to sign the person in when none is",
     );
     assert!(
-        PROFILE_LIBRARY.contains("on:open-registration=tonk:open-registration"),
-        "by the command the worker records the panel's first stage for",
+        PROFILE_LIBRARY.contains("on:sign-in=tonk:sign-in"),
+        "by the command that asks the host for a sign-in",
     );
     assert!(
         PROFILE_LIBRARY.contains(
@@ -402,7 +407,7 @@ const FORM_CONTROL_PREFIX: &str = "dom.event.current-target.elements.";
 /// "open this space" over a repository that loaded.
 #[dialog_common::test]
 fn it_declares_the_repository_concept_the_space_chrome_resolves() {
-    let chrome = "<tonk-display with={id} entity={id} model=tonk:repository view=title>";
+    let chrome = "<tonk-display with=\"{space-branch}@{space-repo}\" entity={space-repo} model=tonk:repository view=title>";
     assert!(
         PROFILE_LIBRARY.contains(chrome),
         "the space chrome decides a space is here by resolving `tonk:repository`"
@@ -469,11 +474,11 @@ fn it_reads_form_controls_at_properties_they_have() {
 #[dialog_common::test]
 fn it_leaves_network_bearing_space_bindings_unquoted() {
     assert!(
-        PROFILE_LIBRARY.contains("space={id}"),
+        PROFILE_LIBRARY.contains("space={space-repo}"),
         "the FAB space binding must be resolved by the renderer"
     );
     assert!(
-        !PROFILE_LIBRARY.contains("space=\"{id}\""),
+        !PROFILE_LIBRARY.contains("space=\"{space-repo}\""),
         "a quoted binding can reach membership fetches unresolved"
     );
 }
@@ -593,7 +598,7 @@ fn display_body<'a>(source: &'a str, opening: &str) -> Option<&'a str> {
 fn it_hides_space_absence_slots_before_display_initialization() {
     let chrome = display_body(
         PROFILE_LIBRARY,
-        "<tonk-display with={id} entity={id} model=tonk:repository view=title>",
+        "<tonk-display with=\"{space-branch}@{space-repo}\" entity={space-repo} model=tonk:repository view=title>",
     )
     .expect("space chrome must contain its repository title display");
     for slot in ["no-model", "no-entity", "no-view"] {
@@ -614,7 +619,7 @@ fn it_hides_space_absence_slots_before_display_initialization() {
 fn it_recovers_from_every_absent_space_directory_state() {
     let directory_probe = display_body(
         PROFILE_LIBRARY,
-        "<tonk-display with=\"{profile-branch}@profile:tonk\" entity={id} model=space view=downloading>",
+        "<tonk-display with=\"{profile-branch}@profile:tonk\" entity={space-repo} model=space view=downloading>",
     )
     .expect("absent-space chrome must consult the profile directory");
 
@@ -638,7 +643,7 @@ fn it_recovers_from_every_absent_space_directory_state() {
     );
     assert_eq!(
         directory_probe
-            .matches("on:retry-registration=tonk:open-registration")
+            .matches("on:ask-sign-in=tonk:sign-in")
             .count(),
         2,
         "both absence states must offer sign-in recovery"
@@ -697,7 +702,7 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         // What a visit to a space that keeps no public ticket ends on.
         "this space is private",
         "class=\"space-unknown-back\" href=\"/\">go to home",
-        "<button type=\"button\" class=\"space-unknown-home\" on:retry-registration=tonk:open-registration>",
+        "<button type=\"button\" class=\"space-unknown-home\" on:ask-sign-in=tonk:sign-in>",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
@@ -912,14 +917,34 @@ fn it_mints_an_invite_when_copying_a_hub_space_link() {
 }
 
 #[dialog_common::test]
+fn it_answers_a_resend_activation_request_in_place() {
+    for contract in [
+        "<button type=\"button\" on:resend-activation=account/resend-activation>",
+        "<tonk-display model=\"tonk:account/resend\" view=\"notice\">",
+        "concept!: &account/resend",
+        "the: xyz.tonk.account-resend/said",
+        "<span class=\"account-resend\" role=\"status\" data-id={this}>{said}</span>",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the activation notice must show what came of a resend: `{contract}`"
+        );
+    }
+}
+
+#[dialog_common::test]
 fn it_renames_a_space_from_the_hub_menu() {
     for contract in [
-        "event!: &on/repository-rename-submit",
-        "on:repository-rename-submit=tonk/rename-repository",
         "data-space={subject}",
         "the: xyz.tonk.command.rename-repository/name",
         "the: xyz.tonk.rename-repository/space",
         "data-space-rename-open",
+        // The submit dispatches under its own receipt and closes the
+        // dialog only on the worker's answer for that receipt.
+        "the: 'xyz.tonk.command.rename-repository/name'",
+        "the: 'xyz.tonk.rename-repository/space'",
+        "the: 'xyz.tonk.repository-rename/status'",
+        "result?.status === 'renamed'",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
@@ -1061,11 +1086,13 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(panel.contains("data-delete-account-open"));
     assert!(panel.contains("data-sign-out-open"));
     assert!(panel.contains("<h2>Sign out</h2>"));
-    assert!(panel.contains("Disconnect this account. Keep local spaces on this device."));
+    assert!(panel.contains(
+        "Disconnect this account. Its spaces stay on this device for when you sign back in."
+    ));
     assert!(panel.contains("sign out on this device"));
     assert!(panel.contains("heading=\"confirm sign out\""));
     assert!(panel.contains(
-        "this disconnects the account from this browser. local spaces stay on this device, including spaces that have not been backed up or synced. you can sign into this or another account later."
+        "this disconnects the account from this browser. its spaces stay on this device, including spaces that have not been backed up or synced, but the hub lists them only while you are signed in. sign back into this account to see them again."
     ));
     assert!(panel.contains("data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>"));
     assert!(!panel.contains("remove this device"));
@@ -1222,7 +1249,10 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
         .nth(1)
-        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .and_then(|tail| {
+            tail.split("# Library components. The profile is a space")
+                .next()
+        })
         .expect("join route view");
 
     for rejected in ["<wa-callout", "variant=\"danger\"", "{reason}"] {
@@ -1239,8 +1269,20 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
     assert!(!failure.contains("tonk-join-retry"));
     assert!(!failure.contains("join this space"));
     assert!(!failure.contains("start a new space"));
-    assert!(!route.contains("<form"));
-    assert!(!route.contains("<input"));
+    // The only form is the bare /join page's paste field, which joins
+    // through the same command the page's own location does; the
+    // failure wall above stays a closed wall with no field of its own.
+    assert_eq!(route.matches("<form").count(), 1);
+    assert_eq!(route.matches("<input").count(), 1);
+    let paste = route
+        .split("<join-paste")
+        .nth(1)
+        .and_then(|tail| tail.split("</join-paste>").next())
+        .expect("the paste form lives in <join-paste>");
+    assert!(paste.contains("<form") && paste.contains("<input"));
+    assert!(route.contains("<join-paste class=\"join-paste\" on:join=tonk:join>"));
+    assert!(route.contains(".join-paste { display:none; }"));
+    assert!(route.contains(".join-view[data-path=\"/join\"] .join-paste"));
     assert!(!route.contains("tonk-invite-link"));
     assert!(route.contains("<page-mount on:join=tonk:join>"));
     assert_eq!(failure.matches("class=\"ebtn solid\"").count(), 1);
@@ -1251,7 +1293,10 @@ fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
         .nth(1)
-        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .and_then(|tail| {
+            tail.split("# Library components. The profile is a space")
+                .next()
+        })
         .expect("join route view");
 
     assert!(
@@ -1279,7 +1324,7 @@ fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
     assert!(PROFILE_LIBRARY.contains("class=\"join-opening-status\""));
     assert!(PROFILE_LIBRARY.contains("class=\"tonk-pulse\""));
     assert!(route.contains(
-        ".join-view:has(.join-status-slot[data-state=\"ready\"]):not(:has(.edge-wall--closed))"
+        ".join-view:not([data-path=\"/join\"]):has(.join-status-slot[data-state=\"ready\"]):not(:has(.edge-wall--closed))"
     ));
 
     let action = css_rule(route, ".ebtn {");
@@ -1303,7 +1348,10 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
         .nth(1)
-        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .and_then(|tail| {
+            tail.split("# Library components. The profile is a space")
+                .next()
+        })
         .expect("join route view");
     let join_view = css_rule(route, ".join-view {");
     let fallback = join_view
@@ -1377,9 +1425,48 @@ async fn it_lowers_the_notebook_library() {
 }
 
 #[dialog_common::test]
-async fn it_lowers_the_prose_library() {
-    assert_component_library_lowers("prose library (prose.yaml)", "prose.yaml", PROSE_LIBRARY)
-        .await;
+async fn it_lowers_the_code_editor_library() {
+    assert_component_library_lowers(
+        "code-editor library (code-editor.yaml)",
+        "code-editor.yaml",
+        CODE_EDITOR_LIBRARY,
+    )
+    .await;
+}
+
+/// A language is a component of its own, installable without the editor,
+/// so it lowers on the standard library alone. One of each shape the
+/// build generates: a Lezer grammar, a legacy stream mode, a SQL dialect.
+#[dialog_common::test]
+async fn it_lowers_language_components() {
+    for (file, document) in [
+        (
+            "language/python.yaml",
+            include_str!("../../tonk-core/assets/library/language/python.yaml"),
+        ),
+        (
+            "language/clojure.yaml",
+            include_str!("../../tonk-core/assets/library/language/clojure.yaml"),
+        ),
+        (
+            "language/postgresql.yaml",
+            include_str!("../../tonk-core/assets/library/language/postgresql.yaml"),
+        ),
+    ] {
+        // Parsed at the library directory, as seeding parses every library
+        // document, so its include (`./language/<id>.js`) resolves there.
+        assert_component_library_lowers(file, "language.yaml", document).await;
+    }
+}
+
+#[dialog_common::test]
+async fn it_lowers_the_prose_editor_library() {
+    assert_component_library_lowers(
+        "prose-editor library (prose-editor.yaml)",
+        "prose-editor.yaml",
+        PROSE_LIBRARY,
+    )
+    .await;
 }
 
 #[dialog_common::test]
@@ -1391,6 +1478,72 @@ async fn it_lowers_the_issue_library() {
 #[dialog_common::test]
 async fn it_lowers_the_tonk_library() {
     assert_component_library_lowers("tonk library (tonk.yaml)", "tonk.yaml", TONK_LIBRARY).await;
+}
+
+#[dialog_common::test]
+async fn it_lowers_the_version_control_library() {
+    assert_component_library_lowers(
+        "version-control library (version-control.yaml)",
+        "version-control.yaml",
+        VERSION_CONTROL_LIBRARY,
+    )
+    .await;
+}
+
+#[dialog_common::test]
+async fn it_lowers_the_inspector_library() {
+    assert_component_library_lowers(
+        "inspector library (inspector.yaml)",
+        "inspector.yaml",
+        INSPECTOR_LIBRARY,
+    )
+    .await;
+}
+
+#[dialog_common::test]
+async fn it_lowers_the_tree_library() {
+    assert_component_library_lowers("tree library (tree.yaml)", "tree.yaml", TREE_LIBRARY).await;
+}
+
+/// The console components install into the profile too, where the
+/// profile library, not `core.yaml`, declares what they build on.
+#[dialog_common::test]
+async fn it_lowers_the_console_components_on_the_profile() {
+    for (label, file, document) in [
+        (
+            "inspector on the profile",
+            "inspector.yaml",
+            INSPECTOR_LIBRARY,
+        ),
+        ("tree on the profile", "tree.yaml", TREE_LIBRARY),
+    ] {
+        assert_library_lowers(label, file, &format!("{PROFILE_LIBRARY}\n{document}")).await;
+    }
+}
+
+/// The console pages route under `/console`, beside version-control's,
+/// from the site's repository and branch, so one route serves a space and
+/// the profile alike.
+#[dialog_common::test]
+fn it_routes_the_console_components_from_the_site() {
+    for (document, path, element) in [
+        (INSPECTOR_LIBRARY, "/console/inspector", "space-inspector"),
+        (TREE_LIBRARY, "/console/tree", "space-tree"),
+    ] {
+        assert!(
+            document.contains(&format!("path: \"{path}\"")),
+            "{element} routes at {path}"
+        );
+        assert!(
+            document.contains(&format!("element!: &{element}")),
+            "the component defines <{element}>"
+        );
+        assert!(
+            document.contains("the: xyz.tonk.site/repo")
+                && document.contains("the: xyz.tonk.site/branch"),
+            "{element}'s route model reads the site's repository and branch"
+        );
+    }
 }
 
 // The `on:` binding gates that used to live here — a dangling
@@ -1721,12 +1874,10 @@ fn every_handled_command_matches_attributes_its_declaration_carries() {
     // worth stating: the name belongs to TWO different commands. The one
     // `core.yaml` declares carries `{subject, name}` and is consumed by a
     // space-side `rule!:`. `tonk_schema::command::RenameRepository`
-    // carries `{space, name}` and is dispatched from the profile branch by
-    // the FAB, which inlines its own descriptor because the space-side
-    // rule cannot consume a claim made on the profile branch. They share a
-    // notation name and nothing else, so pairing them here would compare
-    // two unrelated things. The FAB's claim is pinned against the struct
-    // in `fab_drift.rs` instead, which is where that pairing lives.
+    // carries `{space, name}` and is dispatched from the profile branch,
+    // because the space-side rule cannot consume a claim made on the
+    // profile branch. They share a notation name and nothing else, so
+    // pairing them here would compare two unrelated things.
     let handled: Vec<(&str, Vec<String>)> = vec![
         (
             "space/create",
@@ -1747,6 +1898,31 @@ fn every_handled_command_matches_attributes_its_declaration_carries() {
         (
             "tonk/pause-sync",
             tonk_schema::command::PauseSync::trigger_attributes(),
+        ),
+        // What the bar dispatches on the profile, naming the space each is for.
+        (
+            "invite/mint",
+            tonk_schema::command::Invite::trigger_attributes(),
+        ),
+        (
+            "invite/forget",
+            tonk_schema::command::ForgetInvite::trigger_attributes(),
+        ),
+        (
+            "sync/enable",
+            tonk_schema::command::EnableSync::trigger_attributes(),
+        ),
+        (
+            "agent-handoff/request",
+            tonk_schema::command::AgentHandoff::trigger_attributes(),
+        ),
+        (
+            "space/publish",
+            tonk_schema::command::PublishSpace::trigger_attributes(),
+        ),
+        (
+            "space/unpublish",
+            tonk_schema::command::UnpublishSpace::trigger_attributes(),
         ),
         (
             "profile/rename",

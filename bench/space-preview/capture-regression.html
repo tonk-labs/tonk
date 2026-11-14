@@ -6,7 +6,7 @@
 <script type="module">
 // Serve the repository root over HTTP. Exercise the unmodified production
 // script in opaque guests, including real SVG decode and WebP export.
-const source = await fetch('../../rust/tonk-portal/src/preview_capture.js').then(r => r.text());
+const source = await fetch('../../rust/tonk-site/src/preview_capture.js').then(r => r.text());
 const theme = '.theme { --fixture: "' + 'x'.repeat(140000) + '"; }';
 const cases = [
   { name: 'hidden panels, code, large assets and duplicate CSS fit', capture: true,

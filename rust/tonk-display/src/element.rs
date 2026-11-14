@@ -25,6 +25,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use tonk_common::diagnostics::{self, names};
+
 use crate::resolve::{ParsedSource, name_query, parse_source, phase1_query};
 use custom_elements::CustomElement;
 use ipld_core::ipld::Ipld;
@@ -48,8 +50,7 @@ use crate::fold::show_template;
 use crate::introspect::recorder::{Arrival, Recorder};
 use crate::introspect::registry;
 use crate::resolve::{
-    DETAIL_FACET, DIRECTORY_FACET, TYPE_FACET, entity_query, instances_query, looks_like_uri,
-    view_query,
+    DETAIL_FACET, DIRECTORY_FACET, entity_query, instances_query, looks_like_uri, view_query,
 };
 use crate::state::{self, State};
 
@@ -148,6 +149,10 @@ struct Inner {
     /// drop every instance but the first. The lead conclusion (for
     /// notation / the result event) is `last_frame.first()`.
     last_frame: Vec<Conclusion>,
+    /// Set when an empty entity frame emptied rows this display had
+    /// rendered, and cleared by the next frame with rows, which is then
+    /// counted as content deleted and inserted again.
+    emptied: bool,
     /// The last full row set seen per subscription tag
     /// (`model` / `view` / `entity`), retained so an incremental
     /// `update` delta can be applied to the correct tag's set and the
@@ -201,13 +206,13 @@ struct Inner {
     /// frame through every slide's binding diff, so `dom.host/*` is a
     /// live render input rather than a mount-time snapshot.
     host_watch: Option<HostAttrWatch>,
+    /// The wait for this display to be shown, while it is not: until then
+    /// it resolves and subscribes to nothing.
+    waiting: Option<crate::shown::Waiting>,
     /// The model concept's descriptor JSON: the fields introspection
     /// reports and the scalar fields a view is told about. Set on every
     /// connect.
-    portal_descriptor: Option<String>,
-    /// The resolved model entity, surfaced to the portal as its `model`
-    /// attribute (the bridge's `context.model`).
-    portal_model: Option<String>,
+    model_descriptor: Option<String>,
     /// Introspection's hold on this display's entity frames. `None`
     /// is the ordinary case: no recording, no cost, frames applied as
     /// they arrive. `Some` only while the display is being observed.
@@ -257,6 +262,13 @@ struct Inner {
     /// one that lands after the chain settled on nothing must (a
     /// mismatching entity healed; the absence callout would latch).
     view_settled: bool,
+    /// The display was pointed at another entity of the same model and
+    /// kept what it shows, inert, until the new entity's first frame
+    /// renders into the same view. See [`hold_rendered`].
+    holding: bool,
+    /// Bumped on every hold, so a hold's time limit ends only the hold
+    /// that set it.
+    hold_serial: u64,
 }
 
 impl Inner {
@@ -272,6 +284,7 @@ impl Inner {
             view_sub: None,
             entity_sub: None,
             last_frame: Vec::new(),
+            emptied: false,
             retained: BTreeMap::new(),
             carousel: None,
             slides: BTreeMap::new(),
@@ -282,8 +295,8 @@ impl Inner {
             depth_annotator: None,
             entity_serial: 0,
             host_watch: None,
-            portal_descriptor: None,
-            portal_model: None,
+            waiting: None,
+            model_descriptor: None,
             recorder: None,
             facets: BTreeMap::new(),
             model_name: None,
@@ -294,6 +307,8 @@ impl Inner {
             directory: false,
             self_render: false,
             view_settled: false,
+            holding: false,
+            hold_serial: 0,
         }
     }
 
@@ -314,6 +329,8 @@ impl Inner {
         self.delegate.take();
         // Disconnect the host-attribute watcher.
         self.host_watch.take();
+        // Stop waiting to be shown.
+        self.waiting.take();
     }
 }
 
@@ -353,7 +370,7 @@ impl crate::introspect::registry::DisplayFacts for Inner {
             // is the carousel's business, so report the first
             // rather than guess.
             model_name: self.model_name.clone(),
-            descriptor: self.portal_descriptor.clone(),
+            descriptor: self.model_descriptor.clone(),
             facets: self.facets.clone(),
             template: self
                 .slides
@@ -369,7 +386,7 @@ impl crate::introspect::registry::DisplayFacts for Inner {
                 })
                 .collect(),
             fields: self
-                .portal_descriptor
+                .model_descriptor
                 .as_deref()
                 .map(declared_fields)
                 .unwrap_or_default(),
@@ -571,7 +588,7 @@ impl CustomElement for TonkDisplay {
             })
         });
         *self.inner.borrow_mut() = Some(state.clone());
-        start_flows(&host, state);
+        start_when_shown(&host, state);
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
@@ -618,20 +635,38 @@ impl CustomElement for TonkDisplay {
             return;
         }
 
-        {
+        let hold = {
             let mut s = state.borrow_mut();
+            // Decided before the flows are aborted: whether the view now
+            // mounted is one the new subject renders through too.
+            let hold = name == "entity" && holds_through_entity_change(&s, &old, &new);
             s.abort_all();
             s.last_frame = Vec::new();
             // Drop retained per-tag sets too: a restart re-subscribes and
             // the first frame per tag is a fresh snapshot, so stale rows
             // from the prior context must not survive as a delta base.
             s.retained.clear();
-            // Tear down any mounted slide / carousel chrome so the
-            // restart starts from a clean host.
-            clear_host(&host, &mut s);
+            if hold {
+                // Another entity of the same model renders through the
+                // same view: keep it, inert, and let the new entity's
+                // first frame diff into it.
+                hold_rendered(&host, &mut s);
+            } else {
+                // Tear down any mounted slide / carousel chrome so the
+                // restart starts from a clean host.
+                end_hold(&host, &mut s);
+                clear_host(&host, &mut s, names::DISPLAY_REMOVED_RESTART);
+            }
+            hold.then_some(s.hold_serial)
+        };
+        if let Some(serial) = hold {
+            limit_hold(&host, &state, serial);
+        } else {
+            // A held display keeps the state it had: a loading moment
+            // over the content would paint a pulse on top of it.
+            state::set(&host, State::Loading);
         }
-        state::set(&host, State::Loading);
-        start_flows(&host, state);
+        start_when_shown(&host, state);
     }
 }
 
@@ -719,9 +754,10 @@ fn install_method_delegates(host: &Element, state: &Rc<RefCell<Inner>>) {
     error.forget();
 
     let host_for_notice = host.clone();
+    let state_for_notice = state.clone();
     let notice: Closure<dyn FnMut(JsValue, JsValue)> =
         Closure::wrap(Box::new(move |payload, opts| {
-            on_notice(&host_for_notice, payload, opts);
+            on_notice(&host_for_notice, &state_for_notice, payload, opts);
         }));
     let _ = Reflect::set(host, &"__tonkNotice".into(), notice.as_ref());
     notice.forget();
@@ -731,12 +767,29 @@ fn install_method_delegates(host: &Element, state: &Rc<RefCell<Inner>>) {
 /// rather than its rows. `upgrading` says the worker is moving the branch
 /// to this release's storage format before it answers: the display shows
 /// so until the rows arrive, in place of a bare loading state.
-fn on_notice(host: &Element, payload: JsValue, _opts: JsValue) {
+///
+/// `pending` says the branch is not here yet. A display that already shows
+/// something keeps it: the rows follow on the same
+/// stream, so clearing now would only delete what is about to be inserted
+/// again. One with nothing yet treats it as the empty set it was sent
+/// before, which lands it in its absence state (`no-model`, `no-entity`),
+/// the slot an embedder fills to say the space is on its way.
+fn on_notice(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: JsValue) {
     let control = Reflect::get(&payload, &"control".into())
         .ok()
         .and_then(|v| v.as_string());
-    if control.as_deref() == Some("upgrading") {
-        state::set_upgrading(host);
+    match control.as_deref() {
+        Some("upgrading") => state::set_upgrading(host),
+        Some("pending") => {
+            let shows_rows = {
+                let s = state.borrow();
+                !s.slides.is_empty() || !s.last_frame.is_empty()
+            };
+            if !shows_rows {
+                on_reset(host, state, js_sys::Array::new().into(), opts);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1007,6 +1060,40 @@ fn already_registered() -> bool {
     !win.custom_elements().get("tonk-display").is_undefined()
 }
 
+/// Start the display's flows, or for a display marked `loading="lazy"`,
+/// once it is shown: at once when the browser renders it, or else the first
+/// time it does. See [`crate::shown`]. Only a lazy display waits: a hidden
+/// one is often what a page reads its data from.
+fn start_when_shown(host: &Element, state: Rc<RefCell<Inner>>) {
+    let lazy = host.get_attribute("loading").as_deref() == Some("lazy");
+    if !lazy || crate::shown::shown(host) {
+        start_flows(host, state);
+        return;
+    }
+    let waiting = crate::shown::when_shown(host, {
+        let host = host.clone();
+        let state = Rc::downgrade(&state);
+        move || {
+            // Off the observer's own callback, which the wait owns and
+            // starting drops.
+            spawn_local(async move {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
+                if state.borrow().disposed {
+                    return;
+                }
+                state.borrow_mut().waiting = None;
+                start_flows(&host, state);
+            });
+        }
+    });
+    match waiting {
+        Some(waiting) => state.borrow_mut().waiting = Some(waiting),
+        None => start_flows(host, state),
+    }
+}
+
 fn start_flows(host: &Element, state: Rc<RefCell<Inner>>) {
     // Bump the generation so any already-spawned flow chains
     // running concurrently bail at their next generation check
@@ -1040,7 +1127,8 @@ fn start_flows(host: &Element, state: Rc<RefCell<Inner>>) {
 fn fail(host: &Element, state: &Rc<RefCell<Inner>>, err: ErrorDetail) {
     {
         let mut inner = state.borrow_mut();
-        clear_host(host, &mut inner);
+        end_hold(host, &mut inner);
+        clear_host(host, &mut inner, names::DISPLAY_REMOVED_ERROR);
     }
     let loud = loud_state(&err);
     state::set_error(host, loud, state::state_title(loud, err.kind), &err.message);
@@ -1077,18 +1165,118 @@ fn loud_state(err: &ErrorDetail) -> State {
 /// `slot="no-model"` etc. on a flow restart, so a later absence state
 /// couldn't find them and would fall back to the built-in callout even
 /// though the embedder provided content.
-fn clear_host(host: &Element, inner: &mut Inner) {
+///
+/// `reason` names why the content goes, and is counted when anything that
+/// was rendered is actually removed.
+fn clear_host(host: &Element, inner: &mut Inner, reason: &'static str) {
+    let had_slides = !inner.slides.is_empty();
     inner.slides.clear();
     inner.carousel = None;
     inner.notation_source = None;
     inner.notation_item = None;
-    remove_rendered_children(host);
+    if remove_rendered_children(host) > 0 || had_slides {
+        diagnostics::count(reason);
+    }
+}
+
+/// How long a display keeps showing the entity it was pointed away from
+/// while the new one has not answered. Past it the display empties and
+/// shows that it is loading, so an entity that never answers does not
+/// leave stale, inert content up for good.
+const HOLD_LIMIT_MS: i32 = 10_000;
+
+/// Whether a display pointed from entity `old` to entity `new` can keep
+/// what it shows until `new` answers.
+///
+/// Only when the model and the view stay the same: the new entity's
+/// frame then renders through the very `<tonk-view>` that is mounted,
+/// which diffs it in place, so there is one copy of the page's
+/// components the whole time. A changed model or view mounts different
+/// components, and keeping the old ones while the new ones load would
+/// leave two live copies (the old one still reachable from scripts,
+/// still holding document-wide state such as the FAB's dialogs). A
+/// directory, the default view, a carousel and a `<tonk-portal>` are
+/// left out too: each one is built for its entity at mount, or has no
+/// entity to swap.
+fn holds_through_entity_change(s: &Inner, old: &Option<String>, new: &Option<String>) -> bool {
+    let named = |v: &Option<String>| v.as_deref().is_some_and(|v| !v.is_empty());
+    named(old)
+        && named(new)
+        && !s.disposed
+        && !s.directory
+        && !s.default_slide
+        && !s.self_render
+        && s.carousel.is_none()
+        && s.notation_source.is_none()
+        && !s.slides.is_empty()
+        && s.slides
+            .values()
+            .all(|slide| slide.view_el.tag_name().eq_ignore_ascii_case("tonk-view"))
+}
+
+/// Keep the mounted slides through a restart for another entity of the
+/// same model (see [`holds_through_entity_change`]). They stay mounted
+/// and registered, made `inert` (they still show the old entity, so
+/// acting on them would act on it), and the host is marked `aria-busy`
+/// and `data-tonk-display-holding`. The new entity's first frame ends
+/// the hold ([`end_hold`]) and renders into them.
+fn hold_rendered(host: &Element, s: &mut Inner) {
+    s.holding = true;
+    s.hold_serial = s.hold_serial.wrapping_add(1);
+    let facet = effective_facet(s);
+    let entity = host.get_attribute("entity").filter(|v| !v.is_empty());
+    for (owner, slide) in &s.slides {
+        let _ = slide.item.set_attribute("inert", "");
+        // The chain a nested display checks for re-entry names the
+        // entity; it is the new one from here on.
+        stamp_model_chain(host, &slide.view_el, owner, &facet, entity.as_deref());
+    }
+    let _ = host.set_attribute(HOLDING_ATTR, "");
+    let _ = host.set_attribute("aria-busy", "true");
+}
+
+/// Marks a display keeping what it showed until its new entity answers.
+const HOLDING_ATTR: &str = "data-tonk-display-holding";
+
+/// End a hold [`hold_rendered`] started: the slides become interactive
+/// again and the host is no longer busy. Returns whether a hold was on.
+/// The slides stay mounted; a caller that is replacing them clears the
+/// host itself.
+fn end_hold(host: &Element, s: &mut Inner) -> bool {
+    if !std::mem::take(&mut s.holding) {
+        return false;
+    }
+    for slide in s.slides.values() {
+        let _ = slide.item.remove_attribute("inert");
+    }
+    let _ = host.remove_attribute(HOLDING_ATTR);
+    let _ = host.remove_attribute("aria-busy");
+    true
+}
+
+/// Give up a hold that is still on after [`HOLD_LIMIT_MS`]: empty the
+/// host and show that it is loading.
+fn limit_hold(host: &Element, state: &Rc<RefCell<Inner>>, serial: u64) {
+    let host = host.clone();
+    let state = state.clone();
+    spawn_local(async move {
+        sleep_ms(HOLD_LIMIT_MS).await;
+        {
+            let mut s = state.borrow_mut();
+            if s.disposed || !s.holding || s.hold_serial != serial {
+                return;
+            }
+            end_hold(&host, &mut s);
+            clear_host(&host, &mut s, names::DISPLAY_REMOVED_RESTART);
+        }
+        state::set(&host, State::Loading);
+    });
 }
 
 /// Remove every direct child of `host` that the renderer mounted,
 /// keeping the embedder's authored `[slot]` children. Replaces a blanket
 /// `set_inner_html("")` so state-slot content survives a restart.
-fn remove_rendered_children(host: &Element) {
+fn remove_rendered_children(host: &Element) -> usize {
     // Walk the element children once, collecting the rendered ones (no
     // `slot` attribute) before removing — removing mid-walk would break
     // the sibling chain.
@@ -1100,9 +1288,11 @@ fn remove_rendered_children(host: &Element) {
             to_remove.push(child);
         }
     }
+    let removed = to_remove.len();
     for child in to_remove {
         child.remove();
     }
+    removed
 }
 
 /// Bail if this flow's generation has been superseded or the
@@ -1250,12 +1440,12 @@ async fn start_downstream(
     // model re-enters the same view unconditionally, so the only stable
     // number of levels is one.
     //
-    // Fall back to the notation dump rather than rendering nothing: the
+    // Fall back to the default display rather than rendering nothing: the
     // entity's data is still worth showing, and a card that silently
     // disappears is worse than one that shows what it holds. So a
     // self-rendering display skips only the VIEW flow (no view
     // subscription, no facet fallback) and keeps the entity
-    // subscription; `handle_entity_frame` mounts the notation dump.
+    // subscription; `handle_entity_frame` mounts the default display.
     let entity = host.get_attribute("entity").filter(|s| !s.is_empty());
     let directory = entity.is_none();
     let view = host.get_attribute("view").filter(|s| !s.is_empty());
@@ -1264,7 +1454,7 @@ async fn start_downstream(
     } else {
         DETAIL_FACET
     });
-    let self_render = renders_itself(host, &model_entity, intended_facet);
+    let self_render = renders_itself(host, &model_entity, intended_facet, entity.as_deref());
 
     // The `view` attribute names a FACET — a `show` entry key of the
     // model's view instance (`ui`, `directory`, `label`, `title`, …)
@@ -1299,7 +1489,16 @@ async fn start_downstream(
         let mut s = state.borrow_mut();
         s.view_sub.take();
         s.entity_sub.take();
-        clear_host(host, &mut s);
+        // A held display keeps its slides for the view frame to match,
+        // unless the new entity renders some other way: as a directory,
+        // or through the default view because the model's own view
+        // would render inside itself.
+        if s.holding && (directory || self_render) {
+            end_hold(host, &mut s);
+            clear_host(host, &mut s, names::DISPLAY_REMOVED_RESTART);
+        } else if !s.holding {
+            clear_host(host, &mut s, names::DISPLAY_REMOVED_MODEL);
+        }
         // Subscriptions can deliver their first frame before subscribe returns.
         // Publish the complete rendering context before opening either stream.
         s.directory = directory;
@@ -1309,7 +1508,7 @@ async fn start_downstream(
         // for the facet pick on each view frame and the `tonk:_`
         // default fallback.
         s.view_facet = view.clone();
-        s.model_entity = Some(model_entity.clone());
+        s.model_entity = Some(model_entity);
         // Advertise the effective facet so the default-view notice can
         // say WHICH view was not found — a directory's default and its
         // cards' defaults otherwise read as the same message twice.
@@ -1322,14 +1521,7 @@ async fn start_downstream(
             .to_owned()
         });
         let _ = host.set_attribute("data-view-facet", &facet);
-        // Context handed to a `<tonk-portal>` if a view frame routes
-        // here in portal mode: the subject's model entity (the
-        // bridge's `context.model`) and its descriptor (so the bridge
-        // can build its own entity query). A text/html view's iframe
-        // fetches data itself, so the entity subscription above just
-        // no-ops against the portal (it has no `draw`).
-        s.portal_descriptor = Some(descriptor_json);
-        s.portal_model = Some(model_entity);
+        s.model_descriptor = Some(descriptor_json);
     }
 
     // The view query is model-constrained, so it resolves to one
@@ -1487,7 +1679,7 @@ fn handle_name_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
         s.downstream_generation = s.downstream_generation.wrapping_add(1);
         s.last_frame.clear();
         s.retained.clear();
-        clear_host(host, &mut s);
+        clear_host(host, &mut s, names::DISPLAY_REMOVED_NAME);
     }
     state::set(host, State::Loading);
     start_flows(host, state.clone());
@@ -1514,6 +1706,12 @@ fn handle_model_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: V
         // The concept is not on the branch yet. Stay subscribed; the
         // embedder may skin `no-model` via a `slot="no-model"` child,
         // otherwise the built-in fallback names the missing model.
+        {
+            let mut s = state.borrow_mut();
+            if end_hold(host, &mut s) {
+                clear_host(host, &mut s, names::DISPLAY_REMOVED_RESTART);
+            }
+        }
         let model = host.get_attribute("model").unwrap_or_default();
         state::set_absence(
             host,
@@ -1663,6 +1861,10 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
         // stale; drop it so the fallback can take its place (the
         // notation path refuses to mount over an existing slide).
         if !s.default_slide {
+            end_hold(host, &mut s);
+            if !s.slides.is_empty() {
+                diagnostics::count(names::DISPLAY_REMOVED_VIEW_ABSENT);
+            }
             for (_, slide) in std::mem::take(&mut s.slides) {
                 if let Some(parent) = slide.item.parent_node() {
                     let _: Result<Node, _> = parent.remove_child(&slide.item);
@@ -1688,21 +1890,6 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
         .first()
         .map(|c| BTreeMap::from([(c.this.clone(), display)]))
         .unwrap_or_default();
-
-    // A `type: text/html` entry says the templates are full HTML
-    // documents mounted into a `<tonk-portal>` — whose bridge fetches
-    // the entity's own data through the live `tonk` object — rather
-    // than interpolated inline. A `display` change just reloads the
-    // portal's `content` in place.
-    if folded
-        .first()
-        .is_some_and(|c| show_template(c, TYPE_FACET) == Some("text/html"))
-    {
-        handle_portal_view_frame(host, &mut s, incoming);
-        drop(s);
-        dispatch_event(host, "tonk-display:template", Some(JsValue::from_str("ok")));
-        return;
-    }
 
     // Remove vanished slides.
     let stale: Vec<String> = s
@@ -1861,6 +2048,17 @@ fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
         if s.disposed || (!s.default_slide && !s.slides.is_empty()) {
             return;
         }
+        // Two view frames that both lack the facet each spawn this
+        // fallback before either mounts. The first one to land shows the
+        // default; a later one with the same template must leave it be,
+        // or every row is removed and inserted again for nothing.
+        if s.default_slide
+            && s.slides
+                .get("__default__")
+                .is_some_and(|slide| slide.display == display)
+        {
+            return;
+        }
         // Replace any prior slides with the single default slide.
         for (_, slide) in std::mem::take(&mut s.slides) {
             if let Some(parent) = slide.item.parent_node() {
@@ -1940,72 +2138,6 @@ fn mount_notation_fallback(host: &Element, state: &Rc<RefCell<Inner>>, conclusio
     // `default-view`, not a model-specific render.
     state::set(host, State::DefaultView);
     refresh_host_watch(host, state);
-}
-
-/// Diff a portal-mode view frame. Single-mode only, so at most one
-/// slide keyed by the model entity URI. A new row mounts a
-/// `<tonk-portal>` scoped to the entity; a changed `display` updates
-/// the portal's `content` in place (it reloads itself); a vanished row
-/// removes the portal.
-fn handle_portal_view_frame(host: &Element, s: &mut Inner, incoming: BTreeMap<String, String>) {
-    // Remove a vanished portal.
-    let stale: Vec<String> = s
-        .slides
-        .keys()
-        .filter(|k| !incoming.contains_key(*k))
-        .cloned()
-        .collect();
-    for name in stale {
-        if let Some(slide) = s.slides.remove(&name)
-            && let Some(parent) = slide.item.parent_node()
-        {
-            let _: Result<Node, _> = parent.remove_child(&slide.item);
-        }
-    }
-
-    for (name, display) in incoming {
-        match s.slides.get(&name) {
-            Some(slide) if slide.display == display => {}
-            // Content changed: patch the portal's `content` attribute;
-            // it reloads its iframe internally.
-            Some(slide) => {
-                let _ = slide.view_el.set_attribute("content", &display);
-                if let Some(slide) = s.slides.get_mut(&name) {
-                    slide.display = display;
-                }
-            }
-            None => {
-                if let Some(slide) = mount_portal_slide(host, s, &display) {
-                    s.slides.insert(name, slide);
-                }
-            }
-        }
-    }
-
-    if !s.slides.is_empty() {
-        state::set(host, State::Ready);
-    }
-}
-
-/// Mount a `<tonk-portal>` scoped to the displayed entity. Attributes are
-/// set before append so the portal's
-/// `connected_callback` builds its bridge against the final context.
-fn mount_portal_slide(host: &Element, inner: &Inner, display: &str) -> Option<Slide> {
-    let document = window()?.document()?;
-    let portal = document.create_element("tonk-portal").ok()?;
-    let _ = portal.set_attribute("content", display);
-    if let Some(entity) = host.get_attribute("entity") {
-        let _ = portal.set_attribute("entity", &entity);
-    }
-    if let Some(model) = inner.portal_model.as_ref() {
-        let _ = portal.set_attribute("model", model);
-    }
-    let _ = host.append_child(&portal);
-    Some(Slide {
-        display: display.to_owned(),
-        item: portal.clone(),
-        view_el: portal,
-    })
 }
 
 /// Marker attribute stamped on a `<tonk-display>` host once its event
@@ -2455,6 +2587,19 @@ fn apply_entity_frame(
         return;
     }
 
+    // A frame ends any hold: it supersedes the held empty, is that empty
+    // applied once the grace ran out, or is held in its turn.
+    let _ = host.remove_attribute(HELD);
+
+    // The new entity answered: what was kept for it renders this frame
+    // in place, and can be acted on again.
+    {
+        let mut s = state.borrow_mut();
+        if end_hold(host, &mut s) {
+            diagnostics::count(names::DISPLAY_KEPT_RESTART);
+        }
+    }
+
     if frame.is_empty() {
         // HOLD a reconnect-empty over previously rendered content: the
         // first frame after a re-opened subscription can reflect state the
@@ -2464,13 +2609,17 @@ fn apply_entity_frame(
         // nested guests, only for the heal to rebuild them seconds later.
         // Keep the content; if no real frame supersedes this one within the
         // grace period, apply the emptiness for real (a genuine deletion
-        // still lands, just unhurriedly).
+        // still lands, just unhurriedly). While it holds, the display says
+        // so (`data-held`), which is how the owner learns to re-assert
+        // what the worker lost before the grace runs out.
         let held = {
             let mut s = state.borrow_mut();
             s.entity_serial += 1;
             reconnect && !s.last_frame.is_empty()
         };
         if held {
+            diagnostics::count(names::DISPLAY_ENTITY_HELD);
+            let _ = host.set_attribute(HELD, "");
             let serial = state.borrow().entity_serial;
             let host = host.clone();
             let state = state.clone();
@@ -2485,6 +2634,10 @@ fn apply_entity_frame(
         }
 
         let mut s = state.borrow_mut();
+        if !s.last_frame.is_empty() {
+            diagnostics::count(names::DISPLAY_ENTITY_EMPTIED);
+            s.emptied = true;
+        }
         s.last_frame = Vec::new();
         // An empty frame means no rows matched — zero instances in a
         // collection, or a single entity whose row has not landed yet
@@ -2542,6 +2695,9 @@ fn apply_entity_frame(
     // notation + the result event.
     s.entity_serial += 1;
     let first = frame[0].clone();
+    if std::mem::take(&mut s.emptied) {
+        diagnostics::count(names::DISPLAY_ENTITY_REFILLED);
+    }
     s.last_frame = frame.clone();
     // Each slide sees the whole frame, augmented with the host's own
     // attributes under `dom.host/*`; notation, caching, and the result
@@ -2552,11 +2708,13 @@ fn apply_entity_frame(
     }
     update_notation(host, &s, &first);
     // A self-rendering display has no view flow to mount a slide; its
-    // data still shows — as the notation dump, mounted on the first
-    // non-empty frame and updated in place from then on.
+    // data still shows — through the DEFAULT display (`tonk:_`), as if
+    // the model had no view of its own, which for a single entity is the
+    // notation dump. Its owner is `tonk:_`, so nothing in it re-enters
+    // the view that was refused.
     if s.self_render && s.slides.is_empty() && s.notation_source.is_none() {
         drop(s);
-        mount_notation_fallback(host, state, &first);
+        spawn_default_view(host, state);
         dispatch_event(host, "tonk-display:result", Some(event_detail(&first)));
         return;
     }
@@ -2834,7 +2992,8 @@ fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool
 ///
 /// Forward the display host's OWN routing context (`with`) onto the view
 /// it just mounted — so a view whose content resolves its own context
-/// (`<tonk-tree>`, `<tonk-inspector>`, a nested `<ui-sync-status>`) sees
+/// (an element marked `data-tonk-with`, such as `<notebook-editor>`, a nested
+/// `<ui-sync-status>`) sees
 /// the display's context without inferring it from DOM ancestors. This is
 /// the ONE propagation boundary: context flows across a `<tonk-display>`,
 /// never through an arbitrary element. A view element that carries its own
@@ -2852,13 +3011,30 @@ fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool
 const MODEL_CHAIN: &str = "data-tonk-models";
 
 /// The models being rendered above `host`, innermost last.
+///
+/// Looked up across shadow roots. `closest` stops at one, and a view that
+/// renders inside an element's shadow tree (a notebook cell's results live
+/// in `<prose-editor>`'s) would otherwise start with an empty chain and never
+/// see the notebook it sits in: a cell querying `notebook:` mounted the
+/// notebook again in its own results, forever.
 fn model_chain(host: &Element) -> Vec<String> {
-    host.closest(&format!("[{MODEL_CHAIN}]"))
-        .ok()
-        .flatten()
-        .and_then(|el| el.get_attribute(MODEL_CHAIN))
-        .map(|chain| chain.split('\u{1f}').map(str::to_owned).collect())
-        .unwrap_or_default()
+    let selector = format!("[{MODEL_CHAIN}]");
+    let mut at = host.clone();
+    loop {
+        if let Some(chain) = at
+            .closest(&selector)
+            .ok()
+            .flatten()
+            .and_then(|el| el.get_attribute(MODEL_CHAIN))
+        {
+            return chain.split('\u{1f}').map(str::to_owned).collect();
+        }
+        let root = at.get_root_node();
+        match root.dyn_into::<web_sys::ShadowRoot>() {
+            Ok(shadow) => at = shadow.host(),
+            Err(_) => return Vec::new(),
+        }
+    }
 }
 
 /// Whether rendering `model` here would render it inside ITSELF.
@@ -2867,7 +3043,7 @@ fn model_chain(host: &Element) -> Vec<String> {
 /// What is not fine is a model whose view mounts a display of the same
 /// model, because that view mounts the same view again, forever. A notebook
 /// whose cell queries `notebook:` is the case that found this: each result
-/// card mounted a `<tonk-notebook>`, which bound editors, ran the cell, and
+/// card mounted a `<notebook-editor>`, which bound editors, ran the cell, and
 /// produced the results that mounted the next generation — ~200 queries a
 /// second on an idle page, with the cards visibly flipping between the
 /// nested notebook and a bare name as each frame replaced the last.
@@ -2880,20 +3056,56 @@ fn model_chain(host: &Element) -> Vec<String> {
 /// notebook's `ui` mounting notebook's `ui` forever — so a chain entry
 /// blocks only the facet it recorded. A bare entry with no facet (an
 /// older stamp, or a test's hand-written chain) stays a blanket block.
-fn renders_itself(host: &Element, model: &str, facet: &str) -> bool {
-    model_chain(host)
-        .iter()
-        .any(|seen| match seen.split_once('\u{1e}') {
-            Some((owner, seen_facet)) => owner == model && seen_facet == facet,
-            None => seen == model,
-        })
+///
+/// When both sides name an ENTITY, it has to match too: what loops is the
+/// same entity through the same view, and a notebook whose cell shows a
+/// DIFFERENT notebook is a card, not a cycle. And an entity may appear
+/// inside itself ONCE ([`SELF_NESTING`]): a notebook cell querying
+/// `notebook:` shows its own notebook as a card, and only that card's own
+/// repeat falls back to the default display. An entry or a display with
+/// no entity (a directory) keeps the (owner, facet) rule and repeats
+/// nothing.
+fn renders_itself(host: &Element, model: &str, facet: &str, entity: Option<&str>) -> bool {
+    let mut repeats = 0;
+    for seen in model_chain(host) {
+        let mut parts = seen.split('\u{1e}');
+        let owner = parts.next().unwrap_or_default();
+        let Some(seen_facet) = parts.next() else {
+            if seen == model {
+                return true;
+            }
+            continue;
+        };
+        if owner != model || seen_facet != facet {
+            continue;
+        }
+        match (parts.next(), entity) {
+            (Some(seen_entity), Some(entity)) if seen_entity != entity => {}
+            (Some(_), Some(_)) => repeats += 1,
+            _ => return true,
+        }
+    }
+    repeats > SELF_NESTING
 }
 
-/// Record `(owner, facet)` as rendered, for the displays mounted inside
-/// `view_el`.
-fn stamp_model_chain(host: &Element, view_el: &Element, model: &str, facet: &str) {
+/// How many times an entity may be rendered inside itself through the
+/// same view before the next repeat falls back to the default display.
+const SELF_NESTING: usize = 1;
+
+/// Record `(owner, facet)`, and the entity when the display has one, as
+/// rendered, for the displays mounted inside `view_el`.
+fn stamp_model_chain(
+    host: &Element,
+    view_el: &Element,
+    model: &str,
+    facet: &str,
+    entity: Option<&str>,
+) {
     let mut chain = model_chain(host);
-    chain.push(format!("{model}\u{1e}{facet}"));
+    chain.push(match entity {
+        Some(entity) => format!("{model}\u{1e}{facet}\u{1e}{entity}"),
+        None => format!("{model}\u{1e}{facet}"),
+    });
     let _ = view_el.set_attribute(MODEL_CHAIN, &chain.join("\u{1f}"));
 }
 
@@ -2934,9 +3146,10 @@ fn forward_with(host: &Element, view_el: &Element) {
 }
 
 /// Every element whose routing context a display forwards: the routing
-/// consumers, and a nested display, which forwards it on in turn.
-const ROUTING_CONSUMERS: &str = "[data-tonk-with], tonk-display, tonk-tree, tonk-inspector, \
-                                 tonk-notebook, ui-sync-status";
+/// consumers, and a nested display, which forwards it on in turn. A library
+/// element (the console's `<space-tree>`, say) opts in by carrying
+/// `data-tonk-with`, since the host cannot know the tags a space defines.
+const ROUTING_CONSUMERS: &str = "[data-tonk-with], tonk-display, ui-sync-status";
 
 /// Stamp `context` as `with` on each of `consumers` that lacks one, then
 /// descend into each of `templates` and do the same for its content.
@@ -2983,7 +3196,7 @@ fn mount_view_slide(
     // (blank when absent) instead of being cloned zero times and dropped. Set
     // before the element connects (append below), since `<tonk-view>` reads it
     // in `connected_callback`.
-    if let Some(descriptor) = inner.portal_descriptor.as_deref() {
+    if let Some(descriptor) = inner.model_descriptor.as_deref() {
         let scalars = tonk_template::resolve::scalar_field_names(descriptor);
         if !scalars.is_empty() {
             let csv = scalars.into_iter().collect::<Vec<_>>().join(",");
@@ -3011,7 +3224,8 @@ fn mount_view_slide(
     // the model being rendered: a counter card inside the DEFAULT
     // carousel must still resolve counter's own view, while a counter
     // display inside counter's OWN template must not.
-    stamp_model_chain(host, &view_el, owner, facet);
+    let entity = host.get_attribute("entity").filter(|s| !s.is_empty());
+    stamp_model_chain(host, &view_el, owner, facet, entity.as_deref());
     // Read the embeds the template declares and inject what they name
     // into the document head. From the template TEXT, not the mounted
     // DOM: the markup below becomes the ROW template, so a `<link>`
@@ -3175,13 +3389,22 @@ fn replay_host_frame(host: &Element, state: &Rc<RefCell<Inner>>) {
     }
 }
 
+/// The attribute a display carries while it holds a reconnect-empty frame
+/// over what it rendered: the owner of what the frame lost, such as a
+/// site's stamp, re-asserts it on seeing it.
+const HELD: &str = "data-held";
+
 /// The reconnect-empty grace: long enough for the owner's heal claim to
 /// re-stamp (retry jitter + claim round-trip), short enough that genuine
 /// emptiness still applies promptly.
 async fn reconnect_grace() {
+    sleep_ms(5_000).await;
+}
+
+async fn sleep_ms(ms: i32) {
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
         if let Some(win) = window() {
-            let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 5_000);
+            let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
         }
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
@@ -4541,7 +4764,7 @@ mod tests {
         outer.append_child(&inner).expect("append");
 
         assert!(
-            !renders_itself(&inner, "tonk:notebook", "ui"),
+            !renders_itself(&inner, "tonk:notebook", "ui", None),
             "a different model nested inside one is ordinary nesting"
         );
     }
@@ -4562,7 +4785,7 @@ mod tests {
         outer.append_child(&inner).expect("append");
 
         assert!(
-            renders_itself(&inner, "tonk:notebook", "ui"),
+            renders_itself(&inner, "tonk:notebook", "ui", None),
             "a model already being rendered above must not render again"
         );
     }
@@ -4580,16 +4803,16 @@ mod tests {
         let outer = document.create_element("div").expect("outer");
         let middle = document.create_element("div").expect("middle");
         outer.append_child(&middle).expect("append");
-        stamp_model_chain(&middle, &middle, "concept:todo", "directory");
+        stamp_model_chain(&middle, &middle, "concept:todo", "directory", None);
         let inner = document.create_element("div").expect("inner");
         middle.append_child(&inner).expect("append");
 
         assert!(
-            !renders_itself(&inner, "concept:todo", "ui"),
+            !renders_itself(&inner, "concept:todo", "ui", None),
             "a detail card inside its model's directory template is nesting, not a cycle"
         );
         assert!(
-            renders_itself(&inner, "concept:todo", "directory"),
+            renders_itself(&inner, "concept:todo", "directory", None),
             "re-entering the SAME facet is still the cycle"
         );
     }
@@ -4605,17 +4828,56 @@ mod tests {
         let middle = document.create_element("div").expect("middle");
         outer.append_child(&middle).expect("append");
         // A board rendered inside the notebook extends the chain.
-        stamp_model_chain(&middle, &middle, "tonk:board", "ui");
+        stamp_model_chain(&middle, &middle, "tonk:board", "ui", None);
         let inner = document.create_element("div").expect("inner");
         middle.append_child(&inner).expect("append");
 
         assert!(
-            renders_itself(&inner, "tonk:notebook", "ui"),
+            renders_itself(&inner, "tonk:notebook", "ui", None),
             "the notebook is still above, two levels up"
         );
         assert!(
-            !renders_itself(&inner, "tonk:workspace", "ui"),
+            !renders_itself(&inner, "tonk:workspace", "ui", None),
             "an unrelated model is unaffected"
+        );
+    }
+
+    /// The same entity through the same view is refused past one level of
+    /// self-nesting, even when the repeat sits inside a SHADOW ROOT. A notebook cell's results render
+    /// in `<prose-editor>`'s shadow tree, and the chain lookup stopped at
+    /// that boundary: a cell querying `notebook:` mounted its own notebook
+    /// in its results, which ran the cell again, forever.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_catches_an_entity_rendering_itself_across_a_shadow_root() {
+        let document = window().expect("window").document().expect("document");
+        let outer = document.create_element("div").expect("outer");
+        stamp_model_chain(&outer, &outer, "tonk:notebook", "ui", Some("id:nb/a"));
+        let host = document.create_element("div").expect("shadow host");
+        outer.append_child(&host).expect("append");
+        let init = web_sys::ShadowRootInit::new(web_sys::ShadowRootMode::Open);
+        let shadow = host.attach_shadow(&init).expect("shadow");
+        let inner = document.create_element("div").expect("inner");
+        shadow.append_child(&inner).expect("append");
+
+        assert!(
+            !renders_itself(&inner, "tonk:notebook", "ui", Some("id:nb/a")),
+            "an entity may show inside itself once"
+        );
+        stamp_model_chain(&inner, &inner, "tonk:notebook", "ui", Some("id:nb/a"));
+        let innermost = document.create_element("div").expect("innermost");
+        inner.append_child(&innermost).expect("append");
+        assert!(
+            renders_itself(&innermost, "tonk:notebook", "ui", Some("id:nb/a")),
+            "the repeat's own repeat is the cycle, seen across the shadow root"
+        );
+        assert!(
+            !renders_itself(&inner, "tonk:notebook", "ui", Some("id:nb/b")),
+            "a different notebook shown in a cell is a card, not a cycle"
+        );
+        assert!(
+            !renders_itself(&inner, "tonk:notebook", "label", Some("id:nb/a")),
+            "the same entity through another view is not a cycle"
         );
     }
 
@@ -4788,8 +5050,8 @@ mod tests {
         let view = document.create_element("tonk-view").unwrap();
         view.set_inner_html(concat!(
             "<ui-sync-status></ui-sync-status>",
-            "<tonk-tree></tonk-tree>",
-            r#"<tonk-inspector with="main@did:key:zOther"></tonk-inspector>"#,
+            "<space-tree data-tonk-with></space-tree>",
+            r#"<notebook-editor data-tonk-with with="main@did:key:zOther"></notebook-editor>"#,
             "<span>plain</span>",
         ));
         host.append_child(&view).unwrap();
@@ -4806,15 +5068,16 @@ mod tests {
             "a routing consumer without its own with inherits the display's",
         );
         assert_eq!(
-            view.query_selector("tonk-tree")
+            view.query_selector("space-tree")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")
                 .as_deref(),
             Some("main@did:key:zSpace"),
+            "an element marked data-tonk-with inherits it too",
         );
         assert_eq!(
-            view.query_selector("tonk-inspector")
+            view.query_selector("notebook-editor")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")
@@ -4839,9 +5102,9 @@ mod tests {
     /// `querySelectorAll` on the view never sees them. The forward pass
     /// must stamp the content, and the content of any `<template>` nested
     /// inside it (a view's own row template), or every routing consumer
-    /// inside a view loses its context: `<tonk-tree>`, `<tonk-inspector>`,
-    /// `<tonk-notebook>`, `<ui-sync-status>` and the nested display that
-    /// is how context cascades.
+    /// inside a view loses its context: an element
+    /// marked `data-tonk-with`, `<ui-sync-status>` and the nested display
+    /// that is how context cascades.
     #[cfg(target_arch = "wasm32")]
     #[dialog_common::test]
     fn it_forwards_its_with_into_template_content() {
@@ -4852,9 +5115,9 @@ mod tests {
         let template = document.create_element("template").unwrap();
         template.set_inner_html(concat!(
             "<ui-sync-status></ui-sync-status>",
-            "<tonk-inspector></tonk-inspector>",
+            "<notebook-editor data-tonk-with></notebook-editor>",
             "<tonk-display></tonk-display>",
-            "<template><tonk-tree></tonk-tree></template>",
+            "<template><space-tree data-tonk-with></space-tree></template>",
         ));
         view.append_child(&template).unwrap();
         host.append_child(&view).unwrap();
@@ -4865,7 +5128,7 @@ mod tests {
             .dyn_into::<web_sys::HtmlTemplateElement>()
             .unwrap()
             .content();
-        for tag in ["ui-sync-status", "tonk-inspector", "tonk-display"] {
+        for tag in ["ui-sync-status", "notebook-editor", "tonk-display"] {
             assert_eq!(
                 content
                     .query_selector(tag)
@@ -4885,7 +5148,7 @@ mod tests {
             .unwrap()
             .content();
         assert_eq!(
-            row.query_selector("tonk-tree")
+            row.query_selector("space-tree")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")
@@ -4898,8 +5161,8 @@ mod tests {
     /// The same, through the real mount: `mount_view_slide` parses the
     /// markup into a `<template>` and forwards over it in one place, so a
     /// consumer in a mounted view must come out stamped. This is the path
-    /// `/inspector` and `/diagnose` take, and the one that lost its
-    /// context when the parse moved into a template.
+    /// a route view takes, and the one that lost its context when the
+    /// parse moved into a template.
     #[cfg(target_arch = "wasm32")]
     #[dialog_common::test]
     fn it_stamps_context_into_the_mounted_view_template() {
@@ -4911,8 +5174,8 @@ mod tests {
             &host,
             &mut inner,
             concat!(
-                "<tonk-inspector></tonk-inspector>",
-                r#"<tonk-tree with="main@did:key:zOther"></tonk-tree>"#,
+                "<notebook-editor data-tonk-with></notebook-editor>",
+                r#"<space-tree data-tonk-with with="main@did:key:zOther"></space-tree>"#,
             ),
             "tonk:test",
             "ui",
@@ -4929,17 +5192,17 @@ mod tests {
             .content();
         assert_eq!(
             content
-                .query_selector("tonk-inspector")
+                .query_selector("notebook-editor")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")
                 .as_deref(),
             Some("main@did:key:zSpace"),
-            "the mounted view's inspector inherits the display's context",
+            "the mounted view's notebook inherits the display's context",
         );
         assert_eq!(
             content
-                .query_selector("tonk-tree")
+                .query_selector("space-tree")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")
@@ -5084,12 +5347,17 @@ mod tests {
             Some("no-entity"),
             "a reconnect-empty must not surface absence"
         );
+        assert!(
+            host.has_attribute(HELD),
+            "a held display says so, for the owner to re-assert what was lost"
+        );
 
         handle_entity_frame(&host, &state, Vec::new(), false);
         assert!(
             state.borrow().last_frame.is_empty(),
             "a plain empty frame clears as before"
         );
+        assert!(!host.has_attribute(HELD), "a frame applied ends the hold");
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -5223,7 +5491,7 @@ mod tests {
         let document = web_sys::window().expect("window").document().expect("doc");
         let host = document.create_element("div").expect("host");
         let mut inner = Inner::new();
-        inner.portal_descriptor = Some(
+        inner.model_descriptor = Some(
             r#"{
                 "with":  { "id":   { "the": "xyz.tonk.site/id",   "as": "Text", "cardinality": "one" } },
                 "maybe": { "rest": { "the": "xyz.tonk.site/rest", "as": "Text", "cardinality": "one" } }
@@ -5418,15 +5686,11 @@ mod tests {
         );
     }
 
-    // --- Display hook: routing a `text/html` view to a portal ---
+    // --- Display hook ---
     //
     // Driven through the real `<tonk-display>` flow against a fake host
     // that answers the resolve one-shots in order (model concept → view
-    // concept) and captures the subscriptions. Portal mode is decided
-    // per view frame: a row whose projected `type` is `text/html`
-    // mounts a `<tonk-portal>`; any other row renders inline through
-    // `<tonk-view>`. Both runs open the view and entity subscriptions —
-    // in portal mode the entity frames simply no-op against the iframe.
+    // concept) and captures the subscriptions.
     #[cfg(target_arch = "wasm32")]
     mod hook {
         use super::*;
@@ -5702,9 +5966,7 @@ mod tests {
 
         // The flow resolves ONE concept: the subject `model` concept
         // (projected for the entity query). The view query needs no
-        // resolve — its predicate is the built-in `view` concept and a
-        // `type: text/html` entry in the `show` dictionary decides
-        // portal mode.
+        // resolve — its predicate is the built-in `view` concept.
         //
         // `resolve_model` resolves a bare name through the Name concept
         // first (`id:<name>` → `db.name/referent`), then runs the
@@ -5815,60 +6077,6 @@ mod tests {
             assert!(view.text_content().unwrap().contains('8'));
         }
 
-        #[dialog_common::test]
-        async fn it_mounts_a_portal_for_a_text_html_view_frame() {
-            let host =
-                FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
-            let display = mount_display(&host, "", "counter", "id:demo-counter");
-
-            // Wait for the flow to open its subscriptions (model, then
-            // view + entity once the model frame resolves).
-            for _ in 0..200 {
-                if host.subscribe_tags().contains(&"entity".to_owned()) {
-                    break;
-                }
-                sleep(5).await;
-            }
-            // The view frame carries a `type: text/html` entry beside the
-            // document, which routes the facet to a portal.
-            host.push_frame(
-                "view",
-                &show_rows(
-                    "did:key:zModel",
-                    &[("ui", "<h1>monolith</h1>"), ("type", "text/html")],
-                ),
-            );
-
-            let portal = await_selector(&display, "tonk-portal")
-                .await
-                .expect("a text/html view should mount a <tonk-portal>");
-            assert_eq!(
-                portal.get_attribute("content").as_deref(),
-                Some("<h1>monolith</h1>"),
-                "the view's HTML document becomes the portal content",
-            );
-            assert_eq!(
-                portal.get_attribute("entity").as_deref(),
-                Some("id:demo-counter"),
-                "the portal is scoped to the displayed entity",
-            );
-            assert!(
-                display.query_selector("tonk-view").unwrap().is_none(),
-                "a portal view renders no inline <tonk-view>",
-            );
-            // The model subscription opens first, then the view + entity
-            // subs once the model frame resolves; the entity sub just
-            // no-ops against the portal (a `<tonk-portal>` exposes no
-            // `draw`).
-            assert_eq!(
-                host.subscribe_tags()
-                    .into_iter()
-                    .filter(|tag| tag != "name")
-                    .collect::<Vec<_>>(),
-                vec!["model".to_owned(), "view".to_owned(), "entity".to_owned()],
-            );
-        }
-
         /// A load-time delta supersedes ONE dictionary entry. The
         /// worker's per-entity diff can carry a retract whose row shape
         /// drifted from the retained snapshot row (field projection
@@ -5957,7 +6165,7 @@ mod tests {
         }
 
         #[dialog_common::test]
-        async fn it_renders_inline_and_subscribes_to_the_entity_when_no_type() {
+        async fn it_renders_inline_and_subscribes_to_the_entity() {
             let host =
                 FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
             let display = mount_display(&host, "", "counter", "id:demo-counter");
@@ -5972,11 +6180,7 @@ mod tests {
 
             assert!(
                 await_selector(&display, "tonk-view").await.is_some(),
-                "a view frame with no type renders inline through <tonk-view>",
-            );
-            assert!(
-                display.query_selector("tonk-portal").unwrap().is_none(),
-                "no portal is mounted for a non-portal view",
+                "a view frame renders inline through <tonk-view>",
             );
             let mut tags = host.subscribe_tags();
             tags.sort();
@@ -5990,6 +6194,121 @@ mod tests {
                 ],
                 "inline mode watches the name, model, view, and entity",
             );
+        }
+
+        /// A branch that is not here yet answers `pending`, not an empty
+        /// set. A display with nothing to show lands in its absence state,
+        /// as the empty set put it before: that is the slot a space page
+        /// fills with "downloading".
+        #[dialog_common::test]
+        async fn it_reads_pending_as_absent_when_it_shows_nothing() {
+            let host = FakeHost::install(resolve_responses());
+            let display = mount_display(&host, "", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"model".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            let payload = Object::new();
+            let _ = Reflect::set(&payload, &"control".into(), &"pending".into());
+            let opts = Object::new();
+            let _ = Reflect::set(&opts, &"tag".into(), &"model".into());
+            let notice: Function = Reflect::get(&display, &"notice".into())
+                .unwrap()
+                .dyn_into()
+                .unwrap();
+            let _ = notice.call2(&display, &payload, &opts);
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("no-model") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("no-model"),
+                "a fresh display reads `pending` as absent",
+            );
+
+            // The space arrives: the model subscription pushes a non-empty
+            // frame, the downstream view + entity subs open, and a view +
+            // entity frame render the row live.
+            host.push_frame("model", &model_concept_frame());
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"view".to_owned())
+                    && host.subscribe_tags().contains(&"entity".to_owned())
+                {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("view", &view_frame("<p>{count}</p>"));
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "7")])]));
+
+            assert!(
+                await_selector(&display, "tonk-view").await.is_some(),
+                "the display recovers and renders once the concept lands",
+            );
+            assert!(
+                display.query_selector("wa-callout").unwrap().is_none(),
+                "recovery leaves no latched callout behind",
+            );
+        }
+
+        /// A display that already shows rows keeps them through `pending`
+        /// (a reconnect to a worker that has not mounted the branch yet):
+        /// the rows follow on the same stream, so clearing would delete
+        /// what is about to be inserted again.
+        #[dialog_common::test]
+        async fn it_keeps_its_rows_through_pending() {
+            let dictionary = || {
+                show_rows(
+                    "tonk:_",
+                    &[("directory", "<ul><li data-id={this}>{title}</li></ul>")],
+                )
+            };
+            let host = FakeHost::install_with_model(
+                vec![name_row("did:key:zModel"), dictionary(), dictionary()],
+                Some(directory_model_frame()),
+            );
+            let display = mount_directory(&host, "item");
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame(
+                "entity",
+                &rows(&[("did:key:zItem1", &[("title", "Hello")])]),
+            );
+            host.push_frame("view", &rows(&[]));
+            await_selector(&display, "li[data-id]")
+                .await
+                .expect("the row renders");
+
+            for tag in ["entity", "model"] {
+                let payload = Object::new();
+                let _ = Reflect::set(&payload, &"control".into(), &"pending".into());
+                let opts = Object::new();
+                let _ = Reflect::set(&opts, &"tag".into(), &tag.into());
+                let notice: Function = Reflect::get(&display, &"notice".into())
+                    .unwrap()
+                    .dyn_into()
+                    .unwrap();
+                let _ = notice.call2(&display, &payload, &opts);
+            }
+            sleep(100).await;
+            assert!(
+                display.query_selector("li[data-id]").unwrap().is_some(),
+                "`pending` took down rows the display already showed",
+            );
+            assert_ne!(
+                display.get_attribute("data-state").as_deref(),
+                Some("no-model"),
+            );
+            host.container.remove();
         }
 
         // The fix for the latched red box on a still-seeding space: when
@@ -6550,6 +6869,76 @@ mod tests {
             );
         }
 
+        // Two view frames that both lack the facet, arriving before the
+        // first fallback lands, must not tear the default down and build it
+        // again: the rows the first one rendered stay in place.
+        #[dialog_common::test]
+        async fn it_keeps_the_default_view_when_a_second_frame_lacks_the_facet() {
+            let dictionary = || {
+                show_rows(
+                    "tonk:_",
+                    &[("directory", "<ul><li data-id={this}>{title}</li></ul>")],
+                )
+            };
+            let host = FakeHost::install_with_model(
+                vec![name_row("did:key:zModel"), dictionary(), dictionary()],
+                Some(directory_model_frame()),
+            );
+            let display = mount_directory(&host, "item");
+            // Count every rendered row the display takes down.
+            let removed = Rc::new(RefCell::new(0usize));
+            let observer = {
+                let removed = removed.clone();
+                Closure::<dyn FnMut(js_sys::Array)>::new(move |records: js_sys::Array| {
+                    for record in records.iter() {
+                        let record: web_sys::MutationRecord = record.unchecked_into();
+                        let gone = record.removed_nodes();
+                        for i in 0..gone.length() {
+                            if let Some(node) = gone.item(i)
+                                && let Ok(el) = node.dyn_into::<Element>()
+                            {
+                                if el.matches("li[data-id]").unwrap_or(false) {
+                                    *removed.borrow_mut() += 1;
+                                }
+                                *removed.borrow_mut() += el
+                                    .query_selector_all("li[data-id]")
+                                    .map(|list| list.length() as usize)
+                                    .unwrap_or(0);
+                            }
+                        }
+                    }
+                })
+            };
+            let watch = web_sys::MutationObserver::new(observer.as_ref().unchecked_ref()).unwrap();
+            let options = web_sys::MutationObserverInit::new();
+            options.set_child_list(true);
+            options.set_subtree(true);
+            watch.observe_with_options(&display, &options).unwrap();
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame(
+                "entity",
+                &rows(&[("did:key:zItem1", &[("title", "Hello")])]),
+            );
+            host.push_frame("view", &rows(&[]));
+            host.push_frame("view", &rows(&[]));
+            await_selector(&display, "li[data-id]")
+                .await
+                .expect("the default directory template renders the instances");
+            // Let the second fallback finish its query and land.
+            sleep(100).await;
+            watch.disconnect();
+            assert_eq!(
+                *removed.borrow(),
+                0,
+                "the second frame rebuilt the default view instead of keeping it",
+            );
+        }
+
         // With no view AND no `tonk:_` entry for the facet, an entity
         // with data still shows as a notation dump — the ultimate
         // fallback that keeps every entity inspectable.
@@ -6648,6 +7037,106 @@ mod tests {
                 display.query_selector("tonk-view").unwrap().is_none(),
                 "the stale template is unmounted",
             );
+        }
+
+        /// Mount a counter display and render its first entity, returning
+        /// the display and the `<tonk-view>` it mounted.
+        async fn rendered_counter(host: &FakeHost) -> (Element, Element) {
+            let display = mount_display(host, "", "counter", "id:demo-counter");
+            wait_for_entity_subs(host, 1).await;
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "9")])]));
+            host.push_frame("view", &view_frame("<h1>{count}</h1>"));
+            let shown = await_selector(&display, "tonk-view")
+                .await
+                .expect("the first entity renders");
+            (display, shown)
+        }
+
+        async fn wait_for_entity_subs(host: &FakeHost, count: usize) {
+            for _ in 0..200 {
+                let subs = host
+                    .subscribe_tags()
+                    .iter()
+                    .filter(|tag| tag.as_str() == "entity")
+                    .count();
+                if subs >= count {
+                    return;
+                }
+                sleep(5).await;
+            }
+        }
+
+        // Pointing a display at another entity of the same model keeps
+        // the mounted view, inert, and renders the new entity into that
+        // same element when it answers: nothing is removed, and there is
+        // never a second copy of the view's components.
+        #[dialog_common::test]
+        async fn it_renders_another_entity_into_the_view_it_shows() {
+            let host = FakeHost::install_with_model(
+                // One-shots: the model name lookup for each subject.
+                vec![name_row("did:key:zModel"), name_row("did:key:zModel")],
+                Some(model_concept_frame()),
+            );
+            let (display, shown) = rendered_counter(&host).await;
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("ready") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("ready")
+            );
+
+            display.set_attribute("entity", "id:other-counter").unwrap();
+            assert!(shown.is_connected(), "the old entity stays on screen");
+            assert!(shown.has_attribute("inert"), "and cannot be acted on");
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("ready"),
+                "no loading state is painted over it",
+            );
+            assert_eq!(display.get_attribute("aria-busy").as_deref(), Some("true"));
+
+            wait_for_entity_subs(&host, 2).await;
+            host.push_frame("view", &view_frame("<h1>{count}</h1>"));
+            assert!(
+                shown.is_connected() && shown.has_attribute("inert"),
+                "the same view, still held, while the new entity resolves"
+            );
+            host.push_frame("entity", &rows(&[("id:other-counter", &[("count", "4")])]));
+            for _ in 0..200 {
+                if !shown.has_attribute("inert") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert!(
+                shown.is_connected(),
+                "the new entity renders into the same view"
+            );
+            assert!(!shown.has_attribute("inert"), "which can be acted on again");
+            let views = display.query_selector_all("tonk-view").unwrap();
+            assert_eq!(views.length(), 1, "one view the whole time");
+            assert!(display.get_attribute("aria-busy").is_none());
+            assert!(!display.has_attribute(HOLDING_ATTR));
+        }
+
+        // A changed model mounts different components, so the display
+        // does not keep the old ones while they load: two live copies of
+        // a page's components (one inert but still reachable by scripts,
+        // still holding document-wide state) is what the hold avoids.
+        #[dialog_common::test]
+        async fn it_clears_what_it_shows_when_the_model_changes() {
+            let host = FakeHost::install_with_model(
+                vec![name_row("did:key:zModel"), name_row("did:key:zModel")],
+                Some(model_concept_frame()),
+            );
+            let (display, shown) = rendered_counter(&host).await;
+            display.set_attribute("model", "other").unwrap();
+            assert!(!shown.is_connected(), "the old model's view is removed");
+            assert!(!display.has_attribute(HOLDING_ATTR));
         }
 
         // An entity that starts matching its concept AFTER the view

@@ -32,6 +32,8 @@ let
       "Cargo.toml"
       "rust-toolchain.toml"
       "rust"
+      # The shared MCP tool catalog, embedded by tonk-agent-peer.
+      "mcp/tools.json"
     ];
   };
 
@@ -102,10 +104,18 @@ let
     }
   );
 
+  # The Tonk kernel's components build in a nested cargo build for
+  # `wasm32-wasip3` (rust/tonk-components/build.rs), and the host's tests boot
+  # them. Neither runs in the sandbox yet; a check of their own is to come.
+  kernelExcludeArgs = "--exclude tonk-components --exclude tonk-kernel-host";
+
+  # What runs only natively or in a kernel on WASI, never in a browser.
+  browserExcludeArgs = "--exclude tonk-worker --exclude tonk-kernel";
+
   # Build WASM dependencies separately (different target)
   # Exclude native-only crates that can't compile for wasm32-unknown-unknown.
   # If you add a new native-only crate, add it to the --exclude list here.
-  wasmCargoExcludeArgs = "--workspace --exclude tonk-cli --exclude tonk-perf";
+  wasmCargoExcludeArgs = "--workspace --exclude tonk-cli --exclude tonk-agent-peer --exclude tonk-perf ${kernelExcludeArgs} ${browserExcludeArgs}";
 
   wasmAttributes = commonAttributes // {
     CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
@@ -127,7 +137,18 @@ let
       // {
         version = "0.1.0";
 
-        cargoArtifacts = nativeArtifacts;
+        cargoArtifacts =
+          if attributes ? CARGO_PROFILE then
+            craneLib.buildDepsOnly (
+              commonAttributes
+              // {
+                pname = "${attributes.pname}-deps";
+                CARGO_PROFILE = attributes.CARGO_PROFILE;
+                cargoExtraArgs = attributes.cargoExtraArgs or "";
+              }
+            )
+          else
+            nativeArtifacts;
       }
       // attributes
     );
@@ -168,6 +189,7 @@ let
           muslAttributes
           // {
             pname = "${attributes.pname}-static-deps";
+            CARGO_PROFILE = attributes.CARGO_PROFILE or "release";
             cargoExtraArgs = attributes.cargoExtraArgs or "";
           }
         );
@@ -190,21 +212,43 @@ let
       // attributes
     );
 
+  # `depsBuildCommand` lists the Cargo builds Trunk will run, with their
+  # profiles, binaries and features. Trunk builds each asset under the profile
+  # its `index.html` link names, and the shared Wasm artifacts are built under
+  # `release`, so without it every asset recompiles all of its dependencies.
   buildTrunkCrate =
     attributes:
     let
       crateRoot = builtins.dirOf attributes.trunkConfig;
+      depsBuildCommand = attributes.depsBuildCommand or null;
+      cargoArtifacts =
+        if depsBuildCommand == null then
+          wasmArtifacts
+        else
+          craneLib.buildDepsOnly (
+            wasmAttributes
+            // {
+              pname = "${attributes.pname}-trunk-deps";
+              buildPhaseCargoCommand = depsBuildCommand;
+              doCheck = false;
+            }
+          );
     in
     craneLib.buildTrunkPackage (
       wasmAttributes
       // {
-        cargoArtifacts = wasmArtifacts;
+        inherit cargoArtifacts;
+        # Crane rewrites the store paths of the vendored crates and of the
+        # toolchain wherever the build put one, after the build: in a kernel
+        # that would change the bytes `write-components` named. Its build maps
+        # the paths away, as two flags apart by the unit separator.
         preBuild = ''
+          export TONK_COMPONENT_RUSTFLAGS="--remap-path-prefix=$cargoVendorDir=/cargo-vendor"$'\x1f'"--remap-path-prefix=$(rustc --print sysroot)=/rust-sysroot"
           cd ${crateRoot}
         '';
         inherit wasm-bindgen-cli;
       }
-      // attributes
+      // builtins.removeAttrs attributes [ "depsBuildCommand" ]
     );
 
   # Build cargo-nextest test archive
@@ -213,36 +257,27 @@ let
       name,
       args ? "",
       target ? null,
-      # Extra cargo args for a dedicated dependency-only build. An archive
-      # whose feature set pulls dependencies the shared workspace artifacts
-      # never compile (e.g. tonk-ui's `integration-tests` WebDriver stack)
-      # names them here so they are cached across source changes instead of
-      # rebuilt inside every archive derivation.
-      depsExtraArgs ? null,
-      # Cargo profile the archive builds with, when not the default one.
-      # Its dependencies are built under the same profile, since artifacts
-      # built for another profile are not reused.
-      profile ? null,
+      # One profile and target/feature graph for both the dependency cache and
+      # nextest. Raw nextest does not honor Crane's CARGO_PROFILE default.
+      profile ? "test",
     }:
     let
       baseAttributes = if target == "wasm32-unknown-unknown" then wasmAttributes else commonAttributes;
-
-      targetAttributes =
-        if profile == null then baseAttributes else baseAttributes // { CARGO_PROFILE = profile; };
-
-      sharedArtifacts = if target == "wasm32-unknown-unknown" then wasmArtifacts else nativeArtifacts;
-
-      targetArtifacts =
-        if depsExtraArgs == null && profile == null then
-          sharedArtifacts
-        else
-          craneLib.buildDepsOnly (
-            targetAttributes
-            // {
-              pname = "tonk-workspace-${name}-deps";
-              cargoExtraArgs = if depsExtraArgs == null then "" else depsExtraArgs;
-            }
-          );
+      targetAttributes = baseAttributes // {
+        CARGO_PROFILE = profile;
+      };
+      targetArtifacts = craneLib.buildDepsOnly (
+        targetAttributes
+        // {
+          pname = "tonk-workspace-${name}-deps";
+          cargoExtraArgs = args;
+          # nextest archives consume test artifacts. Compile that graph once;
+          # separate check/build passes produce artifacts this consumer does
+          # not need. --no-run also supports cross-compiled Wasm tests.
+          buildPhaseCargoCommand = "cargoWithProfile test ${args} --no-run";
+          doCheck = false;
+        }
+      );
     in
     craneLib.mkCargoDerivation (
       targetAttributes
@@ -251,7 +286,7 @@ let
         cargoArtifacts = targetArtifacts;
 
         buildPhaseCargoCommand = ''
-          cargo nextest archive \
+          cargo nextest archive --cargo-profile ${profile} --timings \
             ${args} \
             --archive-file ./tests-${name}.tar.zst
         '';
@@ -259,6 +294,7 @@ let
         installPhaseCommand = ''
           mkdir -p $out
           cp ./*.tar.zst $out/
+          cp -r target/cargo-timings $out/cargo-timings
         '';
 
         doInstallCargoArtifacts = false;
@@ -272,6 +308,7 @@ let
       // {
         pname = "tonk-clippy-lint";
         cargoArtifacts = nativeArtifacts;
+        cargoExtraArgs = "--workspace ${kernelExcludeArgs}";
         cargoClippyExtraArgs = "--all-targets --all-features -- -D warnings";
       }
     );

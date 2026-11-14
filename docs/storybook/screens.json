@@ -5,8 +5,7 @@
   "tracked_product_paths": [
     "rust/tonk-ui/",
     "rust/tonk-cli/",
-    "rust/tonk-fab/",
-    "rust/tonk-portal/"
+    "rust/tonk-site/"
   ],
   "screens": [
     {
@@ -31,7 +30,7 @@
       "capture": "running product",
       "status": "captured",
       "journey_ids": ["SPACE-01", "SPACE-03", "SPACE-04", "SPACE-05", "SPACE-06", "SPACE-07", "SPACE-08", "SPACE-13", "SPACE-14", "SPACE-15", "SPACE-16", "UI-04"],
-      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/styles.css", "rust/tonk-fab/src/markup.rs", "rust/tonk-core/assets/library/profile.yaml", "rust/tonk-worker/src/router/repository/duplication.rs"]
+      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/styles.css", "rust/tonk-core/assets/library/profile.yaml", "rust/tonk-worker/src/router/repository/duplication.rs"]
     },
     {
       "id": "WEB-03",
@@ -42,8 +41,8 @@
       "artifact": "app/screens/web-03-space-home.png",
       "capture": "running product",
       "status": "captured",
-      "journey_ids": ["ACCT-C13", "ACCT-C14", "SPACE-09", "DATA-02", "DATA-09", "UI-04"],
-      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/styles.css", "rust/tonk-portal/src/site.rs", "rust/tonk-fab/src/markup.rs"]
+      "journey_ids": ["ACCT-C13", "ACCT-C14", "SPACE-09", "DATA-02", "DATA-09", "UI-04", "SPACE-17"],
+      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/styles.css", "rust/tonk-site/src/site.rs", "rust/tonk-core/assets/library/profile.yaml"]
     },
     {
       "id": "WEB-04",
@@ -55,7 +54,7 @@
       "capture": "running product",
       "status": "captured",
       "journey_ids": ["ACCT-C14", "SPACE-06", "SYNC-01", "SYNC-02", "SYNC-03", "SYNC-04", "COLLAB-01", "CLI-03"],
-      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-fab/src/markup.rs", "rust/tonk-fab/src/bar.rs", "rust/tonk-fab/src/tool_connection.rs", "rust/tonk-fab/src/agent_panel.rs", "rust/tonk-fab/src/member_roster.rs", "rust/tonk-fab/src/skin.rs"]
+      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-core/assets/library/profile.yaml"]
     },
     {
       "id": "WEB-05",
@@ -67,7 +66,7 @@
       "capture": "running product",
       "status": "captured",
       "journey_ids": ["COLLAB-01", "COLLAB-02", "COLLAB-03", "COLLAB-04", "COLLAB-05"],
-      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/src/fabb_task.rs", "rust/tonk-fab/src/contained_tasks.rs", "rust/tonk-fab/src/trusted_tasks.rs", "rust/tonk-fab/src/share.rs", "rust/tonk-portal/src/task.rs"]
+      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/src/fabb_task.rs", "rust/tonk-core/assets/library/profile.yaml", "rust/tonk-site/src/task.rs"]
     },
     {
       "id": "WEB-06",
@@ -199,7 +198,7 @@
       "capture": "running product",
       "status": "captured",
       "journey_ids": ["COLLAB-06"],
-      "source_paths": ["rust/tonk-fab/src/markup.rs", "rust/tonk-fab/src/bar.rs", "rust/tonk-fab/src/skin.rs", "rust/tonk-fab/src/publication.rs", "rust/tonk-worker/src/router/publication.rs"]
+      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-worker/src/router/publication.rs"]
     },
     {
       "id": "WEB-17",
@@ -211,7 +210,7 @@
       "capture": "running product",
       "status": "captured",
       "journey_ids": ["COLLAB-03", "COLLAB-07"],
-      "source_paths": ["rust/tonk-fab/src/markup.rs", "rust/tonk-fab/src/bar.rs", "rust/tonk-fab/src/skin.rs", "rust/tonk-fab/src/member_roster.rs", "rust/tonk-worker/src/router/join.rs"]
+      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-worker/src/router/join.rs"]
     },
     {
       "id": "WEB-18",

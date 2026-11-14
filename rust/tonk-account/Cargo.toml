@@ -14,13 +14,17 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [dependencies]
+# The invites a ticket link opens to.
+tonk-invite = { workspace = true }
 blake3 = { workspace = true }
 dialog-artifacts = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 dialog-credentials = { workspace = true }
+dialog-did-web = { workspace = true }
 dialog-effects = { workspace = true }
 dialog-peer = { workspace = true }
+dialog-remote-ucan = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-storage = { workspace = true }
 dialog-ucan = { workspace = true }
@@ -37,9 +41,13 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 url = { workspace = true }
 
+# On WASI, the peer reaches the network through its embedder.
+[target.'cfg(all(target_arch = "wasm32", not(target_os = "unknown")))'.dependencies]
+dialog-network = { workspace = true }
+tonk-kernel-world = { workspace = true }
+
 [dev-dependencies]
 anyhow = { workspace = true }
-dialog-remote-ucan = { workspace = true }
 dialog-peer = { workspace = true, features = ["helpers"] }
 dialog-storage = { workspace = true, features = ["helpers"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
@@ -47,3 +55,5 @@ wasm-bindgen-test = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tempfile = { workspace = true }
+# The local DID documents the discovery tests serve.
+tokio = { workspace = true, features = ["macros", "rt", "net", "io-util"] }

@@ -23,7 +23,7 @@
 //   bytes because the envelope travels as element text / store text.
 // - anything else (or a bare, envelope-less string) — the body is CSV
 //   and seeds a fresh workbook: the human-authorable channel, so
-//   `<tonk-table>a,b\n1,2</tonk-table>` just works. Formulas survive
+//   `<table-editor>a,b\n1,2</table-editor>` just works. Formulas survive
 //   as `=…` cell text.
 //
 // Identity/ordering lives in the `ETag`: a Hybrid Logical Clock

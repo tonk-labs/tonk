@@ -15,7 +15,9 @@ pub const MAX_DURATION_MS: u64 = 600_000;
 
 /// Create an opaque random token for correlating one interaction lifecycle.
 pub fn attempt_id() -> String {
-    hex::encode(rand::random::<[u8; 16]>())
+    let mut bytes = [0u8; 16];
+    dialog_common::random::fill(&mut bytes).expect("the system has a source of random bytes");
+    hex::encode(bytes)
 }
 
 macro_rules! closed_enum {
@@ -46,7 +48,10 @@ closed_enum! {
         RenameSpace, RemoveSpace, UpdateSeed, ForgetInvitation,
         ActivateSheet, CreateSheet, CloseSheet, Edit, Evaluate, Query, Inspect,
         Import, Export, Blob, Push, Pull, Upgrade, Help, Identity, ConfigureSpace,
-        Concept, View, Render, Remote, Migrate
+        Concept, View, Render, Remote, Migrate,
+        // Desktop app interactions; see docs/analytics-contract.md.
+        PublishSpace, UnpublishSpace, RevokeLink, ResetLink, OpenView, StartChat, SendMessage,
+        ChangeModel, InviteContact
     }
 }
 
@@ -330,6 +335,44 @@ mod tests {
         assert_eq!(
             ProductEvent::from_properties(&invalid),
             Err(ValidationError::InvalidProperties)
+        );
+    }
+
+    /// The macOS app sends these names from Swift (desktop/Sources/HarnessCore/
+    /// DesktopAnalytics.swift); a rename here must change there too.
+    #[test]
+    fn desktop_action_names_match_the_native_client() {
+        let names: Vec<Value> = [
+            ProductAction::CopyShareLink,
+            ProductAction::ConnectAgent,
+            ProductAction::PublishSpace,
+            ProductAction::UnpublishSpace,
+            ProductAction::RevokeLink,
+            ProductAction::ResetLink,
+            ProductAction::OpenView,
+            ProductAction::StartChat,
+            ProductAction::SendMessage,
+            ProductAction::ChangeModel,
+            ProductAction::InviteContact,
+        ]
+        .iter()
+        .map(|action| serde_json::to_value(action).unwrap())
+        .collect();
+        assert_eq!(
+            names,
+            [
+                "copy_share_link",
+                "connect_agent",
+                "publish_space",
+                "unpublish_space",
+                "revoke_link",
+                "reset_link",
+                "open_view",
+                "start_chat",
+                "send_message",
+                "change_model",
+                "invite_contact",
+            ]
         );
     }
 

@@ -37,7 +37,7 @@ library.** Declare it there first; make the Rust match.
 
 This holds even when nothing subscribes through the concept. The FAB
 deliberately subscribes to raw `xyz.tonk.*` attributes rather than naming
-concepts (see `tonk-fab/src/member_roster.rs:12-15` and four siblings) —
+concepts (see the `wire` method of `element!: &tonk-fab` in `profile.yaml`):
 naming one would require per-space seeding and break against older seeds.
 That is a fine reason for the FAB to read attributes. It is not a reason to
 leave the concept undeclared: the declaration is the documentation and the

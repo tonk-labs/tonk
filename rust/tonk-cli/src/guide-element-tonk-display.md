@@ -46,7 +46,7 @@ The `label` facet renders just a name; omitting `view` renders the `ui` facet, t
 
 `<tonk-display model=… >` with no `entity` renders one row per instance —
 the pattern the interactive elements use to feed themselves (a hidden
-`<tonk-display>` per concept inside `<tonk-table>` / a board canvas). Each
+`<tonk-display>` per concept inside `<table-editor>` / a board canvas). Each
 row's `subject={this}` marks the repeat root.
 
 Full resolution pipeline, the `<tonk-view>` binding model, and repeat/fold

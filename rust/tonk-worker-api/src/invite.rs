@@ -75,6 +75,10 @@ pub struct InvitationSummary {
     pub recipient_root: Option<Did>,
     /// Local display state; canonical enforcement remains relay-backed.
     pub status: String,
+    /// The invitation entity a claim records in `xyz.tonk.membership/invitation`,
+    /// so a client can say who joined through this link.
+    #[serde(default)]
+    pub invitation: String,
 }
 
 /// Canonical relay acknowledgement for an invitation revocation.
@@ -167,9 +171,11 @@ mod tests {
             kind: InvitationKind::Scoped,
             recipient_root: Some(root()),
             status: "active".into(),
+            invitation: "tonk:invitation".into(),
         };
         let json = serde_json::to_value(summary).unwrap();
         assert_eq!(json["targetCid"], "bafycid");
+        assert_eq!(json["invitation"], "tonk:invitation");
         assert_eq!(json["recipientRoot"], "did:key:z6Mktest");
         assert!(json.get("url").is_none());
         assert!(json.get("pathHex").is_none());

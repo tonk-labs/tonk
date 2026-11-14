@@ -98,8 +98,8 @@ Opening `/<model>` instead reaches the model directory without changing home.
 Bind stored booleans to the checkbox property with `checked={done}`.
 A bare `{done}` in the input tag does not bind checked state. Native inputs
 change visually on click even without saving; verify persistence by reading
-records and reloading the view. The `onchange` command handles the write
-separately (see the events guide).
+records and reloading the view. An `on:toggle` binding and its command handle
+the write separately (see the events guide).
 
 This example assumes `integration-task` has `title` and boolean `done` fields.
 It displays saved state; add the event handler only after defining its command
@@ -147,6 +147,10 @@ section) takes the same three:
 - `/space/<space>/<entity>@<model>!<facet>` — one entity through an
   explicit facet.
 
+These three are routes the standard library ships. To give a page its
+own path (`/notes`, `/notes/<note>`), write a `route!`: `tonk help
+routes`.
+
 Handing the repo to someone else is a separate act: `tonk invite`.
 
 ## Render to HTML headlessly: `tonk render`
@@ -166,10 +170,7 @@ a model's own lacks the facet, and renders nested `<tonk-display>`
 recursively.
 
 Headless rendering resolves templates and nested `<tonk-display>` elements,
-but it does not run custom elements or their JavaScript. In particular, the
-seeded `portal` model (below) prints a `<tonk-portal>` element headlessly; only
-the browser runtime turns that element into its sandboxed iframe and installs
-the `window.tonk` bridge.
+but it does not run custom elements or their JavaScript.
 
 ## Rendering a reference by name (cross-concept join)
 
@@ -208,37 +209,42 @@ print the URI. The same nesting renders any reference: `entity` is the
 reference field, `model` the referenced concept, and `view` the facet
 you want (`label` for just a name, none for the full `ui` card).
 
-## Built-in view elements
+## Ready-made view elements
 
-Ready-made custom elements a view can drop in, no script needed. Each
-has a full page: **`tonk help <element>`**.
+Custom elements a view can drop in, no script needed. `<tonk-display>`
+is built into the host; the editors are library components a space
+installs, and the element comes with its component. Each has a full
+page: **`tonk help <element>`**.
 
 | Element | What it is | Bind by |
 |---------|-----------|---------|
-| `<tonk-display>` | Render an entity (or every instance) through a view. The primitive everything else hangs off. | `model` + `entity` attrs |
-| `<tonk-prose>` | Typora-style markdown editor. | text content; `onchange` |
-| `<tonk-code>` | CodeMirror code editor with per-language highlighting. | `value`/`language` attrs; `onchange` |
-| `<tonk-table>` | IronCalc spreadsheet — live formulas, sheets, per-cell claims. | text (CSV) or `subject` + `<tonk-display>` rows |
+| `<tonk-display>` | Render an entity (or every instance) through a view. The primitive everything else hangs off. Built in. | `model` + `entity` attrs |
+| `<prose-editor>` | Typora-style markdown editor. Installed with the `prose-editor` component. | text content; `change` event |
+| `<code-editor>` | CodeMirror code editor; languages are installable components. Installed with the `code-editor` component. | `value`/`language` attrs; `change` event |
+| `<table-editor>` | IronCalc spreadsheet — live formulas, sheets, per-cell claims. Installed with the `table` component. | text (CSV) or `subject` + `<tonk-display>` rows |
 
 ```
-tonk help tonk-table     # full docs for one element
-tonk help tonk-prose
+tonk help table-editor   # full docs for one element
+tonk help prose-editor
+tonk help code-editor
 ```
 
 The editors persist the same way: bind the store's value in (as element
-text or an attribute), fire a command on the element's `change` event
-(read `dom.event.detail/…`), and a rule writes it back — the loop in
-`tonk help events`. `<tonk-table>` also offers a store-native *claims*
+text or an attribute), bind the element's `change` event with an
+`on:<name>=<command>` whose `event!:` declaration reads `.detail.…`, and a
+rule writes it back — the loop in
+`tonk help events`. `<table-editor>` also offers a store-native *claims*
 mode (one claim per cell). Your own elements (below) are peers of
 these.
 
 ## Web components
 
 Views can freely use any custom element already registered in the
-rendering realm — the built-in `<tonk-*>` elements above and the Web
-Awesome `<wa-*>` set (`<wa-icon>`, `<wa-carousel>`, …) — with no
-script. A `<script>` written directly in a template never executes
-(templates render through inert fragments), so behaviour the
+rendering realm — `<tonk-display>`, the installed components'
+elements above and the Web Awesome `<wa-*>` set (`<wa-icon>`,
+`<wa-carousel>`, …) — with no script. A `<script>` written directly
+in a template never executes (templates render through inert
+fragments), so behaviour the
 template language can't express (rich editing, canvas, drag
 interactions) is packaged as a **web component** instead.
 
@@ -260,11 +266,17 @@ an element is a dictionary of functions keyed by method.**
 
 ```yaml tonk=eval
 element!: &tally-widget
-  description: "A running tally, incremented by its own bump event"
+  description: "A running tally; a click on it dispatches a bump event"
   method:
     connected: |
       (self) => {
         self.textContent = `count: ${self.getAttribute('count') ?? 0}`;
+        self.__click ??= () => self.bump();
+        self.addEventListener('click', self.__click);
+      }
+    attribute-changed: |
+      (self, name, before, after) => {
+        if (name === 'count') self.textContent = `count: ${after ?? 0}`;
       }
     bump: |
       (self) => self.dispatchEvent(
@@ -459,66 +471,25 @@ Rules of the road:
 
 - **Data flows in** through attributes the view binds (`<tally-widget
   count={count}>`) and through child rows the view renders inside the
-  element; **actions flow out** as bubbling `CustomEvent`s, wired
-  exactly like clicks — `onbump=<command>` on the element plus
-  `dom.event.detail/amount` fields on the command (see `tonk help
-  events`). The built-in `<tonk-sheet-binder>` works this way; your
+  element; **actions flow out** as `CustomEvent`s dispatched with
+  `bubbles: true`, bound exactly like clicks:
+  `<tally-widget count={count} on:tally-bump=tally/bump>` plus an
+  `event!: &on/tally-bump` with `type: "bump"` reading `.detail.amount`.
+  `tonk help events` ("Events from custom elements") has the complete,
+  runnable loop. The `table` component's `<table-editor>` works this way; your
   elements are peers of it.
 - **The escape hatch is a reserved key.** What a method table cannot
   say — `static formAssociated`, extending a built-in — goes in
   `define`, `() => class extends HTMLElement { … }`, whose returned
   class is registered instead of the wrapper, ignoring every other key.
 - Elements **share the realm** with every view on the branch —
-  that is the point (they compose with bindings and events). For a
-  fully isolated third-party page, use a portal (below) instead.
-- **The older `component` shape still works, alongside this one.** A
-  `component` row is one anonymous JS module that calls
-  `customElements.define` itself. The two concepts share nothing — a
-  component's facts are `xyz.tonk.component/module`, an element's are
-  `xyz.tonk.element.method/<key>` — so a branch carries both, each with
-  its own loader, and nothing has to be migrated. `tonk element` lists
-  both, naming the concept each row came from. What `component` cannot
-  offer is identity: an assertion that omits `this:` is keyed by its own
-  body digest, so an edit writes a SECOND row, the directory mounts
-  both, and whichever module runs first wins. Prefer `element` for new
-  work for that reason, not because `component` stops working.
-
-## Escape hatch: the `portal` model
-
-For an imperative HTML document, assert the always-seeded `portal` concept.
-Its `content` may contain scripts, which read and write the branch over HTTP
-(`POST /api/repository/<space>/branch/<branch>/query`) in the live browser:
-
-```yaml tonk=eval
-portal!: &about
-  this: id:about
-  content: |
-    <h1>About</h1>
-    <script>
-      const { repo, branch } = window.tonk.context;
-      fetch(`/api/repository/${repo}/branch/${branch}/query`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          predicate: { with: { name: { the: 'xyz.tonk.space/name', as: 'Text', cardinality: 'one' } } },
-          terms: { name: { '?': { name: 'name' } } },
-        }),
-      }).then((response) => response.json()).then(console.log)
-    </script>
-```
-
-Open it at `/space/<space>/about@portal`. `tonk render about@portal` verifies
-the outer declarative markup, but cannot execute `<tonk-portal>` or the script.
-The live element prepends the bridge bootstrap and mounts the document in an
-opaque-origin sandboxed iframe.
-
-`tonk view` is a lower-level, claim-driven inventory: it lists every model
-carrying `show` entries, plus legacy bare `text/html` claims served by the
-worker's guest-host endpoint. A bare `text/html` claim is not a `tonk render`
-route and is distinct from the seeded `portal` concept above.
+  that is the point (they compose with bindings and events).
+- `component` rows are deprecated; author `element!` instead.
+  `tonk element` still lists existing ones.
 
 ---
 
-For interactivity (clicks, forms) see `tonk help events`. Don't
+For pages at their own paths see `tonk help routes`. For
+interactivity (clicks, forms) see `tonk help events`. Don't
 memorize built-ins — run `tonk show` / `tonk concept` /
 `tonk view` to see what's on the branch.

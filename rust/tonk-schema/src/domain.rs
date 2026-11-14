@@ -202,6 +202,14 @@ pub mod space {
     #[domain("xyz.tonk.space")]
     pub struct Subject(pub Entity);
 
+    /// The kernel the space runs: the asset of its wasm, `asset:<hash>`, on
+    /// the space's own `main`. A new kernel moves it, in the same commit
+    /// that records the new asset.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[pick(last)]
+    pub struct Kernel(pub Entity);
+
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.space")]
     pub struct Status(pub Entity);
@@ -282,6 +290,40 @@ pub mod space {
     #[domain("xyz.tonk.space")]
     #[pick(last)]
     pub struct FoundedBy(pub Entity);
+
+    /// The SF Symbol name this account shows for the space in the desktop
+    /// sidebar. A personal label on the account directory, so it follows
+    /// the account to every device; the desktop writes it.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[pick(last)]
+    pub struct Icon(pub String);
+
+    /// The named color token tinting the space's sidebar icon, alongside
+    /// [`Icon`].
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[pick(last)]
+    pub struct Color(pub String);
+}
+
+/// Attributes of `tonk:model-choice`: the desktop chat provider and model
+/// the account chose, on the account's root DID. Keys, executable paths and
+/// base URLs stay on each Mac.
+pub mod model_choice {
+    use super::Attribute;
+
+    /// The desktop's provider token, such as `claude` or `anthropic`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.model-choice")]
+    #[pick(last)]
+    pub struct Provider(pub String);
+
+    /// The provider's model ID; absent means its default.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.model-choice")]
+    #[pick(last)]
+    pub struct Model(pub String);
 }
 
 /// Attributes describing a device authorization — an
@@ -541,6 +583,24 @@ pub mod route_http {
     #[domain("xyz.tonk.route.http")]
     #[pick(last)]
     pub struct Body(pub String);
+}
+
+/// Attributes for the `tonk:route/asset` table: a path pattern and the asset
+/// a request for it is answered with.
+pub mod route_asset {
+    use super::{Attribute, Entity};
+
+    /// The path pattern, in the same syntax a `route` uses.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.route.asset")]
+    #[pick(last)]
+    pub struct Path(pub String);
+
+    /// The asset whose bytes answer the request, a blob of the space.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.route.asset")]
+    #[pick(last)]
+    pub struct Asset(pub Entity);
 }
 
 /// Attributes describing a seed update this device has looked for —
@@ -1126,9 +1186,9 @@ pub mod command {
         /// next so the transient re-fires, and gives this command an
         /// attribute no other command carries: derived attribute
         /// `xyz.tonk.resend-activation/at`.
-        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
         #[domain("xyz.tonk.resend-activation")]
-        pub struct At(pub u64);
+        pub struct At(pub f64);
     }
 
     pub mod promote {
@@ -1186,6 +1246,52 @@ pub mod command {
         /// The click's timestamp, so a repeated press is a new command.
         #[derive(Attribute, Clone, PartialEq, PartialOrd)]
         #[domain("xyz.tonk.unpublish")]
+        pub struct Time(pub f64);
+    }
+
+    /// Attributes of the `space/invite-agent` command.
+    pub mod invite_agent {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The agent to let into the space: its agent space's subject DID.
+        /// Derived attribute: `xyz.tonk.invite-agent/agent`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.invite-agent")]
+        pub struct Agent(pub Entity);
+
+        /// The space to let it into. Derived attribute:
+        /// `xyz.tonk.invite-agent/space`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.invite-agent")]
+        pub struct Space(pub Entity);
+
+        /// When it was asked, so asking again is a new command.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.invite-agent")]
+        pub struct Time(pub f64);
+    }
+
+    /// Attributes of the `space/invite-email` command.
+    pub mod invite_email {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The address of the account to let in, as typed. Derived
+        /// attribute: `xyz.tonk.invite-email/email`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.invite-email")]
+        pub struct Email(pub String);
+
+        /// The space to let it into. Derived attribute:
+        /// `xyz.tonk.invite-email/space`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.invite-email")]
+        pub struct Space(pub Entity);
+
+        /// When it was asked, so asking again is a new command.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.invite-email")]
         pub struct Time(pub f64);
     }
 
@@ -1261,6 +1367,36 @@ pub mod command {
             #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
             #[domain("xyz.tonk.command.create-space")]
             pub struct Name(pub String);
+        }
+
+        /// `space/create-branch` — give a space a branch it does not have.
+        pub mod create_branch {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The space (its subject DID) to make the branch in.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.create-branch")]
+            pub struct Space(pub Entity);
+
+            /// The new branch's name.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.create-branch")]
+            pub struct Name(pub String);
+
+            /// What the branch starts from: `main` (the space's default
+            /// branch as it is now) or `empty` (the standard library and
+            /// nothing else). A branch of the same name on the space's
+            /// remote takes precedence over either.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.create-branch")]
+            pub struct Base(pub String);
+
+            /// The tab's site that asked, whose missing-branch state the
+            /// handler clears once the branch exists.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.create-branch")]
+            pub struct Site(pub Entity);
         }
 
         /// `space/remove` — drop a space from this device.
@@ -1478,6 +1614,35 @@ pub mod command {
             pub struct Seed(pub String);
         }
 
+        /// `tonk/record-publication` — a space's own worker records a
+        /// publication of it the person's profile minted.
+        pub mod record_publication {
+            use dialog_query::Attribute;
+
+            /// The base58 delegation chain the publication grants the
+            /// public principal.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.record-publication")]
+            pub struct Proof(pub String);
+        }
+
+        /// `tonk/make-branch` — a space's own worker makes a branch of the
+        /// space that the person's profile was asked for.
+        pub mod make_branch {
+            use dialog_query::Attribute;
+
+            /// The new branch's name.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.make-branch")]
+            pub struct Name(pub String);
+
+            /// What the branch starts from when the remote has no branch of
+            /// its name: `main` or `empty`, as for `space/create-branch`.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.make-branch")]
+            pub struct Base(pub String);
+        }
+
         /// `tonk/retain-invite` — a space's own worker keeps the record of
         /// an invitation the person's profile issued to a named audience.
         pub mod retain_invite {
@@ -1637,62 +1802,6 @@ pub mod command {
             pub struct Url(pub String);
         }
 
-        /// `account/check-email` — is this address already registered?
-        pub mod check_email {
-            use dialog_query::Attribute;
-
-            /// The address to look up.
-            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-            #[domain("xyz.tonk.command.check-email")]
-            pub struct Email(pub String);
-        }
-
-        /// `account/open-registration` — raise the panel that adds an
-        /// account.
-        pub mod open_registration {
-            use dialog_query::Attribute;
-
-            /// The activation's timestamp, so each click is its own command.
-            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
-            #[domain("xyz.tonk.command.open-registration")]
-            pub struct Time(pub f64);
-        }
-
-        /// `account/start-registration` — go on with a typed address.
-        pub mod start_registration {
-            use dialog_query::Attribute;
-
-            /// The address given.
-            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-            #[domain("xyz.tonk.command.start-registration")]
-            pub struct Email(pub String);
-        }
-
-        /// `account/create` — create the account with a new passkey.
-        pub mod create_account {
-            use dialog_query::Attribute;
-
-            /// The account's address.
-            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-            #[domain("xyz.tonk.command.create-account")]
-            pub struct Email(pub String);
-
-            /// What to call the account.
-            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-            #[domain("xyz.tonk.command.create-account")]
-            pub struct Name(pub String);
-        }
-
-        /// `account/log-in` — log in with a passkey the person picks.
-        pub mod log_in {
-            use dialog_query::Attribute;
-
-            /// The activation's timestamp, so each click is its own command.
-            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
-            #[domain("xyz.tonk.command.log-in")]
-            pub struct Time(pub f64);
-        }
-
         /// `account/activate` — present the invocation an activation
         /// email's link carries to the access service.
         pub mod activate_account {
@@ -1704,24 +1813,13 @@ pub mod command {
             pub struct Invocation(pub String);
         }
 
-        /// `account/open-sign-in-via` — raise the panel that signs this
-        /// browser in through another Tonk.
-        pub mod open_sign_in_via {
+        /// `account/sign-in` — ask the host to sign the person in.
+        pub mod sign_in {
             use dialog_query::Attribute;
 
             /// The activation's timestamp, so each click is its own command.
             #[derive(Attribute, Clone, PartialEq, PartialOrd)]
-            #[domain("xyz.tonk.command.open-sign-in-via")]
-            pub struct Time(pub f64);
-        }
-
-        /// `account/dismiss-registration` — put the panel away.
-        pub mod dismiss_registration {
-            use dialog_query::Attribute;
-
-            /// The activation's timestamp, so each click is its own command.
-            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
-            #[domain("xyz.tonk.command.dismiss-registration")]
+            #[domain("xyz.tonk.command.sign-in")]
             pub struct Time(pub f64);
         }
 
@@ -1881,104 +1979,15 @@ pub mod ceremony_status {
     pub struct Detail(pub String);
 }
 
-/// The stages of adding an account to this profile, one concept each on
-/// the profile's overlay (see [`crate::registration`]).
-pub mod registration {
-    /// `tonk:registration/address`: the panel asks for an address.
-    pub mod address {
-        use super::super::Attribute;
-
-        /// The address typed so far, empty at first.
-        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-        #[domain("xyz.tonk.registration-address")]
-        #[pick(last)]
-        pub struct Email(pub String);
-    }
-
-    /// `tonk:registration/naming`: the address is free; the panel asks
-    /// what to call the account.
-    pub mod naming {
-        use super::super::Attribute;
-
-        /// The address the account will have.
-        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-        #[domain("xyz.tonk.registration-naming")]
-        #[pick(last)]
-        pub struct Email(pub String);
-    }
-
-    /// `tonk:registration/ceremony`: the passkey is being asked for.
-    pub mod ceremony {
-        use super::super::Attribute;
-
-        /// `create` or `log-in`, see [`crate::registration::kind`].
-        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-        #[domain("xyz.tonk.registration-ceremony")]
-        #[pick(last)]
-        pub struct Kind(pub String);
-    }
-
-    /// `tonk:registration/confirming`: the account waits for its emailed
-    /// link to be opened.
-    pub mod confirming {
-        use super::super::Attribute;
-
-        /// `create` or `log-in`: which ceremony brought the account here.
-        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-        #[domain("xyz.tonk.registration-confirming")]
-        #[pick(last)]
-        pub struct Kind(pub String);
-    }
-
-    /// `tonk:registration/via`: the panel asks which Tonk holds the account,
-    /// to sign this browser in through it.
-    pub mod via {
-        use super::super::Attribute;
-
-        /// The address typed so far, empty at first.
-        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-        #[domain("xyz.tonk.registration-via")]
-        #[pick(last)]
-        pub struct Origin(pub String);
-    }
-
-    /// `tonk:registration/failed`: the last step did not finish.
-    pub mod failed {
-        use super::super::Attribute;
-
-        /// `create` or `log-in`: which ceremony failed.
-        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-        #[domain("xyz.tonk.registration-failed")]
-        #[pick(last)]
-        pub struct Kind(pub String);
-
-        /// What went wrong, in words a person can act on.
-        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-        #[domain("xyz.tonk.registration-failed")]
-        #[pick(last)]
-        pub struct Message(pub String);
-    }
-}
-
-pub mod email_status {
+/// `tonk:sign-in/asked`: the host is signing the person in.
+pub mod sign_in {
     use super::Attribute;
 
-    /// The address the answer is about, so a stale answer for an
-    /// address the user has since edited is recognisable as stale.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.email-status")]
+    /// When the sign-in was asked for, unix milliseconds.
+    #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+    #[domain("xyz.tonk.sign-in")]
     #[pick(last)]
-    pub struct Address(pub String);
-
-    /// What the access service said: `unregistered` (create an
-    /// account), `active` (sign in), `pending` (sign in, then the
-    /// waiting screen), `suspended` (terminal), `invalid` (not an
-    /// address at all), or `unavailable` (the service could not be
-    /// reached, which is not an answer about the address).
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.email-status")]
-    #[pick(last)]
-    pub struct State(pub String);
+    pub struct Asked(pub f64);
 }
 
 /// Attributes on the transient self-identity overlay the topbar chip
@@ -2245,7 +2254,7 @@ pub mod custody {
 /// [`RepositoryName`]: crate::RepositoryName
 /// [`RepositoryAgents`]: crate::RepositoryAgents
 pub mod repo {
-    use super::Attribute;
+    use super::{Attribute, Entity};
 
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.repo")]
@@ -2261,6 +2270,60 @@ pub mod repo {
     #[domain("xyz.tonk.repo")]
     #[pick(last)]
     pub struct Agents(pub String);
+
+    /// What kind of space the repository is, e.g. `case:agent` for an
+    /// agent space. Absent on an ordinary space.
+    ///
+    /// An entity label rather than a flag, so a typo cannot silently
+    /// read as a different kind and a second kind needs no new
+    /// attribute.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.repo")]
+    #[pick(last)]
+    pub struct Kind(pub Entity);
+}
+
+/// Attributes on an agent space beyond its mark.
+pub mod agent_space {
+    use super::Attribute;
+
+    /// Which LLM provider's apps the agent is for (`claude`, `chatgpt`):
+    /// an agent is only offered again to an app of the same provider.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-space")]
+    #[pick(last)]
+    pub struct Provider(pub String);
+}
+
+/// Attributes for the `agent/session` concept — one session key's
+/// authorization to act for an agent space.
+///
+/// The fields of [`device`] under their own namespace: a concept's
+/// identity is the attributes it reads, so sharing `xyz.tonk.device`
+/// would make every session row a device link and the reverse.
+///
+/// [`AgentSession`]: crate::AgentSession
+pub mod agent_session {
+    use super::{Attribute, Entity};
+
+    /// When the session was minted, unix seconds.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-session")]
+    #[pick(last)]
+    pub struct CreatedAt(pub u64);
+
+    /// Human label for the session — the client it was minted for,
+    /// e.g. "Claude".
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-session")]
+    #[pick(last)]
+    pub struct Title(pub String);
+
+    /// Why the delegation exists, `case:agent-session`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-session")]
+    #[pick(last)]
+    pub struct Reason(pub Entity);
 }
 
 /// Attributes on the durable `tonk:authorization` concept — the
@@ -2630,4 +2693,53 @@ pub mod agent_handoff {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.agent-handoff")]
     pub struct Account(pub Entity);
+}
+
+/// Email invitation command and outcome vocabulary.
+pub mod send_email_invitation {
+    use super::Entity;
+    use dialog_query::Attribute;
+    /// Id of this email invitation operation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.send-email-invitation")]
+    pub struct Id(pub String);
+    /// Email of this email invitation operation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.send-email-invitation")]
+    pub struct Email(pub String);
+    /// Space of this email invitation operation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.send-email-invitation")]
+    pub struct Space(pub Entity);
+    /// Account of this email invitation operation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.send-email-invitation")]
+    pub struct Account(pub Entity);
+}
+
+/// Email invitation command and outcome vocabulary.
+pub mod claim_email_invitation {
+    use super::Entity;
+    use dialog_query::Attribute;
+    /// Id of this email invitation operation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.claim-email-invitation")]
+    pub struct Id(pub String);
+    /// Account of this email invitation operation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.claim-email-invitation")]
+    pub struct Account(pub Entity);
+}
+
+/// Email invitation command and outcome vocabulary.
+pub mod email_invitation_status {
+    use dialog_query::Attribute;
+    /// State of this email invitation operation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.email-invitation-status")]
+    pub struct State(pub String);
+    /// Message of this email invitation operation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.email-invitation-status")]
+    pub struct Message(pub String);
 }

@@ -1,7 +1,7 @@
 // DOM-boundary tests for how content survives the store → element path.
 //
 // The failure we're chasing: an envelope (multi-line, headers) fed back
-// into <tonk-prose> comes out with its structure mangled and the headers
+// into <prose-editor> comes out with its structure mangled and the headers
 // leak into the document. These tests pin down which DOM channel
 // (attribute value vs textContent) preserves the content, and whether
 // HTML markup inside the content is a hazard — the two questions that

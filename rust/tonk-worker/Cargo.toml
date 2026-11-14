@@ -10,7 +10,16 @@ name = "tonk-worker-host"
 path = "src/bin/hosted.rs"
 required-features = ["native-host"]
 
+[[bin]]
+name = "tonk-agent-worker"
+path = "src/bin/agent_worker.rs"
+required-features = ["native-host"]
+
 [features]
+default = ["persona"]
+# The person's own worker: their profile, their account, and what they do
+# across spaces. Without it, only what a space's own worker serves.
+persona = []
 native-host = ["axum/tokio", "axum/http1", "tokio/net", "tokio/rt-multi-thread", "tokio/macros", "tokio/signal"]
 # Local opt-in until a compatible CLI is published.
 connection-invites = []
@@ -25,6 +34,9 @@ web-integration-tests = []
 helpers = ["dep:tower"]
 
 [dependencies]
+tonk-macros = { workspace = true }
+anyhow = { workspace = true }
+serde_yaml = { workspace = true }
 sha2_0_10 = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true, features = ["json", "macros", "query"] }
@@ -33,9 +45,7 @@ base64 = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
-axum-wasm-macros = { workspace = true }
 bs58 = { workspace = true }
-console_error_panic_hook = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 dialog-artifacts = { workspace = true }
@@ -58,14 +68,11 @@ futures-util = { workspace = true }
 hex = { workspace = true }
 http-body-util = { workspace = true }
 ipld-core = { workspace = true }
-js-sys = { workspace = true }
 lsp-types = { workspace = true }
-rand = { workspace = true }
 send_wrapper = { workspace = true }
 serde = { workspace = true }
 serde_ipld_dagcbor = { workspace = true }
 serde_json = { workspace = true }
-serde-wasm-bindgen = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true, features = ["sync"] }
@@ -80,70 +87,43 @@ zeroize = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-language-server = { workspace = true }
 tonk-notation = { workspace = true }
+tonk-render = { workspace = true }
 tonk-router = { workspace = true }
 tonk-schema = { workspace = true }
 tonk-worker-api = { workspace = true }
 tower-service = { workspace = true }
 tower = { workspace = true, optional = true }
 url = { workspace = true }
-wasm-bindgen = { workspace = true }
-wasm-bindgen-futures = { workspace = true }
-wasm-streams = { workspace = true }
-web-sys = { workspace = true, features = [
-    "AbortController",
-    "AbortSignal",
-    "Blob",
-    "BroadcastChannel",
-    "Cache",
-    "CacheQueryOptions",
-    "CacheStorage",
-    "Client",
-    "ClientQueryOptions",
-    "ClientType",
-    "Clients",
-    "FrameType",
-    "CryptoKey",
-    "ExtendableEvent",
-    "ExtendableMessageEvent",
-    "FetchEvent",
-    "Headers",
-    "ReadableStream",
-    "MessageChannel",
-    "MessageEvent",
-    "MessagePort",
-    "Request",
-    "RequestCache",
-    "RequestCredentials",
-    "RequestInit",
-    "RequestMode",
-    "RequestRedirect",
-    "Response",
-    "ResponseInit",
-    "ResponseType",
-    "ServiceWorker",
-    "ServiceWorkerGlobalScope",
-    "ServiceWorkerRegistration",
-    "VisibilityState",
-    "WindowClient",
-    "WorkerGlobalScope",
-    "WorkerLocation",
-    "WorkerNavigator",
-] }
 web-time = { workspace = true }
+# The files library documents include, compiled in: a worker seeds the
+# library from compiled-in copies.
+tonk-library = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 reqwest = { workspace = true }
-# The files library documents include, compiled in: a native worker seeds
-# the library from compiled-in copies, with no served `/library/` to
-# fetch from.
-tonk-library = { workspace = true }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+# A kernel on WASI: the component's own async runtime, for work a handler
+# starts and does not wait on; the session a kernel acts as, and how the
+# person's profile hands a space's host the key of its session.
+[target.'cfg(all(target_arch = "wasm32", not(target_os = "unknown")))'.dependencies]
+wit-bindgen = { workspace = true }
+tonk-kernel-world = { workspace = true }
+
+# A worker on a JavaScript host: its tasks, clock and console are the
+# host's.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
 getrandom_0_3 = { workspace = true }
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = ["console"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 axum = { workspace = true, features = ["tokio", "http1"] }
+# The hosted agent's writer, whose kernels run on Wasmtime, which the
+# interplay tests drive against this crate's own grant handling.
+tonk-mcp = { workspace = true, features = ["integration-tests"] }
 
 [dev-dependencies]
 tonk-template = { workspace = true }
@@ -153,10 +133,7 @@ dialog-peer = { workspace = true, features = ["helpers"] }
 dialog-repository = { workspace = true, features = ["helpers"] }
 rand = { workspace = true }
 tonk-access-service = { workspace = true, features = ["helpers"] }
-tonk-fab = { path = "../tonk-fab" }
-tonk-inspector = { workspace = true }
 tower = { workspace = true }
-wasm-bindgen-test = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

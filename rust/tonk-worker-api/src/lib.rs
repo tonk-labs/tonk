@@ -12,13 +12,15 @@
 //! module paths it used to define them, so its handler code is
 //! unchanged.
 
-mod account;
+pub mod account;
+pub mod agent;
 mod agent_connections;
 pub use agent_connections::*;
 mod analytics;
 mod claim;
 mod conclusion;
 mod deployment;
+pub mod email_invitation;
 mod evaluate;
 mod identify;
 mod identity;
@@ -43,9 +45,10 @@ pub use deployment::{DeploymentConfig, SiteOrigins};
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
 pub use identify::IdentifyResponse;
 pub use identity::{
-    AccountCreation, AccountPurge, CUSTODY_REQUEST, CustodyIntent, DeviceAuthorization, DeviceLink,
-    Enrollment, PasskeyAddition, PasskeyMetadata, RootDelegation, RootStatus, SaveRootRequest,
-    WEBAUTHN, WebAuthnKind, WebAuthnRequest,
+    AccountCreation, AccountPurge, AgentAuthorization, AgentRevocation, AgentSpaceChoice,
+    CUSTODY_REQUEST, CustodyIntent, DeviceAuthorization, DeviceLink, Enrollment, PasskeyAddition,
+    PasskeyMetadata, RootDelegation, RootStatus, SaveRootRequest, WEBAUTHN, WebAuthnKind,
+    WebAuthnRequest,
 };
 pub use invite::{
     CreateInviteRequest, CreateInviteResponse, InvitationKind, InvitationSummary,
@@ -62,6 +65,7 @@ pub use repository::{
 use serde_json::{Value, json};
 pub use sync::{
     Comparison, SyncDisposition, SyncResponse, SyncState, SyncStatusResponse, classify,
+    compare_heads, head_context,
 };
 
 /// The `space/create` claim, in the shape the seeded descriptor decodes.

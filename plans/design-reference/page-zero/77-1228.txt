@@ -1,0 +1,447 @@
+const imgIconCheck = "https://www.figma.com/api/mcp/asset/f3fd8dca-93b7-40b9-93a8-2a96f90dff3b.svg";
+const imgIconGlobe = "https://www.figma.com/api/mcp/asset/0d193b65-b878-45b0-98f4-da057e40f126.svg";
+const imgIconLink = "https://www.figma.com/api/mcp/asset/24c0f7a0-27cc-4f55-b305-e52735ab5a3a.svg";
+const imgIconBook = "https://www.figma.com/api/mcp/asset/379a5223-199c-44db-9017-4b9e140199a6.svg";
+const imgIconLeaf = "https://www.figma.com/api/mcp/asset/4dae6146-96a4-45af-a3e5-b4cab7c148bc.svg";
+const imgIconKanban = "https://www.figma.com/api/mcp/asset/dac63f43-a063-4071-b3c5-5e90fb5bdb55.svg";
+const imgIconUsers = "https://www.figma.com/api/mcp/asset/3a2c88ec-558e-4087-a27e-029bc4b9339d.svg";
+const imgIconBookUser = "https://www.figma.com/api/mcp/asset/ff8a6f35-f596-48de-b476-0bac78d65eb2.svg";
+const imgIconPlug = "https://www.figma.com/api/mcp/asset/d09cb8ce-38d8-429f-81d9-40975018ffa9.svg";
+const imgIconPanelLeft = "https://www.figma.com/api/mcp/asset/9fa7aa45-7b2f-483a-b032-1e47c6144297.svg";
+const imgTrafficLights = "https://www.figma.com/api/mcp/asset/462cf5e6-41fb-4396-abc1-8fa35f2a084f.svg";
+const imgIconSearch = "https://www.figma.com/api/mcp/asset/aab5729d-c1ad-45d8-8f4b-5870808abdf6.svg";
+const imgIconLink1 = "https://www.figma.com/api/mcp/asset/646ee377-ac98-48cd-b018-3c971420f78a.svg";
+const imgIconSettings = "https://www.figma.com/api/mcp/asset/1446902e-19a0-47f8-bde5-d6a0275f1559.svg";
+
+type ButtonProps = {
+  className?: string;
+  check?: boolean;
+  label?: string;
+  size?: "Small";
+  style?: "Default";
+};
+
+function Button({ className, check = false, label = "Button", size = "Small", style = "Default" }: ButtonProps) {
+  return (
+    <div className={className || "bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)]"} data-node-id="4:6">
+      {check && (
+        <div className="relative shrink-0 size-[12px]" data-node-id="4:7" data-name="icon/check">
+          <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconCheck} />
+        </div>
+      )}
+      <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text,#1d1d1f)] whitespace-nowrap" data-node-id="4:9" style={{ fontVariationSettings: '"wdth" 100' }}>
+        {label}
+      </p>
+    </div>
+  );
+}
+
+function IconGlobe({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="36:1059" data-name="icon/globe">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconGlobe} />
+    </div>
+  );
+}
+
+function IconLink({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="3:44" data-name="icon/link">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconLink} />
+    </div>
+  );
+}
+
+function IconBook({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="3:76" data-name="icon/book">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconBook} />
+    </div>
+  );
+}
+
+function IconLeaf({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="3:72" data-name="icon/leaf">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconLeaf} />
+    </div>
+  );
+}
+
+function IconKanban({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="3:68" data-name="icon/kanban">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconKanban} />
+    </div>
+  );
+}
+
+function IconUsers({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="3:62" data-name="icon/users">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconUsers} />
+    </div>
+  );
+}
+
+function IconBookUser({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="36:1048" data-name="icon/book-user">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconBookUser} />
+    </div>
+  );
+}
+
+function IconPlug({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="60:960" data-name="icon/plug">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconPlug} />
+    </div>
+  );
+}
+
+function IconPanelLeft({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="70:1146" data-name="icon/panel-left">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconPanelLeft} />
+    </div>
+  );
+}
+
+function TrafficLights({ className }: { className?: string }) {
+  return (
+    <div className={className || "h-[12px] relative w-[52px]"} data-node-id="4:57" data-name="Traffic lights">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgTrafficLights} />
+    </div>
+  );
+}
+
+export default function Component7AllLinks() {
+  return (
+    <div className="bg-[var(--dt-ground,white)] content-stretch flex items-start overflow-clip relative rounded-[20px] shadow-[0px_8px_20px_0px_rgba(0,0,0,0.12),0px_30px_70px_0px_rgba(0,0,0,0.28),0px_0px_0px_0.5px_rgba(0,0,0,0.28)] size-full" data-node-id="77:1228" data-name="7 · All links">
+      <div className="content-stretch flex flex-col h-full items-start pl-[8px] py-[8px] relative shrink-0 w-[192px]" data-node-id="77:1229" data-name="Sidebar · 800×600">
+        <div className="bg-[var(--dt-side,#f8f8f8)] content-stretch flex flex-[1_0_0] flex-col items-start min-h-px overflow-clip relative rounded-[16px] shadow-[0px_2px_10px_0px_rgba(0,0,0,0.06),0px_0px_0px_0.5px_rgba(0,0,0,0.1)] w-full" data-node-id="I77:1229;70:1147" data-name="Panel">
+          <div className="content-stretch flex h-[46px] items-center overflow-clip pl-[12px] pr-[8px] relative shrink-0 w-full" data-node-id="I77:1229;60:992" data-name="Title bar">
+            <TrafficLights className="h-[12px] relative shrink-0 w-[52px]" />
+            <div className="flex-[1_0_0] h-px min-w-px relative" data-node-id="I77:1229;70:1148" data-name="Spacer" />
+            <div className="bg-[var(--dt-ground,white)] content-stretch flex items-center justify-center overflow-clip relative rounded-[999px] shadow-[0px_1px_3px_0px_rgba(0,0,0,0.06),0px_0px_0px_0.5px_rgba(0,0,0,0.1)] shrink-0 size-[28px]" data-node-id="I77:1229;70:1149" data-name="Sidebar toggle">
+              <IconPanelLeft className="relative shrink-0 size-[15px]" />
+            </div>
+          </div>
+          <div className="content-stretch flex items-start overflow-clip pb-[8px] px-[10px] relative shrink-0 w-full" data-node-id="I77:1229;70:1153" data-name="Search">
+            <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex flex-[1_0_0] gap-[6px] h-[28px] items-center min-w-px px-[9px] relative rounded-[999px]" data-node-id="I77:1229;70:1154" data-name="Search spaces">
+              <div className="relative shrink-0 size-[14px]" data-node-id="I77:1229;70:1154;36:1135" data-name="icon/search">
+                <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconSearch} />
+              </div>
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text-3,#969696)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I77:1229;70:1154;36:1138" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Search spaces
+              </p>
+            </div>
+          </div>
+          <div className="content-stretch flex flex-col gap-[2px] items-start overflow-clip px-[10px] relative shrink-0 w-full" data-node-id="I77:1229;60:997" data-name="Navigation">
+            <div className="bg-[var(--dt-selection,#2863d9)] content-stretch flex gap-[8px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I77:1229;60:998" data-name="All links">
+              <div className="relative shrink-0 size-[16px]" data-node-id="I77:1229;60:998;4:26" data-name="icon/link">
+                <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconLink1} />
+              </div>
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Semibold'] font-[590] leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-on-accent,white)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I77:1229;60:998;4:29" style={{ fontVariationSettings: '"wdth" 100' }}>
+                All links
+              </p>
+            </div>
+            <div className="content-stretch flex gap-[8px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I77:1229;60:1006" data-name="Connections">
+              <IconPlug className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I77:1229;60:1006;4:23" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Connections
+              </p>
+              <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text-3,#969696)] whitespace-nowrap" data-node-id="I77:1229;60:1006;4:24" style={{ fontVariationSettings: '"wdth" 100' }}>
+                4
+              </p>
+            </div>
+            <div className="content-stretch flex gap-[8px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I77:1229;60:1016" data-name="Address book">
+              <IconBookUser className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I77:1229;60:1016;4:23" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Address book
+              </p>
+              <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text-3,#969696)] whitespace-nowrap" data-node-id="I77:1229;60:1016;4:24" style={{ fontVariationSettings: '"wdth" 100' }}>
+                12
+              </p>
+            </div>
+          </div>
+          <div className="content-stretch flex items-start overflow-clip pb-[4px] pl-[18px] pr-[8px] pt-[14px] relative shrink-0 w-full" data-node-id="I77:1229;60:1025" data-name="Section head">
+            <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[14px] relative shrink-0 text-[11px] text-[color:var(--dt-text-3,#969696)] tracking-[0.06px] whitespace-nowrap" data-node-id="I77:1229;60:1026" style={{ fontVariationSettings: '"wdth" 100' }}>
+              Spaces
+            </p>
+          </div>
+          <div className="content-stretch flex flex-col gap-[2px] items-start overflow-clip px-[10px] relative shrink-0 w-full" data-node-id="I77:1229;60:1027" data-name="Spaces">
+            <div className="content-stretch flex gap-[7px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I77:1229;60:1028" data-name="tonk-team">
+              <IconUsers className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I77:1229;60:1028;60:980" style={{ fontVariationSettings: '"wdth" 100' }}>
+                tonk-team
+              </p>
+            </div>
+            <div className="content-stretch flex gap-[7px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I77:1229;60:1041" data-name="kanoodel">
+              <IconKanban className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I77:1229;60:1041;60:980" style={{ fontVariationSettings: '"wdth" 100' }}>
+                kanoodel
+              </p>
+            </div>
+            <div className="content-stretch flex gap-[7px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I77:1229;60:1054" data-name="tea-inventory">
+              <IconLeaf className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I77:1229;60:1054;60:980" style={{ fontVariationSettings: '"wdth" 100' }}>
+                tea-inventory
+              </p>
+            </div>
+            <div className="content-stretch flex gap-[7px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I77:1229;60:1067" data-name="little-writer">
+              <IconBook className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I77:1229;60:1067;60:980" style={{ fontVariationSettings: '"wdth" 100' }}>
+                little-writer
+              </p>
+            </div>
+          </div>
+          <div className="flex-[1_0_0] min-h-px relative w-full" data-node-id="I77:1229;60:1079" data-name="Spacer" />
+          <div className="border-[var(--dt-line,#e4e6e5)] border-solid border-t content-stretch flex flex-col items-start overflow-clip pb-[10px] pt-[8px] px-[10px] relative shrink-0 w-full" data-node-id="I77:1229;60:1080" data-name="Footer">
+            <div className="content-stretch flex gap-[9px] items-center overflow-clip px-[8px] py-[6px] relative rounded-[8px] shrink-0 w-full" data-node-id="I77:1229;60:1081" data-name="Account">
+              <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center overflow-clip relative rounded-[11px] shrink-0 size-[22px]" data-node-id="I77:1229;60:1082" data-name="Avatar">
+                <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[13px] relative shrink-0 text-[10.5px] text-[color:var(--dt-text,#1d1d1f)] tracking-[0.06px] whitespace-nowrap" data-node-id="I77:1229;60:1083" style={{ fontVariationSettings: '"wdth" 100' }}>
+                  EW
+                </p>
+              </div>
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I77:1229;60:1084" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Eileen Wagner
+              </p>
+              <div className="relative shrink-0 size-[16px]" data-node-id="I77:1229;60:1085" data-name="icon/settings">
+                <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconSettings} />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="bg-[var(--dt-ground,white)] content-stretch flex flex-[1_0_0] flex-col h-full items-start min-w-px overflow-clip relative" data-node-id="77:1310" data-name="Main">
+        <div className="content-stretch flex h-[52px] items-center overflow-clip pl-[20px] pr-[14px] relative shrink-0 w-full" data-node-id="77:1311" data-name="Toolbar">
+          <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[20px] relative shrink-0 text-[15px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.2px] whitespace-nowrap" data-node-id="77:1312" style={{ fontVariationSettings: '"wdth" 100' }}>
+            All links
+          </p>
+        </div>
+        <div className="content-stretch flex flex-[1_0_0] flex-col gap-[20px] items-start min-h-px overflow-x-clip overflow-y-auto pb-[20px] pt-[8px] px-[20px] relative w-full" data-node-id="77:1313" data-name="Content">
+          <div className="content-stretch flex flex-col gap-[8px] items-start overflow-clip relative shrink-0 w-full" data-node-id="77:1443" data-name="little-writer">
+            <div className="content-stretch flex items-baseline overflow-clip px-[2px] relative shrink-0 w-full" data-node-id="77:1444" data-name="Heading">
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Semibold'] font-[590] leading-[18px] min-w-px relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px]" data-node-id="77:1445" style={{ fontVariationSettings: '"wdth" 100' }}>
+                little-writer
+              </p>
+            </div>
+            <div className="bg-[var(--dt-group,#f7f7f7)] content-stretch flex flex-col items-start overflow-clip relative rounded-[10px] shrink-0 w-full" data-node-id="77:1446" data-name="Group">
+              <div className="content-stretch flex flex-col gap-[10px] items-start overflow-clip px-[14px] py-[12px] relative shrink-0 w-full" data-node-id="77:1447" data-name="Error">
+                <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-full relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] w-[min-content]" data-node-id="77:1448" style={{ fontVariationSettings: '"wdth" 100' }}>{`little-writer's links couldn't be loaded. It's offline, so Tonk can't check them right now.`}</p>
+                <div className="bg-[var(--dt-row,#e6e6e6)] h-px relative shrink-0 w-full" data-node-id="77:1449" data-name="Separator" />
+                <div className="content-stretch flex items-start overflow-clip relative shrink-0" data-node-id="77:1450" data-name="Actions">
+                  <Button className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" label="Try again" />
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="content-stretch flex flex-col gap-[8px] items-start overflow-clip relative shrink-0 w-full" data-node-id="77:1314" data-name="tonk-team">
+            <div className="[word-break:break-word] content-stretch flex items-baseline overflow-clip px-[2px] relative shrink-0 w-full" data-node-id="77:1315" data-name="Heading">
+              <p className="flex-[1_0_0] font-['SF_Pro:Semibold'] font-[590] leading-[18px] min-w-px relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px]" data-node-id="77:1316" style={{ fontVariationSettings: '"wdth" 100' }}>
+                tonk-team
+              </p>
+              <p className="font-['SF_Pro:Regular'] font-normal leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text-3,#969696)] whitespace-nowrap" data-node-id="77:1317" style={{ fontVariationSettings: '"wdth" 100' }}>
+                2 links
+              </p>
+            </div>
+            <div className="bg-[var(--dt-group,#f7f7f7)] content-stretch flex flex-col items-start overflow-clip relative rounded-[10px] shrink-0 w-full" data-node-id="77:1318" data-name="Group">
+              <div className="content-stretch flex gap-[12px] items-center min-h-[44px] px-[14px] py-[10px] relative shrink-0 w-full" data-node-id="77:1319" data-name="Default link">
+                <IconLink className="relative shrink-0 size-[14px]" />
+                <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I77:1319;4:65" data-name="Text">
+                  <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I77:1319;4:66" data-name="Title row">
+                    <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I77:1319;4:67" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      Default link
+                    </p>
+                  </div>
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] min-w-full relative shrink-0 text-[12px] text-[color:var(--dt-text-2,#6e6e73)] w-[min-content]" data-node-id="I77:1319;4:70" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Anyone with the link · Read and write · Never expires
+                  </p>
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] min-w-full relative shrink-0 text-[12px] text-[color:var(--dt-text-3,#969696)] w-[min-content]" data-node-id="I77:1319;4:71" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Used by Mira and Lu
+                  </p>
+                </div>
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I77:1319;4:72" data-name="Actions">
+                  <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" data-node-id="I77:1319;4:73" data-name="Revoke">
+                    <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text,#1d1d1f)] whitespace-nowrap" data-node-id="I77:1319;4:73;4:9" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      Reset…
+                    </p>
+                  </div>
+                  <Button className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" label="Copy" />
+                </div>
+              </div>
+              <div className="border-[var(--dt-row,#e6e6e6)] border-solid border-t content-stretch flex gap-[12px] items-center min-h-[44px] px-[14px] py-[10px] relative shrink-0 w-full" data-node-id="77:1343" data-name="Public link">
+                <IconGlobe className="relative shrink-0 size-[14px]" />
+                <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I77:1343;4:65" data-name="Text">
+                  <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I77:1343;4:66" data-name="Title row">
+                    <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I77:1343;4:67" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      Public link
+                    </p>
+                  </div>
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] min-w-full relative shrink-0 text-[12px] text-[color:var(--dt-text-2,#6e6e73)] w-[min-content]" data-node-id="I77:1343;4:70" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Anyone with the link · Read-only · Whole space · Never expires
+                  </p>
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] min-w-full relative shrink-0 text-[12px] text-[color:var(--dt-text-3,#969696)] w-[min-content]" data-node-id="I77:1343;4:71" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Published Oct 12 · opened 14 times
+                  </p>
+                </div>
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I77:1343;4:72" data-name="Actions">
+                  <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" data-node-id="I77:1343;4:73" data-name="Revoke">
+                    <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text,#1d1d1f)] whitespace-nowrap" data-node-id="I77:1343;4:73;4:9" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      Settings…
+                    </p>
+                  </div>
+                  <Button className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" label="Copy" />
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="content-stretch flex flex-col gap-[8px] items-start overflow-clip relative shrink-0 w-full" data-node-id="77:1366" data-name="kanoodel">
+            <div className="[word-break:break-word] content-stretch flex items-baseline overflow-clip px-[2px] relative shrink-0 w-full" data-node-id="77:1367" data-name="Heading">
+              <p className="flex-[1_0_0] font-['SF_Pro:Semibold'] font-[590] leading-[18px] min-w-px relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px]" data-node-id="77:1368" style={{ fontVariationSettings: '"wdth" 100' }}>
+                kanoodel
+              </p>
+              <p className="font-['SF_Pro:Regular'] font-normal leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text-3,#969696)] whitespace-nowrap" data-node-id="77:1369" style={{ fontVariationSettings: '"wdth" 100' }}>
+                1 link
+              </p>
+            </div>
+            <div className="bg-[var(--dt-group,#f7f7f7)] content-stretch flex flex-col items-start overflow-clip relative rounded-[10px] shrink-0 w-full" data-node-id="77:1370" data-name="Group">
+              <div className="content-stretch flex gap-[12px] items-center min-h-[44px] px-[14px] py-[10px] relative shrink-0 w-full" data-node-id="77:1371" data-name="Default link">
+                <IconLink className="relative shrink-0 size-[14px]" />
+                <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I77:1371;4:65" data-name="Text">
+                  <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I77:1371;4:66" data-name="Title row">
+                    <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I77:1371;4:67" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      Default link
+                    </p>
+                  </div>
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] min-w-full relative shrink-0 text-[12px] text-[color:var(--dt-text-2,#6e6e73)] w-[min-content]" data-node-id="I77:1371;4:70" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Anyone with the link · Read and write · Never expires
+                  </p>
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] min-w-full relative shrink-0 text-[12px] text-[color:var(--dt-text-3,#969696)] w-[min-content]" data-node-id="I77:1371;4:71" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Not used yet
+                  </p>
+                </div>
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I77:1371;4:72" data-name="Actions">
+                  <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" data-node-id="I77:1371;4:73" data-name="Revoke">
+                    <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text,#1d1d1f)] whitespace-nowrap" data-node-id="I77:1371;4:73;4:9" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      Reset…
+                    </p>
+                  </div>
+                  <Button className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" label="Copy" />
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="content-stretch flex flex-col gap-[8px] items-start overflow-clip relative shrink-0 w-full" data-node-id="77:1393" data-name="tea-inventory">
+            <div className="[word-break:break-word] content-stretch flex items-baseline overflow-clip px-[2px] relative shrink-0 w-full" data-node-id="77:1394" data-name="Heading">
+              <p className="flex-[1_0_0] font-['SF_Pro:Semibold'] font-[590] leading-[18px] min-w-px relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px]" data-node-id="77:1395" style={{ fontVariationSettings: '"wdth" 100' }}>
+                tea-inventory
+              </p>
+              <p className="font-['SF_Pro:Regular'] font-normal leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text-3,#969696)] whitespace-nowrap" data-node-id="77:1396" style={{ fontVariationSettings: '"wdth" 100' }}>
+                2 links
+              </p>
+            </div>
+            <div className="bg-[var(--dt-group,#f7f7f7)] content-stretch flex flex-col items-start overflow-clip relative rounded-[10px] shrink-0 w-full" data-node-id="77:1397" data-name="Group">
+              <div className="content-stretch flex gap-[12px] items-center min-h-[44px] px-[14px] py-[10px] relative shrink-0 w-full" data-node-id="77:1398" data-name="Default link">
+                <IconLink className="relative shrink-0 size-[14px]" />
+                <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I77:1398;4:65" data-name="Text">
+                  <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I77:1398;4:66" data-name="Title row">
+                    <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I77:1398;4:67" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      Default link
+                    </p>
+                  </div>
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] min-w-full relative shrink-0 text-[12px] text-[color:var(--dt-text-2,#6e6e73)] w-[min-content]" data-node-id="I77:1398;4:70" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Anyone with the link · Read and write · Never expires
+                  </p>
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] min-w-full relative shrink-0 text-[12px] text-[color:var(--dt-text-3,#969696)] w-[min-content]" data-node-id="I77:1398;4:71" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Used by Ana
+                  </p>
+                </div>
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I77:1398;4:72" data-name="Actions">
+                  <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" data-node-id="I77:1398;4:73" data-name="Revoke">
+                    <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text,#1d1d1f)] whitespace-nowrap" data-node-id="I77:1398;4:73;4:9" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      Reset…
+                    </p>
+                  </div>
+                  <Button className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" label="Copy" />
+                </div>
+              </div>
+              <div className="border-[var(--dt-row,#e6e6e6)] border-solid border-t content-stretch flex gap-[12px] items-center min-h-[44px] px-[14px] py-[10px] relative shrink-0 w-full" data-node-id="77:1420" data-name="Public link">
+                <IconGlobe className="relative shrink-0 size-[14px]" />
+                <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I77:1420;4:65" data-name="Text">
+                  <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I77:1420;4:66" data-name="Title row">
+                    <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I77:1420;4:67" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      Public link
+                    </p>
+                  </div>
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] min-w-full relative shrink-0 text-[12px] text-[color:var(--dt-text-2,#6e6e73)] w-[min-content]" data-node-id="I77:1420;4:70" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Anyone with the link · Read-only · Reorder · Expires in 16 days
+                  </p>
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] min-w-full relative shrink-0 text-[12px] text-[color:var(--dt-text-3,#969696)] w-[min-content]" data-node-id="I77:1420;4:71" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Opened by ChatGPT 3 days ago
+                  </p>
+                </div>
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I77:1420;4:72" data-name="Actions">
+                  <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" data-node-id="I77:1420;4:73" data-name="Revoke">
+                    <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text,#1d1d1f)] whitespace-nowrap" data-node-id="I77:1420;4:73;4:9" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      Settings…
+                    </p>
+                  </div>
+                  <Button className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" label="Copy" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+SUPER CRITICAL: The generated React+Tailwind code MUST be converted to match the target project's technology stack and styling system.
+1. Analyze the target codebase to identify: technology stack, styling approach, component patterns, and design tokens
+2. Convert React syntax to the target framework/library
+3. Transform all Tailwind classes to the target styling system while preserving exact visual design
+4. Follow the project's existing patterns and conventions
+DO NOT install any Tailwind as a dependency unless the user instructs you to do so.
+
+
+Node ids have been added to the code as data attributes, e.g. `data-node-id="1:2"`.
+
+These styles are contained in the design: Body: Font(family: "SF Pro", style: Regular, size: 13, weight: 400, lineHeight: 18, letterSpacing: -0.07999999821186066), Body/Semibold: Font(family: "SF Pro", style: Semibold, size: 13, weight: 590, lineHeight: 18, letterSpacing: -0.07999999821186066), Small: Font(family: "SF Pro", style: Regular, size: 12, weight: 400, lineHeight: 16, letterSpacing: 0), Caption: Font(family: "SF Pro", style: Semibold, size: 11, weight: 590, lineHeight: 14, letterSpacing: 0.05999999865889549), Tag: Font(family: "SF Pro", style: Semibold, size: 10.5, weight: 590, lineHeight: 13, letterSpacing: 0.05999999865889549), Title: Font(family: "SF Pro", style: Semibold, size: 15, weight: 590, lineHeight: 20, letterSpacing: -0.20000000298023224), Small/Medium: Font(family: "SF Pro", style: Medium, size: 12, weight: 510, lineHeight: 16, letterSpacing: 0), Window: Effect(type: DROP_SHADOW, color: #00000047, offset: (0, 0), radius: 0, spread: 0.5); Effect(type: DROP_SHADOW, color: #00000047, offset: (0, 30), radius: 70, spread: 0); Effect(type: DROP_SHADOW, color: #0000001F, offset: (0, 8), radius: 20, spread: 0).
+
+Component descriptions: The following components have usage descriptions or documentation links defined in Figma. These descriptions provide important context about the intended usage, best practices, and any constraints for each component. Follow these guidelines when implementing or using these components.
+
+## Sidebar · 800×600
+**Node ID:** 60:991
+
+Sidebar at 800×600, macOS Tahoe style: an inset rounded panel with the traffic lights, a sidebar toggle and Search spaces, then All links, Connections (active, live) and Address book (static), then Spaces, then the account. Selection is solid accent blue with white text. No sync here: each space page shows its own sync circle.
+
+## Text field
+**Node ID:** 36:1144
+
+Single-line text field, 28px. The value is tertiary (placeholder) by default; recolour it text/primary once filled.
+
+## Nav item
+**Node ID:** 4:31
+
+Sidebar row, 28px. Current = ink wash + semibold ink label. Icon is an instance swap; re-tint it ink when swapping on Current.
+
+## Space item
+**Node ID:** 60:990
+
+A space in the sidebar: icon and name. Re-tint the icon ink on Current after swapping. (Sync lives on the space page, in front of the space name.)
+
+## Button
+**Node ID:** 4:18
+
+Push button. Default and Primary (ink), Regular 28px and Small 24px. Turn on Check for the "Copied" confirmation.
+
+## Link row
+**Node ID:** 4:61
+
+One link in a list: who can use it, what it allows, who used it, Revoke and Copy. Rows stack inside a 10px-radius group with 1px line/row dividers.
+
+The generated code contains image and SVG URL constants, e.g. const image = 'https://www.figma.com/api/mcp/asset/550e8400-e29b-41d4-a716-446655440000.png'. These URLs are temporary download sources and expire after 7 days. Download each asset into the project with curl -L, then replace its URL in the generated code with a reference to the downloaded asset. Never use the temporary URLs as runtime image sources.

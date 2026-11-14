@@ -96,99 +96,18 @@ impl Command for AddPasskey {
     type Output = ();
 }
 
-/// Ask whether an address is already registered, so the form can route
-/// before anyone runs a ceremony.
-///
-/// Answers on the overlay as [`crate::EmailStatus`], not in a response
-/// body: the form subscribes to that row and renders the branch it
-/// names. Asserted as the user types, which is why the answer is
-/// overlay-only.
-///
-/// Creating an account with an address that already has one runs the
-/// whole WebAuthn ceremony and fails at the end, leaving an orphan
-/// passkey in the authenticator. Asking first is what avoids that.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CheckEmail {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The address to look up.
-    pub email: crate::domain::command::current::check_email::Email,
-}
-
-impl From<legacy::CheckEmail> for CheckEmail {
-    fn from(legacy: legacy::CheckEmail) -> Self {
-        Self {
-            email: crate::domain::command::current::check_email::Email(legacy.email.0),
-            this: legacy.this,
-        }
-    }
-}
-
-impl Command for CheckEmail {
-    type Input = Self;
-    type Output = ();
-}
-
-/// Raise the panel that adds an account to this profile.
-///
-/// The panel is views of the [`crate::registration`] stages, so raising
-/// it is recording its first stage.
+/// Ask the host to sign the person in: the provisional persona asks to
+/// merge into the persona they sign in as, and the host asks them who they
+/// are.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
-pub struct OpenRegistration {
+pub struct SignIn {
     /// The command entity, minted per invocation.
     pub this: Entity,
     /// The activation's timestamp, so each click is its own command.
-    pub time: crate::domain::command::current::open_registration::Time,
+    pub time: crate::domain::command::current::sign_in::Time,
 }
 
-impl Command for OpenRegistration {
-    type Input = Self;
-    type Output = ();
-}
-
-/// Go on with the address typed into the panel: name a new account for a
-/// free address, or log in to the one an address already has.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct StartRegistration {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The address given.
-    pub email: crate::domain::command::current::start_registration::Email,
-}
-
-impl Command for StartRegistration {
-    type Input = Self;
-    type Output = ();
-}
-
-/// Create the account for a free address, with a new passkey the page is
-/// asked to make.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CreateAccount {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The account's address.
-    pub email: crate::domain::command::current::create_account::Email,
-    /// What to call the account.
-    pub name: crate::domain::command::current::create_account::Name,
-}
-
-impl Command for CreateAccount {
-    type Input = Self;
-    type Output = ();
-}
-
-/// Log in with a passkey the person picks: the page asks the browser for
-/// any passkey this site has, and the one picked names the account.
-#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
-pub struct LogIn {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The activation's timestamp, so each click is its own command.
-    pub time: crate::domain::command::current::log_in::Time,
-}
-
-impl Command for LogIn {
+impl Command for SignIn {
     type Input = Self;
     type Output = ();
 }
@@ -209,34 +128,6 @@ pub struct ActivateAccount {
 }
 
 impl Command for ActivateAccount {
-    type Input = Self;
-    type Output = ();
-}
-
-/// Raise the panel that signs this browser in through another Tonk.
-#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
-pub struct OpenSignInVia {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The activation's timestamp, so each click is its own command.
-    pub time: crate::domain::command::current::open_sign_in_via::Time,
-}
-
-impl Command for OpenSignInVia {
-    type Input = Self;
-    type Output = ();
-}
-
-/// Put the panel away, wherever it got to.
-#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
-pub struct DismissRegistration {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The activation's timestamp, so each click is its own command.
-    pub time: crate::domain::command::current::dismiss_registration::Time,
-}
-
-impl Command for DismissRegistration {
     type Input = Self;
     type Output = ();
 }
@@ -527,6 +418,45 @@ impl Command for RecordInvite {
     type Output = ();
 }
 
+/// Record, in a space, a publication of it that the person's profile
+/// minted: the invitation to the public principal, of the `public` kind,
+/// and the delegation retained so making the space private again revokes
+/// it. As with [`RecordInvite`], the profile holds the authority and signs,
+/// and the space's own worker writes what the publication leaves in the
+/// space. It fires on the space's own branch and records for that space
+/// only.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RecordPublication {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The delegation chain the publication grants.
+    pub proof: crate::domain::command::current::record_publication::Proof,
+}
+
+impl Command for RecordPublication {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Make, in a space, the branch the person's profile was asked for with
+/// [`CreateBranch`]: where the space's own worker holds its content, the
+/// branch is that worker's to make. It fires on the space's own branch and
+/// makes a branch of that space only.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MakeBranch {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The new branch's name.
+    pub name: crate::domain::command::current::make_branch::Name,
+    /// What the branch starts from, when the remote has no such branch.
+    pub base: crate::domain::command::current::make_branch::Base,
+}
+
+impl Command for MakeBranch {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Keep, in a space, the record of an invitation the person's profile
 /// issued: the roster's invitation, and the delegation retained so the
 /// invitation can be found again and revoked.
@@ -808,6 +738,33 @@ pub struct Interpret {
 }
 
 impl Command for Interpret {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `space/create-branch`: give a space a branch it does not have yet.
+///
+/// Fired from the panel the space chrome shows when a page asks for a
+/// branch the space lacks (`/space/{branch}@{did}`). The worker's handler
+/// starts the branch from the same-named branch on the space's remote when
+/// there is one, else from `base` (`main` as it is now, or the standard
+/// library alone), and has it track that remote branch when the space has a
+/// remote. Only the profile branch may fire it.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CreateBranch {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The space to make the branch in.
+    pub space: crate::domain::command::current::create_branch::Space,
+    /// The new branch's name.
+    pub name: crate::domain::command::current::create_branch::Name,
+    /// What the branch starts from, when the remote has no such branch.
+    pub base: crate::domain::command::current::create_branch::Base,
+    /// The tab's site that asked.
+    pub site: crate::domain::command::current::create_branch::Site,
+}
+
+impl Command for CreateBranch {
     type Input = Self;
     type Output = ();
 }
@@ -1099,6 +1056,57 @@ impl Command for UnpublishSpace {
     type Output = ();
 }
 
+/// Let one of this account's agents read and write a space.
+///
+/// Delegates the space to the agent space's DID and keeps the chains in
+/// the agent space, with a directory entry naming the space, which is
+/// where the hosted agent lists what it can reach. Nothing is handed to
+/// anyone: the agent finds the space the next time it lists its spaces.
+///
+/// Routeless like `space/publish`: the command names its `space`.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct InviteAgent {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The agent space's subject DID.
+    pub agent: crate::domain::command::invite_agent::Agent,
+    /// The space to let it into.
+    pub space: crate::domain::command::invite_agent::Space,
+    /// When it was asked.
+    pub time: crate::domain::command::invite_agent::Time,
+}
+
+impl Command for InviteAgent {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Let the account registered under an email address read and write a
+/// space.
+///
+/// Resolves the address to the account's DID at the access service, the
+/// way signing in does, delegates the space to that DID as a scoped
+/// invite, and leaves the chain in the space as that account's ticket.
+/// Opening the space's address on any device of that account claims it.
+///
+/// Routeless like `space/publish`: the command names its `space`.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct InviteByEmail {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The address the account is registered under.
+    pub email: crate::domain::command::invite_email::Email,
+    /// The space to let it into.
+    pub space: crate::domain::command::invite_email::Space,
+    /// When it was asked.
+    pub time: crate::domain::command::invite_email::Time,
+}
+
+impl Command for InviteByEmail {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Register this profile's account as a customer of the access service.
 ///
 /// A command rather than a request: the outcome is the `AccountCustomer`
@@ -1131,7 +1139,7 @@ impl Command for EnrollCustomer {
 /// self-subjected `/customer/resend` invocation with its own device key.
 /// Deliberately NOT a re-enrollment — that path runs a passkey ceremony
 /// the person waiting on an email never asked for.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct ResendActivation {
     /// The command entity (a fresh id per press).
     pub this: Entity,
@@ -1468,4 +1476,67 @@ pub struct AgentHandoffState {
     pub link: crate::domain::agent_handoff::Link,
     /// Required account; device placeholder until a signed-in account resolves.
     pub account: crate::domain::agent_handoff::Account,
+}
+
+/// SendEmailInvitation through the profile command channel.
+#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SendEmailInvitation {
+    /// Request entity; outcomes reuse this entity.
+    pub this: Entity,
+    /// id for this operation.
+    pub id: crate::domain::send_email_invitation::Id,
+    /// email for this operation.
+    pub email: crate::domain::send_email_invitation::Email,
+    /// space for this operation.
+    pub space: crate::domain::send_email_invitation::Space,
+    /// account for this operation.
+    pub account: crate::domain::send_email_invitation::Account,
+}
+impl Command for SendEmailInvitation {
+    type Input = Self;
+    type Output = ();
+}
+
+/// ClaimEmailInvitation through the profile command channel.
+#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ClaimEmailInvitation {
+    /// Request entity; outcomes reuse this entity.
+    pub this: Entity,
+    /// id for this operation.
+    pub id: crate::domain::claim_email_invitation::Id,
+    /// account for this operation.
+    pub account: crate::domain::claim_email_invitation::Account,
+}
+impl Command for ClaimEmailInvitation {
+    type Input = Self;
+    type Output = ();
+}
+
+/// EmailInvitationStatus through the profile command channel.
+#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EmailInvitationStatus {
+    /// Request entity; outcomes reuse this entity.
+    pub this: Entity,
+    /// state for this operation.
+    pub state: crate::domain::email_invitation_status::State,
+    /// message for this operation.
+    pub message: crate::domain::email_invitation_status::Message,
+}
+
+impl std::fmt::Debug for SendEmailInvitation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SendEmailInvitation { .. }")
+    }
+}
+
+impl std::fmt::Debug for ClaimEmailInvitation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ClaimEmailInvitation { .. }")
+    }
+}
+
+impl std::fmt::Debug for EmailInvitationStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EmailInvitationStatus { .. }")
+    }
 }

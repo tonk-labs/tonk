@@ -2,7 +2,7 @@
   "name": "tonk-table",
   "version": "0.1.0",
   "private": true,
-  "description": "IronCalc web component bundle for the <tonk-table> custom element — a collaborative spreadsheet grid over the headless IronCalc calc engine.",
+  "description": "The core of the library's <table-editor>: a spreadsheet grid over the headless IronCalc engine.",
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",

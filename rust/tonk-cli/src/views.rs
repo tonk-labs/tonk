@@ -1,18 +1,7 @@
-//! `tonk view` — enumerate every entity on the local branch that
-//! carries a renderable claim.
-//!
-//! Two sources:
-//!
-//! - the `show` dictionary the display stack resolves — every
-//!   `xyz.tonk.view/<facet>` entry on a model entity (what
-//!   `tonk view add` writes);
-//! - `text/html`, which the host route at
-//!   `/api/repository/{repo}/branch/{branch}/host/{host}/{entity}`
-//!   selects on for a one-off page.
-//!
-//! Listing only `text/html` — as this module once did — meant
-//! `tonk view` came back empty right after `tonk view add`
-//! succeeded, because the two were looking at different claims.
+//! `tonk view` — enumerate every model on the local branch that
+//! declares views: the `show` dictionary the display stack resolves,
+//! every `xyz.tonk.view/<facet>` entry on a model entity (what
+//! `tonk view add` writes).
 //!
 //! The standard library seeds views of its own. Those are filtered
 //! out for the same reason `tonk concept` drops the runtime
@@ -45,14 +34,10 @@ pub struct ViewSummary {
     pub entity: Entity,
     /// What the view renders. The view instance IS the model entity,
     /// so this is the entity's own published name (or its URI when
-    /// unnamed). `None` for a bare `text/html` page, which binds no
-    /// model.
+    /// unnamed).
     pub model: Option<String>,
-    /// Byte length of the body claim. Lets the listing show a
+    /// Byte length of the longest template. Lets the listing show a
     /// rough "is this empty / huge?" without dumping the HTML.
-    /// When an entity holds more than one renderable claim, this is
-    /// the longest one — the most likely candidate for "the current
-    /// view body."
     pub body_bytes: usize,
 }
 
@@ -70,20 +55,16 @@ pub struct ViewDescription {
     pub template: String,
 }
 
-/// The host route's raw page attribute — the one renderable claim
-/// that is not a `show` entry.
-const TEXT_HTML_ATTRIBUTE: &str = "text/html";
-
-/// Enumerate every distinct entity on the branch holding a renderable
-/// claim, minus the ones the standard library seeded.
+/// Enumerate every distinct entity on the branch declaring views,
+/// minus the ones the standard library seeded.
 ///
-/// One row per entity. When an entity carries several renderable
-/// claims — a model with both a `ui` and a `directory` template, say —
-/// the [`ViewSummary::body_bytes`] field records the longest.
+/// One row per entity. When an entity carries several templates (a
+/// model with both a `ui` and a `directory` template, say), the
+/// [`ViewSummary::body_bytes`] field records the longest.
 pub async fn list(site: &TonkSite) -> Result<Vec<ViewSummary>> {
     let names = name_claims_by_entity(site).await?;
     let shows = show_dictionaries(site).await?;
-    let mut with_show: HashMap<Entity, usize> = HashMap::new();
+    let mut by_entity: HashMap<Entity, usize> = HashMap::new();
     for (entity, entries) in shows {
         // The library's views key off its own model entities: pinned
         // URIs, or — for library concepts without a pinned `this:`
@@ -97,22 +78,7 @@ pub async fn list(site: &TonkSite) -> Result<Vec<ViewSummary>> {
             continue;
         }
         let longest = entries.values().map(String::len).max().unwrap_or(0);
-        with_show.insert(entity, longest);
-    }
-    let mut by_entity = with_show;
-    for row in claims_for_attribute(site, TEXT_HTML_ATTRIBUTE).await? {
-        if crate::site::standard_library_pins_entity(&row.of.to_string()) {
-            continue;
-        }
-        let len = body_byte_len(&row.is);
-        by_entity
-            .entry(row.of)
-            .and_modify(|current| {
-                if len > *current {
-                    *current = len;
-                }
-            })
-            .or_insert(len);
+        by_entity.insert(entity, longest);
     }
     if by_entity.is_empty() {
         return Ok(Vec::new());
@@ -134,29 +100,6 @@ pub async fn list(site: &TonkSite) -> Result<Vec<ViewSummary>> {
         (None, None) => a.entity.to_string().cmp(&b.entity.to_string()),
     });
     Ok(out)
-}
-
-/// Check whether `entity` carries at least one `text/html`
-/// claim — the host route 404s on anything that doesn't.
-pub async fn entity_has_text_html(site: &TonkSite, entity: &Entity) -> Result<bool> {
-    let the = text_html_attribute()?;
-    let the_term: attribute::Relation = the.into();
-    let session = site.branch().await?;
-    let rows: Vec<dialog_query::Claim> = session
-        .handle()
-        .query()
-        .select(AttributeQuery::new(
-            Term::from(the_term),
-            Term::from(entity.clone()),
-            Term::<dialog_query::Any>::var("is"),
-            Term::<attribute::Cause>::blank(),
-            None,
-        ))
-        .perform(&site.operator)
-        .try_vec()
-        .await
-        .map_err(|e| anyhow!("text/html lookup for entity {entity} failed: {e:?}"))?;
-    Ok(!rows.is_empty())
 }
 
 /// Query every `show` entry on the branch and fold them into one
@@ -220,39 +163,6 @@ async fn show_dictionaries(site: &TonkSite) -> Result<Vec<(Entity, BTreeMap<Stri
             Some((entity, dict))
         })
         .collect())
-}
-
-/// Select every current claim under one attribute URI.
-async fn claims_for_attribute(site: &TonkSite, uri: &str) -> Result<Vec<dialog_query::Claim>> {
-    let the: Relation = uri
-        .parse()
-        .map_err(|e| anyhow!("{uri} should be a valid attribute URI: {e:?}"))?;
-    let the_term: attribute::Relation = the.into();
-    let session = site.branch().await?;
-    session
-        .handle()
-        .query()
-        .select(AttributeQuery::new(
-            Term::from(the_term),
-            Term::<Entity>::var("of"),
-            Term::<dialog_query::Any>::var("is"),
-            Term::<attribute::Cause>::blank(),
-            None,
-        ))
-        .perform(&site.operator)
-        .try_vec()
-        .await
-        .map_err(|e| anyhow!("{uri} enumeration failed: {e:?}"))
-}
-
-fn body_byte_len(value: &Value) -> usize {
-    match value {
-        Value::String(s) => s.len(),
-        Value::Symbol(s) => s.to_string().len(),
-        Value::Bytes(b) => b.len(),
-        Value::Record(r) => r.len(),
-        _ => 0,
-    }
 }
 
 /// Pull every name-publication claim and return a `target →
@@ -344,25 +254,12 @@ pub async fn describe(site: &TonkSite, reference: &str) -> Result<Option<ViewDes
     };
 
     // The `ui` facet is the canonical body; otherwise the first entry
-    // of the dictionary, else a raw `text/html` page claim.
-    let mut template = show_dictionaries(site)
+    // of the dictionary.
+    let template = show_dictionaries(site)
         .await?
         .into_iter()
         .find(|(this, _)| *this == entity)
         .and_then(|(_, mut dict)| dict.remove("ui").or_else(|| dict.into_values().next()));
-    if template.is_none()
-        && let Some(claim) = claims_for_attribute(site, TEXT_HTML_ATTRIBUTE)
-            .await?
-            .into_iter()
-            .find(|claim| claim.of == entity)
-    {
-        template = Some(match claim.is {
-            Value::String(value) => value.to_string(),
-            Value::Symbol(value) => value.to_string(),
-            Value::Bytes(value) => String::from_utf8_lossy(&value).into_owned(),
-            value => format!("{value:?}"),
-        });
-    }
     let Some(template) = template else {
         return Ok(None);
     };
@@ -427,10 +324,4 @@ pub async fn facts_for_entity(
         .collect();
     facts.sort_by(|a, b| a.attribute.cmp(&b.attribute).then(a.value.cmp(&b.value)));
     Ok(Some((entity, facts)))
-}
-
-fn text_html_attribute() -> Result<Relation> {
-    "text/html"
-        .parse()
-        .map_err(|e| anyhow!("text/html should be a valid attribute URI: {e:?}"))
 }

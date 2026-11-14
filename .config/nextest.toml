@@ -7,6 +7,13 @@ serial-integration = { max-threads = 1 }
 filter = 'test(/^.*integration_tests::/)'
 test-group = 'serial-integration'
 
+# A test that edits through real focus runs alone. The pooled runner opens
+# one tab per test in a shared browser, and a tab opened beside it takes
+# focus, which blurs the edit and drops the focus events it relies on.
+[[profile.default.overrides]]
+filter = 'package(tonk-display) & test(=registry::tests::it_commits_on_enter_and_restores_on_escape_from_the_library)'
+threads-required = "num-test-threads"
+
 # The profile `test:e2e` runs the tonk-ui real-browser suite under, from
 # the prebuilt `tests-e2e` archive.
 [profile.e2e]
@@ -37,3 +44,14 @@ final-status-level = "flaky"
 # The #852 quarantine is drained: every account flow it named is
 # repaired and back in the suite. To quarantine a newly broken test,
 # add a `default-filter` here excluding it, with a linked issue.
+
+# Release candidates run once against the selected artifact paths. Keep the
+# ordinary PR retry policy above; a release must not hide a flaky pass.
+[profile.release-gate]
+inherits = "e2e"
+retries = 0
+
+[profile.release-gate.junit]
+path = "junit.xml"
+store-success-output = false
+store-failure-output = false

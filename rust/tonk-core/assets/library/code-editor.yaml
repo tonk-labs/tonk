@@ -1,0 +1,712 @@
+# ===========================================================================
+# code-editor — a CodeMirror editor, <code-editor>, as branch data.
+# ===========================================================================
+# <code-editor> is defined below with `element!:`, so installing this
+# component gives a space a code editor with nothing from the host: no
+# bundle, no fetch. <prose-editor> embeds it in its code blocks.
+#
+# Languages are records, not part of the element. A `code-editor/language`
+# names the words a block may use for it (`python`, `py`) and carries its
+# pack as source. The editor ships two, YAML and Dialog YAML, below; every
+# other language is a component of its own, `language/<id>`, installed
+# from the palette like this one. A block asks the space for the record of
+# the language it names, and only that pack is evaluated; a block in a
+# language the space lacks is plain text until one is installed, and then
+# it redraws. A language nobody here has heard of is installed the same
+# way, as a record anyone can assert: the element has no list of them.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Element: the CodeMirror editor, as an `element!`.
+#
+# The methods in `code-editor/` are its custom-element class, and `core` is
+# its CodeMirror core (`rust/tonk-code/src-js/editor.ts`, through
+# `library.ts`), built by `rust/tonk-code/scripts/build.mjs` into an
+# expression returning `createEditor`, the stylesheet, the modules packs
+# share and `loadPack`. Rebuild after changing `rust/tonk-code/src-js`:
+# `npm run build` there, which also regenerates the languages below and
+# every `language/<id>` component.
+#
+# Attributes: value, language, readonly, placeholder, line-numbers,
+# active-line, auto-focus, source, language-server. Properties: `value`,
+# `view` (the CodeMirror `EditorView`, null until mounted), `errorCount`.
+# Methods: `connect(client)`, `disconnect()`. Events: `change` and `run`
+# with `{value, doc}`, `ready` with `{view}`, `diagnostics` with `{value,
+# doc, count, errorCount}`, `code-editor-connect` with `{source, language,
+# url}` and `code-editor-disconnect` with `{source}`.
+#
+# The language server. An editor with a `source` (the document's URI, as
+# `tonk-buffer:///<repo>/<branch>/<name>`) opens it on the language server
+# at `language-server` (`/api/language-server` by default), and every
+# frame the server sends for it arrives as a `diagnostics` event: the
+# verdict on the text as typed, which a host waits for before running it.
+# It announces itself with `code-editor-connect` first; an ancestor that
+# claims the event (`preventDefault`) supplies the client by calling
+# `connect`, and otherwise the core's own session does. A client must come
+# from this core (`LSPClient` among its exports): one built on another
+# CodeMirror is refused.
+# ---------------------------------------------------------------------------
+
+element!: &code-editor
+  description: A CodeMirror code editor; `language` names a `code-editor/language` the space has, `change` carries each edit, and a `source` puts the document on the language server, whose verdicts arrive as `diagnostics`.
+  method:
+    connected: !include/text ./code-editor/connected.js
+    disconnected: !include/text ./code-editor/disconnected.js
+    attribute-changed: !include/text ./code-editor/attribute-changed.js
+    mount: !include/text ./code-editor/mount.js
+    language: !include/text ./code-editor/language.js
+    resolve: !include/text ./code-editor/resolve.js
+    request: !include/text ./code-editor/request.js
+    query: !include/text ./code-editor/query.js
+    watch: !include/text ./code-editor/watch.js
+    unwatch: !include/text ./code-editor/unwatch.js
+    emit: !include/text ./code-editor/emit.js
+    announce: !include/text ./code-editor/announce.js
+    withdraw: !include/text ./code-editor/withdraw.js
+    connect: !include/text ./code-editor/connect.js
+    disconnect: !include/text ./code-editor/disconnect.js
+    core: !include/text ./code-editor/core.js
+  getter:
+    # The document; before the editor mounts, the `value` attribute it
+    # mounts from.
+    value: |
+      (self) => self.__code?.editor?.view.state.doc.toString() ?? self.getAttribute('value') ?? ''
+    # The live CodeMirror view, once mounted.
+    view: |
+      (self) => self.__code?.editor?.view ?? null
+    # Errors in the language server's latest frame; 0 before one lands.
+    error-count: |
+      (self) => self.__code?.errors ?? 0
+  setter:
+    # Patches only the span that differs, so the caret stays put, and
+    # fires no `change`. Before the mount, a write goes to the attribute.
+    value: |
+      (self, next) => {
+        const text = String(next ?? '');
+        const editor = self.__code?.editor;
+        if (editor) editor.setValue(text);
+        else if (self.getAttribute('value') !== text) self.setAttribute('value', text);
+      }
+
+# ---------------------------------------------------------------------------
+# Languages — the concept every language is a record of, the two the
+# editor ships, and the palette's list of the rest. Generated by
+# `rust/tonk-code/scripts/build.mjs`; edit the build, not this region.
+# ---------------------------------------------------------------------------
+
+# BEGIN GENERATED: languages
+concept!: &code-editor/language
+  description: |
+    A language <code-editor> highlights. A block names it by any of its
+    words; `source` is its pack, the text of `(shared) => LanguageSupport`
+    evaluated against the editor's own CodeMirror modules.
+  with:
+    name:
+      description: The language's name, for people.
+      the: xyz.tonk.code-editor.language/name
+      as: text
+    word:
+      description: A word a block names the language by, lower-cased.
+      the: xyz.tonk.code-editor.language/word
+      as: text
+      pick: :all
+    source:
+      description: The pack, as JavaScript source.
+      the: xyz.tonk.code-editor.language/source
+      as: text
+
+# One more word for a language, on its own: words accumulate, one
+# assertion each.
+concept!: &code-editor/language/word
+  description: A word a block names a <code-editor> language by.
+  with:
+    word:
+      description: A word a block names the language by, lower-cased.
+      the: xyz.tonk.code-editor.language/word
+      as: text
+      pick: :all
+
+code-editor/language!:
+  this: tonk:code-editor/language/yaml
+  name: "YAML"
+  word: "yaml"
+  source: !include/text ./code-editor/language/yaml.js
+
+code-editor/language/word!:
+  this: tonk:code-editor/language/yaml
+  word: "yml"
+
+code-editor/language!:
+  this: tonk:code-editor/language/dialog-yaml
+  name: "Dialog YAML"
+  word: "dialog-yaml"
+  source: !include/text ./code-editor/language/dialog-yaml.js
+
+code-editor/language/word!:
+  this: tonk:code-editor/language/dialog-yaml
+  word: "dialog"
+
+library/component!:
+  this: tonk:library/language/c
+  name: "language/c"
+
+library/component!:
+  this: tonk:library/language/cpp
+  name: "language/cpp"
+
+library/component!:
+  this: tonk:library/language/cql
+  name: "language/cql"
+
+library/component!:
+  this: tonk:library/language/css
+  name: "language/css"
+
+library/component!:
+  this: tonk:library/language/go
+  name: "language/go"
+
+library/component!:
+  this: tonk:library/language/html
+  name: "language/html"
+
+library/component!:
+  this: tonk:library/language/java
+  name: "language/java"
+
+library/component!:
+  this: tonk:library/language/javascript
+  name: "language/javascript"
+
+library/component!:
+  this: tonk:library/language/jinja
+  name: "language/jinja"
+
+library/component!:
+  this: tonk:library/language/json
+  name: "language/json"
+
+library/component!:
+  this: tonk:library/language/jsx
+  name: "language/jsx"
+
+library/component!:
+  this: tonk:library/language/less
+  name: "language/less"
+
+library/component!:
+  this: tonk:library/language/liquid
+  name: "language/liquid"
+
+library/component!:
+  this: tonk:library/language/mariadb-sql
+  name: "language/mariadb-sql"
+
+library/component!:
+  this: tonk:library/language/markdown
+  name: "language/markdown"
+
+library/component!:
+  this: tonk:library/language/ms-sql
+  name: "language/ms-sql"
+
+library/component!:
+  this: tonk:library/language/mysql
+  name: "language/mysql"
+
+library/component!:
+  this: tonk:library/language/php
+  name: "language/php"
+
+library/component!:
+  this: tonk:library/language/plsql
+  name: "language/plsql"
+
+library/component!:
+  this: tonk:library/language/postgresql
+  name: "language/postgresql"
+
+library/component!:
+  this: tonk:library/language/python
+  name: "language/python"
+
+library/component!:
+  this: tonk:library/language/rust
+  name: "language/rust"
+
+library/component!:
+  this: tonk:library/language/sass
+  name: "language/sass"
+
+library/component!:
+  this: tonk:library/language/scss
+  name: "language/scss"
+
+library/component!:
+  this: tonk:library/language/sql
+  name: "language/sql"
+
+library/component!:
+  this: tonk:library/language/sqlite
+  name: "language/sqlite"
+
+library/component!:
+  this: tonk:library/language/tsx
+  name: "language/tsx"
+
+library/component!:
+  this: tonk:library/language/typescript
+  name: "language/typescript"
+
+library/component!:
+  this: tonk:library/language/webassembly
+  name: "language/webassembly"
+
+library/component!:
+  this: tonk:library/language/xml
+  name: "language/xml"
+
+library/component!:
+  this: tonk:library/language/apl
+  name: "language/apl"
+
+library/component!:
+  this: tonk:library/language/pgp
+  name: "language/pgp"
+
+library/component!:
+  this: tonk:library/language/asn-1
+  name: "language/asn-1"
+
+library/component!:
+  this: tonk:library/language/asterisk
+  name: "language/asterisk"
+
+library/component!:
+  this: tonk:library/language/brainfuck
+  name: "language/brainfuck"
+
+library/component!:
+  this: tonk:library/language/cobol
+  name: "language/cobol"
+
+library/component!:
+  this: tonk:library/language/clojure
+  name: "language/clojure"
+
+library/component!:
+  this: tonk:library/language/clojurescript
+  name: "language/clojurescript"
+
+library/component!:
+  this: tonk:library/language/closure-stylesheets-gss
+  name: "language/closure-stylesheets-gss"
+
+library/component!:
+  this: tonk:library/language/cmake
+  name: "language/cmake"
+
+library/component!:
+  this: tonk:library/language/coffeescript
+  name: "language/coffeescript"
+
+library/component!:
+  this: tonk:library/language/common-lisp
+  name: "language/common-lisp"
+
+library/component!:
+  this: tonk:library/language/cypher
+  name: "language/cypher"
+
+library/component!:
+  this: tonk:library/language/cython
+  name: "language/cython"
+
+library/component!:
+  this: tonk:library/language/crystal
+  name: "language/crystal"
+
+library/component!:
+  this: tonk:library/language/d
+  name: "language/d"
+
+library/component!:
+  this: tonk:library/language/dart
+  name: "language/dart"
+
+library/component!:
+  this: tonk:library/language/diff
+  name: "language/diff"
+
+library/component!:
+  this: tonk:library/language/dockerfile
+  name: "language/dockerfile"
+
+library/component!:
+  this: tonk:library/language/dtd
+  name: "language/dtd"
+
+library/component!:
+  this: tonk:library/language/dylan
+  name: "language/dylan"
+
+library/component!:
+  this: tonk:library/language/ebnf
+  name: "language/ebnf"
+
+library/component!:
+  this: tonk:library/language/ecl
+  name: "language/ecl"
+
+library/component!:
+  this: tonk:library/language/edn
+  name: "language/edn"
+
+library/component!:
+  this: tonk:library/language/eiffel
+  name: "language/eiffel"
+
+library/component!:
+  this: tonk:library/language/elm
+  name: "language/elm"
+
+library/component!:
+  this: tonk:library/language/erlang
+  name: "language/erlang"
+
+library/component!:
+  this: tonk:library/language/esper
+  name: "language/esper"
+
+library/component!:
+  this: tonk:library/language/factor
+  name: "language/factor"
+
+library/component!:
+  this: tonk:library/language/fcl
+  name: "language/fcl"
+
+library/component!:
+  this: tonk:library/language/forth
+  name: "language/forth"
+
+library/component!:
+  this: tonk:library/language/fortran
+  name: "language/fortran"
+
+library/component!:
+  this: tonk:library/language/f
+  name: "language/f"
+
+library/component!:
+  this: tonk:library/language/gas
+  name: "language/gas"
+
+library/component!:
+  this: tonk:library/language/gherkin
+  name: "language/gherkin"
+
+library/component!:
+  this: tonk:library/language/groovy
+  name: "language/groovy"
+
+library/component!:
+  this: tonk:library/language/haskell
+  name: "language/haskell"
+
+library/component!:
+  this: tonk:library/language/haxe
+  name: "language/haxe"
+
+library/component!:
+  this: tonk:library/language/hxml
+  name: "language/hxml"
+
+library/component!:
+  this: tonk:library/language/http
+  name: "language/http"
+
+library/component!:
+  this: tonk:library/language/idl
+  name: "language/idl"
+
+library/component!:
+  this: tonk:library/language/json-ld
+  name: "language/json-ld"
+
+library/component!:
+  this: tonk:library/language/julia
+  name: "language/julia"
+
+library/component!:
+  this: tonk:library/language/kotlin
+  name: "language/kotlin"
+
+library/component!:
+  this: tonk:library/language/livescript
+  name: "language/livescript"
+
+library/component!:
+  this: tonk:library/language/lua
+  name: "language/lua"
+
+library/component!:
+  this: tonk:library/language/mirc
+  name: "language/mirc"
+
+library/component!:
+  this: tonk:library/language/mathematica
+  name: "language/mathematica"
+
+library/component!:
+  this: tonk:library/language/modelica
+  name: "language/modelica"
+
+library/component!:
+  this: tonk:library/language/mumps
+  name: "language/mumps"
+
+library/component!:
+  this: tonk:library/language/mbox
+  name: "language/mbox"
+
+library/component!:
+  this: tonk:library/language/nginx
+  name: "language/nginx"
+
+library/component!:
+  this: tonk:library/language/nsis
+  name: "language/nsis"
+
+library/component!:
+  this: tonk:library/language/ntriples
+  name: "language/ntriples"
+
+library/component!:
+  this: tonk:library/language/objective-c
+  name: "language/objective-c"
+
+library/component!:
+  this: tonk:library/language/objective-cpp
+  name: "language/objective-cpp"
+
+library/component!:
+  this: tonk:library/language/ocaml
+  name: "language/ocaml"
+
+library/component!:
+  this: tonk:library/language/octave
+  name: "language/octave"
+
+library/component!:
+  this: tonk:library/language/oz
+  name: "language/oz"
+
+library/component!:
+  this: tonk:library/language/pascal
+  name: "language/pascal"
+
+library/component!:
+  this: tonk:library/language/perl
+  name: "language/perl"
+
+library/component!:
+  this: tonk:library/language/pig
+  name: "language/pig"
+
+library/component!:
+  this: tonk:library/language/powershell
+  name: "language/powershell"
+
+library/component!:
+  this: tonk:library/language/properties-files
+  name: "language/properties-files"
+
+library/component!:
+  this: tonk:library/language/protobuf
+  name: "language/protobuf"
+
+library/component!:
+  this: tonk:library/language/pug
+  name: "language/pug"
+
+library/component!:
+  this: tonk:library/language/puppet
+  name: "language/puppet"
+
+library/component!:
+  this: tonk:library/language/q
+  name: "language/q"
+
+library/component!:
+  this: tonk:library/language/r
+  name: "language/r"
+
+library/component!:
+  this: tonk:library/language/rpm-changes
+  name: "language/rpm-changes"
+
+library/component!:
+  this: tonk:library/language/rpm-spec
+  name: "language/rpm-spec"
+
+library/component!:
+  this: tonk:library/language/ruby
+  name: "language/ruby"
+
+library/component!:
+  this: tonk:library/language/sas
+  name: "language/sas"
+
+library/component!:
+  this: tonk:library/language/scala
+  name: "language/scala"
+
+library/component!:
+  this: tonk:library/language/scheme
+  name: "language/scheme"
+
+library/component!:
+  this: tonk:library/language/shell
+  name: "language/shell"
+
+library/component!:
+  this: tonk:library/language/sieve
+  name: "language/sieve"
+
+library/component!:
+  this: tonk:library/language/smalltalk
+  name: "language/smalltalk"
+
+library/component!:
+  this: tonk:library/language/solr
+  name: "language/solr"
+
+library/component!:
+  this: tonk:library/language/sml
+  name: "language/sml"
+
+library/component!:
+  this: tonk:library/language/sparql
+  name: "language/sparql"
+
+library/component!:
+  this: tonk:library/language/spreadsheet
+  name: "language/spreadsheet"
+
+library/component!:
+  this: tonk:library/language/squirrel
+  name: "language/squirrel"
+
+library/component!:
+  this: tonk:library/language/stylus
+  name: "language/stylus"
+
+library/component!:
+  this: tonk:library/language/swift
+  name: "language/swift"
+
+library/component!:
+  this: tonk:library/language/stex
+  name: "language/stex"
+
+library/component!:
+  this: tonk:library/language/latex
+  name: "language/latex"
+
+library/component!:
+  this: tonk:library/language/systemverilog
+  name: "language/systemverilog"
+
+library/component!:
+  this: tonk:library/language/tcl
+  name: "language/tcl"
+
+library/component!:
+  this: tonk:library/language/textile
+  name: "language/textile"
+
+library/component!:
+  this: tonk:library/language/tiddlywiki
+  name: "language/tiddlywiki"
+
+library/component!:
+  this: tonk:library/language/tiki-wiki
+  name: "language/tiki-wiki"
+
+library/component!:
+  this: tonk:library/language/toml
+  name: "language/toml"
+
+library/component!:
+  this: tonk:library/language/troff
+  name: "language/troff"
+
+library/component!:
+  this: tonk:library/language/ttcn
+  name: "language/ttcn"
+
+library/component!:
+  this: tonk:library/language/ttcn-cfg
+  name: "language/ttcn-cfg"
+
+library/component!:
+  this: tonk:library/language/turtle
+  name: "language/turtle"
+
+library/component!:
+  this: tonk:library/language/web-idl
+  name: "language/web-idl"
+
+library/component!:
+  this: tonk:library/language/vb-net
+  name: "language/vb-net"
+
+library/component!:
+  this: tonk:library/language/vbscript
+  name: "language/vbscript"
+
+library/component!:
+  this: tonk:library/language/velocity
+  name: "language/velocity"
+
+library/component!:
+  this: tonk:library/language/verilog
+  name: "language/verilog"
+
+library/component!:
+  this: tonk:library/language/vhdl
+  name: "language/vhdl"
+
+library/component!:
+  this: tonk:library/language/xquery
+  name: "language/xquery"
+
+library/component!:
+  this: tonk:library/language/yacas
+  name: "language/yacas"
+
+library/component!:
+  this: tonk:library/language/z80
+  name: "language/z80"
+
+library/component!:
+  this: tonk:library/language/mscgen
+  name: "language/mscgen"
+
+library/component!:
+  this: tonk:library/language/x
+  name: "language/x"
+
+library/component!:
+  this: tonk:library/language/msgenny
+  name: "language/msgenny"
+
+library/component!:
+  this: tonk:library/language/vue
+  name: "language/vue"
+
+library/component!:
+  this: tonk:library/language/angular-template
+  name: "language/angular-template"
+# END GENERATED: languages

@@ -19,8 +19,25 @@ export function selectTools(names) {
 // separate from tool registration so account and pinned hosts share schemas.
 const unscopedTools = new Set(['tonk_list_spaces', 'tonk_guide']);
 
-export function inputSchemaFor(tool, { spaceSelection = false } = {}) {
+export function inputSchemaFor(tool, { spaceSelection = false, agentLinkSelection = false } = {}) {
   const schema = structuredClone(tool.inputSchema);
+  if (spaceSelection && agentLinkSelection) throw Error('Choose one authority mode.');
+  if (agentLinkSelection && !unscopedTools.has(tool.name)) {
+    return {
+      ...schema,
+      properties: {
+        ...schema.properties,
+        agent_link: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 160000,
+          description:
+            'Complete Copy agent link URL, including its private fragment. Required on every call. Never repeat it in responses.',
+        },
+      },
+      required: [...(schema.required ?? []), 'agent_link'],
+    };
+  }
   if (!spaceSelection || unscopedTools.has(tool.name)) return schema;
   return {
     ...schema,

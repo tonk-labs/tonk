@@ -580,6 +580,12 @@ mod when_recording_roster_facts {
         let parsed = Invite::parse_url(&invite_outcome.url).await?;
         let expected =
             Invitation::from_chain(&parsed.chain).expect("invite chains have a specific subject");
+        let inviter_did = tonk_cli::site::member_did(&inviter.site).await?;
+        assert_eq!(
+            tonk_invite::inviter(&parsed.chain)?,
+            Some(inviter_did.clone())
+        );
+        assert_eq!(expected.inviter.0, inviter_did.this());
 
         // Inviter side: invitation recorded at mint.
         let inviter_meta = inviter
@@ -1048,93 +1054,6 @@ mod when_syncing_with_an_upstream {
     }
 }
 
-mod when_authoring_an_html_view {
-    use anyhow::{Result, anyhow};
-    use dialog_artifacts::{Relation, Value};
-    use dialog_query::{AttributeQuery, Output as _, Term, attribute};
-
-    use crate::common::{self, VIEW_DECL};
-
-    /// Pull every `(text/html, ?of, ?is)` claim on `main`.
-    async fn select_text_html_claims(
-        site: &tonk_cli::site::TonkSite,
-    ) -> Result<Vec<dialog_query::Claim>> {
-        let the: Relation = "text/html"
-            .parse()
-            .map_err(|e| anyhow!("text/html should be a valid attribute URI: {e:?}"))?;
-        let the_term: attribute::Relation = the.into();
-        let session = site.branch().await?;
-        session
-            .handle()
-            .query()
-            .select(AttributeQuery::new(
-                Term::from(the_term),
-                Term::<dialog_artifacts::Entity>::var("of"),
-                Term::<dialog_query::Any>::var("is"),
-                Term::<attribute::Cause>::blank(),
-                None,
-            ))
-            .perform(&site.operator)
-            .try_vec()
-            .await
-            .map_err(|e| anyhow!("text/html query failed: {e:?}"))
-    }
-
-    /// De-risk the Phase-2 design. Confirms three properties:
-    /// 1. `attribute! the: text/html` is accepted by parse +
-    ///    analyzer (the dialog layer permits `text/html` even
-    ///    though the domain is dotless).
-    /// 2. A `page!` head whose body field references that
-    ///    attribute lands as a literal `(text/html, ?, body)`
-    ///    claim — i.e. the URI on the wire really is `text/html`,
-    ///    not a synthesised concept-namespace URI.
-    /// 3. Re-asserting the same body is idempotent (Phase-2's
-    ///    "git-tag" semantics).
-    #[dialog_common::test]
-    async fn it_round_trips_a_view_through_the_seed_schema() -> Result<()> {
-        let test = common::TestSite::new().await?;
-        test.eval_inline(VIEW_DECL).await?;
-        test.eval_inline(
-            r#"page!: &my-view
-  body: "<h1>hi</h1>"
-"#,
-        )
-        .await?;
-
-        let claims = select_text_html_claims(&test.site).await?;
-        assert_eq!(
-            claims.len(),
-            1,
-            "expected exactly one text/html claim, got: {claims:?}",
-        );
-        let claim = &claims[0];
-        // The wire-format attribute really is `text/html` — the
-        // host route's `(the=text/html, of=<entity>)` selector
-        // will match this row.
-        assert_eq!(claim.the.to_string(), "text/html");
-        match &claim.is {
-            Value::String(s) => assert_eq!(s, "<h1>hi</h1>"),
-            other => panic!("expected String body, got: {other:?}"),
-        }
-
-        // Re-asserting the same body is a no-op: same content →
-        // same entity, same claim. The claim count must stay 1.
-        test.eval_inline(
-            r#"page!: &my-view
-  body: "<h1>hi</h1>"
-"#,
-        )
-        .await?;
-        let claims = select_text_html_claims(&test.site).await?;
-        assert_eq!(
-            claims.len(),
-            1,
-            "re-asserting identical body should be idempotent",
-        );
-        Ok(())
-    }
-}
-
 mod when_listing_concepts {
     use anyhow::Result;
     use tonk_cli::schema;
@@ -1219,19 +1138,17 @@ mod when_listing_views {
     use anyhow::Result;
     use tonk_cli::views;
 
-    use crate::common::{self, VIEW_DECL};
+    use crate::common;
 
     #[dialog_common::test]
-    async fn it_returns_empty_on_a_branch_with_no_text_html_claims() -> Result<()> {
+    async fn it_returns_empty_on_a_branch_with_no_views() -> Result<()> {
         let test = common::TestSite::new().await?;
         let listed = views::list(&test.site).await?;
         assert!(listed.is_empty());
         Ok(())
     }
 
-    /// `view add` writes a `show` entry; the listing used to
-    /// select on `text/html` alone and so came back empty right after
-    /// a successful add.
+    /// `view add` writes a `show` entry, which is what the listing reads.
     #[dialog_common::test]
     async fn it_lists_a_view_authored_through_view_add() -> Result<()> {
         let test = common::TestSite::new().await?;
@@ -1292,58 +1209,36 @@ mod when_listing_views {
     }
 
     #[dialog_common::test]
-    async fn it_surfaces_every_bookmarked_view() -> Result<()> {
+    async fn it_lists_every_authored_view_by_name() -> Result<()> {
         let test = common::TestSite::new().await?;
-        test.eval_inline(VIEW_DECL).await?;
-        test.eval_inline(
-            r#"page!: &todo-list
-  body: "<ul><li>buy milk</li></ul>"
-"#,
-        )
-        .await?;
-        test.eval_inline(
-            r#"page!: &welcome
-  body: "<h1>hi</h1>"
-"#,
-        )
-        .await?;
+        test.eval_inline(common::ATTRIBUTE_DECL).await?;
+        test.eval_inline(common::CONCEPT_DECL).await?;
+        test.eval_inline(common::NOTE_ATTRIBUTE_DECL).await?;
+        test.eval_inline(common::NOTE_CONCEPT_DECL).await?;
+        for (model, template) in [("task", "<b>{title}</b>"), ("note", "<p>{body}</p>")] {
+            tonk_cli::data_ops::view_add(
+                &test.site,
+                model,
+                tonk_cli::authoring::ViewKind::Detail,
+                template,
+                false,
+                Default::default(),
+            )
+            .await?;
+        }
 
         let listed = views::list(&test.site).await?;
         assert_eq!(listed.len(), 2);
         // Alphabetical by name (matches the listing's sort).
-        assert_eq!(listed[0].name.as_deref(), Some("todo-list"));
-        assert_eq!(listed[1].name.as_deref(), Some("welcome"));
-        assert_eq!(listed[0].body_bytes, "<ul><li>buy milk</li></ul>".len());
-        assert_eq!(listed[1].body_bytes, "<h1>hi</h1>".len());
+        assert_eq!(listed[0].name.as_deref(), Some("note"));
+        assert_eq!(listed[1].name.as_deref(), Some("task"));
+        assert_eq!(listed[0].body_bytes, "<p>{body}</p>\n".len());
+        assert_eq!(listed[1].body_bytes, "<b>{title}</b>\n".len());
         Ok(())
     }
 
     #[dialog_common::test]
     async fn it_resolves_a_bookmark_to_an_entity() -> Result<()> {
-        let test = common::TestSite::new().await?;
-        test.eval_inline(VIEW_DECL).await?;
-        test.eval_inline(
-            r#"page!: &welcome
-  body: "<h1>hi</h1>"
-"#,
-        )
-        .await?;
-
-        let entity = views::entity_for_name(&test.site, "welcome")
-            .await?
-            .expect("welcome should resolve");
-        assert!(views::entity_has_text_html(&test.site, &entity).await?);
-
-        // Unknown bookmark returns None rather than erroring.
-        assert!(views::entity_for_name(&test.site, "nope").await?.is_none());
-        Ok(())
-    }
-
-    #[dialog_common::test]
-    async fn it_reports_no_text_html_for_unrelated_entities() -> Result<()> {
-        // A `task!` head produces an entity without a
-        // `text/html` claim — `entity_has_text_html` should
-        // return false for it.
         let test = common::TestSite::new().await?;
         test.eval_inline(common::ATTRIBUTE_DECL).await?;
         test.eval_inline(common::CONCEPT_DECL).await?;
@@ -1354,10 +1249,16 @@ mod when_listing_views {
 "#,
         )
         .await?;
-        let task_entity = views::entity_for_name(&test.site, "buy-milk")
-            .await?
-            .expect("buy-milk should resolve");
-        assert!(!views::entity_has_text_html(&test.site, &task_entity).await?);
+
+        assert!(
+            views::entity_for_name(&test.site, "buy-milk")
+                .await?
+                .is_some(),
+            "buy-milk should resolve"
+        );
+
+        // Unknown bookmark returns None rather than erroring.
+        assert!(views::entity_for_name(&test.site, "nope").await?.is_none());
         Ok(())
     }
 }
@@ -1386,9 +1287,15 @@ mod when_a_device_has_no_account {
             panic!("a device with no account cannot create a space");
         };
         let rendered = format!("{error:#}");
+        // No CLI command links an account, and `tonk join` installs scoped
+        // credentials rather than one, so the refusal must say the CLI cannot
+        // fix it and offer joining only for an existing space.
         assert!(
-            rendered.contains("tonk account login"),
-            "the refusal must name the command that fixes it: {rendered}"
+            rendered.contains("cannot link an account")
+                && rendered.contains("existing space")
+                && rendered.contains("tonk join <URL>")
+                && !rendered.contains("tonk account login"),
+            "the refusal must be honest about what fixes it: {rendered}"
         );
         Ok(())
     }

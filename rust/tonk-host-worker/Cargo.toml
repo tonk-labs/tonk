@@ -1,0 +1,40 @@
+[package]
+name = "tonk-host-worker"
+description = "The Host Worker of the hosted agent peer: one space writer per space and MCP session, in a Durable Object, each driving the space's own kernel."
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Not a workspace member: it builds only for wasm32 with worker-build, and
+# it turns on tonk-kernel-host's `volatile`, which a workspace-wide wasm
+# build would unify into the browser's embedder.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+axum = { version = "0.8", default-features = false }
+console_error_panic_hook = "0.1"
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay-main" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay-main" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/ucan-relay-main" }
+futures-util = "0.3"
+http = "1"
+http-body-util = "0.1"
+js-sys = "0.3"
+serde_json = "1"
+tonk-kernel-host = { path = "../tonk-kernel-host", features = ["volatile"] }
+tonk-mcp = { path = "../tonk-mcp" }
+url = "2"
+wasm-bindgen = "=0.2.126"
+worker = { version = "=0.8.5", features = ["http"] }
+worker-macros = { version = "=0.8.5", features = ["http"] }
+zeroize = "1"
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"

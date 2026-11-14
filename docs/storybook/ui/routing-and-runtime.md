@@ -8,8 +8,9 @@ activation page, `/doctor` and `/doctor/` mount standalone diagnostics, and ever
 other route mounts `<tonk-site>`, whose profile route
 table brings up Hub, space chrome, and sealed guest content. Account settings
 are the hub's `/settings` route inside that guest; there is no top-level
-account page any more. A named space's
-`/inspector` route also exposes read-only branch diagnostics above the notebook.
+account page any more. A space with the inspector component installed has a
+`/console/inspector` route, which also exposes read-only branch diagnostics
+above the notebook.
 
 This boundary is small but load-bearing. A route can render correctly in a
 headless renderer while still failing to become the browser home. Account and
@@ -51,11 +52,15 @@ copy-button check using a prompt fixture. Isolated Chrome checks cover card
 spacing and status alignment. Full account/CLI handoff, Safari, offline first
 boot, and crash-at-each-write verification remain unrun for this change.
 
-At a named space's `/inspector` route, the inspector starts with one compact,
-full-width diagnostics summary above the notebook. It identifies the current
-branch, revision, and whether the branch is local-only or has an upstream. The
-profile inspector keeps its notebook-only surface because it has no named-space
-repository boundary to diagnose.
+The inspector and the search-tree view are library components, installed into
+a space (or into the profile, which is a space too) like any other; the
+inspector needs code-editor installed beside it and says so until it is. At a
+named space's `/console/inspector` route, the inspector starts with one
+compact, full-width diagnostics summary above the notebook. It identifies the
+current branch, revision, and whether the branch is local-only or has an
+upstream. The profile's inspector keeps its notebook-only surface because it
+has no named-space repository boundary to diagnose. `/console/tree` draws the
+branch's search-tree index.
 
 Navigation and reload reproduce the same canonical route. A service-worker
 update cannot strand the user between old HTML and new Wasm/assets; an offline
@@ -136,7 +141,7 @@ activation route reads one base64url `ucan`. Content routes are interpreted by
 the profile's route table inside `tonk-site`, not by a second top-document
 framework.
 
-The `/inspector` content route distinguishes a named-space repository from the
+The `/console/inspector` route distinguishes a named-space repository from the
 profile repository. Only the former resolves branch metadata and mounts the
 diagnostics disclosure.
 

@@ -1,0 +1,28 @@
+{
+  "runtimeBuild": "9530528d0d4edab3",
+  "waitSeconds": 15,
+  "frames": [
+    {
+      "mainFrame": true,
+      "observations": []
+    },
+    {
+      "mainFrame": false,
+      "observations": [
+        {
+          "status": "unverified",
+          "reason": "Display tonk:space/chrome is waiting for query checkpoints: view. Recent input events: [\"model:reset\", \"model:checkpoint\", \"view/entity:replace\", \"view:reset\", \"entity:reset\", \"entity:checkpoint\"]"
+        }
+      ]
+    },
+    {
+      "mainFrame": false,
+      "observations": [
+        {
+          "status": "unverified",
+          "reason": "Display tonk:site is waiting for query checkpoints: model, view. Recent input events: [\"model:reset\", \"view/entity:replace\", \"view:reset\", \"entity:reset\", \"entity:checkpoint\"]"
+        }
+      ]
+    }
+  ]
+}

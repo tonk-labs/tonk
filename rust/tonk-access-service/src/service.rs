@@ -103,9 +103,14 @@ fn document(id: &str, keys: impl IntoIterator<Item = String>) -> Value {
     })
 }
 
+/// The binding of the Durable Object that keeps a space's sockets. A
+/// deployment without it keeps none: its upgrade answers 404, and its DID
+/// document names no socket.
+pub const SOCKETS_BINDING: &str = "LIVE";
+
 /// The DID document for `did:web:{host}`, carrying the service's ed25519
-/// key.
-pub fn did_document(host: &str, origin: &str, signer: &Ed25519Signer) -> Value {
+/// key, and naming its socket where the deployment keeps `sockets`.
+pub fn did_document(host: &str, origin: &str, signer: &Ed25519Signer, sockets: bool) -> Value {
     // `did:web` separates path segments with `:`, so a host carrying a
     // port percent-encodes it (`localhost%3A8090`), per the method spec.
     // Raw, `did:web:localhost:8090` reads `8090` as a path segment and a
@@ -117,12 +122,45 @@ pub fn did_document(host: &str, origin: &str, signer: &Ed25519Signer) -> Value {
     // here means a client resolving the service needs nothing but its DID
     // — no side channel naming the endpoint, and no second well-known
     // path to keep in step with this one.
-    document["service"] = json!([{
-        "id": format!("{id}#ucan"),
-        "type": "TonkAccessService",
-        "serviceEndpoint": format!("{}/ucan/", origin.trim_end_matches('/')),
-    }]);
+    let origin = origin.trim_end_matches('/');
+    let mut services = vec![
+        json!({
+            "id": format!("{id}#ucan"),
+            "type": "TonkAccessService",
+            "serviceEndpoint": format!("{origin}/ucan/"),
+        }),
+        // The same endpoint, and its socket, under the kinds dialog
+        // discovers an access service by: a peer handed this DID learns
+        // both from the document alone.
+        json!({
+            "id": format!("{id}#access"),
+            "type": dialog_remote_ucan::ACCESS_SERVICE,
+            "serviceEndpoint": format!("{origin}/ucan/"),
+        }),
+    ];
+    // A deployment without sockets does not name one: a client told of a
+    // socket tries it, and one the service cannot open only fails.
+    if sockets {
+        services.push(json!({
+            "id": format!("{id}#socket"),
+            "type": dialog_remote_ucan::ACCESS_SOCKET,
+            "serviceEndpoint": format!("{}/ucan/", socket_origin(origin)),
+        }));
+    }
+    document["service"] = Value::Array(services);
     document
+}
+
+/// The origin the service's socket is reached at: the service's own, over
+/// `wss` where it is `https`, and `ws` where it is plain `http`.
+fn socket_origin(origin: &str) -> String {
+    if let Some(host) = origin.strip_prefix("https://") {
+        format!("wss://{host}")
+    } else if let Some(host) = origin.strip_prefix("http://") {
+        format!("ws://{host}")
+    } else {
+        origin.to_string()
+    }
 }
 
 /// The DID document for an email address, carrying the `did:key` of the
@@ -224,7 +262,7 @@ mod tests {
     #[dialog_common::test]
     fn it_documents_the_key_under_the_web_did() {
         let signer = signer_from_hex(&"11".repeat(32)).unwrap();
-        let document = did_document("tonk.network", "https://tonk.network", &signer);
+        let document = did_document("tonk.network", "https://tonk.network", &signer, true);
         assert_eq!(document["id"], "did:web:tonk.network");
         let multibase = document["verificationMethod"][0]["publicKeyMultibase"]
             .as_str()
@@ -242,13 +280,72 @@ mod tests {
     #[dialog_common::test]
     fn it_announces_where_the_service_is_reached() {
         let signer = signer_from_hex(&"11".repeat(32)).unwrap();
-        let document = did_document("tonk.network", "https://tonk.network", &signer);
+        let document = did_document("tonk.network", "https://tonk.network", &signer, true);
         let service = &document["service"][0];
         assert_eq!(service["type"], "TonkAccessService");
         assert_eq!(service["serviceEndpoint"], "https://tonk.network/ucan/");
         assert_eq!(
             service["id"], "did:web:tonk.network#ucan",
             "the fragment names the endpoint within the document"
+        );
+    }
+
+    /// A peer handed the service's DID discovers from the document alone
+    /// where the service is reached: its endpoint, and its socket on the
+    /// same origin. The document is the only place a client learns of the
+    /// socket.
+    #[dialog_common::test]
+    fn it_announces_the_access_service_dialog_discovers() {
+        let signer = signer_from_hex(&"11".repeat(32)).unwrap();
+        for (host, origin, socket) in [
+            (
+                "tonk.network",
+                "https://tonk.network",
+                "wss://tonk.network/ucan/",
+            ),
+            (
+                "localhost:8090",
+                "http://localhost:8090",
+                "ws://localhost:8090/ucan/",
+            ),
+        ] {
+            let document: dialog_did_web::DidDocument =
+                serde_json::from_value(did_document(host, origin, &signer, true)).unwrap();
+            let did = document.id.clone().unwrap().parse().unwrap();
+            let services = document.services(&did).unwrap();
+            let discovered = dialog_remote_ucan::UcanAddress::from_services(&services);
+            assert_eq!(
+                discovered,
+                Some(
+                    dialog_remote_ucan::UcanAddress::new(format!("{origin}/ucan/"))
+                        .with_socket(socket)
+                ),
+                "{origin}"
+            );
+        }
+    }
+
+    /// A deployment without sockets names none, so a peer that discovers
+    /// the service from its document syncs over requests rather than
+    /// trying a socket the service answers 404.
+    #[dialog_common::test]
+    fn it_names_no_socket_where_the_deployment_keeps_none() {
+        let signer = signer_from_hex(&"11".repeat(32)).unwrap();
+        let document: dialog_did_web::DidDocument = serde_json::from_value(did_document(
+            "tonk.network",
+            "https://tonk.network",
+            &signer,
+            false,
+        ))
+        .unwrap();
+        let did = document.id.clone().unwrap().parse().unwrap();
+        let services = document.services(&did).unwrap();
+        assert_eq!(
+            dialog_remote_ucan::UcanAddress::from_services(&services),
+            Some(dialog_remote_ucan::UcanAddress::new(
+                "https://tonk.network/ucan/"
+            )),
+            "the access service is discovered without a socket"
         );
     }
 
@@ -261,7 +358,7 @@ mod tests {
     #[dialog_common::test]
     fn it_keeps_the_port_the_service_is_reached_on() {
         let signer = signer_from_hex(&"11".repeat(32)).unwrap();
-        let document = did_document("localhost:8090", "http://localhost:8090", &signer);
+        let document = did_document("localhost:8090", "http://localhost:8090", &signer, true);
         assert_eq!(
             document["service"][0]["serviceEndpoint"],
             "http://localhost:8090/ucan/"

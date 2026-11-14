@@ -30,9 +30,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
       deployments: write
       pull-requests: write
+    timeout-minutes: 240
     name: Cloudflare Artifacts
+    outputs:
+      channel: ${{ github.event_name == 'pull_request' && 'preview' || github.ref == 'refs/heads/main' && 'dev' || steps.release.outputs.channel }}
+      provider: ${{ steps.deploy-preview.outputs.url || github.ref == 'refs/heads/main' && 'https://tonk.foundation' || steps.release.outputs.channel == 'staging' && 'https://staging.tonk.xyz' || 'https://tonk.network' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,7 +61,7 @@ jobs:
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
 
-      - uses: wimpysworld/nothing-but-nix@main
+      - uses: wimpysworld/nothing-but-nix@baf7355748bb5651f08b839669d6bb39051b2874 # main before 153c2fb, whose /nix/tmp TMPDIR breaks the Nix installer
       - uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
@@ -77,14 +82,28 @@ jobs:
       - name: Build assets
         env:
           DEPLOY_EVENT: ${{ github.event_name }}
-          DEPLOY_REF: ${{ github.ref }}
-          DEPLOY_CHANNEL: ${{ steps.release.outputs.channel }}
         run: |
           artifact=tonk-cloudflare-artifacts
-          if [ "$DEPLOY_EVENT" = pull_request ] || [ "$DEPLOY_REF" = refs/heads/main ] || [ "$DEPLOY_CHANNEL" = staging ]; then
-            artifact=tonk-cloudflare-preview-artifacts
+          if [ "$DEPLOY_EVENT" = pull_request ]; then
+            artifact=tonk-cloudflare-ci-artifacts
           fi
           nix build --accept-flake-config ".#$artifact"
+
+      - name: Assemble MCP browser assets from this build
+        run: |
+          TONK_UI_DIST="$PWD/result/tonk-ui" nix --accept-flake-config develop .#ci --command \
+            node mcp/hosted/build-assets.mjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-browser-assets
+          path: mcp/hosted/public
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Require full tag verification before release side effects
+        if: github.ref_type == 'tag'
+        uses: ./.github/actions/require-tag-verification
 
       # A pull request gets its own deployment in the disposable
       # `preview` environment.
@@ -148,15 +167,35 @@ jobs:
           # would refuse every request rather than degrade quietly.
           resolve_kv() {
             namespace="$1"
-            # `kv namespace list` emits JSON on stdout but takes no --json
-            # flag, unlike `d1 list`. Strip anything ahead of the array so a
-            # banner line cannot break the parse.
+            # Read the account's namespaces from the API, every page of them:
+            # `wrangler kv namespace list` came back without namespaces that
+            # exist once the account held many previews. A failed page is
+            # retried, so a transient refusal does not read as "missing".
             lookup() {
-              nix --accept-flake-config develop .#ci --command \
-                wrangler kv namespace list 2>/dev/null \
-                | sed -n '/^[[:space:]]*\[/,$p' \
-                | jq -r --arg title "$1" '.[] | select(.title == $title) | .id' \
-                | head -n 1
+              api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces"
+              page=1
+              while :; do
+                body=""
+                for attempt in 1 2 3 4; do
+                  if body="$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                    "$api?per_page=100&page=$page")"; then
+                    break
+                  fi
+                  body=""
+                  sleep $((attempt * 2))
+                done
+                [ -n "$body" ] || return 0
+                id="$(printf '%s' "$body" \
+                  | jq -r --arg title "$1" '.result[] | select(.title == $title) | .id' \
+                  | head -n 1)"
+                if [ -n "$id" ]; then
+                  echo "$id"
+                  return 0
+                fi
+                pages="$(printf '%s' "$body" | jq -r '.result_info.total_pages // 1')"
+                [ "$page" -lt "$pages" ] || return 0
+                page=$((page + 1))
+              done
             }
             id="$(lookup "$namespace")"
             if [ -z "$id" ]; then
@@ -170,18 +209,73 @@ jobs:
             fi
             echo "$id"
           }
+          # The account's Secrets Store, which holds the secrets every
+          # preview reads at runtime. Only its id and the secrets' names are
+          # read here, never a value. A preview missing either secret could
+          # not sign or could not send its activation mail, so the deploy
+          # stops instead of shipping one.
+          resolve_store() {
+            api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/secrets_store"
+            # A request Cloudflare refuses says why, rather than reading as
+            # an empty answer.
+            store_get() {
+              body="$RUNNER_TEMP/secrets-store.json"
+              status="$(curl -sS -o "$body" -w '%{http_code}' \
+                -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$api$1")"
+              case "$status" in
+                200) cat "$body" ;;
+                401|403)
+                  # Name the token, by its id, so the one to change can be
+                  # found among the account's and its members' tokens. A user
+                  # token verifies at /user, an account token at its account.
+                  token="$({
+                    curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                      "https://api.cloudflare.com/client/v4/user/tokens/verify" \
+                      || curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                        "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify"
+                  } 2>/dev/null | jq -r '"\(.result.id) (\(.result.status))"' 2>/dev/null)"
+                  echo "::error::The Cloudflare API token ${token:-of unknown id} may not read the Secrets Store (HTTP $status: $(jq -c '.errors' "$body" 2>/dev/null)): give the token behind CLOUDFLARE_PREVIEW_API_TOKEN the Secrets Store permission on this account" >&2
+                  exit 1 ;;
+                *)
+                  echo "::error::Reading the Secrets Store ($1) failed with HTTP $status: $(jq -c '.errors' "$body" 2>/dev/null)" >&2
+                  exit 1 ;;
+              esac
+            }
+            stores="$(store_get /stores)" || exit 1
+            id="$(jq -r 'if (.result | length) == 1 then .result[0].id
+              else (.result[] | select(.name == "default_secrets_store") | .id) end' <<<"$stores" | head -n 1)"
+            if [ -z "$id" ] || [ "$id" = null ]; then
+              echo "::error::The account has no Secrets Store for the preview secrets (see the note in wrangler.toml)" >&2
+              exit 1
+            fi
+            secrets="$(store_get "/stores/$id/secrets?per_page=100")" || exit 1
+            names="$(jq -r '.result[].name' <<<"$secrets")"
+            for name in TONK_PREVIEW_SERVICE_SECRET_KEY TONK_PREVIEW_RESEND_API_KEY; do
+              if ! grep -Fxq "$name" <<<"$names"; then
+                echo "::error::The Secrets Store holds no $name; create it as wrangler.toml describes" >&2
+                exit 1
+              fi
+            done
+            echo "$id"
+          }
           number="${{ github.event.pull_request.number }}"
           control="tonk-access-control-pr-${{ github.event.pull_request.number }}"
           ingest="tonk-access-ingest-pr-${{ github.event.pull_request.number }}"
           revocations="tonk-access-revocations-pr-${{ github.event.pull_request.number }}"
           servability="tonk-access-servability-pr-${{ github.event.pull_request.number }}"
+          inbox="tonk-access-test-inbox-pr-${{ github.event.pull_request.number }}"
+          worker="tonk-access-service-pr-${{ github.event.pull_request.number }}"
+          host="tonk-mcp-worker-pr-${{ github.event.pull_request.number }}"
           config="$PWD/wrangler.preview.toml"
           control_id="$(resolve "$control" "rust/tonk-access-service/migrations")"
           ingest_id="$(resolve "$ingest" "rust/tonk-access-service/migrations-ingest")"
           revocations_id="$(resolve_kv "$revocations")"
           servability_id="$(resolve_kv "$servability")"
+          inbox_id="$(resolve_kv "$inbox")"
+          store_id="$(resolve_store)"
           cp wrangler.toml "$config"
           sed -i \
+            -e "s/^name = \"tonk-access-service-preview\"$/name = \"$worker\"/" \
             -e "s/database_name = \"tonk-access-control-preview\"/database_name = \"$control\"/" \
             -e "s/database_id = \"REPLACED-PER-PULL-REQUEST\"/database_id = \"$control_id\"/" \
             -e "s/database_name = \"tonk-access-ingest-preview\"/database_name = \"$ingest\"/" \
@@ -190,23 +284,32 @@ jobs:
             -e "s/id = \"SERVABILITY-REPLACED-PER-PULL-REQUEST\"/id = \"$servability_id\"/" \
             -e "s/SITE_SUFFIX = \"-prREPLACED-PER-PULL-REQUEST\"/SITE_SUFFIX = \"-pr$number\"/" \
             -e "s|APP_ORIGIN = \"https://pr-REPLACED-PER-PULL-REQUEST.tonk.foundation\"|APP_ORIGIN = \"https://pr-$number.tonk.foundation\"|" \
+            -e "s/id = \"TEST-INBOX-REPLACED-PER-PULL-REQUEST\"/id = \"$inbox_id\"/" \
+            -e "s/store_id = \"SECRETS-STORE-REPLACED-PER-DEPLOY\"/store_id = \"$store_id\"/" \
+            -e "s/service = \"tonk-mcp-worker-preview\"/service = \"$host\"/" \
             "$config"
-          if ! grep -Fq "database_name = \"$control\"" "$config" \
+          if ! grep -Fxq "name = \"$worker\"" "$config" \
+            || ! grep -Fq "database_name = \"$control\"" "$config" \
             || ! grep -Fq "database_id = \"$control_id\"" "$config" \
             || ! grep -Fq "database_name = \"$ingest\"" "$config" \
             || ! grep -Fq "database_id = \"$ingest_id\"" "$config" \
             || ! grep -Fq "id = \"$revocations_id\"" "$config" \
             || ! grep -Fq "id = \"$servability_id\"" "$config" \
             || ! grep -Fq "SITE_SUFFIX = \"-pr$number\"" "$config" \
-            || ! grep -Fq "APP_ORIGIN = \"https://pr-$number.tonk.foundation\"" "$config"; then
-            echo "::error::Could not bind the access preview config to $control/$ingest/$revocations"
+            || ! grep -Fq "APP_ORIGIN = \"https://pr-$number.tonk.foundation\"" "$config" \
+            || ! grep -Fq "id = \"$inbox_id\"" "$config" \
+            || ! grep -Fq "service = \"$host\"" "$config" \
+            || grep -Fq "SECRETS-STORE-REPLACED-PER-DEPLOY" "$config"; then
+            echo "::error::Could not bind the access preview config to $worker/$control/$ingest/$revocations"
             exit 1
           fi
           echo "database=$control" >> "$GITHUB_OUTPUT"
           echo "ingest=$ingest" >> "$GITHUB_OUTPUT"
           echo "config=$config" >> "$GITHUB_OUTPUT"
+          echo "worker=$worker" >> "$GITHUB_OUTPUT"
+          echo "host=$host" >> "$GITHUB_OUTPUT"
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Apply preview access migrations
@@ -221,23 +324,103 @@ jobs:
               "${{ steps.access-database.outputs.ingest }}" --remote \
               --env preview -c "${{ steps.access-database.outputs.config }}"
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # The MCP Worker serving `/mcp` (rust/tonk-host-worker), bound into
+      # the access preview as `MCP_WORKER`. It is deployed first so the
+      # binding has a worker to name, and deployed again once the access
+      # preview's URL, which its space writers sync with, is known.
+      - name: Build MCP worker preview
+        if: github.event_name == 'pull_request'
+        run: |
+          nix --accept-flake-config develop .#ci --command \
+            bash -c 'cd rust/tonk-host-worker && scripts/bundle.sh && worker-build --release'
+
+      - name: Deploy MCP worker preview
+        if: github.event_name == 'pull_request'
+        working-directory: rust/tonk-host-worker
+        run: |
+          set -euo pipefail
+          host="${{ steps.access-database.outputs.host }}"
+          nix --accept-flake-config develop .#ci --command \
+            wrangler deploy --name "$host" \
+              --var "ACCESS_SERVICE_URL:https://access-preview-pending.invalid"
+          # The key `Mcp-Session-Id`s are MAC'd under. Kept across pushes,
+          # so a client's session outlives a redeploy; the worker is
+          # deleted with the pull request.
+          if ! nix --accept-flake-config develop .#ci --command \
+            wrangler secret list --name "$host" | grep -q '"MCP_SESSION_SECRET"'; then
+            openssl rand -hex 32 | nix --accept-flake-config develop .#ci --command \
+              wrangler secret put MCP_SESSION_SECRET --name "$host"
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # What the hosted agent's inline views load from this origin: the
+      # view peer (rust/tonk-view-peer) a view runs in a Web Worker, the
+      # space kernel it boots, and
+      # the guest runtime and document its sandboxed page renders with.
+      # MCP hosts load them from their own view origins, so they carry
+      # CORS. Served from a copy of the app's assets, which the deploy's
+      # config is pointed at: the preview's own, or `wrangler.toml` for
+      # dev, staging and production.
+      - name: Build inline view assets
+        run: |
+          set -euo pipefail
+          config="${{ steps.access-database.outputs.config || 'wrangler.toml' }}"
+          assets="$PWD/preview-assets"
+          # The runner's disk holds one wasm build's target, not two: the
+          # host worker is deployed from its `build/`, which stays.
+          rm -rf rust/tonk-host-worker/target
+          rm -rf "$assets"
+          cp -rL result/tonk-ui "$assets"
+          chmod -R u+w "$assets"
+          cp mcp/hosted/public/space-runtime.json mcp/hosted/public/worker-guest.html "$assets/"
+          # Route A's framed page: the relay itself, on this origin, its
+          # peer this origin's service worker.
+          sed -e 's#__TONK_MCP_ORIGIN__#location.origin#' -e 's#__TONK_VIEW_FRAME__#true#' \
+            rust/tonk-mcp/src/view/relay.html > "$assets/view-frame.html"
+          grep -q 'framed = true' "$assets/view-frame.html"
+          nix --accept-flake-config develop .#ci --command bash -c '
+            set -euo pipefail
+            cd rust/tonk-view-peer
+            cargo build --release --target wasm32-unknown-unknown
+            "$WASM_BINDGEN_BIN" --target web --out-dir "$0/view-peer" \
+              target/wasm32-unknown-unknown/release/tonk_view_peer.wasm
+            rm -rf target
+            # The space kernel the view peer boots: a browser compiles it
+            # as it loads, so it goes whole, with no modules ahead of time.
+            cargo run --release --manifest-path ../tonk-kernel-bundle/Cargo.toml \
+              --features connection-invites -- component "$0/view-peer/kernel.component"
+          ' "$assets"
+          {
+            for path in /space-runtime.json /worker-guest.html /worker-guest /view-peer/* /library/*; do
+              printf '\n%s\n  Access-Control-Allow-Origin: *\n' "$path"
+            done
+          } >> "$assets/_headers"
+          sed -i "s#^directory = \"./result/tonk-ui\"#directory = \"$assets\"#" "$config"
+          grep -Fq "directory = \"$assets\"" "$config"
 
       - name: Deploy access preview
         if: github.event_name == 'pull_request'
         id: deploy-preview
+        # A plain deploy of the pull request's own worker, as production is
+        # deployed: it applies the Durable Object migrations, which a version
+        # upload cannot, so the preview keeps sockets as production does.
         run: |
           set -o pipefail
-          preview_alias="pr-${{ github.event.pull_request.number }}"
+          worker="${{ steps.access-database.outputs.worker }}"
+          config="${{ steps.access-database.outputs.config }}"
           log="$RUNNER_TEMP/access-preview.log"
+          # The worker holds no secrets of its own: it reads the account's
+          # from the Secrets Store at runtime, so nothing here handles one.
           nix --accept-flake-config develop .#ci --command \
-            wrangler versions upload --env preview \
-              -c "${{ steps.access-database.outputs.config }}" \
-              --preview-alias "$preview_alias" 2>&1 | tee "$log"
-          url="$(grep -Eo "https://$preview_alias-tonk-access-service-preview\.[a-z0-9-]+\.workers\.dev" "$log" | head -n 1 || true)"
+            wrangler deploy --env preview -c "$config" 2>&1 | tee "$log"
+          url="$(grep -Eo "https://$worker\.[a-z0-9-]+\.workers\.dev" "$log" | head -n 1 || true)"
           if [ -z "$url" ]; then
-            echo "::error::wrangler printed no preview alias URL for the access worker"
+            echo "::error::wrangler printed no workers.dev URL for $worker"
             exit 1
           fi
           echo "url=$url" >> "$GITHUB_OUTPUT"
@@ -251,6 +434,50 @@ jobs:
             echo WRANGLER_OUTPUT_EOF
           } >> "$GITHUB_OUTPUT"
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Point the MCP worker preview at the access preview
+        if: github.event_name == 'pull_request'
+        working-directory: rust/tonk-host-worker
+        run: |
+          nix --accept-flake-config develop .#ci --command \
+            wrangler deploy --name "${{ steps.access-database.outputs.host }}" \
+              --var "ACCESS_SERVICE_URL:${{ steps.deploy-preview.outputs.url }}"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # The MCP Worker serving `/mcp` on this deployment's origin, bound
+      # into the access service as `MCP_WORKER`, so it is deployed first:
+      # `tonk-mcp-worker-dev` for tonk.foundation, `-staging` for
+      # staging.tonk.xyz and `tonk-mcp-worker` for tonk.network.
+      - name: Deploy MCP worker
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || steps.release.outputs.channel == 'staging' || steps.release.outputs.channel == 'stable'
+        id: mcp-worker
+        run: |
+          set -euo pipefail
+          case "$CHANNEL" in
+            dev) name=tonk-mcp-worker-dev; origin=https://tonk.foundation ;;
+            staging) name=tonk-mcp-worker-staging; origin=https://staging.tonk.xyz ;;
+            stable) name=tonk-mcp-worker; origin=https://tonk.network ;;
+            *) echo "no MCP worker for channel '$CHANNEL'" >&2; exit 1 ;;
+          esac
+          nix --accept-flake-config develop .#ci --command \
+            bash -c 'cd rust/tonk-host-worker && scripts/bundle.sh && worker-build --release'
+          cd rust/tonk-host-worker
+          nix --accept-flake-config develop .#ci --command \
+            wrangler deploy --name "$name" --var "ACCESS_SERVICE_URL:$origin"
+          # The key `Mcp-Session-Id`s are MAC'd under, made once and kept,
+          # so a client's session outlives a redeploy.
+          if ! nix --accept-flake-config develop .#ci --command \
+            wrangler secret list --name "$name" | grep -q '"MCP_SESSION_SECRET"'; then
+            openssl rand -hex 32 | nix --accept-flake-config develop .#ci --command \
+              wrangler secret put MCP_SESSION_SECRET --name "$name"
+          fi
+          echo "origin=$origin" >> "$GITHUB_OUTPUT"
+        env:
+          CHANNEL: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'dev' || steps.release.outputs.channel }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
@@ -326,6 +553,28 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+      # An unauthenticated MCP request must reach the MCP worker and be
+      # refused with a pointer to the OAuth metadata. A 404 means the
+      # binding is missing ("this deployment serves no /mcp").
+      - name: Check /mcp
+        if: steps.mcp-worker.outcome == 'success'
+        run: |
+          set -euo pipefail
+          url="${{ steps.mcp-worker.outputs.origin }}/mcp"
+          for attempt in 1 2 3 4 5; do
+            headers="$(curl -sS -o /dev/null -D - -X POST "$url" \
+              -H 'content-type: application/json' -d '{}' || true)"
+            if printf '%s' "$headers" | head -n 1 | grep -q ' 401' \
+              && printf '%s' "$headers" | grep -qi '^www-authenticate:.*resource_metadata'; then
+              echo "$url answers 401 with resource metadata"
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "$url did not answer 401 with resource metadata:" >&2
+          printf '%s\n' "$headers" >&2
+          exit 1
+
       - uses: mshick/add-pr-comment@v2
         if: github.event_name == 'pull_request'
         with:
@@ -333,6 +582,9 @@ jobs:
             **Preview of `${{ steps.commit.outputs.short }}`** · [run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
             ${{ steps.deploy-preview.outputs.site }}
+
+            Hosted agent MCP endpoint: `${{ steps.deploy-preview.outputs.url }}/mcp`
+            (see `rust/tonk-host-worker/README.md` for the manual test)
 
             To link the CLI to it:
 
@@ -351,6 +603,165 @@ jobs:
 
             </details>
 
+  # The MCP container's Rust runtime. It needs nothing from the Cloudflare
+  # deployment, so it compiles while that job builds the browser bundle,
+  # instead of inside the container build after it. It builds in the Debian
+  # release the container runs, so the binary links the same glibc.
+  agent-worker:
+    name: MCP runtime build
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container: rust:1.93.0-bookworm
+    permissions:
+      contents: read
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ github.ref_type != 'tag' && 1 || 0 }}
+      - name: Trust the workspace checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: ./.github/actions/resolve-release
+        if: github.ref_type == 'tag'
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends pkg-config libssl-dev clang cmake zstd
+      # Keeps compiled dependencies across source edits. Cargo still checks
+      # every fingerprint, so a stale entry only costs rebuilding what changed.
+      - name: Cache Cargo build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            target
+            /usr/local/cargo/registry
+            /usr/local/cargo/git
+          key: agent-worker-v1-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            agent-worker-v1-${{ hashFiles('Cargo.lock') }}-
+            agent-worker-v1-
+      - name: Build the agent worker
+        run: cargo build --locked --release -p tonk-worker --features native-host --bin tonk-agent-worker
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tonk-agent-worker
+          path: target/release/tonk-agent-worker
+          if-no-files-found: error
+          retention-days: 3
+
+  mcp:
+    name: MCP deployment
+    needs: [deploy, agent-worker]
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      # A pull request's MCP preview deploys with the previews' own token, so
+      # previews never run on the token that deploys production.
+      CLOUDFLARE_API_TOKEN: ${{ github.event_name == 'pull_request' && secrets.CLOUDFLARE_PREVIEW_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      # Keep Docker on this runner; the Nix asset job deliberately removes it.
+      # The container image copies the agent worker built above.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ github.ref_type != 'tag' && 1 || 0 }}
+      - uses: ./.github/actions/resolve-release
+        if: github.ref_type == 'tag'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcp-browser-assets
+          path: mcp/hosted/public
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-agent-worker
+          path: target/release
+      - name: Make the agent worker executable
+        run: chmod 0755 target/release/tonk-agent-worker
+      - name: Install and test MCP
+        run: |
+          npm ci --prefix mcp --ignore-scripts
+          npm ci --prefix mcp/hosted/cloudflare
+          npm test --prefix mcp
+          npm run test:chatgpt --prefix mcp
+      - name: Prepare isolated deployment
+        id: config
+        run: node mcp/hosted/cloudflare/prepare-deployment.mjs
+        env:
+          DEPLOY_CHANNEL: ${{ needs.deploy.outputs.channel }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+          TONK_PROVIDER_ORIGIN: ${{ needs.deploy.outputs.provider }}
+          BUILD_COMMIT: ${{ github.sha }}
+      - name: Deploy MCP worker and container
+        working-directory: mcp/hosted/cloudflare
+        run: npx --no-install wrangler deploy --config wrangler.generated.json
+      - name: Check deployed MCP
+        run: node mcp/hosted/cloudflare/smoke.mjs
+        env:
+          MCP_ISSUER: ${{ steps.config.outputs.issuer }}
+          BUILD_COMMIT: ${{ github.sha }}
+      - name: Record connection settings
+        env:
+          CONNECTION_SETTINGS: ${{ steps.config.outputs.connection_settings }}
+        run: |
+          {
+            echo '### Tonk MCP'
+            printf '%s\n' "$CONNECTION_SETTINGS"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: mshick/add-pr-comment@v2
+        if: github.event_name == 'pull_request'
+        with:
+          message-id: mcp-preview
+          message: |
+            **MCP preview** · [run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+            ${{ steps.config.outputs.connection_settings }}
+
+  # The hosted agent end to end against this pull request's preview: an MCP
+  # SDK client does OAuth, and Playwright with a virtual passkey signs up and
+  # approves on /settings/agent. See "Testing end to end" in
+  # plans/2026-10-28-hosted-agent-peer.md.
+  agent-e2e:
+    name: Hosted agent end to end
+    needs: [deploy]
+    # Secrets do not reach pull requests from forks.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: tests/e2e/hosted-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install the client and browser
+        run: |
+          npm ci
+          npx --no-install playwright install --with-deps chromium
+      - name: Run against the preview
+        run: npm test
+        env:
+          TONK_E2E_ORIGIN: ${{ needs.deploy.outputs.provider }}
+          TONK_E2E_TRACE: ${{ runner.temp }}/agent-e2e-trace.zip
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: agent-e2e-trace
+          path: ${{ runner.temp }}/agent-e2e-trace.zip
+          if-no-files-found: ignore
+          retention-days: 7
+
   cleanup-preview-databases:
     if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
     runs-on: ubuntu-latest
@@ -358,11 +769,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - uses: wimpysworld/nothing-but-nix@main
+      - uses: wimpysworld/nothing-but-nix@baf7355748bb5651f08b839669d6bb39051b2874 # main before 153c2fb, whose /nix/tmp TMPDIR breaks the Nix installer
       - uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - name: Delete preview databases
+      - name: Delete preview databases and worker
         run: |
           set -euo pipefail
           for database in \
@@ -376,6 +787,16 @@ jobs:
                 wrangler d1 delete "$database" --skip-confirmation
             fi
           done
+          # The pull request's own worker, and with it its Durable Object
+          # namespace. A worker that was never deployed is nothing to delete.
+          worker="tonk-access-service-pr-${{ github.event.pull_request.number }}"
+          nix --accept-flake-config develop .#ci --command \
+            wrangler delete "$worker" --force \
+            || echo "No preview worker $worker to delete"
+          host="tonk-mcp-worker-pr-${{ github.event.pull_request.number }}"
+          nix --accept-flake-config develop .#ci --command \
+            wrangler delete "$host" --force \
+            || echo "No preview worker $host to delete"
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

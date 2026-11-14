@@ -45,7 +45,6 @@ submodule per route family in [`router/`](src/router):
   its own repository outside the named-repo namespace.
 - **Inspect** (`inspect/`): read-only views of branch state, remote/remote-branch
   status, and archive index blocks for debugging.
-- **Host/guest binding** (`host.rs`): the view iframe's route (see below).
 - **LSP** (`lsp.rs`, `lsp_env.rs`): a language-server surface merged into the
   router, carrying its own `LspHub` state and an SSE event stream.
 - **Migration** (`migration.rs`): `GET /api/migrate/repo-vs-profile`.
@@ -60,60 +59,30 @@ The router's shared state is `Arc<RwLock<TonkState>>`. `TonkState` owns:
   `reactor.repository(r).branch(b)` so subscription broadcasts happen
   automatically,
 - a `CommandRegistry<CommandEnv>` (also from `dialog-reactor`) of typed-Rust
-  command handlers fired by transient command concepts after a commit,
-- the view iframe bookkeeping (`view_bindings`).
+  command handlers fired by transient command concepts after a commit.
 
 `dialog-reactor` is the branch layer: it was extracted from this crate and is
 re-exported here as `tonk_worker::reactor` (and flattened), so `Reactor`,
 `CommandRegistry`, and friends are usable directly off this crate.
 
-## Guest authority
+## Session authority
 
-An accountless guest holds no membership. What it holds is an audience-open
-invite URL, retained locally, and one bounded delegation minted from it —
-`subject -> ... -> operator`, capped at `VISIT_TTL_SECONDS` (one hour) by
-`Invite::visit`. That bound never moves.
+Every presign is signed by the operator, a key the profile derives from its
+access branch under a fixed label (`src/session.rs`). The same profile on the
+same branch signs as the same operator across boots and renewals, so each branch
+it writes keeps one history lineage instead of starting a new one per boot.
+Spaces reach the operator through `space -> root -> device -> operator`.
 
-Because the bound never moves, the delegation is renewed rather than extended.
-Before any remote operation presigns (`pull`, `push`, `sync`, `sync_status`, and
-the sync drain), `ensure_session_authority` checks the signing session and every
-retained guest record. If the session or any guest is due, it rotates the
-operator once and replays every still-valid guest invite onto the new one: a
-fresh key means a fresh audience, which is what keeps the retired chain from
-being picked out of a content-addressed store that never deletes and never
-consults the clock. Durable spaces need no replay — they reach the operator
-through `space -> root -> device -> operator`, whose last hop the rotation
-re-mints anyway.
+What lapses is the last hop. The `profile -> operator` grant is bounded by
+`SESSION_TTL_SECONDS` and held only in memory. Before any remote operation
+presigns (`pull`, `push`, `sync`, `sync_status`, and the sync drain),
+`ensure_session_authority` checks it, and once it is within
+`RENEWAL_MARGIN_SECONDS` of lapsing re-issues it to the same operator with a
+later expiry.
 
-Each guest record therefore stores which operator its live chain is addressed to
-and when that chain lapses, alongside the URL. A record naming any other
-operator is due immediately, whatever its expiry says, which is what makes a
-service-worker restart heal on the next request instead of taking a 401. An
-invite that has itself expired is not replayed: a guest hop cannot outlive the
-chain it extends.
-
-Renewal is local — parse, mint, retain — and adds no request to the account or
-access service. Expiry and revocation stay where they were: the access service
-checks them on the next ordinary remote call. Renewal only decides which
-credential that call presents. And it is still not membership: explicit
-promotion (`POST /api/repository/{repo}/membership`) remains the only path from
-a guest to a durable member.
-
-## Host/guest routing model
-
-A view is rendered in a sandboxed iframe. Routing policy lives entirely in
-`on_fetch` / `route_for` (see [`worker.rs`](src/worker.rs)):
-
-- `/api/...` from an ordinary client routes through axum unchanged.
-- A registered guest iframe (recorded by client id against `{repo, branch}` via
-  `GET .../host/{host}/{entity}`) gets a virtual root: its subresource fetches
-  are rewritten under `/api/repository/{repo}/branch/{branch}/...`, so a fetch
-  for `/foo.js` lands inside its branch.
-- A view client hitting `/api/...` directly is rejected with a synthetic 404:
-  the data plane is not reachable from the iframe.
-
-Everything else passes through to the network (or the shell cache, via
-stale-while-revalidate in [`cache.rs`](src/cache.rs)).
+Renewal is local (a key derivation and a self-signed delegation) and adds no
+request to the account or access service. Expiry and revocation stay where they
+were: the access service checks them on the next ordinary remote call.
 
 ## Browser contracts
 
@@ -140,6 +109,7 @@ Successful sync responses are 2xx with disposition `completed`, `offline`, or
 | HTTP | code |
 | ---: | --- |
 | 403 | `CREDENTIAL_REVOKED` |
+| 403 | `ACCESS_DENIED` (no chain this peer holds reaches the space) |
 | 409 | `SYNC_CONFLICT` |
 | 503 | `SYNC_UNAVAILABLE` |
 | 502 | `UPSTREAM_ERROR` |

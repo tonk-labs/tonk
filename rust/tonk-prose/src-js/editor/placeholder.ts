@@ -1,6 +1,6 @@
 // Ghost-text placeholder, shown while the document is empty. The
-// text lives in plugin state (not a closure) so the shell can update
-// it after mount via a transaction meta — see `setPlaceholder` in
+// text lives in plugin state (not a closure) so the element can update
+// it after mount via a transaction meta: see `setPlaceholder` in
 // `index.ts`.
 
 import { Plugin, PluginKey } from "prosemirror-state";

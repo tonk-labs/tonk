@@ -10,15 +10,13 @@ use ::axum::{
     http::HeaderMap,
 };
 use axum::extract::Query as AxumQuery;
-use axum_wasm_macros::wasm_compat;
 use base64::Engine;
 use dialog_artifacts::{ArtifactSelector, Entity, Pick, Relation, Statement, Update, Value};
 use dialog_repository::RepositoryExt as _;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_macros::handler;
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -199,7 +197,7 @@ fn value_to_json(value: &Value) -> serde_json::Value {
 /// Handles claim assertion requests.
 ///
 /// POST /api/repository/{repo}/branch/{branch}/claim/assert/{entity}/{attr_ns}/{attr_name}
-#[wasm_compat]
+#[handler]
 pub async fn assert_claim(
     State(state): State<AppState>,
     Path(path): Path<AssertPath>,
@@ -231,8 +229,9 @@ pub async fn assert_claim(
     let value = parse_value(content_type, &body)?;
 
     // Build and commit the assertion through the reactor so
-    // subscriptions on this branch re-poll on success.
-    let tonk_state = state.write().await;
+    // subscriptions on this branch re-poll on success. The reactor's
+    // transactor serializes the commit, so a read guard is enough.
+    let tonk_state = state.read().await;
 
     let claim = RawClaim {
         the: attribute,
@@ -273,7 +272,7 @@ pub async fn assert_claim(
 /// Handles claim retraction requests.
 ///
 /// POST /api/repository/{repo}/branch/{branch}/claim/retract/{entity}/{attr_ns}/{attr_name}
-#[wasm_compat]
+#[handler]
 pub async fn retract_claim(
     State(state): State<AppState>,
     Path(path): Path<AssertPath>,
@@ -299,8 +298,9 @@ pub async fn retract_claim(
     let content_type = headers.get("content-type").and_then(|v| v.to_str().ok());
     let value = parse_value(content_type, &body)?;
 
-    // Build and commit the retraction using the transaction API
-    let tonk_state = state.write().await;
+    // Build and commit the retraction using the transaction API. The
+    // reactor's transactor serializes the commit, so a read guard is enough.
+    let tonk_state = state.read().await;
 
     // Parse attribute
     let attribute: Relation = attribute_str
@@ -346,7 +346,7 @@ pub async fn retract_claim(
 /// Handles claim query requests.
 ///
 /// GET /api/repository/{repo}/branch/{branch}/claim/select?the=namespace/name&of=entity
-#[wasm_compat]
+#[handler]
 pub async fn select_claims(
     State(state): State<AppState>,
     Path(params): Path<SelectPath>,

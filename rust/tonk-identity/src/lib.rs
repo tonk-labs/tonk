@@ -17,6 +17,7 @@
 pub type Error = anyhow::Error;
 
 pub mod account;
+pub mod agent;
 pub mod ceremony;
 pub mod clearance;
 pub mod custodian;

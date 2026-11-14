@@ -93,20 +93,51 @@ fn split_address(address: &str) -> Option<(&str, &str)> {
 }
 
 /// Rebuild an address from the `{domain}` and `{local}` path segments of
-/// a resolved `did:web` URL.
+/// a `did:web` URL.
 ///
-/// `did:web` resolution percent-decodes each path segment as it builds
-/// the URL, and the local part's own encoding is that same encoding, so
-/// the segments arrive here already decoded: `tag%2Balice` reaches the
-/// worker as `tag+alice`. The segments are therefore used as given, and
-/// must be read raw — running them through form decoding would turn that
-/// `+` into a space and the lookup would miss.
+/// A standard `did:web` resolver copies each DID segment into the URL
+/// as it stands, so the local part's own encoding reaches us intact:
+/// `tag%2Balice` arrives as `tag%2Balice`, and the router hands it over
+/// undecoded. Each segment is therefore percent-decoded here. Callers that
+/// spell the address raw -- `tag+alice` -- still resolve, since a raw `+`
+/// is not an escape and decodes to itself.
+///
+/// Decoding is strict `%XX` only. Form decoding would turn a `+` into a
+/// space and the lookup would miss.
+///
+/// `None` when a segment is empty, holds a malformed escape, decodes to
+/// invalid UTF-8, or holds an `@` or `/` once decoded: an `@` would make
+/// the split ambiguous, and a `/` cannot appear in a segment the router
+/// matched.
 ///
 /// The result is normalized, so a DID spelled with different casing than
 /// the stored row still resolves to it.
 pub fn address_from_segments(domain: &str, local: &str) -> Option<String> {
-    (!domain.is_empty() && !local.is_empty() && !domain.contains('@') && !local.contains('@'))
-        .then(|| normalize_email(&format!("{local}@{domain}")))
+    let domain = decode_segment(domain)?;
+    let local = decode_segment(local)?;
+    Some(normalize_email(&format!("{local}@{domain}")))
+}
+
+/// Percent-decode one path segment, refusing anything that could not have
+/// come from a single address component.
+fn decode_segment(segment: &str) -> Option<String> {
+    let bytes = segment.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = bytes.get(index + 1..index + 3)?;
+            let high = (hex[0] as char).to_digit(16)?;
+            let low = (hex[1] as char).to_digit(16)?;
+            decoded.push((high * 16 + low) as u8);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    let decoded = String::from_utf8(decoded).ok()?;
+    (!decoded.is_empty() && !decoded.contains(['@', '/'])).then_some(decoded)
 }
 
 /// The HTTP status a customer's registration state answers with.
@@ -208,12 +239,70 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_rebuilds_an_address_from_decoded_segments() {
-        // `tag%2Balice` reaches the worker already decoded.
+    fn it_rebuilds_an_address_from_encoded_segments() {
+        // What a standard `did:web` resolver sends for
+        // `did:web:host:customer:web.mail:tag%2Balice`.
+        assert_eq!(
+            address_from_segments("web.mail", "tag%2Balice").unwrap(),
+            "tag+alice@web.mail"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_rebuilds_an_address_from_raw_segments() {
+        // A raw `+` is not an escape, and is never read as a space.
         assert_eq!(
             address_from_segments("web.mail", "tag+alice").unwrap(),
             "tag+alice@web.mail"
         );
+    }
+
+    #[dialog_common::test]
+    fn it_normalizes_after_decoding() {
+        assert_eq!(
+            address_from_segments("web.mail", "TAG%2BAlice").unwrap(),
+            "tag+alice@web.mail"
+        );
+        // Lowercase hex decodes the same.
+        assert_eq!(
+            address_from_segments("web.mail", "tag%2balice").unwrap(),
+            "tag+alice@web.mail"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_decodes_a_non_ascii_local_part() {
+        assert_eq!(
+            address_from_segments("example.com", "jos%C3%A9").unwrap(),
+            "jos\u{e9}@example.com"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_refuses_a_separator_once_decoded() {
+        assert!(address_from_segments("example.com", "a%40b").is_none());
+        assert!(address_from_segments("example%40com", "jsmith").is_none());
+        assert!(address_from_segments("example.com", "a%2Fb").is_none());
+    }
+
+    #[dialog_common::test]
+    fn it_refuses_a_malformed_escape() {
+        assert!(address_from_segments("example.com", "a%").is_none());
+        assert!(address_from_segments("example.com", "a%4").is_none());
+        assert!(address_from_segments("example.com", "a%zzb").is_none());
+    }
+
+    #[dialog_common::test]
+    fn it_refuses_a_segment_that_decodes_to_invalid_utf8() {
+        assert!(address_from_segments("example.com", "a%FFb").is_none());
+        // A truncated two-byte sequence.
+        assert!(address_from_segments("example.com", "jos%C3").is_none());
+    }
+
+    #[dialog_common::test]
+    fn it_refuses_a_segment_that_decodes_to_nothing() {
+        // Not reachable through the router, but nothing here relies on it.
+        assert!(address_from_segments("example.com", "").is_none());
     }
 
     #[dialog_common::test]
@@ -222,24 +311,20 @@ mod tests {
             "jsmith@example.com",
             "tag+alice@web.mail",
             "a.b-c_d@sub.example.org",
-            // A literal `%`, which encodes to `%25`. Decoding it twice
-            // would yield a stray `%` and lose the rest of the segment.
+            // A literal `%`, which encodes to `%25` and decodes once back
+            // to itself.
             "a%b@example.com",
-            // A `/`, which would otherwise open a path segment and take
-            // the route apart.
-            "a/b@example.com",
             // Byte-wise encoding over UTF-8, so a non-ASCII local part
             // survives as its encoded bytes.
             "josé@example.com",
             "!#$&'*=?^`{|}~@example.com",
         ] {
             let did = customer_did("tonk.network", address).unwrap();
+            // A resolver copies the encoded segment into the URL as is.
             let encoded = did.rsplit(':').next().unwrap();
-            // Resolution decodes the segment before it reaches us.
-            let decoded = percent_decode(encoded);
             let domain = did.split(':').nth(4).unwrap();
             assert_eq!(
-                address_from_segments(domain, &decoded).unwrap(),
+                address_from_segments(domain, encoded).unwrap(),
                 address,
                 "round trip failed for {address}"
             );
@@ -256,7 +341,8 @@ mod tests {
 
     /// A `/` in a local part encodes to `%2F`, so the DID keeps one
     /// segment for the local part. Leaving it raw would split the path
-    /// and route the request somewhere else entirely.
+    /// and route the request somewhere else entirely. Like a quoted `@`,
+    /// such an address encodes but does not resolve.
     #[dialog_common::test]
     fn it_encodes_a_separator_that_would_break_the_path() {
         let did = customer_did("tonk.network", "a/b@example.com").unwrap();
@@ -295,25 +381,6 @@ mod tests {
         assert!(address_from_segments("", "jsmith").is_none());
         assert!(address_from_segments("example.com", "").is_none());
         assert!(address_from_segments("exa@mple.com", "jsmith").is_none());
-    }
-
-    /// Stands in for the percent-decoding `did:web` resolution performs
-    /// on each path segment before the request reaches this service.
-    fn percent_decode(segment: &str) -> String {
-        let bytes = segment.as_bytes();
-        let mut decoded = Vec::with_capacity(bytes.len());
-        let mut index = 0;
-        while index < bytes.len() {
-            if bytes[index] == b'%' && index + 2 < bytes.len() {
-                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap();
-                decoded.push(u8::from_str_radix(hex, 16).unwrap());
-                index += 3;
-            } else {
-                decoded.push(bytes[index]);
-                index += 1;
-            }
-        }
-        String::from_utf8(decoded).unwrap()
     }
 
     #[dialog_common::test]

@@ -2,7 +2,7 @@
   "name": "tonk-code",
   "version": "0.1.0",
   "private": true,
-  "description": "CodeMirror 6 web component bundle for the <tonk-code> custom element.",
+  "description": "The core of the library's <code-editor> and its language packs, over CodeMirror 6.",
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -23,6 +23,9 @@
     "@codemirror/lint": "^6.0.0",
     "@codemirror/lsp-client": "6.2.3",
     "@codemirror/state": "^6.4.1",
-    "@codemirror/view": "^6.28.0"
+    "@codemirror/view": "^6.28.0",
+    "@lezer/common": "^1.5.2",
+    "@lezer/highlight": "^1.2.3",
+    "@lezer/lr": "^1.4.10"
   }
 }

@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 # Opt-in until a released CLI supports the versioned invitation envelope.
-connection-invites = ["tonk-worker/connection-invites"]
+connection-invites = []
 helpers = [
     "dialog-common/helpers",
     "dep:thirtyfour",
@@ -18,8 +18,8 @@ helpers = [
     "dep:tempfile",
     "dep:tonk-access-service",
 ]
-integration-tests = ["helpers", "dialog-common/integration-tests", "tonk-worker/helpers"]
-web-integration-tests = ["helpers", "dialog-common/integration-tests", "tonk-worker/helpers"]
+integration-tests = ["helpers", "dialog-common/integration-tests"]
+web-integration-tests = ["helpers", "dialog-common/integration-tests"]
 
 [dependencies]
 async-trait = { workspace = true }
@@ -46,9 +46,7 @@ tonk-common = { workspace = true }
 tonk-host = { workspace = true }
 tonk-account = { workspace = true }
 tonk-identity = { workspace = true }
-tonk-portal = { workspace = true }
-tonk-schema = { workspace = true }
-tonk-worker = { workspace = true }
+tonk-site = { workspace = true }
 tonk-worker-api = { workspace = true }
 tonk-analytics = { workspace = true }
 url = { workspace = true }
@@ -81,11 +79,19 @@ dialog-ucan-core = { workspace = true }
 port_check = { workspace = true }
 thirtyfour = { workspace = true }
 tonk-access-service = { workspace = true, features = ["helpers"] }
+# The id a deployment ships a kernel under, for the tests of the kernels
+# sites pin.
+tonk-kernel-world = { workspace = true }
+# The wire form of the queries the e2e tests read a profile with.
+tonk-worker = { workspace = true, features = ["helpers"] }
 tokio = { workspace = true, features = ["io-util", "process"] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
 getrandom_0_3 = { workspace = true }
+# The service worker prints dialog's socket reports to the console.
+tracing = "0.1.44"
+tracing-subscriber = { workspace = true }
 
 [dependencies.web-sys]
 workspace = true
@@ -104,16 +110,20 @@ features = [
     "HtmlInputElement",
     "History",
     "Clipboard",
+    "console",
     "KeyboardEvent",
     "KeyboardEventInit",
     "HtmlScriptElement",
     "Location",
+    "MessageChannel",
     "MessageEvent",
+    "MessagePort",
     "Navigator",
     "Node",
     "Performance",
     "ServiceWorkerContainer",
     "Storage",
+    "UrlSearchParams",
     "VisibilityState",
     "Window",
 ]

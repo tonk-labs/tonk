@@ -5,11 +5,11 @@
 //! a grant. The caller supplies independently trusted routing and exact scopes.
 
 use anyhow::{Context, Result, ensure};
-use dialog_credentials::{DidKeyResolver, Ed25519Signer};
+use dialog_credentials::{DidKeyResolver, Ed25519Signer, Signer};
 use dialog_ucan::{Parameters, Scope};
 use dialog_ucan_core::{
-    DelegationChain, command::Command, delegation::chain::check_chain, subject::Subject,
-    time::Timestamp,
+    DelegationBuilder, DelegationChain, command::Command, delegation::chain::check_chain,
+    subject::Subject, time::Timestamp,
 };
 use dialog_varsig::{Did, Principal};
 use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
@@ -80,6 +80,24 @@ pub fn candidate_build_scopes(subject: &Did) -> Vec<Scope> {
     scopes
 }
 
+/// What an agent may do in a space it is granted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentAccess {
+    /// Pull: read the space's revision, index and blobs.
+    Read,
+    /// Pull and push: also publish revisions and blobs.
+    ReadWrite,
+}
+
+/// The scopes behind each [`AgentAccess`] level: the `get` half of
+/// [`candidate_build_scopes`] to read, all of it to read and write.
+pub fn agent_grant_scopes(subject: &Did, access: AgentAccess) -> Vec<Scope> {
+    candidate_build_scopes(subject)
+        .into_iter()
+        .filter(|scope| access == AgentAccess::ReadWrite || scope.command.0[1] == "get")
+        .collect()
+}
+
 /// Stable grant-group identity shared by browser management and CLI receipts.
 pub fn grant_set_id(subject: &str, recipient: &str, grant_cids: &[String]) -> String {
     let mut grant_cids = grant_cids.to_vec();
@@ -114,6 +132,42 @@ pub struct SpaceGrantBundle {
 }
 
 impl SpaceGrantBundle {
+    /// Grant `scopes` to `recipient`'s exact key: `signer` extends each of
+    /// `ancestors`, the chain beside each scope, with a delegation of that
+    /// scope that expires at `expires` and names `remote` as the space's home,
+    /// and the grants are then [validated](Self::validate). The recipient's
+    /// private key is never seen.
+    pub async fn issue(
+        recipient: &Did,
+        signer: Signer,
+        ancestors: Vec<DelegationChain>,
+        scopes: &[Scope],
+        remote: &Url,
+        now: Timestamp,
+        expires: Timestamp,
+    ) -> Result<Self> {
+        require_grant_deadline(&ancestors, expires)?;
+        ensure!(
+            ancestors.len() == scopes.len(),
+            "issuer proof count mismatch"
+        );
+        let mut chains = Vec::new();
+        for (chain, scope) in ancestors.into_iter().zip(scopes) {
+            let leaf = DelegationBuilder::new()
+                .issuer(signer.clone())
+                .audience(recipient)
+                .subject(scope.subject.clone())
+                .command(scope.command.0.clone())
+                .policy(scope.policy())
+                .expiration(expires)
+                .meta(crate::home_address_meta(remote))
+                .try_build()
+                .await?;
+            chains.push(chain.push(leaf)?);
+        }
+        Self::validate(chains, recipient, scopes, remote, now).await
+    }
+
     /// Validate signatures, rooted chains, exact leaf rights and bounded expiry.
     ///
     /// `trusted_remote` must come from the existing independently verified service

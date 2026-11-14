@@ -12,9 +12,8 @@ cd "$UI_ROOT"
 HTML=$(mktemp "$UI_ROOT/.connection-test.XXXXXX.html")
 trap 'rm -f "$HTML"' EXIT HUP INT TERM
 # Trunk's global --features also affects tonk-guest, which does not expose this
-# worker feature. Select it only on the two tonk-ui binary build pipelines.
+# feature. Select it only on the tonk-ui binary's build pipeline.
 sed -e 's/data-bin="ui"/data-bin="ui" data-cargo-features="connection-invites"/' \
-    -e 's/data-bin="worker"/data-bin="worker" data-cargo-features="connection-invites"/' \
     index.html > "$HTML"
 env -u NO_COLOR trunk build "$HTML" --html-output index.html \
     --dist "$ARTIFACT" --offline --release --color never

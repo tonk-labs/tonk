@@ -15,7 +15,7 @@ import { pack } from "./editor/hlc";
 
 function host() {
   const { document } = parseHTML("<!doctype html><html><body></body></html>");
-  const el = document.createElement("tonk-prose");
+  const el = document.createElement("prose-editor");
   document.body.appendChild(el);
   return el;
 }

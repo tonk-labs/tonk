@@ -1,0 +1,265 @@
+# version-control — browse a space's revision history and discuss its checkpoints.
+#
+# Dialog already keeps the history: every commit writes a signed revision
+# record into the branch's own tree, and dialog projects each record's fields
+# at query time through built-in rules (`dialog.revision/*`). Nothing here
+# stores a revision. The concepts below only NAME those derived relations so a
+# view can render them, the same history `tonk log` lists from the CLI.
+#
+# What this component adds is the conversation around a revision: a comment
+# is its own entity pointing at the revision it is about. A revision entity is
+# content-derived and the same on every replica, so a comment written on one
+# device lands on the same checkpoint everywhere the space syncs to.
+#
+# The page lives at `/console/history`, and `/console/history/<revision>`
+# selects one. `<vc-history>` draws the graph: the view renders every
+# revision, edge, head, comment and member as a hidden data row inside it
+# (data in), and it reports a new or withdrawn comment as a bubbling event
+# bound to a command below (actions out).
+#
+# A comment is itself a write, so it mints a revision of its own. Git keeps
+# notes on a separate ref for exactly this reason; here they share the
+# branch, so the graph shows them as ordinary commits.
+
+# The history dialog derives. None of these attributes is ever stored, and
+# the `dialog.` namespace is reserved, so nothing can assert them.
+
+concept!: &version-control/revision
+  this: tonk:version-control/revision
+  description: |
+    A revision of the branch, projected from its signed record. `this` is the
+    revision entity, derived from its version and the same on every replica.
+    Records that do not verify are not projected, so a forged attribution
+    never shows up here.
+  with:
+    issuer:
+      description: The operator (session key) that minted the revision.
+      the: dialog.revision/issuer
+      as: entity
+    authority:
+      description: The profile the issuer acted for.
+      the: dialog.revision/authority
+      as: entity
+    edition:
+      description: |
+        Causal depth: one more than the deepest parent. Every revision sorts
+        after the revisions it built on.
+      the: dialog.revision/edition
+      as: natural:64
+
+concept!: &version-control/parent
+  this: tonk:version-control/parent
+  description: |
+    The revisions a revision was built on: one for a commit, two for a merge,
+    none for the first.
+  with:
+    parent:
+      description: A revision this one was built on.
+      the: dialog.revision/parent
+      as: entity
+      pick: :all
+
+concept!: &version-control/head
+  this: tonk:version-control/head
+  description: Where a branch points now. `this` is the branch.
+  with:
+    name:
+      description: The branch's name.
+      the: dialog.branch/name
+      as: text
+    revision:
+      description: The revision the branch points at.
+      the: dialog.branch/revision
+      as: entity
+
+# Comments on a checkpoint.
+
+concept!: &version-control/comment
+  this: tonk:version-control/comment
+  description: A remark someone left on one revision of the space.
+  with:
+    revision:
+      description: The revision the comment is about.
+      the: xyz.tonk.version-control.comment/revision
+      as: entity
+    body:
+      description: What the comment says.
+      the: xyz.tonk.version-control.comment/body
+      as: text
+    time:
+      description: When it was written, in milliseconds since the Unix epoch.
+      the: xyz.tonk.version-control.comment/time
+      as: float
+    author:
+      description: The profile that wrote it, the same identity a revision's `authority` names.
+      the: xyz.tonk.version-control.comment/author
+      as: entity
+
+# Who is writing, read off the session the rule runs in. Pinned to the
+# session entity dialog stamps before every query.
+concept!: &version-control/session
+  this: tonk:version-control/session
+  description: The profile the current session acts for.
+  with:
+    profile:
+      description: The profile, as an entity.
+      the: dialog.session/profile
+      as: entity
+
+command!: &version-control/comment-on
+  description: Leave a comment on a revision.
+  with:
+    revision:
+      description: The revision to comment on.
+      the: xyz.tonk.version-control.comment-on/revision
+      as: entity
+    body:
+      description: What the comment says.
+      the: xyz.tonk.version-control.comment-on/body
+      as: text
+    time:
+      description: When it was written, in milliseconds since the Unix epoch.
+      the: xyz.tonk.version-control.comment-on/time
+      as: float
+
+# The comment takes the command's own entity: it is derived from the
+# command's content, and the time in it makes every comment distinct.
+rule!:
+  description: A comment-on becomes a comment by whoever asked.
+  assert!: version-control/comment
+  when:
+    - assert: version-control/comment-on
+      where: { this: ?this, revision: ?revision, body: ?body, time: ?time }
+    - assert: version-control/session
+      where: { profile: ?author }
+
+command!: &version-control/uncomment
+  description: Withdraw a comment you left on a revision.
+  with:
+    comment:
+      description: The comment to withdraw.
+      the: xyz.tonk.version-control.uncomment/comment
+      as: entity
+
+# The command withdraws only a comment the asking session's profile wrote.
+# That keeps the button honest; it is not an access boundary, since anyone
+# who can write to the space can retract the comment's facts directly.
+rule!:
+  description: An uncomment withdraws the asker's own comment.
+  retract!: version-control/comment
+  when:
+    - assert: version-control/uncomment
+      where: { comment: ?this }
+    - assert: version-control/comment
+      where: { this: ?this, revision: ?revision, body: ?body, time: ?time, author: ?author }
+    - assert: version-control/session
+      where: { profile: ?author }
+
+event!: &on/vc-comment
+  type: "vc-comment"
+  where:
+    revision: ".detail.revision"
+    body: ".detail.body"
+    time: ".detail.time"
+
+event!: &on/vc-uncomment
+  type: "vc-uncomment"
+  where:
+    comment: ".detail.comment"
+
+# The rows `<vc-history>` reads. Each is an empty element whose attributes
+# carry one row; the element never shows them.
+
+view!:
+  this: version-control/revision
+  show:
+    vc-row: |
+      <i class="vc-revision-row" html:data-revision={this} html:data-edition={edition}
+        html:data-issuer={issuer} html:data-authority={authority}></i>
+
+view!:
+  this: version-control/parent
+  show:
+    vc-row: |
+      <i class="vc-parent-row" html:data-revision={this} html:data-parent={parent}></i>
+
+view!:
+  this: version-control/head
+  show:
+    vc-row: |
+      <i class="vc-head-row" html:data-branch={this} html:data-name={name} html:data-revision={revision}></i>
+
+view!:
+  this: version-control/comment
+  show:
+    vc-row: |
+      <i class="vc-comment-row" html:data-comment={this} html:data-revision={revision}
+        html:data-body={body} html:data-time={time} html:data-author={author}></i>
+
+view!:
+  this: version-control/session
+  show:
+    vc-row: |
+      <i class="vc-session-row" html:data-profile={profile}></i>
+
+# Members name the profiles that wrote revisions and comments, when a
+# member's account is the profile itself.
+view!:
+  this: member/account
+  show:
+    vc-row: |
+      <i class="vc-member-row" html:data-member={this} html:data-name={name}></i>
+
+# The console page: `/console/history`, or one revision selected at
+# `/console/history/<revision>`. One route model serves both, so the
+# revision is optional.
+concept!: &version-control/console
+  this: tonk:version-control/console
+  description: The history console (`/console/history[/<revision>]`).
+  with:
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      as: text
+  maybe:
+    entity:
+      description: The selected revision from the path, picked off the site entity.
+      the: xyz.tonk.site/entity
+      as: entity
+
+view!:
+  this: tonk:version-control/console
+  show:
+    ui: !include/text ./version-control/console.html
+
+route!:
+  this: tonk:version-control/route/history
+  path: "/console/history"
+  concept: tonk:version-control/console
+
+route!:
+  this: tonk:version-control/route/revision
+  path: "/console/history/{*entity}"
+  concept: tonk:version-control/console
+
+element!: &vc-history
+  description: "Draws a branch's revision graph from hidden data rows, with a detail pane for the selected revision and its comments."
+  attribute:
+    selected: ""
+    branch: "main"
+    base: "/console/history"
+  method:
+    connected: !include/text ./version-control/connected.js
+    disconnected: !include/text ./version-control/disconnected.js
+    attribute-changed: !include/text ./version-control/attribute-changed.js
+    schedule: !include/text ./version-control/schedule.js
+    read: !include/text ./version-control/read.js
+    layout: !include/text ./version-control/layout.js
+    render: !include/text ./version-control/render.js
+    detail: !include/text ./version-control/detail.js
+    rails: !include/text ./version-control/rails.js
+    navigate: !include/text ./version-control/navigate.js

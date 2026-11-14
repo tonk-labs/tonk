@@ -19,6 +19,7 @@ serde = { workspace = true, features = ["derive"] }
 serde-wasm-bindgen = { workspace = true }
 serde_json = { workspace = true }
 serde_ipld_dagjson = { workspace = true }
+tonk-common = { workspace = true }
 tonk-host = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-schema = { workspace = true }
@@ -45,6 +46,9 @@ web-sys = { workspace = true, features = [
     "HtmlIFrameElement",
     "HtmlScriptElement",
     "HtmlTemplateElement",
+    "IntersectionObserver",
+    "IntersectionObserverEntry",
+    "IntersectionObserverInit",
     "KeyboardEvent",
     "MouseEvent",
     "MutationObserver",
@@ -88,11 +92,3 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(dialog_test_wasm_integration)',
     'cfg(feature, values("web-integration-tests"))',
 ] }
-
-# The real worker, for the full-stack test: a router, the browser<->axum
-# conversion the service worker itself uses, and a real `TonkState`.
-# wasm-only and dev-only — nothing in the shipped crate touches it.
-[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-tonk-worker = { workspace = true, features = ["helpers"] }
-tower = { workspace = true }
-axum = { workspace = true }

@@ -19,6 +19,7 @@ use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
 use crate::domain::route::{Concept as RoutePathConcept, Path as RouteTablePath};
+use crate::domain::route_asset::{Asset as AssetRouteAsset, Path as AssetRoutePath};
 use crate::domain::route_http::{Body as HttpRouteBody, Path as HttpRoutePath};
 use crate::domain::site::{
     Anchor, Branch, BranchEntity, Concept as SiteConcept, Path, ProfileBranch, Replica,
@@ -213,6 +214,18 @@ pub struct HttpRoute {
     pub path: HttpRoutePath,
     /// The response's body.
     pub body: HttpRouteBody,
+}
+
+/// A route answered with an asset of the space: a path pattern and the blob
+/// whose bytes the worker responds with, under the asset's media type.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AssetRoute {
+    /// The route's entity.
+    pub this: Entity,
+    /// The path pattern.
+    pub path: AssetRoutePath,
+    /// The asset that answers it.
+    pub asset: AssetRouteAsset,
 }
 
 /// A seed-update check IN FLIGHT on this device, keyed on the replica.

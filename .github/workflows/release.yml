@@ -13,7 +13,10 @@ name: 'Release'
 # pre-release.
 #
 # This workflow builds the CLI from the tag and attaches it to the tag's
-# GitHub release. A stable release becomes GitHub's `latest`, which is what
+# GitHub release. Desktop is not released from tags yet: until it ships to
+# production, only the nightly build from `main` is published
+# (`desktop-dev.yml`). Calling `desktop-release.yml` with `channel: stable`
+# here builds the tonk.network variant. A stable release becomes GitHub's `latest`, which is what
 # `install.sh` and `tonk update` resolve for the stable channel. A staging
 # release also replaces the rolling `tonk-staging` release, which the
 # staging channel resolves.
@@ -57,7 +60,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/resolve-release
-      - uses: wimpysworld/nothing-but-nix@main
+      - uses: wimpysworld/nothing-but-nix@baf7355748bb5651f08b839669d6bb39051b2874 # main before 153c2fb, whose /nix/tmp TMPDIR breaks the Nix installer
         if: runner.os == 'Linux'
       - uses: cachix/install-nix-action@v31
         with:
@@ -90,6 +93,55 @@ jobs:
           name: ${{ matrix.artifact-name }}
           path: artifacts/tonk
 
+  # The local peer that agent-host plugins launch. Built and signed exactly
+  # like the CLI; the plugin's launcher verifies it against checksums.txt.
+  build-peer:
+    name: 'Build ${{ matrix.artifact-name }}'
+    needs: ['resolve']
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact-name: tonk-agent-peer-linux-x86_64
+          - os: macos-latest
+            artifact-name: tonk-agent-peer-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/resolve-release
+      - uses: wimpysworld/nothing-but-nix@baf7355748bb5651f08b839669d6bb39051b2874 # main before 153c2fb, whose /nix/tmp TMPDIR breaks the Nix installer
+        if: runner.os == 'Linux'
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: 'Build tonk-agent-peer'
+        run: nix build --accept-flake-config .#tonk-agent-peer
+      - name: 'Stage tonk-agent-peer artifact'
+        run: |
+          mkdir -p artifacts
+          cp result/bin/tonk-agent-peer artifacts/tonk-agent-peer
+          chmod 0755 artifacts/tonk-agent-peer
+      - name: 'Sign and notarize macOS artifact'
+        if: runner.os == 'macOS'
+        uses: ./.github/actions/sign-notarize-macos
+        with:
+          binary-path: artifacts/tonk-agent-peer
+          certificate-p12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          app-store-connect-key: ${{ secrets.APP_STORE_CONNECT_KEY_P8 }}
+          app-store-connect-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          app-store-connect-issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: artifacts/tonk-agent-peer
+
   artifact-smoke:
     needs: ['resolve', 'build-cli']
     uses: ./.github/workflows/cli-smoke.yml
@@ -99,15 +151,19 @@ jobs:
 
   publish:
     name: 'Publish GitHub release'
-    needs: ['resolve', 'build-cli', 'artifact-smoke']
+    needs: ['resolve', 'build-cli', 'build-peer', 'artifact-smoke']
     runs-on: ubuntu-latest
+    timeout-minutes: 200
     permissions:
+      actions: read
       contents: write
     env:
       VERSION: ${{ needs.resolve.outputs.version }}
       CHANNEL: ${{ needs.resolve.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/require-tag-verification
+
       - uses: actions/download-artifact@v4
         with:
           name: tonk-macos-arm64
@@ -116,6 +172,14 @@ jobs:
         with:
           name: tonk-linux-x86_64
           path: artifacts/linux-x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-agent-peer-macos-arm64
+          path: artifacts/peer-macos-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-agent-peer-linux-x86_64
+          path: artifacts/peer-linux-x86_64
       - name: Prepare release assets
         run: |
           set -euo pipefail
@@ -127,8 +191,15 @@ jobs:
           install -m 0755 artifacts/linux-x86_64/tonk tonk
           tar -czf tonk-linux-x86_64.tar.gz tonk
           rm tonk
-          # Checksums the installer verifies before installing.
-          sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz > checksums.txt
+          install -m 0755 artifacts/peer-macos-arm64/tonk-agent-peer tonk-agent-peer
+          tar -czf tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer
+          rm tonk-agent-peer
+          install -m 0755 artifacts/peer-linux-x86_64/tonk-agent-peer tonk-agent-peer
+          tar -czf tonk-agent-peer-linux-x86_64.tar.gz tonk-agent-peer
+          rm tonk-agent-peer
+          # Checksums the installer and the plugin launcher verify.
+          sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz \
+            tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer-linux-x86_64.tar.gz > checksums.txt
           # Release identity for `tonk update`.
           cat > manifest.json <<EOF
           {
@@ -150,7 +221,7 @@ jobs:
           generate_release_notes: true
           append_body: true
           body: |
-            **Install (macOS / Linux):**
+            **Install CLI (macOS / Linux):**
             ```
             curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.sh \
               | TONK_RELEASE=${{ github.ref_name }} sh
@@ -162,6 +233,8 @@ jobs:
           files: |
             tonk-macos-arm64.tar.gz
             tonk-linux-x86_64.tar.gz
+            tonk-agent-peer-macos-arm64.tar.gz
+            tonk-agent-peer-linux-x86_64.tar.gz
             checksums.txt
             manifest.json
             install.sh
@@ -181,11 +254,11 @@ jobs:
         with:
           tag_name: tonk-staging
           target_commitish: ${{ github.sha }}
-          name: tonk CLI (staging)
+          name: tonk (staging)
           body: |
-            Rolling staging release of the tonk CLI, currently ${{ github.ref_name }}.
+            Rolling staging release of Tonk CLI, currently ${{ github.ref_name }}.
 
-            **Install this pre-release (macOS / Linux):**
+            **Install CLI pre-release (macOS / Linux):**
             ```
             curl -fsSL https://github.com/${{ github.repository }}/releases/download/tonk-staging/install.sh | TONK_CHANNEL=staging sh
             ```
@@ -197,6 +270,8 @@ jobs:
           files: |
             tonk-macos-arm64.tar.gz
             tonk-linux-x86_64.tar.gz
+            tonk-agent-peer-macos-arm64.tar.gz
+            tonk-agent-peer-linux-x86_64.tar.gz
             checksums.txt
             manifest.json
             install.sh

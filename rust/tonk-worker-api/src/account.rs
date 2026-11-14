@@ -4,6 +4,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::PasskeyMetadata;
 
+/// Split an address into the `(domain, local)` pair the access service's
+/// `/customer/{domain}/{local}/did.json` lookup names, or `None` when it is
+/// not one. A local part with `/` would split the route and one with `@` is
+/// ambiguous, so both are refused rather than sent to produce a 404.
+pub fn split_address(email: &str) -> Option<(String, String)> {
+    let trimmed = email.trim();
+    if trimmed.len() > 254 {
+        return None;
+    }
+    let (local, domain) = trimmed.rsplit_once('@')?;
+    if local.is_empty() || domain.is_empty() || domain.contains('@') || local.contains('/') {
+        return None;
+    }
+    Some((domain.to_ascii_lowercase(), local.to_ascii_lowercase()))
+}
+
 /// Verified facts shown on the linked account dashboard.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

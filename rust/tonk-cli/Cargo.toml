@@ -42,6 +42,7 @@ dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-csv = { workspace = true }
+dialog-did-web = { workspace = true }
 dialog-effects = { workspace = true }
 dialog-peer = { workspace = true }
 dialog-query = { workspace = true }

@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Join a Tonk space</title>
+    <style>
+      /* The ask card of Tonk's in-agent system (gooey in-agent/in-agent.css):
+         ink fills the host's container; tokens live on .tonk. */
+      html,
+      body {
+        margin: 0;
+        background: transparent;
+      }
+      .tonk {
+        --tonk-ink: #38182a;
+        --tonk-ink-soft: #5b4953;
+        --tonk-paper: #f7f6f5;
+        --tonk-rule: #c5babf;
+        --tonk-fg: var(--tonk-ink);
+        --tonk-fg-soft: var(--tonk-ink-soft);
+        --tonk-bg: var(--tonk-paper);
+        --tonk-line: var(--tonk-rule);
+        --tonk-tag: rgb(56 24 42 / 10%);
+        --tonk-wash: rgb(56 24 42 / 6%);
+        --tonk-wash-press: rgb(56 24 42 / 12%);
+        --tonk-wash-solid: rgb(247 246 245 / 16%);
+        --tonk-cond: 'IBM Plex Sans Condensed', 'Arial Narrow', sans-serif;
+        --tonk-pad: 12px;
+        --tonk-line-h: 30px;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        background: var(--tonk-bg);
+        color: var(--tonk-fg);
+        font: 400 14px/1.35 var(--tonk-cond);
+        -webkit-font-smoothing: antialiased;
+      }
+      .tonk *,
+      .tonk *::before,
+      .tonk *::after {
+        box-sizing: border-box;
+      }
+      .tonk--ask {
+        --tonk-fg: var(--tonk-paper);
+        --tonk-fg-soft: #c9bec4;
+        --tonk-bg: var(--tonk-ink);
+        --tonk-line: rgb(247 246 245 / 22%);
+        --tonk-tag: rgb(247 246 245 / 18%);
+        --tonk-wash: rgb(247 246 245 / 10%);
+        --tonk-wash-press: rgb(247 246 245 / 18%);
+        --tonk-wash-solid: rgb(56 24 42 / 14%);
+      }
+      .tonk--tell {
+        box-shadow: inset 0 3px 0 var(--tonk-ink);
+        padding-top: 3px;
+      }
+      .tonk[hidden] {
+        display: none;
+      }
+      .tonk-disc {
+        flex: none;
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--tonk-fg);
+      }
+      .tonk-disc[data-state='hollow'] {
+        background: none;
+        box-shadow: inset 0 0 0 1.5px var(--tonk-fg);
+      }
+      .tonk-disc[data-state='saving'] {
+        background: linear-gradient(90deg, var(--tonk-fg) 50%, transparent 50%);
+        box-shadow: inset 0 0 0 1.5px var(--tonk-fg);
+        animation: tonk-turn 1.2s linear infinite;
+      }
+      .tonk-disc[data-state='broken'] {
+        background: none;
+        border: 1.5px dashed var(--tonk-fg);
+      }
+      @keyframes tonk-turn {
+        to {
+          rotate: 1turn;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .tonk-disc[data-state='saving'] {
+          animation: none;
+        }
+      }
+      .tonk-head {
+        min-height: var(--tonk-line-h);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 4px 0 var(--tonk-pad);
+        font-size: 13px;
+        white-space: nowrap;
+      }
+      .tonk-space {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-weight: 600;
+      }
+      .tonk-role {
+        flex: none;
+        margin-left: auto;
+        padding-right: 8px;
+        color: var(--tonk-fg-soft);
+      }
+      .tonk-say {
+        margin: 0;
+        padding: 6px var(--tonk-pad) 2px;
+        font-size: 15px;
+        text-wrap: pretty;
+      }
+      .tonk--ask .tonk-say {
+        font-size: 16px;
+        font-weight: 600;
+        line-height: 1.25;
+        text-wrap: balance;
+      }
+      .tonk-ledger {
+        margin: 0;
+        padding: 6px var(--tonk-pad) 8px;
+        display: grid;
+        grid-template-columns: minmax(72px, 104px) minmax(0, 1fr);
+        gap: 2px 10px;
+        font-size: 13px;
+      }
+      .tonk-ledger dt {
+        color: var(--tonk-fg-soft);
+      }
+      .tonk-ledger dd {
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+      .tonk-choice {
+        margin: 0;
+        padding: 0 var(--tonk-pad) 6px;
+        border: 0;
+        display: grid;
+        gap: 4px;
+      }
+      .tonk-choice legend {
+        padding: 0 0 2px;
+        color: var(--tonk-fg-soft);
+        font-size: 13px;
+      }
+      .tonk-option {
+        display: grid;
+        grid-template-columns: 18px minmax(0, 1fr);
+        align-items: baseline;
+        gap: 6px;
+        padding: 5px 8px;
+        border-radius: 6px;
+        box-shadow: inset 0 0 0 1px var(--tonk-line);
+        cursor: pointer;
+      }
+      .tonk-option:hover {
+        background: var(--tonk-wash);
+      }
+      .tonk-option:has(input:checked) {
+        box-shadow: inset 0 0 0 1.5px var(--tonk-fg);
+      }
+      .tonk-option:has(input:disabled) {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .tonk-option:has(input:disabled):hover {
+        background: none;
+      }
+      .tonk-option input {
+        margin: 0;
+        accent-color: var(--tonk-paper);
+      }
+      .tonk-option b {
+        font-weight: 600;
+      }
+      .tonk-option span span {
+        color: var(--tonk-fg-soft);
+      }
+      .tonk-fine {
+        margin: 0;
+        padding: 0 var(--tonk-pad) 8px;
+        color: var(--tonk-fg-soft);
+        font-size: 12.5px;
+        text-wrap: pretty;
+      }
+      .tonk-acts {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px 8px;
+        padding: 4px var(--tonk-pad) var(--tonk-pad);
+      }
+      .tonk-btn {
+        appearance: none;
+        height: 30px;
+        display: inline-flex;
+        align-items: center;
+        padding: 0 12px;
+        border: 0;
+        border-radius: 6px;
+        background: var(--tonk-fg);
+        color: var(--tonk-bg);
+        font: inherit;
+        font-size: 14px;
+        white-space: nowrap;
+        cursor: pointer;
+        transition:
+          scale 150ms ease,
+          background-color 150ms ease;
+      }
+      .tonk-btn:hover {
+        background-image: linear-gradient(var(--tonk-wash-solid), var(--tonk-wash-solid));
+      }
+      .tonk-btn:active {
+        scale: 0.96;
+      }
+      .tonk-btn--ring {
+        background: transparent;
+        color: var(--tonk-fg);
+        box-shadow: inset 0 0 0 1px var(--tonk-fg);
+      }
+      .tonk-btn--ring:hover {
+        background: var(--tonk-wash);
+        background-image: none;
+      }
+      .tonk-btn[disabled] {
+        opacity: 0.45;
+        cursor: not-allowed;
+        scale: 1;
+      }
+      .tonk :focus-visible {
+        outline: 2px solid var(--tonk-fg);
+        outline-offset: 2px;
+      }
+      .tonk-bot {
+        display: inline-block;
+        margin-left: 4px;
+        padding: 0 3px;
+        border-radius: 3px;
+        background: var(--tonk-tag);
+        color: var(--tonk-fg);
+        font: 500 11px/15px var(--tonk-cond);
+        letter-spacing: 0.02em;
+        vertical-align: 1px;
+        white-space: nowrap;
+      }
+      .tonk-strip {
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 2px 6px;
+        min-height: var(--tonk-line-h);
+        padding: 4px var(--tonk-pad);
+        font-size: 13px;
+      }
+      .tonk-strip .tonk-receipt {
+        flex: 1;
+      }
+      @media (pointer: coarse) {
+        .tonk-btn {
+          height: 44px;
+        }
+        .tonk-head {
+          min-height: 40px;
+        }
+        .tonk-option {
+          padding: 10px 8px;
+        }
+      }
+      @media (max-width: 480px) {
+        .tonk-ledger {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 0;
+        }
+        .tonk-ledger dd + dt {
+          margin-top: 4px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <section class="tonk tonk-strip" id="wait" aria-label="Tonk">
+      <span class="tonk-disc" data-state="hollow"></span>
+      <span class="tonk-receipt">reading the invitation</span>
+    </section>
+
+    <form class="tonk tonk--ask" id="ask" hidden>
+      <header class="tonk-head">
+        <span class="tonk-disc" data-state="hollow"></span>
+        <span class="tonk-space" data-name></span>
+        <span class="tonk-role">invitation</span>
+      </header>
+      <p class="tonk-say">Let <span data-agent></span><span class="tonk-bot">bot</span> join <span data-name></span></p>
+      <dl class="tonk-ledger">
+        <dt>who joins</dt>
+        <dd><span data-agent></span><span class="tonk-bot">bot</span>, this chat's agent, not you</dd>
+        <dt>access to</dt>
+        <dd>the whole space</dd>
+      </dl>
+      <fieldset class="tonk-choice">
+        <legend>what it may do</legend>
+        <label class="tonk-option">
+          <input type="radio" name="access" value="read" checked />
+          <span><b>read</b> <span>· see and search the space</span></span>
+        </label>
+        <label class="tonk-option" id="write">
+          <input type="radio" name="access" value="write" />
+          <span><b>read and write</b> <span>· also add and change content</span></span>
+        </label>
+      </fieldset>
+      <p class="tonk-fine" id="fine">
+        It acts as itself, under its own name. Remove it any time from your agents in Tonk,
+        with your passkey. Removing it does not end this link: whoever has the link can still
+        use it.
+      </p>
+      <div class="tonk-acts">
+        <button type="submit" class="tonk-btn" id="join">let it join</button>
+        <button type="button" class="tonk-btn tonk-btn--ring" id="no">not now</button>
+      </div>
+    </form>
+
+    <section class="tonk tonk-strip" id="done" hidden aria-live="polite">
+      <span class="tonk-disc"></span>
+      <span class="tonk-receipt"></span>
+    </section>
+
+    <section class="tonk tonk--tell" id="tell" hidden role="alert">
+      <header class="tonk-head">
+        <span class="tonk-disc" data-state="broken"></span>
+        <span class="tonk-space" data-name></span>
+        <span class="tonk-role">not joined</span>
+      </header>
+      <p class="tonk-say" id="problem"></p>
+      <div class="tonk-acts" id="retry" hidden>
+        <button type="button" class="tonk-btn tonk-btn--ring" id="again">try again</button>
+      </div>
+    </section>
+
+    <script>
+      (() => {
+        const $ = (selector) => document.querySelector(selector),
+          ask = $('#ask'),
+          done = $('#done'),
+          tell = $('#tell'),
+          wait = $('#wait'),
+          pending = new Map();
+        let offer,
+          rpcId = 0;
+
+        function rpc(method, params) {
+          return new Promise((resolve, reject) => {
+            const id = ++rpcId;
+            pending.set(id, { resolve, reject });
+            parent.postMessage({ jsonrpc: '2.0', id, method, params }, '*');
+          });
+        }
+        function notify(method, params) {
+          parent.postMessage({ jsonrpc: '2.0', method, params }, '*');
+        }
+        function size() {
+          notify('ui/notifications/size-changed', {
+            height: Math.ceil(document.documentElement.getBoundingClientRect().height),
+          });
+        }
+        new ResizeObserver(size).observe(document.body);
+
+        function show(card) {
+          for (const each of [wait, ask, done, tell]) each.hidden = each !== card;
+        }
+        function fill(selector, text) {
+          for (const each of document.querySelectorAll(selector)) each.textContent = text;
+        }
+        function strip(text, state) {
+          const disc = done.querySelector('.tonk-disc');
+          if (state) disc.dataset.state = state;
+          else delete disc.dataset.state;
+          done.querySelector('.tonk-receipt').replaceChildren(...text);
+          show(done);
+        }
+        function bot(name) {
+          const tag = document.createElement('span');
+          tag.className = 'tonk-bot';
+          tag.textContent = 'bot';
+          return [document.createTextNode(name), tag];
+        }
+        function problem(message, retry) {
+          $('#problem').textContent = message;
+          $('#retry').hidden = !retry;
+          show(tell);
+        }
+        // Tell the model what the person decided, so the next turn knows.
+        async function tellModel(text, message) {
+          try {
+            await rpc('ui/update-model-context', { content: [{ type: 'text', text }] });
+          } catch {}
+          if (message)
+            try {
+              await rpc('ui/message', { role: 'user', content: [{ type: 'text', text: message }] });
+            } catch {}
+        }
+
+        // What removing the agent does, and what it leaves alone.
+        const REMOVAL =
+          'Remove it any time from your agents in Tonk, with your passkey. Removing it does ' +
+          'not end this link: whoever has the link can still use it.';
+
+        // Which options the person may pick: write only where the link
+        // allows it, read only where the agent does not hold it already.
+        function choose() {
+          $('#write input').disabled = !offer.write;
+          $('input[value="read"]').disabled = !!offer.upgrade;
+        }
+        function present(data) {
+          offer = data;
+          const space = data.name || 'this space',
+            agent = data.agent?.name || 'Your agent';
+          fill('[data-name]', space);
+          fill('[data-agent]', agent);
+          // Already in: nothing to ask unless the link allows more than
+          // the agent holds, which the person may grant here.
+          const upgrade = data.joined === 'read' && data.write;
+          if (data.joined && !upgrade) {
+            const words = data.joined === 'write' ? 'read and write' : 'read';
+            return strip(['already in ' + space + ' · ' + words + ' · as ', ...bot(agent)]);
+          }
+          offer.upgrade = upgrade;
+          choose();
+          if (upgrade) {
+            $('#write input').checked = true;
+            $('#join').textContent = 'let it write';
+            $('#fine').textContent =
+              'It can read this space now. Writing lets it add and change content too, ' +
+              'under its own name. ' + REMOVAL;
+          }
+          if (!data.write)
+            $('#fine').textContent =
+              'This link lets an agent read the space, not change it. It acts as itself, ' +
+              'under its own name. ' + REMOVAL;
+          show(ask);
+          $('#join').focus({ preventScroll: true });
+        }
+
+        ask.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const access = new FormData(ask).get('access') === 'write' ? 'write' : 'read',
+            space = offer.name || 'the space',
+            agent = offer.agent?.name || 'Your agent',
+            words = access === 'write' ? 'read and write' : 'read';
+          for (const control of ask.elements) control.disabled = true;
+          ask.querySelector('.tonk-disc').dataset.state = 'saving';
+          try {
+            const result = await rpc('tools/call', {
+              name: 'tonk_join_accept',
+              arguments: { link: offer.link, access },
+            });
+            if (result?.isError || !result?.structuredContent?.space)
+              throw Error(result?.content?.[0]?.text || 'The space did not answer.');
+            const joined = result.structuredContent;
+            strip(['joined ' + space + ' · ' + words + ' · as ', ...bot(agent)]);
+            await tellModel(
+              'The person let you join ' + space + ' (space ' + joined.space + ') with ' +
+                words + ' access. It is in tonk_list_spaces now.',
+              'I let you join ' + space + ' with ' + words + ' access.',
+            );
+          } catch (error) {
+            for (const control of ask.elements) control.disabled = false;
+            choose();
+            ask.querySelector('.tonk-disc').dataset.state = 'hollow';
+            problem(String(error?.message || error), true);
+          }
+        });
+        $('#no').addEventListener('click', async () => {
+          const space = offer.name || 'the space';
+          strip(['not joined · ' + space + ' · the link still works'], 'hollow');
+          await tellModel(
+            'The person chose not to let you join ' + space + ' for now. Do not ask again ' +
+              'unless they bring it up.',
+          );
+        });
+        $('#again').addEventListener('click', () => present(offer));
+
+        addEventListener('message', (event) => {
+          const m = event.data;
+          if (event.source !== parent || m?.jsonrpc !== '2.0') return;
+          if (pending.has(m.id)) {
+            const p = pending.get(m.id);
+            pending.delete(m.id);
+            m.error ? p.reject(Error(m.error.message)) : p.resolve(m.result);
+          } else if (m.method === 'ui/notifications/tool-result') {
+            const data = m.params?.structuredContent;
+            if (m.params?.isError || !data?.link)
+              problem(m.params?.content?.[0]?.text || 'This invitation could not be read.');
+            else present(data);
+          }
+        });
+        rpc('ui/initialize', {
+          appInfo: { name: 'tonk-join', version: '0.1.0' },
+          appCapabilities: {},
+          protocolVersion: '2026-01-26',
+        })
+          .then(() => notify('ui/notifications/initialized', {}))
+          .catch(() => problem('This chat app could not start the card.'));
+      })();
+    </script>
+  </body>
+</html>

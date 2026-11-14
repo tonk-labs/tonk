@@ -35,7 +35,7 @@ export function modelFromSource(source: TableSource): Model {
     try {
       return Model.from_bytes(source.bytes, LANGUAGE);
     } catch (err) {
-      console.warn("[tonk-table] corrupt workbook bytes; starting empty:", err);
+      console.warn("[table-editor] corrupt workbook bytes; starting empty:", err);
       return newModel();
     }
   }
@@ -44,7 +44,7 @@ export function modelFromSource(source: TableSource): Model {
     try {
       seedCsv(model, 0, source.csv);
     } catch (err) {
-      console.warn("[tonk-table] failed to seed CSV; starting empty:", err);
+      console.warn("[table-editor] failed to seed CSV; starting empty:", err);
       return newModel();
     }
   }

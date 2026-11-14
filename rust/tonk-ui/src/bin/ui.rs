@@ -25,7 +25,7 @@ async fn main() {
     // ceremonies the profile's worker asks for. Everything else (the hub,
     // a space's chrome, the bar, a space's content) renders in that site
     // and the sites it nests, and this page asks no worker for anything.
-    tonk_portal::register_site();
+    tonk_site::register_site();
 
     // Passkey ceremonies live on the window: `navigator.credentials`
     // does not exist in the service worker, and each ceremony needs a
@@ -36,10 +36,13 @@ async fn main() {
     // page must never look like one.
     tonk_identity::install();
     tonk_ui::custody_relay::install();
+    // Signing in is this page's too: the profile's worker asks it, and so
+    // does a space this page shows itself that needs the account.
+    tonk_ui::sign_in::install();
     // The panel that adds an account is the profile frame's own; what a
     // frame still asks of this page is where to seat the passkey rows a
     // settings command raised, beside the column that asked.
-    tonk_portal::on_register(|reason, return_focus| {
+    tonk_site::on_register(|reason, return_focus| {
         let request = tonk_ui::custody_relay::parse_seat_request(reason);
         if request.reason == "custody-anchor" {
             tonk_ui::custody_relay::return_to_approval(return_focus);
@@ -49,20 +52,30 @@ async fn main() {
         }
     });
     // A delegation from the account is signed by the worker that holds the
-    // account, behind a passkey this page asks for.
-    tonk_portal::on_delegate(|request, reply| {
-        tonk_ui::custody_relay::delegate(
-            tonk_worker_api::RootDelegation {
-                subject: request.subject,
-                command: request.command,
-                audience: request.audience,
-            },
-            move |answer| reply.finish(answer),
-        );
+    // account, behind a passkey this page asks for. A person known to have
+    // no account signs in first.
+    tonk_site::on_delegate(|request, reply| {
+        let delegation = tonk_worker_api::RootDelegation {
+            subject: request.subject,
+            command: request.command,
+            audience: request.audience,
+        };
+        if !SIGNED_OUT.get() {
+            tonk_ui::custody_relay::delegate(delegation, move |answer| reply.finish(answer));
+            return;
+        }
+        tonk_ui::sign_in::open(move |signed_in| {
+            if signed_in {
+                SIGNED_OUT.set(false);
+                tonk_ui::custody_relay::delegate(delegation, move |answer| reply.finish(answer));
+            } else {
+                reply.finish(Err("The person did not sign in.".to_owned()));
+            }
+        });
     });
     // An account task is the profile frame's to answer. One that reaches
     // this page has no panel here to open.
-    tonk_portal::on_task(|_request, reply| {
+    tonk_site::on_task(|_request, reply| {
         if let Some(reply) = reply {
             reply.finish("invalid");
         }
@@ -137,14 +150,23 @@ fn render_root(shell: &web_sys::Element) {
         .ok()
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "/".to_owned());
+    let (with, path) = shown(&path);
     let current = shell.first_element_child();
 
-    if let Some(site) = current.filter(|element| element.tag_name() == "TONK-SITE") {
+    // The profile's branch may be read after it mounted: any profile is the
+    // profile.
+    let same = |mounted: Option<String>| match mounted {
+        Some(mounted) if mounted.starts_with(SPACE) => mounted == with,
+        _ => !with.starts_with(SPACE),
+    };
+    if let Some(site) = current
+        .filter(|element| element.tag_name() == "TONK-SITE" && same(element.get_attribute("with")))
+    {
         let _ = site.set_attribute("path", &path);
         return;
     }
 
-    // The profile renders on an origin of its own, which the deployment's
+    // Each site renders on an origin of its own, which the deployment's
     // configuration names. A navigation while that is being read must not
     // mount a second site.
     if shell.has_attribute("data-mounting") {
@@ -153,30 +175,122 @@ fn render_root(shell: &web_sys::Element) {
     let _ = shell.set_attribute("data-mounting", "");
     let shell = shell.clone();
     wasm_bindgen_futures::spawn_local(async move {
-        let site_pattern = site_pattern().await;
-        let _ = shell.remove_attribute("data-mounting");
-        let Some(site_pattern) = site_pattern else {
+        let Some(site_pattern) = site_pattern().await else {
+            let _ = shell.remove_attribute("data-mounting");
             show_readiness_failure();
             return;
         };
-        shell.set_inner_html("");
-        let Some(document) = shell.owner_document() else {
+        let (with, _) = shown(&current_path());
+        let Some(did) = with
+            .strip_prefix("main@")
+            .filter(|_| with.starts_with(SPACE))
+        else {
+            mount(&shell, &site_pattern);
             return;
         };
-        let Ok(site) = document.create_element("tonk-site") else {
-            return;
+        // A DID may name one of the person's accounts rather than a space:
+        // that account's profile is shown, at the rest of the address. One
+        // the profile does not answer for in time is taken for a space.
+        let once = std::rc::Rc::new(std::cell::Cell::new(false));
+        let settle = {
+            let (shell, site_pattern, once) = (shell.clone(), site_pattern.clone(), once.clone());
+            move |account: bool| {
+                if once.replace(true) {
+                    return;
+                }
+                if account {
+                    let (_, rest) = shown(&current_path());
+                    if let Some(history) =
+                        web_sys::window().and_then(|window| window.history().ok())
+                    {
+                        let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&rest));
+                    }
+                } else {
+                    tonk_site::signed_in(&site_pattern, |signed_in| {
+                        SIGNED_OUT.set(!signed_in);
+                    });
+                }
+                mount(&shell, &site_pattern);
+            }
         };
-        let _ = site.set_attribute("with", &tonk_host::bridge::profile_with());
-        let _ = site.set_attribute("allow", "*");
-        let _ = site.set_attribute("origin", &site_pattern);
-        // The path may have moved while the configuration was being read.
-        let path = web_sys::window()
-            .and_then(|window| window.location().pathname().ok())
-            .filter(|path| !path.is_empty())
-            .unwrap_or_else(|| "/".to_owned());
-        let _ = site.set_attribute("path", &path);
-        let _ = shell.append_child(&site);
+        let late = settle.clone();
+        tonk_site::account(&site_pattern, did, settle);
+        let timeout = wasm_bindgen::closure::Closure::once_into_js(move || late(false));
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                timeout.unchecked_ref(),
+                ACCOUNT_WAIT_MS,
+            );
+        }
     });
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+thread_local! {
+    /// Whether the person is known to have no account, as the profile said
+    /// when the app showed a space itself.
+    static SIGNED_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// How long the app waits to hear whether an address's DID names an
+/// account before it shows it as a space.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const ACCOUNT_WAIT_MS: i32 = 10_000;
+
+/// The app's address, as far as its path.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn current_path() -> String {
+    web_sys::window()
+        .and_then(|window| window.location().pathname().ok())
+        .filter(|path| !path.is_empty())
+        .unwrap_or_else(|| "/".to_owned())
+}
+
+/// Mount the site the app's address names in `shell`, rendered at
+/// `site_pattern`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn mount(shell: &web_sys::Element, site_pattern: &str) {
+    let _ = shell.remove_attribute("data-mounting");
+    shell.set_inner_html("");
+    let Some(document) = shell.owner_document() else {
+        return;
+    };
+    let Ok(site) = document.create_element("tonk-site") else {
+        return;
+    };
+    let (with, path) = shown(&current_path());
+    // A space shown itself reaches no further than itself; the profile
+    // reaches every space it shows.
+    let allow = if with.starts_with(SPACE) {
+        with.clone()
+    } else {
+        "*".to_owned()
+    };
+    let _ = site.set_attribute("with", &with);
+    let _ = site.set_attribute("allow", &allow);
+    let _ = site.set_attribute("origin", site_pattern);
+    let _ = site.set_attribute("path", &path);
+    let _ = shell.append_child(&site);
+    // A different site than the one the path names now was mounted
+    // meanwhile: put the right one in.
+    render_root(shell);
+}
+
+/// How a space shown itself is written where its site is mounted.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const SPACE: &str = "main@did:";
+
+/// The site the app's address `path` shows, and the path within it: a space
+/// itself at `/{did}/…`, and otherwise the profile of the account last
+/// signed in to.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn shown(path: &str) -> (String, String) {
+    let rest = path.trim_start_matches('/');
+    if rest.starts_with("did:") {
+        let (space, within) = rest.split_once('/').unwrap_or((rest, ""));
+        return (format!("main@{space}"), format!("/{within}"));
+    }
+    (tonk_host::bridge::profile_with(), path.to_owned())
 }
 
 /// The hostname this deployment renders each site at, with `*` where the
@@ -221,7 +335,7 @@ fn show_stages(shell: &web_sys::Element) {
             }
         });
     let _ = shell.add_event_listener_with_callback(
-        tonk_portal::STAGE_EVENT,
+        tonk_site::STAGE_EVENT,
         on_stage.as_ref().unchecked_ref(),
     );
     on_stage.forget();

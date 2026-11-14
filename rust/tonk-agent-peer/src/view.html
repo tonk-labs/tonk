@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tonk live view</title>
+    <style>
+      :root {
+        --bg: #fbfaf7;
+        --panel: #ffffff;
+        --ink: #1d1b16;
+        --muted: #6f6a5f;
+        --line: #e6e1d6;
+        --accent: #2f6f4e;
+        --warn: #a34a28;
+        --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+        color-scheme: light;
+      }
+      :root[data-theme='dark'] {
+        --bg: #171614;
+        --panel: #201e1b;
+        --ink: #ece8df;
+        --muted: #a29c90;
+        --line: #36332d;
+        --accent: #7cc49d;
+        --warn: #e08a63;
+        color-scheme: dark;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; background: var(--bg); color: var(--ink); }
+      body {
+        font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+        padding: 16px 18px 12px;
+      }
+      header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+      h1 { font-size: 16px; font-weight: 600; margin: 0; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+      .status { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+      .live .dot { background: var(--accent); animation: pulse 2.4s ease-in-out infinite; }
+      .error .dot { background: var(--warn); }
+      @keyframes pulse { 50% { opacity: 0.35; } }
+      .group + .group { margin-top: 14px; }
+      .label { font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+      .card {
+        background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+        padding: 10px 12px; transition: box-shadow 0.6s ease;
+      }
+      .card + .card { margin-top: 8px; }
+      .card.fresh { box-shadow: 0 0 0 2px var(--accent); }
+      .this { font: 11px/1.4 var(--mono); color: var(--muted); overflow-wrap: anywhere; margin-bottom: 6px; }
+      dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
+      dt { color: var(--muted); }
+      dd { margin: 0; overflow-wrap: anywhere; }
+      .doc { white-space: pre-wrap; font-size: 15px; }
+      .json { font: 12px/1.45 var(--mono); white-space: pre-wrap; }
+      .empty, .note { color: var(--muted); }
+      .note { font-size: 12px; margin-top: 8px; }
+      .problem { color: var(--warn); margin: 8px 0; }
+      details { margin-top: 14px; font-size: 12px; color: var(--muted); }
+      summary { cursor: pointer; }
+      table { border-collapse: collapse; margin-top: 6px; }
+      td { padding: 2px 12px 2px 0; vertical-align: top; }
+      td:first-child { white-space: nowrap; }
+      .ok { color: var(--accent); }
+      .no { color: var(--warn); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1 id="title">Tonk</h1>
+      <span id="status" class="status"><span class="dot"></span><span id="status-text">connecting</span></span>
+    </header>
+    <main id="view"><p class="empty">Waiting for the view…</p></main>
+    <p id="problem" class="problem" hidden></p>
+    <details id="diagnostics">
+      <summary>Sandbox checks</summary>
+      <table id="checks"></table>
+    </details>
+    <script>
+      (() => {
+        const PROBE_ORIGIN = __TONK_PROBE_ORIGIN__;
+        const PROTOCOL_VERSION = '2026-01-26';
+        const $ = (id) => document.getElementById(id);
+        const pending = new Map();
+        let nextId = 0;
+        let stopped = false;
+        let state = null;
+        let host = { info: null, capabilities: {} };
+        const checks = {};
+
+        const send = (message) => parent.postMessage({ jsonrpc: '2.0', ...message }, '*');
+        const notify = (method, params = {}) => send({ method, params });
+        const rpc = (method, params) =>
+          new Promise((resolve, reject) => {
+            const id = ++nextId;
+            pending.set(id, { resolve, reject });
+            send({ id, method, params });
+          });
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+        addEventListener('message', (event) => {
+          if (event.source !== parent) return;
+          const m = event.data;
+          if (!m || m.jsonrpc !== '2.0') return;
+          if (m.method === undefined && pending.has(m.id)) {
+            const { resolve, reject } = pending.get(m.id);
+            pending.delete(m.id);
+            m.error ? reject(new Error(m.error.message || 'Host error')) : resolve(m.result);
+          } else if (m.method === 'ui/notifications/tool-result') {
+            onResult(m.params);
+          } else if (m.method === 'ui/notifications/tool-input') {
+            const args = m.params && m.params.arguments;
+            if (args && args.title) $('title').textContent = args.title;
+          } else if (m.method === 'ui/notifications/host-context-changed') {
+            applyContext(m.params);
+          } else if (m.method === 'ui/resource-teardown') {
+            stopped = true;
+            send({ id: m.id, result: {} });
+          } else if (m.id !== undefined && m.method === 'ping') {
+            send({ id: m.id, result: {} });
+          } else if (m.id !== undefined && m.method) {
+            send({ id: m.id, error: { code: -32601, message: 'Method not found' } });
+          }
+        });
+
+        function applyContext(context) {
+          if (!context) return;
+          if (context.theme === 'dark' || context.theme === 'light') {
+            document.documentElement.dataset.theme = context.theme;
+          }
+        }
+
+        function setStatus(kind, text) {
+          $('status').className = 'status ' + kind;
+          $('status-text').textContent = text;
+        }
+
+        function showProblem(text) {
+          $('problem').hidden = !text;
+          $('problem').textContent = text || '';
+        }
+
+        function el(tag, attrs, children) {
+          const node = document.createElement(tag);
+          for (const [key, value] of Object.entries(attrs || {})) node.setAttribute(key, value);
+          for (const child of [].concat(children || [])) {
+            node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+          }
+          return node;
+        }
+
+        // Card content is often JSON text such as {"markdown": "..."}.
+        function value(raw) {
+          if (typeof raw === 'string') {
+            const trimmed = raw.trim();
+            if (trimmed.startsWith('{')) {
+              try {
+                const parsed = JSON.parse(trimmed);
+                if (typeof parsed.markdown === 'string') return el('div', { class: 'doc' }, parsed.markdown || '(empty)');
+                if (typeof parsed.content === 'string') return el('div', { class: 'doc' }, parsed.content || '(empty)');
+                return el('div', { class: 'json' }, JSON.stringify(parsed, null, 2));
+              } catch (_) {}
+            }
+            return el('span', {}, raw);
+          }
+          if (raw && typeof raw === 'object') return el('div', { class: 'json' }, JSON.stringify(raw, null, 2));
+          return el('span', {}, String(raw));
+        }
+
+        const fingerprint = (result) => JSON.stringify(result);
+
+        function render(matches, truncated, previous) {
+          const view = $('view');
+          view.replaceChildren();
+          const groups = Array.isArray(matches) ? matches : [];
+          const total = groups.reduce((n, g) => n + ((g.results && g.results.length) || 0), 0);
+          if (!total) {
+            view.append(el('p', { class: 'empty' }, 'No results.'));
+            return;
+          }
+          const before = new Set(previous || []);
+          const now = [];
+          for (const group of groups) {
+            const section = el('section', { class: 'group' }, [
+              el('h2', { class: 'label' }, `${group.label} · ${(group.results || []).length}`),
+            ]);
+            for (const result of group.results || []) {
+              const card = el('article', { class: 'card' });
+              if (result.this) card.append(el('div', { class: 'this' }, result.this));
+              const fields = Object.entries(result.fields || {});
+              if (fields.length) {
+                const list = el('dl');
+                for (const [name, raw] of fields) list.append(el('dt', {}, name), el('dd', {}, value(raw)));
+                card.append(list);
+              }
+              const print = fingerprint(result);
+              now.push(print);
+              if (previous && !before.has(print)) {
+                card.classList.add('fresh');
+                setTimeout(() => card.classList.remove('fresh'), 1600);
+              }
+              section.append(card);
+            }
+            view.append(section);
+          }
+          if (truncated) view.append(el('p', { class: 'note' }, 'Large result: some rows are not shown.'));
+          return now;
+        }
+
+        let printed = null;
+        function show(matches, truncated) {
+          printed = render(matches, truncated, printed) || [];
+        }
+
+        function onResult(result) {
+          if (!result) return;
+          if (result.isError) {
+            const text = (result.content || []).map((c) => c.text).join(' ');
+            setStatus('error', 'error');
+            showProblem(text || 'The view could not be read.');
+            return;
+          }
+          const data = result.structuredContent;
+          if (!data) return;
+          state = { space: data.space, document: data.document, version: data.version };
+          $('title').textContent = data.title || 'Tonk view';
+          checks.peer = data.peer || '?';
+          show(data.matches, data.truncated);
+          showProblem('');
+          renderChecks();
+          watch();
+        }
+
+        let watching = false;
+        async function watch() {
+          if (watching) return;
+          watching = true;
+          let failures = 0;
+          while (!stopped && state) {
+            setStatus('live', 'live');
+            try {
+              const result = await rpc('tools/call', {
+                name: 'tonk_watch',
+                arguments: { space: state.space, document: state.document, version: state.version },
+              });
+              if (result && result.isError) throw new Error((result.content || []).map((c) => c.text).join(' '));
+              const data = (result && result.structuredContent) || {};
+              if (data.changed) {
+                state.version = data.version;
+                show(data.matches, data.truncated);
+              }
+              checks.watch = 'ok';
+              failures = 0;
+              showProblem('');
+            } catch (error) {
+              failures += 1;
+              checks.watch = 'failed: ' + error.message;
+              setStatus('error', 'reconnecting');
+              showProblem('Live updates paused: ' + error.message);
+              await sleep(Math.min(30000, 2000 * failures));
+            }
+            renderChecks();
+          }
+          watching = false;
+          if (stopped) setStatus('', 'closed');
+        }
+
+        async function probe() {
+          try {
+            await WebAssembly.compile(Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0));
+            checks.wasm = 'allowed';
+          } catch (error) {
+            checks.wasm = 'blocked: ' + error.message;
+          }
+          try {
+            checks.eval = new Function('return 1')() === 1 ? 'allowed' : 'unexpected';
+          } catch (error) {
+            checks.eval = 'blocked';
+          }
+          try {
+            const response = await fetch(PROBE_ORIGIN + '/probe', { signal: AbortSignal.timeout(4000) });
+            const body = await response.json();
+            checks.loopback = body && body.probe ? 'reachable' : 'unexpected response';
+          } catch (error) {
+            checks.loopback = 'blocked: ' + (error.name === 'TimeoutError' ? 'timed out' : error.message);
+          }
+          renderChecks();
+          if (host.capabilities && host.capabilities.updateModelContext) {
+            rpc('ui/update-model-context', {
+              structuredContent: { tonkViewChecks: { ...checks, host: host.info } },
+            }).catch(() => {});
+          }
+        }
+
+        function renderChecks() {
+          const rows = [
+            ['host', host.info ? `${host.info.name} ${host.info.version || ''}`.trim() : 'unknown'],
+            ['peer', checks.peer || '…'],
+            ['live updates', checks.watch || 'starting'],
+            ['WebAssembly', checks.wasm || 'checking'],
+            ['eval', checks.eval || 'checking'],
+            ['loopback ' + PROBE_ORIGIN, checks.loopback || 'checking'],
+          ];
+          $('checks').replaceChildren(
+            ...rows.map(([name, text]) => {
+              const good = /^(ok|allowed|reachable)$/.test(text);
+              const bad = /^(blocked|failed)/.test(text);
+              return el('tr', {}, [
+                el('td', {}, name),
+                el('td', { class: good ? 'ok' : bad ? 'no' : '' }, text),
+              ]);
+            }),
+          );
+        }
+
+        new ResizeObserver(() => {
+          notify('ui/notifications/size-changed', {
+            height: Math.ceil(document.documentElement.scrollHeight),
+          });
+        }).observe(document.body);
+
+        renderChecks();
+        (async () => {
+          try {
+            const init = await rpc('ui/initialize', {
+              appInfo: { name: 'tonk-view', version: '0.1.0' },
+              appCapabilities: {},
+              protocolVersion: PROTOCOL_VERSION,
+            });
+            host = { info: init && init.hostInfo, capabilities: (init && init.hostCapabilities) || {} };
+            applyContext(init && init.hostContext);
+            notify('ui/notifications/initialized');
+            setStatus('', 'waiting');
+          } catch (error) {
+            setStatus('error', 'no host');
+            showProblem('The host did not answer: ' + error.message);
+          }
+          renderChecks();
+          probe();
+        })();
+      })();
+    </script>
+  </body>
+</html>

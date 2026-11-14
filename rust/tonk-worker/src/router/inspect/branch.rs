@@ -2,12 +2,10 @@
 
 use ::axum::extract::Path;
 use ::axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_repository::{RepositoryExt as _, Revision};
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_macros::handler;
 
 use super::super::AppState;
 use crate::TonkWorkerError;
@@ -54,7 +52,7 @@ pub enum UpstreamInfo {
 }
 
 /// Returns the status of a specific branch.
-#[wasm_compat]
+#[handler]
 pub async fn inspect_branch(
     State(state): State<AppState>,
     Path(params): Path<InspectBranchPath>,
@@ -76,13 +74,14 @@ pub async fn inspect_branch(
             TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
         })?;
 
+    // Inspecting a branch makes none: one that does not exist is not found.
     let branch = repo
         .branch(params.branch.as_str())
-        .open()
+        .load()
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
+            TonkWorkerError::NotFound(format!("Branch '{}' not found: {}", params.branch, e))
         })?;
 
     let names = crate::router::remotes::list(&repo, &tonk_state.operator).await?;

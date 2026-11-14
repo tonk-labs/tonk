@@ -14,17 +14,14 @@ const accountStyles = readFileSync(LIBRARY, "utf8")
   ?.split("\n  show:")[0];
 assert.ok(accountStyles, "the activation view must carry its styles");
 const appStyles = readFileSync(join(UI, "styles.css"), "utf8");
+// The host's sign-in panel: its markup and its own styles, on the top page.
+const registration = readFileSync(join(UI, "src", "sign_in.rs"), "utf8");
+const signInStyles = readFileSync(join(UI, "src", "sign_in.css"), "utf8");
 // The settings panel is markup on the profile branch: the
 // `<account-settings>` element's contents, plus the registration view's
 // `settings` facet, which carries the display name and the deletion
 // dialog.
 const library = readFileSync(LIBRARY, "utf8");
-// The panel that adds an account: the profile library's views of the
-// registration stages.
-const registration = library
-  .split("view!:\n  this: tonk:registration/address")[1]
-  ?.split("# What the address check said")[0];
-assert.ok(registration, "the registration stage views must be in the profile library");
 const panel = library.split("<account-settings>\n")[1]?.split("</account-settings>")[0];
 const registered = library
   .split("    settings: |\n      <div data-account-registered>")[1]
@@ -37,6 +34,7 @@ test("authored text fields keep the browser's native insertion caret", () => {
   for (const [name, source] of [
     ["account styles", accountStyles],
     ["application styles", appStyles],
+    ["sign-in styles", signInStyles],
   ]) {
     assert.doesNotMatch(source, /caret-shape\s*:\s*block/i, `${name} forces a block caret`);
     assert.doesNotMatch(
@@ -83,47 +81,44 @@ test("the settings display name has visible input affordance", () => {
 });
 
 test("active account fields use a measured two-line row spanning its full width", () => {
-  assert.match(registration, /class="orow mblk editing">\s*<span class="k">email address<\/span>/);
+  assert.match(registration, /class="orow mblk editing"><span class="k">email address<\/span>/);
   // A settled answer is the next stage's plain row, not an editing one.
   assert.match(registration, /<div class="orow mblk"><span class="k">email<\/span><span class="v">\{email\}<\/span><\/div>/);
   assert.match(
-    appStyles,
-    /\.tonk-ceremony \.orow\.editing \{[\s\S]*?box-sizing: border-box;[\s\S]*?height: 60px;[\s\S]*?grid-template-rows: 13px 20px;[\s\S]*?gap: 7px;/,
+    signInStyles,
+    /\.tonk-ceremony \.orow\.editing \{[\s\S]*?display: grid;[\s\S]*?grid-template-rows: auto 48px;/,
   );
   assert.match(
-    appStyles,
-    /\.tonk-ceremony \.orow\.editing \.ed \{[\s\S]*?display: block;[\s\S]*?inline-size: 100%;[\s\S]*?max-inline-size: none;/,
+    signInStyles,
+    /\.tonk-ceremony \.ed \{[\s\S]*?display: block;[\s\S]*?inline-size: 100%; max-inline-size: none;/,
     "the password manager must see the field's real trailing edge",
   );
   assert.doesNotMatch(
-    appStyles,
+    signInStyles,
     /\.tonk-ceremony \.ed\[autocomplete~="webauthn"\]/,
     "input padding shifts the password-manager affordance away from the row edge",
   );
 });
 
-test("an anchored account ceremony cannot scroll away from its hub bar", () => {
+test("the sign-in panel cannot scroll away from the page it is over", () => {
   assert.match(
-    appStyles,
-    /html:has\(#tonk-register\[data-anchored\]\[open\]:not\(\[data-suspended\]\)\),[\s\S]*?body:has\(#tonk-register\[data-anchored\]\[open\]:not\(\[data-suspended\]\)\)\s*\{\s*overflow: hidden;/,
-    "the top page must be locked while its fixed account page is open",
+    signInStyles,
+    /html:has\(#tonk-register:not\(\[hidden\]\)\),[\s\S]*?body:has\(#tonk-register:not\(\[hidden\]\)\)\s*\{\s*overflow: hidden;/,
+    "the top page must be locked while the panel is up",
   );
   assert.match(
-    appStyles,
-    /#tonk-register\[data-anchored\]\s*\{[^}]*overflow: hidden;[^}]*overscroll-behavior: none;/,
-    "the account page must neither scroll nor chain wheel input to the page behind it",
+    signInStyles,
+    /#tonk-register \{[^}]*overflow: hidden;[^}]*overscroll-behavior: none;/,
+    "the panel must neither scroll nor chain wheel input to the page behind it",
   );
   assert.match(
-    appStyles,
-    /#tonk-register\[data-anchored\] \.ocol\s*\{[^}]*overflow: auto;[^}]*overscroll-behavior: none;/,
-    "the content panel must remain scrollable without chaining to the page behind it",
+    signInStyles,
+    /\.tonk-ceremony \.ocol \{[^}]*overflow: auto;[^}]*overscroll-behavior: none;/,
+    "the content column must remain scrollable without chaining to the page behind it",
   );
-});
-
-test("an anchored account ceremony obscures the hub account menu beneath it", () => {
   assert.match(
-    appStyles,
-    /#tonk-register\[data-anchored\] \.ocol\s*\{[\s\S]*?background:\s*var\(--page\);/,
-    "the opaque column backing must cover the gaps between ceremony rows",
+    signInStyles,
+    /\.tonk-ceremony \.ocol \{[\s\S]*?background: var\(--card\);/,
+    "the opaque column backing must cover the gaps between rows",
   );
 });
