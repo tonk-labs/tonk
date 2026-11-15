@@ -649,7 +649,7 @@ async fn it_runs_every_menu_act_from_the_palette() {
             "POST",
             &format!("{profile}/evaluate"),
             "application/yaml",
-            library.into(),
+            library,
         )
         .await;
     }
@@ -727,7 +727,7 @@ async fn it_says_publishing_in_the_palette() {
             "POST",
             &format!("{profile}/evaluate"),
             "application/yaml",
-            library.into(),
+            library,
         )
         .await;
     }
@@ -777,7 +777,7 @@ async fn it_says_inviting_an_agent_or_an_address_in_the_palette() {
             "POST",
             &format!("{profile}/evaluate"),
             "application/yaml",
-            library.into(),
+            library,
         )
         .await;
     }
@@ -869,7 +869,7 @@ async fn it_labels_a_space_by_its_name_not_its_description() {
             "POST",
             &format!("{profile}/evaluate"),
             "application/yaml",
-            library.into(),
+            library,
         )
         .await;
     }
