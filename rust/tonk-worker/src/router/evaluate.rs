@@ -955,17 +955,24 @@ async fn evaluate_on_branch_with<'a>(
             let matches_before = evaluated.matches;
             let commits = evaluated.commits;
             let t_commit = web_time::Instant::now();
-            // A document on the branch's own stack commits as one
-            // invocation through it: the dispatch's report names the
-            // commands it landed on `control:` — the document's and the
-            // ones its rules dispatched — and its effect runs the
+            // An interactive document on the branch's own stack commits
+            // as one invocation through it: the dispatch's report names
+            // the commands it landed on `control:` — the document's and
+            // the ones its rules dispatched — and its effect runs the
             // providers over exactly those. The asking client rides on
-            // the tick, a row of `control:` itself. A conditional commit goes through
-            // its private handle, outside the stack, with no command; a
-            // seed that records its own version chains a second commit
-            // on the first's batch, which only the transaction offers,
-            // and lands its commands to no provider.
-            let outcome = if conditional_branch.is_none() && record.is_none() {
+            // the tick, a row of `control:` itself. The stack re-runs the
+            // invocation from a moved head with the same stimulus, which
+            // an interactive document's idempotent claims allow. The
+            // other commits stay on the transaction, whose publish
+            // reports nothing an effect can be built from: a conditional
+            // commit goes through its private handle, outside the stack,
+            // with no command; a library seed plans its ownership
+            // retractions against the head it commits on, so a lost
+            // publish must re-plan here, not replay (see the retry arm
+            // below), and one that records its own version chains a
+            // second commit on the first's batch. Their callers run no
+            // providers.
+            let outcome = if mode == EvaluationMode::Interactive && conditional_branch.is_none() {
                 let Evaluated {
                     changes,
                     mut dispatched,
