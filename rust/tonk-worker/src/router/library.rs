@@ -210,6 +210,37 @@ impl dialog_capability::Provider<tonk_schema::command::InstallComponent>
     }
 }
 
+/// `library` with each `key: !include/text ./path` field replaced by a
+/// block scalar of the bundled file it names, for tests that send a library
+/// document as plain notation, which has no location to include from.
+#[cfg(test)]
+pub(crate) fn inline_includes(library: &str) -> String {
+    let mut out = String::new();
+    for line in library.lines() {
+        let Some((key, path)) = line.split_once(": !include/text ") else {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        };
+        let indent = key.len() - key.trim_start().len() + 2;
+        let uri = tonk_library::location(path.trim().trim_start_matches("./"));
+        let text = tonk_library::Bundled
+            .get(&uri)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .unwrap_or_else(|| panic!("{path} is bundled"));
+        out.push_str(key);
+        out.push_str(": |\n");
+        for content in text.lines() {
+            if !content.is_empty() {
+                out.push_str(&" ".repeat(indent));
+                out.push_str(content);
+            }
+            out.push('\n');
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,35 +321,4 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("include"), "{error}");
     }
-}
-
-/// `library` with each `key: !include/text ./path` field replaced by a
-/// block scalar of the bundled file it names, for tests that send a library
-/// document as plain notation, which has no location to include from.
-#[cfg(test)]
-pub(crate) fn inline_includes(library: &str) -> String {
-    let mut out = String::new();
-    for line in library.lines() {
-        let Some((key, path)) = line.split_once(": !include/text ") else {
-            out.push_str(line);
-            out.push('\n');
-            continue;
-        };
-        let indent = key.len() - key.trim_start().len() + 2;
-        let uri = tonk_library::location(path.trim().trim_start_matches("./"));
-        let text = tonk_library::Bundled
-            .get(&uri)
-            .and_then(|bytes| std::str::from_utf8(bytes).ok())
-            .unwrap_or_else(|| panic!("{path} is bundled"));
-        out.push_str(key);
-        out.push_str(": |\n");
-        for content in text.lines() {
-            if !content.is_empty() {
-                out.push_str(&" ".repeat(indent));
-                out.push_str(content);
-            }
-            out.push('\n');
-        }
-    }
-    out
 }
