@@ -2119,3 +2119,42 @@ fn it_derives_each_hub_rows_sync_disc_and_role() {
         "paused, then synced, then local"
     );
 }
+
+/// A hub row is a link that opens the space; a chevron beside it, a button
+/// of its own, unfolds the space's details in place. Closed, the details
+/// stay in the page, inert and out of the tab order.
+#[dialog_common::test]
+fn it_opens_a_hub_space_from_its_row_and_unfolds_details_with_a_chevron() {
+    for contract in [
+        "<a class=\"hub-open\" href=\"/space/{subject}\">",
+        "<button type=\"button\" class=\"hub-toggle\" aria-expanded=\"false\" aria-controls=\"body-{subject}\"",
+        "aria-label=\"links and details of {name}\"",
+        "<div class=\"hub-body\" id=\"body-{subject}\" inert>",
+        "<span class=\"hub-mono\" data-space-address></span>",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the hub row must carry `{contract}`",
+        );
+    }
+    let collection = PROFILE_LIBRARY
+        .split("element!: &hub-collection")
+        .nth(1)
+        .and_then(|rest| rest.split("\nelement!:").next())
+        .expect("the hub collection element");
+    for contract in [
+        // one row open at a time
+        "if (other !== row) self.fold(other, false);",
+        // closed details leave the tab order
+        "if (body) body.inert = !open;",
+        // Escape folds the open row and hands focus back to its chevron
+        "row.querySelector('.hub-toggle')?.focus();",
+        // a keyboard press lands at once
+        "page.setAttribute('data-still', '');",
+    ] {
+        assert!(
+            collection.contains(contract),
+            "the hub collection must keep `{contract}`",
+        );
+    }
+}

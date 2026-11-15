@@ -982,7 +982,18 @@ view!:
                     data-space-rename-submit>save changes</button>
                 </tonk-dialog>
               </space-actions>
+              <!-- The chevron: a button of its own, the height of the row,
+                   that unfolds the space's details in place. Pressing the
+                   row itself opens the space. -->
+              <button type="button" class="hub-toggle" aria-expanded="false" aria-controls="body-{subject}"
+                aria-label="links and details of {name}"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
             </div>
+            <!-- What unfolds: the space's address and a line about it.
+                 Closed, it stays in the page, hidden and inert. -->
+            <div class="hub-fold"><div class="hub-fold-in"><div class="hub-body" id="body-{subject}" inert>
+              <p class="hub-addr"><span class="hub-mono" data-space-address></span></p>
+              <p class="hub-note" data-space-note data-role-case={role}></p>
+            </div></div></div>
           </div>
         </hub-collection>
     # The space page's waiting room. Reached only when the space's own
@@ -2465,6 +2476,52 @@ element!: &hub-collection
           if (meta.textContent !== role) meta.textContent = role;
         }
       }
+    # A row unfolds in place, one at a time: the chevron opens it and a
+    # second press, or Escape, folds it back. Which row is open is kept
+    # here, so a re-render that rebuilds the rows keeps it open.
+    unfold: |
+      (self, row, open, still) => {
+        const page = self.closest('.tonk-hub');
+        // a keyboard press lands at once: nothing moves under someone going fast
+        if (still && page) {
+          page.setAttribute('data-still', '');
+          requestAnimationFrame(() => requestAnimationFrame(() => page.removeAttribute('data-still')));
+        }
+        for (const other of self.querySelectorAll('.hub-row[data-open]')) {
+          if (other !== row) self.fold(other, false);
+        }
+        self.fold(row, open);
+        self._open = open ? row.dataset.spaceSubject : null;
+      }
+    fold: |
+      (self, row, open) => {
+        const toggle = row.querySelector('.hub-toggle');
+        const body = row.querySelector('.hub-body');
+        if (open) row.setAttribute('data-open', ''); else row.removeAttribute('data-open');
+        toggle?.setAttribute('aria-expanded', String(open));
+        if (body) body.inert = !open;
+      }
+    # A row's address in full, the way it opens, and a line about it.
+    details: |
+      (self) => {
+        for (const row of self.querySelectorAll('.hub-row[data-space-subject]')) {
+          const link = row.querySelector('.hub-open');
+          const address = row.querySelector('[data-space-address]');
+          if (link && address) {
+            const text = link.href.replace(/^https?:\/\//, '');
+            if (address.textContent !== text) address.textContent = text;
+          }
+          const note = row.querySelector('[data-space-note]');
+          if (note) {
+            const role = (note.getAttribute('data-role-case') ?? '').replace(/^case:/, '');
+            const text = role === 'admin' ? 'your space · you have admin'
+              : role ? `a space you joined · you have ${role}` : '';
+            if (note.textContent !== text) note.textContent = text;
+          }
+          const open = self._open === row.dataset.spaceSubject;
+          if (open !== row.hasAttribute('data-open')) self.fold(row, open);
+        }
+      }
     # How many spaces the sheet lists, in Tonk's line: the rows that show,
     # since an agent's own space leaves the list (`hub-discover`).
     count: |
@@ -2482,8 +2539,27 @@ element!: &hub-collection
         self.previews();
         self.count();
         self.words();
+        self.details();
+        if (!self.__unfolding) {
+          self.__unfolding = true;
+          self.addEventListener('click', (event) => {
+            const toggle = event.target?.closest?.('.hub-toggle');
+            if (!toggle || !self.contains(toggle)) return;
+            const row = toggle.closest('.hub-row');
+            // `detail` is 0 for a press from the keyboard
+            self.unfold(row, !row.hasAttribute('data-open'), event.detail === 0);
+          });
+          self.addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape' || event.defaultPrevented) return;
+            const row = self.querySelector('.hub-row[data-open]');
+            if (!row || event.target?.closest?.('hub-menu, tonk-dialog')) return;
+            event.preventDefault();
+            self.unfold(row, false, true);
+            row.querySelector('.hub-toggle')?.focus();
+          });
+        }
         self._observer?.disconnect();
-        const observer = new MutationObserver(() => { self.deal(); self.previews(); self.count(); self.words(); });
+        const observer = new MutationObserver(() => { self.deal(); self.previews(); self.count(); self.words(); self.details(); });
         observer.observe(self, { childList: true, subtree: true, attributes: true,
           attributeFilter: ['data-space-subject', 'data-space-thumbnail', 'data-sync-case', 'data-role-case'] });
         self._observer = observer;
