@@ -1056,22 +1056,26 @@ pub(crate) mod tests {
     }
 
     /// Dialog runs the FIRST provider claiming a command, and a provider
-    /// claims by any one attribute of its concept's fields: two
-    /// registered commands sharing an attribute shadow one another. The
-    /// vocabulary must therefore keep every command's claim attributes
-    /// to itself, and every concept registered once. The one overlap it
-    /// has is known: the three legacy shapes that share
-    /// `dom.event/time-stamp` (`legacy::Invite`, `legacy::EnableSync`,
-    /// `legacy::PauseSync`), which dialog's rule routes to whichever
-    /// registered first; it is recorded against dialog, not worked
-    /// around here, and anything beyond it fails this test.
+    /// claims by any one attribute of its concept's fields: two commands
+    /// sharing an attribute shadow one another, and the first one
+    /// registered runs for both, or runs instead of the other when it
+    /// decodes. A current and a legacy shape of ONE command may share
+    /// attributes: one registration decodes either. The overlaps the
+    /// vocabulary has across registrations are known, all among legacy
+    /// shapes: `dom.event/time-stamp` (`legacy::Invite`,
+    /// `legacy::EnableSync`, `legacy::PauseSync`),
+    /// `dom.event.current-target.elements.email/value`
+    /// (`legacy::CheckEmail`, `legacy::RegisterAccount`) and
+    /// `dom.event.current-target/value` (`legacy::ProfileRename`,
+    /// `legacy::RenameRepository`). They are recorded against dialog, not
+    /// worked around here, and anything beyond them fails this test.
     #[dialog_common::test]
     fn no_two_commands_share_a_claim_attribute() {
         let providers = command_providers();
-        let mut seen: std::collections::BTreeMap<String, String> = Default::default();
+        let mut claimants: std::collections::BTreeMap<String, std::collections::BTreeSet<usize>> =
+            Default::default();
         let mut concepts: std::collections::BTreeSet<String> = Default::default();
-        let mut shared: std::collections::BTreeMap<String, usize> = Default::default();
-        for registration in providers.registrations() {
+        for (index, registration) in providers.registrations().iter().enumerate() {
             for concept in registration.concepts() {
                 let name = concept.this().to_string();
                 assert!(
@@ -1079,20 +1083,32 @@ pub(crate) mod tests {
                     "{name} is registered twice; dialog keeps one provider per concept"
                 );
                 for (_, field) in concept.with().iter() {
-                    let attribute = field.the().to_string();
-                    if seen.insert(attribute.clone(), name.clone()).is_some() {
-                        *shared.entry(attribute).or_default() += 1;
-                    }
+                    claimants
+                        .entry(field.the().to_string())
+                        .or_default()
+                        .insert(index);
                 }
             }
         }
+        let shared: std::collections::BTreeMap<String, usize> = claimants
+            .into_iter()
+            .filter(|(_, registrations)| registrations.len() > 1)
+            .map(|(attribute, registrations)| (attribute, registrations.len()))
+            .collect();
         assert_eq!(
             shared,
-            [("dom.event/time-stamp".to_owned(), 2)]
-                .into_iter()
-                .collect(),
-            "the legacy timestamp is the one attribute two commands share; another \
-             would be claimed by whichever registered first"
+            [
+                (
+                    "dom.event.current-target.elements.email/value".to_owned(),
+                    2
+                ),
+                ("dom.event.current-target/value".to_owned(), 2),
+                ("dom.event/time-stamp".to_owned(), 3),
+            ]
+            .into_iter()
+            .collect(),
+            "the legacy shapes' shared attributes are the only ones two commands claim; \
+             another would be run by whichever registered first"
         );
     }
 
