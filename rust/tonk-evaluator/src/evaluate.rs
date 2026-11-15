@@ -56,7 +56,7 @@ use std::collections::BTreeMap;
 
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
-use dialog_corpus::{Entity, Preload, Speculation, Value};
+use dialog_corpus::{Changes, Entity, Preload, Speculation, Statement as _, Value};
 use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
@@ -421,6 +421,12 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         // where the caller reads it back; the count is only for a caller
         // that must refuse a document carrying any before it commits.
         let mut commands = 0usize;
+        // The document's writes, in order, as one batch each: what the
+        // transaction is handed below, and what a caller committing
+        // through the stack's invocation rather than this transaction
+        // asserts and invokes.
+        let mut changes = Changes::new();
+        let mut dispatched = Changes::new();
         // Retraction targets resolved by querying the branch
         // up-front so we don't interleave reads with mutation
         // accumulation against the transaction.
@@ -460,10 +466,10 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                 claim_count += 2 + tonk_schema::rule::reads_entities(rule).len();
                             }
                             if dispatch {
-                                txn = txn.dispatch(plan);
+                                plan.assert(&mut dispatched);
                                 commands += 1;
                             } else {
-                                txn = txn.assert(plan);
+                                plan.assert(&mut changes);
                             }
                         }
                         Statement::Retract(application) => {
@@ -485,12 +491,12 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                     // canonical encoding makes the
                                     // dissociate byte-exact.
                                     claim_count += 2 + tonk_schema::rule::on_entities(&rule).len();
-                                    txn = txn.retract(*rule);
+                                    rule.retract(&mut changes);
                                 }
                                 ApplicationPlan::DeductiveRule(rule) => {
                                     claim_count +=
                                         2 + tonk_schema::rule::reads_entities(&rule).len();
-                                    txn = txn.retract(*rule);
+                                    rule.retract(&mut changes);
                                 }
                             }
                         }
@@ -498,10 +504,14 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                 }
             }
             for claim in retract_claims {
-                txn = txn.retract(claim);
+                claim.retract(&mut changes);
             }
         }
         commits.claims = claim_count;
+        // The same writes, in the same order, into the transaction: its
+        // overlay answers the post-mutation reads, and a caller that
+        // commits it writes what `changes` and `dispatched` hold.
+        txn = txn.assert(changes.clone()).dispatch(dispatched.clone());
 
         let matches = render_match_blocks(&analysis.analysis, pre_results.as_ref());
 
@@ -519,6 +529,8 @@ impl<'s, 'a> Evaluate<'s, 'a> {
             commits,
             analysis,
             commands,
+            changes,
+            dispatched,
         })
     }
 }
@@ -554,6 +566,19 @@ pub struct Evaluated<'a> {
     /// them (one committing outside a session) refuses a document with
     /// any.
     pub commands: usize,
+    /// The document's durable writes, asserts and retracts in order, as
+    /// the transaction was handed them: for a caller that commits them
+    /// through the stack's own invocation ([`Stack::assert`]) instead,
+    /// to get the report of what the dispatch landed.
+    ///
+    /// [`Stack::assert`]: dialog_repository::Stack::assert
+    pub changes: Changes,
+    /// The commands the document dispatched, as rows: what
+    /// [`commands`](Self::commands) counts, for a caller invoking them
+    /// through the stack ([`Invocation::invoke`]).
+    ///
+    /// [`Invocation::invoke`]: dialog_repository::Invocation::invoke
+    pub dispatched: Changes,
 }
 
 impl<'a> Evaluated<'a> {

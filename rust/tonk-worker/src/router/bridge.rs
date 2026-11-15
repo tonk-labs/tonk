@@ -392,6 +392,7 @@ async fn handle_evaluate(
             &tonk,
             &binding.repo,
             &binding.branch,
+            Some(client.clone()),
             body,
             transact,
         )
@@ -421,13 +422,13 @@ async fn handle_evaluate(
                 }),
             )
             .await;
-            if let Some(commands) = commands {
+            if let Some(effect) = commands {
                 let origin = crate::router::CommandOrigin {
                     repo: binding.repo,
                     branch: binding.branch,
                     client: Some(client.clone()),
                 };
-                crate::router::run_commands(&state, origin, commands).await;
+                crate::router::run_commands(&state, origin, Some(effect)).await;
             }
         }
         Err(e) => {

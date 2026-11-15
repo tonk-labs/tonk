@@ -7,9 +7,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use dialog_corpus::Statement;
-use dialog_corpus::{Changes, Pick, Update as _};
 use dialog_query::ConceptQuery;
-use dialog_repository::{Arrivals, Branch, Stack, control_layer};
+use dialog_repository::{Branch, CommitError, Stack};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
@@ -37,12 +36,9 @@ pub struct BranchState {
     ///
     /// [`acquire`]: crate::BranchReference::acquire
     stack: Stack,
-    /// The one reader of what lands on the outside end of the stack's
-    /// `control:` channel: every row a published dispatch leaves there,
-    /// each once, oldest first. Read under the transactor lock right
-    /// after a dispatch ([`Self::landed`]), so what it yields is that
-    /// dispatch's commands and no other writer's.
-    arrivals: Mutex<Arrivals>,
+    /// Whether the embedder has registered its providers on the stack
+    /// ([`provide_once`](Self::provide_once)).
+    provided: std::sync::atomic::AtomicBool,
     /// Subscriptions on this branch, keyed by query hash, in the order
     /// they were created. [`Self::poll`] walks them lowest level first (see
     /// [`Subscription::level`]), creation order breaking ties.
@@ -77,13 +73,10 @@ impl BranchState {
     /// Construct a fresh state over an open branch and the stack opened
     /// over it.
     pub fn new(branch: Branch, stack: Stack) -> Self {
-        let arrivals = stack
-            .arrivals_rows(&control_layer())
-            .expect("every stack holds control:");
         Self {
             branch,
             stack,
-            arrivals: Mutex::new(arrivals),
+            provided: std::sync::atomic::AtomicBool::new(false),
             subscriptions: Mutex::new(IndexMap::new()),
             transactor: tokio::sync::Mutex::new(()),
             migration_claimed: std::sync::atomic::AtomicBool::new(false),
@@ -123,17 +116,27 @@ impl BranchState {
         &self.stack
     }
 
-    /// The commands that landed on the stack's `control:` channel since
-    /// the last call: every fact a published dispatch left there, as one
-    /// batch, each once. A caller that reads right after its own
-    /// dispatch, still holding the transactor lock, reads that
-    /// dispatch's commands alone.
-    pub fn landed(&self) -> Changes {
-        let mut commands = Changes::new();
-        for fact in self.arrivals.lock().rows() {
-            commands.associate(fact.the, fact.of, fact.is, Pick::All);
+    /// Register the embedder's providers on the stack, once per
+    /// `BranchState`: `provide` runs the first time, and a later call
+    /// returns at once. The state is opened by whoever acquires the
+    /// branch first, with no embedder state in hand, so the embedder
+    /// registers here, when it first performs an effect on the branch,
+    /// which is before any provider is looked up. A registration that
+    /// fails is reported and leaves the state unprovided, so the next
+    /// call tries again.
+    pub fn provide_once<F>(&self, provide: F) -> Result<(), CommitError>
+    where
+        F: FnOnce(&Stack) -> Result<(), CommitError>,
+    {
+        use std::sync::atomic::Ordering;
+        if self
+            .provided
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
         }
-        commands
+        provide(&self.stack).inspect_err(|_| self.provided.store(false, Ordering::Release))
     }
 
     /// The per-branch transaction lock. A transaction takes it

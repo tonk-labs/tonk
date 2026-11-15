@@ -1,41 +1,73 @@
 //! Command registration and the providers' run after a commit.
 //!
-//! [`command_providers`] builds the two command vocabularies the worker
-//! carries on [`TonkState`] — one for the profile branch's session, one
-//! for the space (content) branches' — and [`run_commands`] runs the
-//! commands a dispatch landed in its session's `control:` layer against
-//! the vocabulary its origin selects.
+//! [`command_providers`] builds the worker's command vocabulary, carried
+//! on [`TonkState`]: one [`Registration`] per command, each naming the
+//! surface it runs on ([`Surface`]). The vocabulary is registered on a
+//! branch's dialog stack as that stack's providers
+//! ([`CommandProviders::provide`], once per branch, through
+//! [`BranchState::provide_once`]), and [`run_commands`] performs the
+//! effect a dispatch landed: dialog runs the provider claiming each
+//! command and writes its lifecycle rows, and the worker drains the
+//! polls the request scheduled after.
 //!
 //! A command is a claim of a transient concept. A transaction through
 //! the reactor writes it `.at(control_layer())`, so dialog takes it as
 //! the dispatch's stimulus (the branch's rules read it for one tick) and,
-//! once the dispatch has published, lands it in the session's `control:`
-//! layer for one instant. The committing route reads that instant back
-//! ([`Commit::dispatch`](crate::reactor::Commit::dispatch), through
-//! [`Stack::arrivals_rows`](dialog_repository::Stack::arrivals_rows)) and
-//! hands the rows here; nothing of a command is stored or replicated.
+//! once the dispatch has published, lands it in the stack's `control:`
+//! layer for one instant, which the dispatch's report names
+//! ([`Landed::effect`](crate::reactor::Landed::effect)). Nothing of a
+//! command is stored or replicated.
 //!
 //! A command is a [`dialog_capability::Command`] run by a
 //! [`Provider<C>`](dialog_capability::Provider) — there is no handler
 //! function. The provider is [`CommandEnv`], a cheap handle over
 //! [`AppState`]; registering a command requires `CommandEnv: Provider<C>`,
 //! so capability is a compile-time gate. A command is self-contained: its
-//! `execute` does its own IO and commits its own outcomes through the env.
+//! `execute` does its own IO and commits its own outcomes through the env,
+//! and answers dialog with no rows of its own.
+//!
+//! The stack provider for a command is built per branch
+//! ([`Scope`]): its handler captures the state and the branch the stack
+//! is of, takes the tick the command landed in ([`Tick`]: the asking
+//! client, `control: tonk.session/client client:<id>`, which the
+//! committing route stamps beside the commands), decodes the command
+//! exactly as before ([`Decode`], [`Migrated`]) and runs
+//! `Provider::execute`. A command sent for a branch that has no stack
+//! yet (an absent repository, a branch nobody has made) goes through
+//! the profile's stack with its origin in the tick's rows
+//! ([`relay_commands`]).
+//!
+//! A tick's rows are the `control:` entity's, not any command's, and
+//! dialog hands a handler the command's rows alone, so [`run_commands`]
+//! reads the tick from the effect it is about to perform and leaves it
+//! for the handler under each command's entity
+//! ([`CommandProviders::record`]).
 //!
 //! [`TonkState`]: crate::worker::TonkState
+//! [`BranchState::provide_once`]: crate::reactor::BranchState::provide_once
 
-use dialog_corpus::Changes;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use dialog_capability::{Command, Provider};
+use dialog_common::{ConditionalSend, ConditionalSync};
+use dialog_corpus::{Changes, Entity, Fact, Value};
+use dialog_query::ConceptDescriptor;
+use dialog_query::attribute::The;
+use dialog_repository::{
+    CommitError, Effect, EffectReport, Failure, Provider as CommandProvider, Stack, control_layer,
+};
 use tonk_common::log;
 
 use super::AppState;
-use crate::reactor::CommandRegistry;
+use crate::reactor::{Decode, Migrated, control, stamp};
 
 /// The environment commands run against — a cheap handle (clone of
 /// [`AppState`]) that implements
 /// [`Provider<C>`](dialog_capability::Provider) for each command `C` the
-/// worker supports. The dispatcher hands a clone to the matched command;
-/// `execute` does the work, reaching the operator/reactor by re-locking
-/// through the `AppState`.
+/// worker supports. The stack provider hands a clone to the decoded
+/// command; `execute` does the work, reaching the operator/reactor by
+/// re-locking through the `AppState`.
 ///
 /// Capability is structural: a command runs iff `CommandEnv: Provider<C>`
 /// is implemented. Registering a command requires that bound, so an
@@ -48,12 +80,18 @@ pub struct CommandEnv {
     origin: CommandOrigin,
 }
 
-/// The repository + branch a command was triggered in. Captured at the
-/// dispatch site (the transact handler holds the committing
-/// `BranchReference`, which knows both names) and carried on the env so
-/// a handler can act on "the branch I fired in" without the command
-/// re-carrying that context as a field.
-#[derive(Clone, Debug, Default)]
+/// The repository + branch a command was triggered in, and the client
+/// that asked. The repository and branch are the stack's the command
+/// landed on, unless the tick it landed in says otherwise
+/// ([`control::repo`], [`control::branch`]: a command relayed through
+/// the profile's stack for a branch that has no stack yet); the client
+/// is the tick's [`control::client`] row, which the committing route
+/// stamps beside the commands.
+///
+/// [`control::repo`]: crate::reactor::control::repo
+/// [`control::branch`]: crate::reactor::control::branch
+/// [`control::client`]: crate::reactor::control::client
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommandOrigin {
     /// The repository name (its routing key).
     pub repo: String,
@@ -66,6 +104,98 @@ pub struct CommandOrigin {
     /// branch a subscription could observe, so the originating client is
     /// the only channel back to the page that asked for the effect.
     pub client: Option<crate::router::ClientId>,
+}
+
+impl CommandOrigin {
+    /// The origin of a command that landed on `stack`'s branch in
+    /// `tick`: the branch the tick names, else the stack's own, and the
+    /// tick's client.
+    fn of_tick(stack: &Scope, tick: Option<Tick>) -> Self {
+        let tick = tick.unwrap_or_default();
+        let (repo, branch) = match (tick.repo, tick.branch) {
+            (Some(repo), Some(branch)) => (repo, branch),
+            _ => (stack.repo.clone(), stack.branch.clone()),
+        };
+        Self {
+            repo,
+            branch,
+            client: tick.client,
+        }
+    }
+}
+
+/// What the `control:` entity's rows say of one tick: who asked for its
+/// commands, and which branch they were sent for when it is not the
+/// stack's own. Read from the tick an effect performs
+/// ([`Tick::of_effect`]) and kept for each of its commands until the
+/// command's handler runs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Tick {
+    /// The asking client, from `control: tonk.session/client client:<id>`.
+    pub client: Option<crate::router::ClientId>,
+    /// The repository the commands were sent for, from
+    /// `control: tonk.session/repo`.
+    pub repo: Option<String>,
+    /// The branch the commands were sent for, from
+    /// `control: tonk.session/branch`.
+    pub branch: Option<String>,
+}
+
+impl Tick {
+    /// The tick `effect` performs, from the rows of the `control:`
+    /// entity among what landed; `None` when the tick carries none.
+    pub fn of_effect(effect: &Effect) -> Option<Self> {
+        let control = control_layer();
+        let rows = effect
+            .commands()
+            .iter()
+            .find(|(entity, _)| *entity == control)
+            .map(|(_, rows)| rows.as_slice())?;
+        let text = |the: dialog_corpus::Relation| {
+            rows.iter().find_map(|row| match &row.is {
+                Value::String(text) if row.the == the => Some(text.clone()),
+                _ => None,
+            })
+        };
+        Some(Self {
+            client: rows.iter().find_map(|row| match &row.is {
+                Value::Entity(entity) if row.the == control::client() => {
+                    control::client_id(entity).map(crate::router::ClientId)
+                }
+                _ => None,
+            }),
+            repo: text(control::repo()),
+            branch: text(control::branch()),
+        })
+    }
+
+    /// Write this tick's rows on the `control:` entity into `changes`'
+    /// `control:` share, beside the commands written there.
+    fn stamp(&self, changes: &mut Changes) {
+        if let Some(client) = &self.client {
+            client_row(changes, client);
+        }
+        if let Some(repo) = &self.repo {
+            stamp(changes, control::repo(), Value::String(repo.clone()));
+        }
+        if let Some(branch) = &self.branch {
+            stamp(changes, control::branch(), Value::String(branch.clone()));
+        }
+    }
+}
+
+/// Write the asking `client` as the tick's `control: tonk.session/client
+/// client:<id>` row into `changes`' `control:` share, beside the
+/// commands written there. A client id that makes no URI is not
+/// written.
+pub(crate) fn client_row(changes: &mut Changes, client: &crate::router::ClientId) {
+    match control::client_entity(&client.0) {
+        Some(entity) => stamp(changes, control::client(), Value::Entity(entity)),
+        None => log!(
+            "commands: client id {:?} makes no entity; not stamped",
+            client.0
+        ),
+    }
 }
 
 impl CommandEnv {
@@ -125,66 +255,311 @@ impl CommandEnv {
     }
 }
 
-/// The worker's two command vocabularies, selected per dispatch by the
-/// triggering commit's [`CommandOrigin`].
+/// Where a command runs: the profile branch — the Hub/FAB evaluation
+/// surface, the one the user actually drives — a space (content)
+/// branch, or either.
 ///
-/// This is the registry-level expression of the containment rule
+/// This is the vocabulary-level expression of the containment rule
 /// [`CommandEnv::may_target_space`] enforces per provider: WHERE a
-/// transient committed decides WHAT it can mean. The profile branch —
-/// the Hub/FAB evaluation surface, the one the user actually drives —
-/// carries the full vocabulary. A space (content) branch carries only
-/// the commands that are genuinely that space's to run; everything else
-/// (space lifecycle, joins, account/passkey ceremonies, member
-/// promotion) simply does not exist there, so a same-shaped fact
-/// committed on a joined space's branch matches nothing instead of
-/// relying on each provider to notice and refuse.
-pub struct CommandProviders {
-    /// The full vocabulary — every command the worker supports.
-    profile: CommandRegistry<CommandEnv>,
-    /// What a space branch may run on itself: loading a site
-    /// ([`Load`](tonk_schema::command::Load), whose target IS the
-    /// origin), renaming itself
-    /// ([`RenameRepository`](tonk_schema::command::RenameRepository),
-    /// which names its space and is refused cross-space by
-    /// `may_target_space`), requesting an invite for itself (the space
-    /// view's share surface dispatches on the space branch and its
-    /// refusal publishes there), and — until membership moves fully
-    /// profile-side —
-    /// [`ExpelMember`](tonk_schema::command::ExpelMember), whose target
-    /// is likewise the origin space, and installing a library component
-    /// ([`InstallComponent`](tonk_schema::command::InstallComponent)) into
-    /// the origin space, which the profile has none of.
-    space: CommandRegistry<CommandEnv>,
+/// transient committed decides WHAT it can mean. The profile carries
+/// the full vocabulary. A space branch carries only the commands that
+/// are genuinely that space's to run; everything else (space lifecycle,
+/// joins, account/passkey ceremonies, member promotion) simply does not
+/// exist there, so a same-shaped fact committed on a joined space's
+/// branch is refused instead of relying on each provider to notice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    /// The profile branch alone.
+    Profile,
+    /// A space branch alone: what the profile has none of.
+    Space,
+    /// Either: a space acting on itself, dispatchable from the profile
+    /// too — the FAB is routeless.
+    Both,
 }
 
-impl CommandProviders {
-    /// Build the pair explicitly. Production uses
-    /// [`command_providers`]; tests use this to install doubles.
-    pub fn new(profile: CommandRegistry<CommandEnv>, space: CommandRegistry<CommandEnv>) -> Self {
-        Self { profile, space }
-    }
-
-    /// The vocabulary for a commit that landed at `origin`: the full
-    /// set for the profile branch, the space set for a content branch.
-    pub fn select(&self, origin: &CommandOrigin) -> &CommandRegistry<CommandEnv> {
-        if origin.repo.is_empty() {
-            &self.profile
-        } else {
-            &self.space
+impl Surface {
+    /// Whether a command of this surface may run from `origin`.
+    pub fn admits(self, origin: &CommandOrigin) -> bool {
+        match self {
+            Surface::Profile => origin.repo.is_empty(),
+            Surface::Space => !origin.repo.is_empty(),
+            Surface::Both => true,
         }
     }
 }
 
-impl Default for CommandProviders {
-    fn default() -> Self {
-        Self::new(CommandRegistry::new(), CommandRegistry::new())
+/// What a stack's providers are built for: the state they re-lock
+/// through, and the branch the stack is of — the origin of every
+/// command that lands on it, unless the command's rows say otherwise.
+#[derive(Clone)]
+pub struct Scope {
+    /// The shared state the providers' commands run against.
+    pub state: AppState,
+    /// The repository the stack's branch is of; empty for the profile.
+    pub repo: String,
+    /// The stack's branch.
+    pub branch: String,
+    /// The tick each pending command landed in, by the command's entity:
+    /// what [`run_commands`] leaves for the handlers of the effect it
+    /// performs ([`CommandProviders::record`]).
+    ticks: Ticks,
+}
+
+/// The ticks of the commands whose effects are being performed, by
+/// command entity: one table for the worker, since a command's entity
+/// names it on every stack.
+type Ticks = Arc<Mutex<HashMap<Entity, Tick>>>;
+
+/// A command's decode, from the rows of its entity.
+#[cfg(not(target_arch = "wasm32"))]
+type Decoder<C> = Arc<dyn Fn(&[Fact]) -> Option<C> + Send + Sync>;
+/// A command's decode, from the rows of its entity.
+#[cfg(target_arch = "wasm32")]
+type Decoder<C> = Arc<dyn Fn(&[Fact]) -> Option<C>>;
+
+/// Builds a registration's stack providers for one scope.
+#[cfg(not(target_arch = "wasm32"))]
+type Build = Arc<dyn Fn(&Scope) -> Vec<CommandProvider> + Send + Sync>;
+/// Builds a registration's stack providers for one scope.
+#[cfg(target_arch = "wasm32")]
+type Build = Arc<dyn Fn(&Scope) -> Vec<CommandProvider>>;
+
+/// One command the worker provides: the concepts its rows decode from,
+/// the surface it runs on, and how to build its stack providers for a
+/// branch. A stack provider claims a landed command by the attributes
+/// of its concept's fields ([`dialog_repository::Provider::claims`]),
+/// one provider per concept, so a migrated command registers one for
+/// its current shape and one for its legacy shape, both decoding to the
+/// current one.
+pub struct Registration {
+    surface: Surface,
+    concepts: Vec<&'static ConceptDescriptor>,
+    build: Build,
+}
+
+impl Registration {
+    /// Where the command runs.
+    pub fn surface(&self) -> Surface {
+        self.surface
+    }
+
+    /// The concepts whose commands this registration's providers claim.
+    pub fn concepts(&self) -> &[&'static ConceptDescriptor] {
+        &self.concepts
+    }
+
+    /// Whether a stack provider of this registration claims the command
+    /// whose rows are `rows`: one of the rows has an attribute one of
+    /// the concepts' fields names (or, for a collection field, lies in
+    /// its domain). The rule is dialog's
+    /// ([`dialog_repository::Provider::claims`]); this is the same
+    /// test without a provider in hand.
+    pub fn claims(&self, rows: &[Fact]) -> bool {
+        rows.iter().any(|row| {
+            self.concepts.iter().any(|concept| {
+                concept.with().iter().any(|(_, field)| match field.the() {
+                    The::Relation(_) => field.the().attribute().as_ref() == Some(&row.the),
+                    The::Collection { domain, .. } => row.the.domain() == domain.as_str(),
+                })
+            })
+        })
+    }
+
+    /// Whether the command may run from `origin`.
+    pub fn admits(&self, origin: &CommandOrigin) -> bool {
+        self.surface.admits(origin)
+    }
+
+    /// The stack providers of this command for `scope`, one per concept.
+    pub fn providers(&self, scope: &Scope) -> Vec<CommandProvider> {
+        (self.build)(scope)
     }
 }
 
-/// Build both command vocabularies. Registration is just the type — the
-/// behaviour is the `Provider<C>` impl on [`CommandEnv`].
+/// The worker's command vocabulary: every command it provides, each with
+/// the surface it runs on. Registered on each branch's stack as its
+/// providers ([`provide`](Self::provide)).
+#[derive(Default)]
+pub struct CommandProviders {
+    registrations: Vec<Registration>,
+    ticks: Ticks,
+}
+
+impl CommandProviders {
+    /// An empty vocabulary. Production uses [`command_providers`]; tests
+    /// use this to install doubles.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register the command type `C`, run on `surface`. Lighter than
+    /// passing a handler: the behaviour is the
+    /// [`Provider<C>`](dialog_capability::Provider) impl on
+    /// [`CommandEnv`], so registration is just the type. The
+    /// `CommandEnv: Provider<C>` bound means a command can only be
+    /// registered if the env has the capability to run it. Chainable.
+    pub fn command<C>(self, surface: Surface) -> Self
+    where
+        C: Decode + Command<Input = C, Output = ()> + ConditionalSend + ConditionalSync + 'static,
+        CommandEnv: Provider<C>,
+    {
+        let decode: Decoder<C> = Arc::new(|rows| {
+            crate::reactor::facts_entity(rows).and_then(|this| C::decode(this, rows))
+        });
+        self.register(surface, C::concepts(), decode)
+    }
+
+    /// Register the command type `Current`, also accepting the
+    /// deprecated `Legacy` shape on its behalf and converting it. The
+    /// [`Self::command`] counterpart for a command whose shape changed;
+    /// see [`Migrated`]. Chainable.
+    pub fn migrated<Current, Legacy>(self, surface: Surface) -> Self
+    where
+        Current: Decode
+            + Command<Input = Current, Output = ()>
+            + ConditionalSend
+            + ConditionalSync
+            + 'static,
+        Legacy: Decode + Into<Current> + ConditionalSend + ConditionalSync + 'static,
+        CommandEnv: Provider<Current>,
+    {
+        let migrated: Migrated<Current, Legacy> = Migrated::new();
+        let decode: Decoder<Current> = Arc::new(move |rows| migrated.decode(rows));
+        self.register(surface, Migrated::<Current, Legacy>::concepts(), decode)
+    }
+
+    /// Register a command decoding through `decode`, claimed by
+    /// `concepts`: one stack provider per concept, all running the
+    /// [`Provider<C>`](dialog_capability::Provider) impl on
+    /// [`CommandEnv`].
+    fn register<C>(
+        mut self,
+        surface: Surface,
+        concepts: Vec<&'static ConceptDescriptor>,
+        decode: Decoder<C>,
+    ) -> Self
+    where
+        C: Command<Input = C, Output = ()> + ConditionalSend + ConditionalSync + 'static,
+        CommandEnv: Provider<C>,
+    {
+        let claimed = concepts.clone();
+        let build: Build = Arc::new(move |scope: &Scope| {
+            claimed
+                .iter()
+                .map(|concept| {
+                    let scope = scope.clone();
+                    let decode = decode.clone();
+                    let concept = *concept;
+                    CommandProvider::new(concept, move |command: dialog_repository::Command| {
+                        // Decode synchronously, then hand the owned command
+                        // and an env clone to the future dialog awaits: the
+                        // provider's `execute` re-locks through the env, so
+                        // nothing here holds a lock.
+                        let rows = command.rows();
+                        let tick = scope
+                            .ticks
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .remove(command.entity());
+                        let origin = CommandOrigin::of_tick(&scope, tick);
+                        let admitted = surface.admits(&origin);
+                        let decoded = decode(rows);
+                        let env = CommandEnv::new(scope.state.clone(), origin);
+                        let name = concept.this();
+                        async move {
+                            if !admitted {
+                                return Err(Failure::new(format!(
+                                    "{name} is no command of {}",
+                                    if env.from_profile() {
+                                        "the profile".to_owned()
+                                    } else {
+                                        format!("space '{}'", env.origin().repo)
+                                    }
+                                )));
+                            }
+                            let Some(command) = decoded else {
+                                return Err(Failure::new(format!(
+                                    "the rows do not decode as {name}"
+                                )));
+                            };
+                            env.execute(command).await;
+                            Ok(Changes::new())
+                        }
+                    })
+                })
+                .collect()
+        });
+        self.registrations.push(Registration {
+            surface,
+            concepts,
+            build,
+        });
+        self
+    }
+
+    /// Every command registered, in registration order — the order
+    /// dialog tries their providers in.
+    pub fn registrations(&self) -> &[Registration] {
+        &self.registrations
+    }
+
+    /// `true` when nothing is registered.
+    pub fn is_empty(&self) -> bool {
+        self.registrations.is_empty()
+    }
+
+    /// Register every command's providers on `stack`, built for the
+    /// branch at `repo` / `branch` over `state`. Done once per branch,
+    /// through
+    /// [`BranchState::provide_once`](crate::reactor::BranchState::provide_once).
+    pub fn provide(
+        &self,
+        stack: &Stack,
+        state: AppState,
+        repo: String,
+        branch: String,
+    ) -> Result<(), CommitError> {
+        let scope = Scope {
+            state,
+            repo,
+            branch,
+            ticks: self.ticks.clone(),
+        };
+        for registration in &self.registrations {
+            for provider in registration.providers(&scope) {
+                stack.provide(provider)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Leave the tick `effect` performs for the handlers of its
+    /// commands, under each command's entity. Dialog hands a handler
+    /// the command's rows alone, and the tick's rows are the `control:`
+    /// entity's; a handler takes its command's entry as it runs, so
+    /// effects performed at the same time do not mix.
+    pub fn record(&self, effect: &Effect) {
+        let Some(tick) = Tick::of_effect(effect) else {
+            return;
+        };
+        let control = control_layer();
+        let mut ticks = self
+            .ticks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (entity, _) in effect.commands() {
+            if *entity != control {
+                ticks.insert(entity.clone(), tick.clone());
+            }
+        }
+    }
+}
+
+/// Build the command vocabulary. Registration is just the type and the
+/// surface — the behaviour is the `Provider<C>` impl on [`CommandEnv`].
 ///
-/// The same vocabularies build for EVERY target — the browser, the CLI,
+/// The same vocabulary builds for EVERY target — the browser, the CLI,
 /// a TUI, a test. A command whose effect needs a page (a passkey
 /// ceremony, a redirect) still registers everywhere; its provider
 /// refuses visibly on a host without one rather than silently not
@@ -192,11 +567,6 @@ impl Default for CommandProviders {
 /// `cfg` sits on that leaf (`delete_space_storage_for`,
 /// `worker_origin`, the `navigate` client messaging), never on a
 /// registration.
-pub fn command_providers() -> CommandProviders {
-    CommandProviders::new(profile_commands(), space_commands())
-}
-
-/// The profile branch's vocabulary: everything.
 ///
 /// Three commands register through wrapper request types rather than
 /// their schema concept, because their transients carry facts outside
@@ -215,78 +585,26 @@ pub fn command_providers() -> CommandProviders {
 /// registered against it would attach the remote to a brand-new space
 /// rather than the existing one the FAB names.
 ///
+/// A space branch runs only what is genuinely its own: loading a site
+/// ([`Load`](tonk_schema::command::Load), whose target IS the origin),
+/// renaming itself
+/// ([`RenameRepository`](tonk_schema::command::RenameRepository), which
+/// names its space and is refused cross-space by `may_target_space`),
+/// requesting an invite for itself (the space view's share surface
+/// dispatches on the space branch and its refusal publishes there),
+/// and — until membership moves fully profile-side —
+/// [`ExpelMember`](tonk_schema::command::ExpelMember), whose target is
+/// likewise the origin space, and installing a library component
+/// ([`InstallComponent`](tonk_schema::command::InstallComponent)) into
+/// the origin space, which the profile has none of.
+///
 /// [`CreateSpaceRequest`]: super::repository::CreateSpaceRequest
 /// [`InviteRequest`]: super::repository::InviteRequest
 /// [`EnableSyncRequest`]: super::repository::EnableSyncRequest
-fn profile_commands() -> CommandRegistry<CommandEnv> {
-    CommandRegistry::new()
-        .command::<super::repository::CreateSpaceRequest>()
-        .command::<super::repository::InviteRequest>()
-        .command::<super::repository::AgentHandoffRequest>()
-        .command::<super::repository::EnableSyncRequest>()
-        .command::<tonk_schema::command::Load>()
-        .command::<tonk_schema::command::PromoteMember>()
-        .command::<tonk_schema::command::PublishSpace>()
-        .command::<tonk_schema::command::UnpublishSpace>()
-        .command::<tonk_schema::command::InviteAgent>()
-        .command::<tonk_schema::command::InviteByEmail>()
-        .command::<tonk_schema::command::EnrollCustomer>()
-        .command::<tonk_schema::command::ResendActivation>()
-        .command::<tonk_schema::command::DeleteAccount>()
-        .command::<tonk_schema::command::SendEmailInvitation>()
-        .command::<tonk_schema::command::ClaimEmailInvitation>()
-        .command::<super::ceremony::AuthorizeDeviceRequest>()
-        // Signing in through another deployment is new, so neither half
-        // has a legacy shape to migrate.
-        .command::<tonk_schema::command::SignInVia>()
-        .command::<tonk_schema::command::FinishSignInVia>()
-        .migrated::<tonk_schema::command::AddPasskey, tonk_schema::command::legacy::AddPasskey>()
-        .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
-        .migrated::<tonk_schema::command::RemoveSpace, tonk_schema::command::legacy::RemoveSpace>()
-        .migrated::<tonk_schema::command::Join, tonk_schema::command::legacy::Join>()
-        .migrated::<tonk_schema::command::CheckEmail, tonk_schema::command::legacy::CheckEmail>()
-        .migrated::<tonk_schema::command::RegisterAccount, tonk_schema::command::legacy::RegisterAccount>()
-        .migrated::<tonk_schema::command::PauseSync, tonk_schema::command::legacy::PauseSync>()
-        .migrated::<tonk_schema::command::ProfileRename, tonk_schema::command::legacy::ProfileRename>()
-        .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
-        // Replication and update checks are the Hub's to ask for: it is
-        // the surface that lists spaces this device may not hold, and
-        // `ForgetInvite` clears a row that lives on this branch anyway.
-        // Switching profiles is new, so it has no legacy shape to migrate.
-        .command::<tonk_schema::command::AddProfile>()
-        .command::<tonk_schema::command::SwitchProfile>()
-        .command::<tonk_schema::command::SignOut>()
-        .command::<tonk_schema::command::Home>()
-        // The bar's own acts: each records a request on the asking tab's
-        // site, which that tab's bar performs (see `site_request`).
-        .command::<tonk_schema::command::AddAccount>()
-        .command::<tonk_schema::command::ShareLink>()
-        .command::<tonk_schema::command::ViewMembers>()
-        .command::<tonk_schema::command::ConnectAgent>()
-        .command::<tonk_schema::command::ConnectSpace>()
-        // Opens the introspection overlay; the same site-request shape,
-        // answered by the overlay rather than the bar.
-        .command::<tonk_schema::command::Inspect>()
-        // What the page in a tab has selected, recorded on its site.
-        .command::<tonk_schema::command::SiteSelect>()
-        // A branch a page asked for that its space does not have yet.
-        .command::<tonk_schema::command::CreateBranch>()
-        // What was typed in the command palette, interpreted.
-        .command::<tonk_schema::command::Interpret>()
-        .command::<tonk_schema::command::ReplicateSpace>()
-        .command::<tonk_schema::command::ForgetInvite>()
-        .command::<tonk_schema::command::CheckUpdate>()
-}
-
-/// A space branch's vocabulary — see [`CommandProviders`] for why each
-/// of the three is here and nothing else is.
-fn space_commands() -> CommandRegistry<CommandEnv> {
-    CommandRegistry::new()
-        .command::<tonk_schema::command::Load>()
-        // What the space's page has selected, recorded on the tab's site.
-        .command::<tonk_schema::command::SiteSelect>()
-        // What was typed in the command palette, against this space's commands.
-        .command::<tonk_schema::command::Interpret>()
+pub fn command_providers() -> CommandProviders {
+    use Surface::{Both, Profile, Space};
+    CommandProviders::new()
+        .command::<super::repository::CreateSpaceRequest>(Profile)
         // A space may request an invite FOR ITSELF: the space view's
         // blank-canvas share (and the seeded `tonk:invite` descriptor)
         // dispatches on the space's own branch, and the refusal flow
@@ -294,99 +612,171 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // overlay. `may_target_space` keeps it self-scoped — a space
         // cannot mint for another space. Profile-side is still the
         // destination once that surface moves.
-        .command::<super::repository::InviteRequest>()
+        .command::<super::repository::InviteRequest>(Both)
+        .command::<super::repository::AgentHandoffRequest>(Both)
+        .command::<super::repository::EnableSyncRequest>(Profile)
+        .command::<tonk_schema::command::Load>(Both)
+        .command::<tonk_schema::command::PromoteMember>(Profile)
+        .command::<tonk_schema::command::PublishSpace>(Profile)
+        .command::<tonk_schema::command::UnpublishSpace>(Profile)
+        .command::<tonk_schema::command::InviteAgent>(Profile)
+        .command::<tonk_schema::command::InviteByEmail>(Profile)
+        .command::<tonk_schema::command::EnrollCustomer>(Profile)
+        .command::<tonk_schema::command::ResendActivation>(Profile)
+        .command::<tonk_schema::command::DeleteAccount>(Profile)
+        .command::<tonk_schema::command::SendEmailInvitation>(Profile)
+        .command::<tonk_schema::command::ClaimEmailInvitation>(Profile)
+        .command::<super::ceremony::AuthorizeDeviceRequest>(Profile)
+        // Signing in through another deployment is new, so neither half
+        // has a legacy shape to migrate.
+        .command::<tonk_schema::command::SignInVia>(Profile)
+        .command::<tonk_schema::command::FinishSignInVia>(Profile)
+        .migrated::<tonk_schema::command::AddPasskey, tonk_schema::command::legacy::AddPasskey>(Profile)
+        .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>(Both)
+        .migrated::<tonk_schema::command::RemoveSpace, tonk_schema::command::legacy::RemoveSpace>(Profile)
+        .migrated::<tonk_schema::command::Join, tonk_schema::command::legacy::Join>(Profile)
+        .migrated::<tonk_schema::command::CheckEmail, tonk_schema::command::legacy::CheckEmail>(Profile)
+        .migrated::<tonk_schema::command::RegisterAccount, tonk_schema::command::legacy::RegisterAccount>(Profile)
+        .migrated::<tonk_schema::command::PauseSync, tonk_schema::command::legacy::PauseSync>(Profile)
+        .migrated::<tonk_schema::command::ProfileRename, tonk_schema::command::legacy::ProfileRename>(Profile)
+        .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>(Both)
+        // Replication and update checks are the Hub's to ask for: it is
+        // the surface that lists spaces this device may not hold, and
+        // `ForgetInvite` clears a row that lives on this branch anyway.
+        // Switching profiles is new, so it has no legacy shape to migrate.
+        .command::<tonk_schema::command::AddProfile>(Profile)
+        .command::<tonk_schema::command::SwitchProfile>(Profile)
+        .command::<tonk_schema::command::SignOut>(Profile)
+        .command::<tonk_schema::command::Home>(Profile)
+        // The bar's own acts: each records a request on the asking tab's
+        // site, which that tab's bar performs (see `site_request`).
+        .command::<tonk_schema::command::AddAccount>(Profile)
+        .command::<tonk_schema::command::ShareLink>(Profile)
+        .command::<tonk_schema::command::ViewMembers>(Profile)
+        .command::<tonk_schema::command::ConnectAgent>(Profile)
+        .command::<tonk_schema::command::ConnectSpace>(Profile)
+        // Opens the introspection overlay; the same site-request shape,
+        // answered by the overlay rather than the bar.
+        .command::<tonk_schema::command::Inspect>(Profile)
+        // What the page in a tab has selected, recorded on its site.
+        .command::<tonk_schema::command::SiteSelect>(Both)
+        // A branch a page asked for that its space does not have yet.
+        .command::<tonk_schema::command::CreateBranch>(Profile)
+        // What was typed in the command palette, interpreted.
+        .command::<tonk_schema::command::Interpret>(Both)
+        .command::<tonk_schema::command::ReplicateSpace>(Profile)
+        .command::<tonk_schema::command::ForgetInvite>(Profile)
         // A space may ask whether ITS OWN seed is behind: the check
         // targets the origin, and `may_target_space` keeps it there.
-        // Replication is deliberately absent — a space cannot ask to be
-        // pulled onto a device that does not have it yet, because the
-        // request would have to arrive on the branch it is asking for.
-        .command::<tonk_schema::command::CheckUpdate>()
-        .command::<super::repository::AgentHandoffRequest>()
+        // Replication is deliberately absent from a space — it cannot
+        // ask to be pulled onto a device that does not have it yet,
+        // because the request would have to arrive on the branch it is
+        // asking for.
+        .command::<tonk_schema::command::CheckUpdate>(Both)
         // A space installs a library component into itself; the profile
         // has no components to install.
-        .command::<tonk_schema::command::InstallComponent>()
-        .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
-        .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
+        .command::<tonk_schema::command::InstallComponent>(Space)
 }
 
-/// Run every command among `commands`, the rows a dispatch landed in
-/// its session's `control:` layer.
+/// How many answer dispatches one request's chain may run: a provider's
+/// answer that lands commands of its own continues it, and nothing in
+/// the worker's providers does, so the bound only catches a rule that
+/// re-dispatches what it is premised on.
+const EFFECT_CHAIN_LIMIT: usize = 16;
+
+/// The branch whose stack `origin`'s commands land on: the profile's
+/// own repository for an empty origin repo.
+fn stack_of<'a>(
+    reactor: &'a crate::Reactor,
+    origin: &'a CommandOrigin,
+) -> crate::reactor::BranchReference<'a> {
+    if origin.repo.is_empty() {
+        reactor.profile_repository().branch(&origin.branch)
+    } else {
+        reactor.repository(&origin.repo).branch(&origin.branch)
+    }
+}
+
+/// Perform `effect`, the stack's providers over the commands a dispatch
+/// landed on the branch at `origin`, then drain the polls the request
+/// scheduled. With no effect (a dispatch that landed no command, or
+/// wrote nothing), the polls are still drained.
 ///
-/// Called by a mutation path (e.g. `/transact`) after its commit, with
-/// `AppState` in hand. The rows are the one instant the dispatch left
-/// in `control:`, read under the branch's transactor lock, so each
-/// command reaches its provider exactly once and only from the dispatch
-/// that asserted it.
+/// Called by a mutation path (e.g. `/transact`) after it answered, with
+/// `AppState` in hand. The vocabulary is registered on the branch's
+/// stack first if this is the branch's first effect
+/// ([`CommandProviders::provide`]). Dialog runs, for each command in
+/// order, the first provider claiming it, then one answer dispatch
+/// through the stack that writes each command's lifecycle row
+/// (`dialog.command/answered`, `failed` or `unhandled`), and reports
+/// whether that dispatch landed commands of its own, whose effect
+/// continues the chain. A command is self-contained: it does its own IO
+/// and commits through the [`CommandEnv`], so there's no outcome
+/// buffer to commit here, and its answer to dialog is empty.
 ///
-/// Each command's `Provider::execute` runs *concurrently and
-/// independently* — they don't block one another, and a slow or failing
-/// one doesn't hold up the rest. (Concurrent, not parallel: they share
-/// the single SW task, interleaving at await points.) A command is
-/// self-contained: it does its own IO and commits through the
-/// [`CommandEnv`], so there's no outcome buffer to commit here.
+/// The providers run one after another, not concurrently: that is the
+/// order dialog performs an effect in.
 ///
 /// TODO(stm): commands have no transactional isolation. A command reads
 /// durable state through the env, decides, and commits — but between the
-/// read and the commit another commit may have changed what it read, and
-/// concurrent commands in the same batch can both read and write the same
-/// state. The goal is STM-like optimistic concurrency: track the observed
-/// revision/read-set and commit-or-conflict, re-running on conflict. See
-/// the `TODO(stm)` notes on `reactor::command::TypedCommand::run`.
-pub async fn run_commands(state: &AppState, origin: CommandOrigin, commands: Changes) {
-    // Decode commands and build their `'static` run-futures while holding
-    // the read lock — each future owns its decoded command and an env
-    // clone, so we can drop the lock before awaiting them. That keeps
-    // command IO from ever running under a held lock (a command re-locks
-    // through its env).
-    let run_futures = {
+/// read and the commit another commit may have changed what it read. The
+/// goal is STM-like optimistic concurrency: track the observed
+/// revision/read-set and commit-or-conflict, re-running on conflict.
+pub async fn run_commands(state: &AppState, origin: CommandOrigin, effect: Option<Effect>) {
+    let operator = {
         let tonk = state.read().await;
-        let registry = tonk.commands.select(&origin);
-        if registry.is_empty() {
-            // No command providers for this origin — but the triggering
-            // transact already committed and scheduled a poll, so still
-            // drain below.
-            Vec::new()
-        } else {
-            let fired = registry.commands(&commands);
-            // The one place a command that decodes as nothing can be
-            // seen: the command landed, so the page believes it asked,
-            // and nothing else says which attributes reached the
-            // registry. On a space origin this is also where a
-            // profile-only shape (a join, a create, a ceremony)
-            // surfaces as contained rather than run.
-            if fired.is_empty() {
-                let attributes: std::collections::BTreeSet<String> = commands
-                    .clone()
-                    .into_instructions()
-                    .into_iter()
-                    .map(|instruction| match instruction {
-                        dialog_corpus::Instruction::Assert(artifact, _)
-                        | dialog_corpus::Instruction::Retract(artifact) => artifact.the.to_string(),
-                    })
-                    .collect();
-                if !attributes.is_empty() {
-                    let surface = if origin.repo.is_empty() {
-                        "profile".to_string()
-                    } else {
-                        format!("space '{}'", origin.repo)
-                    };
-                    log!(
-                        "commands: no provider in the {surface} vocabulary decoded a \
-                         command over {attributes:?}"
-                    );
+        if let Some(effect) = effect.as_ref().filter(|effect| !effect.is_empty()) {
+            match stack_of(&tonk.reactor, &origin)
+                .acquire(&tonk.operator)
+                .await
+            {
+                Ok(session) => {
+                    if let Err(error) = session.state.provide_once(|stack| {
+                        tonk.commands.provide(
+                            stack,
+                            state.clone(),
+                            origin.repo.clone(),
+                            origin.branch.clone(),
+                        )
+                    }) {
+                        log!("commands: registering the providers on {origin:?} failed: {error}");
+                    }
+                }
+                Err(error) => {
+                    log!("commands: no branch at {origin:?} to provide on: {error}");
                 }
             }
-            let env = CommandEnv::new(state.clone(), origin);
-            fired
-                .into_iter()
-                .map(|(handler, facts)| handler.run(&facts, &env))
-                .collect::<Vec<_>>()
+            tonk.commands.record(effect);
         }
+        tonk.operator.clone()
     };
 
-    // Drive every command concurrently. `join_all` interleaves them so
-    // independent effects make progress together rather than in sequence.
-    futures_util::future::join_all(run_futures).await;
+    // Nothing here holds the state lock: every provider re-locks through
+    // its env.
+    let mut effect = effect;
+    for _ in 0..EFFECT_CHAIN_LIMIT {
+        let Some(next) = effect.take().filter(|effect| !effect.is_empty()) else {
+            break;
+        };
+        match next.perform(&operator).await {
+            Ok(report) => {
+                report_effect(&origin, &report);
+                if !report.remaining() {
+                    break;
+                }
+                let next = report.effect();
+                {
+                    let tonk = state.read().await;
+                    tonk.commands.record(&next);
+                }
+                effect = Some(next);
+            }
+            Err(error) => {
+                log!("commands: the answer dispatch at {origin:?} failed: {error}");
+                break;
+            }
+        }
+    }
 
     // Drain every poll the request scheduled — the triggering commit plus
     // anything its providers committed or wrote to the overlay — in one
@@ -394,6 +784,104 @@ pub async fn run_commands(state: &AppState, origin: CommandOrigin, commands: Cha
     // subscription broadcasts; coalesced by branch identity.
     let tonk = state.read().await;
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
+/// Log what an effect did not do: a provider that failed, with its
+/// reason, and a command no provider claims. The latter is the one
+/// place a command that decodes as nothing can be seen: the command
+/// landed, so the page believes it asked. The `control:` entity's own
+/// rows (the tick's client) are reported as a command of that entity
+/// and left unhandled by every effect; that one is no news.
+fn report_effect(origin: &CommandOrigin, report: &EffectReport) {
+    let surface = if origin.repo.is_empty() {
+        "the profile".to_owned()
+    } else {
+        format!("space '{}'", origin.repo)
+    };
+    for (entity, reason) in report.failed() {
+        log!("commands: {entity} on {surface}: {reason}");
+    }
+    let control = control_layer();
+    for entity in report.unhandled() {
+        if *entity != control {
+            log!("commands: no provider on {surface} claims {entity}");
+        }
+    }
+}
+
+/// Send `commands`, sent for the branch at `origin` which has no stack —
+/// an absent repository, a branch nobody has made yet — through the
+/// profile's stack, their origin in the tick's rows, and perform their
+/// effect there. A command for such a branch has nothing durable to
+/// land beside and no library whose rules could read it, so the
+/// profile's stack, which every worker holds, carries it to its
+/// provider; the provider takes the origin from the tick
+/// ([`CommandOrigin::of_tick`]), so it acts on the branch the command
+/// was sent for.
+pub async fn relay_commands(state: &AppState, origin: CommandOrigin, commands: Changes) {
+    let profile = {
+        let tonk = state.read().await;
+        CommandOrigin {
+            repo: String::new(),
+            branch: tonk.active_branch.clone(),
+            client: origin.client.clone(),
+        }
+    };
+    let mut sent = Changes::new();
+    Tick {
+        client: origin.client.clone(),
+        repo: Some(origin.repo.clone()),
+        branch: Some(origin.branch.clone()),
+    }
+    .stamp(&mut sent);
+    sent.merge(commands);
+    match invoke_on(state, &profile, sent).await {
+        Ok(effect) => run_commands(state, profile, Some(effect)).await,
+        Err(error) => {
+            log!("commands: relaying {origin:?}'s commands through the profile failed: {error}")
+        }
+    }
+}
+
+/// Invoke `commands` through the stack of the branch at `origin`,
+/// under its transactor lock, and return the effect of what landed.
+async fn invoke_on(
+    state: &AppState,
+    origin: &CommandOrigin,
+    commands: Changes,
+) -> Result<Effect, crate::TonkWorkerError> {
+    let tonk = state.read().await;
+    let session = stack_of(&tonk.reactor, origin)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| crate::TonkWorkerError::NotFound(error.to_string()))?;
+    let _transacting = session.transactor().lock().await;
+    let report = session
+        .state
+        .stack()
+        .invoke(commands)
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| crate::TonkWorkerError::Internal(error.to_string()))?;
+    Ok(report.effect())
+}
+
+/// Invoke `commands` as the branch at `origin` would land them — through
+/// its stack when it has one, the client stamped on the tick, or relayed through the profile's when it has none — and
+/// perform their effect: what a route does in two steps, for a test or
+/// a caller holding the rows rather than a request.
+#[cfg(test)]
+pub(crate) async fn invoke_commands(state: &AppState, origin: CommandOrigin, commands: Changes) {
+    let mut sent = Changes::new();
+    if let Some(client) = &origin.client {
+        client_row(&mut sent, client);
+    }
+    sent.merge(commands.clone());
+    match invoke_on(state, &origin, sent).await {
+        Ok(effect) => run_commands(state, origin, Some(effect)).await,
+        Err(crate::TonkWorkerError::NotFound(_)) => relay_commands(state, origin, commands).await,
+        Err(error) => log!("commands: invoking at {origin:?} failed: {error}"),
+    }
 }
 
 #[cfg(test)]
@@ -405,11 +893,9 @@ pub(crate) mod tests {
     use dialog_query::{Attribute, Concept, Entity, the};
     use std::sync::Mutex;
 
-    // A test command whose provider RECORDS each invocation's tag, so a
-    // test can observe whether (and with what) `execute` ran. The
-    // provider does no IO, so `run`-level tests don't need a real
-    // service-worker scope — only `dispatch` (which builds a real
-    // `CommandEnv` from `AppState`) is browser-gated.
+    // A test command whose provider RECORDS each invocation's tag and
+    // the client it ran for, so a test can observe whether (and with
+    // what) `execute` ran. The provider does no IO.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.command")]
     pub struct PingTag(pub String);
@@ -425,21 +911,30 @@ pub(crate) mod tests {
         type Output = ();
     }
 
-    /// Tags passed to `Ping`'s provider, in invocation order. The `run`
-    /// tests `drain` it; serialized within the single-threaded test run.
-    static PING_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// What `Ping`'s provider was handed, in invocation order: the tag
+    /// and the client the env carried. The tests `drain` it; serialized
+    /// within the single-threaded test run.
+    static PING_LOG: Mutex<Vec<(String, Option<String>)>> = Mutex::new(Vec::new());
 
-    /// Take and clear the recorded tags. The provider writes it on every
-    /// target; the `run` tests here and the transact route's native
+    /// Take and clear the recorded invocations. The provider writes it
+    /// on every target; the tests here and the transact route's native
     /// test read it.
-    pub(crate) fn drain_ping_log() -> Vec<String> {
+    pub(crate) fn drain_ping_log() -> Vec<(String, Option<String>)> {
         std::mem::take(&mut *PING_LOG.lock().unwrap())
+    }
+
+    /// The tags of the recorded invocations alone.
+    pub(crate) fn drain_ping_tags() -> Vec<String> {
+        drain_ping_log().into_iter().map(|(tag, _)| tag).collect()
     }
 
     #[dialog_capability::provider]
     impl dialog_capability::Provider<Ping> for CommandEnv {
         async fn execute(&self, command: Ping) {
-            PING_LOG.lock().unwrap().push(command.tag.0);
+            PING_LOG
+                .lock()
+                .unwrap()
+                .push((command.tag.0, self.client().map(|client| client.0.clone())));
         }
     }
 
@@ -453,26 +948,85 @@ pub(crate) mod tests {
         changes
     }
 
+    /// The rows `changes` asserts, as a landed command's rows are.
+    fn rows_of(changes: &Changes) -> Vec<Fact> {
+        changes
+            .clone()
+            .into_instructions()
+            .into_iter()
+            .map(|instruction| match instruction {
+                dialog_corpus::Instruction::Assert(artifact, _)
+                | dialog_corpus::Instruction::Retract(artifact) => artifact,
+            })
+            .collect()
+    }
+
+    /// The registrations whose providers claim the command `changes`
+    /// asserts, and admit it from `origin`: what dialog runs the first
+    /// of.
+    fn claiming<'a>(
+        providers: &'a CommandProviders,
+        origin: &CommandOrigin,
+        changes: &Changes,
+    ) -> Vec<&'a Registration> {
+        let rows = rows_of(changes);
+        providers
+            .registrations()
+            .iter()
+            .filter(|registration| registration.claims(&rows) && registration.admits(origin))
+            .collect()
+    }
+
     #[dialog_common::test]
     fn it_registers_a_command_type_by_its_provider() {
         // `command::<Ping>()` compiles only because `CommandEnv:
         // Provider<Ping>` — the capability gate. The registered type
-        // matches its trigger.
-        let registry = profile_commands().command::<Ping>();
+        // claims its trigger.
+        let providers = command_providers().command::<Ping>(Surface::Both);
         let changes = ping_transient("did:key:zPing", "hi");
         assert_eq!(
-            registry.commands(&changes).len(),
+            claiming(&providers, &CommandOrigin::default(), &changes).len(),
             1,
-            "the registered Ping command should match its trigger"
+            "the registered Ping command should claim its trigger"
         );
     }
 
-    /// The vocabulary split itself: every transient here DECODES as its
-    /// command (each shape matches at least once on the profile), so a
-    /// zero-match on the space vocabulary means the command is absent
-    /// there — not that the probe was malformed.
+    /// Dialog runs the FIRST provider claiming a command, and a provider
+    /// claims by any one attribute of its concept's fields: two
+    /// registered commands sharing an attribute would shadow one
+    /// another. The vocabulary must therefore keep every command's
+    /// claim attributes to itself, and every concept registered once.
     #[dialog_common::test]
-    fn a_space_origin_selects_a_vocabulary_without_profile_only_commands() {
+    fn no_two_commands_share_a_claim_attribute() {
+        let providers = command_providers();
+        let mut seen: std::collections::BTreeMap<String, String> = Default::default();
+        let mut concepts: std::collections::BTreeSet<String> = Default::default();
+        for registration in providers.registrations() {
+            for concept in registration.concepts() {
+                let name = concept.this().to_string();
+                assert!(
+                    concepts.insert(name.clone()),
+                    "{name} is registered twice; dialog keeps one provider per concept"
+                );
+                for (_, field) in concept.with().iter() {
+                    let attribute = field.the().to_string();
+                    if let Some(other) = seen.insert(attribute.clone(), name.clone()) {
+                        panic!(
+                            "{name} and {other} both claim `{attribute}`: dialog would run \
+                             whichever registered first for either command"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The vocabulary split itself: every transient here is CLAIMED by
+    /// its command (each shape is admitted at least once on the
+    /// profile), so a zero on a space origin means the command is
+    /// refused there — not that the probe was malformed.
+    #[dialog_common::test]
+    fn a_space_origin_is_refused_the_profile_only_commands() {
         let providers = command_providers();
         let profile = CommandOrigin::default();
         let space = CommandOrigin {
@@ -522,13 +1076,13 @@ pub(crate) mod tests {
             ("member/promote", &promote),
         ] {
             assert!(
-                !providers.select(&profile).commands(changes).is_empty(),
-                "`{name}` must match on the profile — a zero here means the \
-                 probe shape no longer decodes and this test proves nothing"
+                !claiming(&providers, &profile, changes).is_empty(),
+                "`{name}` must be claimed on the profile — a zero here means the \
+                 probe shape no longer matches and this test proves nothing"
             );
             assert!(
-                providers.select(&space).commands(changes).is_empty(),
-                "`{name}` must not exist in a space branch's vocabulary"
+                claiming(&providers, &space, changes).is_empty(),
+                "`{name}` must be refused from a space branch"
             );
         }
 
@@ -563,102 +1117,87 @@ pub(crate) mod tests {
         ] {
             for (surface, origin) in [("profile", &profile), ("space", &space)] {
                 assert!(
-                    !providers.select(origin).commands(changes).is_empty(),
+                    !claiming(&providers, origin, changes).is_empty(),
                     "`{name}` must be dispatchable from the {surface}"
                 );
             }
         }
     }
 
-    // The `run` and `dispatch` tests build a real `CommandEnv` from an
-    // `AppState`, which needs the service-worker scope (`test_state`).
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    /// The providers' run itself, natively over real state: a command
+    /// invoked through the profile's stack reaches `Ping`'s provider
+    /// through dialog's effect, with what the env carried.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     mod run {
         use super::*;
-        use crate::reactor::{CommandRegistry, EntityFacts};
         use crate::router::AppState;
-        use crate::router::tests::test_state;
-        use std::sync::Arc;
 
-        async fn env() -> (AppState, CommandEnv) {
-            let state: AppState = Arc::new(crate::StateLock::new(test_state().await));
-            let env = CommandEnv::new(state.clone(), CommandOrigin::default());
-            (state, env)
-        }
-
-        fn one_match<'a>(
-            registry: &'a CommandRegistry<CommandEnv>,
-            changes: &Changes,
-        ) -> (
-            &'a dyn crate::reactor::CommandHandler<CommandEnv>,
-            EntityFacts,
-        ) {
-            let mut fired = registry.commands(changes);
-            assert_eq!(fired.len(), 1, "expected exactly one matched command");
-            fired.pop().unwrap()
+        /// A state whose vocabulary is `Ping` alone.
+        async fn state_with_ping() -> AppState {
+            let state = native::test_state().await;
+            {
+                let mut tonk = state.write().await;
+                tonk.shared_mut().commands = CommandProviders::new().command::<Ping>(Surface::Both);
+            }
+            state
         }
 
         #[dialog_common::test]
         async fn it_runs_the_provider_with_the_decoded_command() {
             let _ = drain_ping_log();
-            let (_state, env) = env().await;
-            let registry = CommandRegistry::new().command::<Ping>();
-            let changes = ping_transient("did:key:zPing", "hello");
-
-            let (handler, facts) = one_match(&registry, &changes);
-            handler.run(&facts, &env).await;
-
+            let state = state_with_ping().await;
+            invoke_commands(
+                &state,
+                CommandOrigin::default(),
+                ping_transient("did:key:zPing", "hello"),
+            )
+            .await;
             assert_eq!(
-                drain_ping_log(),
+                drain_ping_tags(),
                 vec!["hello".to_string()],
                 "the provider should run once with the decoded tag"
             );
         }
 
+        /// A command reaches its provider with the client that invoked
+        /// it: the route stamps the client on the tick, a row of the
+        /// `control:` entity beside the command, and the provider takes
+        /// it from the tick. This is the path a navigation command
+        /// (`tonk:home`) takes to post back to the tab that asked.
         #[dialog_common::test]
-        async fn it_runs_the_provider_for_a_non_decoding_entity_as_a_noop() {
-            // `TypedCommand::run`'s own decode guard: handed an entity's
-            // facts that don't decode as `Ping`, `run` is a no-op (the
-            // provider is never called). We get a handler from a real
-            // match, then run it against unrelated facts directly.
+        async fn a_command_reaches_its_provider_with_the_client_that_invoked_it() {
             let _ = drain_ping_log();
-            let (_state, env) = env().await;
-            let registry = CommandRegistry::new().command::<Ping>();
-            let matched = registry.commands(&ping_transient("did:key:zP", "t"));
-            let handler = matched[0].0;
-
-            let unrelated: EntityFacts = {
-                let mut changes = Changes::new();
-                the!("xyz.tonk.unrelated/noise")
-                    .of("did:key:zNoise".parse::<Entity>().unwrap())
-                    .is("x".to_string())
-                    .assert(&mut changes);
-                // One entity → its facts.
-                match changes.into_instructions().into_iter().next().unwrap() {
-                    dialog_corpus::Instruction::Assert(a, _)
-                    | dialog_corpus::Instruction::Retract(a) => vec![a],
-                }
-            };
-            handler.run(&unrelated, &env).await;
-
-            assert!(
-                drain_ping_log().is_empty(),
-                "a non-decoding entity must not run the provider"
+            let state = state_with_ping().await;
+            invoke_commands(
+                &state,
+                CommandOrigin {
+                    client: Some(crate::router::ClientId("tab-42".to_owned())),
+                    ..CommandOrigin::default()
+                },
+                ping_transient("did:key:zPing", "navigate"),
+            )
+            .await;
+            assert_eq!(
+                drain_ping_log(),
+                vec![("navigate".to_string(), Some("tab-42".to_string()))],
+                "the provider sees the client the command was invoked with"
             );
+
+            // Without a client, the provider sees none: the row is the
+            // only channel, and nothing is left over from the last one.
+            invoke_commands(
+                &state,
+                CommandOrigin::default(),
+                ping_transient("did:key:zPing", "nobody"),
+            )
+            .await;
+            assert_eq!(drain_ping_log(), vec![("nobody".to_string(), None)],);
         }
 
         #[dialog_common::test]
         async fn it_runs_every_decoded_command_in_a_batch() {
             let _ = drain_ping_log();
-            let (state, _env) = env().await;
-            // Install the registry on the state so `run_commands` sees it.
-            {
-                let mut tonk = state.write().await;
-                tonk.shared_mut().commands = CommandProviders::new(
-                    CommandRegistry::new().command::<Ping>(),
-                    CommandRegistry::new(),
-                );
-            }
+            let state = state_with_ping().await;
 
             // Two distinct Ping entities in one batch → two invocations.
             let mut changes = ping_transient("did:key:zA", "alpha");
@@ -667,36 +1206,57 @@ pub(crate) mod tests {
                 .is("beta".to_string())
                 .assert(&mut changes);
 
-            run_commands(&state, CommandOrigin::default(), changes).await;
+            invoke_commands(&state, CommandOrigin::default(), changes).await;
 
-            let mut tags = drain_ping_log();
+            let mut tags = drain_ping_tags();
             tags.sort();
             assert_eq!(
                 tags,
                 vec!["alpha".to_string(), "beta".to_string()],
-                "run_commands runs each decoded command's provider"
+                "the effect runs each decoded command's provider"
             );
         }
 
         #[dialog_common::test]
         async fn it_runs_nothing_when_no_command_decodes() {
             let _ = drain_ping_log();
-            let (state, _env) = env().await;
-            {
-                let mut tonk = state.write().await;
-                tonk.shared_mut().commands = CommandProviders::new(
-                    CommandRegistry::new().command::<Ping>(),
-                    CommandRegistry::new(),
-                );
-            }
+            let state = state_with_ping().await;
             let mut changes = Changes::new();
             the!("xyz.tonk.unrelated/noise")
                 .of("did:key:zNoise".parse::<Entity>().unwrap())
                 .is("x".to_string())
                 .assert(&mut changes);
 
-            run_commands(&state, CommandOrigin::default(), changes).await;
+            invoke_commands(&state, CommandOrigin::default(), changes).await;
             assert!(drain_ping_log().is_empty());
+        }
+
+        /// A command the surface refuses never reaches its provider: a
+        /// `Profile` command sent from a space origin fails in dialog's
+        /// effect before `execute`.
+        #[dialog_common::test]
+        async fn a_surface_refuses_a_command_from_the_wrong_origin() {
+            let _ = drain_ping_log();
+            let state = native::test_state().await;
+            {
+                let mut tonk = state.write().await;
+                tonk.shared_mut().commands =
+                    CommandProviders::new().command::<Ping>(Surface::Profile);
+            }
+            invoke_commands(
+                &state,
+                CommandOrigin {
+                    repo: "did:key:zSomeSpace".to_owned(),
+                    branch: "main".to_owned(),
+                    client: None,
+                },
+                ping_transient("did:key:zPing", "contained"),
+            )
+            .await;
+            assert!(
+                drain_ping_log().is_empty(),
+                "a profile-only command must not run from a space origin"
+            );
         }
     }
 
@@ -829,7 +1389,7 @@ pub(crate) mod tests {
             // names one). The provider mints an identity, seeds the
             // standard library from the embedded assets, and records the
             // replica — all natively.
-            run_commands(
+            invoke_commands(
                 &state,
                 CommandOrigin::default(),
                 create_space_transient("Command Test Space"),
@@ -852,7 +1412,7 @@ pub(crate) mod tests {
                 branch: "main".to_string(),
                 client: None,
             };
-            run_commands(&state, foreign, remove_space_transient(&subject)).await;
+            invoke_commands(&state, foreign, remove_space_transient(&subject)).await;
             assert_eq!(
                 space_subjects(&state).await.len(),
                 1,
@@ -860,7 +1420,7 @@ pub(crate) mod tests {
             );
 
             // From the profile origin the same transient removes it.
-            run_commands(
+            invoke_commands(
                 &state,
                 CommandOrigin::default(),
                 remove_space_transient(&subject),
@@ -919,7 +1479,7 @@ pub(crate) mod tests {
         #[dialog_common::test]
         async fn it_dispatches_duplicate_space_only_from_the_profile() {
             let state = test_state().await;
-            run_commands(
+            invoke_commands(
                 &state,
                 CommandOrigin::default(),
                 create_space_transient("Original"),
@@ -934,7 +1494,7 @@ pub(crate) mod tests {
                     .assert(&mut changes);
                 changes
             };
-            run_commands(
+            invoke_commands(
                 &state,
                 CommandOrigin {
                     repo: original.repo_key().to_owned(),
@@ -945,7 +1505,7 @@ pub(crate) mod tests {
             )
             .await;
             assert_eq!(space_subjects(&state).await.len(), 1);
-            run_commands(&state, CommandOrigin::default(), copy_command()).await;
+            invoke_commands(&state, CommandOrigin::default(), copy_command()).await;
             let spaces = space_subjects(&state).await;
             assert_eq!(spaces.len(), 2);
             assert!(spaces.contains(&original));
@@ -957,7 +1517,7 @@ pub(crate) mod tests {
                 .of("cmd:create".parse::<Entity>().unwrap())
                 .is(false)
                 .assert(&mut invalid);
-            run_commands(&state, CommandOrigin::default(), invalid).await;
+            invoke_commands(&state, CommandOrigin::default(), invalid).await;
             assert_eq!(space_subjects(&state).await.len(), 2);
         }
 
@@ -989,7 +1549,7 @@ pub(crate) mod tests {
                     .of("cmd:create".parse::<Entity>().unwrap())
                     .is(format!("{base}/catalog.json#remote-demo"))
                     .assert(&mut changes);
-                run_commands(&state, CommandOrigin::default(), changes).await;
+                invoke_commands(&state, CommandOrigin::default(), changes).await;
                 assert_eq!(space_subjects(&state).await.len(), expected);
             }
         }
@@ -1001,7 +1561,7 @@ pub(crate) mod tests {
         async fn it_seeds_a_new_space_from_a_url() {
             let base = serve(SEED_FILES);
             let state = test_state().await;
-            run_commands(
+            invoke_commands(
                 &state,
                 CommandOrigin::default(),
                 seeded_create_transient("Seeded", &format!("{base}/lib/seed.yaml")),
@@ -1043,7 +1603,7 @@ pub(crate) mod tests {
                 "ftp://example.test/seed.yaml".to_owned(),
                 "not a url".to_owned(),
             ] {
-                run_commands(
+                invoke_commands(
                     &state,
                     CommandOrigin::default(),
                     seeded_create_transient("Refused", &seed),

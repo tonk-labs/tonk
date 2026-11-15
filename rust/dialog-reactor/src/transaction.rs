@@ -7,12 +7,16 @@
 //! land in the primary; a command (a claim of a transient concept,
 //! written `.at(control_layer())`) is the dispatch's stimulus and, once
 //! the dispatch has published, lands on the outside end of the stack's
-//! `control:` channel for one tick. [`Commit::dispatch`] reads that tick
-//! back through the branch's reader of `control:`
-//! ([`BranchState::landed`], over [`Stack::arrivals_rows`]) and hands
-//! the commands to the caller as [`Landed::commands`], so the worker's
-//! providers run exactly the commands this dispatch landed and no other
-//! writer's.
+//! `control:` channel for one tick. The dispatch's report names that
+//! tick's commands, and [`Commit::dispatch`] hands them to the caller
+//! as [`Landed::effect`]: the stack's providers over exactly the
+//! commands this dispatch landed, to perform when the caller chooses
+//! ([`Effect::perform`](dialog_repository::Effect::perform)).
+//!
+//! A tick that carries commands may carry rows of the `control:` entity
+//! itself beside them, written into the same share by
+//! [`TransactionBuilder::stamp`]: the asking client, for one
+//! ([`control::client`](crate::control::client)).
 //!
 //! On a successful commit, [`Commit::perform`] **schedules** a poll of
 //! the affected branch ([`Reactor::schedule_poll`]) rather than
@@ -28,11 +32,9 @@
 //! [`Reactor::schedule_poll`]: crate::Reactor::schedule_poll
 //! [`Reactor::run_scheduled_polls`]: crate::Reactor::run_scheduled_polls
 //! [`Stack::assert`]: dialog_repository::Stack::assert
-//! [`Stack::arrivals_rows`]: dialog_repository::Stack::arrivals_rows
-//! [`BranchState::landed`]: crate::BranchState::landed
 
-use dialog_corpus::{Changes, Statement};
-use dialog_repository::{Revision, control_layer};
+use dialog_corpus::{Changes, Pick, Relation, Statement, Update as _, Value};
+use dialog_repository::{Effect, Revision, control_layer};
 use tonk_schema::claim::{Claim, PredicateApplication};
 use tonk_schema::transact::application_plan_from_predicate;
 
@@ -56,6 +58,12 @@ pub struct TransactionBuilder<'a> {
     /// Accumulated claims, durable and commands alike: a command's
     /// facts are in the `control:` share.
     pub changes: Changes,
+    /// Rows of the `control:` entity for the tick, written beside the
+    /// commands when there are any. See [`stamp`](Self::stamp).
+    stamps: Vec<(Relation, Value)>,
+    /// Whether a command has been applied, so the stamps have a tick to
+    /// land in.
+    commands: bool,
 }
 
 impl<'a> TransactionBuilder<'a> {
@@ -64,7 +72,20 @@ impl<'a> TransactionBuilder<'a> {
         Self {
             branch,
             changes: Changes::new(),
+            stamps: Vec::new(),
+            commands: false,
         }
+    }
+
+    /// Write the row `the is` on the `control:` entity, into the same
+    /// `control:` share the transaction's commands go in, so it lands in
+    /// their tick and whoever performs them reads it from the tick's
+    /// rows: the asking client ([`control::client`](crate::control::client)),
+    /// for one. Written only when the transaction asserts a command; a
+    /// durable-only commit lands no tick to stamp.
+    pub fn stamp(mut self, the: Relation, is: Value) -> Self {
+        self.stamps.push((the, is));
+        self
     }
 
     /// Add an assertion to the primary. Used by callers that operate
@@ -97,6 +118,7 @@ impl<'a> TransactionBuilder<'a> {
     /// command, written `.at(control_layer())`.
     pub fn apply_assert(mut self, application: PredicateApplication) -> Self {
         if application.is_transient() {
+            self.commands = true;
             application_plan_from_predicate(application)
                 .at(control_layer())
                 .assert(&mut self.changes);
@@ -124,12 +146,28 @@ impl<'a> TransactionBuilder<'a> {
     /// Wrap the accumulated changes into a [`Commit`] effect.
     #[track_caller]
     pub fn commit(self) -> Commit<'a> {
+        let mut changes = self.changes;
+        if self.commands {
+            for (the, is) in self.stamps {
+                stamp(&mut changes, the, is);
+            }
+        }
         Commit {
             origin: std::panic::Location::caller(),
             branch: self.branch,
-            changes: self.changes,
+            changes,
         }
     }
+}
+
+/// Write the row `the is` on the `control:` entity into `changes`'
+/// `control:` share, where it lands in the tick of the commands written
+/// there with it. What [`TransactionBuilder::stamp`] does at commit; for
+/// a caller that invokes commands through the stack itself.
+pub fn stamp(changes: &mut Changes, the: Relation, is: Value) {
+    let mut row = Changes::new();
+    row.associate(the, control_layer(), is, Pick::All);
+    row.at(control_layer()).assert(changes);
 }
 
 /// Commit effect — performs one dispatch through the branch's stack,
@@ -146,21 +184,23 @@ pub struct Commit<'a> {
 }
 
 /// What a dispatch left behind: the head it left the primary at, and
-/// the commands that landed on the stack's `control:` channel for it,
-/// read back through [`Stack::arrivals_rows`](dialog_repository::Stack::arrivals_rows).
+/// the effect of the commands that landed on the stack's `control:`
+/// channel for it.
 ///
 /// The commands are the ones this dispatch wrote `.at(control_layer())`
 /// and the ones its rules dispatched in any tick, as rows: a provider
 /// decodes a command from the facts of its entity, since nothing of a
-/// command stays anywhere a later read could find it.
+/// command stays anywhere a later read could find it. Nothing runs
+/// until the effect is performed, so a route answers first and
+/// performs it after.
 #[derive(Debug, Clone)]
 pub struct Landed {
     /// The revision the dispatch published, or the unchanged head when
     /// it wrote nothing durable.
     pub revision: Revision,
-    /// The commands that stood in `control:` for this dispatch, empty
-    /// when it dispatched none.
-    pub commands: Changes,
+    /// The stack's providers over the commands that stood in `control:`
+    /// for this dispatch; empty when it dispatched none.
+    pub effect: Effect,
 }
 
 impl Commit<'_> {
@@ -184,13 +224,10 @@ impl Commit<'_> {
     /// dispatch from the new head when a sync moved it meanwhile (see
     /// [`Invocation`](dialog_repository::Invocation)). Once it has
     /// published, its commands land on `control:`'s outside end as one
-    /// tick; the branch's reader of that channel ([`BranchState::landed`]),
-    /// read right after the dispatch under the branch's transactor lock,
-    /// yields exactly that tick's rows. Rows, not one concept's
+    /// tick, which its report names; [`Landed::effect`] is the stack's
+    /// providers over exactly those. Rows, not one concept's
     /// conclusions: a provider decodes a command from the shape of its
     /// entity's facts, so it wants every row.
-    ///
-    /// [`BranchState::landed`]: crate::BranchState::landed
     pub async fn dispatch<Env>(self, env: &Env) -> Result<Landed, ReactorError>
     where
         Env: LoadProvider + BranchOpenProvider + CommitProvider + SelectProvider,
@@ -229,10 +266,7 @@ impl Commit<'_> {
         let report = stack.assert(changes).perform(env).await?;
         let revision = report.revision().clone();
         let commit_ms = t_commit.elapsed().as_millis();
-
-        // What the dispatch landed in `control:`, still under the lock,
-        // so no other writer's dispatch is among it.
-        let commands = cached.state.landed();
+        let effect = report.effect();
 
         // Name the commit: the branch, the claim count, and whether the
         // tree moved. A commit that lands an identical tree still mints a
@@ -264,7 +298,7 @@ impl Commit<'_> {
             .reactor()
             .schedule_poll(std::sync::Arc::clone(&cached.state));
 
-        Ok(Landed { revision, commands })
+        Ok(Landed { revision, effect })
     }
 }
 

@@ -108,7 +108,8 @@ pub async fn transact(
             .reactor
             .repository(&path.repo)
             .branch(&path.branch);
-        transact_on_branch(&tonk_state, tonk_branch, body).await?
+        let client = client.as_ref().map(|Extension(id)| id.clone());
+        transact_on_branch(&tonk_state, tonk_branch, client, body).await?
     };
     // Mark the repo dirty so the next sync drain pushes its new commits — but
     // ONLY if the commit actually moved the tree. The SW owns the sync
@@ -149,7 +150,7 @@ pub async fn transact(
     // Awaiting the providers here serialized the iframe boot behind the command;
     // detaching them returns the commit (~40ms) immediately and lets the command
     // finish in the background under the fetch event's `waitUntil` lifetime.
-    run_commands_detached(state, origin, commands.unwrap_or_default(), lifetime).await;
+    run_commands_detached(state, origin, commands, lifetime).await;
     Ok(response)
 }
 
@@ -177,7 +178,8 @@ async fn transact_profile(
     let (response, commands) = {
         let tonk_state = state.read().await;
         let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
-        transact_on_branch(&tonk_state, tonk_branch, body).await?
+        let client = client.as_ref().map(|Extension(id)| id.clone());
+        transact_on_branch(&tonk_state, tonk_branch, client, body).await?
     };
     announce_local_commit(&path.branch, &response.0);
     // Profile-branch commits carry an empty `repo` origin: the profile
@@ -195,7 +197,7 @@ async fn transact_profile(
     // Detached like the repository-scoped `transact` above: the commit returns
     // now, the command providers + poll drain run in the background and broadcast
     // their writes to subscribers when they land.
-    run_commands_detached(state, origin, commands.unwrap_or_default(), lifetime).await;
+    run_commands_detached(state, origin, commands, lifetime).await;
     Ok(response)
 }
 
@@ -224,14 +226,14 @@ fn announce_local_commit(branch: &str, response: &TransactResponse) {
 pub(super) async fn run_commands_detached(
     state: AppState,
     origin: super::CommandOrigin,
-    commands: dialog_corpus::Changes,
+    pending: Option<Pending>,
     lifetime: Option<Extension<crate::worker::FetchLifetime>>,
 ) {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     match lifetime {
         Some(Extension(lifetime)) => {
             let promise = wasm_bindgen_futures::future_to_promise(async move {
-                super::run_commands(&state, origin, commands).await;
+                run_pending(&state, origin, pending).await;
                 Ok(wasm_bindgen::JsValue::UNDEFINED)
             });
             if let Err(error) = lifetime.extend(&promise) {
@@ -241,21 +243,45 @@ pub(super) async fn run_commands_detached(
             }
         }
         None => wasm_bindgen_futures::spawn_local(async move {
-            super::run_commands(&state, origin, commands).await;
+            run_pending(&state, origin, pending).await;
         }),
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
         let _ = lifetime;
-        super::run_commands(&state, origin, commands).await;
+        run_pending(&state, origin, pending).await;
+    }
+}
+
+/// What a route has left to do once it has answered: the effect its
+/// dispatch landed on the branch at the origin, or the commands it
+/// took for a branch that has no stack, which go through the profile's
+/// ([`relay_commands`](super::relay_commands)).
+pub(super) enum Pending {
+    /// The stack's providers over what the dispatch landed.
+    Landed(dialog_repository::Effect),
+    /// Commands for a branch with no stack: an absent repository, or a
+    /// branch nobody has made yet.
+    Relay(dialog_corpus::Changes),
+}
+
+/// Run what the route left pending. With nothing pending the request's
+/// scheduled polls are still drained, so a durable commit's
+/// subscribers hear of it.
+async fn run_pending(state: &AppState, origin: super::CommandOrigin, pending: Option<Pending>) {
+    match pending {
+        Some(Pending::Landed(effect)) => super::run_commands(state, origin, Some(effect)).await,
+        Some(Pending::Relay(commands)) => super::relay_commands(state, origin, commands).await,
+        None => super::run_commands(state, origin, None).await,
     }
 }
 
 async fn transact_on_branch<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: BranchReference<'a>,
+    client: Option<super::ClientId>,
     body: Bytes,
-) -> Result<(Json<TransactResponse>, Option<dialog_corpus::Changes>), TonkWorkerError> {
+) -> Result<(Json<TransactResponse>, Option<Pending>), TonkWorkerError> {
     let request: TransactRequest = serde_json::from_slice(&body)
         .map_err(|e| TonkWorkerError::Router(format!("invalid TransactRequest body: {e}")))?;
 
@@ -298,7 +324,7 @@ async fn transact_on_branch<'a>(
                     revision_after: None,
                     commits: CommitSummary::default(),
                 }),
-                (!transients.is_empty()).then_some(transients),
+                (!transients.is_empty()).then_some(Pending::Relay(transients)),
             ));
         }
         Err(error) => return Err(reactor_to_error(error)),
@@ -322,7 +348,7 @@ async fn transact_on_branch<'a>(
                 revision_after: None,
                 commits: CommitSummary::default(),
             }),
-            (!transients.is_empty()).then_some(transients),
+            (!transients.is_empty()).then_some(Pending::Relay(transients)),
         ));
     }
 
@@ -339,7 +365,18 @@ async fn transact_on_branch<'a>(
         ));
     }
 
+    // The asking client rides on the tick, a row of `control:` itself
+    // beside the commands, so their providers read it from the tick.
     let mut builder = tonk_branch.transaction();
+    if let Some(entity) = client
+        .as_ref()
+        .and_then(|client| crate::reactor::control::client_entity(&client.0))
+    {
+        builder = builder.stamp(
+            crate::reactor::control::client(),
+            dialog_corpus::Value::Entity(entity),
+        );
+    }
     for source in request.claims {
         // Validate and type-coerce the wire claim against its
         // predicate's declared types before it can emit any facts. A
@@ -354,15 +391,14 @@ async fn transact_on_branch<'a>(
     // the reactor's `commit().dispatch()` (so no commit path — route or direct
     // handler — can sidestep it). Taking it here too would deadlock: the
     // mutex is not re-entrant. The dispatch answers with the head it left
-    // and the commands it landed in the session's `control:` layer, read
-    // back under that same lock: the post-commit view of which commands
-    // arrived, this dispatch's alone. Empty → nothing to run.
+    // and the effect of the commands it landed in the stack's `control:`
+    // layer: this dispatch's alone. Empty → nothing to run.
     let landed = builder
         .commit()
         .dispatch(&tonk_state.operator)
         .await
         .map_err(reactor_to_error)?;
-    let commands = (!landed.commands.is_empty()).then_some(landed.commands);
+    let commands = (!landed.effect.is_empty()).then_some(Pending::Landed(landed.effect));
 
     Ok((
         Json(TransactResponse {
@@ -562,27 +598,27 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
 }
 
 /// A command asserted through `/transact` reaches its provider by way
-/// of the branch's session: the route writes it `.at(control_layer())`,
-/// the dispatch lands it in `control:` once it has published, and the
-/// route reads that instant back and runs the providers on it. Natively,
-/// against a real space, so the chain is dialog's and not a mirror of
-/// the request.
+/// of the branch's stack: the route writes it `.at(control_layer())`,
+/// the dispatch lands it in `control:` once it has published, the
+/// dispatch's report names it, and the route performs the stack's
+/// providers over it after answering. Natively, against a real space,
+/// so the chain is dialog's and not a mirror of the request.
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod control_layer {
     use axum::body::Bytes;
     use dialog_corpus::Value;
 
-    use super::transact_on_branch;
-    use crate::reactor::CommandRegistry;
-    use crate::router::command::tests::{Ping, drain_ping_log};
-    use crate::router::command::{CommandOrigin, CommandProviders, run_commands};
+    use super::{Pending, transact_on_branch};
+    use crate::router::ClientId;
+    use crate::router::command::tests::{Ping, drain_ping_log, drain_ping_tags};
+    use crate::router::command::{CommandOrigin, CommandProviders, Surface, run_commands};
     use crate::router::repository::{
         BranchConfiguration, RepositoryConfiguration, create_repository,
     };
     use tonk_schema::prelude::DidExt as _;
 
-    /// A space with a `main` branch, on a state whose space vocabulary
-    /// is `Ping` alone.
+    /// A space with a `main` branch, on a state whose vocabulary is
+    /// `Ping` alone, a command of a space branch.
     async fn space_with_ping() -> (crate::router::AppState, String) {
         let state = crate::router::command::tests::native::test_state().await;
         let repo = create_repository(
@@ -597,10 +633,7 @@ mod control_layer {
         .to_owned();
         {
             let mut tonk = state.write().await;
-            tonk.shared_mut().commands = CommandProviders::new(
-                CommandRegistry::new(),
-                CommandRegistry::new().command::<Ping>(),
-            );
+            tonk.shared_mut().commands = CommandProviders::new().command::<Ping>(Surface::Space);
         }
         (state, repo)
     }
@@ -648,15 +681,40 @@ mod control_layer {
         )
     }
 
+    /// The landed effect of what a request left pending, or none.
+    fn landed(pending: Option<Pending>) -> Option<dialog_repository::Effect> {
+        match pending {
+            Some(Pending::Landed(effect)) => Some(effect),
+            Some(Pending::Relay(_)) => panic!("a branch with a stack relays nothing"),
+            None => None,
+        }
+    }
+
+    /// The rows of `attribute` among what an effect holds, each as
+    /// `<entity> <value>`.
+    fn rows(effect: &dialog_repository::Effect, attribute: &str) -> Vec<String> {
+        effect
+            .commands()
+            .iter()
+            .flat_map(|(_, rows)| rows.iter())
+            .filter(|row| row.the.to_string() == attribute)
+            .map(|row| match &row.is {
+                Value::String(text) => text.clone(),
+                Value::Entity(entity) => format!("{} {entity}", row.of),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
     #[dialog_common::test]
     async fn a_command_lands_in_control_and_reaches_its_provider() {
         let (state, repo) = space_with_ping().await;
         let _ = drain_ping_log();
 
-        let (response, commands) = {
+        let (response, pending) = {
             let tonk = state.read().await;
             let branch = tonk.reactor.repository(&repo).branch("main");
-            transact_on_branch(&tonk, branch, ping_request("through control:"))
+            transact_on_branch(&tonk, branch, None, ping_request("through control:"))
                 .await
                 .expect("the command transacts")
         };
@@ -668,24 +726,15 @@ mod control_layer {
             "a command moves no head"
         );
         // What came back is what stood in `control:` for this dispatch:
-        // the command's own facts, read through `Session::arrivals`.
-        let commands = commands.expect("the dispatch landed its command in control:");
-        let tags: Vec<Value> = commands
-            .iter()
-            .filter(|(_, the, _)| the.to_string() == "xyz.tonk.command/ping-tag")
-            .filter_map(|(_, _, change)| match change {
-                dialog_corpus::Change::Assert(is, _) => Some(is.clone()),
-                dialog_corpus::Change::Retract(_) => None,
-            })
-            .collect();
+        // the command's own facts, as the dispatch's report names them.
+        let effect = landed(pending).expect("the dispatch landed its command in control:");
         assert_eq!(
-            tags,
-            vec![Value::String("through control:".to_owned())],
-            "the rows read back from control: are the command's facts"
+            rows(&effect, "xyz.tonk.command/ping-tag"),
+            vec!["through control:".to_owned()],
+            "the rows the report names are the command's facts"
         );
 
-        // The route then runs the providers of the origin's vocabulary
-        // on them.
+        // The route then performs the stack's providers on them.
         run_commands(
             &state,
             CommandOrigin {
@@ -693,13 +742,58 @@ mod control_layer {
                 branch: "main".to_owned(),
                 client: None,
             },
-            commands,
+            Some(effect),
+        )
+        .await;
+        assert_eq!(
+            drain_ping_tags(),
+            vec!["through control:".to_owned()],
+            "the provider ran once with the decoded command"
+        );
+    }
+
+    /// The client a request came from rides on its commands' tick: the
+    /// route stamps it on the `control:` entity beside them, and the
+    /// provider takes it from the tick — the way a navigation command
+    /// finds the tab to post back to.
+    #[dialog_common::test]
+    async fn a_command_reaches_its_provider_with_the_client_that_asked() {
+        let (state, repo) = space_with_ping().await;
+        let _ = drain_ping_log();
+
+        let (_, pending) = {
+            let tonk = state.read().await;
+            let branch = tonk.reactor.repository(&repo).branch("main");
+            transact_on_branch(
+                &tonk,
+                branch,
+                Some(ClientId("tab-7".to_owned())),
+                ping_request("navigate"),
+            )
+            .await
+            .expect("the command transacts")
+        };
+        let effect = landed(pending).expect("the dispatch landed its command");
+        assert_eq!(
+            rows(&effect, "tonk.session/client"),
+            vec!["control: client:tab-7".to_owned()],
+            "the client is a row of the control: entity in the command's tick"
+        );
+
+        run_commands(
+            &state,
+            CommandOrigin {
+                repo: repo.clone(),
+                branch: "main".to_owned(),
+                client: None,
+            },
+            Some(effect),
         )
         .await;
         assert_eq!(
             drain_ping_log(),
-            vec!["through control:".to_owned()],
-            "the provider ran once with the decoded command"
+            vec![("navigate".to_owned(), Some("tab-7".to_owned()))],
+            "the provider ran with the client the command was invoked with"
         );
     }
 
@@ -707,16 +801,16 @@ mod control_layer {
     async fn a_durable_claim_lands_no_command_and_moves_the_head() {
         let (state, repo) = space_with_ping().await;
 
-        let (response, commands) = {
+        let (response, pending) = {
             let tonk = state.read().await;
             let branch = tonk.reactor.repository(&repo).branch("main");
-            transact_on_branch(&tonk, branch, durable_request("kept"))
+            transact_on_branch(&tonk, branch, None, durable_request("kept"))
                 .await
                 .expect("the claim transacts")
         };
 
         assert!(
-            commands.is_none(),
+            landed(pending).is_none(),
             "nothing stood in control: for a durable write"
         );
         assert_ne!(
@@ -727,7 +821,7 @@ mod control_layer {
     }
 
     #[dialog_common::test]
-    async fn each_dispatch_reads_its_own_commands_once() {
+    async fn each_dispatch_reports_its_own_commands() {
         let (state, repo) = space_with_ping().await;
 
         let transact = |body: Bytes| {
@@ -736,10 +830,12 @@ mod control_layer {
             async move {
                 let tonk = state.read().await;
                 let branch = tonk.reactor.repository(&repo).branch("main");
-                transact_on_branch(&tonk, branch, body)
-                    .await
-                    .expect("the request transacts")
-                    .1
+                landed(
+                    transact_on_branch(&tonk, branch, None, body)
+                        .await
+                        .expect("the request transacts")
+                        .1,
+                )
             }
         };
 
@@ -747,30 +843,20 @@ mod control_layer {
         let second = transact(ping_request("second")).await;
         let none = transact(durable_request("after")).await;
 
-        let tag = |commands: Option<dialog_corpus::Changes>| -> Vec<String> {
-            commands
-                .map(|commands| {
-                    commands
-                        .iter()
-                        .filter_map(|(_, _, change)| match change {
-                            dialog_corpus::Change::Assert(Value::String(tag), _) => {
-                                Some(tag.clone())
-                            }
-                            _ => None,
-                        })
-                        .collect()
-                })
+        let tag = |effect: Option<dialog_repository::Effect>| -> Vec<String> {
+            effect
+                .map(|effect| rows(&effect, "xyz.tonk.command/ping-tag"))
                 .unwrap_or_default()
         };
         assert_eq!(tag(first), vec!["first".to_owned()]);
         assert_eq!(
             tag(second),
             vec!["second".to_owned()],
-            "the second dispatch reads its own command and not the first's"
+            "the second dispatch reports its own command and not the first's"
         );
         assert!(
             none.is_none(),
-            "a dispatch with no command reads none left over"
+            "a dispatch with no command reports none left over"
         );
     }
 }
