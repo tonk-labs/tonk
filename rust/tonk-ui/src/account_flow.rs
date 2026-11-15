@@ -2451,8 +2451,9 @@ pub(crate) mod tests {
             }),
             "the embed pass must point every carrier at minted content; got {hub}",
         );
+        // Three contents: Tonk's look, the hub, and the view's own `ui`.
         assert_eq!(
-            hub["minted"], 1,
+            hub["minted"], 3,
             "one blob per content, however often the view re-renders; got {hub}",
         );
 
@@ -2488,8 +2489,8 @@ pub(crate) mod tests {
             "the cross-view embed must resolve to minted content; got {settings}",
         );
         assert_eq!(
-            settings["minted"], 1,
-            "the cross-view embed mints one blob, not a second copy; got {settings}",
+            settings["minted"], 3,
+            "the cross-view embeds mint one blob per content, not a second copy; got {settings}",
         );
 
         driver.quit().await?;
