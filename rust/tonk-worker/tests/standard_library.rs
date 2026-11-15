@@ -833,9 +833,24 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
         0,
         "the empty Hub must not claim a roster fact it cannot tell from a pending download",
     );
+    // The one place that may say so is the wall on a settings task page
+    // (an app or a terminal asking for the account), where it is true.
+    let wall_start = PROFILE_LIBRARY
+        .find("<div class=\"fabb-page signed-out-wall\"")
+        .expect("the settings task pages' wall");
+    let wall_end = wall_start
+        + PROFILE_LIBRARY[wall_start..]
+            .find("</section>")
+            .expect("the wall's end");
+    let hub = format!(
+        "{}{}",
+        &PROFILE_LIBRARY[..wall_start],
+        &PROFILE_LIBRARY[wall_end..]
+    )
+    .to_lowercase();
     for rejected in ["signed out", "no spaces available"] {
         assert!(
-            !PROFILE_LIBRARY.to_lowercase().contains(rejected),
+            !hub.contains(rejected),
             "a provider-free local profile must not claim `{rejected}`",
         );
     }
@@ -2068,4 +2083,72 @@ fn it_draws_a_missing_page_as_a_wall() {
     for gone in ["<wa-button", "--wa-", "fabb-disc", "404"] {
         assert!(!view.contains(gone), "the wall must not draw `{gone}`");
     }
+}
+
+#[dialog_common::test]
+fn it_shows_a_signed_out_wall_on_settings_task_pages() {
+    // gooey in-browser/task-page.html#signed-out, on /settings/* only: a
+    // wall whose sign in raises the account ceremony, in place of raising
+    // it unasked. The account page and ?via keep raising theirs.
+    assert!(PROFILE_LIBRARY.contains(
+        "const signedOut = path.startsWith('/settings/') && self.unlinked()\n          && !self.viaRequest() && !self.viaAsk();"
+    ));
+    assert!(
+        PROFILE_LIBRARY
+            .contains("if (account && self.unlinked() && !self.viaRequest() && !signedOut) {")
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("<div class=\"fabb-page signed-out-wall\" data-signed-out-wall>")
+    );
+    assert!(PROFILE_LIBRARY.contains(">you’re signed out</h1>"));
+    assert!(
+        PROFILE_LIBRARY
+            .contains("<tonk-message kind=\"status\">Sign in to see your spaces.</tonk-message>")
+    );
+    assert!(PROFILE_LIBRARY.contains(
+        "} else if (hit('[data-signed-out-sign-in]')) {\n            self.link('needs-account');"
+    ));
+}
+
+#[dialog_common::test]
+fn it_draws_a_devices_request_as_the_connect_a_device_task() {
+    // gooey in-browser/task-page.html #device, #device-connected,
+    // #device-denied, #device-expired, #device-cancelled, #device-failed.
+    let pane = PROFILE_LIBRARY
+        .split("<div class=\"pane fabb-page\" data-pane=\"link\" hidden data-link-approval>")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("<div class=\"pane fabb-page\" data-pane=\"local-link\"")
+                .next()
+        })
+        .expect("the device task");
+    assert!(pane.contains(">connect a device</h1>"));
+    assert!(pane.contains("<dt>device</dt><dd data-link-name></dd>"));
+    assert!(pane.contains("<dt>your account</dt>"));
+    assert!(
+        pane.contains("BUG-246"),
+        "a slot for the code the device shows"
+    );
+    // the safe answer first, the main one last, naming how much it grants
+    assert!(pane.contains(
+        "<button type=\"button\" data-link-decline>don’t allow</button>\n                      <button type=\"button\" data-link-approve"
+    ));
+    assert!(pane.contains("data-wait=\"connecting\">allow whole account</button>"));
+    for step in ["ask", "connected", "denied", "expired"] {
+        assert!(
+            pane.contains(&format!("data-link-step=\"{step}\"")),
+            "{step}"
+        );
+    }
+    // the terminal's answer comes back as ?link=ok|denied|invalid
+    assert!(PROFILE_LIBRARY.contains(
+        "return { ok: 'connected', denied: 'denied', invalid: 'denied' }[outcome] ?? null;"
+    ));
+    // a cancelled or failed passkey is the same step, the reason in the form
+    assert!(PROFILE_LIBRARY.contains(
+        "if (state === 'refused') self.linkError('The passkey prompt was cancelled. Try again when you’re ready.');"
+    ));
+    // the other two panes keep their copy on the same parts
+    assert!(PROFILE_LIBRARY.contains(">attach a local space to this account</h1>"));
+    assert!(PROFILE_LIBRARY.contains(">sign in through another tonk</h1>"));
 }
