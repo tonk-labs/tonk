@@ -560,7 +560,7 @@ bar_command!(
 /// input, the site, and the site's selection) and one `intent` per command
 /// the input could mean, in the session overlay of the branch it came from.
 /// Rules derive values for those commands' fields onto the intents, and
-/// `intent/suggest` reads them back as readings.
+/// [`Suggest`] reads them back as readings.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct Interpret {
     /// The command entity (a fresh id per keystroke).
@@ -576,6 +576,35 @@ pub struct Interpret {
 }
 
 impl Command for Interpret {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `intent/suggest`: what a line typed in the command palette could mean.
+/// Asked by the page through the transact path, and answered by a
+/// provider the worker registers on the branch's stack
+/// ([`Stack::provide`](dialog_repository::Stack::provide)), which reads
+/// the branch's palette vocabulary and writes one `intent/reading` per
+/// reading and an `intent/answer` into the branch's `session:` layer, all
+/// naming this command, so the tab that asked reads its own answer.
+///
+/// These are the fields every ask carries. The optional ones (`subject`,
+/// `site`, `expression`, `memory`; see the library's declaration) are
+/// read from the command's rows by the provider, since a derived concept
+/// has no optional field.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct Suggest {
+    /// The command entity (a fresh id per ask), which its answer names.
+    pub this: Entity,
+    /// What was typed; empty asks for the menu.
+    pub input: crate::domain::command::current::intent_suggest::Input,
+    /// The caller's clock in milliseconds.
+    pub now: crate::domain::command::current::intent_suggest::Now,
+    /// How many readings at most.
+    pub max: crate::domain::command::current::intent_suggest::Max,
+}
+
+impl Command for Suggest {
     type Input = Self;
     type Output = ();
 }

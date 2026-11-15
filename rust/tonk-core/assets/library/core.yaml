@@ -2710,7 +2710,7 @@ concept!: &intent/action
 # intent, each as a one-field concept on the field's own attribute with the
 # field named after the attribute (`subject` for `…/subject`), scoped to the
 # command (`intent` where `command: <the command>`). `intent/suggest`
-# reads the intents and those values back as readings.
+# reads the intents and those values back as readings, below.
 command!: &intent/interpret
   this: tonk:intent-interpret
   description: Interpret what was typed in the command palette, where it was opened.
@@ -2764,6 +2764,117 @@ concept!: &intent
       description: The command it would run.
       the: tonk.dialog.intent/command
       as: entity
+
+# What the line could mean, asked as a command and answered as session
+# facts. The palette asserts `intent/suggest` on each branch it asks (the
+# space's and the profile's) through the transact path, in the same commit
+# as the line's `intent/interpret`. A stack provider answers it after the
+# commit: it reads the branch's palette vocabulary (`intent/action`, the
+# roles on attributes, the `intent`s and what rules derived onto them, the
+# memory) and writes one `intent/reading` per reading, best first, and one
+# `intent/answer` saying how many, into the branch's `session:` layer. The
+# rows name the ask (the command entity the page minted), so the tab that
+# asked reads its own answer and no other's; an answer replaces the
+# previous one for the same asker (its site, else its expression). Nothing
+# is stored, and it goes with the process.
+command!: &intent/suggest
+  this: tonk:intent-suggest
+  description: Ask what a line typed in the command palette could mean.
+  with:
+    input:
+      description: What was typed; empty asks what can be done without saying more.
+      the: tonk.dialog.intent.suggest/input
+      as: text
+    now:
+      description: The caller's clock in milliseconds, for arguments that take the moment the command runs.
+      the: tonk.dialog.intent.suggest/now
+      as: float
+    max:
+      description: How many readings at most.
+      the: tonk.dialog.intent.suggest/max
+      as: natural
+  maybe:
+    subject:
+      description: The entity the page shows, what "this" means, and the default for an argument it can fill.
+      the: tonk.dialog.intent.suggest/subject
+      as: entity
+    site:
+      description: The tab's site, whose selection is tried in every reading.
+      the: tonk.dialog.intent.suggest/site
+      as: entity
+    expression:
+      description: The palette opening `intent/interpret` recorded; its intents and what rules derived onto them fill the readings.
+      the: tonk.dialog.intent.suggest/expression
+      as: entity
+    memory:
+      description: What was run from the palette, kept on another branch, as JSON with `choices` and `picks`, each a list of rows.
+      the: tonk.dialog.intent.suggest/memory
+      as: text
+
+concept!: &intent/answer
+  description: How an `intent/suggest` was answered. Session facts, one per asker, replaced by the next ask.
+  with:
+    ask:
+      description: The `intent/suggest` command it answers.
+      the: tonk.dialog.intent.answer/ask
+      as: entity
+    readings:
+      description: How many readings the answer has; none is an answer too.
+      the: tonk.dialog.intent.answer/readings
+      as: natural
+
+concept!: &intent/reading
+  description: One reading of what was typed, as `intent/suggest` answered it. Session facts, best first by rank.
+  with:
+    ask:
+      description: The `intent/suggest` command it answers.
+      the: tonk.dialog.intent.reading/ask
+      as: entity
+    rank:
+      description: Its place among the answer's readings, from 0.
+      the: tonk.dialog.intent.reading/rank
+      as: natural
+    score:
+      description: How well it reads, higher is better.
+      the: tonk.dialog.intent.reading/score
+      as: float
+    command:
+      description: The command it would run.
+      the: tonk.dialog.intent.reading/command
+      as: entity
+    text:
+      description: The reading as plain text.
+      the: tonk.dialog.intent.reading/text
+      as: text
+    display:
+      description: Its segments, as JSON.
+      the: tonk.dialog.intent.reading/display
+      as: text
+    nouns:
+      description: Role to kind of thing, as JSON.
+      the: tonk.dialog.intent.reading/nouns
+      as: text
+    listed:
+      description: Whether it is one of the values listed for an argument nothing was typed for.
+      the: tonk.dialog.intent.reading/listed
+      as: boolean
+    entities:
+      description: The entities its arguments are filled with, as JSON.
+      the: tonk.dialog.intent.reading/entities
+      as: text
+  maybe:
+    input:
+      description: The words the reading took for its verb, when it took any.
+      the: tonk.dialog.intent.reading/input
+      as: text
+    completion:
+      description: The input extended by this reading, when it extends it.
+      the: tonk.dialog.intent.reading/completion
+      as: text
+    claim:
+      description: The transact request that runs it, as JSON, once nothing is missing.
+      the: tonk.dialog.intent.reading/claim
+      as: text
 
 # A member as the account `member/expel` wants. A roster row is the
 # membership, derived from (space, account); the command takes the

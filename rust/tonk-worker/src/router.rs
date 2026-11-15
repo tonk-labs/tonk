@@ -206,6 +206,8 @@ mod interpret;
 mod navigate;
 mod site_request;
 mod site_select;
+/// `intent/suggest`, answered by a provider on the branch's stack.
+mod suggest;
 
 mod diagnostics;
 

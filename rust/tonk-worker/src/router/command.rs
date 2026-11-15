@@ -429,6 +429,67 @@ impl CommandProviders {
         self.register(surface, Migrated::<Current, Legacy>::concepts(), decode)
     }
 
+    /// Register a command answered by `answer` itself: a handler over
+    /// the [`CommandEnv`] of the command's tick and the landed command,
+    /// whose result is the rows dialog writes as the answer, each in the
+    /// layer it names. The typed commands answer with nothing and commit
+    /// through the env; this is for a command whose answer is the point
+    /// (`intent/suggest`, answered in the stack's `session:` layer).
+    /// Chainable.
+    pub fn answering<F, Fut>(
+        mut self,
+        surface: Surface,
+        concept: &'static ConceptDescriptor,
+        answer: F,
+    ) -> Self
+    where
+        F: Fn(CommandEnv, dialog_repository::Command) -> Fut
+            + ConditionalSend
+            + ConditionalSync
+            + 'static,
+        Fut: std::future::Future<Output = Result<Changes, Failure>> + ConditionalSend + 'static,
+    {
+        let answer = Arc::new(answer);
+        let build: Build = Arc::new(move |scope: &Scope| {
+            let scope = scope.clone();
+            let answer = answer.clone();
+            vec![CommandProvider::new(
+                concept,
+                move |command: dialog_repository::Command| {
+                    let tick = scope
+                        .ticks
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .remove(command.entity());
+                    let origin = CommandOrigin::of_tick(&scope, tick);
+                    let admitted = surface.admits(&origin);
+                    let env = CommandEnv::new(scope.state.clone(), origin);
+                    let answer = answer.clone();
+                    let name = concept.this();
+                    async move {
+                        if !admitted {
+                            return Err(Failure::new(format!(
+                                "{name} is no command of {}",
+                                if env.from_profile() {
+                                    "the profile".to_owned()
+                                } else {
+                                    format!("space '{}'", env.origin().repo)
+                                }
+                            )));
+                        }
+                        answer(env, command).await
+                    }
+                },
+            )]
+        });
+        self.registrations.push(Registration {
+            surface,
+            concepts: vec![concept],
+            build,
+        });
+        self
+    }
+
     /// Register a command decoding through `decode`, claimed by
     /// `concepts`: one stack provider per concept, all running the
     /// [`Provider<C>`](dialog_capability::Provider) impl on
@@ -664,6 +725,9 @@ pub fn command_providers() -> CommandProviders {
         .command::<tonk_schema::command::CreateBranch>(Profile)
         // What was typed in the command palette, interpreted.
         .command::<tonk_schema::command::Interpret>(Both)
+        // What the line could mean: answered in the stack's own layer, on
+        // each branch the page asks (the space's and the profile's).
+        .answering(Both, super::suggest::concept(), super::suggest::respond)
         .command::<tonk_schema::command::ReplicateSpace>(Profile)
         .command::<tonk_schema::command::ForgetInvite>(Profile)
         // A space may ask whether ITS OWN seed is behind: the check
