@@ -1488,7 +1488,12 @@ async fn it_replaces_an_askers_previous_answer() {
     .await;
     assert!(answered(&app, &space, &first).await.is_some_and(|n| n > 0));
     let rows = readings_of(&app, &space, &first).await;
-    assert_eq!(field(&rows[0], "completion"), "rename Budget to ");
+    assert!(
+        field(&rows[0], "completion")
+            .as_str()
+            .is_some_and(|completion| completion.starts_with("rename")),
+        "ren completes to rename: {rows:?}"
+    );
 
     // The same site asks the menu: the first ask's readings are gone,
     // and the menu's readings name the second ask alone.

@@ -2807,7 +2807,7 @@ command!: &intent/suggest
       the: tonk.dialog.intent.suggest/expression
       as: entity
     memory:
-      description: What was run from the palette, kept on another branch, as JSON `{"choices": [row…], "picks": [row…]}`.
+      description: What was run from the palette, kept on another branch, as JSON with `choices` and `picks`, each a list of rows.
       the: tonk.dialog.intent.suggest/memory
       as: text
 
