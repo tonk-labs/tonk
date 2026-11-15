@@ -2415,16 +2415,16 @@ pub(crate) mod tests {
             )
             .await?;
         let hub = hub.json();
-        // The view declares both twins — `--page: #dedbd8` / `--ink:
-        // #38182a`, and a `@media (prefers-color-scheme: dark)` pair —
-        // so the values to expect depend on the scheme the browser is
-        // actually in. Pinning the light literals would fail on a dark
-        // runner for a style that arrived perfectly well. Either way a
-        // transparent background means the style never arrived at all.
+        // The page is `.tonk-hub`, which wears Tonk's look: the ground and
+        // the ink `tonk-look.css` declares as light-dark pairs, so the
+        // values to expect depend on the scheme the browser is actually
+        // in. Pinning the light literals would fail on a dark runner for a
+        // style that arrived perfectly well. Either way a transparent
+        // background means the style never arrived at all.
         let (page, ink) = if hub["dark"] == true {
-            ("rgb(22, 19, 19)", "rgb(226, 223, 221)")
+            ("rgb(24, 13, 18)", "rgb(247, 246, 245)")
         } else {
-            ("rgb(222, 219, 216)", "rgb(56, 24, 42)")
+            ("rgb(232, 230, 228)", "rgb(56, 24, 42)")
         };
         assert_eq!(
             hub["background"], page,
@@ -4114,7 +4114,7 @@ pub(crate) mod tests {
         input.send_keys(select_all).await?;
         input.send_keys("After rename").await?;
         click(&driver, &format!("{card} [data-space-rename-submit]")).await?;
-        wait_for_text(&driver, &format!("{card} .n"), "After rename").await?;
+        wait_for_text(&driver, &format!("{card} .hub-name"), "After rename").await?;
 
         driver.quit().await?;
         Ok(())

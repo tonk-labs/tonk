@@ -28,17 +28,20 @@ use tonk_notation::{Load, Syntax, Url, expand, parse_at};
 use crate::TonkWorkerError;
 
 /// Where library documents live, or `None` where the library has no
-/// location: a wasm test harness is not a service worker, so it has no
-/// origin to serve from. A document parsed without a location still
-/// seeds; it just cannot include.
+/// location: a service worker that cannot name its origin. A document
+/// parsed without a location still seeds; it just cannot include. A wasm
+/// unit test is not a service worker, so it reads the compiled-in library,
+/// as a native worker does.
 pub(super) fn location() -> Option<Url> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown", not(test)))]
     {
         // The directory the service worker serves the library from.
         let origin = super::repository::worker_origin()?;
         Url::parse(&format!("{origin}/library/")).ok()
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    // Natively, and in wasm unit tests, which are not a service worker:
+    // the compiled-in library.
+    #[cfg(any(not(all(target_arch = "wasm32", target_os = "unknown")), test))]
     {
         Url::parse(tonk_library::ROOT).ok()
     }
@@ -72,14 +75,14 @@ impl Load for Library {
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown", not(test)))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
     super::repository::fetch_library_bytes(uri.path())
         .await
         .map_err(|error| error.to_string())
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(any(not(all(target_arch = "wasm32", target_os = "unknown")), test))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
     tonk_library::Bundled.load(uri).await
 }
@@ -287,4 +290,35 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("include"), "{error}");
     }
+}
+
+/// `library` with each `key: !include/text ./path` field replaced by a
+/// block scalar of the bundled file it names, for tests that send a library
+/// document as plain notation, which has no location to include from.
+#[cfg(test)]
+pub(crate) fn inline_includes(library: &str) -> String {
+    let mut out = String::new();
+    for line in library.lines() {
+        let Some((key, path)) = line.split_once(": !include/text ") else {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        };
+        let indent = key.len() - key.trim_start().len() + 2;
+        let uri = tonk_library::location(path.trim().trim_start_matches("./"));
+        let text = tonk_library::Bundled
+            .get(&uri)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .unwrap_or_else(|| panic!("{path} is bundled"));
+        out.push_str(key);
+        out.push_str(": |\n");
+        for content in text.lines() {
+            if !content.is_empty() {
+                out.push_str(&" ".repeat(indent));
+                out.push_str(content);
+            }
+            out.push('\n');
+        }
+    }
+    out
 }

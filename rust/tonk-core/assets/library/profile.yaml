@@ -6597,7 +6597,7 @@ element!: &account-settings
       (self, reason) => {
         const target = matchMedia('(max-width: 600px)').matches
           ? document.querySelector('[data-account-nav]')
-          : document.querySelector('.hubbar');
+          : document.querySelector('.hub-top [data-account-trigger]');
         const box = target?.getBoundingClientRect();
         const anchor = box && box.width > 0 && box.height > 0 ? { left: box.left, bottom: box.bottom, width: box.width } : null;
         if (!anchor && reason === 'reseat') return;

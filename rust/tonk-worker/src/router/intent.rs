@@ -643,7 +643,7 @@ async fn it_runs_every_menu_act_from_the_palette() {
     let profile = format!("/api/repository/profile:tonk/branch/{branch}");
     let client = "tab";
     let site = format!("site:{client}");
-    for library in [CORE, PROFILE] {
+    for library in [CORE.to_owned(), super::library::inline_includes(PROFILE)] {
         send(
             &app,
             "POST",
@@ -721,7 +721,7 @@ async fn it_says_publishing_in_the_palette() {
     let (app, state, _lsp) = api_router_with_state(test_state().await);
     let branch = state.read().await.active_branch.clone();
     let profile = format!("/api/repository/profile:tonk/branch/{branch}");
-    for library in [CORE, PROFILE] {
+    for library in [CORE.to_owned(), super::library::inline_includes(PROFILE)] {
         send(
             &app,
             "POST",
@@ -771,7 +771,7 @@ async fn it_says_inviting_an_agent_or_an_address_in_the_palette() {
     let (app, state, _lsp) = api_router_with_state(test_state().await);
     let branch = state.read().await.active_branch.clone();
     let profile = format!("/api/repository/profile:tonk/branch/{branch}");
-    for library in [CORE, PROFILE] {
+    for library in [CORE.to_owned(), super::library::inline_includes(PROFILE)] {
         send(
             &app,
             "POST",
@@ -863,7 +863,7 @@ async fn it_labels_a_space_by_its_name_not_its_description() {
     let (app, state, _lsp) = api_router_with_state(test_state().await);
     let branch = state.read().await.active_branch.clone();
     let profile = format!("/api/repository/profile:tonk/branch/{branch}");
-    for library in [CORE, PROFILE] {
+    for library in [CORE.to_owned(), super::library::inline_includes(PROFILE)] {
         send(
             &app,
             "POST",

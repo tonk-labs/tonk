@@ -2052,7 +2052,7 @@ mod tests {
         set_context(&[("origin", "https://tonk.test"), ("path", "/account")]);
         // The bar beside the panel carries the link display the door reads.
         let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
+        bar.set_class_name("hub-top");
         bar.set_inner_html(
             r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
         );
@@ -2095,7 +2095,7 @@ mod tests {
             ("search", "?via"),
         ]);
         let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
+        bar.set_class_name("hub-top");
         bar.set_inner_html(
             r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
         );
@@ -2168,7 +2168,7 @@ mod tests {
             ("search", ""),
         ]);
         let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
+        bar.set_class_name("hub-top");
         bar.set_inner_html(
             r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
         );
@@ -2310,7 +2310,7 @@ mod tests {
         let navigations = record_bridge_calls("navigate");
         set_context(&[("origin", "https://tonk.test"), ("path", "/settings")]);
         let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
+        bar.set_class_name("hub-top");
         bar.set_inner_html(
             r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
         );
@@ -2353,7 +2353,7 @@ mod tests {
         let calls = record_bridge_calls("register");
         set_context(&[("origin", "https://tonk.test"), ("path", "/account")]);
         let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
+        bar.set_class_name("hub-top");
         bar.set_inner_html(
             r#"<a data-account-trigger><span data-account-link data-state="empty"></span></a>"#,
         );
