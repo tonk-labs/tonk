@@ -486,7 +486,7 @@ enum Document {
     Parsed(Syntax),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum EvaluationMode {
     /// A request's document: parsed strictly, committed only when it
     /// writes, as one invocation through the branch's stack, with the
