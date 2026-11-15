@@ -804,7 +804,8 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
         "<button class=\"hub-btn hub-btn--main\" type=\"button\" data-new-space data-space-create-open>new space</button>",
         "<hub-collection class=\"hub-rows\"",
         "<div class=\"hub-row space-card\"",
-        "<a class=\"hub-open\" href=\"/space/{subject}\"><span class=\"hub-name\" title=\"{name}\">{name}</span></a>",
+        "<a class=\"hub-open\" href=\"/space/{subject}\">",
+        "<span class=\"hub-name\" title=\"{name}\">{name}</span>",
         "<footer class=\"hub-foot\">tonk.network</footer>",
         "with=\"main@profile:tonk\"",
         "<nav class=\"mobile-nav\"",
@@ -886,7 +887,7 @@ fn it_deals_stable_weighted_frames_from_space_identity() {
         "data-space-subject",
         "const stepDown = { 15: 7, 7: 3, 3: 1, 1: 1 }",
         "--fr-r-mobile",
-        "attributeFilter: ['data-space-subject', 'data-space-thumbnail']",
+        "attributeFilter: ['data-space-subject', 'data-space-thumbnail', 'data-sync-case', 'data-role-case']",
     ] {
         assert!(
             collection.contains(contract),
@@ -2079,5 +2080,42 @@ fn it_routes_a_seed_link_to_the_seed_page_with_the_url_intact() {
     assert_eq!(
         matched.params.get("url"),
         Some("https://tonk.network/library/notebook.yaml")
+    );
+}
+
+/// A hub row draws the space's sync disc and what you can do there, both
+/// derived on the profile branch from facts this device holds: the disc
+/// from the space's upstream and this device's pause preference, the role
+/// from whether the account made or provides the space.
+#[dialog_common::test]
+fn it_derives_each_hub_rows_sync_disc_and_role() {
+    for contract in [
+        "concept!: &space/sync",
+        "concept!: &space/role",
+        "concept!: &replica/sync-enabled",
+        "the: xyz.tonk.space/sync",
+        "the: xyz.tonk.space/role",
+        "the: xyz.tonk.sync/enabled",
+        "description: A synced space whose replica is paused on this device is paused",
+        "<span class=\"hub-disc\" role=\"img\" data-sync-case={sync}></span>",
+        "<span class=\"hub-meta\" data-role-case={role}></span>",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the hub row must carry `{contract}`",
+        );
+    }
+    // The cases rank: a paused space that has an upstream reads as paused,
+    // and one nothing better speaks for reads as local.
+    let sync = PROFILE_LIBRARY
+        .split("concept!: &space/sync\n")
+        .nth(1)
+        .expect("the space/sync concept");
+    let paused = sync.find("- case:paused").expect("paused case");
+    let synced = sync.find("- case:synced").expect("synced case");
+    let local = sync.find("- case:local").expect("local case");
+    assert!(
+        paused < synced && synced < local,
+        "paused, then synced, then local"
     );
 }
