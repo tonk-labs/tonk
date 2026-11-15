@@ -14243,14 +14243,17 @@ route!: &probe/dropped
     #[dialog_common::test]
     async fn it_evaluates_both_shipped_libraries() {
         const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
-        const PROFILE: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
+        // Sent as plain notation, which has no location to include from.
+        let profile = crate::router::library::inline_includes(include_str!(
+            "../../../tonk-core/assets/library/profile.yaml"
+        ));
 
         let (app, state, _lsp) =
             crate::router::api_router_with_state(crate::router::tests::test_state().await);
 
         for (name, library, url) in [
             ("core", CORE, super::STANDARD_LIBRARY_URL),
-            ("profile", PROFILE, super::PROFILE_LIBRARY_URL),
+            ("profile", profile.as_str(), super::PROFILE_LIBRARY_URL),
         ] {
             let key = crate::router::tests::put_repo(&app, &format!("eval-{name}")).await;
             let tonk = state.read().await;

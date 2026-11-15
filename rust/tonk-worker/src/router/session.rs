@@ -1143,7 +1143,7 @@ mod tests {
             crate::router::evaluate::evaluate_profile_body(
                 &tonk,
                 "main",
-                PROFILE_LIBRARY.to_owned(),
+                crate::router::library::inline_includes(PROFILE_LIBRARY),
                 true,
             )
             .await
@@ -1261,15 +1261,13 @@ mod tests {
             // The profile library first (it declares the shared `view` /
             // `route` concepts), then the notebook on top — the install a
             // author performs to get a notebook onto their profile.
-            for library in [PROFILE_LIBRARY, NOTEBOOK_LIBRARY] {
-                crate::router::evaluate::evaluate_profile_body(
-                    &tonk,
-                    "main",
-                    library.to_owned(),
-                    true,
-                )
-                .await
-                .expect("the library installs on the profile");
+            for library in [
+                crate::router::library::inline_includes(PROFILE_LIBRARY),
+                NOTEBOOK_LIBRARY.to_owned(),
+            ] {
+                crate::router::evaluate::evaluate_profile_body(&tonk, "main", library, true)
+                    .await
+                    .expect("the library installs on the profile");
             }
         }
 
