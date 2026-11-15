@@ -54,7 +54,7 @@ pub(crate) mod tests {
         create_space(&driver, "Navigation test").await?;
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
-        wait_for_displayed(&driver, ".space-card > a.srow").await?;
+        wait_for_displayed(&driver, ".space-card a.hub-open").await?;
 
         let origin = driver
             .execute(
@@ -102,7 +102,7 @@ pub(crate) mod tests {
         for _ in 0..8 {
             enter_guest(&driver).await?;
             driver
-                .find(By::Css(".space-card > a.srow"))
+                .find(By::Css(".space-card a.hub-open"))
                 .await?
                 .click()
                 .await?;
@@ -120,7 +120,7 @@ pub(crate) mod tests {
             driver.enter_default_frame().await?;
             driver.execute("history.back()", Vec::new()).await?;
             enter_hub(&driver).await?;
-            wait_for_displayed(&driver, ".space-card > a.srow").await?;
+            wait_for_displayed(&driver, ".space-card a.hub-open").await?;
         }
 
         enter_guest(&driver).await?;
@@ -2515,12 +2515,12 @@ pub(crate) mod tests {
                 .json()
                 .as_u64()
                 .unwrap_or_default();
-            if count == 3 {
+            if count == 2 {
                 break;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "the Hub never rendered all three create controls; found {count}",
+                "the Hub never rendered both create controls; found {count}",
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -2528,16 +2528,19 @@ pub(crate) mod tests {
         driver.set_window_rect(0, 0, 1200, 900).await?;
         let desktop = driver
             .execute(
-                r#"const header = document.querySelector('.hub-header').getBoundingClientRect();
-                   const main = document.querySelector('.hubcol').getBoundingClientRect();
+                r#"const top = document.querySelector('.hub-top').getBoundingClientRect();
+                   const sheet = document.querySelector('[data-spaces-sheet]').getBoundingClientRect();
+                   const line = document.querySelector('[data-spaces-sheet] .hub-line').getBoundingClientRect();
                    const mobile = getComputedStyle(document.querySelector('.mobile-nav'));
-                   const logo = document.querySelector('.hub-logo');
+                   const logo = document.querySelector('.hub-logo').getBoundingClientRect();
                    const account = document.querySelector('.mobile-nav a[href="/settings"]');
                    return {
-                     headerWidth: Math.round(header.width),
-                     mainWidth: Math.round(main.width),
+                     topWidth: Math.round(top.width),
+                     sheetWidth: Math.round(sheet.width),
+                     sheetLeft: Math.round(sheet.left),
+                     lineHeight: Math.round(line.height),
+                     logoHeight: Math.round(logo.height),
                      mobileDisplay: mobile.display,
-                     logoHref: logo?.getAttribute('href'),
                      accountHref: account?.getAttribute('href'),
                      newSpaceForms: document.querySelectorAll('[data-new-space]').length,
                      overflow: document.documentElement.scrollWidth > innerWidth,
@@ -2546,12 +2549,15 @@ pub(crate) mod tests {
             )
             .await?;
         let desktop = desktop.json();
-        assert_eq!(desktop["headerWidth"], 1200);
-        assert_eq!(desktop["mainWidth"], 1116);
+        // One 680px column, centred: the top and the sheet share its edges.
+        assert_eq!(desktop["topWidth"], 680, "{desktop}");
+        assert_eq!(desktop["sheetWidth"], 680, "{desktop}");
+        assert_eq!(desktop["sheetLeft"], (1200 - 680) / 2, "{desktop}");
+        assert_eq!(desktop["lineHeight"], 48, "{desktop}");
+        assert_eq!(desktop["logoHeight"], 22, "{desktop}");
         assert_eq!(desktop["mobileDisplay"], "none");
-        assert_eq!(desktop["logoHref"], "/");
         assert_eq!(desktop["accountHref"], "/settings");
-        assert_eq!(desktop["newSpaceForms"], 3);
+        assert_eq!(desktop["newSpaceForms"], 2);
         assert_eq!(desktop["overflow"], false);
 
         driver.set_window_rect(0, 0, 390, 844).await?;
@@ -2560,8 +2566,7 @@ pub(crate) mod tests {
                 r#"const viewport = innerWidth;
                    const nav = document.querySelector('.mobile-nav');
                    const navRect = nav.getBoundingClientRect();
-                   const card = document.querySelector('.space-card .srow');
-                   const cardStyle = card ? getComputedStyle(card) : null;
+                   const sheet = document.querySelector('[data-spaces-sheet]').getBoundingClientRect();
                    const visibleNew = [...document.querySelectorAll('[data-new-space]')]
                      .filter(element => element.getClientRects().length > 0);
                    return {
@@ -2570,7 +2575,8 @@ pub(crate) mod tests {
                      navDisplay: getComputedStyle(nav).display,
                      navBottom: Math.round(navRect.bottom),
                      navItems: nav.querySelectorAll(':scope > a, :scope > space-create').length,
-                     cardColumns: cardStyle?.gridTemplateColumns ?? null,
+                     sheetLeft: Math.round(sheet.left),
+                     sheetRight: Math.round(sheet.right),
                      visibleNew: visibleNew.length,
                      overflow: document.documentElement.scrollWidth > innerWidth,
                    };"#,
@@ -2582,16 +2588,17 @@ pub(crate) mod tests {
             assert_eq!(mobile["navDisplay"], "grid");
             assert_eq!(mobile["navBottom"], mobile["viewportHeight"]);
             assert_eq!(mobile["navItems"], 3);
-            assert_eq!(mobile["visibleNew"], 1);
+            // The line's `new space` and the bar's, until the bar's future
+            // is settled.
+            assert_eq!(mobile["visibleNew"], 2);
             assert_eq!(mobile["overflow"], false);
-            if !mobile["cardColumns"].is_null() {
-                assert!(
-                    mobile["cardColumns"]
-                        .as_str()
-                        .is_some_and(|columns| columns.starts_with("64px ")),
-                    "mobile cards must place a 64px preview beside the caption: {mobile}"
-                );
-            }
+            // 16px at the sides.
+            assert_eq!(mobile["sheetLeft"], 16, "{mobile}");
+            assert_eq!(
+                mobile["sheetRight"].as_i64().unwrap_or_default(),
+                mobile["viewport"].as_i64().unwrap_or_default() - 16,
+                "{mobile}"
+            );
         }
 
         driver.quit().await?;
@@ -2599,9 +2606,7 @@ pub(crate) mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_keeps_hub_card_actions_beside_the_mobile_caption(
-        env: TestEnvironment,
-    ) -> Result<()> {
+    async fn it_keeps_hub_row_actions_beside_the_row(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         goto(&driver, env.tonk_web.as_str()).await?;
         let before = space_keys(&driver).await?;
@@ -2622,15 +2627,14 @@ pub(crate) mod tests {
             driver.set_window_rect(0, 0, width, 844).await?;
             let layout = driver.execute(
                 r#"const card = document.querySelector(arguments[0]);
-                   const link = card.querySelector('.srow').getBoundingClientRect();
+                   const link = card.querySelector('.hub-open').getBoundingClientRect();
                    const action = card.querySelector('[data-space-actions-open]').getBoundingClientRect();
-                   const preview = card.querySelector('.space-preview').getBoundingClientRect();
                    return {
                      toolbar: !!document.querySelector('.collection-heading, .collection-search'),
                      overflow: document.documentElement.scrollWidth > innerWidth,
                      separate: !card.querySelector('a button'),
                      beside: action.left >= link.right && action.top >= link.top && action.bottom <= link.bottom,
-                     previewWidth: Math.round(preview.width),
+                     rowHeight: Math.round(link.height),
                    };"#,
                 vec![serde_json::json!(card)],
             ).await?;
@@ -2638,9 +2642,9 @@ pub(crate) mod tests {
             assert_eq!(layout["toolbar"], false);
             assert_eq!(layout["overflow"], false);
             assert_eq!(layout["separate"], true);
-            if width == 500 {
-                assert_eq!(layout["beside"], true, "{layout}");
-                assert_eq!(layout["previewWidth"], 64);
+            assert_eq!(layout["beside"], true, "{layout}");
+            if width == 1200 {
+                assert_eq!(layout["rowHeight"], 48, "{layout}");
             }
         }
         element(&driver, &format!("{card} [data-space-actions-open]"))
@@ -3427,17 +3431,28 @@ pub(crate) mod tests {
         driver.goto(env.tonk_web.as_str()).await?;
         let before = space_keys(&driver).await?;
         enter_hub(&driver).await?;
-        click(&driver, ".stack > space-create [data-space-create-open]").await?;
-        wait_for_displayed(&driver, ".stack > space-create [data-space-create-dialog]").await?;
-        element(&driver, ".stack > space-create input[name=name]")
+        click(&driver, ".hub-line > space-create [data-space-create-open]").await?;
+        wait_for_displayed(
+            &driver,
+            ".hub-line > space-create [data-space-create-dialog]",
+        )
+        .await?;
+        element(&driver, ".hub-line > space-create input[name=name]")
             .await?
             .send_keys("One card creation")
             .await?;
-        element(&driver, ".stack > space-create textarea[name=description]")
-            .await?
-            .send_keys("One submit, one space")
-            .await?;
-        click(&driver, ".stack > space-create [data-space-create-submit]").await?;
+        element(
+            &driver,
+            ".hub-line > space-create textarea[name=description]",
+        )
+        .await?
+        .send_keys("One submit, one space")
+        .await?;
+        click(
+            &driver,
+            ".hub-line > space-create [data-space-create-submit]",
+        )
+        .await?;
         driver.enter_default_frame().await?;
         await_url_containing(&driver, "/space/").await?;
         // Both handlers finish asynchronously; allow a second creation to surface.
@@ -4121,7 +4136,7 @@ pub(crate) mod tests {
         let opener_selector = format!("{remove} [data-space-remove-open]");
         let dialog_selector = format!("{remove} tonk-dialog[data-space-remove-dialog]");
         let submit_selector = format!("{dialog_selector} .m-go");
-        let row = wait_for_displayed(&driver, &format!(".srow-wrap:has({remove})")).await?;
+        let row = wait_for_displayed(&driver, &format!(".hub-row:has({remove})")).await?;
         // Park on the row once it has held still: its stylesheet lands a
         // beat after it renders, and a pointer aimed at where the row was
         // hovers nothing once it moves.
@@ -4154,7 +4169,7 @@ pub(crate) mod tests {
             .await?;
         click(
             &driver,
-            &format!(".srow-wrap:has({remove}) [data-space-actions-open]"),
+            &format!(".hub-row:has({remove}) [data-space-actions-open]"),
         )
         .await?;
         let opener = match wait_for_displayed(&driver, &opener_selector).await {
@@ -4173,7 +4188,7 @@ pub(crate) mod tests {
                            under: at ? at.tagName + '.' + at.className : null,
                            underInRow: !!(at && row.contains(at)),
                            verbsOpacity: verbs ? getComputedStyle(verbs).opacity : null,
-                           rows: document.querySelectorAll('.srow-wrap').length,
+                           rows: document.querySelectorAll('.hub-row').length,
                            scrollY: window.scrollY,
                          };",
                         vec![row.to_json()?],
@@ -4459,9 +4474,7 @@ pub(crate) mod tests {
                     haspopup: trigger ? trigger.getAttribute("aria-haspopup") : "no trigger",
                     caret: !!(trigger && trigger.querySelector(".g")),
                     accountHeight: trigger.getBoundingClientRect().height,
-                    newHeight: document.querySelector('.header-new .snew').getBoundingClientRect().height,
-                    accountTop: trigger.getBoundingClientRect().top,
-                    newTop: document.querySelector('.header-new .snew').getBoundingClientRect().top,
+                    inTop: !!trigger.closest('.hub-top'),
                 };
                 "##,
                 Vec::new(),
@@ -4478,11 +4491,9 @@ pub(crate) mod tests {
             "the account cell draws no dropdown caret",
         );
 
-        assert_eq!(
-            affordance.json()["accountHeight"],
-            affordance.json()["newHeight"]
-        );
-        assert_eq!(affordance.json()["accountTop"], affordance.json()["newTop"]);
+        // Your name stands at the top of the page, a 44px target.
+        assert_eq!(affordance.json()["accountHeight"], 44.0);
+        assert_eq!(affordance.json()["inTop"], true);
 
         // One press. The cell is the account tab: it pushes `/account`
         // into the same document, and the page the Hub asks for is the
@@ -4651,7 +4662,7 @@ pub(crate) mod tests {
                      agentAccess: !!document.querySelector('[data-agent-connections]'),
                      agentAccessVisible: !document.querySelector('[data-agent-connections]')?.hidden,
                      pageBottom: document.querySelector('.hub-page').getBoundingClientRect().bottom,
-                     contentBottom: document.querySelector('.hubcol').getBoundingClientRect().bottom,
+                     contentBottom: document.querySelector('.hub-page > main').getBoundingClientRect().bottom,
                      signoutLeft: signout.left,
                      signoutTop: signout.top,
                      signoutRight: signout.right,
@@ -4691,8 +4702,8 @@ pub(crate) mod tests {
         );
         assert!(
             settings["pageBottom"].as_f64().unwrap()
-                >= settings["contentBottom"].as_f64().unwrap() + 119.0,
-            "the footer margin escaped the page background: {settings}"
+                >= settings["contentBottom"].as_f64().unwrap() + 64.0,
+            "the page's foot escaped the page background: {settings}"
         );
         assert!(
             settings["passkeyDate"]
@@ -6243,22 +6254,33 @@ pub(crate) mod tests {
         description: &str,
     ) -> Result<()> {
         enter_hub(driver).await?;
-        click(driver, ".header-new [data-space-create-open]").await?;
-        wait_for_displayed(driver, ".header-new [data-space-create-dialog]").await?;
-        element(driver, ".header-new input[name=name]")
+        click(driver, ".hub-line > space-create [data-space-create-open]").await?;
+        wait_for_displayed(
+            driver,
+            ".hub-line > space-create [data-space-create-dialog]",
+        )
+        .await?;
+        element(driver, ".hub-line > space-create input[name=name]")
             .await?
             .send_keys(name)
             .await?;
         if !description.is_empty() {
-            element(driver, ".header-new textarea[name=description]")
-                .await?
-                .send_keys(description)
-                .await?;
+            element(
+                driver,
+                ".hub-line > space-create textarea[name=description]",
+            )
+            .await?
+            .send_keys(description)
+            .await?;
         }
         // Through `click`: the dialog's `space/create` binding must be wired
         // before the press, or the display resolves nothing and the space
         // is never asked for.
-        click(driver, ".header-new [data-space-create-submit]").await?;
+        click(
+            driver,
+            ".hub-line > space-create [data-space-create-submit]",
+        )
+        .await?;
         // Back to the top document: everything after this — the space
         // page, the bar, the cluster — lives there.
         driver.enter_default_frame().await?;
@@ -7338,7 +7360,7 @@ pub(crate) mod tests {
         // The real Hub frame renders the first account's space.
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
-        wait_for_text_containing(&driver, ".stack", "First Garden").await?;
+        wait_for_text_containing(&driver, ".hub-rows", "First Garden").await?;
         driver.enter_default_frame().await?;
 
         // Prepare a fresh profile through the API, then use the unlinked
@@ -7411,17 +7433,20 @@ pub(crate) mod tests {
                 });
             return Err(error).context(format!("Hub account diagnostic: {diagnostic}"));
         }
-        wait_for_displayed(&driver, ".snew").await?;
-        let create_action = element(&driver, ".snew").await?.text().await?;
+        wait_for_displayed(&driver, "[data-spaces-sheet] [data-new-space]").await?;
+        let create_action = element(&driver, "[data-spaces-sheet] [data-new-space]")
+            .await?
+            .text()
+            .await?;
         assert!(
             create_action.contains("new space"),
             "an empty Hub roster must show the creation action: {create_action:?}"
         );
         assert!(
-            driver.find_all(By::Css(".srow-wrap")).await?.is_empty(),
+            driver.find_all(By::Css(".hub-row")).await?.is_empty(),
             "an empty Hub roster must not render a space row"
         );
-        let second_stack = element(&driver, ".stack").await?.text().await?;
+        let second_stack = element(&driver, ".hub-rows").await?.text().await?;
         assert!(
             !second_stack.contains("First Garden"),
             "the second account's Hub must omit the first account's space"
@@ -7515,7 +7540,7 @@ pub(crate) mod tests {
         // back to it, pushed in place.
         enter_hub(&driver).await?;
         click(&driver, ".settings-back").await?;
-        wait_for_text_containing(&driver, ".stack", "First Garden").await?;
+        wait_for_text_containing(&driver, ".hub-rows", "First Garden").await?;
         driver.enter_default_frame().await?;
         let listed = get_json(&driver, "/api/profile").await?;
         assert!(

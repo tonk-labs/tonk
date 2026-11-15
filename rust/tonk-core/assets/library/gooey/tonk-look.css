@@ -1,0 +1,82 @@
+/* Vendored from tonk-labs/gooey tonk-look.css at ready-to-tonk 406b6d7db17477fe7a5b071b3aa59c248c45d5e6.
+   Unchanged below this comment: change it in gooey, then copy it here again. */
+/* =============================================================================
+   tonk-look.css — Tonk's look as custom properties: the values README.md lists
+   under "Tonk's look", in one place. Scoped to Tonk's own elements, never
+   :root (rule 1), so nothing reaches a space or the agent app around it.
+   in-agent.css imports this file. In a browser, Tonk's own pages wear it: the
+   hub (.tonk-hub, in-browser/hub.css) and task pages. <tonk-message> inherits
+   these names and falls back to the same values on its own.
+
+   Every name says the job a value does. Light, dark and the ask change values,
+   never names. Each name is declared once as light-dark(light, dark); recipes
+   read other names, so they follow. Only color-scheme decides dark.
+============================================================================= */
+.tonk, .tonk-hub, .tonk-task, .tonk-look, .fabb-page, .fabb-request {
+  --tonk-text:          light-dark(#38182a, #f7f6f5);
+  --tonk-text-soft:     light-dark(#5b4953, #c9bec4);
+  --tonk-text-disabled: color-mix(in oklab, var(--tonk-text) 40%, var(--tonk-sheet));
+  --tonk-sheet:         light-dark(#f7f6f5, #23141c);
+  --tonk-ground:        light-dark(#e8e6e4, #180d12);
+  --tonk-field:         light-dark(#ffffff, #180d12);
+  --tonk-control-edge:  #86757d;
+  --tonk-rule:          color-mix(in oklab, var(--tonk-text) 28%, transparent);
+  --tonk-rule-soft:     color-mix(in oklab, var(--tonk-text) 12%, transparent);
+  --tonk-wash:          color-mix(in oklab, var(--tonk-text) 6%, transparent);
+  --tonk-wash-strong:   color-mix(in oklab, var(--tonk-text) 12%, transparent);
+  --tonk-main:          var(--tonk-text);
+  --tonk-main-text:     light-dark(#f7f6f5, #38182a);
+  --tonk-main-hover:    color-mix(in oklab, var(--tonk-main-text) 12%, var(--tonk-main));
+  --tonk-backdrop:      light-dark(rgb(56 24 42 / 32%), rgb(0 0 0 / 45%));
+  --tonk-shadow:        0 0 0 1px light-dark(rgb(56 24 42 / 6%), rgb(247 246 245 / 6%)),
+                        0 1px 3px light-dark(rgb(56 24 42 / 6%), transparent),
+                        0 8px 24px -12px light-dark(rgb(56 24 42 / 12%), transparent);
+  --tonk-view-ground:   light-dark(#ffffff, #131313);
+  --tonk-font-label:    "IBM Plex Sans Condensed", "Tonk Narrow", "Tonk Narrowed", sans-serif;
+  --tonk-font-sentence: "IBM Plex Sans", system-ui, sans-serif;
+  --tonk-font-code:     "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  --tonk-radius-tag:     3px;
+  --tonk-radius-control: 6px;
+  --tonk-radius-sheet:   12px;
+  --tonk-change:    150ms ease-out;                  /* a hover, a press, a wash, a ring */
+  --tonk-ease-open: cubic-bezier(0.23, 1, 0.32, 1);  /* anything that opens; each sets its own duration */
+  /* type: 12, 14 and 16, and no other size */
+  --tonk-size-heading:     16px;   /* what a page, sheet or ask is called */
+  --tonk-size-label:       14px;   /* buttons, options, links, row details, ledgers, Tonk's line */
+  --tonk-size-hint:        14px;   /* hints, the hub's receipts, fine print: soft text makes the step */
+  --tonk-size-code:        12px;   /* ids and addresses; a code someone compares takes the size around it */
+  --tonk-size-tag:         12px;   /* the bot and default tags */
+  --tonk-size-field:       16px;   /* text a person types, on every surface */
+  --tonk-leading-label:    1.3;
+  --tonk-leading-sentence: 1.5;
+  --tonk-leading-tag:      1.333;
+  --tonk-height-field:     44px;
+  --tonk-measure:          29em;   /* 65 real characters of Plex Sans; 65ch holds 86 */
+}
+/* two settings. Tonk's own pages: */
+.tonk-hub, .tonk-task, .tonk-look, .fabb-page, .fabb-request {
+  --tonk-size-sentence:  16px;
+  --tonk-size-name:      16px;
+  --tonk-height-control: 36px;
+  --tonk-height-row:     48px;
+}
+/* a card inside someone's agent app, which sits under the agent's text: */
+.tonk {
+  --tonk-size-sentence:  14px;
+  --tonk-size-name:      14px;
+  --tonk-height-control: 30px;
+}
+@media (pointer: coarse) { .tonk { --tonk-height-control: 44px; } }
+/* the ask: a solid card, the same in light and dark */
+.tonk--ask {
+  --tonk-text: #f7f6f5; --tonk-text-soft: #c9bec4; --tonk-sheet: #38182a; --tonk-field: #180d12;
+  --tonk-rule: rgb(247 246 245 / 22%); --tonk-wash: rgb(247 246 245 / 12%); --tonk-wash-strong: rgb(247 246 245 / 18%);
+  --tonk-main-text: #38182a;
+}
+/* who is dark: the hub follows the system, task pages stay light, the frame sets in-agent */
+.tonk-hub { color-scheme: light dark; }
+.tonk-task, .fabb-page { color-scheme: light; }
+[data-theme="dark"] .tonk:not(:where([data-theme="light"] .tonk)), .tonk[data-theme="dark"] { color-scheme: dark; }
+[data-theme="light"] .tonk, .tonk[data-theme="light"] { color-scheme: light; }
+@font-face { font-family: "Tonk Narrow"; src: local("Arial Narrow"), local("ArialNarrow"), local("Roboto Condensed"), local("HelveticaNeue-Condensed"); }
+@font-face { font-family: "Tonk Narrowed"; src: local("Arial"), local("ArialMT"), local("Helvetica"); size-adjust: 88%; }

@@ -29,6 +29,8 @@ const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core
 /// backs the Hub (the `space` directory view + the `space/create`
 /// command and its form).
 const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profile.yaml");
+const GOOEY_LOOK: &str = include_str!("../../tonk-core/assets/library/gooey/tonk-look.css");
+const GOOEY_HUB: &str = include_str!("../../tonk-core/assets/library/gooey/in-browser/hub.css");
 
 /// The component libraries. Each is seeded the same way and lowers the
 /// same way, so each belongs in the lowering gate — until now only
@@ -727,7 +729,38 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
 
 #[dialog_common::test]
 fn it_keeps_the_hub_on_the_shared_theme_tokens() {
-    // Colors live in ONE place — the token block at the top of the hub's
+    // The hub page is `.tonk-hub`: its colours, type and sizes are Tonk's
+    // look, the `--tonk-*` names `gooey/tonk-look.css` sets, which the
+    // vendored `gooey/in-browser/hub.css` reads. Both travel with the view
+    // as its own styles, included from the library directory.
+    for contract in [
+        "look: !include/text ./gooey/tonk-look.css",
+        "hub: !include/text ./gooey/in-browser/hub.css",
+        "<div class=\"hub-page tonk-hub\">",
+        "<link rel=\"stylesheet\" with:src=\"look@space\">",
+        "<link rel=\"stylesheet\" with:src=\"hub@space\">",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the Hub must draw from Tonk's look: missing `{contract}`",
+        );
+    }
+    for (file, text) in [
+        ("tonk-look.css", GOOEY_LOOK),
+        ("in-browser/hub.css", GOOEY_HUB),
+    ] {
+        assert!(
+            text.starts_with(&format!(
+                "/* Vendored from tonk-labs/gooey {file} at ready-to-tonk "
+            )),
+            "gooey/{file} must name the gooey revision it was copied from",
+        );
+    }
+    assert!(GOOEY_LOOK.contains(".tonk-hub { color-scheme: light dark; }"));
+    assert!(GOOEY_HUB.contains(".hub-line { position: sticky;"));
+
+    // The parts of the page the mocks have not reached yet keep their
+    // older palette. Colors live in ONE place — the token block at the top of the hub's
     // own `style: ui`, which travels with the view. The hub must CONSUME
     // those tokens rather than restating a color at each use; a raw hex in
     // a rule is the drift this contract exists to prevent.
@@ -736,13 +769,7 @@ fn it_keeps_the_hub_on_the_shared_theme_tokens() {
     // aliases over a component library's theme: that is what lets the page
     // carry its own colors instead of depending on a stylesheet the host
     // injects into every guest.
-    for consumed in [
-        "background:var(--page)",
-        "color:var(--ink)",
-        "background:var(--cur)",
-        "var(--frost-solid)",
-        "var(--wash-p)",
-    ] {
+    for consumed in ["color:var(--ink)", "var(--frost-solid)", "var(--wash-p)"] {
         assert!(
             PROFILE_LIBRARY.contains(consumed),
             "the Hub must consume the shared theme token `{consumed}`",
@@ -768,14 +795,19 @@ fn it_keeps_the_hub_on_the_shared_theme_tokens() {
 #[dialog_common::test]
 fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
     for contract in [
-        ".hub-header",
-        ".hubcol",
-        "width:min(1166px, calc(100vw - 84px))",
-        "grid-template-columns:repeat(3,minmax(0,1fr))",
-        "<hub-collection class=\"stack chrome\"",
+        "<hub-bar class=\"hub-top\">",
+        "<svg class=\"hub-logo\"",
+        "<a class=\"hub-me account-trigger\" href=\"/settings\" data-account-trigger>",
+        "<section class=\"hub-sheet\" data-spaces-sheet aria-label=\"your spaces\">",
+        "<div class=\"hub-line\">",
+        "<h2 class=\"hub-line-name\">spaces <span class=\"hub-count\" data-space-count></span></h2>",
+        "<button class=\"hub-btn hub-btn--main\" type=\"button\" data-new-space data-space-create-open>new space</button>",
+        "<hub-collection class=\"hub-rows\"",
+        "<div class=\"hub-row space-card\"",
+        "<a class=\"hub-open\" href=\"/space/{subject}\"><span class=\"hub-name\" title=\"{name}\">{name}</span></a>",
+        "<footer class=\"hub-foot\">tonk.network</footer>",
         "with=\"main@profile:tonk\"",
         "<nav class=\"mobile-nav\"",
-        "<a class=\"hub-logo\" href=\"/\" aria-label=\"Tonk home\"",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
@@ -786,15 +818,15 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
         PROFILE_LIBRARY.contains("create new space"),
         "the responsive Hub collection must contain `create new space`",
     );
-    let hubbar = PROFILE_LIBRARY
-        .split(".hubbar {")
-        .nth(1)
-        .and_then(|css| css.split('}').next())
-        .expect("the Hub bar rule");
-    for rejected in ["position:fixed", "right:", "border-radius"] {
+    // A row is a line in the sheet now, not a card with a picture.
+    for rejected in [
+        "class=\"space-preview\"",
+        "class=\"space-description\"",
+        "<hub-collection class=\"stack",
+    ] {
         assert!(
-            !hubbar.contains(rejected),
-            "the desktop Hub bar must reject `{rejected}`",
+            !PROFILE_LIBRARY.contains(rejected),
+            "the Hub's rows must reject `{rejected}`",
         );
     }
     let rejected = "class=\"shead";
@@ -1040,7 +1072,7 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
             "{route} resolves to the hub, not a page of its own",
         );
     }
-    assert!(PROFILE_LIBRARY.contains("<hub-bar class=\"hub-bar\">"));
+    assert!(PROFILE_LIBRARY.contains("<hub-bar class=\"hub-top\">"));
     assert!(!PROFILE_LIBRARY.contains("tab=\"account\">"));
     assert!(!PROFILE_LIBRARY.contains(".hub-settings"));
     assert!(PROFILE_LIBRARY.contains("href=\"/settings\""));

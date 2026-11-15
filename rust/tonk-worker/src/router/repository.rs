@@ -10524,7 +10524,7 @@ route!: &foreign-profile-route
             "stale facet is gone: {after}"
         );
         assert!(
-            after.contains("create new space"),
+            after.contains("hub-rows"),
             "current facet resolves: {after}"
         );
         let mut delivered = Vec::new();
@@ -10536,7 +10536,7 @@ route!: &foreign-profile-route
         let asserted = serde_json::to_string(&delivered["asserted"]).unwrap();
         let retracted = serde_json::to_string(&delivered["retracted"]).unwrap();
         assert!(
-            !asserted.contains("no spaces yet") && asserted.contains("create new space"),
+            !asserted.contains("no spaces yet") && asserted.contains("hub-rows"),
             "the mounted view subscription receives the repaired facet: {delivered}"
         );
         assert!(

@@ -1313,8 +1313,12 @@ mod tests {
         .call1(&JsValue::NULL, &host_bridge())
         .unwrap();
         let host = document().create_element("space-create").unwrap();
+        // The `new space` in the spaces sheet's line.
         let markup = PROFILE_LIBRARY
-            .split_once("<space-create class=\"header-new\">")
+            .split_once("<div class=\"hub-line\">")
+            .unwrap()
+            .1
+            .split_once("<space-create>")
             .unwrap()
             .1
             .split_once("</space-create>")

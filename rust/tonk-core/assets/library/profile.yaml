@@ -339,6 +339,11 @@ command!: &tonk/load
 view!:
   this: space
   style:
+    # Tonk's look and the hub, vendored unchanged from gooey (see the
+    # header of each file for the revision). `ui` below draws what the
+    # mocks have not reached yet.
+    look: !include/text ./gooey/tonk-look.css
+    hub: !include/text ./gooey/in-browser/hub.css
     ui: |
       /* The hub chrome: the space directory at `/` and the /settings route.
          Both views render it (logo, column, two-cell bar, account view,
@@ -408,14 +413,15 @@ view!:
          page stand on its own — nothing has to be injected into the guest
          for the hub to have its colors, and the dark twin is the media
          query above, not a class someone else stamps. ── */
-      .hub-page {
-        display:flow-root; position:relative; min-height:100dvh; background:var(--page);
-        color:var(--ink); font-family:var(--cond);
-      }
+      /* The page itself is `.tonk-hub` (hub.css): its ground, its column and
+         its type. What follows draws only the parts of the page that the
+         mocks have not reached yet, on the older tokens above. */
+      .hub-page { position:relative; }
       .hub-page *, .hub-page *::before, .hub-page *::after { box-sizing:border-box; }
       /* selection is chrome too — ink, never the browser's blue */
       .hub-page ::selection { background:var(--ink); color:var(--on-ink); }
-      .hub-page :focus-visible { outline:none;
+      .hub-page :is(.collection-tabs, .discover-collection, .contacts-collection, .settings,
+          .mobile-nav, .account-email-notice, .space-menu, tonk-dialog) :focus-visible { outline:none;
         box-shadow:inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink); }
       /* A real reset, not a token one. Web Awesome skins NATIVE controls
          inside `@layer wa-native` — `button` gets `display:inline-flex`,
@@ -428,14 +434,17 @@ view!:
          `.hub-page button` is (0,1,1) and silently outranks every (0,1,0)
          cell rule below — which stripped `.hcell`'s padding and left "new
          space" flush against the corner while the anchor cell next to it
-         sat correctly. A reset must lose every tie it takes part in. */
-      .hub-page :where(button) {
+         sat correctly. A reset must lose every tie it takes part in, so
+         the `:where()` takes the whole selector: `.hub-page :where(button)`
+         still counted the class, tied hub.css's `.hub-btn` and, loaded
+         after it, won. */
+      :where(.hub-page button) {
         font:inherit; letter-spacing:inherit; color:inherit; text-align:inherit;
         background:none; border:0; border-radius:0; margin:0; padding:0;
         min-width:0; min-height:0; block-size:auto; inline-size:auto;
         box-shadow:none; appearance:none; -webkit-appearance:none;
         cursor:pointer; }
-      .hub-page :where(a) { color:inherit; text-decoration:none; }
+      :where(.hub-page a) { color:inherit; text-decoration:none; }
 
       /* the block: 36px, frost + ink ring. every cell derives from it. */
       .blk { height:36px; background:var(--frost);
@@ -444,54 +453,15 @@ view!:
       .chrome { font-family:var(--cond); font-weight:600; font-size:13px;
         line-height:1; letter-spacing:.02em; text-transform:lowercase; }
 
-      /* ── collection shell ── */
-      .hub-header { width:100%; min-height:100px; padding:0 42px;
-        display:flex; align-items:center; justify-content:space-between;
-        gap:32px; }
-      .hub-logo { display:flex; justify-content:center; color:var(--ink); user-select:none;
-        flex:none; }
-      .hub-logo svg { display:block; width:107px; height:auto; }
-      .hubcol { width:min(1166px, calc(100vw - 84px)); margin:18px auto 120px; }
-      .hubbar { position:relative; z-index:10; display:flex; align-items:center;
-        justify-content:flex-end; gap:14px; width:auto; min-height:44px; background:transparent; }
-      .hcell { display:flex; align-items:center; justify-content:center; gap:8px;
-        min-height:38px; height:38px; padding:0 18px; font-size:14px; line-height:1; white-space:nowrap;
-        text-decoration:none; color:inherit; flex:none; }
-      .hcell:hover { background:var(--wash); }
-      .hcell:active { background:var(--wash-2); }
-      .hc-acct { min-width:0; max-width:260px; justify-content:flex-start;
-        border:0; }
-      .hc-view { display:none; }
-      .header-new { display:block; }
-      .header-new .snew { min-width:120px; min-height:38px; height:38px; gap:16px; font-weight:500; box-shadow:none;
-        align-items:center; justify-content:center; padding:0 18px; }
-      .hubbar :is(.hcell, .header-new .snew) { box-sizing:border-box;
-        height:38px; min-height:38px; padding:0 18px; font:500 14px/1 var(--cond); }
-      .header-new .snew .g { font-size:20px; }
-      /* the view you are in wears CURRENT (near-ink) — solid ink stays the
-         CTA register, so a tab never outshouts an action */
-      .hc-acct[aria-current="page"], .hc-view[aria-current="page"] {
-        background:var(--cur); color:var(--on-ink); }
-      .hc-acct[aria-current="page"]:hover, .hc-view[aria-current="page"]:hover,
-      .hc-acct[aria-current="page"]:active, .hc-view[aria-current="page"]:active {
-        background:linear-gradient(var(--wash-p),var(--wash-p)), var(--cur); }
-      /* exactly one cell wears the CURRENT coat and it follows the view:
-         spaces while the roster shows, the account cell while its page
-         (linking ceremony or account stack) is up. The mock's solid-ink
-         account cell belongs only to its fully signed-out state, where
-         the roster is gone — an unlinked profile here still has one. */
-      hub-bar[linking="true"] .hc-acct { cursor:default; }
-      .hcell .g { font-size:14px; font-weight:500; }
-      .settings-icon { width:9px; height:9px; flex:none; margin-bottom:1px; }
 
       /* ── the account view — the second tab's page: it REPLACES the
          spaces list under the bar. The current account is the tab itself,
          so the rows are only ways onward: settings first, one row per
          other account carrying its switch verb, then the add door — the
          page's one CTA, solid ink. ── */
-      .hub-page hub-bar { position:relative; display:block; width:auto; }
-      .hub-page:has(hub-bar[path^="/settings"]) .hub-header hub-bar { display:none; }
-      .hub-page:has(hub-bar[path^="/settings"]) .hub-header { border-bottom:0; }
+      /* your name, at the top: the link to the account until the account
+         is a sheet of its own */
+      .hub-top .hub-me { color:inherit; text-decoration:none; text-transform:none; }
       /* The menu's own `open` attribute drives its visibility, rather
          than a `hidden` attribute script has to remember to toggle. */
       .account-trigger { overflow:hidden; }
@@ -540,7 +510,8 @@ view!:
       .settings { display:flex; flex-direction:column; align-items:stretch;
         margin-top:24px; }
       .settings[hidden] { display:none; }
-      hub-discover { display:block; padding:17px 24px 22px;
+      hub-discover { display:block; }
+      hub-discover :is(.discover-collection, .contacts-collection) { padding:17px 24px 22px;
         border:1px solid var(--sep); background:var(--collection); }
       .collection-tabs { display:inline-flex; margin-bottom:22px; border:1px solid var(--ring); }
       .collection-tabs button { display:flex; align-items:center; justify-content:center;
@@ -552,11 +523,11 @@ view!:
       .collection-compass { width:17px; height:17px; }
       hub-discover .stack { padding:0; border:0; background:transparent; }
       hub-discover[collection="spaces"] .discover-collection,
-      hub-discover[collection="discover"] > tonk-display { display:none; }
+      hub-discover[collection="discover"] > .hub-sheet { display:none; }
       .collection-tabs button[hidden] { display:none; }
       .collection-square--round { border-radius:50%; }
       hub-discover:not([collection="contacts"]) .contacts-collection,
-      hub-discover[collection="contacts"] > tonk-display,
+      hub-discover[collection="contacts"] > .hub-sheet,
       hub-discover[collection="contacts"] .discover-collection { display:none; }
       .contact-list { display:grid; gap:16px; }
       .contact-card { border:1px solid var(--ink); background:var(--card); }
@@ -609,7 +580,7 @@ view!:
       @media (max-width:900px) { .template-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
       @media (max-width:600px) {
         .template-grid { grid-template-columns:1fr; gap:16px; }
-        hub-discover { padding:11px 10px 16px; }
+        hub-discover :is(.discover-collection, .contacts-collection) { padding:11px 10px 16px; }
         .collection-tabs { display:flex; margin-bottom:13px; }
         .collection-tabs button { flex:1; min-width:0; min-height:44px; padding:10px 8px; }
         .template-preview { display:grid; grid-template-columns:64px minmax(0,1fr); }
@@ -625,8 +596,6 @@ view!:
         .template-summary { margin-bottom:0; font:11px/1.4 var(--sans); display:-webkit-box;
           -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
       }
-      .hub-page > .hub-logo { margin:32px auto 0; }
-      .hub-page:has(hub-bar[path^="/settings"]) .hubcol { margin-top:24px; }
       .settings-title { margin:0 0 34px; font:300 clamp(38px,4.5vw,60px)/1.08 Gestalte,Georgia,serif;
         letter-spacing:-.02em; text-transform:none; }
       .settings-back { position:absolute; right:42px; top:28px;
@@ -712,12 +681,6 @@ view!:
       .hub-page account-settings .connection-space { gap:12px; }
       .hub-page account-settings .connection-space__name { font-size:20px; }
 
-      /* ── the spaces collection ── */
-      .stack { width:100%; display:grid;
-        grid-template-columns:repeat(3,minmax(0,1fr)); gap:34px 26px;
-        padding:25px 24px 22px; border:1px solid var(--sep);
-        background:var(--collection); }
-      .stack[hidden] { display:none; }
       /* The account cell while its name is still replicating: a <wa-skeleton>
          standing in for the name that has not arrived. A name is a fact; until
          one arrives the cell shows the SHAPE of one rather than a guess (the
@@ -782,23 +745,15 @@ view!:
       .space-description:empty { display:none; }
       /* a space still seeding, and one this device has not replicated:
          quieter, but still openable — visiting replicates it */
-      .srow-wrap[data-presence="case:seeding"] .srow .n,
-      .srow-wrap[data-presence="case:remote"] .srow .n { color:var(--soft); }
-      .verbs { position:relative; z-index:1; display:flex; justify-content:flex-end;
-        gap:18px; min-height:49px; margin:0 19px 9px; padding:5px 0 0; border-top:1px solid var(--sep);
-        color:var(--soft); background:var(--card); }
-      space-actions { position:relative; z-index:2; display:block; }
+      .hub-row[data-presence="case:seeding"] .hub-name,
+      .hub-row[data-presence="case:remote"] .hub-name { color:var(--tonk-text-soft); }
+      /* a space's verbs, beside its row until the row opens in place */
+      .hub-row-line > space-actions { flex:none; display:flex; align-items:center; padding-right:6px; }
+      .verbs { display:flex; }
       space-remove { display:contents; }
-      .verbs button { display:inline-flex; min-width:44px; min-height:44px;
-        align-items:center; justify-content:flex-end; gap:6px;
-        color:inherit; font:500 12px/1 var(--cond); letter-spacing:normal;
-        text-transform:lowercase; cursor:pointer; }
-      [data-space-actions-open]::after { content:"▾"; font-size:12px; transition:transform .15s; }
+      [data-space-actions-open]::after { content:"▾"; font-size:12px; transition:transform .15s; margin-left:-2px; }
       [data-space-actions-open][aria-expanded="true"]::after { transform:rotate(180deg); }
-      .verbs button:hover { color:var(--ink);
-        text-decoration:underline; text-underline-offset:3px; }
-      .verbs button:disabled { opacity:.55; cursor:wait; text-decoration:none; }
-      .srow-wrap:has(.space-menu[open="true"]) { z-index:10; }
+      .hub-row:has(.space-menu[open="true"]) { position:relative; z-index:10; }
       .space-menu { position:fixed; z-index:8; width:184px;
         max-width:calc(100vw - 16px); padding:5px; border:1px solid var(--ink);
         background:var(--frost-solid); color:var(--ink);
@@ -818,17 +773,10 @@ view!:
       .space-menu tonk-share[data-share-state="copied"] [data-share-copy-label="copied"],
       .space-menu tonk-share[data-share-state="blocked"] [data-share-copy-label="failed"],
       .space-menu tonk-share[data-share-state="failed"] [data-share-copy-label="failed"] { display:inline; }
-      /* creation is the collection's final card and the header's primary action */
+      /* creation is the action in Tonk's line */
       space-create { display:block; }
       [data-space-duplicate]:not([busy]) [data-duplicating-label],
       [data-space-duplicate][busy] [data-duplicate-label] { display:none; }
-      .stack > space-create { min-height:0; }
-      .stack > space-create > .snew { min-height:100%; }
-      .stack > space-create > .snew { flex-direction:column; gap:18px;
-        border:1px dashed var(--sep); background:transparent; color:var(--ink);
-        box-shadow:none; font:400 15px/1.2 var(--cond); }
-      .stack > space-create > .snew .g { order:-1; font:300 40px/1 Gestalte,Georgia,serif; }
-      .stack > space-create > .snew:hover { background:var(--wash); }
       .snew { display:flex; align-items:center; justify-content:center; gap:8px;
         width:100%; height:100%; padding:20px; background:var(--ink);
         color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); cursor:pointer; }
@@ -892,26 +840,9 @@ view!:
       .account-email-notice .resend-status:empty { display:none; }
       .visually-hidden { position:absolute; width:1px; height:1px; padding:0; margin:-1px;
         overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
-      @media (hover:none) {
-        .verbs { gap:24px; }
-        .verbs button:hover, .verbs .verb-remove:hover { text-decoration:none; }
-      }
-      @media (min-width:601px) and (max-width:1100px) {
-        .srow .n { font-size:25px; }
-        .space-caption { padding:14px 14px 22px; }
-        .verbs { margin-right:14px; margin-left:14px; }
-      }
-      @media (min-width:601px) and (max-width:900px) {
-        .hub-header { padding:0 24px; }
-        .hubcol { width:calc(100vw - 48px); }
-        .stack { grid-template-columns:repeat(2,minmax(0,1fr)); }
-      }
       @media (max-width:600px) {
-        .hub-header { min-height:72px; padding:0 16px; justify-content:center; }
-        .hub-logo svg { width:98px; }
-        .hub-header hub-bar { display:none; }
-        .hubcol { width:calc(100vw - 32px); margin:12px auto 118px; }
-        .stack { grid-template-columns:1fr; gap:16px; padding:13px 10px 16px; }
+        /* room for the bar at the bottom */
+        .hub-page.tonk-hub { padding-bottom:calc(96px + env(safe-area-inset-bottom,0px)); }
         .srow-wrap:nth-of-type(3n+2) { top:0; }
         .srow-wrap { display:grid; grid-template-columns:minmax(0,1fr) 67px; --fr-r:var(--fr-r-mobile,0px); --fr-b:var(--fr-b-mobile,0px);
           --fr-l:var(--fr-l-mobile,0px); }
@@ -923,10 +854,6 @@ view!:
         .space-description { min-width:0; max-width:100%; font:400 11px/1.4 var(--sans);
           display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }
         .space-description:empty { display:none; }
-        .srow-wrap > space-actions { display:flex; align-items:center; }
-        .verbs { min-height:44px; margin:0; padding:0 10px 0 0; border:0; }
-        .verbs button { min-width:57px; }
-        .stack > space-create { display:none; }
         .mobile-nav { position:fixed; z-index:30; inset:auto 0 0; display:grid;
           grid-template-columns:1fr 1.25fr 1fr; gap:7px; padding:7px 12px
           calc(7px + env(safe-area-inset-bottom,0px)); background:var(--frost-solid);
@@ -944,11 +871,8 @@ view!:
           left:16px; max-width:none; flex-wrap:wrap; gap:6px 16px; }
         .account-email-notice button { margin-left:auto; white-space:normal; }
         .account-menu__row { min-height:44px; }
-        .hub-page > .hub-logo { margin-top:20px; }
-        .hub-page:has(hub-bar[path^="/settings"]) .hubcol { margin-top:20px; }
         .settings-title { font-size:40px; }
         .settings-back { position:static; align-self:flex-end; margin-bottom:12px; }
-        .hubcol:has(.settings) > hub-bar > .hubbar { display:none; }
         .settings { margin-top:0; }
         .hub-page account-settings .account-panels { grid-template-columns:1fr; gap:16px; }
         .hub-page account-settings .settings-panel { padding:22px 20px; }
@@ -966,97 +890,75 @@ view!:
       .hub-page:has(account-settings[data-linking="true"]) [data-settings-view] { display:none; }
   show:
     directory: |
-        <hub-collection class="stack chrome" with="main@profile:tonk"
+        <hub-collection class="hub-rows" with="main@profile:tonk"
           data-spaces-view aria-label="spaces">
+          <link rel="stylesheet" with:src="look">
+          <link rel="stylesheet" with:src="hub">
           <link rel="stylesheet" with:src="ui">
-          <!-- No empty-state bar. An account with no spaces and an
-               account whose spaces are still arriving look identical
-               from here, so any words this row could carry are wrong in
-               one of those two cases. The waiting is stated where the
-               waiting is known: the account cell, which holds a skeleton
-               while the link runs. An empty stack simply shows the one
-               row that is always true — "create new space". -->
-          <!-- `data-id={this}` designates the repeat row — the WRAPPER, not the
-               link, so the verbs and the confirm cluster travel with the row
-               while staying outside it: reaching for the action never opens the space.
-               Each per-space consumer carries its OWN subject; the routing
-               helpers read an element's own attribute and never walk ancestors. -->
-          <div class="srow-wrap space-card" data-presence={presence} data-space-subject={subject} data-id={this}>
-            <a class="srow" href="/space/{subject}">
-              <span class="space-preview" aria-hidden="true"><img data-space-thumbnail="{subject}" alt="" data-preview-pending decoding="async" loading="lazy"></span>
-              <span class="space-caption"><span class="n">{name}</span><span class="space-description">{description}</span></span>
-            </a>
-            <!-- Both verbs sit outside the anchor and are laid over it: a
-                 <button> inside an <a> is invalid markup the parser reshapes,
-                 and a <label for> inside one navigates rather than opening the
-                 confirm. Hovering the row reveals them (`.srow-wrap:hover`),
-                 so the reveal still follows the row and not just the verbs. -->
-            <space-actions>
-              <span class="verbs">
-                <button type="button" data-space-actions-open aria-haspopup="menu"
-                  aria-expanded="false" aria-controls="space-menu-{subject}">more</button>
-              </span>
-              <hub-menu id="space-menu-{subject}" class="space-menu" role="menu">
-                <tonk-share space={subject}><button type="button" role="menuitem"><span data-share-copy-label="idle">copy link</span><span data-share-copy-label="copying">copying…</span><span data-share-copy-label="copied">copied</span><span data-share-copy-label="failed">couldn't copy</span></button></tonk-share>
-                <button type="button" role="menuitem" data-space-rename-open>rename</button>
-                <button type="button" role="menuitem" data-space-duplicate-open>duplicate</button>
-                <space-remove data-space-subject={subject} data-space-name={name}
-                  data-space-provider={provider} data-space-founded={founded-at}
-                  data-space-owner={owner}>
-                  <button class="verb-remove" type="button" role="menuitem"
-                    data-space-remove-open disabled>checking&hellip;</button>
-                  <tonk-dialog appearance="hub" data-space-remove-dialog heading="confirm leaving space">
-                    <form id="remove-{subject}" class="remove-form" data-remove={subject}>
-                      Leave {name}? This removes the space and its local data from this
-                      device. You'll need another invite link to join again. Other
-                      members keep access.
+          <!-- A row each, in a sheet whose line carries the count and
+               `new space`. `data-id={this}` designates the repeat row — the
+               WRAPPER, not the link, so the verbs travel with the row while
+               staying outside it: reaching for the action never opens the
+               space. Each per-space consumer carries its OWN subject; the
+               routing helpers read an element's own attribute and never walk
+               ancestors. -->
+          <div class="hub-row space-card" data-presence={presence} data-space-subject={subject} data-id={this}>
+            <div class="hub-row-line">
+              <a class="hub-open" href="/space/{subject}"><span class="hub-name" title="{name}">{name}</span></a>
+              <space-actions>
+                <span class="verbs">
+                  <button class="hub-btn" type="button" data-space-actions-open aria-haspopup="menu"
+                    aria-expanded="false" aria-controls="space-menu-{subject}">more</button>
+                </span>
+                <hub-menu id="space-menu-{subject}" class="space-menu" role="menu">
+                  <tonk-share space={subject}><button type="button" role="menuitem"><span data-share-copy-label="idle">copy link</span><span data-share-copy-label="copying">copying…</span><span data-share-copy-label="copied">copied</span><span data-share-copy-label="failed">couldn't copy</span></button></tonk-share>
+                  <button type="button" role="menuitem" data-space-rename-open>rename</button>
+                  <button type="button" role="menuitem" data-space-duplicate-open>duplicate</button>
+                  <space-remove data-space-subject={subject} data-space-name={name}
+                    data-space-provider={provider} data-space-founded={founded-at}
+                    data-space-owner={owner}>
+                    <button class="verb-remove" type="button" role="menuitem"
+                      data-space-remove-open disabled>checking&hellip;</button>
+                    <tonk-dialog appearance="hub" data-space-remove-dialog heading="confirm leaving space">
+                      <form id="remove-{subject}" class="remove-form" data-remove={subject}>
+                        Leave {name}? This removes the space and its local data from this
+                        device. You'll need another invite link to join again. Other
+                        members keep access.
+                      </form>
+                      <p class="space-create-error" data-space-remove-error role="alert"></p>
+                      <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+                      <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}" data-space-remove-submit aria-live="polite">leave space</button>
+                    </tonk-dialog>
+                  </space-remove>
+                </hub-menu>
+                <space-create data-space-duplicate>
+                  <tonk-dialog appearance="hub" data-space-create-dialog heading="Duplicate space">
+                    <form id="duplicate-{subject}" class="space-create-form" data-space-create-form>
+                      <p class="space-create-help">Copy the data and app into a new space. Members and shared access won't carry over.</p>
+                      <label class="space-create-field"><span>space name</span><input name="name" type="text" html:value="Copy of {name}" required maxlength="100" autocomplete="off"></label>
+                      <input name="description" type="hidden" value="">
+                      <input name="open" type="hidden" value="true">
+                      <input name="copyFrom" type="hidden" value={subject}>
+                      <p class="space-create-error" data-space-create-error role="alert"></p>
                     </form>
-                    <p class="space-create-error" data-space-remove-error role="alert"></p>
                     <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-                    <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}" data-space-remove-submit aria-live="polite">leave space</button>
+                    <button class="m-go" slot="actions" type="submit" html:form="duplicate-{subject}" data-space-create-submit><span data-duplicate-label>duplicate space</span><span data-duplicating-label>duplicating…</span></button>
                   </tonk-dialog>
-                </space-remove>
-              </hub-menu>
-              <space-create data-space-duplicate>
-                <tonk-dialog appearance="hub" data-space-create-dialog heading="Duplicate space">
-                  <form id="duplicate-{subject}" class="space-create-form" data-space-create-form>
-                    <p class="space-create-help">Copy the data and app into a new space. Members and shared access won't carry over.</p>
-                    <label class="space-create-field"><span>space name</span><input name="name" type="text" html:value="Copy of {name}" required maxlength="100" autocomplete="off"></label>
-                    <input name="description" type="hidden" value="">
-                    <input name="open" type="hidden" value="true">
-                    <input name="copyFrom" type="hidden" value={subject}>
-                    <p class="space-create-error" data-space-create-error role="alert"></p>
+                </space-create>
+                <tonk-dialog appearance="hub" data-space-rename-dialog heading="Rename space">
+                  <form id="rename-{subject}" class="space-create-form" data-space-rename-form
+                    data-space={subject}>
+                    <label class="space-create-field"><span>space name</span><input name="name" type="text"
+                      value={name} required maxlength="100" autocomplete="off" data-space-rename-input></label>
+                    <p class="space-create-error" data-space-rename-error role="alert"></p>
                   </form>
                   <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-                  <button class="m-go" slot="actions" type="submit" html:form="duplicate-{subject}" data-space-create-submit><span data-duplicate-label>duplicate space</span><span data-duplicating-label>duplicating…</span></button>
+                  <button class="m-go" slot="actions" type="submit" html:form="rename-{subject}"
+                    data-space-rename-submit>save changes</button>
                 </tonk-dialog>
-              </space-create>
-              <tonk-dialog appearance="hub" data-space-rename-dialog heading="Rename space">
-                <form id="rename-{subject}" class="space-create-form" data-space-rename-form
-                  data-space={subject}>
-                  <label class="space-create-field"><span>space name</span><input name="name" type="text"
-                    value={name} required maxlength="100" autocomplete="off" data-space-rename-input></label>
-                  <p class="space-create-error" data-space-rename-error role="alert"></p>
-                </form>
-                <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-                <button class="m-go" slot="actions" type="submit" html:form="rename-{subject}"
-                  data-space-rename-submit>save changes</button>
-              </tonk-dialog>
-            </space-actions>
+              </space-actions>
+            </div>
           </div>
-          <space-create>
-            <button class="snew chrome" type="button" data-new-space data-space-create-open>new space<span class="g" aria-hidden="true">+</span></button>
-            <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
-              <form id="create-space-card" class="space-create-form" data-space-create-form>
-                <label class="space-create-field"><span>space name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
-                <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240"></textarea></label>
-                <input type="hidden" name="open" value="true">
-                <p class="space-create-error" data-space-create-error role="alert"></p>
-              </form>
-              <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-              <button class="m-go" slot="actions" type="submit" form="create-space-card" data-space-create-submit>create space</button>
-            </tonk-dialog>
-          </space-create>
         </hub-collection>
     # The space page's waiting room. Reached only when the space's own
     # content has not arrived but the account's DIRECTORY ROW for it has
@@ -2520,12 +2422,24 @@ element!: &hub-collection
           }
         } catch (_) { /* The decorative preview remains when storage is unavailable. */ }
       }
+    # How many spaces the sheet lists, in Tonk's line: the rows that show,
+    # since an agent's own space leaves the list (`hub-discover`).
+    count: |
+      (self) => {
+        const slot = self.closest('[data-spaces-sheet]')?.querySelector('[data-space-count]');
+        if (!slot) return;
+        const rows = [...self.querySelectorAll('.hub-row[data-space-subject]')]
+          .filter(row => getComputedStyle(row).display !== 'none');
+        const count = String(rows.length);
+        if (slot.textContent !== count) slot.textContent = count;
+      }
     connected: |
       (self) => {
         self.deal();
         self.previews();
+        self.count();
         self._observer?.disconnect();
-        const observer = new MutationObserver(() => { self.deal(); self.previews(); });
+        const observer = new MutationObserver(() => { self.deal(); self.previews(); self.count(); });
         observer.observe(self, { childList: true, subtree: true, attributes: true,
           attributeFilter: ['data-space-subject', 'data-space-thumbnail'] });
         self._observer = observer;
@@ -2615,6 +2529,7 @@ element!: &hub-discover
         const key = text => String(text ?? '').replace(/["\\]/g, '\\$&');
         if (hide) hide.textContent = agents.map(agent => `.space-card[data-space-subject="${key(agent.key)}"]`).join(',') + (agents.length ? '{display:none}' : '');
         if (tab) tab.hidden = agents.length === 0;
+        self.querySelector('[data-spaces-sheet] hub-collection')?.count?.();
         if (!agents.length && self.getAttribute('collection') === 'contacts') {
           self.querySelector('[data-collection="spaces"]')?.click();
         }
@@ -3054,64 +2969,70 @@ view!:
   this: tonk:hub
   show:
     ui: |
-      <div class="hub-page">
+      <div class="hub-page tonk-hub">
         <!-- The bar, latent: no space here, so it shows only for the
              command line (Cmd/Ctrl+K) and what a command opens. -->
         <tonk-fab with="{profile-branch}@profile:tonk" latent>
           <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
         </tonk-fab>
+        <!-- Tonk's look and the hub, vendored from gooey (`gooey/` beside
+             this file), then the `space` view's own `style: ui`: the parts
+             of the page the mocks have not reached yet, and which of the
+             two sections below shows. -->
+        <link rel="stylesheet" with:src="look@space">
+        <link rel="stylesheet" with:src="hub@space">
         <link rel="stylesheet" with:src="ui@space">
-        <!-- The hub chrome's CSS is the `space` view's own `style: ui`,
-             which also says which of the two sections below shows. -->
         <tab-title text="Tonk"></tab-title>
-        <header class="hub-header">
-        <a class="hub-logo" href="/" aria-label="Tonk home"><svg viewBox="0 0 1024 343" width="132" height="44" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></a>
-        <hub-bar class="hub-bar">
-          <nav class="hubbar chrome" aria-label="hub">
-            <space-create class="header-new">
-              <button class="snew chrome" type="button" data-new-space data-space-create-open>new space<span class="g" aria-hidden="true">+</span></button>
-              <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
-                <form id="create-space-header" class="space-create-form" data-space-create-form>
-                  <label class="space-create-field"><span>space name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
-                  <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240"></textarea></label>
-                  <input type="hidden" name="open" value="true">
-                  <p class="space-create-error" data-space-create-error role="alert"></p>
-                </form>
-                <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-                <button class="m-go" slot="actions" type="submit" form="create-space-header" data-space-create-submit>create space</button>
-              </tonk-dialog>
-            </space-create>
-            <!-- Two links: the account's page and home. The host pushes
-                 the path and this page re-routes in place, and the cell
-                 for where the page is reads as current. -->
-            <!-- The link, not the registration or the name: those are
-                 facts about the account and outlive a sign-out on this
-                 branch. The link row says whether THIS DEVICE holds the
-                 account here; the name renders through it. Directory
-                 mode (no `entity=`), where an absent row is `empty`. -->
-            <a class="hcell hc-acct account-trigger" href="/settings" data-account-trigger>
-              <span data-account-label><tonk-display model="state:account-link" view="label" data-account-link
-                ><span slot="empty">add an account</span></tonk-display></span>
-            </a>
-            <a class="hcell hc-view" href="/" data-return-spaces aria-current="page">spaces</a>
-          </nav>
+        <!-- The top: the logotype at the left, your name at the right, each
+             on the sheets' edge. -->
+        <hub-bar class="hub-top">
+          <svg class="hub-logo" viewBox="0 0 202 54" fill="currentColor" role="img" aria-label="Tonk"><path d="M61.4097 26.2461C61.4097 18.671 67.4444 12.5295 74.8889 12.5295C82.3321 12.5295 88.3669 18.671 88.3669 26.2461C88.3669 33.8225 82.3321 39.964 74.8889 39.964C67.4444 39.964 61.4097 33.8225 61.4097 26.2461ZM130.925 0C124.313 0 118.752 1.74144 114.845 5.27674C112.849 7.08238 111.33 9.28375 110.316 11.8062C110.19 9.83541 109.614 7.085 107.631 4.80894C105.309 2.14503 101.749 0.414067 97.0759 0.50055C95.7813 0.528067 94.7524 1.59992 94.7785 2.89585C94.8047 4.17605 95.8494 5.19681 97.1231 5.19681C97.1388 5.19681 97.1558 5.19681 97.1715 5.19681C100.388 5.1326 102.706 6.32108 104.075 7.87252C106.074 10.1381 105.617 13.5882 105.606 13.6708C105.412 14.947 106.285 16.1421 107.56 16.3425C107.683 16.3622 108.675 16.488 109.147 16.0254C108.933 17.3056 108.819 18.6396 108.819 20.0285C108.819 29.3752 105.425 38.6157 100.012 44.0038C95.7001 48.2952 90.4351 50.3721 83.5522 51.1845C93.6894 47.6164 100.961 37.9343 100.961 26.5422C100.961 12.1193 89.3094 0.428481 74.9347 0.428481C60.5614 0.428481 48.9096 12.1193 48.9096 26.5422C48.9096 40.9651 60.5614 52.6573 74.9347 52.6573C75.4243 52.6573 75.9087 52.6403 76.3904 52.614C87.2345 52.483 94.8296 50.5804 100.72 44.7166C106.327 39.1359 109.823 29.649 109.823 20.0285C109.823 8.21583 117.909 0.877927 130.925 0.877927C152.316 0.877927 153.196 12.0748 153.214 13.617C150.903 14.1661 145.751 16.5994 145.751 21.1764V52.3926H153.364C154.142 52.3926 154.225 51.9052 154.225 51.6274V13.6734C154.225 12.2595 153.566 0 130.925 0Z"/><path d="M17.5255 1.03747L14.2306 1.0414C8.87533 1.05188 5.55428 3.49042 3.70984 5.42841C1.35094 7.90495 0 11.3262 0 14.8118C0 21.3818 4.4429 28.4524 15.0566 28.4524V23.0865C7.61079 23.0865 5.36054 18.6288 5.36054 14.8118C5.36054 11.3616 7.42883 6.30241 14.338 6.30241L17.5255 6.3011V47.1116C14.6914 47.1116 13.1232 44.2773 13.1232 41.8047L8.62399 41.8074C8.62399 48.4442 14.3288 52.3202 17.4823 52.3936H23.4895C29.2572 52.3936 33.6228 46.7185 33.6228 32.4581V12.1059H36.0917V23.0865H47.0471V1.03747H17.5255Z"/><path d="M195.242 32.633L188.118 32.5806C190.005 31.59 191.522 30.4172 192.686 29.3126C198.678 23.6297 201.716 14.1166 201.716 1.04073H198.03C198.03 13.0644 195.379 21.6759 190.152 26.6356C187.771 28.8933 183.605 31.5035 177.24 31.2362V1.04073H161.239V35.8053C161.239 43.3083 156.125 44.4889 156.125 44.4889V52.3955H177.24V36.9755C177.24 35.8145 179.356 35.8184 179.356 36.9755C179.356 38.9567 179.351 42.1959 179.351 44.2793C179.351 50.4117 184.599 53.5355 190.909 53.5355C196.451 53.5355 201.763 50.0985 201.915 44.2793C202.014 40.4662 202.94 32.633 195.242 32.633Z"/></svg>
+          <!-- Your name, which leads to the account. The link, not the
+               registration or the name: those are facts about the account
+               and outlive a sign-out on this branch. The link row says
+               whether THIS DEVICE holds the account here; the name renders
+               through it. Directory mode (no `entity=`), where an absent row
+               is `empty`. -->
+          <a class="hub-me account-trigger" href="/settings" data-account-trigger>
+            <span data-account-label><tonk-display model="state:account-link" view="label" data-account-link
+              ><span slot="empty">add an account</span></tonk-display></span>
+          </a>
         </hub-bar>
-        </header>
-        <main class="hubcol">
-        <h1 class="visually-hidden">Spaces</h1>
+        <main>
+        <h1 class="hub-sr">your spaces and account</h1>
         <hub-discover data-spaces-view collection="spaces" catalog-url="https://goblinoats.github.io/honky-tonks/catalog.json">
           <nav class="collection-tabs chrome" aria-label="space collections">
             <button type="button" data-collection="spaces" aria-pressed="true"><span class="collection-square" aria-hidden="true"></span>your spaces</button>
             <button type="button" data-collection="discover" aria-pressed="false"><svg class="collection-compass" viewBox="0 0 18 18" fill="none" aria-hidden="true"><circle cx="9" cy="9" r="6.5" stroke="currentColor" stroke-width="1.2"/><path d="m11.8 6.2-1.6 4-4 1.6 1.6-4z" fill="currentColor"/></svg>discover</button>
             <button type="button" data-collection="contacts" aria-pressed="false" data-contacts-tab hidden><span class="collection-square collection-square--round" aria-hidden="true"></span>your agents</button>
           </nav>
-          <!-- One page for `/` and `/settings`: the stack and the panel
+          <!-- One page for `/` and `/settings`: the sheet and the panel
                are both here, and the bar's `path` picks the one that
                shows. The view reads nothing off the site, so a navigation
                re-renders nothing here: the bar and the panel follow the
-               host's context on their own, and the stack keeps its rows,
-               its hover and its focus across the move. -->
-          <tonk-display model="space"></tonk-display>
+               host's context on their own, and the rows keep their hover
+               and their focus across the move. -->
+          <section class="hub-sheet" data-spaces-sheet aria-label="your spaces">
+            <!-- Tonk's line: the sheet's name and count, and its action. It
+                 stays at the top while the sheet scrolls. -->
+            <div class="hub-line">
+              <div class="hub-line-l"><h2 class="hub-line-name">spaces <span class="hub-count" data-space-count></span></h2></div>
+              <space-create>
+                <button class="hub-btn hub-btn--main" type="button" data-new-space data-space-create-open>new space</button>
+                <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
+                  <form id="create-space-header" class="space-create-form" data-space-create-form>
+                    <label class="space-create-field"><span>space name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
+                    <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240"></textarea></label>
+                    <input type="hidden" name="open" value="true">
+                    <p class="space-create-error" data-space-create-error role="alert"></p>
+                  </form>
+                  <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+                  <button class="m-go" slot="actions" type="submit" form="create-space-header" data-space-create-submit>create space</button>
+                </tonk-dialog>
+              </space-create>
+            </div>
+            <tonk-display model="space"></tonk-display>
+          </section>
           <section class="discover-collection" aria-label="Discover templates">
             <p class="space-create-help" data-discover-status role="status"></p>
             <button type="button" class="cta" data-discover-retry hidden>try again</button>
@@ -3263,6 +3184,7 @@ view!:
             </account-settings>
           </section>
         </main>
+        <footer class="hub-foot">tonk.network</footer>
         <tonk-display model="tonk:account/status" view="notice"></tonk-display>
         <nav class="mobile-nav" aria-label="main navigation">
           <a href="/" data-return-spaces><span class="nav-mark nav-square" aria-hidden="true"></span>spaces</a>
