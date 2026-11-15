@@ -9391,6 +9391,11 @@ pub(crate) mod tests {
         .context("timed out waiting for local-space approval URL")??;
 
         goto(&driver, url_line.trim()).await?;
+        // Signed out, the request page is a wall whose sign in raises the
+        // account ceremony.
+        enter_guest(&driver).await?;
+        wait_for_displayed(&driver, "[data-signed-out-wall] .fabb-task-title").await?;
+        click(&driver, "[data-signed-out-sign-in]").await?;
         driver.enter_default_frame().await?;
         await_register_dialog(&driver).await?;
         let presentation = driver
