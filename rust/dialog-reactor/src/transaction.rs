@@ -8,10 +8,11 @@
 //! concept, written `.at(control_layer())`) is the dispatch's stimulus
 //! and, once the dispatch has published, stands in the session's
 //! `control:` layer for one instant. [`Commit::dispatch`] reads that
-//! instant back ([`Ephemeral::since`] on the session's `control:` layer)
-//! and hands the commands to the caller as [`Landed::commands`], so the
-//! worker's providers run exactly the commands this dispatch landed and
-//! no other writer's.
+//! instant back through the branch's reader of `control:`
+//! ([`BranchState::landed`], over [`Session::arrivals_rows`]) and hands
+//! the commands to the caller as [`Landed::commands`], so the worker's
+//! providers run exactly the commands this dispatch landed and no other
+//! writer's.
 //!
 //! On a successful commit, [`Commit::perform`] **schedules** a poll of
 //! the affected branch ([`Reactor::schedule_poll`]) rather than
@@ -27,9 +28,10 @@
 //! [`Reactor::schedule_poll`]: crate::Reactor::schedule_poll
 //! [`Reactor::run_scheduled_polls`]: crate::Reactor::run_scheduled_polls
 //! [`Session::transact`]: dialog_repository::Session::transact
-//! [`Ephemeral::since`]: dialog_repository::Ephemeral::since
+//! [`Session::arrivals_rows`]: dialog_repository::Session::arrivals_rows
+//! [`BranchState::landed`]: crate::BranchState::landed
 
-use dialog_corpus::{Changes, Pick, Statement, Update as _};
+use dialog_corpus::{Changes, Statement};
 use dialog_repository::{Revision, control_layer};
 use tonk_schema::claim::{Claim, PredicateApplication};
 use tonk_schema::transact::application_plan_from_predicate;
@@ -145,7 +147,7 @@ pub struct Commit<'a> {
 
 /// What a dispatch left behind: the head it left the primary at, and
 /// the commands that landed in the session's `control:` layer for it,
-/// read back from the layer's instants.
+/// read back through [`Session::arrivals_rows`](dialog_repository::Session::arrivals_rows).
 ///
 /// The commands are the ones this dispatch wrote `.at(control_layer())`
 /// and the ones its rules dispatched in any tick, as rows: a provider
@@ -181,20 +183,14 @@ impl Commit<'_> {
     /// the primary's share with one compare-and-swap, and re-runs the
     /// whole dispatch from the new head when a sync moved it meanwhile
     /// (see [`Invocation`](dialog_repository::Invocation)). Once it has
-    /// published, its commands stand in `control:` for one instant,
-    /// minted on the layer's instant chain; the layer's sequence noted
-    /// before the dispatch and read after it, both under the branch's
-    /// transactor lock, bound exactly that instant.
+    /// published, its commands stand in `control:` for one instant; the
+    /// branch's reader of that layer ([`BranchState::landed`]), read
+    /// right after the dispatch under the branch's transactor lock,
+    /// yields exactly that instant's rows. Rows, not one concept's
+    /// conclusions: a provider decodes a command from the shape of its
+    /// entity's facts, so it wants every row.
     ///
-    /// Read from the instants ([`Ephemeral::since`]) rather than through
-    /// [`Session::arrivals`]: `Arrivals` evaluates a query over what
-    /// arrived, and a provider that decodes a command from the shape of
-    /// its entity's facts wants every row, which no attribute query can
-    /// ask for (one with `the`, `of` and `is` all unbound is refused with
-    /// `EmptySelector`, and a bound `in` alone does not count).
-    ///
-    /// [`Ephemeral::since`]: dialog_repository::Ephemeral::since
-    /// [`Session::arrivals`]: dialog_repository::Session::arrivals
+    /// [`BranchState::landed`]: crate::BranchState::landed
     pub async fn dispatch<Env>(self, env: &Env) -> Result<Landed, ReactorError>
     where
         Env: LoadProvider + BranchOpenProvider + CommitProvider + SelectProvider,
@@ -217,20 +213,11 @@ impl Commit<'_> {
         // dispatch's alone. Sync does NOT take it — it coordinates via the
         // CAS and retries — so a commit never waits on a sync.
         let _transacting = cached.state.transactor().lock().await;
-        let session = cached.state.session(env).await?;
+        let session = cached.state.session();
 
         let changes = self.changes;
         let (claims, attributes) = describe(&changes);
         let before = session.primary().revision();
-
-        // Noted before the dispatch: `control:` holds nothing between
-        // dispatches, so the instants after this sequence are this
-        // dispatch's commands landing and leaving, and nothing else.
-        let control = session
-            .layer(&control_layer())
-            .expect("every session holds control:")
-            .clone();
-        let sequence = control.revision().sequence;
 
         let t_commit = web_time::Instant::now();
         // The session re-runs the dispatch from the new head when a sync
@@ -240,24 +227,9 @@ impl Commit<'_> {
         let revision = session.transact(changes).perform(env).await?;
         let commit_ms = t_commit.elapsed().as_millis();
 
-        // Every assertion the instants since carry: the commands landing
-        // (their leaving in the next instant is a retraction, which is
-        // not news to a provider). `None` means the layer's log moved
-        // past the sequence, which a dispatch under the lock cannot do;
-        // the layer holds nothing between dispatches, so there is
-        // nothing to read in its place.
-        let mut commands = Changes::new();
-        match control.since(sequence) {
-            Some(instants) => {
-                for fact in instants.into_iter().flat_map(|instant| instant.asserted) {
-                    commands.associate(fact.the, fact.of, fact.is, Pick::All);
-                }
-            }
-            None => dialog_common::log!(
-                "reactor commit: control: moved past sequence {sequence} on {name}@{repo}; \
-                 the dispatch's commands were not read"
-            ),
-        }
+        // What the dispatch landed in `control:`, still under the lock,
+        // so no other writer's dispatch is among it.
+        let commands = cached.state.landed();
 
         // Name the commit: the branch, the claim count, and whether the
         // tree moved. A commit that lands an identical tree still mints a

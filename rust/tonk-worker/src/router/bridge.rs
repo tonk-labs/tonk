@@ -388,7 +388,7 @@ async fn handle_evaluate(
 
     let result = {
         let tonk = state.read().await;
-        crate::router::evaluate::evaluate_body_with_transients(
+        crate::router::evaluate::evaluate_body_with_commands(
             &tonk,
             &binding.repo,
             &binding.branch,
@@ -398,10 +398,10 @@ async fn handle_evaluate(
         .await
     };
     match result {
-        Ok((response, transients)) => {
+        Ok((response, commands)) => {
             // Post-commit parity with the HTTP `/evaluate` route: a commit
             // that moved the tree marks the repo dirty for the next sync
-            // push, and the document's transient commands dispatch with
+            // push, and the document's commands run with
             // this guest as the originating client.
             if response.revision_before.as_ref().map(|r| &r.tree)
                 != response.revision_after.as_ref().map(|r| &r.tree)
@@ -421,13 +421,13 @@ async fn handle_evaluate(
                 }),
             )
             .await;
-            if let Some(transients) = transients {
+            if let Some(commands) = commands {
                 let origin = crate::router::CommandOrigin {
                     repo: binding.repo,
                     branch: binding.branch,
                     client: Some(client.clone()),
                 };
-                crate::router::run_commands(&state, origin, transients).await;
+                crate::router::run_commands(&state, origin, commands).await;
             }
         }
         Err(e) => {

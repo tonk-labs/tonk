@@ -198,28 +198,29 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-# 0.5.0-rc.2 (the layers stack, dialog-db#795..#808, pinned by commit
+# 0.5.0-rc.3 (the layers stack, dialog-db#795..#809, pinned by commit
 # until the tag exists): a row has a layer `in`, a `Session` over a
 # branch routes writes to layers, commands land in `control:` for one
-# tick, and a durable layer is a branch the primary points at.
-dialog-corpus = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "1d072eb5c55eec22e4390451e9cb84ddf87ff687", version = "0.5.0-rc.2" }
+# tick and providers read them with `Session::arrivals_rows`, and a
+# durable layer is a branch the primary points at.
+dialog-corpus = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "898812ee49aa697aa03dd9479edd95d5e40510bc", version = "0.5.0-rc.3" }
 
 [profile.dev]
 opt-level = 1

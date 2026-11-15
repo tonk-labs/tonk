@@ -192,8 +192,8 @@ impl<'a> BranchReference<'a> {
             return Ok(BranchSession { state });
         }
 
-        // Open the branch outside the lock — `branch().open()` is
-        // async.
+        // Open the branch, and the session every commit on it goes
+        // through, outside the lock — both are async.
         let branch = repository
             .repository()
             .branch(name)
@@ -205,12 +205,13 @@ impl<'a> BranchReference<'a> {
                 branch: name.to_owned(),
                 reason: e.to_string(),
             })?;
+        let session = branch.session().perform(env).await?;
 
         let state = {
             let mut branches = repository.branches().write();
             let entry = branches
                 .entry(name.to_owned())
-                .or_insert_with(|| Arc::new(BranchState::new(branch)));
+                .or_insert_with(|| Arc::new(BranchState::new(branch, session)));
             Arc::clone(entry)
         };
 

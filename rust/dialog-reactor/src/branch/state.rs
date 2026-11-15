@@ -7,8 +7,9 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use dialog_corpus::Statement;
+use dialog_corpus::{Changes, Pick, Update as _};
 use dialog_query::ConceptQuery;
-use dialog_repository::{Branch, Session, SessionEnv};
+use dialog_repository::{Arrivals, Branch, Session, control_layer};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
@@ -31,12 +32,17 @@ pub struct BranchState {
     /// The [`Session`] every commit on this branch goes through: the
     /// branch as primary with the layers its schema declares, and the
     /// `control:` loopback a committed command lands in for one tick.
-    /// Opened on the first commit (opening reads the primary's schema
-    /// through a commit-capable env, which [`acquire`] does not have)
-    /// and shared by every writer after; see [`Self::session`].
+    /// Opened with the branch ([`acquire`]) and shared by every writer
+    /// after; see [`Self::session`].
     ///
     /// [`acquire`]: crate::BranchReference::acquire
-    session: tokio::sync::OnceCell<Session>,
+    session: Session,
+    /// The one reader of what lands in the session's `control:` layer:
+    /// every row a published dispatch leaves there, each once, oldest
+    /// first. Read under the transactor lock right after a dispatch
+    /// ([`Self::landed`]), so what it yields is that dispatch's commands
+    /// and no other writer's.
+    arrivals: Mutex<Arrivals>,
     /// Subscriptions on this branch, keyed by query hash, in the order
     /// they were created. [`Self::poll`] walks them lowest level first (see
     /// [`Subscription::level`]), creation order breaking ties.
@@ -68,11 +74,16 @@ pub struct BranchState {
 }
 
 impl BranchState {
-    /// Construct a fresh state over an open branch.
-    pub fn new(branch: Branch) -> Self {
+    /// Construct a fresh state over an open branch and the session
+    /// opened over it.
+    pub fn new(branch: Branch, session: Session) -> Self {
+        let arrivals = session
+            .arrivals_rows(&control_layer())
+            .expect("every session holds control:");
         Self {
             branch,
-            session: tokio::sync::OnceCell::new(),
+            session,
+            arrivals: Mutex::new(arrivals),
             subscriptions: Mutex::new(IndexMap::new()),
             transactor: tokio::sync::Mutex::new(()),
             migration_claimed: std::sync::atomic::AtomicBool::new(false),
@@ -103,16 +114,26 @@ impl BranchState {
         self.migrating.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// The session every commit on this branch goes through, opened on
-    /// first use over [`Self::branch`]: it builds a layer for each the
-    /// primary's schema declares and holds the `control:` loopback. A
-    /// clone shares the layers, so the one session serves every writer
+    /// The session every commit on this branch goes through, opened
+    /// over [`Self::branch`] when the branch was: it holds a layer for
+    /// each the primary's schema declares and the `control:` loopback.
+    /// A clone shares the layers, so the one session serves every writer
     /// and every reader of what their dispatches land.
-    pub async fn session<Env: SessionEnv>(&self, env: &Env) -> Result<&Session, ReactorError> {
-        self.session
-            .get_or_try_init(|| self.branch.session().perform(env))
-            .await
-            .map_err(ReactorError::from)
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
+    /// The commands that landed in the session's `control:` layer since
+    /// the last call: every fact a published dispatch left there, as one
+    /// batch, each once. `control:` holds nothing between dispatches, so
+    /// a caller that reads right after its own dispatch, still holding
+    /// the transactor lock, reads that dispatch's commands alone.
+    pub fn landed(&self) -> Changes {
+        let mut commands = Changes::new();
+        for fact in self.arrivals.lock().rows() {
+            commands.associate(fact.the, fact.of, fact.is, Pick::All);
+        }
+        commands
     }
 
     /// The per-branch transaction lock. A transaction takes it

@@ -29,7 +29,7 @@
 //!     .evaluate(branch.transaction())
 //!     .perform(env).await?;
 //! // evaluated.txn — overlay reflects pending mutations
-//! // evaluated.transients — dispatched transient facts (commands), for post-commit dispatch
+//! // evaluated.commands — how many commands the document dispatched into the transaction
 //! // evaluated.matches — pre-mutation per-expression match blocks
 //! // evaluated.commits — claim count + entity bindings for the response envelope
 //! // evaluated.analysis — re-run queries against the overlay to get post-mutation matches
@@ -56,7 +56,7 @@ use std::collections::BTreeMap;
 
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
-use dialog_corpus::{Changes, Entity, Preload, Speculation, Value};
+use dialog_corpus::{Entity, Preload, Speculation, Value};
 use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
@@ -416,11 +416,11 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         // reads and commit-time induction, never committed).
         let transient_entities = document.transient_entities();
         let mut claim_count = 0usize;
-        // Every dispatched transient, mirrored into a bucket the caller
-        // can hand to a post-commit command dispatcher. The commit sweeps
-        // transients from the transaction, so this mirror is the only
-        // post-evaluate view of which commands the document carried.
-        let mut transients = Changes::new();
+        // How many commands the document dispatched. A command lands in
+        // the session's `control:` layer once the transaction publishes,
+        // where the caller reads it back; the count is only for a caller
+        // that must refuse a document carrying any before it commits.
+        let mut commands = 0usize;
         // Retraction targets resolved by querying the branch
         // up-front so we don't interleave reads with mutation
         // accumulation against the transaction.
@@ -460,10 +460,8 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                 claim_count += 2 + tonk_schema::rule::reads_entities(rule).len();
                             }
                             if dispatch {
-                                let mut command = Changes::new();
-                                command.assert(plan);
-                                txn = txn.dispatch(command.clone());
-                                transients.assert(command);
+                                txn = txn.dispatch(plan);
+                                commands += 1;
                             } else {
                                 txn = txn.assert(plan);
                             }
@@ -511,15 +509,16 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         // `TransactionCommit::perform` fires installed rules over the
         // transaction's delta (durable changes and dispatched
         // transients alike) and folds their durable novelty into the
-        // commit, while transients are dropped, never written. The
-        // caller's txn is returned with the dispatch staged; they
-        // commit or drop.
+        // commit, while transients are dropped, never written: a
+        // transaction from a session lands them in its `control:` layer
+        // once it publishes. The caller's txn is returned with the
+        // dispatch staged; they commit or drop.
         Ok(Evaluated {
             txn,
             matches,
             commits,
             analysis,
-            transients,
+            commands,
         })
     }
 }
@@ -547,12 +546,14 @@ pub struct Evaluated<'a> {
     /// against the transaction overlay to compute post-mutation
     /// matches.
     pub analysis: Analysis<Syntax>,
-    /// The transient facts (commands) the document dispatched into
-    /// the transaction. The commit sweeps them from the transaction,
-    /// so a caller that dispatches commands post-commit reads them
-    /// here — same contract as the reactor builder's transient
-    /// bucket on the `/transact` path.
-    pub transients: Changes,
+    /// How many commands (transient-concept assertions) the document
+    /// dispatched into the transaction. The commit never writes them;
+    /// a transaction from a branch's session lands them in its
+    /// `control:` layer once it publishes, and a caller running
+    /// providers reads them back from there. A caller that cannot land
+    /// them (one committing outside a session) refuses a document with
+    /// any.
+    pub commands: usize,
 }
 
 impl<'a> Evaluated<'a> {
@@ -1482,97 +1483,6 @@ attribute!: &foo/title
                 .await
                 .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
         }
-        Ok(())
-    }
-
-    /// A transient-concept assertion must mirror into
-    /// [`Evaluated::transients`] — the bucket post-commit command
-    /// dispatch runs on — while a durable assertion must not. The
-    /// commit sweeps transients from the transaction, so this mirror
-    /// is the only post-evaluate view of the commands a document
-    /// carried.
-    #[dialog_common::test]
-    async fn it_mirrors_dispatched_transients_for_command_dispatch() -> anyhow::Result<()> {
-        let (operator, profile) = test_session_with_peer().await;
-        let repo = test_repo(&operator, &profile).await;
-        let branch = repo.branch("main").open().perform(&operator).await?;
-
-        // Commit 1: a transient `ping` concept and a durable `note`
-        // concept.
-        let setup = r#"concept!: &ping
-  transient:
-  with:
-    message:
-      the: xyz.tonk.ping/message
-      as: text
-      cardinality: :one
-      description: "message"
-
-attribute!: &note-body
-  description: "body"
-  the: xyz.tonk.note/body
-  as: text
-  cardinality: :one
-
-concept!: &note
-  description: "A note"
-  with:
-    body: note-body
-"#;
-        let parsed = parse(setup);
-        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        parsed
-            .syntax
-            .expect("syntax")
-            .evaluate(branch.transaction())
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("setup evaluate failed: {e}"))?
-            .commit()
-            .publish()
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("setup commit failed: {e}"))?;
-
-        // A transient instance mirrors its facts.
-        let parsed = parse("ping!:\n  message: \"hello\"\n");
-        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let evaluated = parsed
-            .syntax
-            .expect("syntax")
-            .evaluate(branch.transaction())
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("ping evaluate failed: {e}"))?;
-        assert!(
-            !evaluated.transients.is_empty(),
-            "transient assert must mirror into Evaluated::transients",
-        );
-        let attributes: Vec<String> = evaluated
-            .transients
-            .iter()
-            .map(|(_, attribute, _)| attribute.to_string())
-            .collect();
-        assert!(
-            attributes.iter().any(|a| a == "xyz.tonk.ping/message"),
-            "mirror carries the transient's facts, got {attributes:?}",
-        );
-
-        // A durable instance mirrors nothing.
-        let parsed = parse("note!:\n  body: \"kept\"\n");
-        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let evaluated = parsed
-            .syntax
-            .expect("syntax")
-            .evaluate(branch.transaction())
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("note evaluate failed: {e}"))?;
-        assert!(
-            evaluated.transients.is_empty(),
-            "durable asserts must not mirror into Evaluated::transients",
-        );
-
         Ok(())
     }
 

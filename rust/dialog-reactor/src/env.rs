@@ -29,8 +29,14 @@ pub trait LoadProvider: Provider<Load> + Provider<List> + RegistryEnv + PeersEnv
 impl<T> LoadProvider for T where T: Provider<Load> + Provider<List> + RegistryEnv + PeersEnv {}
 
 /// Bound needed to open a branch on a repository.
-pub trait BranchOpenProvider: Provider<Resolve> + ConditionalSync + 'static {}
-impl<T> BranchOpenProvider for T where T: Provider<Resolve> + ConditionalSync + 'static {}
+pub trait BranchOpenProvider:
+    Provider<Resolve> + dialog_repository::OpenSessionEnv + ConditionalSync + 'static
+{
+}
+impl<T> BranchOpenProvider for T where
+    T: Provider<Resolve> + dialog_repository::OpenSessionEnv + ConditionalSync + 'static
+{
+}
 
 /// Bound needed for raw content-addressed block access to the branch
 /// archive, reading tree nodes by hash. `Put` is part of the

@@ -167,7 +167,7 @@ pub async fn evaluate(
         path.branch,
         query.transact
     );
-    let (response, transients) = {
+    let (response, commands) = {
         // A READ lock, not a write lock. `tokio`'s `RwLock` is write-preferring, so
         // a single write-lock holder stalls every new reader — a boot-time evaluate
         // (or the editor's auto-evaluate) blocked every concurrent `query` for its
@@ -183,7 +183,7 @@ pub async fn evaluate(
             .reactor
             .repository(&path.repo)
             .branch(&path.branch);
-        let (response, transients) =
+        let (response, commands) =
             evaluate_on_branch(&tonk_state, tonk_branch, body, query).await?;
 
         // A commit moves the branch head. Announce it on the branch's
@@ -220,7 +220,7 @@ pub async fn evaluate(
                 },
             );
         }
-        (response, transients)
+        (response, commands)
     };
 
     // Mark the repo dirty so the next sync drain pushes the new commits —
@@ -234,20 +234,17 @@ pub async fn evaluate(
             .mark_dirty(&path.repo, super::sync::now_millis());
     }
 
-    // Run the document's commands, mirroring `/transact`: detached so a
-    // slow handler never delays the response, with the origin carrying
-    // the branch this commit landed in and the client that asked. The
-    // evaluator threads a raw dialog `Transaction` through resolution
-    // and commits it itself, outside the branch's session, so its
-    // commands never reach `control:`: they come from the evaluator's
-    // mirror of what it dispatched (`Evaluated::transients`) instead.
-    if let Some(transients) = transients {
+    // Run the commands the document's commit landed in the branch's
+    // `control:` layer, mirroring `/transact`: detached so a slow
+    // handler never delays the response, with the origin carrying the
+    // branch this commit landed in and the client that asked.
+    if let Some(commands) = commands {
         let origin = super::CommandOrigin {
             repo: path.repo,
             branch: path.branch,
             client: client.map(|Extension(id)| id),
         };
-        super::transact::run_commands_detached(state, origin, transients, lifetime).await;
+        super::transact::run_commands_detached(state, origin, commands, lifetime).await;
     }
     Ok(response)
 }
@@ -325,12 +322,12 @@ pub async fn evaluate_profile(
             ));
         }
     }
-    let (response, transients) = {
+    let (response, commands) = {
         // Read lock — see [`evaluate`] for why a write lock here serialized every
         // concurrent request behind a commit.
         let tonk_state = state.read().await;
         let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
-        let (response, transients) =
+        let (response, commands) =
             evaluate_on_branch(&tonk_state, tonk_branch, body, query).await?;
 
         // Same durable-commit gate as [`evaluate`]: pure queries and dry
@@ -355,19 +352,18 @@ pub async fn evaluate_profile(
                 },
             );
         }
-        (response, transients)
+        (response, commands)
     };
 
-    // Run the document's commands with the empty-repo origin profile
-    // commits carry — mirroring `transact_profile`. As in `evaluate`,
-    // they come from the evaluator's mirror, not from `control:`.
-    if let Some(transients) = transients {
+    // Run the commands the commit landed with the empty-repo origin
+    // profile commits carry — mirroring `transact_profile`.
+    if let Some(commands) = commands {
         let origin = super::CommandOrigin {
             repo: String::new(),
             branch: path.branch,
             client: client.map(|Extension(id)| id),
         };
-        super::transact::run_commands_detached(state, origin, transients, lifetime).await;
+        super::transact::run_commands_detached(state, origin, commands, lifetime).await;
     }
     Ok(response)
 }
@@ -445,10 +441,10 @@ pub(super) async fn stage_and_publish(
 /// [`crate::reactor::BranchReference`] so the URL extraction is
 /// the only difference between the two routes.
 ///
-/// Alongside the response, returns the transient facts (commands) the
-/// committed document dispatched — `None` for dry runs, pure queries,
-/// and documents that carried no transients. The caller hands them to
-/// the post-commit command dispatcher, exactly as `/transact` does.
+/// Alongside the response, returns the commands the committed document
+/// landed in the branch's `control:` layer — `None` for dry runs, pure
+/// queries, and documents that carried none. The caller hands them to
+/// the post-commit command providers, exactly as `/transact` does.
 async fn evaluate_on_branch<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: crate::reactor::BranchReference<'a>,
@@ -694,7 +690,17 @@ async fn evaluate_on_branch_with<'a>(
         // explicit integrate here, and they never reach the durable write (the
         // overlay is session-only). Match queries resolve stored `db.rule/*`
         // rules automatically via the branch query's layer stack.
-        let mut txn = branch.transaction();
+        //
+        // The transaction comes from the branch's dialog session, so the
+        // commands the document dispatches land in the session's `control:`
+        // layer once the commit publishes, where the providers read them
+        // (see `BranchState::landed`). A conditional evaluation commits on
+        // its private handle, outside the session, and so refuses a document
+        // with any command below.
+        let mut txn = match conditional_branch.as_ref() {
+            Some(private) => private.transaction(),
+            None => session.state.session().transaction(),
+        };
         let desired = match &retract {
             Retractions::Planned { desired, .. } => *desired,
             Retractions::Fixed(_) => &[],
@@ -760,7 +766,7 @@ async fn evaluate_on_branch_with<'a>(
             .perform(&tonk_state.operator)
             .await
             .map_err(map_evaluate_error)?;
-        if query.expected_revision.is_some() && !evaluated.transients.is_empty() {
+        if query.expected_revision.is_some() && evaluated.commands > 0 {
             return Err(TonkWorkerError::Forbidden(
                 "Conditional builds accept durable changes only; transient commands are unavailable".into(),
             ));
@@ -847,7 +853,7 @@ async fn evaluate_on_branch_with<'a>(
         matches_after,
         matches_before,
         commits,
-        transients,
+        commands,
         eval_ms,
         matches_ms,
         commit_ms,
@@ -918,21 +924,25 @@ async fn evaluate_on_branch_with<'a>(
             }
             // Extract what the response needs before the commit consumes the
             // transaction (`Transaction` isn't `Clone`, and `commit()` takes it
-            // by value). The transients mirror is what post-commit command
-            // dispatch runs on — the commit sweeps them from the transaction.
+            // by value).
             let matches_before = evaluated.matches;
             let commits = evaluated.commits;
-            let transients = evaluated.transients;
             let t_commit = web_time::Instant::now();
             match stage_and_publish(tonk_state, evaluated.txn, record).await {
                 Ok(revision_after) => {
+                    // What the publish landed in the session's `control:`
+                    // layer: the document's commands and the ones its rules
+                    // dispatched, read here under the transactor lock so no
+                    // other writer's are among them. A conditional commit
+                    // went through no session and landed none.
+                    let commands = session.state.landed();
                     break (
                         revision_before,
                         revision_after,
                         matches_after,
                         matches_before,
                         commits,
-                        transients,
+                        commands,
                         eval_ms,
                         matches_ms,
                         t_commit.elapsed().as_millis(),
@@ -1021,7 +1031,7 @@ async fn evaluate_on_branch_with<'a>(
             matches_after,
             commits,
         }),
-        (!transients.is_empty()).then_some(transients),
+        (!commands.is_empty()).then_some(commands),
     ))
 }
 
@@ -1051,14 +1061,14 @@ pub async fn evaluate_body(
         .map(|(Json(r), _)| r)
 }
 
-/// [`evaluate_body`], additionally returning the transient facts
-/// (commands) the committed document dispatched. The bridge's evaluate
-/// handler uses this so a sealed guest's document triggers command
-/// dispatch the same way the HTTP `/evaluate` route does; callers that
-/// evaluate authored documents with no commands (seeding, joins) keep
-/// using [`evaluate_body`].
+/// [`evaluate_body`], additionally returning the commands the committed
+/// document landed in the branch's `control:` layer. The bridge's
+/// evaluate handler uses this so a sealed guest's document reaches the
+/// command providers the same way the HTTP `/evaluate` route does;
+/// callers that evaluate authored documents with no commands (seeding,
+/// joins) keep using [`evaluate_body`].
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-pub async fn evaluate_body_with_transients(
+pub async fn evaluate_body_with_commands(
     tonk_state: &crate::worker::TonkState,
     repo: &str,
     branch: &str,
@@ -1073,7 +1083,7 @@ pub async fn evaluate_body_with_transients(
     let bytes = Bytes::from(body.into_bytes());
     evaluate_on_branch(tonk_state, tonk_branch, bytes, query)
         .await
-        .map(|(Json(r), transients)| (r, transients))
+        .map(|(Json(r), commands)| (r, commands))
 }
 
 /// [`evaluate_body`], with a second commit that names the first's
@@ -2009,14 +2019,14 @@ command!: &counter/+1
         );
     }
 
-    /// The evaluate pipeline must surface a committed document's
-    /// transient facts for the post-commit command providers — the
+    /// A committed document's commands land in the branch's `control:`
+    /// layer and come back for the post-commit command providers — the
     /// seam the route and the bridge hand to
     /// `router::command::run_commands`, mirroring `/transact`. A
-    /// durable document and a dry run surface none.
+    /// durable document and a dry run land none.
     #[dialog_common::test]
-    async fn it_returns_transients_for_command_dispatch() {
-        let (state, repo) = state_with_repo("test-evaluate-transients").await;
+    async fn it_returns_the_commands_a_document_landed() {
+        let (state, repo) = state_with_repo("test-evaluate-commands").await;
         let repo = repo.as_str();
 
         evaluate(&state, repo, CONCEPTS, true).await;
@@ -2027,13 +2037,13 @@ command!: &counter/+1
   name: "Dispatch Joe"
   age: 9
 "#;
-        let (_, transients) =
-            super::evaluate_body_with_transients(&guard, repo, "main", instance.to_owned(), true)
+        let (_, commands) =
+            super::evaluate_body_with_commands(&guard, repo, "main", instance.to_owned(), true)
                 .await
                 .expect("transient instance evaluates");
         assert!(
-            transients.is_some(),
-            "a committed transient-concept assertion must surface for dispatch",
+            commands.is_some(),
+            "a committed transient-concept assertion lands in control: and comes back",
         );
 
         let durable = r#"person!:
@@ -2041,20 +2051,20 @@ command!: &counter/+1
   name: "Durable Joe"
   age: 9
 "#;
-        let (_, transients) =
-            super::evaluate_body_with_transients(&guard, repo, "main", durable.to_owned(), true)
+        let (_, commands) =
+            super::evaluate_body_with_commands(&guard, repo, "main", durable.to_owned(), true)
                 .await
                 .expect("durable instance evaluates");
         assert!(
-            transients.is_none(),
-            "a durable-only document dispatches nothing",
+            commands.is_none(),
+            "a durable-only document lands no command",
         );
 
-        let (_, transients) =
-            super::evaluate_body_with_transients(&guard, repo, "main", instance.to_owned(), false)
+        let (_, commands) =
+            super::evaluate_body_with_commands(&guard, repo, "main", instance.to_owned(), false)
                 .await
                 .expect("dry run evaluates");
-        assert!(transients.is_none(), "a dry run dispatches nothing");
+        assert!(commands.is_none(), "a dry run lands no command");
     }
 
     /// A pure-query document must not advance the branch even with
