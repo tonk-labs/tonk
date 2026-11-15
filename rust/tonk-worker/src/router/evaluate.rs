@@ -469,12 +469,11 @@ async fn evaluate_on_branch<'a>(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        client,
         Document::Text(body),
         query,
         Retractions::Fixed(Vec::new()),
         None,
-        EvaluationMode::Interactive,
+        EvaluationMode::Interactive { client },
     )
     .await
 }
@@ -489,7 +488,12 @@ enum Document {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EvaluationMode {
-    Interactive,
+    /// A request's document: parsed strictly, committed only when it
+    /// writes, as one invocation through the branch's stack, with the
+    /// asking client on the tick when known.
+    Interactive {
+        client: Option<super::ClientId>,
+    },
     LibrarySeed,
     #[cfg(test)]
     LibrarySeedWithRace,
@@ -538,7 +542,6 @@ pub(super) async fn seed_on_branch<'a>(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        None,
         Document::Text(Bytes::from(body.into_bytes())),
         EvaluateQuery {
             transact: true,
@@ -563,7 +566,6 @@ pub(super) async fn seed_syntax_on_branch<'a>(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        None,
         Document::Parsed(syntax),
         EvaluateQuery {
             transact: true,
@@ -602,7 +604,6 @@ pub(super) async fn seed_syntax_on_branch<'a>(
 async fn evaluate_on_branch_with<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: crate::reactor::BranchReference<'a>,
-    client: Option<super::ClientId>,
     body: Document,
     query: EvaluateQuery,
     retract: Retractions<'a>,
@@ -610,6 +611,11 @@ async fn evaluate_on_branch_with<'a>(
     mode: EvaluationMode,
 ) -> Result<(Json<EvaluateResponse>, Option<Effect>), TonkWorkerError> {
     let total_start = web_time::Instant::now();
+    let interactive = matches!(mode, EvaluationMode::Interactive { .. });
+    let client = match &mode {
+        EvaluationMode::Interactive { client } => client.clone(),
+        _ => None,
+    };
     let evaluation_passes = std::sync::atomic::AtomicUsize::new(0);
     let t_parse = web_time::Instant::now();
     let syntax = match body {
@@ -621,9 +627,10 @@ async fn evaluate_on_branch_with<'a>(
             // A library seed is parsed where the library lives, so it can
             // `!include` the files beside it. Anything else arrived as a
             // request body with no location of its own, and may not.
-            match mode {
-                EvaluationMode::Interactive => surface_parse_diagnostics(parse(text))?,
-                _ => super::library::parse(text).await?,
+            if interactive {
+                surface_parse_diagnostics(parse(text))?
+            } else {
+                super::library::parse(text).await?
             }
         }
     };
@@ -804,8 +811,8 @@ async fn evaluate_on_branch_with<'a>(
         // below answers commits nothing, and answers its matches before
         // for after, so they are not computed a second time.
         let t_matches = web_time::Instant::now();
-        let answered_as_read = mode == EvaluationMode::Interactive
-            && !(query.transact && evaluated.analysis.analysis.has_statements());
+        let answered_as_read =
+            interactive && !(query.transact && evaluated.analysis.analysis.has_statements());
         let matches_after = if answered_as_read {
             Vec::new()
         } else {
@@ -831,7 +838,7 @@ async fn evaluate_on_branch_with<'a>(
     // lock. We can't know it's a dry run until after evaluating, so a peek: if
     // the first (lock-free) evaluation shows no commit, return it directly; only
     // a committing document re-enters under the transactor lock.
-    if mode == EvaluationMode::Interactive {
+    if interactive {
         let (evaluated, _, revision_before, matches_after, ..) = evaluate_once().await?;
         if !(query.transact && evaluated.analysis.analysis.has_statements()) {
             // Pure-query or dry-run: drop the transaction without committing. The
@@ -889,8 +896,7 @@ async fn evaluate_on_branch_with<'a>(
         loop {
             let (evaluated, mut staged, revision_before, matches_after, eval_ms, matches_ms) =
                 evaluate_once().await?;
-            if mode != EvaluationMode::Interactive && !evaluated.analysis.analysis.has_statements()
-            {
+            if !interactive && !evaluated.analysis.analysis.has_statements() {
                 return Err(TonkWorkerError::Internal(
                     "library seed must contain mutation statements".to_owned(),
                 ));
@@ -972,7 +978,7 @@ async fn evaluate_on_branch_with<'a>(
             // below), and one that records its own version chains a
             // second commit on the first's batch. Their callers run no
             // providers.
-            let outcome = if mode == EvaluationMode::Interactive && conditional_branch.is_none() {
+            let outcome = if interactive && conditional_branch.is_none() {
                 let Evaluated {
                     changes,
                     mut dispatched,
@@ -1174,7 +1180,6 @@ pub async fn evaluate_body_recording(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        None,
         Document::Text(bytes),
         query,
         Retractions::Fixed(Vec::new()),
@@ -1209,7 +1214,6 @@ pub async fn evaluate_with_retractions(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        None,
         Document::Text(bytes),
         query,
         Retractions::Fixed(retract),
@@ -1239,7 +1243,6 @@ pub async fn evaluate_profile_body_recording(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        None,
         Document::Text(bytes),
         query,
         Retractions::Fixed(Vec::new()),
@@ -1266,7 +1269,6 @@ pub(super) async fn evaluate_profile_with_retraction_plan<'a>(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        None,
         Document::Text(Bytes::from(body.into_bytes())),
         EvaluateQuery {
             transact: true,
@@ -1566,7 +1568,6 @@ mod tests {
         let result = super::evaluate_on_branch_with(
             &tonk,
             tonk.reactor.repository(&repo).branch("main"),
-            None,
             super::Document::Text(
                 "person!:\n  this: id:must-not-exist\n  name: Stale\n  age: 1\n"
                     .to_owned()
@@ -1827,7 +1828,6 @@ mod tests {
         let response = super::evaluate_on_branch_with(
             &tonk,
             tonk.reactor.repository(&repo).branch("main"),
-            None,
             super::Document::Text(CONCEPTS.to_owned().into()),
             super::EvaluateQuery {
                 transact: true,
