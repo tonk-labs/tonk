@@ -417,7 +417,8 @@ async fn authorize_device_inner(
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD.encode(payload)
     };
-    let redirect = format!("{origin}settings");
+    // Back to the task page, which says the device is connected.
+    let redirect = format!("{origin}settings/link");
     tonk_worker_api::callback::delivery_url(
         &authorization.callback,
         &[("authorize", &encoded), ("redirect", &redirect)],

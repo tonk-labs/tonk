@@ -2109,3 +2109,46 @@ fn it_shows_a_signed_out_wall_on_settings_task_pages() {
         "} else if (hit('[data-signed-out-sign-in]')) {\n            self.link('needs-account');"
     ));
 }
+
+#[dialog_common::test]
+fn it_draws_a_devices_request_as_the_connect_a_device_task() {
+    // gooey in-browser/task-page.html #device, #device-connected,
+    // #device-denied, #device-expired, #device-cancelled, #device-failed.
+    let pane = PROFILE_LIBRARY
+        .split("<div class=\"pane fabb-page\" data-pane=\"link\" hidden data-link-approval>")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("<div class=\"pane fabb-page\" data-pane=\"local-link\"")
+                .next()
+        })
+        .expect("the device task");
+    assert!(pane.contains(">connect a device</h1>"));
+    assert!(pane.contains("<dt>device</dt><dd data-link-name></dd>"));
+    assert!(pane.contains("<dt>your account</dt>"));
+    assert!(
+        pane.contains("BUG-246"),
+        "a slot for the code the device shows"
+    );
+    // the safe answer first, the main one last, naming how much it grants
+    assert!(pane.contains(
+        "<button type=\"button\" data-link-decline>don’t allow</button>\n                      <button type=\"button\" data-link-approve"
+    ));
+    assert!(pane.contains("data-wait=\"connecting\">allow whole account</button>"));
+    for step in ["ask", "connected", "denied", "expired"] {
+        assert!(
+            pane.contains(&format!("data-link-step=\"{step}\"")),
+            "{step}"
+        );
+    }
+    // the terminal's answer comes back as ?link=ok|denied|invalid
+    assert!(PROFILE_LIBRARY.contains(
+        "return { ok: 'connected', denied: 'denied', invalid: 'denied' }[outcome] ?? null;"
+    ));
+    // a cancelled or failed passkey is the same step, the reason in the form
+    assert!(PROFILE_LIBRARY.contains(
+        "if (state === 'refused') self.linkError('The passkey prompt was cancelled. Try again when you’re ready.');"
+    ));
+    // the other two panes keep their copy on the same parts
+    assert!(PROFILE_LIBRARY.contains(">attach a local space to this account</h1>"));
+    assert!(PROFILE_LIBRARY.contains(">sign in through another tonk</h1>"));
+}
