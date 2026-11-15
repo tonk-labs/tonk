@@ -867,7 +867,7 @@ pub(crate) mod tests {
                             text: document.body.innerText,
                             spaces: [...document.querySelectorAll(".space-card a.hub-open")].map(link => ({
                                 href: link.getAttribute("href"),
-                                name: link.textContent.trim(),
+                                name: (link.querySelector(".hub-name")?.textContent ?? link.textContent).trim(),
                             })),
                             createEnabled: !!document.querySelector("[data-spaces-sheet] button[data-new-space]:not(:disabled)"),
                         };
