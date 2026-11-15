@@ -4,7 +4,10 @@
 //! carries on [`TonkState`] — one for the profile branch's session, one
 //! for the space (content) branches' — and [`run_commands`] runs the
 //! commands a dispatch landed in its session's `control:` layer against
-//! the vocabulary its origin selects.
+//! the vocabulary its origin selects. [`run_effect`] then performs the
+//! same commands' effect under the providers registered on the stack
+//! itself ([`Stack::provide`](dialog_repository::Stack::provide)), the
+//! shape a command's behaviour is moving to.
 //!
 //! A command is a claim of a transient concept. A transaction through
 //! the reactor writes it `.at(control_layer())`, so dialog takes it as
@@ -394,6 +397,82 @@ pub async fn run_commands(state: &AppState, origin: CommandOrigin, commands: Cha
     // subscription broadcasts; coalesced by branch identity.
     let tonk = state.read().await;
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
+/// How many rounds of answers a dispatch's effect may chain: an answer
+/// placed in `control:` is a command the next round performs.
+const MAX_EFFECT_ROUNDS: usize = 8;
+
+/// Perform `effect`, the stack's providers over the commands a dispatch
+/// at `origin` landed: the step dialog leaves to the embedder
+/// ([`Effect::perform`]). Called after [`run_commands`] ran the registry's
+/// handlers on the same commands, so a provider reads what they wrote
+/// (`intent/suggest` reads the intents `intent/interpret` recorded).
+///
+/// The providers tonk registers are registered here, on the origin's
+/// stack, right before the effect runs; registering again replaces the
+/// handler and writes nothing (see [`Stack::provide`]). Each answer is
+/// written by the effect's own dispatch through the stack, in the layer
+/// the answer names; a failed provider is logged and does not stop the
+/// others. A command no provider claims is answered `unhandled`, which is
+/// how a command the registry ran reads, so it is not logged here. The
+/// branch's subscriptions are polled after, so the page reads the
+/// answers through the query it already has.
+///
+/// [`Effect::perform`]: dialog_repository::Effect::perform
+/// [`Stack::provide`]: dialog_repository::Stack::provide
+pub async fn run_effect(
+    state: &AppState,
+    origin: CommandOrigin,
+    effect: dialog_repository::Effect,
+) {
+    if effect.is_empty() {
+        return;
+    }
+    // A clone, not the guard: a provider re-locks through its env.
+    let tonk = state.read().await.clone();
+    let branch = if origin.repo.is_empty() {
+        tonk.reactor.profile_repository().branch(&origin.branch)
+    } else {
+        tonk.reactor.repository(&origin.repo).branch(&origin.branch)
+    };
+    let session = match branch.acquire(&tonk.operator).await {
+        Ok(session) => session,
+        Err(error) => {
+            log!("commands: effect skipped, branch unavailable: {error}");
+            return;
+        }
+    };
+    super::suggest::provide(
+        session.state.stack(),
+        CommandEnv::new(state.clone(), origin.clone()),
+    );
+    let mut effect = effect;
+    let mut answered = false;
+    for _ in 0..MAX_EFFECT_ROUNDS {
+        let report = match effect.perform(&tonk.operator).await {
+            Ok(report) => report,
+            Err(error) => {
+                log!("commands: effect failed: {error}");
+                break;
+            }
+        };
+        for (command, reason) in report.failed() {
+            log!("commands: {command} failed: {reason}");
+        }
+        answered |= !report.answered().is_empty();
+        if !report.remaining() {
+            break;
+        }
+        effect = report.effect();
+    }
+    // An answer landed in a layer the page reads: let its subscriptions
+    // see it. `run_commands` drained once already, before the effect.
+    if answered {
+        tonk.reactor
+            .schedule_poll(std::sync::Arc::clone(&session.state));
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    }
 }
 
 #[cfg(test)]

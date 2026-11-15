@@ -9,6 +9,7 @@ edition.workspace = true
 [dependencies]
 async-trait = { workspace = true }
 base58 = { workspace = true }
+blake3 = { workspace = true }
 bytes = { workspace = true }
 dialog-corpus = { workspace = true }
 dialog-capability = { workspace = true }

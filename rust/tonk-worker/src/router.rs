@@ -206,11 +206,15 @@ mod interpret;
 mod navigate;
 mod site_request;
 mod site_select;
+/// `intent/suggest`, answered by a provider on the branch's stack.
+mod suggest;
 
 mod diagnostics;
 
 mod command;
-pub use command::{CommandEnv, CommandOrigin, CommandProviders, command_providers, run_commands};
+pub use command::{
+    CommandEnv, CommandOrigin, CommandProviders, command_providers, run_commands, run_effect,
+};
 
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod intent;

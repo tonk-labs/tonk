@@ -20,6 +20,10 @@ use crate::subscription::{
     QueryHash, Status, Subscriber, SubscriberSession, Subscription, SubscriptionPoll,
 };
 
+/// The domain of a command's lifecycle rows, which
+/// [`BranchState::landed`] leaves out.
+const LIFECYCLE: &str = "dialog.command";
+
 /// Cached branch handle plus the subscriptions registered
 /// against it. Held inside the reactor's cache as
 /// `Arc<BranchState>` so callers can hand the state around
@@ -131,6 +135,12 @@ impl BranchState {
     pub fn landed(&self) -> Changes {
         let mut commands = Changes::new();
         for fact in self.arrivals.lock().rows() {
+            // A command's lifecycle (`dialog.command/answered`, `failed`,
+            // `unhandled`, `progress`), which an effect's answer dispatch
+            // lands on the same channel, is no command.
+            if fact.the.domain() == LIFECYCLE {
+                continue;
+            }
             commands.associate(fact.the, fact.of, fact.is, Pick::All);
         }
         commands
@@ -269,11 +279,13 @@ impl BranchState {
         // `QueryEffect` applies) so a concept-of-concept / command / rule
         // metadata query dispatches to its anonymous-enumeration application
         // instead of scanning for `dialog.meta/*` facts that aren't stored.
-        // The branch folds its own session overlay into every read, so the
-        // subscription sees ephemeral facts with no extra wiring here.
+        // The subscription reads through the stack: the primary with its
+        // session overlay, and every layer the stack holds, among them
+        // its own `session:`, where a provider's answer to a command
+        // lands. A poll re-evaluates when any of them moved.
         let plan = tonk_schema::concept::QueryPlan::from(query);
         let subscription = entry.or_insert_with(|| Subscription {
-            engine: Arc::new(tokio::sync::Mutex::new(Some(self.branch.subscribe(plan)))),
+            engine: Arc::new(tokio::sync::Mutex::new(Some(self.stack.subscribe(plan)))),
             terms,
             subscribers: Vec::new(),
         });

@@ -32,7 +32,7 @@
 //! [`BranchState::landed`]: crate::BranchState::landed
 
 use dialog_corpus::{Changes, Statement};
-use dialog_repository::{Revision, control_layer};
+use dialog_repository::{Effect, Revision, control_layer};
 use tonk_schema::claim::{Claim, PredicateApplication};
 use tonk_schema::transact::application_plan_from_predicate;
 
@@ -145,9 +145,10 @@ pub struct Commit<'a> {
     pub changes: Changes,
 }
 
-/// What a dispatch left behind: the head it left the primary at, and
-/// the commands that landed on the stack's `control:` channel for it,
-/// read back through [`Stack::arrivals_rows`](dialog_repository::Stack::arrivals_rows).
+/// What a dispatch left behind: the head it left the primary at, the
+/// commands that landed on the stack's `control:` channel for it, read
+/// back through [`Stack::arrivals_rows`](dialog_repository::Stack::arrivals_rows),
+/// and their [`Effect`] under the stack's own providers.
 ///
 /// The commands are the ones this dispatch wrote `.at(control_layer())`
 /// and the ones its rules dispatched in any tick, as rows: a provider
@@ -161,6 +162,12 @@ pub struct Landed {
     /// The commands that stood in `control:` for this dispatch, empty
     /// when it dispatched none.
     pub commands: Changes,
+    /// The same commands, with the stack's providers
+    /// ([`Stack::provide`](dialog_repository::Stack::provide)): the step
+    /// that runs them and writes their answers, which the caller performs
+    /// when it chooses, after it has answered its request. Empty when the
+    /// dispatch landed no command.
+    pub effect: Effect,
 }
 
 impl Commit<'_> {
@@ -233,6 +240,7 @@ impl Commit<'_> {
         // What the dispatch landed in `control:`, still under the lock,
         // so no other writer's dispatch is among it.
         let commands = cached.state.landed();
+        let effect = report.effect();
 
         // Name the commit: the branch, the claim count, and whether the
         // tree moved. A commit that lands an identical tree still mints a
@@ -264,7 +272,11 @@ impl Commit<'_> {
             .reactor()
             .schedule_poll(std::sync::Arc::clone(&cached.state));
 
-        Ok(Landed { revision, commands })
+        Ok(Landed {
+            revision,
+            commands,
+            effect,
+        })
     }
 }
 

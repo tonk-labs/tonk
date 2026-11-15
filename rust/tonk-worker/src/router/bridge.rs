@@ -244,8 +244,8 @@ async fn handle_query(
     };
     let query: dialog_query::ConceptQuery = match wire.into_concept_query() {
         Ok(q) => q,
-        // A named query (`tree/*`, `intent/suggest`) is answered by the
-        // reactor, as the HTTP `/query` route answers it.
+        // A named query (`tree/*`) is answered by the reactor, as the
+        // HTTP `/query` route answers it.
         Err(wire) => {
             let result = {
                 let tonk = state.read().await;
@@ -310,8 +310,13 @@ async fn handle_query(
         };
         let terms = query.terms.clone();
         use dialog_query::Output as _;
+        // Through the branch's stack, as the reactor's one-shot query
+        // reads: every layer, among them `session:`, where a provider's
+        // answer to a command lands.
         match session
-            .handle()
+            .state
+            .stack()
+            .query()
             .select(tonk_schema::concept::QueryPlan::from(query))
             .perform(&tonk.operator)
             .try_vec()

@@ -244,7 +244,7 @@ pub async fn evaluate(
             branch: path.branch,
             client: client.map(|Extension(id)| id),
         };
-        super::transact::run_commands_detached(state, origin, commands, lifetime).await;
+        super::transact::run_commands_detached(state, origin, commands, None, lifetime).await;
     }
     Ok(response)
 }
@@ -363,7 +363,7 @@ pub async fn evaluate_profile(
             branch: path.branch,
             client: client.map(|Extension(id)| id),
         };
-        super::transact::run_commands_detached(state, origin, commands, lifetime).await;
+        super::transact::run_commands_detached(state, origin, commands, None, lifetime).await;
     }
     Ok(response)
 }

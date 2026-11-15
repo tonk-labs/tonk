@@ -102,7 +102,7 @@ pub async fn transact(
     // per-branch transactor lock (taken inside `transact_on_branch`); sync
     // coordinates via the head CAS. So a tab's commit never blocks behind an
     // in-flight sync (the bug that made pause-mid-sync feel dead).
-    let (response, commands) = {
+    let (response, commands, effect) = {
         let tonk_state = state.read().await;
         let tonk_branch = tonk_state
             .reactor
@@ -149,7 +149,14 @@ pub async fn transact(
     // Awaiting the providers here serialized the iframe boot behind the command;
     // detaching them returns the commit (~40ms) immediately and lets the command
     // finish in the background under the fetch event's `waitUntil` lifetime.
-    run_commands_detached(state, origin, commands.unwrap_or_default(), lifetime).await;
+    run_commands_detached(
+        state,
+        origin,
+        commands.unwrap_or_default(),
+        effect,
+        lifetime,
+    )
+    .await;
     Ok(response)
 }
 
@@ -174,7 +181,7 @@ async fn transact_profile(
             ));
         }
     }
-    let (response, commands) = {
+    let (response, commands, effect) = {
         let tonk_state = state.read().await;
         let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
         transact_on_branch(&tonk_state, tonk_branch, body).await?
@@ -195,7 +202,14 @@ async fn transact_profile(
     // Detached like the repository-scoped `transact` above: the commit returns
     // now, the command providers + poll drain run in the background and broadcast
     // their writes to subscribers when they land.
-    run_commands_detached(state, origin, commands.unwrap_or_default(), lifetime).await;
+    run_commands_detached(
+        state,
+        origin,
+        commands.unwrap_or_default(),
+        effect,
+        lifetime,
+    )
+    .await;
     Ok(response)
 }
 
@@ -217,21 +231,31 @@ fn announce_local_commit(branch: &str, response: &TransactResponse) {
     }
 }
 
-/// Run [`super::run_commands`] as background work so it never blocks the
-/// triggering response (shared by the transact and evaluate routes). The
-/// service worker attaches the promise to the originating fetch event;
-/// native builds run it inline so tests remain deterministic.
+/// Run [`super::run_commands`], then the commands' `effect` under the
+/// stack's own providers ([`super::run_effect`]), as background work so
+/// neither blocks the triggering response (shared by the transact and
+/// evaluate routes). The service worker attaches the promise to the
+/// originating fetch event; native builds run it inline so tests remain
+/// deterministic. A commit that went through no stack (an absent branch,
+/// a conditional evaluation) has no effect to run.
 pub(super) async fn run_commands_detached(
     state: AppState,
     origin: super::CommandOrigin,
     commands: dialog_corpus::Changes,
+    effect: Option<dialog_repository::Effect>,
     lifetime: Option<Extension<crate::worker::FetchLifetime>>,
 ) {
+    let run = async move {
+        super::run_commands(&state, origin.clone(), commands).await;
+        if let Some(effect) = effect {
+            super::run_effect(&state, origin, effect).await;
+        }
+    };
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     match lifetime {
         Some(Extension(lifetime)) => {
             let promise = wasm_bindgen_futures::future_to_promise(async move {
-                super::run_commands(&state, origin, commands).await;
+                run.await;
                 Ok(wasm_bindgen::JsValue::UNDEFINED)
             });
             if let Err(error) = lifetime.extend(&promise) {
@@ -240,22 +264,30 @@ pub(super) async fn run_commands_detached(
                 );
             }
         }
-        None => wasm_bindgen_futures::spawn_local(async move {
-            super::run_commands(&state, origin, commands).await;
-        }),
+        None => wasm_bindgen_futures::spawn_local(run),
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
         let _ = lifetime;
-        super::run_commands(&state, origin, commands).await;
+        run.await;
     }
 }
 
+/// Commit `body` on `tonk_branch`. Alongside the response: the commands
+/// the dispatch landed, for the registry, and their effect under the
+/// stack's providers, when the commit went through the stack.
 async fn transact_on_branch<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: BranchReference<'a>,
     body: Bytes,
-) -> Result<(Json<TransactResponse>, Option<dialog_corpus::Changes>), TonkWorkerError> {
+) -> Result<
+    (
+        Json<TransactResponse>,
+        Option<dialog_corpus::Changes>,
+        Option<dialog_repository::Effect>,
+    ),
+    TonkWorkerError,
+> {
     let request: TransactRequest = serde_json::from_slice(&body)
         .map_err(|e| TonkWorkerError::Router(format!("invalid TransactRequest body: {e}")))?;
 
@@ -299,6 +331,7 @@ async fn transact_on_branch<'a>(
                     commits: CommitSummary::default(),
                 }),
                 (!transients.is_empty()).then_some(transients),
+                None,
             ));
         }
         Err(error) => return Err(reactor_to_error(error)),
@@ -323,6 +356,7 @@ async fn transact_on_branch<'a>(
                 commits: CommitSummary::default(),
             }),
             (!transients.is_empty()).then_some(transients),
+            None,
         ));
     }
 
@@ -335,6 +369,7 @@ async fn transact_on_branch<'a>(
                 revision_after: revision_before,
                 commits: CommitSummary::default(),
             }),
+            None,
             None,
         ));
     }
@@ -363,6 +398,7 @@ async fn transact_on_branch<'a>(
         .await
         .map_err(reactor_to_error)?;
     let commands = (!landed.commands.is_empty()).then_some(landed.commands);
+    let effect = (!landed.effect.is_empty()).then_some(landed.effect);
 
     Ok((
         Json(TransactResponse {
@@ -374,6 +410,7 @@ async fn transact_on_branch<'a>(
             },
         }),
         commands,
+        effect,
     ))
 }
 
@@ -653,7 +690,7 @@ mod control_layer {
         let (state, repo) = space_with_ping().await;
         let _ = drain_ping_log();
 
-        let (response, commands) = {
+        let (response, commands, _effect) = {
             let tonk = state.read().await;
             let branch = tonk.reactor.repository(&repo).branch("main");
             transact_on_branch(&tonk, branch, ping_request("through control:"))
@@ -707,7 +744,7 @@ mod control_layer {
     async fn a_durable_claim_lands_no_command_and_moves_the_head() {
         let (state, repo) = space_with_ping().await;
 
-        let (response, commands) = {
+        let (response, commands, _effect) = {
             let tonk = state.read().await;
             let branch = tonk.reactor.repository(&repo).branch("main");
             transact_on_branch(&tonk, branch, durable_request("kept"))
