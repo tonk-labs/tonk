@@ -30,11 +30,11 @@ impl<T> LoadProvider for T where T: Provider<Load> + Provider<List> + RegistryEn
 
 /// Bound needed to open a branch on a repository.
 pub trait BranchOpenProvider:
-    Provider<Resolve> + dialog_repository::OpenSessionEnv + ConditionalSync + 'static
+    Provider<Resolve> + dialog_repository::OpenStackEnv + ConditionalSync + 'static
 {
 }
 impl<T> BranchOpenProvider for T where
-    T: Provider<Resolve> + dialog_repository::OpenSessionEnv + ConditionalSync + 'static
+    T: Provider<Resolve> + dialog_repository::OpenStackEnv + ConditionalSync + 'static
 {
 }
 

@@ -1,15 +1,15 @@
 //! [`TransactionBuilder`] and [`Commit`] — accumulate
 //! assert/retract pairs and commit them through the branch's
-//! [`Session`](dialog_repository::Session).
+//! [`Stack`](dialog_repository::Stack).
 //!
 //! Routes call this instead of `Branch::transaction()`. A commit is one
-//! dispatch through the session ([`Session::transact`]): the durable
-//! writes land in the primary; a command (a claim of a transient
-//! concept, written `.at(control_layer())`) is the dispatch's stimulus
-//! and, once the dispatch has published, stands in the session's
-//! `control:` layer for one instant. [`Commit::dispatch`] reads that
-//! instant back through the branch's reader of `control:`
-//! ([`BranchState::landed`], over [`Session::arrivals_rows`]) and hands
+//! invocation through the stack ([`Stack::assert`]): the durable writes
+//! land in the primary; a command (a claim of a transient concept,
+//! written `.at(control_layer())`) is the dispatch's stimulus and, once
+//! the dispatch has published, lands on the outside end of the stack's
+//! `control:` channel for one tick. [`Commit::dispatch`] reads that tick
+//! back through the branch's reader of `control:`
+//! ([`BranchState::landed`], over [`Stack::arrivals_rows`]) and hands
 //! the commands to the caller as [`Landed::commands`], so the worker's
 //! providers run exactly the commands this dispatch landed and no other
 //! writer's.
@@ -27,8 +27,8 @@
 //!
 //! [`Reactor::schedule_poll`]: crate::Reactor::schedule_poll
 //! [`Reactor::run_scheduled_polls`]: crate::Reactor::run_scheduled_polls
-//! [`Session::transact`]: dialog_repository::Session::transact
-//! [`Session::arrivals_rows`]: dialog_repository::Session::arrivals_rows
+//! [`Stack::assert`]: dialog_repository::Stack::assert
+//! [`Stack::arrivals_rows`]: dialog_repository::Stack::arrivals_rows
 //! [`BranchState::landed`]: crate::BranchState::landed
 
 use dialog_corpus::{Changes, Statement};
@@ -44,7 +44,7 @@ use super::error::ReactorError;
 /// [`Changes`] batch. Chain off `TonkBranch::transaction`.
 ///
 /// A claim of a transient concept is a command: it is written
-/// `.at(control_layer())`, so the session's commit takes it as the
+/// `.at(control_layer())`, so the stack's commit takes it as the
 /// dispatch's stimulus rather than a write to the primary, and it
 /// reaches `control:` once the dispatch publishes. Routes that don't
 /// carry transient classification (e.g. the legacy `/claim/*` path)
@@ -132,7 +132,7 @@ impl<'a> TransactionBuilder<'a> {
     }
 }
 
-/// Commit effect — performs one dispatch through the branch's session,
+/// Commit effect — performs one dispatch through the branch's stack,
 /// then schedules a re-poll of every subscription on the branch so
 /// changed query results fan out to subscribers.
 pub struct Commit<'a> {
@@ -146,8 +146,8 @@ pub struct Commit<'a> {
 }
 
 /// What a dispatch left behind: the head it left the primary at, and
-/// the commands that landed in the session's `control:` layer for it,
-/// read back through [`Session::arrivals_rows`](dialog_repository::Session::arrivals_rows).
+/// the commands that landed on the stack's `control:` channel for it,
+/// read back through [`Stack::arrivals_rows`](dialog_repository::Stack::arrivals_rows).
 ///
 /// The commands are the ones this dispatch wrote `.at(control_layer())`
 /// and the ones its rules dispatched in any tick, as rows: a provider
@@ -175,18 +175,18 @@ impl Commit<'_> {
         self.dispatch(env).await.map(|landed| landed.revision)
     }
 
-    /// Execute the commit as one dispatch through the branch's session
-    /// and read back what it landed in `control:`.
+    /// Execute the commit as one dispatch through the branch's stack and
+    /// read back what it landed in `control:`.
     ///
-    /// The session's commit runs induction over the user's claims and
-    /// the branch's rules, routes each write to its layer, publishes
-    /// the primary's share with one compare-and-swap, and re-runs the
-    /// whole dispatch from the new head when a sync moved it meanwhile
-    /// (see [`Invocation`](dialog_repository::Invocation)). Once it has
-    /// published, its commands stand in `control:` for one instant; the
-    /// branch's reader of that layer ([`BranchState::landed`]), read
-    /// right after the dispatch under the branch's transactor lock,
-    /// yields exactly that instant's rows. Rows, not one concept's
+    /// The stack's commit runs induction over the user's claims and the
+    /// branch's rules, routes each write to its layer, publishes the
+    /// primary's share with one compare-and-swap, and re-runs the whole
+    /// dispatch from the new head when a sync moved it meanwhile (see
+    /// [`Invocation`](dialog_repository::Invocation)). Once it has
+    /// published, its commands land on `control:`'s outside end as one
+    /// tick; the branch's reader of that channel ([`BranchState::landed`]),
+    /// read right after the dispatch under the branch's transactor lock,
+    /// yields exactly that tick's rows. Rows, not one concept's
     /// conclusions: a provider decodes a command from the shape of its
     /// entity's facts, so it wants every row.
     ///
@@ -213,18 +213,21 @@ impl Commit<'_> {
         // dispatch's alone. Sync does NOT take it — it coordinates via the
         // CAS and retries — so a commit never waits on a sync.
         let _transacting = cached.state.transactor().lock().await;
-        let session = cached.state.session();
+        let stack = cached.state.stack();
 
         let changes = self.changes;
         let (claims, attributes) = describe(&changes);
-        let before = session.primary().revision();
+        let before = stack.primary().revision();
 
         let t_commit = web_time::Instant::now();
-        // The session re-runs the dispatch from the new head when a sync
+        // The stack re-runs the dispatch from the new head when a sync
         // advanced it between the snapshot and the publish: the changes
         // are idempotent asserts/retracts, so replaying them on the
-        // advanced head is safe.
-        let revision = session.transact(changes).perform(env).await?;
+        // advanced head is safe. Nothing here is computed from a read, so
+        // the one-statement `assert` serves; a route that must read
+        // first would go through `Stack::transact` with a body.
+        let report = stack.assert(changes).perform(env).await?;
+        let revision = report.revision().clone();
         let commit_ms = t_commit.elapsed().as_millis();
 
         // What the dispatch landed in `control:`, still under the lock,

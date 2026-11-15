@@ -691,15 +691,15 @@ async fn evaluate_on_branch_with<'a>(
         // overlay is session-only). Match queries resolve stored `db.rule/*`
         // rules automatically via the branch query's layer stack.
         //
-        // The transaction comes from the branch's dialog session, so the
-        // commands the document dispatches land in the session's `control:`
-        // layer once the commit publishes, where the providers read them
+        // The transaction comes from the branch's dialog stack, so the
+        // commands the document dispatches land on the stack's `control:`
+        // channel once the commit publishes, where the providers read them
         // (see `BranchState::landed`). A conditional evaluation commits on
-        // its private handle, outside the session, and so refuses a document
+        // its private handle, outside the stack, and so refuses a document
         // with any command below.
         let mut txn = match conditional_branch.as_ref() {
             Some(private) => private.transaction(),
-            None => session.state.session().transaction(),
+            None => session.state.stack().transaction(),
         };
         let desired = match &retract {
             Retractions::Planned { desired, .. } => *desired,
@@ -930,11 +930,11 @@ async fn evaluate_on_branch_with<'a>(
             let t_commit = web_time::Instant::now();
             match stage_and_publish(tonk_state, evaluated.txn, record).await {
                 Ok(revision_after) => {
-                    // What the publish landed in the session's `control:`
-                    // layer: the document's commands and the ones its rules
+                    // What the publish landed on the stack's `control:`
+                    // channel: the document's commands and the ones its rules
                     // dispatched, read here under the transactor lock so no
                     // other writer's are among them. A conditional commit
-                    // went through no session and landed none.
+                    // went through no stack and landed none.
                     let commands = session.state.landed();
                     break (
                         revision_before,

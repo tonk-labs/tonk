@@ -12,8 +12,8 @@
 //! once the dispatch has published, lands it in the session's `control:`
 //! layer for one instant. The committing route reads that instant back
 //! ([`Commit::dispatch`](crate::reactor::Commit::dispatch), through
-//! [`Session::arrivals`](dialog_repository::Session::arrivals)) and hands
-//! the rows here; nothing of a command is stored or replicated.
+//! [`Stack::arrivals_rows`](dialog_repository::Stack::arrivals_rows)) and
+//! hands the rows here; nothing of a command is stored or replicated.
 //!
 //! A command is a [`dialog_capability::Command`] run by a
 //! [`Provider<C>`](dialog_capability::Provider) — there is no handler

@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use dialog_corpus::{Changes, Statement, Update as _};
+use dialog_corpus::{Changes, Statement};
 use serde::{Deserialize, Serialize};
 
 use super::BranchReference;
@@ -133,7 +133,7 @@ impl crate::Reactor {
                     .map(|(branch, cached)| OverlaySnapshot {
                         repository: repository.clone(),
                         branch: branch.clone(),
-                        changes: embedder_facts(cached.branch.overlay().export()),
+                        changes: cached.branch.overlay().export(),
                     })
                     .filter(|snapshot| !snapshot.changes.is_empty())
                     .collect::<Vec<_>>()
@@ -171,84 +171,5 @@ impl crate::Reactor {
             }
         }
         restored
-    }
-}
-
-/// The facts of an overlay that are the embedder's own: every row but
-/// dialog's machinery under `dialog.`. The branch's overlay is also the
-/// session's own layer, `session:`, where each dispatch records every
-/// layer's revision (`dialog.layer/revision`) and which layer is selected
-/// (`dialog.session/layer`). Those rows are this process's bookkeeping,
-/// written afresh by the successor's first dispatch, so a snapshot carries
-/// none of them: restored, they would stand for revisions the successor's
-/// session never recorded.
-fn embedder_facts(changes: Changes) -> Changes {
-    let mut kept = Changes::new();
-    for (of, the, change) in changes.iter() {
-        if the.to_string().starts_with("dialog.") {
-            continue;
-        }
-        match change {
-            dialog_corpus::Change::Assert(is, pick) => {
-                kept.associate(the.clone(), of.clone(), is.clone(), pick.clone())
-            }
-            dialog_corpus::Change::Retract(is) => {
-                kept.dissociate(the.clone(), of.clone(), is.clone())
-            }
-        }
-    }
-    kept
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(missing_docs)]
-
-    #[cfg(target_arch = "wasm32")]
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_test_configure!(run_in_browser);
-
-    use super::*;
-    use dialog_corpus::{Pick, Value};
-
-    /// A snapshot carries the embedder's rows and none of the session's
-    /// `dialog.layer/revision` bookkeeping, which the branch's overlay
-    /// holds beside them.
-    #[dialog_common::test]
-    fn an_exported_overlay_keeps_only_the_embedders_facts() {
-        let mut overlay = Changes::new();
-        overlay.associate(
-            "test/status".parse().unwrap(),
-            "tonk:test/handoff".parse().unwrap(),
-            Value::String("failed".into()),
-            Pick::All,
-        );
-        overlay.dissociate(
-            "test/status".parse().unwrap(),
-            "tonk:test/handoff".parse().unwrap(),
-            Value::String("passed".into()),
-        );
-        overlay.associate(
-            "dialog.layer/revision".parse().unwrap(),
-            "memory:".parse().unwrap(),
-            Value::String("11111111111111111111111111111111".into()),
-            Pick::Last,
-        );
-        overlay.associate(
-            "dialog.session/layer".parse().unwrap(),
-            "session:".parse().unwrap(),
-            Value::Entity("memory:".parse().unwrap()),
-            Pick::Last,
-        );
-
-        let kept = embedder_facts(overlay);
-        let attributes: Vec<String> = kept.iter().map(|(_, the, _)| the.to_string()).collect();
-        assert_eq!(attributes, vec!["test/status", "test/status"]);
-        assert!(
-            kept.iter()
-                .any(|(_, _, change)| matches!(change, dialog_corpus::Change::Retract(_))),
-            "a retraction the embedder recorded is kept as a retraction"
-        );
     }
 }

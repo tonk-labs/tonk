@@ -844,10 +844,10 @@ mod tests {
             .acquire(&tonk.operator)
             .await
             .unwrap();
-        let session = stale.session().perform(&tonk.operator).await.unwrap();
+        let stack = stale.stack().perform(&tonk.operator).await.unwrap();
         cached.branches().write().insert(
             "main".into(),
-            std::sync::Arc::new(dialog_reactor::BranchState::new(stale, session)),
+            std::sync::Arc::new(dialog_reactor::BranchState::new(stale, stack)),
         );
         assert!(
             !mounted_configuration_is_current(&tonk, &key, &repository, &configuration)
@@ -1001,10 +1001,10 @@ mod tests {
             .perform(&tonk.operator)
             .await
             .unwrap();
-        let session = unrelated.session().perform(&tonk.operator).await.unwrap();
+        let stack = unrelated.stack().perform(&tonk.operator).await.unwrap();
         repo.branches().write().insert(
             "main".into(),
-            std::sync::Arc::new(dialog_reactor::BranchState::new(unrelated, session)),
+            std::sync::Arc::new(dialog_reactor::BranchState::new(unrelated, stack)),
         );
         assert!(!entry.valid(&tonk, &key));
     }
