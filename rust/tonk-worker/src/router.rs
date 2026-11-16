@@ -3809,40 +3809,6 @@ employee:
         (status, json)
     }
 
-    /// A `tree/node` formula query walks the branch's index tree:
-    /// it reads and decodes the root node, returning a `Conclusion`
-    /// whose `this` is the node hash and whose fields describe the
-    /// node (kind, byte size, child/entry count).
-    #[dialog_common::test]
-    async fn it_resolves_a_tree_node_formula() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-        let repo = "test-reactor-formula";
-        let key = put_repo(&app, repo).await;
-        let repo = key.as_str();
-        seed_named_entity(&app, repo).await;
-
-        let (status, body) = post_formula_query(&app, repo, "main", "tree/node").await;
-        assert_eq!(status, StatusCode::OK, "formula query OK: {body}");
-        let arr = body.as_array().expect("array of conclusions");
-        assert_eq!(arr.len(), 1, "a seeded branch has a root node: {body}");
-        let row = &arr[0];
-        assert!(
-            row["this"].as_str().is_some_and(|s| s.starts_with('#')),
-            "this is a base58 node hash: {row}"
-        );
-        let kind = row["fields"]["kind"].as_str().unwrap_or("");
-        assert!(kind == "index" || kind == "segment", "kind set: {row}");
-        assert!(
-            row["fields"]["size"].as_i64().is_some_and(|n| n > 0),
-            "node has a byte size: {row}"
-        );
-        assert!(
-            row["fields"]["count"].as_i64().is_some(),
-            "node has a child/entry count: {row}"
-        );
-    }
-
     /// An unknown formula name is a 4xx, not a panic or a concept
     /// fall-through.
     #[dialog_common::test]
@@ -3887,155 +3853,159 @@ employee:
         (status, json)
     }
 
-    /// `tree/child` walks one level down: given the root node's hash,
-    /// it returns one self-contained row per child — each carrying the
-    /// child's own hash, sibling position, and node fields. (If the
-    /// root is itself a leaf, there are no children and zero rows; the
-    /// query still succeeds.)
+    /// The root of `repo`'s `main`, as the `node:` entity the branch
+    /// names its tree by.
+    async fn tree_root(app: &Router, repo: &str) -> String {
+        let wire = serde_json::json!({
+            "predicate": { "with": {
+                "tree": { "the": "dialog.branch/tree", "as": "Entity", "cardinality": "one" }
+            } },
+            "terms": { "this": { "?": { "name": "this" } }, "tree": { "?": { "name": "tree" } } }
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/main/query"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(wire.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let rows: serde_json::Value = serde_json::from_slice(&body).expect("rows");
+        let root = rows[0]["fields"]["tree"].as_str().expect("a root").to_owned();
+        assert!(root.starts_with("node:"), "the root is a node entity: {rows}");
+        root
+    }
+
+    fn variable(name: &str) -> serde_json::Value {
+        serde_json::json!({ "?": { "name": name } })
+    }
+
+    /// A query whose predicate is a resolver's name is answered by
+    /// dialog: `tree/node` of the branch's root says what the node is,
+    /// under the names the terms gave its variables.
     #[dialog_common::test]
-    async fn it_resolves_tree_children_of_the_root() {
+    async fn it_answers_a_tree_resolver_by_name() {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
-        let repo = "test-reactor-formula-child";
+        let repo = "test-reactor-step";
         let key = put_repo(&app, repo).await;
         let repo = key.as_str();
         seed_named_entity(&app, repo).await;
-
-        // Find the root and its kind.
-        let (_, root_body) = post_formula_query(&app, repo, "main", "tree/node").await;
-        let root = &root_body.as_array().expect("array")[0];
-        let root_hash = root["this"].as_str().expect("root hash").to_string();
-        let root_is_index = root["fields"]["kind"] == "index";
+        let root = tree_root(&app, repo).await;
 
         let (status, body) = post_formula_query_with(
             &app,
             repo,
             "main",
-            "tree/child",
-            serde_json::json!({ "hash": root_hash }),
+            "tree/node",
+            serde_json::json!({
+                "of": root, "kind": variable("kind"), "size": variable("bytes"), "count": variable("count")
+            }),
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "tree/child OK: {body}");
-        let rows = body.as_array().expect("array of children");
+        assert_eq!(status, StatusCode::OK, "tree/node OK: {body}");
+        let rows = body.as_array().expect("array of conclusions");
+        assert_eq!(rows.len(), 1, "one row for the node: {body}");
+        let row = &rows[0];
+        assert_eq!(row["this"], root, "the row names the node asked of: {row}");
+        let kind = row["fields"]["kind"].as_str().unwrap_or("");
+        assert!(kind == "index" || kind == "segment", "kind set: {row}");
+        assert!(
+            row["fields"]["bytes"].as_i64().is_some_and(|n| n > 0),
+            "the size, under the variable's name: {row}"
+        );
+        assert!(row["fields"]["count"].as_i64().is_some(), "a count: {row}");
 
-        if root_is_index {
-            assert!(!rows.is_empty(), "an index root has children: {body}");
-            for (i, row) in rows.iter().enumerate() {
-                assert!(
-                    row["fields"]["child"]
-                        .as_str()
-                        .is_some_and(|s| s.starts_with('#')),
-                    "child hash present: {row}"
-                );
-                assert_eq!(row["this"], row["fields"]["child"], "this == child: {row}");
-                assert_eq!(row["fields"]["at"], i as i64, "sibling position: {row}");
-                let kind = row["fields"]["kind"].as_str().unwrap_or("");
-                assert!(
-                    kind == "index" || kind == "segment",
-                    "child kind set: {row}"
-                );
-            }
-        } else {
-            assert!(rows.is_empty(), "a segment root has no children: {body}");
-        }
+        // A resolver reads the node it is given: with none, it is the
+        // caller's mistake, not an empty answer.
+        let (status, body) = post_formula_query(&app, repo, "main", "tree/node").await;
+        assert_ne!(status, StatusCode::OK, "no node given: {body}");
     }
 
-    /// A full walk: root → (descend branches to) a leaf → its entries
-    /// → decode one entry's key into components. Exercises tree/node,
-    /// tree/child, tree/entry, and tree/key chained by feeding each
-    /// row's hash into the next query.
+    /// A full walk by named steps: root, down the first span of each
+    /// index (`tree/span`) to a segment, its entries (`tree/entry`),
+    /// and one entry's key decoded by the formula `dialog/key-part`.
     #[dialog_common::test]
-    async fn it_walks_to_a_leaf_and_decodes_an_entry_key() {
+    async fn it_walks_to_a_segment_and_decodes_an_entry_key() {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
-        let repo = "test-reactor-formula-walk";
+        let repo = "test-reactor-step-walk";
         let key = put_repo(&app, repo).await;
         let repo = key.as_str();
         seed_named_entity(&app, repo).await;
 
-        // Descend from the root to the first segment.
-        let (_, root_body) = post_formula_query(&app, repo, "main", "tree/node").await;
-        let mut hash = root_body.as_array().unwrap()[0]["this"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let mut kind = root_body.as_array().unwrap()[0]["fields"]["kind"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        let mut node = tree_root(&app, repo).await;
         let mut guard = 0;
-        while kind == "index" && guard < 32 {
-            guard += 1;
-            let (_, kids) = post_formula_query_with(
+        loop {
+            let (_, described) = post_formula_query_with(
                 &app,
                 repo,
                 "main",
-                "tree/child",
-                serde_json::json!({ "hash": hash }),
+                "tree/node",
+                serde_json::json!({ "of": node, "kind": variable("kind") }),
             )
             .await;
-            let first = &kids.as_array().expect("children")[0];
-            hash = first["fields"]["child"].as_str().unwrap().to_string();
-            kind = first["fields"]["kind"].as_str().unwrap().to_string();
+            if described[0]["fields"]["kind"] == "segment" {
+                break;
+            }
+            guard += 1;
+            assert!(guard < 32, "the tree has a bottom");
+            let (status, spans) = post_formula_query_with(
+                &app,
+                repo,
+                "main",
+                "tree/span",
+                serde_json::json!({ "of": node, "at": variable("at"), "node": variable("node") }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "tree/span OK: {spans}");
+            let spans = spans.as_array().expect("spans");
+            assert!(!spans.is_empty(), "an index has spans");
+            node = spans[0]["fields"]["node"].as_str().expect("a child").to_owned();
+            assert!(node.starts_with("node:"), "a child is a node entity");
         }
-        assert_eq!(kind, "segment", "descended to a segment");
 
-        // Read the segment's entries.
         let (status, entries) = post_formula_query_with(
             &app,
             repo,
             "main",
             "tree/entry",
-            serde_json::json!({ "hash": hash }),
+            serde_json::json!({ "of": node, "at": variable("at"), "key": variable("key") }),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "tree/entry OK: {entries}");
         let entries = entries.as_array().expect("entries");
-        assert!(!entries.is_empty(), "segment has entries: {entries:?}");
-        let entry = &entries[0];
-        assert!(
-            entry["fields"]["key"]
-                .as_str()
-                .is_some_and(|s| s.starts_with("0x")),
-            "entry carries a hex key: {entry}"
-        );
-        assert!(
-            entry["fields"]["attribute"].as_str().is_some(),
-            "entry carries its decoded datum: {entry}"
-        );
+        assert!(!entries.is_empty(), "a segment has entries");
+        let key = entries[0]["fields"]["key"].clone();
+        assert!(!key.is_null(), "an entry carries its key: {entries:?}");
 
-        // Decode that entry's key into components.
-        let entry_key = entry["fields"]["key"].as_str().unwrap().to_string();
-        let (status, decoded) = post_formula_query_with(
+        // The key goes back as it came: a formula is computed from the
+        // constants its terms give.
+        let (status, parts) = post_formula_query_with(
             &app,
             repo,
             "main",
-            "tree/key",
-            serde_json::json!({ "key": entry_key }),
+            "dialog/key-part",
+            serde_json::json!({
+                "of": key, "at": variable("at"), "kind": variable("kind"), "text": variable("text")
+            }),
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "tree/key OK: {decoded}");
-        let row = &decoded.as_array().expect("one row")[0];
-        let tag = row["fields"]["tag"].as_str().unwrap_or("");
-        assert!(
-            matches!(tag, "entity" | "attribute" | "value"),
-            "key tag named: {row}"
-        );
-        // The M3 key format is variable-length, so components come back
-        // as a decoded `parts` list rather than the fixed-offset
-        // `entity` / `value-type` fields the old layout could name.
-        let parts = row["fields"]["parts"]
-            .as_array()
-            .unwrap_or_else(|| panic!("key parts present: {row}"));
+        assert_eq!(status, StatusCode::OK, "dialog/key-part OK: {parts}");
         let kinds: Vec<&str> = parts
+            .as_array()
+            .expect("parts")
             .iter()
-            .filter_map(|part| part["kind"].as_str())
+            .filter_map(|part| part["fields"]["kind"].as_str())
             .collect();
-        assert!(kinds.contains(&"entity"), "entity component present: {row}");
-        assert!(
-            kinds.contains(&"vtype"),
-            "value-type component present: {row}"
-        );
+        assert!(!kinds.is_empty(), "a key decodes into components: {parts}");
     }
 
     /// Open an SSE subscription and return the open body so the

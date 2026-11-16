@@ -40,6 +40,8 @@ const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose-e
 const CODE_EDITOR_LIBRARY: &str = include_str!("../../tonk-core/assets/library/code-editor.yaml");
 const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
 const META_LIBRARY: &str = include_str!("../../tonk-core/assets/library/meta.yaml");
+const TREE_INSPECTOR_LIBRARY: &str =
+    include_str!("../../tonk-core/assets/library/tree-inspector.yaml");
 const VERSION_CONTROL_LIBRARY: &str =
     include_str!("../../tonk-core/assets/library/version-control.yaml");
 
@@ -1446,6 +1448,16 @@ async fn it_lowers_the_prose_editor_library() {
 async fn it_lowers_the_issue_library() {
     assert_component_library_lowers("issue library (issue.yaml)", "issue.yaml", ISSUE_LIBRARY)
         .await;
+}
+
+#[dialog_common::test]
+async fn it_lowers_the_tree_inspector_library() {
+    assert_component_library_lowers(
+        "tree-inspector library (tree-inspector.yaml)",
+        "tree-inspector.yaml",
+        TREE_INSPECTOR_LIBRARY,
+    )
+    .await;
 }
 
 #[dialog_common::test]

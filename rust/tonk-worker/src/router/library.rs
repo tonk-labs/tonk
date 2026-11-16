@@ -136,13 +136,14 @@ fn parsed(parsed: tonk_notation::Parsed) -> Result<Syntax, TonkWorkerError> {
 /// profile branch). Only these, and the [`LANGUAGES`]: a component names a
 /// library file by its name, so the list is what keeps an install to the
 /// library.
-pub(super) const COMPONENTS: [&str; 7] = [
+pub(super) const COMPONENTS: [&str; 8] = [
     "code-editor",
     "issue",
     "meta",
     "notebook",
     "prose-editor",
     "table",
+    "tree-inspector",
     "version-control",
 ];
 

@@ -5745,6 +5745,9 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         "/library/table.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/table.yaml").to_owned())
         }
+        "/library/tree-inspector.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/tree-inspector.yaml").to_owned())
+        }
         "/library/version-control.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/version-control.yaml").to_owned())
         }
@@ -16591,6 +16594,10 @@ mod library_quarantine_tests {
             (
                 "table",
                 include_str!("../../../tonk-core/assets/library/table.yaml"),
+            ),
+            (
+                "tree-inspector",
+                include_str!("../../../tonk-core/assets/library/tree-inspector.yaml"),
             ),
             (
                 "version-control",
