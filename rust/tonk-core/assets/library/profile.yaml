@@ -964,10 +964,6 @@ view!:
                  menu. The mock's line about the space ("you have admin")
                  waits for a recorded role. Closed, it stays in the page,
                  hidden and inert. -->
-            <!-- What unfolds: the space's address and its links
-                 (`space-links`). The mock's line about the space ("you have
-                 admin") waits for a recorded role. Closed, it stays in the
-                 page, hidden and inert. -->
             <div class="hub-fold"><div class="hub-fold-in"><div class="hub-body" id="body-{subject}" inert>
               <space-links data-space={subject} data-name={name}></space-links>
             </div></div></div>
