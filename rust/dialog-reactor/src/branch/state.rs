@@ -278,7 +278,7 @@ impl BranchState {
         // lands. A poll re-evaluates when any of them moved.
         let plan = tonk_schema::concept::QueryPlan::from(query);
         let subscription = entry.or_insert_with(|| Subscription {
-            engine: Arc::new(tokio::sync::Mutex::new(Some(self.stack.subscribe(plan)))),
+            engine: Arc::new(tokio::sync::Mutex::new(Some(self.stack.subscription(plan)))),
             terms,
             subscribers: Vec::new(),
         });

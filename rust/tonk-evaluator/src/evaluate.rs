@@ -65,7 +65,7 @@ use dialog_effects::memory::{Publish, Resolve};
 use dialog_query::attribute::The;
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::{ConceptDescriptor, ConceptQuery, Output as _, Parameters, Term};
-use dialog_repository::{Branch, RemoteSite, Transaction};
+use dialog_repository::{Branch, RemoteSite, StackTransaction, Transaction};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tonk_notation::Syntax;
@@ -73,7 +73,7 @@ use tonk_notation::Syntax;
 use tonk_analyzer::analysis::{Analysis, ExpressionAnalysis, SynthesizedQuery};
 use tonk_analyzer::analyzer;
 use tonk_schema::concept::{QueryEnv, application_to_plan};
-use tonk_schema::query_source::Source;
+use tonk_schema::query_source::{Pending, Source};
 use tonk_schema::transact::{Application, ApplicationPlan, Planner as _, Statement};
 
 // ---------------------------------------------------------------- //
@@ -323,23 +323,47 @@ pub trait SyntaxEvaluateExt {
     /// baked into its overlay. The chain does *not* commit —
     /// the caller decides whether to commit, drop, or compose
     /// further on `Evaluated::txn`.
-    fn evaluate<'a>(&self, txn: Transaction<&'a Branch>) -> Evaluate<'_, 'a>;
+    fn evaluate<T: Staging>(&self, txn: T) -> Evaluate<'_, T>;
 }
 
 impl SyntaxEvaluateExt for Syntax {
-    fn evaluate<'a>(&self, txn: Transaction<&'a Branch>) -> Evaluate<'_, 'a> {
+    fn evaluate<T: Staging>(&self, txn: T) -> Evaluate<'_, T> {
         Evaluate { syntax: self, txn }
+    }
+}
+
+/// A transaction an evaluation stages its writes on: a branch's own
+/// ([`Transaction`]), or one through the branch's stack
+/// ([`StackTransaction`]), which reads every layer the stack holds and
+/// whose publish reports the commands it landed. The evaluation reads
+/// through it ([`Pending`]) and hands it the document's writes and
+/// commands.
+pub trait Staging: Pending + Sized {
+    /// Stage `changes`, the document's writes, and `dispatched`, the
+    /// commands it dispatched, in that order.
+    fn stage(self, changes: Changes, dispatched: Changes) -> Self;
+}
+
+impl Staging for Transaction<&Branch> {
+    fn stage(self, changes: Changes, dispatched: Changes) -> Self {
+        self.assert(changes).dispatch(dispatched)
+    }
+}
+
+impl Staging for StackTransaction<&Branch> {
+    fn stage(self, changes: Changes, dispatched: Changes) -> Self {
+        self.assert(changes).dispatch(dispatched)
     }
 }
 
 /// Chain handle for an evaluation. Holds the syntax and the
 /// transaction until `.perform(env)` consumes them.
-pub struct Evaluate<'s, 'a> {
+pub struct Evaluate<'s, T> {
     syntax: &'s Syntax,
-    txn: Transaction<&'a Branch>,
+    txn: T,
 }
 
-impl<'s, 'a> Evaluate<'s, 'a> {
+impl<'s, T: Staging> Evaluate<'s, T> {
     /// Analyze the syntax, run pre-mutation queries, plan every
     /// mutation `Statement` per match frame, apply the resulting
     /// claims, and run effect induction. The transaction is
@@ -352,16 +376,16 @@ impl<'s, 'a> Evaluate<'s, 'a> {
     /// retract-target resolution, rule-retract source resolution)
     /// go through the transaction's overlay so the chain never
     /// needs a `&Branch`.
-    pub async fn perform<Env: EvaluateEnv>(
-        self,
-        env: &Env,
-    ) -> Result<Evaluated<'a>, EvaluateError> {
+    pub async fn perform<Env: EvaluateEnv>(self, env: &Env) -> Result<Evaluated<T>, EvaluateError> {
         let Evaluate { syntax, mut txn } = self;
 
         // Run `compile` under the hood. Resolution reads through
         // the txn overlay; pre-mutation overlay is empty so this
         // sees branch state.
-        let Compiled { analysis } = syntax.compile(&txn).perform(env).await?;
+        let Compiled { analysis } = syntax
+            .compile(Source::Transaction(&txn))
+            .perform(env)
+            .await?;
         let document = &analysis.analysis;
 
         // ---- Build base bindings frame from analysis-derived vars ----
@@ -511,7 +535,7 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         // The same writes, in the same order, into the transaction: its
         // overlay answers the post-mutation reads, and a caller that
         // commits it writes what `changes` and `dispatched` hold.
-        txn = txn.assert(changes.clone()).dispatch(dispatched.clone());
+        txn = txn.stage(changes.clone(), dispatched.clone());
 
         let matches = render_match_blocks(&analysis.analysis, pre_results.as_ref());
 
@@ -543,11 +567,11 @@ impl<'s, 'a> Evaluate<'s, 'a> {
 /// drop (rollback), or query (`txn.query()`) further. Post-
 /// mutation matches are computed by the caller from the txn;
 /// the chain itself never commits and never re-queries.
-pub struct Evaluated<'a> {
+pub struct Evaluated<T> {
     /// Transaction with the document's mutations + induction
     /// applied to its overlay. Caller drives commit / drop /
     /// further composition.
-    pub txn: Transaction<&'a Branch>,
+    pub txn: T,
     /// Pre-mutation per-source-expression match blocks. For
     /// post-mutation matches, call [`Self::matches_after`].
     pub matches: Vec<QueryMatchBlock>,
@@ -581,7 +605,7 @@ pub struct Evaluated<'a> {
     pub dispatched: Changes,
 }
 
-impl<'a> Evaluated<'a> {
+impl<T: Staging> Evaluated<T> {
     /// Post-mutation per-source-expression match blocks. Runs
     /// the analyzer's queries against the transaction overlay,
     /// which already reflects every applied write plus the
@@ -603,7 +627,9 @@ impl<'a> Evaluated<'a> {
         };
         Ok(render_match_blocks(document, post_results.as_ref()))
     }
+}
 
+impl<'a> Evaluated<Transaction<&'a Branch>> {
     /// Convenience: hand the underlying transaction to dialog's
     /// commit chain. Same as `self.txn.commit()` — exposed on
     /// `Evaluated` so the common `.evaluate(...).perform(...)?
@@ -678,7 +704,7 @@ struct QueryResults {
 async fn run_query<Env: EvaluateEnv>(
     queries: &[LabeledQuery],
     synthesized: &[SynthesizedQuery],
-    txn: &Transaction<&Branch>,
+    txn: &dyn Pending,
     env: &Env,
 ) -> Result<QueryResults, EvaluateError> {
     let mut per_expression = Vec::with_capacity(queries.len());
@@ -781,7 +807,7 @@ impl dialog_corpus::Statement for RawClaim {
 /// so this function only handles `ApplicationPlan::Concept`.
 async fn resolve_retraction_targets<Env: EvaluateEnv>(
     plan: tonk_schema::transact::ConceptPlan,
-    txn: &Transaction<&Branch>,
+    txn: &dyn Pending,
     env: &Env,
 ) -> Result<Vec<RawClaim>, EvaluateError> {
     let Some(this_term) = plan.statement.terms.get("this") else {
@@ -882,7 +908,7 @@ fn count_emitted_claims(plan: &tonk_schema::transact::ConceptPlan) -> usize {
 /// frame carries every entry's binding.
 async fn collect_matches<Env: EvaluateEnv>(
     application: Application,
-    txn: &Transaction<&Branch>,
+    txn: &dyn Pending,
     env: &Env,
 ) -> Result<Vec<Parameters>, EvaluateError> {
     if let Application::Concept {
@@ -909,7 +935,7 @@ async fn collect_matches<Env: EvaluateEnv>(
 /// extracts every bound variable from each [`ConceptConclusion`].
 async fn collect_single_matches<Env: EvaluateEnv>(
     application: Application,
-    txn: &Transaction<&Branch>,
+    txn: &dyn Pending,
     env: &Env,
 ) -> Result<Vec<Parameters>, EvaluateError> {
     // Capture the variable names present in the application's

@@ -22,13 +22,13 @@ use ::axum::{
     extract::{Path, State},
     http::HeaderMap,
 };
-use dialog_corpus::{Changes, Statement as _};
+use dialog_corpus::Changes;
 use dialog_repository::{Effect, RepositoryExt as _, Revision};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_evaluator::evaluate::{EvaluateError, Evaluated, SyntaxEvaluateExt};
+use tonk_evaluator::evaluate::{EvaluateError, SyntaxEvaluateExt};
 use tonk_handler_macros::wasm_compat;
 use tonk_notation::{Parsed, Syntax, parse};
 
@@ -395,6 +395,89 @@ pub async fn evaluate_profile(
 pub type SeedRecord<'a> =
     &'a (dyn Fn(&dialog_corpus::history::Version) -> Vec<dialog_corpus::Instruction> + Send + Sync);
 
+/// The transaction an evaluation stages on: one through the branch's
+/// stack, which reads every layer and whose publish reports what it
+/// landed, or a private handle's own, outside the stack (a conditional
+/// evaluation's, which carries no command).
+pub(super) enum Staged<'a> {
+    /// Through the branch's stack.
+    Stack(dialog_repository::StackTransaction<&'a dialog_repository::Branch>),
+    /// On a private handle, outside the stack.
+    Private(dialog_repository::Transaction<&'a dialog_repository::Branch>),
+}
+
+impl Staged<'_> {
+    fn assert(self, claim: crate::router::claim::RawClaim) -> Self {
+        match self {
+            Self::Stack(txn) => Self::Stack(txn.assert(claim)),
+            Self::Private(txn) => Self::Private(txn.assert(claim)),
+        }
+    }
+
+    fn retract(self, claim: crate::router::claim::RawClaim) -> Self {
+        match self {
+            Self::Stack(txn) => Self::Stack(txn.retract(claim)),
+            Self::Private(txn) => Self::Private(txn.retract(claim)),
+        }
+    }
+
+    /// Write `rows`, rows of the `control:` entity, into the tick the
+    /// transaction's commands land in. A private handle lands no tick,
+    /// so it takes none.
+    fn on_tick(self, rows: Changes) -> Self {
+        match self {
+            Self::Stack(txn) => Self::Stack(txn.assert(rows)),
+            private => private,
+        }
+    }
+}
+
+impl tonk_schema::query_source::Pending for Staged<'_> {
+    fn query(&self) -> dialog_repository::TransactionQuery<'_> {
+        match self {
+            Self::Stack(txn) => txn.query(),
+            Self::Private(txn) => txn.query(),
+        }
+    }
+}
+
+impl tonk_evaluator::evaluate::Staging for Staged<'_> {
+    fn stage(self, changes: Changes, dispatched: Changes) -> Self {
+        match self {
+            Self::Stack(txn) => Self::Stack(txn.stage(changes, dispatched)),
+            Self::Private(txn) => Self::Private(txn.stage(changes, dispatched)),
+        }
+    }
+}
+
+/// The facts a seed record asserts, as the claims a transaction takes.
+fn record_claims(
+    instructions: Vec<dialog_corpus::Instruction>,
+) -> impl Iterator<Item = (bool, crate::router::claim::RawClaim)> {
+    instructions
+        .into_iter()
+        .map(|instruction| match instruction {
+            dialog_corpus::Instruction::Assert(artifact, _) => (
+                true,
+                crate::router::claim::RawClaim {
+                    the: artifact.the,
+                    of: artifact.of,
+                    is: artifact.is,
+                    policy: dialog_corpus::Pick::All,
+                },
+            ),
+            dialog_corpus::Instruction::Retract(artifact) => (
+                false,
+                crate::router::claim::RawClaim {
+                    the: artifact.the,
+                    of: artifact.of,
+                    is: artifact.is,
+                    policy: dialog_corpus::Pick::All,
+                },
+            ),
+        })
+}
+
 /// Commit the evaluated transaction, optionally chaining a second commit
 /// that names the first's version, then publish the whole chain.
 ///
@@ -405,50 +488,72 @@ pub type SeedRecord<'a> =
 /// commits as the next link, and the single `publish` moves the head to
 /// the chain tip — so either both land or neither does, and no reader
 /// ever observes a library without the record describing it.
+///
+/// A chain through the branch's stack answers, beside the revision, the
+/// effect of the commands its links landed on `control:`, which the
+/// stack's providers perform as they do a transact's.
 #[cfg_attr(
     not(all(target_arch = "wasm32", target_os = "unknown")),
     allow(dead_code)
 )]
 pub(super) async fn stage_and_publish(
     tonk_state: &crate::worker::TonkState,
-    txn: dialog_repository::Transaction<&dialog_repository::Branch>,
+    txn: Staged<'_>,
     record: Option<SeedRecord<'_>>,
-) -> Result<dialog_corpus::Revision, dialog_repository::CommitError> {
-    let batch = txn.commit().perform(&tonk_state.operator).await?;
-    let Some(record) = record else {
-        return batch.publish().perform(&tonk_state.operator).await;
-    };
-
-    // Authoritative, not predicted: the commit that minted this version
-    // has already happened. It just is not visible yet.
-    let instructions = record(&batch.version());
-    let mut next = batch.transaction();
-    for instruction in instructions {
-        next = match instruction {
-            dialog_corpus::Instruction::Assert(artifact, _) => {
-                next.assert(crate::router::claim::RawClaim {
-                    the: artifact.the,
-                    of: artifact.of,
-                    is: artifact.is,
-                    policy: dialog_corpus::Pick::All,
-                })
+) -> Result<(dialog_corpus::Revision, Option<Effect>), dialog_repository::CommitError> {
+    let env = &tonk_state.operator;
+    match txn {
+        Staged::Stack(txn) => {
+            let batch = txn.commit().perform(env).await?;
+            let report = match record {
+                None => batch.publish().perform(env).await?,
+                Some(record) => {
+                    // Authoritative, not predicted: the commit that minted
+                    // this version has already happened. It just is not
+                    // visible yet.
+                    let version = batch.version();
+                    let mut next = batch.transaction();
+                    for (asserted, claim) in record_claims(record(&version)) {
+                        next = if asserted {
+                            next.assert(claim)
+                        } else {
+                            next.retract(claim)
+                        };
+                    }
+                    next.commit()
+                        .perform(env)
+                        .await?
+                        .publish()
+                        .perform(env)
+                        .await?
+                }
+            };
+            Ok((report.revision().clone(), Some(report.effect())))
+        }
+        Staged::Private(txn) => {
+            let batch = txn.commit().perform(env).await?;
+            let Some(record) = record else {
+                return Ok((batch.publish().perform(env).await?, None));
+            };
+            let version = batch.version();
+            let mut next = batch.transaction();
+            for (asserted, claim) in record_claims(record(&version)) {
+                next = if asserted {
+                    next.assert(claim)
+                } else {
+                    next.retract(claim)
+                };
             }
-            dialog_corpus::Instruction::Retract(artifact) => {
-                next.retract(crate::router::claim::RawClaim {
-                    the: artifact.the,
-                    of: artifact.of,
-                    is: artifact.is,
-                    policy: dialog_corpus::Pick::All,
-                })
-            }
-        };
+            let revision = next
+                .commit()
+                .perform(env)
+                .await?
+                .publish()
+                .perform(env)
+                .await?;
+            Ok((revision, None))
+        }
     }
-    next.commit()
-        .perform(&tonk_state.operator)
-        .await?
-        .publish()
-        .perform(&tonk_state.operator)
-        .await
 }
 
 /// Shared body for [`evaluate`] and [`evaluate_profile`]. Takes a
@@ -718,19 +823,15 @@ async fn evaluate_on_branch_with<'a>(
         // rules automatically via the branch query's layer stack.
         //
         // The transaction comes from the branch's dialog stack and answers
-        // the document's reads; the committing path below lands the same
-        // writes through the stack's invocation, whose report names the
-        // commands that landed on `control:` for the providers. A
+        // the document's reads; the committing path below publishes it,
+        // and its report names the commands that landed on `control:`
+        // for the providers. A
         // conditional evaluation commits on its private handle, outside
         // the stack, and so refuses a document with any command below.
         let mut txn = match conditional_branch.as_ref() {
-            Some(private) => private.transaction(),
-            None => session.state.stack().transaction(),
+            Some(private) => Staged::Private(private.transaction()),
+            None => Staged::Stack(session.state.stack().transaction()),
         };
-        // The same writes, for the stack's invocation the committing
-        // path below runs them through: the transaction answers the
-        // reads, the invocation lands them and reports what landed.
-        let mut staged = Changes::new();
         let desired = match &retract {
             Retractions::Planned { desired, .. } => *desired,
             Retractions::Fixed(_) => &[],
@@ -745,7 +846,6 @@ async fn evaluate_on_branch_with<'a>(
         // rather than retracted and asserted afresh in one commit.
         for claim in retract.resolve().await? {
             if !kept.contains(&identity(&claim)) {
-                claim.clone().retract(&mut staged);
                 txn = txn.retract(claim);
             }
         }
@@ -780,7 +880,6 @@ async fn evaluate_on_branch_with<'a>(
                     policy: dialog_corpus::Pick::All,
                 };
                 if !kept.contains(&identity(&stale)) {
-                    stale.clone().retract(&mut staged);
                     txn = txn.retract(stale);
                 }
             }
@@ -790,7 +889,6 @@ async fn evaluate_on_branch_with<'a>(
         // against the branch: legacy schemas otherwise validate new views
         // against old fields and prevent the migration from committing.
         for claim in desired {
-            claim.clone().assert(&mut staged);
             txn = txn.assert(claim.clone());
         }
         let t_eval = web_time::Instant::now();
@@ -824,7 +922,6 @@ async fn evaluate_on_branch_with<'a>(
         let matches_ms = t_matches.elapsed().as_millis();
         Ok::<_, TonkWorkerError>((
             evaluated,
-            staged,
             revision_before,
             matches_after,
             eval_ms,
@@ -839,7 +936,7 @@ async fn evaluate_on_branch_with<'a>(
     // the first (lock-free) evaluation shows no commit, return it directly; only
     // a committing document re-enters under the transactor lock.
     if interactive {
-        let (evaluated, _, revision_before, matches_after, ..) = evaluate_once().await?;
+        let (evaluated, revision_before, matches_after, ..) = evaluate_once().await?;
         if !(query.transact && evaluated.analysis.analysis.has_statements()) {
             // Pure-query or dry-run: drop the transaction without committing. The
             // pre-mutation matches double as "after". Zero out `claims` so the
@@ -894,7 +991,7 @@ async fn evaluate_on_branch_with<'a>(
     ) = {
         let mut attempt = 0;
         loop {
-            let (evaluated, mut staged, revision_before, matches_after, eval_ms, matches_ms) =
+            let (evaluated, revision_before, matches_after, eval_ms, matches_ms) =
                 evaluate_once().await?;
             if !interactive && !evaluated.analysis.analysis.has_statements() {
                 return Err(TonkWorkerError::Internal(
@@ -961,46 +1058,29 @@ async fn evaluate_on_branch_with<'a>(
             let matches_before = evaluated.matches;
             let commits = evaluated.commits;
             let t_commit = web_time::Instant::now();
-            // An interactive document on the branch's own stack commits
-            // as one invocation through it: the dispatch's report names
-            // the commands it landed on `control:` — the document's and
-            // the ones its rules dispatched — and its effect runs the
-            // providers over exactly those. The asking client rides on
-            // the tick, a row of `control:` itself. The stack re-runs the
-            // invocation from a moved head with the same stimulus, which
-            // an interactive document's idempotent claims allow. The
-            // other commits stay on the transaction, whose publish
-            // reports nothing an effect can be built from: a conditional
-            // commit goes through its private handle, outside the stack,
-            // with no command; a library seed plans its ownership
-            // retractions against the head it commits on, so a lost
-            // publish must re-plan here, not replay (see the retry arm
-            // below), and one that records its own version chains a
-            // second commit on the first's batch. Their callers run no
-            // providers.
-            let outcome = if interactive && conditional_branch.is_none() {
-                let Evaluated {
-                    changes,
-                    mut dispatched,
-                    ..
-                } = evaluated;
-                changes.assert(&mut staged);
-                if let Some(client) = client.as_ref().filter(|_| !dispatched.is_empty()) {
-                    super::command::client_row(&mut dispatched, client);
-                }
-                session
-                    .state
-                    .stack()
-                    .assert(staged)
-                    .invoke(dispatched)
-                    .perform(&tonk_state.operator)
-                    .await
-                    .map(|report| (report.revision().clone(), Some(report.effect())))
-            } else {
-                stage_and_publish(tonk_state, evaluated.txn, record)
-                    .await
-                    .map(|revision| (revision, None))
-            };
+            // The evaluated transaction commits as it stands: through the
+            // branch's stack, its publish reports what it landed on
+            // `control:` — the document's commands and the ones its rules
+            // dispatched — and the report's effect runs the stack's
+            // providers over exactly those, as a transact's does. The
+            // asking client rides on the tick, a row of `control:` itself,
+            // beside the document's commands. A publish that lost its
+            // compare-and-swap lands nothing and is re-evaluated against
+            // the new head by the retry arm below. A conditional commit
+            // goes through its private handle, outside the stack, with no
+            // command, and reports nothing; a library seed that records
+            // its own version chains a second commit on the first's
+            // batch before the one publish.
+            let commands = evaluated.commands;
+            let mut txn = evaluated.txn;
+            if commands > 0
+                && let Some(client) = client.as_ref()
+            {
+                let mut row = Changes::new();
+                super::command::client_row(&mut row, client);
+                txn = txn.on_tick(row);
+            }
+            let outcome = stage_and_publish(tonk_state, txn, record).await;
             match outcome {
                 Ok((revision_after, effect)) => {
                     break (
