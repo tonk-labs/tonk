@@ -2188,15 +2188,18 @@ impl TonkServiceWorker {
                 tonk.retire();
                 overlays
             };
-            lsp.shutdown().await;
-            log!("Streams are released");
-            // Written even when empty: the successor's activation waits for
-            // this snapshot, and an empty one tells it there is nothing to
-            // carry rather than leaving it to time out.
+            // Written even when empty, so the successor finds a snapshot
+            // whenever this worker announced one; the JS shim releases the
+            // successor's activation once this promise resolves. Written
+            // before the language-server stream is released: an open
+            // stream is what keeps this worker alive, and a worker with
+            // none left may be stopped before a later write lands.
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             crate::handoff::save(overlays).await;
             #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             drop(overlays);
+            lsp.shutdown().await;
+            log!("Streams are released");
             Ok(JsValue::UNDEFINED)
         })
     }
