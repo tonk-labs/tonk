@@ -29,6 +29,8 @@ const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core
 /// backs the Hub (the `space` directory view + the `space/create`
 /// command and its form).
 const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profile.yaml");
+const GOOEY_LOOK: &str = include_str!("../../tonk-core/assets/library/gooey/tonk-look.css");
+const GOOEY_HUB: &str = include_str!("../../tonk-core/assets/library/gooey/in-browser/hub.css");
 /// gooey's task-page sheets, vendored beside the library.
 const TASK_PAGES_CSS: &str =
     include_str!("../../tonk-core/assets/library/gooey/in-browser/fabb-pages.css");
@@ -732,7 +734,38 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
 
 #[dialog_common::test]
 fn it_keeps_the_hub_on_the_shared_theme_tokens() {
-    // Colors live in ONE place — the token block at the top of the hub's
+    // The hub page is `.tonk-hub`: its colours, type and sizes are Tonk's
+    // look, the `--tonk-*` names `gooey/tonk-look.css` sets, which the
+    // vendored `gooey/in-browser/hub.css` reads. Both travel with the view
+    // as its own styles, included from the library directory.
+    for contract in [
+        "look: !include/text ./gooey/tonk-look.css",
+        "hub: !include/text ./gooey/in-browser/hub.css",
+        "<div class=\"hub-page tonk-hub\">",
+        "<link rel=\"stylesheet\" with:src=\"look@space\">",
+        "<link rel=\"stylesheet\" with:src=\"hub@space\">",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the Hub must draw from Tonk's look: missing `{contract}`",
+        );
+    }
+    for (file, text) in [
+        ("tonk-look.css", GOOEY_LOOK),
+        ("in-browser/hub.css", GOOEY_HUB),
+    ] {
+        assert!(
+            text.starts_with(&format!(
+                "/* Vendored from tonk-labs/gooey {file} at ready-to-tonk "
+            )),
+            "gooey/{file} must name the gooey revision it was copied from",
+        );
+    }
+    assert!(GOOEY_LOOK.contains(".tonk-hub { color-scheme: light dark; }"));
+    assert!(GOOEY_HUB.contains(".hub-line { position: sticky;"));
+
+    // The parts of the page the mocks have not reached yet keep their
+    // older palette. Colors live in ONE place — the token block at the top of the hub's
     // own `style: ui`, which travels with the view. The hub must CONSUME
     // those tokens rather than restating a color at each use; a raw hex in
     // a rule is the drift this contract exists to prevent.
@@ -741,13 +774,7 @@ fn it_keeps_the_hub_on_the_shared_theme_tokens() {
     // aliases over a component library's theme: that is what lets the page
     // carry its own colors instead of depending on a stylesheet the host
     // injects into every guest.
-    for consumed in [
-        "background:var(--page)",
-        "color:var(--ink)",
-        "background:var(--cur)",
-        "var(--frost-solid)",
-        "var(--wash-p)",
-    ] {
+    for consumed in ["color:var(--ink)", "var(--frost-solid)", "var(--wash-p)"] {
         assert!(
             PROFILE_LIBRARY.contains(consumed),
             "the Hub must consume the shared theme token `{consumed}`",
@@ -773,14 +800,20 @@ fn it_keeps_the_hub_on_the_shared_theme_tokens() {
 #[dialog_common::test]
 fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
     for contract in [
-        ".hub-header",
-        ".hubcol",
-        "width:min(1166px, calc(100vw - 84px))",
-        "grid-template-columns:repeat(3,minmax(0,1fr))",
-        "<hub-collection class=\"stack chrome\"",
+        "<hub-bar class=\"hub-top\">",
+        "<svg class=\"hub-logo\"",
+        "<a class=\"hub-me account-trigger\" href=\"/settings\" data-account-trigger>",
+        "<section class=\"hub-sheet\" data-spaces-sheet aria-label=\"your spaces\">",
+        "<div class=\"hub-line\">",
+        "<h2 class=\"hub-line-name\" tabindex=\"-1\" data-spaces-line>spaces <span class=\"hub-count\" data-space-count></span></h2>",
+        "<button class=\"hub-btn hub-btn--main\" type=\"button\" data-new-space data-space-create-open>new space</button>",
+        "<hub-collection class=\"hub-rows\"",
+        "<div class=\"hub-row space-card\"",
+        "<a class=\"hub-open\" href=\"/space/{subject}\">",
+        "<span class=\"hub-name\" title=\"{name}\">{name}</span>",
+        "<footer class=\"hub-foot\">tonk.network</footer>",
         "with=\"main@profile:tonk\"",
         "<nav class=\"mobile-nav\"",
-        "<a class=\"hub-logo\" href=\"/\" aria-label=\"Tonk home\"",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
@@ -791,15 +824,15 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
         PROFILE_LIBRARY.contains("create new space"),
         "the responsive Hub collection must contain `create new space`",
     );
-    let hubbar = PROFILE_LIBRARY
-        .split(".hubbar {")
-        .nth(1)
-        .and_then(|css| css.split('}').next())
-        .expect("the Hub bar rule");
-    for rejected in ["position:fixed", "right:", "border-radius"] {
+    // A row is a line in the sheet now, not a card with a picture.
+    for rejected in [
+        "class=\"space-preview\"",
+        "class=\"space-description\"",
+        "<hub-collection class=\"stack",
+    ] {
         assert!(
-            !hubbar.contains(rejected),
-            "the desktop Hub bar must reject `{rejected}`",
+            !PROFILE_LIBRARY.contains(rejected),
+            "the Hub's rows must reject `{rejected}`",
         );
     }
     let rejected = "class=\"shead";
@@ -834,7 +867,7 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
         "data-space-create-open",
         "description: \".currentTarget.elements.description.value\"",
         "the: xyz.tonk.command.create-space/description",
-        "form=\"create-space-header\"",
+        "form=\"create-space-mobile\"",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
@@ -859,7 +892,7 @@ fn it_deals_stable_weighted_frames_from_space_identity() {
         "data-space-subject",
         "const stepDown = { 15: 7, 7: 3, 3: 1, 1: 1 }",
         "--fr-r-mobile",
-        "attributeFilter: ['data-space-subject', 'data-space-thumbnail']",
+        "attributeFilter: ['data-space-subject', 'data-space-thumbnail', 'data-sync-case']",
     ] {
         assert!(
             collection.contains(contract),
@@ -1045,7 +1078,7 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
             "{route} resolves to the hub, not a page of its own",
         );
     }
-    assert!(PROFILE_LIBRARY.contains("<hub-bar class=\"hub-bar\">"));
+    assert!(PROFILE_LIBRARY.contains("<hub-bar class=\"hub-top\">"));
     assert!(!PROFILE_LIBRARY.contains("tab=\"account\">"));
     assert!(!PROFILE_LIBRARY.contains(".hub-settings"));
     assert!(PROFILE_LIBRARY.contains("href=\"/settings\""));
@@ -1070,27 +1103,30 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(PROFILE_LIBRARY.contains("on:add-passkey=tonk:add-passkey"));
     assert!(panel.contains("on:authorize-device=tonk:authorize-device"));
     assert!(!panel.contains("/api/"));
-    assert!(panel.contains("data-delete-account-open"));
-    assert!(panel.contains("data-sign-out-open"));
-    assert!(panel.contains("<h2>Sign out</h2>"));
-    assert!(panel.contains(
-        "Disconnect this account. Its spaces stay on this device for when you sign back in."
-    ));
-    assert!(panel.contains("sign out on this device"));
-    assert!(panel.contains("heading=\"confirm sign out\""));
-    assert!(panel.contains(
-        "this disconnects the account from this browser. its spaces stay on this device, including spaces that have not been backed up or synced, but the hub lists them only while you are signed in. sign back into this account to see them again."
-    ));
-    assert!(panel.contains("data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>"));
+    // The account is a sheet: Tonk's line with `close`, then its sections,
+    // each with its action on the heading line. What can't be undone asks
+    // first, in place.
+    for contract in [
+        "<section class=\"hub-sheet\" data-account-sheet aria-label=\"account settings\">",
+        "<h2 class=\"hub-line-name\" tabindex=\"-1\" data-account-line>account settings</h2>",
+        "<a class=\"hub-btn\" href=\"/\" data-return-spaces data-account-close>close</a>",
+        "<h3 id=\"sec-conn\">connections</h3>",
+        "<h3 id=\"sec-device\">this device</h3><button class=\"hub-btn\" type=\"button\" data-sign-out-open>sign out on this device</button>",
+        "<p>Sign out on this device? Your spaces stay in your account.</p>",
+        "<button class=\"hub-btn\" type=\"button\" data-ask-keep>stay signed in</button><button class=\"hub-btn hub-btn--ring\" type=\"button\" data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>",
+        "data-agent-connections hidden",
+        "data-connections-refresh",
+        r#"<tonk-display model="tonk:account/registered" view="deletion">"#,
+    ] {
+        assert!(
+            panel.contains(contract),
+            "the account sheet must carry `{contract}`"
+        );
+    }
+    assert!(!panel.contains("data-sign-out-dialog"));
     assert!(!panel.contains("remove this device"));
     assert!(!panel.contains("confirm device removal"));
-    assert!(!panel.contains("remove all data associated with this account from this device"));
     assert!(PROFILE_LIBRARY.contains("data-add-passkey"));
-    // Agent access joins the current panel layout; the API feature gate
-    // controls visibility. Account switching remains absent.
-    assert!(panel.contains("class=\"settings-panel agent-access-panel\""));
-    assert!(panel.contains("data-agent-connections hidden"));
-    assert!(panel.contains("data-connections-refresh"));
     assert!(!panel.contains("switch-panel"));
     assert!(!panel.contains("data-add-profile"));
     assert_eq!(panel.matches("href=\"/settings\"").count(), 0);
@@ -1105,54 +1141,51 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
         r#"<tonk-display model="state:ceremony" entity="state:ceremony" view="settings">"#
     ));
 
-    // The deletion dialog rides the registration view, because the
-    // command carries the verified address and that view has it.
-    let registered = PROFILE_LIBRARY
-        .split("    settings: |\n      <div data-account-registered>")
+    // Deleting stands apart, on the registration view, because the
+    // command carries the verified address and that view has it. It asks
+    // first in place; the answer is `delete with passkey`.
+    let deletion = PROFILE_LIBRARY
+        .split("    deletion: |\n      <section class=\"hub-sec hub-apart\"")
         .nth(1)
         .and_then(|rest| rest.split("\n\n").next())
-        .expect("the registration settings facet");
-    assert!(registered.contains("data-delete-account-submit data-email={email}"));
-    assert!(registered.contains("on:delete-account=tonk:delete-account disabled"));
+        .expect("the registration deletion facet");
+    assert!(deletion.contains("data-delete-account-submit data-email={email}"));
+    assert!(deletion.contains("on:delete-account=tonk:delete-account>"));
+    assert!(deletion.contains("<p>Delete your account? This can’t be undone.</p>"));
+    assert!(deletion.contains("data-ask-keep>keep account</button>"));
+    assert!(deletion.contains("<span data-delete-submit-label>delete with passkey</span>"));
     assert!(
-        registered.contains(r#"<tonk-display model="tonk:space/owned" view="deletion">"#),
-        "what the deletion deletes is listed from the owned-space facts",
+        deletion.contains(r#"<tonk-display model="tonk:space/owned" view="deletion">"#),
+        "what the deletion deletes is counted from the owned-space facts",
     );
-    // Editable settings fields use native text inputs and native carets.
+    assert!(!deletion.contains("data-delete-confirm"));
+    // The name saves when you leave the field: no save button.
     let name_form = PROFILE_LIBRARY
-        .split("<form class=\"details-form\" data-profile-rename-form")
+        .split("<form class=\"hub-kv\" data-profile-rename-form")
         .nth(1)
         .and_then(|rest| rest.split("</form>").next())
         .expect("the display-name form");
-    assert!(
-        !name_form.contains("<i class=\"cur\""),
-        "an unfocused display-name field must not draw an editing cursor",
-    );
     assert!(
         !name_form.contains("on:profile-rename-submit"),
         "the receipt-aware submit handler must own dispatch",
     );
     for contract in [
         "name=\"name\" type=\"text\"",
-        "required maxlength=\"50\" autocomplete=\"name\"",
-        "data-profile-rename-submit>save changes",
+        "maxlength=\"50\" autocomplete=\"name\"",
     ] {
         assert!(
             name_form.contains(contract),
-            "the explicit display-name form must preserve `{contract}`",
+            "the display-name form must preserve `{contract}`",
         );
     }
+    assert!(!name_form.contains("save changes"));
     assert!(
-        registered.contains("data-delete-confirm type=\"text\""),
-        "the deletion confirm is a native text input",
+        PROFILE_LIBRARY.contains("if (error) error.textContent = 'Your name can’t be empty.';")
     );
+    assert!(PROFILE_LIBRARY.contains("self.receipt(['changed your name to', name]);"));
     assert!(
-        registered.contains("data-delete-confirm-label>delete account</b>"),
-        "the deletion confirm must say exactly what to type",
-    );
-    assert!(
-        !registered.contains("<i class=\"cur\""),
-        "settings inputs must not draw terminal-style cursors",
+        PROFILE_LIBRARY
+            .contains("'This is your only passkey, so it can’t be removed. Add another first.'")
     );
 }
 
@@ -2032,4 +2065,192 @@ fn it_routes_a_seed_link_to_the_seed_page_with_the_url_intact() {
         matched.params.get("url"),
         Some("https://tonk.network/library/notebook.yaml")
     );
+}
+
+/// A hub row draws the space's sync disc, derived on the profile branch
+/// from facts this device holds: the space's upstream and this device's
+/// pause preference. It shows no role or people count, since the profile
+/// branch records neither and the hub shows only recorded facts.
+#[dialog_common::test]
+fn it_derives_each_hub_rows_sync_disc_and_no_unrecorded_role() {
+    for contract in [
+        "concept!: &space/sync",
+        "concept!: &replica/sync-enabled",
+        "the: xyz.tonk.space/sync",
+        "the: xyz.tonk.sync/enabled",
+        "description: A synced space whose replica is paused on this device is paused",
+        "<span class=\"hub-disc\" role=\"img\" data-sync-case={sync}></span>",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the hub row must carry `{contract}`",
+        );
+    }
+    for absent in [
+        "concept!: &space/role",
+        "data-role-case",
+        "class=\"hub-meta\"",
+    ] {
+        assert!(
+            !PROFILE_LIBRARY.contains(absent),
+            "the hub row must not infer `{absent}`",
+        );
+    }
+    // The cases rank: a paused space that has an upstream reads as paused,
+    // and one nothing better speaks for reads as local.
+    let sync = PROFILE_LIBRARY
+        .split("concept!: &space/sync\n")
+        .nth(1)
+        .expect("the space/sync concept");
+    let paused = sync.find("- case:paused").expect("paused case");
+    let synced = sync.find("- case:synced").expect("synced case");
+    let local = sync.find("- case:local").expect("local case");
+    assert!(
+        paused < synced && synced < local,
+        "paused, then synced, then local"
+    );
+}
+
+/// A hub row is a link that opens the space; a chevron beside it, a button
+/// of its own, unfolds the space's details in place. Closed, the details
+/// stay in the page, inert and out of the tab order.
+#[dialog_common::test]
+fn it_opens_a_hub_space_from_its_row_and_unfolds_details_with_a_chevron() {
+    for contract in [
+        "<a class=\"hub-open\" href=\"/space/{subject}\">",
+        "<button type=\"button\" class=\"hub-toggle\" aria-expanded=\"false\" aria-controls=\"body-{subject}\"",
+        "aria-label=\"links and details of {name}\"",
+        "<div class=\"hub-body\" id=\"body-{subject}\" inert>",
+        "<span class=\"hub-mono\" data-space-address></span>",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the hub row must carry `{contract}`",
+        );
+    }
+    let collection = PROFILE_LIBRARY
+        .split("element!: &hub-collection")
+        .nth(1)
+        .and_then(|rest| rest.split("\nelement!:").next())
+        .expect("the hub collection element");
+    for contract in [
+        // one row open at a time
+        "if (other !== row) self.fold(other, false);",
+        // closed details leave the tab order
+        "if (body) body.inert = !open;",
+        // Escape folds the open row and hands focus back to its chevron
+        "row.querySelector('.hub-toggle')?.focus();",
+        // a keyboard press lands at once
+        "page.setAttribute('data-still', '');",
+    ] {
+        assert!(
+            collection.contains(contract),
+            "the hub collection must keep `{contract}`",
+        );
+    }
+}
+
+/// While the spaces list loads, placeholder rows hold its place past
+/// 400ms and Tonk's line says `loading`; when the service worker cannot
+/// be reached before any row shows, the sheet says so with `try again`.
+#[dialog_common::test]
+fn it_shows_loading_rows_and_a_didnt_load_sheet_for_the_spaces_list() {
+    for contract in [
+        "<ul slot=\"loading\" class=\"hub-wait\" aria-hidden=\"true\">",
+        "<div class=\"hub-skel\"><i></i><i></i></div>",
+        ".hub-wait { list-style:none; margin:0; padding:0; animation:hub-wait-in 400ms step-end; }",
+        "<div slot=\"offline\" class=\"hub-empty hub-failed\"><p>Your spaces didn’t load. Check your connection and try again.</p><button class=\"hub-btn hub-btn--main\" type=\"button\" data-spaces-retry>try again</button></div>",
+        "tonk-display:has(.space-card) > .hub-failed { display:none; }",
+        "count.textContent = list === 'loading' ? 'loading' : '';",
+        "button.disabled = list === 'loading';",
+        "if (event.target?.closest?.('[data-spaces-retry]')) { self.listRetry(); return; }",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the spaces sheet must carry `{contract}`",
+        );
+    }
+    assert_eq!(
+        PROFILE_LIBRARY
+            .matches("<li class=\"hub-wait-row\"><div class=\"hub-skel\">")
+            .count(),
+        5,
+        "five placeholder rows",
+    );
+}
+
+/// A rename or a removal in the hub leaves a receipt in the spaces line,
+/// in place of its name, and announces it. The hub follows the command to
+/// its outcome, since a removed space's row leaves before `removed`.
+#[dialog_common::test]
+fn it_gives_a_receipt_in_the_spaces_line_after_a_change() {
+    for contract in [
+        "<span class=\"hub-receipt\" tabindex=\"-1\" data-hub-receipt hidden></span>",
+        "<button class=\"hub-btn\" type=\"button\" data-hub-undo data-wait=\"undoing\" hidden>undo</button>",
+        "<div class=\"hub-sr\" role=\"status\" aria-live=\"polite\" data-hub-live></div>",
+        "document.createTextNode(' · by you')",
+        "sheet.querySelector('[data-spaces-line]')?.classList.add('hub-sr');",
+        "slot.textContent = 'Couldn’t undo that, so the change stays.';",
+        "self.closest('hub-discover')?.follow?.(id, 'repository-rename', 'renamed',",
+        "self.closest('hub-discover')?.follow?.(id, 'space-removal', 'removed',",
+        "[action === 'leave' ? 'left' : 'deleted', name]",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the spaces line must carry `{contract}`",
+        );
+    }
+}
+
+/// An open hub row lists the space's links from what the worker records,
+/// with desktop's rules: the first open link is the default and resets in
+/// place; any other link is removed. No link records a role or an expiry,
+/// so the rows say neither.
+#[dialog_common::test]
+fn it_lists_a_spaces_links_in_its_open_hub_row() {
+    for contract in [
+        "element!: &space-links",
+        "<space-links data-space={subject} data-name={name}></space-links>",
+        "self.api(`${base}/invites`)",
+        "member: field('xyz.tonk.membership/member', 'Entity'),",
+        "self.api('/api/account/connections')",
+        "const first = open.find((row) => made.has(row.target)) ?? open[0];",
+        "/invites/${encodeURIComponent(target)}/revoke",
+        "/api/account/connections/${encodeURIComponent(target)}/revoke",
+        "'keep the link', 'reset passlink', true]",
+        "new ClipboardItem({ 'text/plain': pending.then(",
+        "'No links yet. Make one to bring someone in.'",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the hub row's links must carry `{contract}`",
+        );
+    }
+}
+
+/// `new space` opens a row under the spaces line: a name, `make space` and
+/// `not now`. An empty name and a name you already have are said under the
+/// field; the hub stays, and the new space's row opens with its default
+/// link made.
+#[dialog_common::test]
+fn it_makes_a_new_space_from_an_inline_row_under_the_line() {
+    for contract in [
+        "<space-create data-inline>",
+        "<form class=\"hub-new\" data-space-create-form novalidate hidden>",
+        "<label for=\"new-space-name\">name</label>",
+        "<input type=\"hidden\" name=\"open\" value=\"false\">",
+        "<button class=\"hub-btn\" type=\"button\" data-space-create-cancel>not now</button>",
+        "data-space-create-submit data-wait=\"making\">make space</button>",
+        "(inline ? 'Give the space a name.' : 'Enter a name for this space.')",
+        ": `You already have a space called ${name.value}.`;",
+        "if (inline) control.textContent = 'making';",
+        "self.closest('hub-discover')?.receipt?.(['made', parameters.name]);",
+        "await links.makeDefault();",
+        "self.querySelector('[data-link-copy]')?.focus();",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the inline new space row must carry `{contract}`",
+        );
+    }
 }

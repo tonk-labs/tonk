@@ -18,7 +18,8 @@ function attributes(object = {}) {
   });
 }
 function fixture(kind) {
-  const name = attributes({ value: 'Ada', defaultValue: 'Ada', focus() {} });
+  // `dataset.was` is the saved name, as focusing the field records it.
+  const name = attributes({ value: 'Ada', defaultValue: 'Ada', dataset: { was: 'Ada' }, focus() {} });
   const error = { textContent: '', hidden: true };
   const submit = { disabled: false };
   const form = attributes({
@@ -31,10 +32,12 @@ function fixture(kind) {
     isConnected: true,
     querySelector: selector => selector.includes('error') ? error : selector.includes('dialog') ? { close() {} } : form,
     querySelectorAll: () => [submit],
+    receipts: [],
+    receipt(words) { this.receipts.push(words); },
   });
   let pending;
   self.create = form => { pending = method('space-create', 'create')(self, form); };
-  self.profileNameSave = (form, name) => { pending = method('account-settings', 'profile-name-save')(self, form, name); };
+  self.profileNameSave = (form, name, was) => { pending = method('account-settings', 'profile-name-save')(self, form, name, was); };
   const event = { target: form, prevented: false, stopped: false,
     preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; } };
   return { self, form, name, error, submit, event, pending: () => pending,
@@ -95,17 +98,27 @@ test('unchanged display name is a no-op and a subsequent edit can submit', async
   const f = fixture('rename');
   const b = bridge({ status: 'renamed' });
   f.run();
-  assert.equal(f.submit.disabled, false);
   assert.equal(f.pending(), undefined);
   assert.ok(f.event.prevented && f.event.stopped);
   f.name.value = 'Grace';
   f.run();
-  assert.equal(f.submit.disabled, true);
+  assert.equal(f.form.getAttribute('aria-busy'), 'true');
   await f.pending();
   assert.equal(b.calls(), 1);
-  assert.equal(f.name.defaultValue, 'Grace');
-  assert.equal(f.submit.disabled, false);
+  assert.equal(f.name.dataset.was, 'Grace');
+  assert.deepEqual(f.self.receipts, [['changed your name to', 'Grace']]);
   assert.notEqual(f.form.getAttribute('aria-busy'), 'true');
+});
+
+test('an empty display name keeps the name you had and says so', () => {
+  const f = fixture('rename');
+  bridge({ status: 'renamed' });
+  f.name.value = '   ';
+  f.run();
+  assert.equal(f.pending(), undefined);
+  assert.equal(f.name.value, 'Ada');
+  assert.equal(f.error.textContent, 'Your name can’t be empty.');
+  assert.equal(f.name.getAttribute('aria-invalid'), 'true');
 });
 
 for (const kind of ['create', 'rename']) {
@@ -118,12 +131,12 @@ for (const kind of ['create', 'rename']) {
       });
       f.run();
       f.run();
-      assert.equal(f.submit.disabled, true);
+      if (kind === 'create') assert.equal(f.submit.disabled, true);
       await f.pending();
       assert.equal(b.calls(), 1, 'repeat submits are blocked');
       assert.equal(b.cancelled(), 1);
       assert.equal(f.name.value, 'Grace');
-      assert.equal(f.submit.disabled, false);
+      if (kind === 'create') assert.equal(f.submit.disabled, false);
       assert.notEqual(f.form.getAttribute('aria-busy'), 'true');
       assert.ok(f.error.textContent);
       if (failure === 'receipt') assert.equal(f.error.textContent, 'Please try again.');
