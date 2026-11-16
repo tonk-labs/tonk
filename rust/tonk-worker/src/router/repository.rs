@@ -16542,11 +16542,30 @@ mod library_quarantine_tests {
             .collect()
     }
 
+    /// The stored rule bodies `branch` of `repo` does not read, as
+    /// `dialog.rule/invalid` lists them: each rule and why.
+    async fn invalid(tonk: &TonkState, repo: &str, branch: &str) -> Vec<(String, String)> {
+        let session = tonk
+            .reactor
+            .repository(repo)
+            .branch(branch)
+            .acquire(&tonk.operator)
+            .await
+            .expect("the branch opens");
+        tonk_schema::upgrade::invalid_rules(session.handle(), &tonk.operator)
+            .await
+            .expect("the invalid rules read")
+            .into_iter()
+            .map(|(rule, reason)| (rule.to_string(), reason))
+            .collect()
+    }
+
     /// dialog sets aside a rule that closes a cycle through an absence
-    /// test, so a library rule that does is silently left out. None of
-    /// the standard libraries may: each is installed onto a space, and
-    /// the profile library onto the profile branch, and neither sets any
-    /// rule aside.
+    /// test, so a library rule that does is silently left out, and skips
+    /// a stored rule body it does not read (`dialog.rule/invalid`). None
+    /// of the standard libraries may do either: each is installed onto a
+    /// space, and the profile library onto the profile branch, and neither
+    /// sets any rule aside or stores one dialog does not read.
     ///
     /// Native only: it needs a whole worker state, which the native test
     /// fixture builds. dialog's quarantine runs the same on wasm, covered
@@ -16610,6 +16629,11 @@ mod library_quarantine_tests {
             Vec::<String>::new(),
             "no space library rule is set aside"
         );
+        assert_eq!(
+            invalid(&tonk, &key, CONTENT_BRANCH).await,
+            Vec::<(String, String)>::new(),
+            "every space library rule is read"
+        );
 
         reconcile_profile_library_from(
             &tonk,
@@ -16622,6 +16646,11 @@ mod library_quarantine_tests {
             quarantined(&tonk, &profile, &tonk.active_branch).await,
             Vec::<String>::new(),
             "no profile library rule is set aside"
+        );
+        assert_eq!(
+            invalid(&tonk, &profile, &tonk.active_branch).await,
+            Vec::<(String, String)>::new(),
+            "every profile library rule is read"
         );
     }
 }

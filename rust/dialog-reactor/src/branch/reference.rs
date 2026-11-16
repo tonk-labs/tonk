@@ -43,8 +43,13 @@ pub struct Upgraded {
     pub storage: Option<dialog_repository::Revision>,
     /// The attribute and concept definitions written again.
     pub definitions: tonk_schema::upgrade::DefinitionsUpgraded,
-    /// The rules re-installed.
+    /// The rules re-installed. Its `unmapped` lists the rules an earlier
+    /// release stored that no rewriting reads with the same meaning, left
+    /// inert.
     pub rules: dialog_repository::RulesUpgraded,
+    /// Every stored rule body the branch does not read once the upgrade
+    /// has run (`dialog.rule/invalid`): the rule's entity and why.
+    pub invalid: Vec<(dialog_corpus::Entity, String)>,
 }
 
 /// Move what an earlier release stored in `branch` to the shape this
@@ -54,7 +59,9 @@ pub struct Upgraded {
 /// ([`tonk_schema::upgrade::upgrade_definitions`]), then the rules stored
 /// under an identity an earlier dialog release gave them
 /// ([`Branch::upgrade_rules`]). `None` when the head is already in this
-/// release's layout, after one root read ([`Branch::needs_migration`]).
+/// release's layout and holds no definition recorded the earlier way, after
+/// one root read ([`Branch::needs_migration`]) and an index read per earlier
+/// definition relation ([`needs_upgrade`]).
 ///
 /// For a write into a branch opened outside the reactor (a meta branch a
 /// repository route records into, a blob import, the CLI's account branch),
@@ -73,16 +80,41 @@ pub async fn migrate<Env>(
 where
     Env: LoadProvider + BranchOpenProvider + CommitProvider,
 {
-    let needed = branch
+    if !needs_upgrade(branch, env).await? {
+        return Ok(None);
+    }
+    migrate_branch(branch, env).await.map(Some)
+}
+
+/// Whether [`migrate`] would move anything on `branch`: its head is laid out
+/// the way an earlier release wrote ([`Branch::needs_migration`]), or it holds
+/// an attribute or concept definition recorded the way an earlier release
+/// recorded it ([`tonk_schema::upgrade::has_legacy_definitions`]). A branch a
+/// dialog 0.4 release wrote is laid out as this release lays it out, and is
+/// told apart by its definitions, which record picks: every library defines
+/// attributes, so such a branch holds one, and the rules over them are
+/// re-installed with them.
+///
+/// [`Branch::needs_migration`]: dialog_repository::Branch::needs_migration
+pub async fn needs_upgrade<Env>(
+    branch: &dialog_repository::Branch,
+    env: &Env,
+) -> Result<bool, ReactorError>
+where
+    Env: LoadProvider + BranchOpenProvider + CommitProvider,
+{
+    let storage = branch
         .needs_migration(env)
         .await
         .map_err(|error| ReactorError::Upgrade {
             reason: error.to_string(),
         })?;
-    if !needed {
-        return Ok(None);
+    if storage {
+        return Ok(true);
     }
-    migrate_branch(branch, env).await.map(Some)
+    tonk_schema::upgrade::has_legacy_definitions(branch, env)
+        .await
+        .map_err(|reason| ReactorError::Upgrade { reason })
 }
 
 /// The three steps of a migration, unconditionally.
@@ -98,10 +130,14 @@ where
         .await
         .map_err(|reason| ReactorError::Upgrade { reason })?;
     let rules = branch.upgrade_rules().perform(env).await?;
+    let invalid = tonk_schema::upgrade::invalid_rules(branch, env)
+        .await
+        .map_err(|reason| ReactorError::Upgrade { reason })?;
     Ok(Upgraded {
         storage,
         definitions,
         rules,
+        invalid,
     })
 }
 
@@ -130,13 +166,7 @@ where
     ) -> dialog_peer::StepFuture<'a> {
         Box::pin(async move {
             let failed = |error: ReactorError| dialog_peer::PeerError::Upgrade(error.to_string());
-            let needed = branch
-                .needs_migration(peer)
-                .await
-                .map_err(|error| failed(error.into()))?
-                || tonk_schema::upgrade::has_legacy_definitions(branch, peer)
-                    .await
-                    .map_err(|reason| failed(ReactorError::Upgrade { reason }))?;
+            let needed = needs_upgrade(branch, peer).await.map_err(failed)?;
             if !needed {
                 return Ok(());
             }
@@ -229,10 +259,12 @@ impl<'a> BranchReference<'a> {
     /// transactor lock, as a commit does, so a write that reaches the
     /// branch meanwhile waits for it.
     ///
-    /// Gated on the head's storage layout ([`Branch::needs_migration`]):
-    /// a branch this release wrote has nothing an earlier release left, so
-    /// the gate is one root read, paid by every call while nothing has
-    /// run, so a head laid out the earlier way that a pull adopts later in
+    /// Gated on [`needs_upgrade`]: the head's storage layout
+    /// ([`Branch::needs_migration`]) and whether it holds a definition
+    /// recorded the earlier way. A branch this release wrote has nothing an
+    /// earlier release left, so the gate is one root read and an index read
+    /// per earlier definition relation, paid by every call while nothing has
+    /// run, so a head an earlier release wrote that a pull adopts later in
     /// the process is still moved. Once a migration has run, a later call
     /// returns `None` at once; a second caller during the migration waits
     /// for it and then returns `None`. A failed migration is not retried
@@ -254,14 +286,7 @@ impl<'a> BranchReference<'a> {
     {
         let session = self.acquire(env).await?;
         let branch = &session.state.branch;
-        let needs_migration = || async {
-            branch
-                .needs_migration(env)
-                .await
-                .map_err(|error| ReactorError::Upgrade {
-                    reason: error.to_string(),
-                })
-        };
+        let needs_migration = || needs_upgrade(branch, env);
         // Without the lock first: a branch already moved, or one with
         // nothing to move, is the common case, and a read that only
         // asks must not wait on a writer holding the lock.
@@ -286,9 +311,9 @@ impl<'a> BranchReference<'a> {
     }
 
     /// Whether [`migrate_once`](Self::migrate_once) would move anything,
-    /// or is moving it now: the branch's head is laid out the way an
-    /// earlier release wrote and nothing has migrated it yet in this
-    /// process. One root read when the branch is open; `false` once the
+    /// or is moving it now: the branch holds what an earlier release
+    /// wrote ([`needs_upgrade`]) and nothing has migrated it yet in this
+    /// process. A few index reads when the branch is open; `false` once the
     /// migration has run. A page reads this to show that an upgrade is
     /// taking place before it waits for its rows.
     pub async fn migration_pending<Env>(&self, env: &Env) -> Result<bool, ReactorError>
@@ -302,14 +327,7 @@ impl<'a> BranchReference<'a> {
         if session.state.migration_claimed() {
             return Ok(false);
         }
-        session
-            .state
-            .branch
-            .needs_migration(env)
-            .await
-            .map_err(|error| ReactorError::Upgrade {
-                reason: error.to_string(),
-            })
+        needs_upgrade(&session.state.branch, env).await
     }
 
     /// The reactor that owns this branch's cache — so leaf effects can
@@ -511,8 +529,8 @@ mod tests {
 
     /// A profile an earlier release wrote keeps library definitions on its
     /// state branch in that release's form. Opening it moves the storage
-    /// and the definitions together, so the later storage-gated
-    /// [`super::migrate`] finding nothing to do leaves nothing behind.
+    /// and the definitions together, so a later [`super::migrate`] finding
+    /// nothing to do leaves nothing behind.
     #[dialog_common::test]
     async fn it_upgrades_the_definitions_of_a_profile_an_earlier_release_wrote()
     -> anyhow::Result<()> {
@@ -559,6 +577,51 @@ mod tests {
             .save(b"kept".to_vec())
             .perform(&peer)
             .await?;
+        Ok(())
+    }
+
+    /// A branch a dialog 0.4 release wrote is laid out as this release lays
+    /// it out, so the storage gate says nothing; its definitions record
+    /// picks (`db.attribute/pick all:`), and [`super::migrate`] moves them
+    /// all the same, leaving no pick behind.
+    #[dialog_common::test]
+    #[allow(deprecated)]
+    async fn it_upgrades_definitions_a_release_with_picks_recorded() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
+        let peer = open(&directory, &ProfileUpgrade).await?;
+        let attribute: dialog_query::AttributeDescriptor = serde_json::from_value(
+            serde_json::json!({ "the": "xyz.tonk.note/tags", "as": "text:", "cardinality": "many" }),
+        )?;
+        let earlier: Entity = dialog_query::migration::attribute_uri_v1(&attribute).parse()?;
+        let mut transaction = peer.state().transaction();
+        for (the, is) in [
+            (
+                "db.attribute/id",
+                Value::String("xyz.tonk.note/tags".into()),
+            ),
+            ("db.attribute/as", Value::Entity("text:".parse()?)),
+            ("db.attribute/pick", Value::Entity("all:".parse()?)),
+            ("db.meta/description", Value::String("Tags".into())),
+        ] {
+            transaction = transaction.assert(Raw {
+                the: the.parse()?,
+                of: earlier.clone(),
+                is,
+            });
+        }
+        transaction.commit().publish().perform(&peer).await?;
+        assert!(!peer.state().needs_migration(&peer).await?);
+
+        let upgraded = super::migrate(peer.state(), &peer)
+            .await?
+            .expect("the definitions recorded under a pick are moved");
+        let now: Entity = attribute.to_uri().parse()?;
+        assert_eq!(upgraded.definitions.moves, vec![(earlier, now)]);
+        assert!(
+            super::migrate(peer.state(), &peer).await?.is_none(),
+            "nothing is left to move"
+        );
         Ok(())
     }
 }

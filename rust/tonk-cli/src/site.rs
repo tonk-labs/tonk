@@ -440,6 +440,17 @@ impl TonkSite {
                         upgraded.rules.rewritten.len()
                     );
                 }
+                for (rule, why) in &upgraded.rules.unmapped {
+                    let why: Vec<String> = why.iter().map(ToString::to_string).collect();
+                    eprintln!(
+                        "warning: rule {rule} reads {}, which this release cannot rewrite; \
+                         it is left inert until its author replaces it",
+                        why.join("; ")
+                    );
+                }
+                for (rule, reason) in &upgraded.invalid {
+                    eprintln!("warning: rule {rule} is not read: {reason}");
+                }
             }
             Ok(None) => {}
             Err(error) => eprintln!("warning: upgrade failed: {error}"),

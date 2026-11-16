@@ -323,7 +323,7 @@ async fn enumerate_attributes(site: &TonkSite) -> Result<Vec<AttributeInfo>> {
   this:        ?a
   id:          ?the
   as:          ?type
-  pick:        ?pick
+  cardinality: ?cardinality
   description: ?desc
 "#;
     let response = run_query(site, QUERY).await?;
@@ -345,12 +345,7 @@ async fn enumerate_attributes(site: &TonkSite) -> Result<Vec<AttributeInfo>> {
                     .map(|kind| kind.anchor().to_owned())
                     .unwrap_or(wire)
             },
-            cardinality: {
-                let wire = take_string(&row.fields, "pick");
-                tonk_notation::Pick::from_wire(&wire)
-                    .map(|pick| pick.cardinality().keyword().to_owned())
-                    .unwrap_or(wire)
-            },
+            cardinality: take_string(&row.fields, "cardinality"),
             description: take_string(&row.fields, "description"),
         });
     }

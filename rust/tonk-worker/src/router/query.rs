@@ -157,6 +157,20 @@ pub(super) async fn migrate_while_opening(
                     branch.repository.name()
                 );
             }
+            for (rule, why) in &upgraded.rules.unmapped {
+                let why: Vec<String> = why.iter().map(ToString::to_string).collect();
+                tonk_common::log!(
+                    "rule {rule} on '{}' reads {}, which this release cannot rewrite; it is left inert",
+                    branch.repository.name(),
+                    why.join("; ")
+                );
+            }
+            for (rule, reason) in &upgraded.invalid {
+                tonk_common::log!(
+                    "rule {rule} on '{}' is not read: {reason}",
+                    branch.repository.name()
+                );
+            }
             Ok(())
         }
         Ok(None) => Ok(()),
