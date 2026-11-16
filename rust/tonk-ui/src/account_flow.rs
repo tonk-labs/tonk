@@ -6822,11 +6822,18 @@ pub(crate) mod tests {
             enter_guest(&driver).await?;
             let state = driver
                 .execute(
-                    "return { receipt: document.querySelector('[data-hub-receipt]')?.textContent ?? null, \
+                    "const row = document.querySelector(arguments[1]); \
+                     return { receipt: document.querySelector('[data-hub-receipt]')?.textContent ?? null, \
                        links: !!document.querySelector(arguments[0]), \
                        error: document.querySelector(arguments[0] + ' [data-links-err]')?.textContent ?? null, \
-                       reloaded: window.__tonkWrote === undefined };",
-                    vec![serde_json::json!(format!("{row} space-links"))],
+                       reloaded: window.__tonkWrote === undefined, \
+                       allLinks: document.querySelectorAll('space-links').length, \
+                       rows: [...document.querySelectorAll('.hub-row')].map((each) => (each.dataset.spaceSubject ?? '').slice(-6) + (each.hasAttribute('data-open') ? '+open' : '')), \
+                       row: row ? row.outerHTML.slice(0, 2500) : null };",
+                    vec![
+                        serde_json::json!(format!("{row} space-links")),
+                        serde_json::json!(row),
+                    ],
                 )
                 .await?
                 .json()
