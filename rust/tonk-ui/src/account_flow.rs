@@ -54,7 +54,7 @@ pub(crate) mod tests {
         create_space(&driver, "Navigation test").await?;
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
-        wait_for_displayed(&driver, ".space-card > a.srow").await?;
+        wait_for_displayed(&driver, ".space-card a.hub-open").await?;
 
         let origin = driver
             .execute(
@@ -102,7 +102,7 @@ pub(crate) mod tests {
         for _ in 0..8 {
             enter_guest(&driver).await?;
             driver
-                .find(By::Css(".space-card > a.srow"))
+                .find(By::Css(".space-card a.hub-open"))
                 .await?
                 .click()
                 .await?;
@@ -120,7 +120,7 @@ pub(crate) mod tests {
             driver.enter_default_frame().await?;
             driver.execute("history.back()", Vec::new()).await?;
             enter_hub(&driver).await?;
-            wait_for_displayed(&driver, ".space-card > a.srow").await?;
+            wait_for_displayed(&driver, ".space-card a.hub-open").await?;
         }
 
         enter_guest(&driver).await?;
@@ -2392,16 +2392,16 @@ pub(crate) mod tests {
             )
             .await?;
         let hub = hub.json();
-        // The view declares both twins — `--page: #dedbd8` / `--ink:
-        // #38182a`, and a `@media (prefers-color-scheme: dark)` pair —
-        // so the values to expect depend on the scheme the browser is
-        // actually in. Pinning the light literals would fail on a dark
-        // runner for a style that arrived perfectly well. Either way a
-        // transparent background means the style never arrived at all.
+        // The page is `.tonk-hub`, which wears Tonk's look: the ground and
+        // the ink `tonk-look.css` declares as light-dark pairs, so the
+        // values to expect depend on the scheme the browser is actually
+        // in. Pinning the light literals would fail on a dark runner for a
+        // style that arrived perfectly well. Either way a transparent
+        // background means the style never arrived at all.
         let (page, ink) = if hub["dark"] == true {
-            ("rgb(22, 19, 19)", "rgb(226, 223, 221)")
+            ("rgb(24, 13, 18)", "rgb(247, 246, 245)")
         } else {
-            ("rgb(222, 219, 216)", "rgb(56, 24, 42)")
+            ("rgb(232, 230, 228)", "rgb(56, 24, 42)")
         };
         assert_eq!(
             hub["background"], page,
@@ -2428,8 +2428,23 @@ pub(crate) mod tests {
             }),
             "the embed pass must point every carrier at minted content; got {hub}",
         );
+        // Three contents: Tonk's look, the hub, and the view's own `ui`.
+        // Every carrier of one content points at the same blob.
+        let distinct = |page: &serde_json::Value| {
+            page["hrefs"]
+                .as_array()
+                .map(|hrefs| {
+                    hrefs
+                        .iter()
+                        .filter_map(|href| href.as_str())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                })
+                .unwrap_or_default()
+        };
         assert_eq!(
-            hub["minted"], 1,
+            distinct(hub),
+            3,
             "one blob per content, however often the view re-renders; got {hub}",
         );
 
@@ -2465,8 +2480,9 @@ pub(crate) mod tests {
             "the cross-view embed must resolve to minted content; got {settings}",
         );
         assert_eq!(
-            settings["minted"], 1,
-            "the cross-view embed mints one blob, not a second copy; got {settings}",
+            distinct(settings),
+            3,
+            "the cross-view embeds mint one blob per content, not a second copy; got {settings}",
         );
 
         driver.quit().await?;
@@ -2492,12 +2508,12 @@ pub(crate) mod tests {
                 .json()
                 .as_u64()
                 .unwrap_or_default();
-            if count == 3 {
+            if count == 2 {
                 break;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "the Hub never rendered all three create controls; found {count}",
+                "the Hub never rendered both create controls; found {count}",
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -2505,16 +2521,19 @@ pub(crate) mod tests {
         driver.set_window_rect(0, 0, 1200, 900).await?;
         let desktop = driver
             .execute(
-                r#"const header = document.querySelector('.hub-header').getBoundingClientRect();
-                   const main = document.querySelector('.hubcol').getBoundingClientRect();
+                r#"const top = document.querySelector('.hub-top').getBoundingClientRect();
+                   const sheet = document.querySelector('[data-spaces-sheet]').getBoundingClientRect();
+                   const line = document.querySelector('[data-spaces-sheet] .hub-line').getBoundingClientRect();
                    const mobile = getComputedStyle(document.querySelector('.mobile-nav'));
-                   const logo = document.querySelector('.hub-logo');
+                   const logo = document.querySelector('.hub-logo').getBoundingClientRect();
                    const account = document.querySelector('.mobile-nav a[href="/settings"]');
                    return {
-                     headerWidth: Math.round(header.width),
-                     mainWidth: Math.round(main.width),
+                     topWidth: Math.round(top.width),
+                     sheetWidth: Math.round(sheet.width),
+                     sheetLeft: Math.round(sheet.left),
+                     lineHeight: Math.round(line.height),
+                     logoHeight: Math.round(logo.height),
                      mobileDisplay: mobile.display,
-                     logoHref: logo?.getAttribute('href'),
                      accountHref: account?.getAttribute('href'),
                      newSpaceForms: document.querySelectorAll('[data-new-space]').length,
                      overflow: document.documentElement.scrollWidth > innerWidth,
@@ -2523,12 +2542,15 @@ pub(crate) mod tests {
             )
             .await?;
         let desktop = desktop.json();
-        assert_eq!(desktop["headerWidth"], 1200);
-        assert_eq!(desktop["mainWidth"], 1116);
+        // One 680px column, centred: the top and the sheet share its edges.
+        assert_eq!(desktop["topWidth"], 680, "{desktop}");
+        assert_eq!(desktop["sheetWidth"], 680, "{desktop}");
+        assert_eq!(desktop["sheetLeft"], (1200 - 680) / 2, "{desktop}");
+        assert_eq!(desktop["lineHeight"], 48, "{desktop}");
+        assert_eq!(desktop["logoHeight"], 22, "{desktop}");
         assert_eq!(desktop["mobileDisplay"], "none");
-        assert_eq!(desktop["logoHref"], "/");
         assert_eq!(desktop["accountHref"], "/settings");
-        assert_eq!(desktop["newSpaceForms"], 3);
+        assert_eq!(desktop["newSpaceForms"], 2);
         assert_eq!(desktop["overflow"], false);
 
         driver.set_window_rect(0, 0, 390, 844).await?;
@@ -2537,8 +2559,7 @@ pub(crate) mod tests {
                 r#"const viewport = innerWidth;
                    const nav = document.querySelector('.mobile-nav');
                    const navRect = nav.getBoundingClientRect();
-                   const card = document.querySelector('.space-card .srow');
-                   const cardStyle = card ? getComputedStyle(card) : null;
+                   const sheet = document.querySelector('[data-spaces-sheet]').getBoundingClientRect();
                    const visibleNew = [...document.querySelectorAll('[data-new-space]')]
                      .filter(element => element.getClientRects().length > 0);
                    return {
@@ -2547,7 +2568,8 @@ pub(crate) mod tests {
                      navDisplay: getComputedStyle(nav).display,
                      navBottom: Math.round(navRect.bottom),
                      navItems: nav.querySelectorAll(':scope > a, :scope > space-create').length,
-                     cardColumns: cardStyle?.gridTemplateColumns ?? null,
+                     sheetLeft: Math.round(sheet.left),
+                     sheetRight: Math.round(sheet.right),
                      visibleNew: visibleNew.length,
                      overflow: document.documentElement.scrollWidth > innerWidth,
                    };"#,
@@ -2559,16 +2581,17 @@ pub(crate) mod tests {
             assert_eq!(mobile["navDisplay"], "grid");
             assert_eq!(mobile["navBottom"], mobile["viewportHeight"]);
             assert_eq!(mobile["navItems"], 3);
-            assert_eq!(mobile["visibleNew"], 1);
+            // The line's `new space` and the bar's, until the bar's future
+            // is settled.
+            assert_eq!(mobile["visibleNew"], 2);
             assert_eq!(mobile["overflow"], false);
-            if !mobile["cardColumns"].is_null() {
-                assert!(
-                    mobile["cardColumns"]
-                        .as_str()
-                        .is_some_and(|columns| columns.starts_with("64px ")),
-                    "mobile cards must place a 64px preview beside the caption: {mobile}"
-                );
-            }
+            // 16px at the sides.
+            assert_eq!(mobile["sheetLeft"], 16, "{mobile}");
+            assert_eq!(
+                mobile["sheetRight"].as_i64().unwrap_or_default(),
+                mobile["viewport"].as_i64().unwrap_or_default() - 16,
+                "{mobile}"
+            );
         }
 
         driver.quit().await?;
@@ -2576,18 +2599,11 @@ pub(crate) mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_keeps_hub_card_actions_beside_the_mobile_caption(
-        env: TestEnvironment,
-    ) -> Result<()> {
+    async fn it_keeps_hub_row_actions_beside_the_row(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         goto(&driver, env.tonk_web.as_str()).await?;
         let before = space_keys(&driver).await?;
-        submit_hub_wizard_with(
-            &driver,
-            "Layout notes",
-            "A description that wraps beside the action",
-        )
-        .await?;
+        submit_hub_wizard_with(&driver, "Layout notes").await?;
         let key = await_new_space(&driver, &before).await?;
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
@@ -2599,15 +2615,14 @@ pub(crate) mod tests {
             driver.set_window_rect(0, 0, width, 844).await?;
             let layout = driver.execute(
                 r#"const card = document.querySelector(arguments[0]);
-                   const link = card.querySelector('.srow').getBoundingClientRect();
+                   const link = card.querySelector('.hub-open').getBoundingClientRect();
                    const action = card.querySelector('[data-space-actions-open]').getBoundingClientRect();
-                   const preview = card.querySelector('.space-preview').getBoundingClientRect();
                    return {
                      toolbar: !!document.querySelector('.collection-heading, .collection-search'),
                      overflow: document.documentElement.scrollWidth > innerWidth,
                      separate: !card.querySelector('a button'),
                      beside: action.left >= link.right && action.top >= link.top && action.bottom <= link.bottom,
-                     previewWidth: Math.round(preview.width),
+                     rowHeight: Math.round(link.height),
                    };"#,
                 vec![serde_json::json!(card)],
             ).await?;
@@ -2615,9 +2630,9 @@ pub(crate) mod tests {
             assert_eq!(layout["toolbar"], false);
             assert_eq!(layout["overflow"], false);
             assert_eq!(layout["separate"], true);
-            if width == 500 {
-                assert_eq!(layout["beside"], true, "{layout}");
-                assert_eq!(layout["previewWidth"], 64);
+            assert_eq!(layout["beside"], true, "{layout}");
+            if width == 1200 {
+                assert_eq!(layout["rowHeight"], 48, "{layout}");
             }
         }
         element(&driver, &format!("{card} [data-space-actions-open]"))
@@ -3419,19 +3434,17 @@ pub(crate) mod tests {
         driver.goto(env.tonk_web.as_str()).await?;
         let before = space_keys(&driver).await?;
         enter_hub(&driver).await?;
-        click(&driver, ".stack > space-create [data-space-create-open]").await?;
-        wait_for_displayed(&driver, ".stack > space-create [data-space-create-dialog]").await?;
-        element(&driver, ".stack > space-create input[name=name]")
+        click(&driver, "[data-spaces-sheet] [data-new-space]").await?;
+        let form = "space-create[data-inline] form[data-space-create-form]";
+        wait_for_displayed(&driver, &format!("{form} input[name=name]")).await?;
+        element(&driver, &format!("{form} input[name=name]"))
             .await?
             .send_keys("One card creation")
             .await?;
-        element(&driver, ".stack > space-create textarea[name=description]")
-            .await?
-            .send_keys("One submit, one space")
-            .await?;
-        click(&driver, ".stack > space-create [data-space-create-submit]").await?;
+        click(&driver, &format!("{form} [data-space-create-submit]")).await?;
+        // The hub stays: the receipt says what was made.
+        wait_for_text_containing(&driver, "[data-hub-receipt]", "made").await?;
         driver.enter_default_frame().await?;
-        await_url_containing(&driver, "/space/").await?;
         // Both handlers finish asynchronously; allow a second creation to surface.
         tokio::time::sleep(Duration::from_secs(3)).await;
         let after = space_keys(&driver).await?;
@@ -3836,12 +3849,7 @@ pub(crate) mod tests {
         );
 
         let before = space_keys(&driver).await?;
-        submit_hub_wizard_with(
-            &driver,
-            "Offline notes",
-            "Created locally before account registration",
-        )
-        .await?;
+        submit_hub_wizard_with(&driver, "Offline notes").await?;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let key = loop {
@@ -4025,7 +4033,7 @@ pub(crate) mod tests {
         let driver = driver_with_prf(&env).await?;
         driver.goto(env.tonk_web.as_str()).await?;
         let before = space_keys(&driver).await?;
-        submit_hub_wizard_with(&driver, "Before rename", "A retained description").await?;
+        submit_hub_wizard_with(&driver, "Before rename").await?;
         let key = await_new_space(&driver, &before).await?;
 
         goto(&driver, env.tonk_web.as_str()).await?;
@@ -4091,7 +4099,7 @@ pub(crate) mod tests {
         input.send_keys(select_all).await?;
         input.send_keys("After rename").await?;
         click(&driver, &format!("{card} [data-space-rename-submit]")).await?;
-        wait_for_text(&driver, &format!("{card} .n"), "After rename").await?;
+        wait_for_text(&driver, &format!("{card} .hub-name"), "After rename").await?;
 
         driver.quit().await?;
         Ok(())
@@ -4113,7 +4121,7 @@ pub(crate) mod tests {
         let opener_selector = format!("{remove} [data-space-remove-open]");
         let dialog_selector = format!("{remove} tonk-dialog[data-space-remove-dialog]");
         let submit_selector = format!("{dialog_selector} .m-go");
-        let row = wait_for_displayed(&driver, &format!(".srow-wrap:has({remove})")).await?;
+        let row = wait_for_displayed(&driver, &format!(".hub-row:has({remove})")).await?;
         // Park on the row once it has held still: its stylesheet lands a
         // beat after it renders, and a pointer aimed at where the row was
         // hovers nothing once it moves.
@@ -4146,7 +4154,7 @@ pub(crate) mod tests {
             .await?;
         click(
             &driver,
-            &format!(".srow-wrap:has({remove}) [data-space-actions-open]"),
+            &format!(".hub-row:has({remove}) [data-space-actions-open]"),
         )
         .await?;
         let opener = match wait_for_displayed(&driver, &opener_selector).await {
@@ -4165,7 +4173,7 @@ pub(crate) mod tests {
                            under: at ? at.tagName + '.' + at.className : null,
                            underInRow: !!(at && row.contains(at)),
                            verbsOpacity: verbs ? getComputedStyle(verbs).opacity : null,
-                           rows: document.querySelectorAll('.srow-wrap').length,
+                           rows: document.querySelectorAll('.hub-row').length,
                            scrollY: window.scrollY,
                          };",
                         vec![row.to_json()?],
@@ -4451,9 +4459,7 @@ pub(crate) mod tests {
                     haspopup: trigger ? trigger.getAttribute("aria-haspopup") : "no trigger",
                     caret: !!(trigger && trigger.querySelector(".g")),
                     accountHeight: trigger.getBoundingClientRect().height,
-                    newHeight: document.querySelector('.header-new .snew').getBoundingClientRect().height,
-                    accountTop: trigger.getBoundingClientRect().top,
-                    newTop: document.querySelector('.header-new .snew').getBoundingClientRect().top,
+                    inTop: !!trigger.closest('.hub-top'),
                 };
                 "##,
                 Vec::new(),
@@ -4470,11 +4476,9 @@ pub(crate) mod tests {
             "the account cell draws no dropdown caret",
         );
 
-        assert_eq!(
-            affordance.json()["accountHeight"],
-            affordance.json()["newHeight"]
-        );
-        assert_eq!(affordance.json()["accountTop"], affordance.json()["newTop"]);
+        // Your name stands at the top of the page, a 44px target.
+        assert_eq!(affordance.json()["accountHeight"], 44.0);
+        assert_eq!(affordance.json()["inTop"], true);
 
         // One press. The cell is the account tab: it pushes `/account`
         // into the same document, and the page the Hub asks for is the
@@ -4623,59 +4627,50 @@ pub(crate) mod tests {
         click(&driver, "[data-account-trigger]").await?;
         await_url_path(&driver, "/settings").await?;
         enter_hub(&driver).await?;
-        wait_for_displayed(&driver, ".details-panel").await?;
-        wait_for_displayed(&driver, ".passkeys-panel").await?;
+        wait_for_displayed(&driver, "[data-account-sheet] [data-settings-name]").await?;
         wait_for_displayed(&driver, "[data-settings-passkey-created]").await?;
-        wait_for_displayed(&driver, ".signout-panel").await?;
+        wait_for_displayed(&driver, "[data-sign-out-open]").await?;
         #[cfg(feature = "connection-invites")]
         wait_for_displayed(&driver, "[data-agent-connections]").await?;
         let settings = driver
             .execute(
-                r#"const details = document.querySelector('.details-panel').getBoundingClientRect();
-                   const passkeys = document.querySelector('.passkeys-panel').getBoundingClientRect();
-                   const signout = document.querySelector('.signout-panel').getBoundingClientRect();
-                   const danger = document.querySelector('.danger-panel').getBoundingClientRect();
-                   const email = document.querySelector('[data-settings-email]').getBoundingClientRect();
-                   const save = document.querySelector('[data-profile-rename-submit]');
+                r#"const sheet = document.querySelector('[data-account-sheet]').getBoundingClientRect();
+                   const spaces = document.querySelector('[data-spaces-sheet]')?.getBoundingClientRect();
+                   const sections = [...document.querySelectorAll('[data-account-sheet] .hub-sec')]
+                     .filter((node) => node.getBoundingClientRect().height > 0)
+                     .map((node) => node.getBoundingClientRect());
                    return {
-                     saveAfterEmail: save.getBoundingClientRect().top >= email.bottom,
-                     saveOwnsName: !!save.form?.querySelector('[data-settings-name]'),
+                     line: document.querySelector('[data-account-line]')?.textContent,
+                     close: !!document.querySelector('[data-account-sheet] .hub-line [data-account-close]'),
+                     saveButton: !!document.querySelector('[data-profile-rename-submit]'),
+                     spacesBelow: !!spaces && spaces.height > 0 && spaces.top >= sheet.bottom,
+                     oneColumn: sections.every((box) => Math.abs(box.left - sections[0].left) <= 1),
+                     inOrder: sections.every((box, i) => i === 0 || box.top >= sections[i - 1].bottom - 1),
                      agentAccess: !!document.querySelector('[data-agent-connections]'),
                      agentAccessVisible: !document.querySelector('[data-agent-connections]')?.hidden,
                      pageBottom: document.querySelector('.hub-page').getBoundingClientRect().bottom,
-                     contentBottom: document.querySelector('.hubcol').getBoundingClientRect().bottom,
-                     signoutLeft: signout.left,
-                     signoutTop: signout.top,
-                     signoutRight: signout.right,
-                     dangerLeft: danger.left,
-                     dangerTop: danger.top,
-                     detailsLeft: details.left,
-                     title: document.querySelector('.settings-title')?.textContent,
+                     contentBottom: document.querySelector('.hub-page > main').getBoundingClientRect().bottom,
                      switchPanel: !!document.querySelector('.switch-panel'),
                      passkeyDate: document.querySelector('[data-settings-passkey-created]')?.textContent,
-                     detailsTop: details.top,
-                     detailsRight: details.right,
-                     passkeysTop: passkeys.top,
-                     passkeysLeft: passkeys.left,
                    };"#,
                 Vec::new(),
             )
             .await?;
         let settings = settings.json();
-        assert_eq!(settings["title"], "account settings", "{settings}");
-        assert_eq!(settings["switchPanel"], false, "{settings}");
-        assert_eq!(settings["saveAfterEmail"], true, "{settings}");
-        assert_eq!(settings["saveOwnsName"], true, "{settings}");
+        assert_eq!(settings["line"], "account settings", "{settings}");
+        assert_eq!(settings["close"], true, "{settings}");
         assert_eq!(
-            settings["signoutLeft"], settings["detailsLeft"],
-            "{settings}"
+            settings["saveButton"], false,
+            "the name saves on leave: {settings}"
         );
+        assert_eq!(
+            settings["spacesBelow"], true,
+            "the account sheet opens above your spaces: {settings}"
+        );
+        assert_eq!(settings["oneColumn"], true, "{settings}");
+        assert_eq!(settings["inOrder"], true, "{settings}");
+        assert_eq!(settings["switchPanel"], false, "{settings}");
         assert_eq!(settings["agentAccess"], true, "{settings}");
-        assert!(
-            settings["dangerLeft"].as_f64().unwrap() > settings["signoutRight"].as_f64().unwrap(),
-            "delete account should sit beside sign out: {settings}"
-        );
-        assert_eq!(settings["dangerTop"], settings["signoutTop"], "{settings}");
         assert_eq!(
             settings["agentAccessVisible"],
             cfg!(feature = "connection-invites"),
@@ -4683,26 +4678,14 @@ pub(crate) mod tests {
         );
         assert!(
             settings["pageBottom"].as_f64().unwrap()
-                >= settings["contentBottom"].as_f64().unwrap() + 119.0,
-            "the footer margin escaped the page background: {settings}"
+                >= settings["contentBottom"].as_f64().unwrap() + 64.0,
+            "the page's foot escaped the page background: {settings}"
         );
         assert!(
             settings["passkeyDate"]
                 .as_str()
                 .is_some_and(|date| date.chars().any(char::is_alphabetic)),
             "passkey creation date should be readable rather than raw seconds: {settings}"
-        );
-        assert!(
-            (settings["detailsTop"].as_f64().unwrap_or_default()
-                - settings["passkeysTop"].as_f64().unwrap_or_default())
-            .abs()
-                <= 2.0,
-            "details and passkeys should share the first settings row: {settings}"
-        );
-        assert!(
-            settings["passkeysLeft"].as_f64().unwrap_or_default()
-                > settings["detailsRight"].as_f64().unwrap_or(f64::INFINITY),
-            "details and passkeys should be separate columns: {settings}"
         );
 
         #[cfg(feature = "connection-invites")]
@@ -6226,31 +6209,58 @@ pub(crate) mod tests {
     /// document at all — a reach-in returns `no guest frame` and says
     /// nothing about the app.
     async fn submit_hub_wizard(driver: &WebDriver) -> Result<()> {
-        submit_hub_wizard_with(driver, "Untitled", "").await
+        submit_hub_wizard_with(driver, "Untitled").await
     }
 
-    async fn submit_hub_wizard_with(
-        driver: &WebDriver,
-        name: &str,
-        description: &str,
-    ) -> Result<()> {
+    /// Make a space from the inline row under the spaces line, then open
+    /// it from its new row, the way a person goes on to it. The hub stays
+    /// put after `make space`, so the helper presses the row's link.
+    async fn submit_hub_wizard_with(driver: &WebDriver, name: &str) -> Result<()> {
         enter_hub(driver).await?;
-        click(driver, ".header-new [data-space-create-open]").await?;
-        wait_for_displayed(driver, ".header-new [data-space-create-dialog]").await?;
-        element(driver, ".header-new input[name=name]")
+        let before = driver
+            .execute(
+                "return [...document.querySelectorAll('.hub-row[data-space-subject]')] \
+                   .map((row) => row.dataset.spaceSubject);",
+                Vec::new(),
+            )
+            .await?
+            .json()
+            .clone();
+        click(driver, "[data-spaces-sheet] [data-new-space]").await?;
+        let form = "space-create[data-inline] form[data-space-create-form]";
+        wait_for_displayed(driver, &format!("{form} input[name=name]")).await?;
+        element(driver, &format!("{form} input[name=name]"))
             .await?
             .send_keys(name)
             .await?;
-        if !description.is_empty() {
-            element(driver, ".header-new textarea[name=description]")
-                .await?
-                .send_keys(description)
+        // Through `click`: the row's submit must be wired before the press,
+        // or the space is never asked for.
+        click(driver, &format!("{form} [data-space-create-submit]")).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let key = loop {
+            enter_guest(driver).await?;
+            let found = driver
+                .execute(
+                    "const before = new Set(arguments[0] || []); \
+                     const row = [...document.querySelectorAll('.hub-row[data-space-subject]')] \
+                       .find((row) => !before.has(row.dataset.spaceSubject)); \
+                     return row ? row.dataset.spaceSubject : null;",
+                    vec![before.clone()],
+                )
                 .await?;
-        }
-        // Through `click`: the dialog's `space/create` binding must be wired
-        // before the press, or the display resolves nothing and the space
-        // is never asked for.
-        click(driver, ".header-new [data-space-create-submit]").await?;
+            if let Some(key) = found.json().as_str() {
+                break key.to_owned();
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("no new hub row appeared after `make space`"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+        click(
+            driver,
+            &format!(".hub-row[data-space-subject='{key}'] a.hub-open"),
+        )
+        .await?;
         // Back to the top document: everything after this — the space
         // page, the bar, the cluster — lives there.
         driver.enter_default_frame().await?;
@@ -6784,6 +6794,117 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A space's open hub row lists its links the way desktop does: `new
+    /// link` makes an open link and hands it to the clipboard, the first
+    /// open link is the default and resets in place (a new one, then the old
+    /// one revoked), and any other link is removed. Each change leaves a
+    /// receipt in the spaces line.
+    #[dialog_common::test]
+    async fn it_makes_resets_and_removes_a_spaces_links_from_its_hub_row(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "linker@example.com").await?;
+        // A space with no remote refuses to mint; this test is about the list.
+        let key = create_space_awaiting_remote(&driver, "Linked Space", true).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        let row = format!(".space-card[data-space-subject='{key}']");
+        // The chevron answers once `hub-collection` has wired its press, which
+        // can land after the row first draws: press until the row opens.
+        let toggle = format!("{row} .hub-toggle");
+        wait_for_displayed(&driver, &toggle).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            click(&driver, &toggle).await?;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let expanded = element(&driver, &toggle)
+                .await?
+                .attr("aria-expanded")
+                .await?;
+            if expanded.as_deref() == Some("true") {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the row's chevron never opened it (aria-expanded={expanded:?})"
+            );
+        }
+        if let Err(error) =
+            wait_for_displayed(&driver, &format!("{row} space-links [data-link-new]")).await
+        {
+            enter_guest(&driver).await?;
+            let state = driver
+                .execute(
+                    "const row = document.querySelector(arguments[0]); \
+                     const links = row?.querySelector('space-links'); \
+                     return { defined: !!customElements.get('space-links'), \
+                       upgraded: !!links && typeof links.render === 'function', \
+                       links: links ? links.outerHTML.slice(0, 1500) : null, \
+                       body: row?.querySelector('.hub-body')?.outerHTML.slice(0, 1500) ?? null, \
+                       open: row?.hasAttribute('data-open') };",
+                    vec![serde_json::json!(row)],
+                )
+                .await
+                .map(|value| value.json().to_string())
+                .unwrap_or_else(|inspect| format!("unable to inspect the row: {inspect}"));
+            return Err(error).context(format!("open row state: {state}"));
+        }
+
+        // The clipboard hook and its reader leave WebDriver in the top
+        // document; the hub lives in the guest frame, so go back in.
+        watch_guest_clipboard(&driver).await?;
+        enter_guest(&driver).await?;
+        click(&driver, &format!("{row} space-links [data-link-new]")).await?;
+        wait_for_displayed(&driver, &format!("{row} .hub-link [data-link-ask='reset']")).await?;
+        let first = guest_copied_text(&driver).await?;
+        enter_guest(&driver).await?;
+        assert!(
+            first.contains(&format!("/space/{key}")) && first.contains('#'),
+            "new link must hand the clipboard a ticket link into the space, got {first:?}",
+        );
+        wait_for_text_containing(&driver, "[data-hub-receipt]", "made a passlink for").await?;
+        wait_for_displayed(&driver, &format!("{row} .hub-link [data-link-copy]")).await?;
+
+        // A second open link is not the default: it is removed, not reset.
+        click(&driver, &format!("{row} space-links [data-link-new]")).await?;
+        wait_for_displayed(
+            &driver,
+            &format!("{row} .hub-link [data-link-ask='remove']"),
+        )
+        .await?;
+        click(
+            &driver,
+            &format!("{row} .hub-link [data-link-ask='remove']"),
+        )
+        .await?;
+        wait_for_displayed(&driver, &format!("{row} .hub-ask [data-link-keep]")).await?;
+        click(&driver, &format!("{row} .hub-ask [data-link-do]")).await?;
+        wait_for_text_containing(&driver, "[data-hub-receipt]", "removed a passlink from").await?;
+
+        // Resetting the default hands over a new link.
+        enter_guest(&driver).await?;
+        driver
+            .execute(r##"window.__tonkWrote = "";"##, Vec::new())
+            .await?;
+        click(&driver, &format!("{row} .hub-link [data-link-ask='reset']")).await?;
+        click(&driver, &format!("{row} .hub-ask [data-link-do]")).await?;
+        wait_for_text_containing(
+            &driver,
+            "[data-hub-receipt]",
+            "reset the default passlink of",
+        )
+        .await?;
+        let second = guest_copied_text(&driver).await?;
+        assert!(
+            second.contains(&format!("/space/{key}")) && second != first,
+            "reset must hand over a new link, got {second:?} after {first:?}",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// The account customer row has no provider until activation. The FABB
     /// used to require that optional field in its query, so this exact state
     /// resolved as no account: the space offered the account gate and raised the
@@ -7139,39 +7260,16 @@ pub(crate) mod tests {
         // where the deletion controls live.
         open_hub_settings(&driver, &env).await?;
         click(&driver, "[data-delete-account-open]").await?;
-        wait_for_text_containing(&driver, "[data-delete-scope]", "1 owned hosted space").await?;
+        wait_for_text_containing(&driver, "[data-delete-scope]", "the 1 space you own").await?;
 
-        // The explicit confirmation phrase is the gate: a mistyped one leaves the solid
-        // verb off, and nothing is asked of the worker.
-        let confirmation = element(&driver, "[data-delete-confirm]").await?;
-        confirmation.send_keys("delete").await?;
-        let verb = element(&driver, "[data-delete-account-submit]").await?;
-        assert!(
-            verb.attr("disabled").await?.is_some(),
-            "a partial confirmation must not arm the deletion"
-        );
+        // It asks first, in place: the question opens with focus on the
+        // safe answer, and keeping the account closes it again.
+        wait_for_displayed(&driver, "[data-delete-ask] [data-ask-keep]").await?;
+        click(&driver, "[data-delete-ask] [data-ask-keep]").await?;
+        wait_for_displayed(&driver, "[data-delete-account-open]").await?;
+        click(&driver, "[data-delete-account-open]").await?;
+        wait_for_displayed(&driver, "[data-delete-ask] [data-delete-account-submit]").await?;
 
-        // The real thing: the exact phrase arms the verb, and
-        // the passkey gesture the virtual authenticator answers on the
-        // consent card the worker's ask raises finishes it.
-        driver
-            .execute(
-                r#"const field = document.querySelector("[data-delete-confirm]");
-                   field.value = "";
-                   field.dispatchEvent(new Event("input", { bubbles: true }));"#,
-                Vec::new(),
-            )
-            .await
-            .ok();
-        confirmation.send_keys("delete account").await?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while verb.attr("disabled").await?.is_some() {
-            anyhow::ensure!(
-                tokio::time::Instant::now() < deadline,
-                "the exact confirmation phrase must arm the deletion"
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
         // The passkey is asked for on this click, with no card between.
         click(&driver, "[data-delete-account-submit]").await?;
 
@@ -7330,7 +7428,7 @@ pub(crate) mod tests {
         // The real Hub frame renders the first account's space.
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
-        wait_for_text_containing(&driver, ".stack", "First Garden").await?;
+        wait_for_text_containing(&driver, ".hub-rows", "First Garden").await?;
         driver.enter_default_frame().await?;
 
         // Prepare a fresh profile through the API, then use the unlinked
@@ -7403,17 +7501,20 @@ pub(crate) mod tests {
                 });
             return Err(error).context(format!("Hub account diagnostic: {diagnostic}"));
         }
-        wait_for_displayed(&driver, ".snew").await?;
-        let create_action = element(&driver, ".snew").await?.text().await?;
+        wait_for_displayed(&driver, "[data-spaces-sheet] [data-new-space]").await?;
+        let create_action = element(&driver, "[data-spaces-sheet] [data-new-space]")
+            .await?
+            .text()
+            .await?;
         assert!(
             create_action.contains("new space"),
             "an empty Hub roster must show the creation action: {create_action:?}"
         );
         assert!(
-            driver.find_all(By::Css(".srow-wrap")).await?.is_empty(),
+            driver.find_all(By::Css(".hub-row")).await?.is_empty(),
             "an empty Hub roster must not render a space row"
         );
-        let second_stack = element(&driver, ".stack").await?.text().await?;
+        let second_stack = element(&driver, ".hub-rows").await?.text().await?;
         assert!(
             !second_stack.contains("First Garden"),
             "the second account's Hub must omit the first account's space"
@@ -7506,8 +7607,8 @@ pub(crate) mod tests {
         // there, where the stack is not shown; the spaces tab is the way
         // back to it, pushed in place.
         enter_hub(&driver).await?;
-        click(&driver, ".settings-back").await?;
-        wait_for_text_containing(&driver, ".stack", "First Garden").await?;
+        click(&driver, "[data-account-close]").await?;
+        wait_for_text_containing(&driver, ".hub-rows", "First Garden").await?;
         driver.enter_default_frame().await?;
         let listed = get_json(&driver, "/api/profile").await?;
         assert!(
@@ -7516,7 +7617,7 @@ pub(crate) mod tests {
         );
         enter_hub(&driver).await?;
         click(&driver, "[data-account-trigger]").await?;
-        wait_for_displayed(&driver, ".signout-panel").await?;
+        wait_for_displayed(&driver, "[data-sign-out-open]").await?;
         assert!(driver.find_all(By::Css(".switch-panel")).await?.is_empty());
 
         driver.quit().await?;
@@ -8259,16 +8360,22 @@ pub(crate) mod tests {
             (async () => {
                 await until(() => settings.querySelectorAll('[data-connection-id]').length === 3);
                 const initial = {
-                    spaces: [...settings.querySelectorAll('[data-connection-space]')].map(node => node.dataset.connectionSpace),
-                    names: [...settings.querySelectorAll('.connection-space__name')].map(node => node.textContent),
-                    sharedButtons: settings.querySelectorAll('[data-connection-id="' + shared.id + '"] button').length,
+                    rows: [...settings.querySelectorAll('[data-connection-id]')].map(node => node.dataset.connectionId[0]),
+                    names: [...settings.querySelectorAll('.connection-record .hub-item-name')].map(node => node.firstChild.textContent.trim()),
+                    metas: [...settings.querySelectorAll('.connection-record .hub-item-meta')].map(node => node.textContent),
+                    bots: settings.querySelectorAll('.connection-record .hub-bot').length,
+                    asksClosed: [...settings.querySelectorAll('[data-connection-ask-for]')].every(node => node.hidden),
                     disclosures: settings.querySelectorAll('[data-connection-id] details').length,
-                    labels: [...settings.querySelectorAll('.connection-installations li')].map(node => node.textContent),
                     injected: settings.querySelectorAll('[data-connections-list] img').length,
                     legacy: settings.querySelector('[data-connection-id="' + legacy.id + '"]').textContent,
                     inactiveRows: settings.querySelectorAll('[data-connection-id="' + expired.id + '"], [data-connection-id="' + revoked.id + '"]').length,
-                    retry: settings.querySelector('[data-connection-revoke="' + partial.id + '"]').textContent
+                    retry: settings.querySelector('[data-connection-ask="' + partial.id + '"]').textContent
                 };
+                // `remove` asks first, in place; the safe answer closes it.
+                settings.querySelector('[data-connection-ask="' + shared.id + '"]').click();
+                initial.askOpened = !settings.querySelector('[data-connection-ask-for="' + shared.id + '"]').hidden;
+                settings.querySelector('[data-connection-ask-for="' + shared.id + '"] [data-ask-keep]').click();
+                initial.askKept = settings.querySelector('[data-connection-ask-for="' + shared.id + '"]').hidden;
                 settings.api = () => Promise.resolve({...partial, status: 'revoked',
                     targets: partial.targets.map(target => ({...target, acknowledged: true, error: null}))});
                 settings.querySelector('[data-connection-revoke="' + partial.id + '"]').click();
@@ -8277,17 +8384,17 @@ pub(crate) mod tests {
                 settings.api = () => Promise.resolve({...legacy, status: 'revoked',
                     targets: legacy.targets.map(target => ({...target, acknowledged: true}))});
                 settings.querySelector('[data-connection-revoke="' + legacy.id + '"]').click();
-                await until(() => !settings.querySelector('[data-connection-space="did:key:second"]'));
-                initial.emptySpaceHidden = true;
+                await until(() => !settings.querySelector('[data-connection-id="' + legacy.id + '"]'));
+                initial.legacyRemoved = true;
                 settings.api = () => Promise.resolve([expired, revoked]);
                 settings.connectionsRefresh();
                 await until(() => settings.querySelector('[data-connections-status]').textContent === 'No active connections.');
-                initial.inactiveOnlySpaces = settings.querySelectorAll('[data-connection-space]').length;
+                initial.inactiveOnlyRows = settings.querySelectorAll('[data-connection-id]').length;
                 // New names come from the current projection, not the issue-time label.
                 settings.api = () => Promise.resolve([{...shared, spaceName: 'Renamed space'}, {...legacy, spaceName: null}]);
                 settings.connectionsRefresh();
                 await until(() => settings.querySelectorAll('[data-connection-id]').length === 2);
-                initial.renamed = [...settings.querySelectorAll('.connection-space__name')].map(node => node.textContent);
+                initial.renamed = [...settings.querySelectorAll('.connection-record .hub-item-meta')].map(node => node.textContent.split(' · ')[0]);
                 // A late response must not repaint after the next refresh.
                 let late;
                 settings.api = () => new Promise(resolve => { late = resolve; });
@@ -8308,21 +8415,28 @@ pub(crate) mod tests {
             })().catch(error => { settings.api = original; done({error: error.message}); });
         "#, vec![]).await?;
         let state = result.json();
-        assert_eq!(
-            state["spaces"],
-            serde_json::json!(["did:key:first", "did:key:second"]),
-            "{state}"
-        );
+        assert_eq!(state["rows"], serde_json::json!(["a", "b", "c"]), "{state}");
         assert_eq!(
             state["names"],
-            serde_json::json!(["Same display name", "Same display name"])
+            serde_json::json!([
+                "Codex on work laptop, <img src=x onerror=alert(1)>",
+                "Name unavailable",
+                "Name unavailable"
+            ]),
+            "{state}"
         );
-        assert_eq!(state["sharedButtons"], 1);
+        assert!(
+            state["metas"].as_array().unwrap().iter().all(|meta| meta
+                .as_str()
+                .unwrap()
+                .starts_with("Same display name · until ")),
+            "{state}"
+        );
+        assert_eq!(state["bots"], 3);
+        assert_eq!(state["asksClosed"], true);
+        assert_eq!(state["askOpened"], true);
+        assert_eq!(state["askKept"], true);
         assert_eq!(state["disclosures"], 0);
-        assert_eq!(
-            state["labels"],
-            serde_json::json!(["Codex on work laptop", "<img src=x onerror=alert(1)>"])
-        );
         assert_eq!(state["injected"], 0);
         assert!(
             state["legacy"]
@@ -8331,13 +8445,13 @@ pub(crate) mod tests {
                 .contains("Name unavailable")
         );
         assert_eq!(state["inactiveRows"], 0);
-        assert_eq!(state["emptySpaceHidden"], true);
-        assert_eq!(state["inactiveOnlySpaces"], 0);
-        assert_eq!(state["retry"], "retry removal");
+        assert_eq!(state["legacyRemoved"], true);
+        assert_eq!(state["inactiveOnlyRows"], 0);
+        assert_eq!(state["retry"], "try again");
         assert_eq!(state["removed"], true);
         assert_eq!(
             state["renamed"],
-            serde_json::json!(["Renamed space", "did:key:second"])
+            serde_json::json!(["Renamed space", "a space"])
         );
         assert_eq!(state["staleRows"], 0);
         assert_eq!(state["errorVisible"], true);
@@ -8412,7 +8526,7 @@ pub(crate) mod tests {
                     .send_keys(Key::Tab)
                     .await?;
                 let focused = browser.execute(r#"const node=document.activeElement;const style=getComputedStyle(node);
-                    return {settingsHidden:document.querySelector('[data-settings-view]')?.hidden, accountExpanded:document.querySelector('.account-trigger')?.getAttribute('aria-expanded'), keys:window.__connectionKeys, tag:node.tagName, class:node.className, refresh:node.matches('[data-connections-refresh]'), revoke:node.matches('[data-connection-revoke]'), visible:node.matches(':focus-visible'),
+                    return {settingsHidden:document.querySelector('[data-settings-view]')?.hidden, accountExpanded:document.querySelector('.account-trigger')?.getAttribute('aria-expanded'), keys:window.__connectionKeys, tag:node.tagName, class:node.className, refresh:node.matches('[data-connections-refresh]'), revoke:node.matches('[data-connection-ask]'), visible:node.matches(':focus-visible'),
                         ring:style.outlineStyle !== 'none' || style.boxShadow !== 'none',
                         height:node.getBoundingClientRect().height, animation:style.animationName,
                         clientWidth:document.documentElement.clientWidth, scrollWidth:document.documentElement.scrollWidth };"#, vec![]).await?;
@@ -8445,7 +8559,7 @@ pub(crate) mod tests {
                         <= state["clientWidth"].as_u64().unwrap(),
                     "management content overflows horizontally: {state}"
                 );
-                element(browser, &format!("[data-connection-revoke='{group_id}']"))
+                element(browser, &format!("[data-connection-ask='{group_id}']"))
                     .await?
                     .scroll_into_view()
                     .await?;
