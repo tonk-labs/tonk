@@ -6817,7 +6817,7 @@ pub(crate) mod tests {
         if let Err(error) =
             wait_for_text_containing(&driver, "[data-hub-receipt]", "removed a passlink from").await
         {
-            let state = driver
+            let guest = driver
                 .execute(
                     "const links = document.querySelector(arguments[0]); \
                      return { error: links?.querySelector('[data-links-err]')?.textContent ?? null, \
@@ -6827,7 +6827,19 @@ pub(crate) mod tests {
                 .await
                 .map(|value| value.json().to_string())
                 .unwrap_or_else(|inspect| format!("unable to inspect the links: {inspect}"));
-            return Err(error).context(format!("after remove: {state}"));
+            // Where the top page went: the diagnostic redacts the path.
+            driver.enter_default_frame().await?;
+            let top = driver
+                .execute(
+                    "return { path: location.pathname, hash: location.hash.slice(0, 40), \
+                       title: document.title, \
+                       text: document.body.innerText.slice(0, 600) };",
+                    Vec::new(),
+                )
+                .await
+                .map(|value| value.json().to_string())
+                .unwrap_or_else(|inspect| format!("unable to inspect the page: {inspect}"));
+            return Err(error).context(format!("after remove: guest={guest} top={top}"));
         }
 
         // Resetting the default hands over a new link.
