@@ -2102,7 +2102,11 @@ fn it_derives_each_hub_rows_sync_disc_and_no_unrecorded_role() {
             "the hub row must carry `{contract}`",
         );
     }
-    for absent in ["concept!: &space/role", "data-role-case", "class=\"hub-meta\""] {
+    for absent in [
+        "concept!: &space/role",
+        "data-role-case",
+        "class=\"hub-meta\"",
+    ] {
         assert!(
             !PROFILE_LIBRARY.contains(absent),
             "the hub row must not infer `{absent}`",
