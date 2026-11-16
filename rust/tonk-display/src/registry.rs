@@ -2478,7 +2478,7 @@ mod tests {
         assert_eq!(
             navigations.get(0).as_string().as_deref(),
             Some(
-                "http://127.0.0.1:4321/#deny=declined+in+the+browser&redirect=https%3A%2F%2Ftonk.test%2Fsettings"
+                "http://127.0.0.1:4321/#deny=declined+in+the+browser&redirect=https%3A%2F%2Ftonk.test%2Fsettings%2Flink"
             ),
             "declining answers the terminal on its callback and returns here"
         );
@@ -2533,7 +2533,7 @@ mod tests {
         assert_eq!(
             navigations.get(0).as_string().as_deref(),
             Some(
-                "https://tonk.host/settings/link?via=https%3A%2F%2Ftonk.test&request=r1#deny=declined+in+the+browser&redirect=https%3A%2F%2Ftonk.test%2Fsettings"
+                "https://tonk.host/settings/link?via=https%3A%2F%2Ftonk.test&request=r1#deny=declined+in+the+browser&redirect=https%3A%2F%2Ftonk.test%2Fsettings%2Flink"
             ),
             "declining answers the page on its callback, keeping the request it named"
         );

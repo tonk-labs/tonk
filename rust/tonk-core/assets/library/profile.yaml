@@ -6474,6 +6474,7 @@ element!: &account-settings
       (self, step) => {
         const pane = self.querySelector('[data-link-approval]');
         if (!pane) return;
+        self._linkStep = step;
         for (const section of pane.querySelectorAll('[data-link-step]')) section.hidden = section.dataset.linkStep !== step;
         const shown = pane.querySelector(`[data-link-step="${step}"]`);
         (shown?.querySelector(':scope > tonk-message') ?? shown?.querySelector('.fabb-task-title'))?.focus({ preventScroll: true });
@@ -6509,7 +6510,9 @@ element!: &account-settings
     link-error: |
       (self, text) => {
         const error = self.querySelector('[data-link-error]');
-        if (!error) return;
+        // The rows observer watches this subtree, and describe calls this
+        // on every mutation: writing the same words again would loop.
+        if (!error || (error.textContent === text && error.hidden === !text)) return;
         error.textContent = text;
         error.hidden = !text;
         if (text) error.focus({ preventScroll: true });
@@ -6717,7 +6720,7 @@ element!: &account-settings
           const approve = self.querySelector('[data-link-approve]');
           if (asking) self.wait(approve); else self.settle(approve);
           if (state === 'refused') self.linkError('The passkey prompt was cancelled. Try again when you’re ready.');
-          else if (state === 'failed' && /expired/i.test(detail)) self.linkStep('expired');
+          else if (state === 'failed' && /expired/i.test(detail)) { if (self._linkStep !== 'expired') self.linkStep('expired'); }
           else if (state === 'failed') self.linkError(`Tonk couldn’t finish, so nothing was connected. Check that the device is still waiting, then try again. (${detail})`);
           else if (asking) self.linkError('');
           self.status('');

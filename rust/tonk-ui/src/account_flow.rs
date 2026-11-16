@@ -9578,7 +9578,7 @@ pub(crate) mod tests {
         enter_hub(&driver).await?;
         wait_for_text_containing(
             &driver,
-            "[data-ceremony-status]",
+            "[data-link-error]",
             "this handoff requires account",
         )
         .await?;
