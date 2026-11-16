@@ -2136,13 +2136,14 @@ fn it_opens_a_hub_space_from_its_row_and_unfolds_details_with_a_chevron() {
         "<button type=\"button\" class=\"hub-toggle\" aria-expanded=\"false\" aria-controls=\"body-{subject}\"",
         "aria-label=\"links and details of {name}\"",
         "<div class=\"hub-body\" id=\"body-{subject}\" inert>",
-        "<span class=\"hub-mono\" data-space-address></span>",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
             "the hub row must carry `{contract}`",
         );
     }
+    // The address is not repeated in the open row: the row is its link.
+    assert!(!PROFILE_LIBRARY.contains("data-space-address"));
     let collection = PROFILE_LIBRARY
         .split("element!: &hub-collection")
         .nth(1)

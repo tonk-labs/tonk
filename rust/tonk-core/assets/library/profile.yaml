@@ -941,11 +941,12 @@ view!:
               <button type="button" class="hub-toggle" aria-expanded="false" aria-controls="body-{subject}"
                 aria-label="links and details of {name}"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
             </div>
-            <!-- What unfolds: the space's address. The mock's line about
-                 the space ("you have admin") waits for a recorded role.
-                 Closed, it stays in the page, hidden and inert. -->
+            <!-- What unfolds: the space's details (its links). Not its
+                 address: the row is its link, and `copy link` is in the
+                 menu. The mock's line about the space ("you have admin")
+                 waits for a recorded role. Closed, it stays in the page,
+                 hidden and inert. -->
             <div class="hub-fold"><div class="hub-fold-in"><div class="hub-body" id="body-{subject}" inert>
-              <p class="hub-addr"><span class="hub-mono" data-space-address></span></p>
             </div></div></div>
           </div>
         </hub-collection>
@@ -2450,16 +2451,10 @@ element!: &hub-collection
         toggle?.setAttribute('aria-expanded', String(open));
         if (body) body.inert = !open;
       }
-    # A row's address in full, the way it opens.
+    # Keep the open row open across a re-render.
     details: |
       (self) => {
         for (const row of self.querySelectorAll('.hub-row[data-space-subject]')) {
-          const link = row.querySelector('.hub-open');
-          const address = row.querySelector('[data-space-address]');
-          if (link && address) {
-            const text = link.href.replace(/^https?:\/\//, '');
-            if (address.textContent !== text) address.textContent = text;
-          }
           const open = self._open === row.dataset.spaceSubject;
           if (open !== row.hasAttribute('data-open')) self.fold(row, open);
         }
