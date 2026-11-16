@@ -379,10 +379,15 @@ export async function snap(page, name) {
 async function approvalRoot(page, signIn) {
   // The approval page's own continue, not the account ceremony's.
   const ready = (root) =>
-    root.getByRole('button', { name: 'continue' }).and(root.locator(':not(#tonk-register-action)'));
+    root
+      .getByRole('button', { name: 'continue' })
+      .and(root.locator(':not(#tonk-register-action):not([disabled])'));
   const register = page.locator('#tonk-register-email');
+  // Signed out, a settings page is a wall whose sign in raises the ceremony.
+  const wall = guest(page).locator('[data-signed-out-sign-in]');
   const deadline = Date.now() + SETTLE;
   for (;;) {
+    if (signIn && (await wall.isVisible())) await wall.click();
     // A browser with no account: the page signs the person in first,
     // then comes back to the request.
     if (await register.isVisible()) {

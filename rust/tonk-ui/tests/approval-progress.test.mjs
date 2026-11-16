@@ -24,16 +24,23 @@ function fixture() {
   progress.setAttribute('entity', 'state:ceremony');
   const line = { textContent: '', hidden: true };
   const row = { dataset: { of: 'state:ceremony', ceremony: 'authorize-device', ceremonyState: 'done' } };
+  // The device task page's own parts, recorded rather than drawn.
+  const task = { waiting: false, step: 'ask', error: '' };
   const self = attributes({
+    task,
+    wait: () => { task.waiting = true; },
+    settle: () => { task.waiting = false; },
+    linkStep: step => { task.step = step; },
+    linkError: text => { task.error = text; },
     request: { ...request },
     linkRequest() { return this.request; },
     querySelector: selector => selector === '[data-ceremony-row]' ? row
       : selector === '[data-ceremony-status]' ? line
       : selector.startsWith('tonk-display') ? progress : null,
     localLinkShow: () => false, viaShow: () => false, agentShow: () => false, text() {}, pane() {}, seat() {},
-    context: () => ({ hash: '' }), connectionsRefresh() {},
+    context: () => ({ hash: '', path: '/settings/link', search: '' }), connectionsRefresh() {},
   });
-  for (const name of ['base58', 'approval-entity', 'ceremony-target', 'refresh', 'describe', 'status']) {
+  for (const name of ['base58', 'approval-entity', 'ceremony-target', 'link-outcome', 'refresh', 'describe', 'status']) {
     self[name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = (...args) => method(name)(self, ...args);
   }
   return { self, row, progress, line };
@@ -50,20 +57,26 @@ test('fresh approval hides an earlier completed or failed ceremony', () => {
   }
 });
 
+// The device task page answers for its own request; the status line under
+// the hub stays quiet.
 test('current request reports progress and a fast terminal result without observing pending', () => {
-  for (const [state, text] of [
-    ['pending-ceremony', 'Approving the connection: waiting for passkey…'],
-    ['working', 'Approving the connection…'],
-    ['done', 'Approved. Completing the connection…'],
-    ['refused', 'Approving the connection did not finish: refused callback'],
-    ['failed', 'Approving the connection did not finish: refused callback'],
+  for (const [state, detail, waiting, step, error] of [
+    ['pending-ceremony', '', true, 'ask', ''],
+    ['working', '', true, 'ask', ''],
+    ['done', '', false, 'ask', ''],
+    ['refused', 'refused callback', false, 'ask', /passkey prompt was cancelled/],
+    ['failed', 'refused callback', false, 'ask', /nothing was connected.*refused callback/],
+    ['failed', 'request expired', false, 'expired', ''],
   ]) {
     const { self, row, line } = fixture();
     self.refresh();
-    row.dataset = { of: self.ceremonyTarget(), ceremony: 'authorize-device', ceremonyState: state, ceremonyDetail: 'refused callback' };
+    row.dataset = { of: self.ceremonyTarget(), ceremony: 'authorize-device', ceremonyState: state, ceremonyDetail: detail };
     self.describe();
-    assert.equal(line.textContent, text);
-    assert.equal(line.hidden, false);
+    assert.equal(self.task.waiting, waiting, state);
+    assert.equal(self.task.step, step, state);
+    if (error) assert.match(self.task.error, error); else assert.equal(self.task.error, '');
+    assert.equal(self.getAttribute('data-ceremony-state'), state);
+    assert.equal(line.hidden, true);
   }
 });
 
@@ -72,7 +85,7 @@ test('switching requests clears old status and ignores delayed results from anot
   self.refresh();
   row.dataset.of = self.ceremonyTarget();
   self.describe();
-  assert.equal(line.hidden, false);
+  assert.equal(self.getAttribute('data-ceremony-state'), 'done');
   self.request.callback += '2';
   self.refresh(); self.describe();
   assert.equal(line.hidden, true);
@@ -86,7 +99,8 @@ test('a remounted panel resumes its own approval without another click', () => {
   second.self.refresh();
   second.row.dataset = { of: first.self.ceremonyTarget(), ceremony: 'authorize-device', ceremonyState: 'working' };
   second.self.describe();
-  assert.equal(second.line.textContent, 'Approving the connection…');
+  assert.equal(second.self.task.waiting, true);
+  assert.equal(second.self.hasAttribute('data-passkey-requested'), true);
 });
 
 test('non-approval ceremonies retain their normal progress row', () => {
@@ -112,4 +126,23 @@ test('an approval without a ceremony row has a quiet absence fallback', () => {
   const display = library.match(/<tonk-display model="state:ceremony"[^>]*>([\s\S]*?)<\/tonk-display>/);
   assert.ok(display, 'settings contains its ceremony display');
   assert.match(display[1], /<span slot="no-entity" hidden><\/span>/);
+});
+
+// The rows observer re-runs describe on every write under the element, so a
+// repeated answer must not write the error line again.
+test('the device error line is written once for a repeated answer', () => {
+  let writes = 0;
+  let text = '';
+  const error = { hidden: true, focus() {} };
+  Object.defineProperty(error, 'textContent', { get: () => text, set: value => { writes += 1; text = value; } });
+  const self = { querySelector: selector => selector === '[data-link-error]' ? error : null };
+  const linkError = method('link-error');
+  linkError(self, 'Tonk couldn’t finish.');
+  linkError(self, 'Tonk couldn’t finish.');
+  assert.equal(writes, 1);
+  assert.equal(error.hidden, false);
+  linkError(self, '');
+  linkError(self, '');
+  assert.equal(writes, 2);
+  assert.equal(error.hidden, true);
 });
