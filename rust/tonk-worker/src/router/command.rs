@@ -853,6 +853,7 @@ pub async fn run_commands(state: &AppState, origin: CommandOrigin, effect: Optio
     // Nothing here holds the state lock: every provider re-locks through
     // its env.
     let mut effect = effect;
+    let mut answered = false;
     for _ in 0..EFFECT_CHAIN_LIMIT {
         let Some(next) = effect.take().filter(|effect| !effect.is_empty()) else {
             break;
@@ -860,6 +861,7 @@ pub async fn run_commands(state: &AppState, origin: CommandOrigin, effect: Optio
         match next.perform(&operator).await {
             Ok(report) => {
                 report_effect(&origin, &report);
+                answered |= !report.answered().is_empty();
                 if !report.remaining() {
                     break;
                 }
@@ -880,8 +882,20 @@ pub async fn run_commands(state: &AppState, origin: CommandOrigin, effect: Optio
     // Drain every poll the request scheduled — the triggering commit plus
     // anything its providers committed or wrote to the overlay — in one
     // pass. This is the single point that turns scheduled writes into
-    // subscription broadcasts; coalesced by branch identity.
+    // subscription broadcasts; coalesced by branch identity. An answer a
+    // provider gave lands through the effect's own dispatch, outside the
+    // reactor's commit, in a layer the branch's subscriptions read
+    // (`intent/suggest` answers in `session:`), so the branch is polled
+    // for it too.
     let tonk = state.read().await;
+    if answered
+        && let Ok(session) = stack_of(&tonk.reactor, &origin)
+            .acquire(&tonk.operator)
+            .await
+    {
+        tonk.reactor
+            .schedule_poll(std::sync::Arc::clone(&session.state));
+    }
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
 
