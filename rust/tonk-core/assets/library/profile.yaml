@@ -5803,6 +5803,8 @@ element!: &space-links
         for (let tries = 0; tries < 10; tries++) {
           try {
             await self.mint();
+            // Opening the row started a read; wait for it, then read again.
+            while (self._loading) await new Promise((resolve) => setTimeout(resolve, 100));
             await self.load();
             self.querySelector('[data-link-copy]')?.focus();
             return;
