@@ -2493,6 +2493,7 @@ element!: &hub-collection
         if (open) row.setAttribute('data-open', ''); else row.removeAttribute('data-open');
         toggle?.setAttribute('aria-expanded', String(open));
         if (body) body.inert = !open;
+        if (open) row.querySelector('space-links')?.opened?.();
       }
     # A row's address in full, the way it opens.
     details: |
@@ -5873,25 +5874,19 @@ element!: &space-links
           self.render();
         }
       }
-    # Load when the row opens; a closed row keeps what it read.
-    watch: |
+    # The row opened (`hub-collection` says so): read the links once; a
+    # closed row keeps what it read.
+    opened: |
       (self) => {
-        const row = self.closest('.hub-row');
-        self._rowObserver?.disconnect();
-        if (!row) return;
-        // The row's actions draw at once; the links fill in as they load.
-        const opened = () => {
-          if (!row.hasAttribute('data-open') || self._rows || self._loading) return;
-          if (!self.querySelector('[data-link-new]')) self.render();
-          self.load();
-        };
-        self._rowObserver = new MutationObserver(opened);
-        self._rowObserver.observe(row, { attributes: true, attributeFilter: ['data-open'] });
-        opened();
+        if (self._rows || self._loading) return;
+        self.load();
       }
     connected: |
       (self) => {
-        self.watch();
+        // The actions draw at once, open or not; the links fill in when
+        // the row opens.
+        if (!self.querySelector('[data-link-new]')) self.render();
+        if (self.closest('.hub-row')?.hasAttribute('data-open')) self.opened();
         if (self.__wired) return;
         self.__wired = true;
         self.addEventListener('click', (event) => {
@@ -5930,8 +5925,6 @@ element!: &space-links
           self.render();
         });
       }
-    disconnected: |
-      (self) => { self._rowObserver?.disconnect(); }
 
 element!: &space-remove
   description: Names delete or leave for a Hub row and opens its confirmation.
