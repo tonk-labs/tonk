@@ -1313,8 +1313,13 @@ mod tests {
         .call1(&JsValue::NULL, &host_bridge())
         .unwrap();
         let host = document().create_element("space-create").unwrap();
+        // The `new space` dialog in the phone bar; the sheet's line opens
+        // an inline row instead.
         let markup = PROFILE_LIBRARY
-            .split_once("<space-create class=\"header-new\">")
+            .split_once("<nav class=\"mobile-nav\"")
+            .unwrap()
+            .1
+            .split_once("<space-create>")
             .unwrap()
             .1
             .split_once("</space-create>")
@@ -2048,7 +2053,7 @@ mod tests {
         set_context(&[("origin", "https://tonk.test"), ("path", "/account")]);
         // The bar beside the panel carries the link display the door reads.
         let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
+        bar.set_class_name("hub-top");
         bar.set_inner_html(
             r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
         );
@@ -2091,7 +2096,7 @@ mod tests {
             ("search", "?via"),
         ]);
         let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
+        bar.set_class_name("hub-top");
         bar.set_inner_html(
             r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
         );
@@ -2164,7 +2169,7 @@ mod tests {
             ("search", ""),
         ]);
         let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
+        bar.set_class_name("hub-top");
         bar.set_inner_html(
             r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
         );
@@ -2306,7 +2311,7 @@ mod tests {
         let navigations = record_bridge_calls("navigate");
         set_context(&[("origin", "https://tonk.test"), ("path", "/settings")]);
         let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
+        bar.set_class_name("hub-top");
         bar.set_inner_html(
             r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
         );
@@ -2349,7 +2354,7 @@ mod tests {
         let calls = record_bridge_calls("register");
         set_context(&[("origin", "https://tonk.test"), ("path", "/account")]);
         let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
+        bar.set_class_name("hub-top");
         bar.set_inner_html(
             r#"<a data-account-trigger><span data-account-link data-state="empty"></span></a>"#,
         );
@@ -2639,10 +2644,12 @@ mod tests {
         ]);
     }
 
-    /// Deleting is armed by the exact phrase, and what it deletes is
-    /// counted off the owned-space rows the view renders.
+    /// Deleting asks first, in place: `delete account` steps aside, the
+    /// question opens with focus on `keep account`, and the sentence counts
+    /// what goes off the owned-space rows the view renders. `keep account`
+    /// closes the question and puts `delete account` back.
     #[dialog_common::test]
-    async fn it_arms_the_deletion_on_the_exact_phrase_from_the_library() {
+    async fn it_asks_in_place_before_deleting_from_the_library() {
         set_context(&[
             ("origin", "https://tonk.test"),
             ("path", "/settings"),
@@ -2650,7 +2657,7 @@ mod tests {
             ("hash", ""),
         ]);
         let host = account_settings(
-            r#"<div class="pane" data-pane="account"><button type="button" data-delete-account-open>delete</button><div data-delete-account-dialog><span data-delete-scope>loading</span><span data-delete-owned hidden><span data-owned-space><span data-space-name>Welcome</span></span><span data-owned-space><span data-space-name>Doomed Garden</span></span></span><label>type <b data-delete-confirm-label>delete account</b></label><input data-delete-confirm type="text"><button type="button" data-delete-account-submit data-email="owner@example.com" disabled>delete</button></div></div><p data-ceremony-status hidden></p>"#,
+            r#"<div class="pane" data-pane="account"><input data-settings-name value="Alex"><p data-delete-scope>loading</p><span data-delete-owned hidden><span data-owned-space>Welcome</span><span data-owned-space>Doomed Garden</span></span><button type="button" data-delete-account-open>delete account</button><div class="hub-ask" data-delete-ask hidden><p>Delete your account? This can’t be undone.</p><button type="button" data-ask-keep>keep account</button><button type="button" data-delete-account-submit data-email="owner@example.com">delete with passkey</button></div></div><p data-ceremony-status hidden></p>"#,
         );
         settle_until(|| defined("account-settings")).await;
         settle_briefly().await;
@@ -2663,37 +2670,34 @@ mod tests {
         settle_briefly().await;
         assert_eq!(
             text_of(&host, "[data-delete-scope]"),
-            "2 owned hosted spaces will be deleted: Welcome, Doomed Garden. Spaces you joined are left intact."
+            "Deletes Alex, the 2 spaces you own."
         );
+        let ask = host
+            .query_selector("[data-delete-ask]")
+            .expect("query")
+            .expect("the ask");
+        assert!(!ask.has_attribute("hidden"), "the question opens in place");
+        assert!(opener.has_attribute("hidden"), "delete account steps aside");
         let submit = host
             .query_selector("[data-delete-account-submit]")
             .expect("query")
             .expect("the submit");
         assert!(
-            submit.has_attribute("disabled"),
-            "nothing typed, nothing armed"
+            !submit.has_attribute("disabled"),
+            "the address is on it, so the answer is ready"
         );
 
-        let field: web_sys::HtmlInputElement = host
-            .query_selector("[data-delete-confirm]")
+        let keep = host
+            .query_selector("[data-ask-keep]")
             .expect("query")
-            .expect("the field")
-            .unchecked_into();
-        field.set_value("delete");
-        fire(&field, "input");
+            .expect("the safe answer");
+        fire(&keep, "click");
         settle_briefly().await;
         assert!(
-            submit.has_attribute("disabled"),
-            "a partial phrase does not arm"
+            ask.has_attribute("hidden"),
+            "keep account closes the question"
         );
-
-        field.set_value("delete account");
-        fire(&field, "input");
-        settle_until(|| !submit.has_attribute("disabled")).await;
-        assert!(
-            !submit.has_attribute("disabled"),
-            "the exact phrase arms the submit"
-        );
+        assert!(!opener.has_attribute("hidden"), "delete account comes back");
     }
 
     /// The ceremony row is worded for the person, and a terminal state
