@@ -53,10 +53,24 @@ mod load {
     /// subscriptions spell them. `kind` is the field's `as`: a type name,
     /// or the cases a ranked field lists best first.
     fn query(field: &str, the: &str, kind: serde_json::Value) -> ConceptQuery {
-        let descriptor = serde_json::from_value(json!({
-            "with": { field: { "the": the, "as": kind } }
-        }))
-        .expect("descriptor parses");
+        ranked_query(field, the, kind, None)
+    }
+
+    /// [`query`] over a cardinality-many attribute, read with the
+    /// selective aggregator `aggregate` when there is one.
+    fn ranked_query(
+        field: &str,
+        the: &str,
+        kind: serde_json::Value,
+        aggregate: Option<&str>,
+    ) -> ConceptQuery {
+        let mut spec = json!({ "the": the, "as": kind });
+        if let Some(aggregate) = aggregate {
+            spec["cardinality"] = json!("many");
+            spec["aggregate"] = json!(aggregate);
+        }
+        let descriptor =
+            serde_json::from_value(json!({ "with": { field: spec } })).expect("descriptor parses");
         let mut terms = Parameters::new();
         terms.insert("this".to_string(), Term::var("this"));
         terms.insert(field.to_string(), Term::var(field));
@@ -387,29 +401,31 @@ mod load {
             return Ok(());
         }
 
-        // The status and presence fields list their cases best first,
-        // as the library declares them: the read elects the best case
-        // any rule derives.
-        let status = query(
+        // The status and presence fields list their cases least first,
+        // as the library declares them, and read with `top`: the read
+        // elects the best case any rule derives.
+        let status = ranked_query(
             "status",
             "xyz.tonk.account/status",
             json!([
-                "case:suspended",
-                "case:active",
-                "case:registered",
+                "case:onboarding",
                 "case:retired",
-                "case:onboarding"
+                "case:registered",
+                "case:active",
+                "case:suspended"
             ]),
+            Some("top"),
         );
-        let presence = query(
+        let presence = ranked_query(
             "presence",
             "xyz.tonk.space/presence",
             json!([
-                "case:seeding",
-                "case:replicating",
+                "case:remote",
                 "case:replicated",
-                "case:remote"
+                "case:replicating",
+                "case:seeding"
             ]),
+            Some("top"),
         );
         let position = query("at", "xyz.tonk.notebook.block/at", json!("Text"));
         let mut one = status.clone();

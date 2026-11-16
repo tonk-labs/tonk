@@ -1814,13 +1814,23 @@ mod member_roster {
 /// Reads the PROFILE branch's account-level space directory by raw attribute.
 /// Directory mode (`this` unbound), so every convergent space entry returns as
 /// a row. `name` is optional for vintage entries that predate the mirror;
-/// `presence` is optional because its absence IS the remote case.
+/// `presence` is optional because a space no rule speaks for has none.
+///
+/// `presence` reads the profile library's `space` field: the rules derive
+/// every case that holds, and the field reads the one listed last, the cases
+/// listed least first.
 pub fn space_list_query_body() -> String {
     json!({
         "predicate": { "with": {
             "subject": { "the": "xyz.tonk.space/subject", "as": "Entity", "cardinality": "one" },
             "name":    { "the": "xyz.tonk.space/name",    "as": "Text",   "cardinality": "one", "optional": true },
-            "presence": { "the": "xyz.tonk.space/presence", "as": "Entity", "cardinality": "one", "optional": true }
+            "presence": {
+                "the": "xyz.tonk.space/presence",
+                "as": ["case:remote", "case:replicated", "case:replicating", "case:seeding"],
+                "cardinality": "many",
+                "aggregate": "top",
+                "optional": true
+            }
         } },
         "terms": {
             "this":    { "?": { "name": "this" } },

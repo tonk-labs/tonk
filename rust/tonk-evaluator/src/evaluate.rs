@@ -5329,3 +5329,220 @@ person!:
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod ranked_fields {
+    use super::SyntaxEvaluateExt as _;
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
+    use std::collections::BTreeMap;
+    use tonk_notation::parse;
+
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profile.yaml");
+
+    /// Each row of `query` on `branch`, as `this` and the text of `field`.
+    async fn rows(
+        branch: &dialog_repository::Branch,
+        operator: &impl super::EvaluateEnv,
+        query: &str,
+        field: &str,
+    ) -> anyhow::Result<BTreeMap<String, String>> {
+        let evaluated = parse(query)
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("query failed: {e}"))?;
+        Ok(evaluated
+            .matches
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .map(|row| {
+                let value = row
+                    .fields
+                    .get(field)
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_owned();
+                (row.this.clone(), value)
+            })
+            .collect())
+    }
+
+    /// The profile library's ranked fields read the best-ranked case any
+    /// rule derives, as they did when a listed `as:` ranked its values
+    /// best first: an account that is registered, activated and suspended
+    /// is suspended, one registered and activated is active, one only
+    /// registered is registered, and a retired onboarding account is
+    /// retired.
+    #[dialog_common::test]
+    #[allow(deprecated)]
+    async fn the_profile_library_ranks_an_accounts_status() -> anyhow::Result<()> {
+        let (operator, profile) = test_session_with_peer().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        for doc in [
+            PROFILE_LIBRARY,
+            r#"
+account/registered!:
+  this: id:account/active
+  registered-at: 1
+  email: "active@example.com"
+  provider: "https://access.example.com"
+account/active!:
+  this: id:account/active
+  activated-at: 2
+account/registered!:
+  this: id:account/suspended
+  registered-at: 1
+  email: "suspended@example.com"
+  provider: "https://access.example.com"
+account/active!:
+  this: id:account/suspended
+  activated-at: 2
+account/suspended!:
+  this: id:account/suspended
+  suspended-at: 3
+  reason: "withdrawn"
+account/registered!:
+  this: id:account/registered
+  registered-at: 1
+  email: "registered@example.com"
+  provider: "https://access.example.com"
+account/onboarding!:
+  this: id:account/retired
+  minted-at: 1
+  retired-at: 2
+account/onboarding!:
+  this: id:account/onboarding
+  minted-at: 1
+"#,
+        ] {
+            parse(doc)
+                .syntax
+                .expect("syntax")
+                .evaluate(branch.transaction())
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
+                .commit()
+                .publish()
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
+        }
+        let statuses = rows(
+            &branch,
+            &operator,
+            "account/status:\n  this: ?account\n  status: ?status\n",
+            "status",
+        )
+        .await?;
+        // An onboarding account no real one replaced reads `retired` too,
+        // as it did before cardinalities: the retirement rule binds the
+        // optional `retired-at`, which matches its absence.
+        let expected: BTreeMap<String, String> = [
+            ("id:account/active", "case:active"),
+            ("id:account/onboarding", "case:retired"),
+            ("id:account/registered", "case:registered"),
+            ("id:account/retired", "case:retired"),
+            ("id:account/suspended", "case:suspended"),
+        ]
+        .into_iter()
+        .map(|(this, status)| (this.to_owned(), status.to_owned()))
+        .collect();
+        assert_eq!(statuses, expected);
+        Ok(())
+    }
+
+    /// The `space` concept's `presence` reads the best-ranked case the
+    /// presence rules derive for a space: a space this device holds no
+    /// replica of is remote, one it holds a replica of is replicated, and
+    /// one whose replica is still seeding is seeding.
+    #[dialog_common::test]
+    async fn the_profile_library_ranks_a_spaces_presence() -> anyhow::Result<()> {
+        let (operator, profile) = test_session_with_peer().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        let commit = |doc: String| {
+            let branch = branch.clone();
+            let operator = &operator;
+            async move {
+                #[allow(deprecated)]
+                parse(&doc)
+                    .syntax
+                    .expect("syntax")
+                    .evaluate(branch.transaction())
+                    .perform(operator)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
+                    .commit()
+                    .publish()
+                    .perform(operator)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
+                anyhow::Ok(())
+            }
+        };
+        commit(PROFILE_LIBRARY.to_owned()).await?;
+        let sessions = rows(
+            &branch,
+            &operator,
+            "db/session:\n  profile: ?profile\n",
+            "profile",
+        )
+        .await?;
+        let device = sessions
+            .values()
+            .next()
+            .cloned()
+            .expect("the session names its profile");
+        commit(format!(
+            r#"
+space!:
+  this: id:space/remote
+  subject: did:key:remote
+space!:
+  this: id:space/replicated
+  subject: did:key:replicated
+space!:
+  this: id:space/seeding
+  subject: did:key:seeding
+space/replica!:
+  this: id:replica/replicated
+  subject: did:key:replicated
+  profile: {device}
+space/replica!:
+  this: id:replica/seeding
+  subject: did:key:seeding
+  profile: {device}
+space/replica-status!:
+  this: id:replica/seeding
+  status: tonk:blank
+"#
+        ))
+        .await?;
+        let presence = rows(
+            &branch,
+            &operator,
+            "space:\n  this: ?space\n  subject: ?subject\n  presence: ?presence\n",
+            "presence",
+        )
+        .await?;
+        let expected: BTreeMap<String, String> = [
+            ("id:space/remote", "case:remote"),
+            ("id:space/replicated", "case:replicated"),
+            ("id:space/seeding", "case:seeding"),
+        ]
+        .into_iter()
+        .map(|(this, presence)| (this.to_owned(), presence.to_owned()))
+        .collect();
+        assert_eq!(presence, expected);
+        Ok(())
+    }
+}
