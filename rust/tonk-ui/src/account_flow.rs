@@ -6786,7 +6786,21 @@ pub(crate) mod tests {
         .await?;
         wait_for_displayed(&driver, &format!("{row} .hub-ask [data-link-keep]")).await?;
         click(&driver, &format!("{row} .hub-ask [data-link-do]")).await?;
-        wait_for_text_containing(&driver, "[data-hub-receipt]", "removed a passlink from").await?;
+        if let Err(error) =
+            wait_for_text_containing(&driver, "[data-hub-receipt]", "removed a passlink from").await
+        {
+            let state = driver
+                .execute(
+                    "const links = document.querySelector(arguments[0]); \
+                     return { error: links?.querySelector('[data-links-err]')?.textContent ?? null, \
+                       links: links ? links.outerHTML.slice(0, 2000) : null };",
+                    vec![serde_json::json!(format!("{row} space-links"))],
+                )
+                .await
+                .map(|value| value.json().to_string())
+                .unwrap_or_else(|inspect| format!("unable to inspect the links: {inspect}"));
+            return Err(error).context(format!("after remove: {state}"));
+        }
 
         // Resetting the default hands over a new link.
         enter_guest(&driver).await?;
