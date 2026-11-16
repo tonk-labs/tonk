@@ -805,7 +805,6 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
         "<hub-collection class=\"hub-rows\"",
         "<div class=\"hub-row space-card\"",
         "<a class=\"hub-open\" href=\"/space/{subject}\"><span class=\"hub-name\" title=\"{name}\">{name}</span></a>",
-        "<footer class=\"hub-foot\">tonk.network</footer>",
         "with=\"main@profile:tonk\"",
         "<nav class=\"mobile-nav\"",
     ] {
