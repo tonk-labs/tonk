@@ -7502,7 +7502,7 @@ element!: &command-palette
           }
           return false;
         };
-        const subject = space ? { this: space } : {};
+        const subject = space ? { subject: space } : {};
         // What was run from the palette is kept on the profile; the space
         // ranks its own commands and their values by it too. Read once per
         // opening.
