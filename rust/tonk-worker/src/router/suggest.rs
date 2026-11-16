@@ -2,10 +2,12 @@
 //! answered by a provider on the branch's stack.
 //!
 //! The page asserts the command through the transact path, on each
-//! branch it asks (the space's and the profile's), in the same commit as
-//! the line's `intent/interpret`. Once the commit has published and its
-//! handlers have run, the command's effect performs the provider
-//! registered here ([`provide`]): it decodes the ask from the command's
+//! branch it asks (the space's and the profile's), once that branch has
+//! recorded the line's `intent/interpret`: an effect runs its commands'
+//! providers in the order they landed, which is no order the page sets,
+//! so an ask sent in the interpretation's own commit could be answered
+//! before the line was recorded. Once the commit has published, the
+//! command's effect performs the provider registered here: it decodes the ask from the command's
 //! rows, reads the branch's palette vocabulary and what rules derived
 //! onto the line's intents (through [`dialog_reactor::intent::suggest`]),
 //! and answers with the rows [`dialog_reactor::intent::answer`] makes,

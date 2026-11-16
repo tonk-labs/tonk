@@ -318,24 +318,44 @@ type Decoder<C> = Arc<dyn Fn(&[Fact]) -> Option<C> + Send + Sync>;
 #[cfg(target_arch = "wasm32")]
 type Decoder<C> = Arc<dyn Fn(&[Fact]) -> Option<C>>;
 
-/// Builds a registration's stack providers for one scope.
+/// What a provider answers dialog with, boxed so every registration's
+/// run has one type.
 #[cfg(not(target_arch = "wasm32"))]
-type Build = Arc<dyn Fn(&Scope) -> Vec<CommandProvider> + Send + Sync>;
-/// Builds a registration's stack providers for one scope.
+type Answer = futures_util::future::BoxFuture<'static, Result<Changes, Failure>>;
+/// What a provider answers dialog with, boxed so every registration's
+/// run has one type.
 #[cfg(target_arch = "wasm32")]
-type Build = Arc<dyn Fn(&Scope) -> Vec<CommandProvider>>;
+type Answer = futures_util::future::LocalBoxFuture<'static, Result<Changes, Failure>>;
+
+/// A decoded command, ready to run against the [`CommandEnv`] of its
+/// tick.
+#[cfg(not(target_arch = "wasm32"))]
+type Run = Box<dyn FnOnce(CommandEnv) -> Answer + Send>;
+/// A decoded command, ready to run against the [`CommandEnv`] of its
+/// tick.
+#[cfg(target_arch = "wasm32")]
+type Run = Box<dyn FnOnce(CommandEnv) -> Answer>;
+
+/// Decodes a landed command as one registration's command, or answers
+/// `None` when its rows are not that command.
+#[cfg(not(target_arch = "wasm32"))]
+type Decoding = Arc<dyn Fn(&dialog_repository::Command) -> Option<Run> + Send + Sync>;
+/// Decodes a landed command as one registration's command, or answers
+/// `None` when its rows are not that command.
+#[cfg(target_arch = "wasm32")]
+type Decoding = Arc<dyn Fn(&dialog_repository::Command) -> Option<Run>>;
 
 /// One command the worker provides: the concepts its rows decode from,
-/// the surface it runs on, and how to build its stack providers for a
-/// branch. A stack provider claims a landed command by the attributes
-/// of its concept's fields ([`dialog_repository::Provider::claims`]),
-/// one provider per concept, so a migrated command registers one for
-/// its current shape and one for its legacy shape, both decoding to the
+/// the surface it runs on, and how a landed command decodes as it. A
+/// stack provider claims a landed command by the attributes of its
+/// concept's fields ([`dialog_repository::Provider::claims`]), one
+/// provider per concept, so a migrated command registers one for its
+/// current shape and one for its legacy shape, both decoding to the
 /// current one.
 pub struct Registration {
     surface: Surface,
     concepts: Vec<&'static ConceptDescriptor>,
-    build: Build,
+    decode: Decoding,
 }
 
 impl Registration {
@@ -371,10 +391,69 @@ impl Registration {
         self.surface.admits(origin)
     }
 
-    /// The stack providers of this command for `scope`, one per concept.
-    pub fn providers(&self, scope: &Scope) -> Vec<CommandProvider> {
-        (self.build)(scope)
+    /// Whether `command`'s rows decode as this registration's command.
+    pub fn decodes(&self, command: &dialog_repository::Command) -> bool {
+        (self.decode)(command).is_some()
     }
+}
+
+/// The refusal of a command `name` from `env`'s origin, whose surface
+/// it is not of.
+fn refusal(name: &Entity, env: &CommandEnv) -> Failure {
+    Failure::new(format!(
+        "{name} is no command of {}",
+        if env.from_profile() {
+            "the profile".to_owned()
+        } else {
+            format!("space '{}'", env.origin().repo)
+        }
+    ))
+}
+
+/// Run `command`, which the provider of `concept` claimed, as the first
+/// registration claiming it whose command its rows decode as.
+///
+/// Dialog runs the first provider claiming a command, and a provider
+/// claims by any one attribute of its concept's fields, so the provider
+/// dialog picked is not always the command's: legacy shapes of different
+/// commands share attributes (the DOM timestamp of an invite, an
+/// enable-sync and a pause-sync, for one). The vocabulary therefore
+/// decides among its claimants by what the rows decode as, in
+/// registration order, as the worker's registry did before the commands
+/// were a stack's providers: an enable-sync is run as an enable-sync
+/// even though the invite, registered first, claims its timestamp.
+async fn dispatch(
+    registrations: Arc<Vec<Registration>>,
+    scope: Scope,
+    concept: Entity,
+    command: dialog_repository::Command,
+) -> Result<Changes, Failure> {
+    let tick = scope
+        .ticks
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(command.entity());
+    let origin = CommandOrigin::of_tick(&scope, tick);
+    let env = CommandEnv::new(scope.state.clone(), origin);
+    let rows = command.rows();
+    for registration in registrations
+        .iter()
+        .filter(|registration| registration.claims(rows))
+    {
+        let Some(run) = (registration.decode)(&command) else {
+            continue;
+        };
+        if !registration.admits(env.origin()) {
+            let name = registration
+                .concepts
+                .first()
+                .map(|concept| concept.this())
+                .unwrap_or_else(|| concept.clone());
+            return Err(refusal(&name, &env));
+        }
+        return run(env).await;
+    }
+    Err(Failure::new(format!("the rows do not decode as {concept}")))
 }
 
 /// The worker's command vocabulary: every command it provides, each with
@@ -382,7 +461,7 @@ impl Registration {
 /// providers ([`provide`](Self::provide)).
 #[derive(Default)]
 pub struct CommandProviders {
-    registrations: Vec<Registration>,
+    registrations: Arc<Vec<Registration>>,
     ticks: Ticks,
 }
 
@@ -435,9 +514,9 @@ impl CommandProviders {
     /// layer it names. The typed commands answer with nothing and commit
     /// through the env; this is for a command whose answer is the point
     /// (`intent/suggest`, answered in the stack's `session:` layer).
-    /// Chainable.
+    /// Every command its concept claims is its. Chainable.
     pub fn answering<F, Fut>(
-        mut self,
+        self,
         surface: Surface,
         concept: &'static ConceptDescriptor,
         answer: F,
@@ -450,52 +529,26 @@ impl CommandProviders {
         Fut: std::future::Future<Output = Result<Changes, Failure>> + ConditionalSend + 'static,
     {
         let answer = Arc::new(answer);
-        let build: Build = Arc::new(move |scope: &Scope| {
-            let scope = scope.clone();
+        let decode: Decoding = Arc::new(move |command: &dialog_repository::Command| {
             let answer = answer.clone();
-            vec![CommandProvider::new(
-                concept,
-                move |command: dialog_repository::Command| {
-                    let tick = scope
-                        .ticks
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .remove(command.entity());
-                    let origin = CommandOrigin::of_tick(&scope, tick);
-                    let admitted = surface.admits(&origin);
-                    let env = CommandEnv::new(scope.state.clone(), origin);
-                    let answer = answer.clone();
-                    let name = concept.this();
-                    async move {
-                        if !admitted {
-                            return Err(Failure::new(format!(
-                                "{name} is no command of {}",
-                                if env.from_profile() {
-                                    "the profile".to_owned()
-                                } else {
-                                    format!("space '{}'", env.origin().repo)
-                                }
-                            )));
-                        }
-                        answer(env, command).await
-                    }
-                },
-            )]
+            let command = command.clone();
+            let run: Run = Box::new(move |env: CommandEnv| -> Answer {
+                Box::pin(async move { answer(env, command).await })
+            });
+            Some(run)
         });
-        self.registrations.push(Registration {
+        self.push(Registration {
             surface,
             concepts: vec![concept],
-            build,
-        });
-        self
+            decode,
+        })
     }
 
     /// Register a command decoding through `decode`, claimed by
-    /// `concepts`: one stack provider per concept, all running the
-    /// [`Provider<C>`](dialog_capability::Provider) impl on
-    /// [`CommandEnv`].
+    /// `concepts`, run by the [`Provider<C>`](dialog_capability::Provider)
+    /// impl on [`CommandEnv`].
     fn register<C>(
-        mut self,
+        self,
         surface: Surface,
         concepts: Vec<&'static ConceptDescriptor>,
         decode: Decoder<C>,
@@ -504,58 +557,31 @@ impl CommandProviders {
         C: Command<Input = C, Output = ()> + ConditionalSend + ConditionalSync + 'static,
         CommandEnv: Provider<C>,
     {
-        let claimed = concepts.clone();
-        let build: Build = Arc::new(move |scope: &Scope| {
-            claimed
-                .iter()
-                .map(|concept| {
-                    let scope = scope.clone();
-                    let decode = decode.clone();
-                    let concept = *concept;
-                    CommandProvider::new(concept, move |command: dialog_repository::Command| {
-                        // Decode synchronously, then hand the owned command
-                        // and an env clone to the future dialog awaits: the
-                        // provider's `execute` re-locks through the env, so
-                        // nothing here holds a lock.
-                        let rows = command.rows();
-                        let tick = scope
-                            .ticks
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .remove(command.entity());
-                        let origin = CommandOrigin::of_tick(&scope, tick);
-                        let admitted = surface.admits(&origin);
-                        let decoded = decode(rows);
-                        let env = CommandEnv::new(scope.state.clone(), origin);
-                        let name = concept.this();
-                        async move {
-                            if !admitted {
-                                return Err(Failure::new(format!(
-                                    "{name} is no command of {}",
-                                    if env.from_profile() {
-                                        "the profile".to_owned()
-                                    } else {
-                                        format!("space '{}'", env.origin().repo)
-                                    }
-                                )));
-                            }
-                            let Some(command) = decoded else {
-                                return Err(Failure::new(format!(
-                                    "the rows do not decode as {name}"
-                                )));
-                            };
-                            env.execute(command).await;
-                            Ok(Changes::new())
-                        }
-                    })
+        let decode: Decoding = Arc::new(move |command: &dialog_repository::Command| {
+            // Decode synchronously, then hand the owned command to the
+            // run: the provider's `execute` re-locks through the env, so
+            // nothing here holds a lock.
+            let decoded = decode(command.rows())?;
+            let run: Run = Box::new(move |env: CommandEnv| -> Answer {
+                Box::pin(async move {
+                    env.execute(decoded).await;
+                    Ok(Changes::new())
                 })
-                .collect()
+            });
+            Some(run)
         });
-        self.registrations.push(Registration {
+        self.push(Registration {
             surface,
             concepts,
-            build,
-        });
+            decode,
+        })
+    }
+
+    /// Add `registration`, after every one registered so far.
+    fn push(mut self, registration: Registration) -> Self {
+        Arc::get_mut(&mut self.registrations)
+            .expect("the vocabulary is built before it is provided")
+            .push(registration);
         self
     }
 
@@ -571,8 +597,9 @@ impl CommandProviders {
     }
 
     /// Register every command's providers on `stack`, built for the
-    /// branch at `repo` / `branch` over `state`. Done once per branch,
-    /// through
+    /// branch at `repo` / `branch` over `state`: one stack provider per
+    /// concept, each running the command as [`dispatch`] decides. Done
+    /// once per branch, through
     /// [`BranchState::provide_once`](crate::reactor::BranchState::provide_once).
     pub fn provide(
         &self,
@@ -587,9 +614,17 @@ impl CommandProviders {
             branch,
             ticks: self.ticks.clone(),
         };
-        for registration in &self.registrations {
-            for provider in registration.providers(&scope) {
-                stack.provide(provider)?;
+        for registration in self.registrations.iter() {
+            for concept in &registration.concepts {
+                let registrations = self.registrations.clone();
+                let scope = scope.clone();
+                let name = concept.this();
+                stack.provide(CommandProvider::new(
+                    concept,
+                    move |command: dialog_repository::Command| {
+                        dispatch(registrations.clone(), scope.clone(), name.clone(), command)
+                    },
+                ))?;
             }
         }
         Ok(())
@@ -1002,6 +1037,34 @@ pub(crate) mod tests {
         }
     }
 
+    // A test command sharing `Ping`'s tag attribute, registered before
+    // it: dialog hands it every `Ping`, whose rows lack its mark.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.command")]
+    pub struct EchoMark(pub String);
+
+    #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct Echo {
+        pub this: Entity,
+        pub tag: PingTag,
+        pub mark: EchoMark,
+    }
+
+    impl dialog_capability::Command for Echo {
+        type Input = Self;
+        type Output = ();
+    }
+
+    #[dialog_capability::provider]
+    impl dialog_capability::Provider<Echo> for CommandEnv {
+        async fn execute(&self, command: Echo) {
+            PING_LOG
+                .lock()
+                .unwrap()
+                .push((format!("echo:{}", command.tag.0), None));
+        }
+    }
+
     fn ping_transient(of: &str, tag: &str) -> Changes {
         let mut changes = Changes::new();
         // `PingTag`'s attribute name snake-cases the struct name.
@@ -1056,19 +1119,20 @@ pub(crate) mod tests {
     }
 
     /// Dialog runs the FIRST provider claiming a command, and a provider
-    /// claims by any one attribute of its concept's fields: two commands
-    /// sharing an attribute shadow one another, and the first one
-    /// registered runs for both, or runs instead of the other when it
-    /// decodes. A current and a legacy shape of ONE command may share
-    /// attributes: one registration decodes either. The overlaps the
-    /// vocabulary has across registrations are known, all among legacy
-    /// shapes: `dom.event/time-stamp` (`legacy::Invite`,
-    /// `legacy::EnableSync`, `legacy::PauseSync`),
+    /// claims by any one attribute of its concept's fields, so two
+    /// commands sharing an attribute are both handed each other's
+    /// commands; the vocabulary tells them apart by what the rows decode
+    /// as ([`dispatch`]). A current and a legacy shape of ONE command may
+    /// share attributes: one registration decodes either. The overlaps
+    /// across registrations are known, all among legacy shapes:
+    /// `dom.event/time-stamp` (`legacy::Invite`, `legacy::EnableSync`,
+    /// `legacy::PauseSync`),
     /// `dom.event.current-target.elements.email/value`
     /// (`legacy::CheckEmail`, `legacy::RegisterAccount`) and
     /// `dom.event.current-target/value` (`legacy::ProfileRename`,
-    /// `legacy::RenameRepository`). They are recorded against dialog, not
-    /// worked around here, and anything beyond them fails this test.
+    /// `legacy::RenameRepository`). A new one fails this test, so it is
+    /// added knowingly, with a test that each of its commands is run as
+    /// itself.
     #[dialog_common::test]
     fn no_two_commands_share_a_claim_attribute() {
         let providers = command_providers();
@@ -1107,8 +1171,7 @@ pub(crate) mod tests {
             ]
             .into_iter()
             .collect(),
-            "the legacy shapes' shared attributes are the only ones two commands claim; \
-             another would be run by whichever registered first"
+            "the legacy shapes' shared attributes are the only ones two commands claim"
         );
     }
 
@@ -1306,6 +1369,42 @@ pub(crate) mod tests {
                 vec!["alpha".to_string(), "beta".to_string()],
                 "the effect runs each decoded command's provider"
             );
+        }
+
+        /// Two commands that share an attribute are told apart by what
+        /// their rows decode as. Dialog runs the first provider claiming
+        /// a command, by any attribute of its concept, so `Echo`,
+        /// registered first, is handed a `Ping` too; the `Ping` still
+        /// reaches `Ping`'s provider, and an `Echo` reaches `Echo`'s.
+        #[dialog_common::test]
+        async fn it_runs_the_command_the_rows_decode_as_when_two_claim_them() {
+            let _ = drain_ping_log();
+            let state = native::test_state().await;
+            {
+                let mut tonk = state.write().await;
+                tonk.shared_mut().commands = CommandProviders::new()
+                    .command::<Echo>(Surface::Both)
+                    .command::<Ping>(Surface::Both);
+            }
+            invoke_commands(
+                &state,
+                CommandOrigin::default(),
+                ping_transient("did:key:zPing", "plain"),
+            )
+            .await;
+            assert_eq!(
+                drain_ping_tags(),
+                vec!["plain".to_string()],
+                "a ping is run as a ping, though the echo claims its tag"
+            );
+
+            let mut echo = ping_transient("did:key:zEcho", "loud");
+            the!("xyz.tonk.command/echo-mark")
+                .of("did:key:zEcho".parse::<Entity>().unwrap())
+                .is("!".to_string())
+                .assert(&mut echo);
+            invoke_commands(&state, CommandOrigin::default(), echo).await;
+            assert_eq!(drain_ping_tags(), vec!["echo:loud".to_string()]);
         }
 
         #[dialog_common::test]

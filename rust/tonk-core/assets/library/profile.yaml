@@ -6964,9 +6964,10 @@ concept!: &intent
 
 # What the line could mean, asked as a command and answered as session
 # facts. The palette asserts `intent/suggest` on each branch it asks (the
-# space's and the profile's) through the transact path, in the same commit
-# as the line's `intent/interpret`. A stack provider answers it after the
-# commit: it reads the branch's palette vocabulary (`intent/action`, the
+# space's and the profile's) through the transact path, once the branch has
+# recorded the line's `intent/interpret`: the providers of one commit's
+# commands run in no set order, so the two are not sent together. A stack
+# provider answers it after the commit: it reads the branch's palette vocabulary (`intent/action`, the
 # roles on attributes, the `intent`s and what rules derived onto them, the
 # memory) and writes one `intent/reading` per reading, best first, and one
 # `intent/answer` saying how many, into the branch's `session:` layer. The
@@ -7470,14 +7471,17 @@ element!: &command-palette
         const expression = site ? self.__expression : null;
         const started = performance.now();
         const timing = {};
-        // The line's interpretation, as a claim: the handler (the parser)
-        // records the expression and an intent per command the line could
-        // mean, and rules derive values for those commands' fields. Sent in
-        // the same commit as the ask below, so the ask's provider reads
-        // what it recorded.
-        const interpret = () => {
+        // The line's interpretation, a command of its own: the handler (the
+        // parser) records the expression and an intent per command the line
+        // could mean, and rules derive values for those commands' fields.
+        // Its own transact, before the ask: the providers of one commit's
+        // commands run in no order the page can count on, so an ask sent
+        // beside it could be answered before the line was recorded. The
+        // handler runs after the transact returns: wait until it has
+        // recorded this line.
+        const interpreted = async (branch) => {
           const field = (name, as) => ({ the: `tonk.dialog.intent.interpret/${name}`, as });
-          return { op: 'assert', application: {
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
             predicate: { kind: 'transient', concept: {
               description: 'Interpret what was typed in the command palette, where it was opened.',
               with: {
@@ -7485,7 +7489,18 @@ element!: &command-palette
                 site: field('site', 'Entity'), time: field('time', 'Float'),
               } } },
             parameters: { expression, input: typed, site, time: now },
-          } };
+          } }] }, { with: branch });
+          const recorded = { predicate: { with: { input: {
+            the: 'tonk.dialog.intent.expression/input', as: 'Text', cardinality: 'one' } } },
+            terms: { this: expression, input: { '?': { name: 'input' } } } };
+          for (let tries = 0; tries < 100; tries++) {
+            if (self.__asked !== asked) return false;
+            const found = await window.tonk.query(recorded, { with: branch });
+            const rows = Array.isArray(found) ? found : (found && found.rows) || [];
+            if (rows.some((row) => (row.fields || {}).input === typed)) return true;
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          return false;
         };
         const subject = space ? { this: space } : {};
         // What was run from the palette is kept on the profile; the space
@@ -7522,9 +7537,10 @@ element!: &command-palette
         // of each branch through the transact path and answered by a
         // provider on the branch's stack into its `session:` layer: an
         // `intent/answer` saying how many readings, and one
-        // `intent/reading` per reading, every row naming the ask. With a
-        // site to interpret against, the ask names the expression; else
-        // the line itself.
+        // `intent/reading` per reading, every row naming the ask. Once the
+        // branch has recorded the line's interpretation, the ask names the
+        // expression; with no site to interpret against, or a branch that
+        // did not record it, the line itself.
         const ofExpression = (branch) => ({ expression, ...subject, now, max, ...remembered(branch) });
         const ofLine = (branch) => ({ input: typed, ...subject, now, max, site, ...remembered(branch) });
         const askTypes = { input: 'Text', memory: 'Text', now: 'Float', max: 'UnsignedInteger',
@@ -7586,9 +7602,13 @@ element!: &command-palette
           };
         };
         const answers = await Promise.all(branches.map(async (branch) => {
+          const done = expression ? await interpreted(branch).catch((error) => {
+            console.warn('<command-palette> intent/interpret failed on', branch, error);
+            return false;
+          }) : false;
+          if (self.__asked !== asked) return [];
           const ask = `ask:${crypto.randomUUID()}`;
-          const claims = expression ? [interpret()] : [];
-          claims.push(askClaim(ask, expression ? ofExpression(branch) : ofLine(branch)));
+          const claims = [askClaim(ask, done ? ofExpression(branch) : ofLine(branch))];
           try {
             await window.tonk.transact({ claims }, { with: branch });
           } catch (error) {
