@@ -6362,11 +6362,13 @@ where
     meta.refresh(&tonk.operator).await.map_err(|e| {
         RepositoryError::Internal(format!("Failed to refresh meta for '{}': {}", key, e))
     })?;
+    let changes = transaction.into_changes();
     let revision = meta
-        .transaction()
-        .assert(transaction.into_changes())
-        .commit()
-        .publish()
+        .transact(|transaction| {
+            std::future::ready(Ok::<_, dialog_repository::CommitError>(
+                transaction.assert(changes.clone()),
+            ))
+        })
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
@@ -8283,11 +8285,13 @@ where
     meta.refresh(&tonk.operator).await.map_err(|e| {
         RepositoryError::Internal(format!("Failed to refresh meta for '{}': {}", name, e))
     })?;
+    let changes = transaction.into_changes();
     let revision = meta
-        .transaction()
-        .assert(transaction.into_changes())
-        .commit()
-        .publish()
+        .transact(|transaction| {
+            std::future::ready(Ok::<_, dialog_repository::CommitError>(
+                transaction.assert(changes.clone()),
+            ))
+        })
         .perform(&tonk.operator)
         .await
         .map_err(|e| {

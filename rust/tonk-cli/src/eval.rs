@@ -253,6 +253,12 @@ pub async fn run_documents(
     // run. Pure-query docs and `--dry-run` short-circuit so we
     // don't pay for (or apply) a commit.
     let (response, committed) = if !options.dry_run && writes {
+        // One try, failing on a lost race: the documents were evaluated
+        // against the head this transaction opened at, and the response
+        // reports what they matched there. Committing them over a head
+        // that won meanwhile would land writes the response does not
+        // describe, so a lost race is reported as a failed commit.
+        #[allow(deprecated)]
         let revision_after = txn
             .commit()
             .publish()

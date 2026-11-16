@@ -1060,48 +1060,39 @@ async fn perform_join(
     // holds other writers of this branch off meanwhile (a space's seeding
     // commits into it in the background), so a commit that loses the
     // head's race is computed again on the head that won.
-    const CLAIM_ATTEMPTS: usize = 4;
-    let mut attempt = 0;
-    loop {
-        attempt += 1;
-        let (changes, _already_claimed) = claim_changes(
-            tonk,
-            &branch,
-            &tonk.operator,
-            &prepared.invitation,
-            &prepared.invitation_execution,
-            &prepared.member,
-            &prepared.subject,
-        )
-        .await?;
-        if changes.is_empty() {
-            break;
-        }
-        match branch
-            .transaction()
-            .assert(changes)
-            .commit()
-            .publish()
-            .perform(&tonk.operator)
-            .await
-        {
-            Ok(_) => break,
-            Err(dialog_repository::CommitError::Publish(
-                dialog_repository::PublishError::VersionMismatch { .. },
-            )) if attempt < CLAIM_ATTEMPTS => {
-                branch.refresh(&tonk.operator).await.map_err(|error| {
-                    JoinFailure::claim_failed(format!(
-                        "failed to read the content branch again: {error}"
-                    ))
-                })?;
-            }
-            Err(error) => {
-                return Err(JoinFailure::claim_failed(format!(
-                    "failed to commit the claim: {error}"
-                )));
-            }
+    enum ClaimTry {
+        Read(JoinFailure),
+        Commit(dialog_repository::CommitError),
+    }
+    impl From<dialog_repository::CommitError> for ClaimTry {
+        fn from(error: dialog_repository::CommitError) -> Self {
+            Self::Commit(error)
         }
     }
+    let (claimed, claiming) = (&branch, &prepared);
+    claimed
+        .transact(|transaction| async move {
+            let (changes, _already_claimed) = claim_changes(
+                tonk,
+                claimed,
+                &tonk.operator,
+                &claiming.invitation,
+                &claiming.invitation_execution,
+                &claiming.member,
+                &claiming.subject,
+            )
+            .await
+            .map_err(ClaimTry::Read)?;
+            Ok::<_, ClaimTry>(transaction.assert(changes))
+        })
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| match error {
+            ClaimTry::Read(failure) => failure,
+            ClaimTry::Commit(error) => {
+                JoinFailure::claim_failed(format!("failed to commit the claim: {error}"))
+            }
+        })?;
 
     // The reactor may hold a handle from an earlier attempt at this key;
     // the pull and commit moved the head underneath it. Leaving a stale

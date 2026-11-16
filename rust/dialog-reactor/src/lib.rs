@@ -16,6 +16,10 @@
 //! and the subscriptions a page opened on a branch that does not exist
 //! yet.
 
+// Tests commit with the one-step publish, which fails on a lost race:
+// a test's branch has no other writer to lose one to.
+#![cfg_attr(test, allow(deprecated))]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
