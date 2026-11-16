@@ -85,16 +85,6 @@ concept!: &space
         - case:paused
         - case:synced
         - case:local
-    role:
-      description: >
-        What this account can do in the space, in the hub's words:
-        case:admin for a space it made or provides, case:write for one it
-        joined, since a passlink or an invite makes the invitee a writer.
-        Derived by the `space/role` rules below.
-      the: xyz.tonk.space/role
-      as:
-        - case:admin
-        - case:write
     description:
       description: >
         The optional account-directory mirror of the space's short
@@ -926,10 +916,11 @@ view!:
                ancestors. -->
           <div class="hub-row space-card" data-presence={presence} data-space-subject={subject} data-id={this}>
             <div class="hub-row-line">
-              <!-- The sync disc, the name, then what you can do there. The
-                   disc and the role arrive as cases; `hub-collection` says
-                   them in hub.css's words (`data-sync`, the meta text). -->
-              <a class="hub-open" href="/space/{subject}"><span class="hub-disc" role="img" data-sync-case={sync}></span><span class="hub-name" title="{name}">{name}</span><span class="hub-meta" data-role-case={role}></span></a>
+              <!-- The sync disc, then the name. The disc arrives as a case;
+                   `hub-collection` says it in hub.css's words (`data-sync`).
+                   The meta slot (people, role) is left out until the
+                   profile branch records them. -->
+              <a class="hub-open" href="/space/{subject}"><span class="hub-disc" role="img" data-sync-case={sync}></span><span class="hub-name" title="{name}">{name}</span></a>
               <space-actions>
                 <span class="verbs">
                   <button class="hub-btn" type="button" data-space-actions-open aria-haspopup="menu"
@@ -2447,8 +2438,8 @@ element!: &hub-collection
           }
         } catch (_) { /* The decorative preview remains when storage is unavailable. */ }
       }
-    # A row's sync disc and role arrive as the cases the rules derive
-    # (`case:paused`, `case:admin`); hub.css and the reader want words.
+    # A row's sync disc arrives as the case the rules derive
+    # (`case:paused`); hub.css and the reader want words.
     words: |
       (self) => {
         const SYNC = { 'case:synced': ['synced', 'synced'], 'case:paused': ['paused', 'paused'], 'case:local': ['local', 'local only'] };
@@ -2459,10 +2450,6 @@ element!: &hub-collection
             disc.setAttribute('aria-label', label);
             disc.setAttribute('title', label);
           }
-        }
-        for (const meta of self.querySelectorAll('.hub-meta[data-role-case]')) {
-          const role = (meta.getAttribute('data-role-case') ?? '').replace(/^case:/, '');
-          if (meta.textContent !== role) meta.textContent = role;
         }
       }
     # How many spaces the sheet lists, in Tonk's line: the rows that show,
@@ -2485,7 +2472,7 @@ element!: &hub-collection
         self._observer?.disconnect();
         const observer = new MutationObserver(() => { self.deal(); self.previews(); self.count(); self.words(); });
         observer.observe(self, { childList: true, subtree: true, attributes: true,
-          attributeFilter: ['data-space-subject', 'data-space-thumbnail', 'data-sync-case', 'data-role-case'] });
+          attributeFilter: ['data-space-subject', 'data-space-thumbnail', 'data-sync-case'] });
         self._observer = observer;
       }
     disconnected: |
@@ -7060,67 +7047,6 @@ rule!:
       where:
         this: ?sync
         is: case:paused
-
-# A space this account made: `founded-at` is optional on `space`, so a rule
-# binds it through this required field.
-concept!: &space/founded
-  this: tonk:space/founded
-  description: A space this account created.
-  with:
-    founded-at:
-      description: When this account created the space.
-      the: xyz.tonk.space/founded-at
-      as: natural:64
-
-# What this account can do in a space, in the hub's words. A space it made
-# here or provides is its own to run; any other it joined through a link,
-# and a link or an invite makes the invitee a writer.
-concept!: &space/role
-  this: tonk:space/role
-  description: What this account can do in a space.
-  with:
-    role:
-      description: "`case:admin` or `case:write`: the first listed case any rule derives."
-      the: xyz.tonk.space/role
-      as:
-        - case:admin
-        - case:write
-
-rule!:
-  description: A space this account joined gives it write
-  assert: space/role
-  when:
-    - assert: space
-      where:
-        this: ?this
-    - assert: ==
-      where:
-        this: ?role
-        is: case:write
-
-rule!:
-  description: A space this account provides is its to run
-  assert: space/role
-  when:
-    - assert: space/owned
-      where:
-        this: ?this
-    - assert: ==
-      where:
-        this: ?role
-        is: case:admin
-
-rule!:
-  description: A space this account made here is its to run
-  assert: space/role
-  when:
-    - assert: space/founded
-      where:
-        this: ?this
-    - assert: ==
-      where:
-        this: ?role
-        is: case:admin
 
 rule!:
   description: A space on this account that syncs is one "invite" from the palette can let an agent into.

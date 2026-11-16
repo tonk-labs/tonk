@@ -887,7 +887,7 @@ fn it_deals_stable_weighted_frames_from_space_identity() {
         "data-space-subject",
         "const stepDown = { 15: 7, 7: 3, 3: 1, 1: 1 }",
         "--fr-r-mobile",
-        "attributeFilter: ['data-space-subject', 'data-space-thumbnail', 'data-sync-case', 'data-role-case']",
+        "attributeFilter: ['data-space-subject', 'data-space-thumbnail', 'data-sync-case']",
     ] {
         assert!(
             collection.contains(contract),
@@ -2083,26 +2083,29 @@ fn it_routes_a_seed_link_to_the_seed_page_with_the_url_intact() {
     );
 }
 
-/// A hub row draws the space's sync disc and what you can do there, both
-/// derived on the profile branch from facts this device holds: the disc
-/// from the space's upstream and this device's pause preference, the role
-/// from whether the account made or provides the space.
+/// A hub row draws the space's sync disc, derived on the profile branch
+/// from facts this device holds: the space's upstream and this device's
+/// pause preference. It shows no role or people count, since the profile
+/// branch records neither and the hub shows only recorded facts.
 #[dialog_common::test]
-fn it_derives_each_hub_rows_sync_disc_and_role() {
+fn it_derives_each_hub_rows_sync_disc_and_no_unrecorded_role() {
     for contract in [
         "concept!: &space/sync",
-        "concept!: &space/role",
         "concept!: &replica/sync-enabled",
         "the: xyz.tonk.space/sync",
-        "the: xyz.tonk.space/role",
         "the: xyz.tonk.sync/enabled",
         "description: A synced space whose replica is paused on this device is paused",
         "<span class=\"hub-disc\" role=\"img\" data-sync-case={sync}></span>",
-        "<span class=\"hub-meta\" data-role-case={role}></span>",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
             "the hub row must carry `{contract}`",
+        );
+    }
+    for absent in ["concept!: &space/role", "data-role-case", "class=\"hub-meta\""] {
+        assert!(
+            !PROFILE_LIBRARY.contains(absent),
+            "the hub row must not infer `{absent}`",
         );
     }
     // The cases rank: a paused space that has an upstream reads as paused,
