@@ -1015,6 +1015,13 @@ pub(crate) mod tests {
     /// within the single-threaded test run.
     static PING_LOG: Mutex<Vec<(String, Option<String>)>> = Mutex::new(Vec::new());
 
+    /// The tests that read `Ping`'s log drain it, so they take turns: one
+    /// running beside another would read, or take, its entries.
+    pub(crate) async fn ping_turn() -> tokio::sync::MutexGuard<'static, ()> {
+        static TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        TURN.lock().await
+    }
+
     /// Take and clear the recorded invocations. The provider writes it
     /// on every target; the tests here and the transact route's native
     /// test read it.
@@ -1062,6 +1069,34 @@ pub(crate) mod tests {
                 .lock()
                 .unwrap()
                 .push((format!("echo:{}", command.tag.0), None));
+        }
+    }
+
+    // A test command of its own for the evaluate route's test, logging
+    // apart from `Ping`, so tests running beside it do not take its
+    // entries.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.command")]
+    pub struct EvaluatedNote(pub String);
+
+    #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct Evaluated {
+        pub this: Entity,
+        pub note: EvaluatedNote,
+    }
+
+    impl dialog_capability::Command for Evaluated {
+        type Input = Self;
+        type Output = ();
+    }
+
+    /// What `Evaluated`'s provider was handed.
+    static EVALUATED_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    #[dialog_capability::provider]
+    impl dialog_capability::Provider<Evaluated> for CommandEnv {
+        async fn execute(&self, command: Evaluated) {
+            EVALUATED_LOG.lock().unwrap().push(command.note.0);
         }
     }
 
@@ -1298,6 +1333,7 @@ pub(crate) mod tests {
 
         #[dialog_common::test]
         async fn it_runs_the_provider_with_the_decoded_command() {
+            let _turn = ping_turn().await;
             let _ = drain_ping_log();
             let state = state_with_ping().await;
             invoke_commands(
@@ -1320,6 +1356,7 @@ pub(crate) mod tests {
         /// (`tonk:home`) takes to post back to the tab that asked.
         #[dialog_common::test]
         async fn a_command_reaches_its_provider_with_the_client_that_invoked_it() {
+            let _turn = ping_turn().await;
             let _ = drain_ping_log();
             let state = state_with_ping().await;
             invoke_commands(
@@ -1350,6 +1387,7 @@ pub(crate) mod tests {
 
         #[dialog_common::test]
         async fn it_runs_every_decoded_command_in_a_batch() {
+            let _turn = ping_turn().await;
             let _ = drain_ping_log();
             let state = state_with_ping().await;
 
@@ -1378,6 +1416,7 @@ pub(crate) mod tests {
         /// reaches `Ping`'s provider, and an `Echo` reaches `Echo`'s.
         #[dialog_common::test]
         async fn it_runs_the_command_the_rows_decode_as_when_two_claim_them() {
+            let _turn = ping_turn().await;
             let _ = drain_ping_log();
             let state = native::test_state().await;
             {
@@ -1407,8 +1446,63 @@ pub(crate) mod tests {
             assert_eq!(drain_ping_tags(), vec!["echo:loud".to_string()]);
         }
 
+        /// A command a document asserts through the evaluate route is
+        /// answered by its provider, as one asserted through the transact
+        /// route is: the document commits through the branch's stack, and
+        /// the publish's report hands its commands to the providers.
+        #[dialog_common::test]
+        async fn the_evaluate_route_answers_a_command_through_its_provider() {
+            let _turn = ping_turn().await;
+            use axum::body::Body;
+            use axum::http::{Request, StatusCode};
+            use tower::ServiceExt as _;
+
+            let state = native::test_state().await;
+            {
+                let mut tonk = state.write().await;
+                tonk.shared_mut().commands =
+                    CommandProviders::new().command::<Evaluated>(Surface::Both);
+            }
+            let branch = state.read().await.active_branch.clone();
+            let (app, _lsp) = crate::api_router_from_state(state.clone());
+            let evaluate = |document: &'static str| {
+                let app = app.clone();
+                let uri = format!("/api/repository/profile:tonk/branch/{branch}/evaluate");
+                async move {
+                    let response = app
+                        .oneshot(
+                            Request::builder()
+                                .uri(uri)
+                                .method("POST")
+                                .header("content-type", "application/yaml")
+                                .body(Body::from(document))
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status(), StatusCode::OK);
+                }
+            };
+            evaluate(
+                "command!: &test/note\n  description: Note.\n  with:\n    note:\n      description: The note.\n      the: xyz.tonk.command/evaluated-note\n      as: text\n",
+            )
+            .await;
+            assert!(
+                EVALUATED_LOG.lock().unwrap().is_empty(),
+                "a declaration runs nothing"
+            );
+
+            evaluate("test/note!:\n  note: \"evaluated\"\n").await;
+            assert_eq!(
+                std::mem::take(&mut *EVALUATED_LOG.lock().unwrap()),
+                vec!["evaluated".to_string()],
+                "the provider answers the command the document asserted"
+            );
+        }
+
         #[dialog_common::test]
         async fn it_runs_nothing_when_no_command_decodes() {
+            let _turn = ping_turn().await;
             let _ = drain_ping_log();
             let state = state_with_ping().await;
             let mut changes = Changes::new();
@@ -1426,6 +1520,7 @@ pub(crate) mod tests {
         /// effect before `execute`.
         #[dialog_common::test]
         async fn a_surface_refuses_a_command_from_the_wrong_origin() {
+            let _turn = ping_turn().await;
             let _ = drain_ping_log();
             let state = native::test_state().await;
             {

@@ -10493,13 +10493,11 @@ route!: &foreign-profile-route
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
-        let mut subscriber = subscribed_session
-            .subscribe(query, None, 0)
-            .expect("view subscription registers");
+        let mut subscriber = subscribed_session.subscribe(query, None, 0);
         tonk.reactor
             .schedule_poll(std::sync::Arc::clone(&subscribed_session.state));
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
-        while subscriber.receiver.try_recv().is_ok() {}
+        while subscriber.try_recv().is_ok() {}
 
         tonk.shared_mut().profile_library = Default::default();
         let outcome = reconcile_profile_library(&tonk)
@@ -10522,7 +10520,7 @@ route!: &foreign-profile-route
             "current facet resolves: {after}"
         );
         let mut delivered = Vec::new();
-        while let Ok(bytes) = subscriber.receiver.try_recv() {
+        while let Ok(bytes) = subscriber.try_recv() {
             delivered.extend_from_slice(&bytes);
         }
         let delivered: serde_json::Value =
@@ -12502,14 +12500,12 @@ block/insert!:
                 .acquire(&guard.operator)
                 .await
                 .expect("acquire cached main");
-            subscriber = session
-                .subscribe(ConceptQuery::from(Query::<Name>::default()), None, 0)
-                .expect("subscribe");
+            subscriber = session.subscribe(ConceptQuery::from(Query::<Name>::default()), None, 0);
             before_ptr = Arc::as_ptr(&session.state);
         }
         // Drain whatever subscribing itself delivered, so anything that
         // arrives next can only be a later write's doing.
-        while subscriber.receiver.try_recv().is_ok() {}
+        while subscriber.try_recv().is_ok() {}
 
         // An ephemeral session fact — the kind a tab's `tonk:site` stamp
         // or the sync status is made of. It must survive the refresh.
@@ -12531,10 +12527,10 @@ block/insert!:
             guard.reactor.run_scheduled_polls(&guard.operator).await;
         }
         assert!(
-            subscriber.receiver.try_recv().is_ok(),
+            subscriber.try_recv().is_ok(),
             "the overlay write must reach the live subscriber",
         );
-        while subscriber.receiver.try_recv().is_ok() {}
+        while subscriber.try_recv().is_ok() {}
 
         attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
 
@@ -12551,7 +12547,7 @@ block/insert!:
             "refresh must keep the cached BranchState, not swap it",
         );
         assert_eq!(
-            session.state.subscriptions().lock().len(),
+            session.state.subscriptions_held(),
             1,
             "the live subscription must survive the refresh",
         );
@@ -12564,15 +12560,13 @@ block/insert!:
         // snapshot carries the ephemeral fact. Before the in-place
         // refresh this was the share-flow regression — the swapped-in
         // handle's empty overlay silently dropped every session fact.
-        let mut fresh = session
-            .subscribe(ConceptQuery::from(Query::<Name>::default()), None, 0)
-            .expect("subscribe after refresh");
+        let mut fresh = session.subscribe(ConceptQuery::from(Query::<Name>::default()), None, 0);
         // A new subscriber is Pending until a poll serves its snapshot;
         // drive one the way the request dispatcher would.
         guard.reactor.schedule_poll(Arc::clone(&session.state));
         guard.reactor.run_scheduled_polls(&guard.operator).await;
         let mut snapshot = Vec::new();
-        while let Ok(bytes) = fresh.receiver.try_recv() {
+        while let Ok(bytes) = fresh.try_recv() {
             snapshot.extend_from_slice(&bytes);
         }
         let snapshot = String::from_utf8_lossy(&snapshot);

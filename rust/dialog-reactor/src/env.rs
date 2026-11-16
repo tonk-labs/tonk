@@ -38,6 +38,24 @@ impl<T> BranchOpenProvider for T where
 {
 }
 
+/// What settling a branch's stack needs ([`Stack::settle`]): the reads
+/// a subscription's poll makes, through a handle the stack clones once
+/// and shares among every subscription it polls.
+///
+/// [`Stack::settle`]: dialog_repository::Stack::settle
+pub trait SettleProvider:
+    dialog_repository::OpenStackEnv + Clone + dialog_common::ConditionalSend + ConditionalSync + 'static
+{
+}
+impl<T> SettleProvider for T where
+    T: dialog_repository::OpenStackEnv
+        + Clone
+        + dialog_common::ConditionalSend
+        + ConditionalSync
+        + 'static
+{
+}
+
 /// Bound needed for raw content-addressed block access to the branch
 /// archive, reading tree nodes by hash. `Put` is part of the
 /// `StorageBackend` bound even though

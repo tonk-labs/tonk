@@ -1,7 +1,7 @@
-//! [`BranchState`] — cached branch handle plus the subscriptions
-//! registered against it. Lives behind an `Arc`; subscription
-//! operations on the branch happen directly on the state without
-//! routing through the reactor's name-keyed lookup.
+//! [`BranchState`] — cached branch handle, the stack over it, and the
+//! connections streaming its subscriptions. Lives behind an `Arc`;
+//! subscription operations on the branch happen directly on the state
+//! without routing through the reactor's name-keyed lookup.
 
 use std::sync::Arc;
 
@@ -9,15 +9,11 @@ use bytes::Bytes;
 use dialog_corpus::Statement;
 use dialog_query::ConceptQuery;
 use dialog_repository::{Branch, CommitError, Stack};
-use indexmap::IndexMap;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
-use crate::env::SelectProvider;
-use crate::error::ReactorError;
-use crate::subscription::{
-    QueryHash, Status, Subscriber, SubscriberSession, Subscription, SubscriptionPoll,
-};
+use crate::env::SettleProvider;
+use crate::subscription::{Connection, Listener, Plan, QueryHash, Subscriber};
 
 /// Cached branch handle plus the subscriptions registered
 /// against it. Held inside the reactor's cache as
@@ -39,10 +35,11 @@ pub struct BranchState {
     /// Whether the embedder has registered its providers on the stack
     /// ([`provide_once`](Self::provide_once)).
     provided: std::sync::atomic::AtomicBool,
-    /// Subscriptions on this branch, keyed by query hash, in the order
-    /// they were created. [`Self::poll`] walks them lowest level first (see
-    /// [`Subscription::level`]), creation order breaking ties.
-    subscriptions: Mutex<IndexMap<QueryHash, Subscription>>,
+    /// The connections streaming this branch's subscriptions, in the
+    /// order they were made. The evaluations are the stack's
+    /// ([`Stack::subscribe`]); [`Self::deliver`] sends each connection
+    /// what the stack delivered it, lowest level first.
+    listeners: Mutex<Vec<Listener>>,
     /// Serializes *transactions* on this branch — concurrent writers (e.g.
     /// two browser tabs committing through one service worker) line up rather
     /// than racing the head CAS and failing. Guards nothing but the right to be
@@ -77,7 +74,7 @@ impl BranchState {
             branch,
             stack,
             provided: std::sync::atomic::AtomicBool::new(false),
-            subscriptions: Mutex::new(IndexMap::new()),
+            listeners: Mutex::new(Vec::new()),
             transactor: tokio::sync::Mutex::new(()),
             migration_claimed: std::sync::atomic::AtomicBool::new(false),
             migrating: std::sync::atomic::AtomicBool::new(false),
@@ -151,9 +148,10 @@ impl BranchState {
     /// ephemeral facts folded into every read of the branch (queries,
     /// transaction views, and standing subscriptions) but never
     /// committed. Delegates to [`Branch::overlay`]: dialog owns the
-    /// overlay now, folds it in at the single `QueryLayer::from(&Branch)`
-    /// point, and bumps an epoch so the branch's subscriptions re-evaluate
-    /// on their next poll. A cardinality-one re-assert overwrites in place.
+    /// overlay, and every read through the stack reads it as rows of the
+    /// primary. The stack does not see a write into it, so this schedules
+    /// the stack's poll ([`Stack::schedule_poll`]), which the next settle
+    /// runs. A cardinality-one re-assert overwrites in place.
     ///
     /// The overlay holds facts only, so a statement that changes an asset
     /// is refused; that is a mistake in the caller, reported in the log.
@@ -161,6 +159,7 @@ impl BranchState {
         if let Err(error) = self.branch.overlay().assert(claim) {
             dialog_common::log!("overlay assert refused: {error}");
         }
+        self.stack.schedule_poll();
     }
 
     /// Retract a [`Statement`] from the branch's session overlay. A
@@ -170,6 +169,7 @@ impl BranchState {
         if let Err(error) = self.branch.overlay().retract(claim) {
             dialog_common::log!("overlay retract refused: {error}");
         }
+        self.stack.schedule_poll();
     }
 
     /// Drop every fact in the branch's session overlay. Used to keep
@@ -179,133 +179,181 @@ impl BranchState {
     /// does).
     pub fn clear_overlay(&self) {
         self.branch.overlay().clear();
+        self.stack.schedule_poll();
     }
 
-    /// Borrow the subscription map. Used by [`SubscriptionPoll`]
-    /// to walk subscribers, and by tests asserting on cache state.
-    pub fn subscriptions(&self) -> &Mutex<IndexMap<QueryHash, Subscription>> {
-        &self.subscriptions
-    }
-
-    /// Drop every subscriber session on this branch.
+    /// Drop every connection on this branch, so each one's stream ends.
     ///
-    /// Each session owns an `mpsc::Sender`; dropping it surfaces
-    /// `None` on the receiver side, which ends the
-    /// `UnboundedReceiverStream` driving the SSE response body, so
-    /// the in-flight fetch settles. Called from the worker's
-    /// `onupdatefound` path so the old SW can be replaced —
-    /// without this, the SW spec keeps the worker alive for as long
-    /// as any open fetch still holds a stream.
+    /// Each listener owns its connection's sender; dropping it surfaces
+    /// `None` on the receiver side, which ends the stream driving the
+    /// SSE response body, so the in-flight fetch settles and drops its
+    /// [`Subscriber`], and with it the dialog reader. Called from the
+    /// worker's `onupdatefound` path so the old SW can be replaced —
+    /// without this, the SW spec keeps the worker alive for as long as
+    /// any open fetch still holds a stream.
     pub fn clear_subscribers(&self) {
-        self.subscriptions.lock().clear();
+        self.listeners.lock().clear();
     }
 
-    /// Register a fresh subscriber for `query`. Returns a
-    /// [`Subscriber`] carrying the subscription's hash and the
-    /// receiver to read broadcast bytes from. The caller is
-    /// expected to follow up with
-    /// `branch_session.subscription(hash).poll().perform(&env)`
-    /// so the new subscriber's first event is the current snapshot.
-    ///
-    /// Query identity is the blake3 hash of the serialized
-    /// [`Query`] projection. We **don't** re-check `PartialEq`
-    /// against the registered query, even though earlier
-    /// revisions did: `NamedAttributes` in dialog-query derives
-    /// `PartialEq` over a `Vec` whose order is randomized by the
-    /// `HashMap`-mediated `Serialize` / `Deserialize` impls, so
-    /// the same query round-tripped through ser/de can compare
-    /// `!=` even though the hashes match. A genuine blake3
-    /// collision is cryptographically impossible, so trusting
-    /// the hash is the right move here. Track the upstream fix
-    /// in dialog-db (make `NamedAttributes::PartialEq`
-    /// order-insensitive, or serialize in sorted order).
-    /// Attach a subscriber that already owns its channel.
-    ///
-    /// The adoption path for a subscription registered before this
-    /// branch existed: its sender is already wired to a stream the page
-    /// is holding open, so re-minting a channel here would deliver
-    /// frames nowhere. Otherwise identical to [`Self::subscribe`] —
-    /// same plan, same dedup by query hash — so an adopted subscriber
-    /// joins whatever subscription its peers are already on.
-    pub fn adopt_subscriber(
-        &self,
-        query: ConceptQuery,
-        client: Option<String>,
-        level: u32,
-        sender: mpsc::UnboundedSender<Bytes>,
-    ) -> QueryHash {
-        let hash = QueryHash::from(&query);
-        self.install_subscriber(query, client, level, sender);
-        hash
-    }
-
-    pub fn subscribe(
-        &self,
-        query: ConceptQuery,
-        client: Option<String>,
-        level: u32,
-    ) -> Result<Subscriber, ReactorError> {
-        let hash = QueryHash::from(&query);
+    /// Subscribe a fresh connection to `query`: a reader of the stack's
+    /// subscription to it, registered now or attached to the one the
+    /// stack holds. Its frames arrive once [`Self::settle`] (or the
+    /// reactor's `run_scheduled_polls`) has delivered: the first is the
+    /// whole result set.
+    pub fn subscribe(&self, query: ConceptQuery, client: Option<String>, level: u32) -> Subscriber {
         let (sender, receiver) = mpsc::unbounded_channel();
-        self.install_subscriber(query, client, level, sender);
-        Ok(Subscriber { hash, receiver })
+        let connection = self.connect(query, client, level, sender);
+        Subscriber::new(receiver, connection)
     }
 
-    /// Register `sender` against `query`'s subscription, creating the
-    /// subscription (and its engine) if this is the first subscriber.
-    /// Shared by [`Self::subscribe`] and [`Self::adopt_subscriber`] so
-    /// the two cannot drift.
-    fn install_subscriber(
+    /// Attach a connection that already owns its channel: the adoption
+    /// path for a subscription registered before this branch existed,
+    /// whose sender is already wired to a stream the page is holding
+    /// open. Its [`Connection`] is the one the waiting subscriber holds,
+    /// handed its reader here; one already gone attaches nothing.
+    pub(crate) fn adopt(&self, pending: crate::PendingSubscription) {
+        let Some(connection) = pending.connection.upgrade() else {
+            return;
+        };
+        connection.attach(self.stack.subscribe(Plan::new(pending.query)));
+        self.listeners.lock().push(Listener {
+            connection: Arc::downgrade(&connection),
+            sender: pending.sender,
+            client: pending.client,
+            level: pending.level,
+        });
+    }
+
+    /// Register a connection reading `query`, whose frames go into
+    /// `sender`.
+    pub fn connect(
         &self,
         query: ConceptQuery,
         client: Option<String>,
         level: u32,
         sender: mpsc::UnboundedSender<Bytes>,
-    ) {
-        let hash = QueryHash::from(&query);
-
+    ) -> Arc<Connection> {
         let terms = query.terms.clone();
-
-        let mut subs = self.subscriptions.lock();
-        let entry = subs.entry(hash.clone());
-        // Route through `QueryPlan::from` (the same projection the one-shot
-        // `QueryEffect` applies) so a concept-of-concept / command / rule
-        // metadata query dispatches to its anonymous-enumeration application
-        // instead of scanning for `dialog.meta/*` facts that aren't stored.
-        // The subscription reads through the stack: the primary with its
-        // session overlay, and every layer the stack holds, among them
-        // its own `session:`, where a provider's answer to a command
-        // lands. A poll re-evaluates when any of them moved.
-        let plan = tonk_schema::concept::QueryPlan::from(query);
-        let subscription = entry.or_insert_with(|| Subscription {
-            engine: Arc::new(tokio::sync::Mutex::new(Some(self.stack.subscription(plan)))),
-            terms,
-            subscribers: Vec::new(),
-        });
-        subscription.subscribers.push(SubscriberSession {
+        let reader = self.stack.subscribe(Plan::new(query));
+        let connection = Connection::new(Some(reader), terms);
+        self.listeners.lock().push(Listener {
+            connection: Arc::downgrade(&connection),
             sender,
-            status: Status::Pending,
             client,
             level,
         });
+        connection
     }
 
-    /// Drop every subscriber whose `client` tag fails `keep`; an
-    /// untagged subscriber (`None`) is always kept. A subscription
-    /// left with no subscribers is removed with its engine.
+    /// Drop every connection whose `client` tag fails `keep`; an
+    /// untagged connection (`None`) is always kept. Dropping a
+    /// connection's listener ends its client's stream, which drops the
+    /// dialog reader the client held; a subscription left with no reader
+    /// goes with it.
     ///
-    /// This is the liveness-driven prune: send-failure pruning in
-    /// `fan_out` only fires once the receiver is actually dropped,
-    /// which a vanished client may never trigger — its stale
-    /// subscription would re-evaluate on every poll forever.
+    /// This is the liveness-driven prune: a vanished client may never
+    /// close its stream, so its connection would otherwise keep its
+    /// subscription evaluating on every poll forever.
     pub fn retain_subscribers<F: Fn(&str) -> bool>(&self, keep: F) {
-        let mut subs = self.subscriptions.lock();
-        subs.retain(|_, subscription| {
-            subscription
-                .subscribers
-                .retain(|s| s.client.as_deref().is_none_or(&keep));
-            !subscription.subscribers.is_empty()
-        });
+        self.listeners
+            .lock()
+            .retain(|listener| listener.client.as_deref().is_none_or(&keep));
+    }
+
+    /// The levels of this branch's live connections, in the order they
+    /// were made.
+    pub fn connection_levels(&self) -> Vec<u32> {
+        self.listeners
+            .lock()
+            .iter()
+            .filter(|listener| listener.connection.strong_count() > 0)
+            .map(|listener| listener.level)
+            .collect()
+    }
+
+    /// How many subscriptions the branch's stack holds that some
+    /// connection still reads.
+    pub fn subscriptions_held(&self) -> usize {
+        self.stack.subscriptions_held()
+    }
+
+    /// Send every connection the frames the stack delivered it since its
+    /// last delivery, subscription by subscription, lowest level first: a
+    /// display's level is how many displays enclose it, so it learns of a
+    /// change before the displays nested inside it do, and a parent that
+    /// re-renders its children away first spares them a frame for an
+    /// address it is replacing. A subscription shared across levels is
+    /// delivered at its outermost reader's, to all its readers at once;
+    /// the order subscriptions were first read breaks ties. A connection
+    /// whose client has dropped it, or stopped listening, is pruned.
+    pub fn deliver(&self) {
+        let mut listeners = self.listeners.lock();
+        // Each listener's subscription, as the hash its connection reads
+        // (a connection gone, or still waiting for its reader, has none).
+        let hashes: Vec<Option<QueryHash>> = listeners
+            .iter()
+            .map(|listener| listener.connection.upgrade().and_then(|c| c.hash()))
+            .collect();
+        // Each subscription's rank: its outermost reader's level, then
+        // where it was first read.
+        let mut ranks: Vec<(Option<QueryHash>, u32, usize)> = Vec::new();
+        for (index, (listener, hash)) in listeners.iter().zip(&hashes).enumerate() {
+            match ranks
+                .iter_mut()
+                .find(|(seen, _, _)| seen == hash && hash.is_some())
+            {
+                Some((_, level, _)) => *level = (*level).min(listener.level),
+                None => ranks.push((hash.clone(), listener.level, index)),
+            }
+        }
+        let rank = |index: usize| {
+            ranks
+                .iter()
+                .find(|(seen, _, first)| {
+                    *first == index || (hashes[index].is_some() && *seen == hashes[index])
+                })
+                .map(|(_, level, first)| (*level, *first))
+                .unwrap_or((u32::MAX, index))
+        };
+        let mut order: Vec<usize> = (0..listeners.len()).collect();
+        order.sort_by_key(|index| rank(*index));
+        let mut live = vec![true; listeners.len()];
+        for index in order {
+            live[index] = listeners[index].deliver();
+        }
+        let mut live = live.into_iter();
+        listeners.retain(|_| live.next().unwrap_or(true));
+    }
+
+    /// Settle the branch's stack, polling its subscriptions once if a
+    /// write scheduled a poll ([`Stack::settle`]), then send every
+    /// connection what it was delivered ([`Self::deliver`]). A
+    /// connection attached to a subscription already evaluated has its
+    /// result set waiting, and is sent it even when no poll was
+    /// scheduled.
+    ///
+    /// A poll can await the network (a node still held remotely), and a
+    /// write re-evaluates every subscription on the stack, so a slow one
+    /// is named with what it serves.
+    pub async fn settle<Env: SettleProvider>(&self, env: &Env) {
+        const SLOW: web_time::Duration = web_time::Duration::from_millis(500);
+        let started = web_time::Instant::now();
+        if let Err(error) = self.stack.settle(env).await {
+            dialog_common::log!(
+                "[reactor] subscription poll on {} failed: {error:?}",
+                self.branch.name()
+            );
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= SLOW {
+            dialog_common::log!(
+                "[reactor] slow branch settle: {} subscriptions on {} elapsed_ms={}",
+                self.stack.subscriptions_held(),
+                self.branch.name(),
+                elapsed.as_millis()
+            );
+        }
+        self.deliver();
     }
 
     /// Drop every session-overlay fact recorded for entities that
@@ -318,66 +366,5 @@ impl BranchState {
         keep: F,
     ) -> bool {
         self.branch.overlay().retain_entities(keep)
-    }
-
-    /// Re-poll every subscription on this branch. Mutating leaf
-    /// effects call this on success so changed query results
-    /// fan out to subscribers. Each subscription is polled via
-    /// the same `SubscriptionPoll::perform` path the public
-    /// chain uses.
-    ///
-    /// Lower levels go first. A display's level is how many displays
-    /// enclose it, so it learns of a change before the displays nested
-    /// inside it do: a parent that re-renders
-    /// its children away first spares them a frame for an address it is
-    /// replacing. Creation order breaks ties (a stable sort over the
-    /// insertion-ordered map).
-    pub async fn poll<'a, Env: SelectProvider>(self: &'a Arc<Self>, env: &'a Env) {
-        let hashes: Vec<QueryHash> = {
-            let subs = self.subscriptions.lock();
-            let mut ordered: Vec<(u32, QueryHash)> = subs
-                .iter()
-                .map(|(hash, subscription)| (subscription.level(), hash.clone()))
-                .collect();
-            ordered.sort_by_key(|(level, _)| *level);
-            ordered.into_iter().map(|(_, hash)| hash).collect()
-        };
-        // A poll can await the network (a node still held remotely), and
-        // an overlay write re-evaluates every subscription on the branch,
-        // so a slow one is named with what it serves.
-        const SLOW: web_time::Duration = web_time::Duration::from_millis(500);
-        let started = web_time::Instant::now();
-        let count = hashes.len();
-        for hash in hashes {
-            let polled = web_time::Instant::now();
-            let (level, subscribers) = {
-                let subs = self.subscriptions.lock();
-                subs.get(&hash)
-                    .map(|subscription| (subscription.level(), subscription.subscribers.len()))
-                    .unwrap_or_default()
-            };
-            SubscriptionPoll {
-                state: self,
-                hash: hash.clone(),
-            }
-            .perform(env)
-            .await;
-            let elapsed = polled.elapsed();
-            if elapsed >= SLOW {
-                dialog_common::log!(
-                    "[reactor] slow subscription poll: {hash:?} on {} level={level} subscribers={subscribers} elapsed_ms={}",
-                    self.branch.name(),
-                    elapsed.as_millis()
-                );
-            }
-        }
-        let elapsed = started.elapsed();
-        if elapsed >= SLOW {
-            dialog_common::log!(
-                "[reactor] slow branch poll: {count} subscriptions on {} elapsed_ms={}",
-                self.branch.name(),
-                elapsed.as_millis()
-            );
-        }
     }
 }

@@ -545,7 +545,8 @@ async fn handle_subscribe(
         }
     };
 
-    let mut receiver = subscriber.receiver;
+    // The pump owns the subscriber: its end drops the dialog reader.
+    let mut receiver = subscriber;
     let pump_state = state.clone();
     let pump_client = client.clone();
     let pump_id = id.clone();

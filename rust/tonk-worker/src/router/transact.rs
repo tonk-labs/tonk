@@ -610,7 +610,7 @@ mod control_layer {
 
     use super::{Pending, transact_on_branch};
     use crate::router::ClientId;
-    use crate::router::command::tests::{Ping, drain_ping_log, drain_ping_tags};
+    use crate::router::command::tests::{Ping, drain_ping_log, drain_ping_tags, ping_turn};
     use crate::router::command::{CommandOrigin, CommandProviders, Surface, run_commands};
     use crate::router::repository::{
         BranchConfiguration, RepositoryConfiguration, create_repository,
@@ -709,6 +709,7 @@ mod control_layer {
     #[dialog_common::test]
     async fn a_command_lands_in_control_and_reaches_its_provider() {
         let (state, repo) = space_with_ping().await;
+        let _turn = ping_turn().await;
         let _ = drain_ping_log();
 
         let (response, pending) = {
@@ -759,6 +760,7 @@ mod control_layer {
     #[dialog_common::test]
     async fn a_command_reaches_its_provider_with_the_client_that_asked() {
         let (state, repo) = space_with_ping().await;
+        let _turn = ping_turn().await;
         let _ = drain_ping_log();
 
         let (_, pending) = {

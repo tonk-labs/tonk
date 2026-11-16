@@ -23,12 +23,10 @@ dialog-repository = { workspace = true }
 dialog-search-tree = { workspace = true }
 dialog-storage = { workspace = true }
 futures-util = { workspace = true }
-indexmap = { workspace = true }
 ipld-core = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-serde_ipld_dagjson = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonk-account = { workspace = true }
@@ -42,6 +40,7 @@ web-time = { workspace = true }
 # feature available at that target.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { workspace = true, features = ["console"] }
+send_wrapper = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

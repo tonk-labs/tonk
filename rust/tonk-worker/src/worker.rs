@@ -2612,7 +2612,7 @@ async fn has_live_subscribers(state: &AppState) -> bool {
     let repos = tonk.reactor.repos().read();
     for repo in repos.values() {
         for branch in repo.branches().read().values() {
-            if !branch.subscriptions().lock().is_empty() {
+            if !branch.connection_levels().is_empty() {
                 return true;
             }
         }

@@ -259,10 +259,10 @@ pub async fn run_documents(
             .perform(&site.operator)
             .await
             .map_err(|e| EvalError::Io(format!("commit failed: {e}")))?;
-        // Re-poll the branch's subscriptions so the reactor's
-        // commit contract holds. Tonk opens none, so this is a
-        // no-op today, kept for parity with the worker's path.
-        session.poll(&site.operator).await;
+        // The commit went through the branch handle, outside its stack:
+        // schedule the stack's subscriptions, so the reactor's commit
+        // contract holds. The CLI opens none, so nothing settles them.
+        session.state.stack().schedule_poll();
         (
             EvaluateResponse {
                 revision_before,

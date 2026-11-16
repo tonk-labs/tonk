@@ -452,7 +452,7 @@ mod authorization_tests {
             .perform(&tonk.operator)
             .await
             .unwrap();
-        while subscription.receiver.try_recv().is_ok() {}
+        while subscription.try_recv().is_ok() {}
         for state in [
             ceremony_state::PENDING_CEREMONY,
             ceremony_state::WORKING,
@@ -461,7 +461,6 @@ mod authorization_tests {
         ] {
             super::report_authorization(&tonk, &request, state, "").await;
             let frame = subscription
-                .receiver
                 .try_recv()
                 .expect("a ceremony report must broadcast before returning");
             let frame = String::from_utf8_lossy(&frame);
@@ -500,13 +499,12 @@ mod authorization_tests {
                 .await
                 .unwrap()
         };
-        while subscription.receiver.try_recv().is_ok() {}
+        while subscription.try_recv().is_ok() {}
         {
             let tonk = state.read().await;
             super::report_working(&state, &tonk, &request).await;
         }
         let frame = subscription
-            .receiver
             .recv()
             .await
             .expect("the detached refresh broadcasts the progress");
