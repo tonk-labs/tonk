@@ -4309,6 +4309,24 @@ concept!: &account/onboarding
       the: xyz.tonk.account/onboarding-retired-at
       as: natural:64
 
+# Retirement: a real account took over from the onboarding one.
+#
+# ENTITY: the onboarding account's own DID.
+#
+# The same `retired-at` fact `account/onboarding` carries, REQUIRED here.
+# There it is optional, so that an account nothing has replaced still
+# resolves, and an optional field bound to a variable matches its absence
+# as well as its value. A rule that means "this account was retired" reads
+# this concept, which has a row only where the fact is.
+concept!: &account/retired
+  this: tonk:account/retired
+  description: An onboarding account a real one replaced.
+  with:
+    retired-at:
+      description: When a real account took over, unix seconds.
+      the: xyz.tonk.account/onboarding-retired-at
+      as: natural:64
+
 # The account's status, DERIVED from the facts above.
 #
 # ENTITY: the account's own DID.
@@ -4609,14 +4627,18 @@ rule!:
       where:
         this: ?status
         is: case:onboarding
-# Retirement is the presence of `retired-at`: a positive fact, read by
-# binding it.
+# Retirement is the presence of `retired-at`: a positive fact, read
+# through `account/retired`, which requires it. Binding the optional
+# `retired-at` of `account/onboarding` would match its absence too, and
+# call every onboarding account retired.
 rule!:
   description: An onboarding account a real one replaced is retired
   assert: account/status-case
   when:
     - assert: account/onboarding
-      where: { this: ?this, retired-at: ?retired }
+      where: { this: ?this }
+    - assert: account/retired
+      where: { this: ?this }
     - assert: ==
       where:
         this: ?status

@@ -5378,8 +5378,8 @@ mod ranked_fields {
     /// rule derives, as they did when a listed `as:` ranked its values
     /// best first: an account that is registered, activated and suspended
     /// is suspended, one registered and activated is active, one only
-    /// registered is registered, and a retired onboarding account is
-    /// retired.
+    /// registered is registered, a retired onboarding account is retired,
+    /// and an onboarding account no real one replaced is onboarding.
     #[dialog_common::test]
     #[allow(deprecated)]
     async fn the_profile_library_ranks_an_accounts_status() -> anyhow::Result<()> {
@@ -5443,12 +5443,12 @@ account/onboarding!:
             "status",
         )
         .await?;
-        // An onboarding account no real one replaced reads `retired` too,
-        // as it did before cardinalities: the retirement rule binds the
-        // optional `retired-at`, which matches its absence.
+        // An onboarding account no real one replaced stays `onboarding`:
+        // the retirement rule reads `account/retired`, which requires
+        // `retired-at`, so its absence derives nothing.
         let expected: BTreeMap<String, String> = [
             ("id:account/active", "case:active"),
-            ("id:account/onboarding", "case:retired"),
+            ("id:account/onboarding", "case:onboarding"),
             ("id:account/registered", "case:registered"),
             ("id:account/retired", "case:retired"),
             ("id:account/suspended", "case:suspended"),
