@@ -1443,6 +1443,99 @@ async fn it_answers_from_a_provider_on_the_stack_into_the_session_layer() {
     assert_eq!(head(&app).await, before, "an answer is no commit");
 }
 
+/// The answer names the ask, never the subject. The palette asks a
+/// space's page with the space as `subject` beside the ask's own `this`
+/// (and the expression its `intent/interpret` recorded), so a claim
+/// built from those fields must keep the ask as the command entity: an
+/// answer written under the space would be one the page, polling for
+/// its ask, never sees.
+#[dialog_common::test]
+async fn it_names_the_ask_in_its_answer_not_the_subject() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let subject = created["subject"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+    let site = "site:7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d";
+    let expression = "intent:9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a";
+    interpreted(&app, &space, expression, "exp", site, 1.0).await;
+
+    // The palette's own shape: the ask is `this`, the space its subject.
+    let this = fresh_ask();
+    let fields = json!({ "expression": expression, "subject": subject, "now": 2.0, "max": 5 });
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        ask_claim(&this, &fields),
+    )
+    .await;
+    let count = answered(&app, &space, &this)
+        .await
+        .expect("the ask is answered under its own entity");
+    assert!(count > 0, "expel is read from the expression's intents");
+    let rows = readings_of(&app, &space, &this).await;
+    assert_eq!(rows.len() as u64, count);
+    assert!(
+        rows.iter()
+            .all(|row| field(row, "ask").as_str() == Some(this.as_str())),
+        "every reading names the ask: {rows:?}"
+    );
+
+    // No answer, and no reading, names the space.
+    let named = |attribute: &str| {
+        let app = app.clone();
+        let space = space.clone();
+        let the = format!("tonk.dialog.intent.{attribute}/ask");
+        async move {
+            send(
+                &app,
+                "POST",
+                &format!("{space}/query"),
+                "application/json",
+                json!({
+                    "predicate": { "with": {
+                        "ask": { "the": the, "as": "Entity", "cardinality": "one" }
+                    } },
+                    "terms": { "this": { "?": { "name": "this" } }, "ask": { "?": { "name": "ask" } } }
+                })
+                .to_string(),
+            )
+            .await
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| row["fields"]["ask"].as_str().map(str::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+        }
+    };
+    let answers = named("answer").await;
+    assert_eq!(answers, vec![this.clone()], "one answer, naming the ask");
+    let readings = named("reading").await;
+    assert!(
+        !readings.is_empty() && readings.iter().all(|ask| *ask == this),
+        "the readings name the ask, not {subject}: {readings:?}"
+    );
+}
+
 /// An asker (here a tab's site) holds one answer: the next ask replaces
 /// the readings of the one before, so a reading that lost a field between
 /// asks does not keep the old value.
