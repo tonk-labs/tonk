@@ -545,6 +545,7 @@ view!:
       /* Not `.hub-rows`: that names the list of spaces, which tests and
          readers look for; these rows only hold its place. */
       .hub-wait { list-style:none; margin:0; padding:0; animation:hub-wait-in 400ms step-end; }
+      .hub-wait-row + .hub-wait-row { border-top:1px solid var(--tonk-rule-soft); }
       @keyframes hub-wait-in { from, to { visibility:hidden; } }
       .hub-wait > li:nth-child(1) { --w:46%; }
       .hub-wait > li:nth-child(2) { --w:62%; }
@@ -3355,11 +3356,11 @@ view!:
                  reached. `hub-discover` says the same in the line. -->
             <tonk-display model="space">
               <ul slot="loading" class="hub-wait" aria-hidden="true">
-                <li class="hub-row"><div class="hub-skel"><i></i><i></i></div></li>
-                <li class="hub-row"><div class="hub-skel"><i></i><i></i></div></li>
-                <li class="hub-row"><div class="hub-skel"><i></i><i></i></div></li>
-                <li class="hub-row"><div class="hub-skel"><i></i><i></i></div></li>
-                <li class="hub-row"><div class="hub-skel"><i></i><i></i></div></li>
+                <li class="hub-wait-row"><div class="hub-skel"><i></i><i></i></div></li>
+                <li class="hub-wait-row"><div class="hub-skel"><i></i><i></i></div></li>
+                <li class="hub-wait-row"><div class="hub-skel"><i></i><i></i></div></li>
+                <li class="hub-wait-row"><div class="hub-skel"><i></i><i></i></div></li>
+                <li class="hub-wait-row"><div class="hub-skel"><i></i><i></i></div></li>
               </ul>
               <div slot="offline" class="hub-empty hub-failed"><p>Your spaces didn’t load. Check your connection and try again.</p><button class="hub-btn hub-btn--main" type="button" data-spaces-retry>try again</button></div>
             </tonk-display>
