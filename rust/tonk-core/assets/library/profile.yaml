@@ -979,11 +979,11 @@ view!:
               <button type="button" class="hub-toggle" aria-expanded="false" aria-controls="body-{subject}"
                 aria-label="links and details of {name}"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
             </div>
-            <!-- What unfolds: the space's address and a line about it.
+            <!-- What unfolds: the space's address. The mock's line about
+                 the space ("you have admin") waits for a recorded role.
                  Closed, it stays in the page, hidden and inert. -->
             <div class="hub-fold"><div class="hub-fold-in"><div class="hub-body" id="body-{subject}" inert>
               <p class="hub-addr"><span class="hub-mono" data-space-address></span></p>
-              <p class="hub-note" data-space-note data-role-case={role}></p>
             </div></div></div>
           </div>
         </hub-collection>
@@ -2488,7 +2488,7 @@ element!: &hub-collection
         toggle?.setAttribute('aria-expanded', String(open));
         if (body) body.inert = !open;
       }
-    # A row's address in full, the way it opens, and a line about it.
+    # A row's address in full, the way it opens.
     details: |
       (self) => {
         for (const row of self.querySelectorAll('.hub-row[data-space-subject]')) {
@@ -2497,13 +2497,6 @@ element!: &hub-collection
           if (link && address) {
             const text = link.href.replace(/^https?:\/\//, '');
             if (address.textContent !== text) address.textContent = text;
-          }
-          const note = row.querySelector('[data-space-note]');
-          if (note) {
-            const role = (note.getAttribute('data-role-case') ?? '').replace(/^case:/, '');
-            const text = role === 'admin' ? 'your space · you have admin'
-              : role ? `a space you joined · you have ${role}` : '';
-            if (note.textContent !== text) note.textContent = text;
           }
           const open = self._open === row.dataset.spaceSubject;
           if (open !== row.hasAttribute('data-open')) self.fold(row, open);
