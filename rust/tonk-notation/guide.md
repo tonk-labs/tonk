@@ -174,21 +174,55 @@ attribute!: &task-tags
   description: "Tags on a task"
   the:         xyz.tonk.task/tags
   as:          text
-  pick:        :all
+  cardinality: :many
 ```
 
-`pick:` (`:last`, `:all`, `:top`, `:max`, `:min`) and a command
-field's `role:` (`:object`, `:goal`, …) take keywords. Both also
-read the spellings earlier releases wrote, the bare word
-(`pick: all`) and the quoted word (`role: "object"`), as the same
-keyword, with a warning (`W_OLDER_KEYWORD_SPELLING`) naming the
-keyword to write. `cardinality:`, the spelling earlier releases
-used for a field's pick, is deprecated: it is read, in every
-spelling (`one`, `:one`, `"one"`), as `pick: :last` for `one`
-(the default, so the field can go) and `pick: :all` for `many`,
-with a warning (`W_DEPRECATED_CARDINALITY`) saying so. A template
-or notebook written for an earlier release still evaluates; a
-new document writes the pick.
+`cardinality:` (`:one`, the default, or `:many`), a concept
+field's `aggregate:` (`:top`, `:max`, `:min`, `:last`) and a
+command field's `role:` (`:object`, `:goal`, …) take keywords. Each
+also reads the spellings earlier releases wrote, the bare word
+(`cardinality: many`) and the quoted word (`role: "object"`), as
+the same keyword, with a warning (`W_OLDER_KEYWORD_SPELLING`)
+naming the keyword to write.
+
+`pick:`, the spelling the release before cardinalities used for both
+how many claims an attribute holds and how a field ranks them, is
+deprecated: it is read, in every spelling (`all`, `:all`, `"all"`),
+as what it stands for, with a warning (`W_DEPRECATED_PICK`) saying
+what to write. `pick: :last` is the default cardinality, so the
+field can go; `pick: :all` is `cardinality: :many`; and on a concept
+field `pick: :top`, `:max` or `:min` is `cardinality: :many` read
+with the `aggregate:` of the same name, a `top`'s listed values
+reversed, since that release listed them best first. An
+`attribute!:` refuses a ranking pick, since it has no field to
+aggregate. A template or notebook written for an earlier release
+still evaluates; a new document writes the cardinality.
+
+A listed `as:` is an enumerated type, ordered least first. It no
+longer ranks on its own, as it did when it implied `pick: :top`: a
+field that reads the best-ranked of the listed values says so.
+
+```yaml tonk=parse
+concept!: &job/status
+  description: "Where a job stands"
+  with:
+    status:
+      description: "Every state a job reached; the field reads the greatest"
+      the:         xyz.tonk.job/status
+      as:
+        - case:queued
+        - case:running
+        - case:done
+      cardinality: :many
+      aggregate:   :top
+```
+
+Writing `case:running` to a job that holds `case:queued` adds a
+claim beside it, and the field reads `case:running`: `top` is the
+value listed last among those the job holds. `:max` and `:min` read
+the greatest and least value by the type's own order, and `:last`
+the newest claim. A ranking aggregate needs a cardinality-many
+attribute, and `:top` one that lists its values.
 
 ## Heads in detail
 
@@ -577,7 +611,7 @@ themselves cannot.
 ### `attribute`
 
 Defines an attribute: a relation, by domain/name, qualified by a
-value type and a pick. Although `attribute` is a built-in, it is a
+value type and a cardinality. Although `attribute` is a built-in, it is a
 regular concept and can be described in the notation:
 
 ```yaml tonk=illustrative-built-in-schema
@@ -596,10 +630,10 @@ attribute!:
   as:          entity
 
 attribute!:
-  this: ?pick
-  description: "Which claims a read returns, as the entity dialog names the pick (last:, all:, …)"
-  the:         db.attribute/pick
-  as:          entity
+  this: ?cardinality
+  description: "How many claims the attribute holds per entity: one or many"
+  the:         db.attribute/cardinality
+  as:          text
 
 attribute!:
   this: ?description
@@ -613,22 +647,24 @@ concept!: &attribute
   description: "An attribute definition"
   with:
     id:          ?id
-    pick:        ?pick
+    cardinality: ?cardinality
     description: ?description
   maybe:
     as:          ?type
 ```
 
-The body field shorthands users write (`the:`, `as:`, `pick:`,
-`description:`) map to these attributes through the concept's
-`with:` map. `as: text` names the built-in type anchor `text`,
-which stands for the type entity `text:`, and `pick: all` names the
-built-in pick anchor `all`, which stands for the pick entity `all:`.
-The built-in picks are `last`, `all`, `top`, `max` and `min`.
+The body field shorthands users write (`the:`, `as:`,
+`cardinality:`, `description:`) map to these attributes through the
+concept's `with:` map. `as: text` names the built-in type anchor
+`text`, which stands for the type entity `text:`, and
+`cardinality: :many` records `many`; an attribute that leaves it
+out records `one`. A field's `aggregate:` is not part of the
+attribute: the concept records it beside the field
+(`db.concept.aggregate/<field>`).
 
 `description` is required on every attribute, but it does not
 participate in the attribute entity's content-derivation —
-two attributes with identical `the:`, `as:`, and `pick:` but
+two attributes with identical `the:`, `as:`, and `cardinality:` but
 different `description:` claims resolve to the same entity.
 Changing the description of an existing attribute is a
 mutation on a stable entity, not the creation of a new one.
@@ -636,11 +672,11 @@ mutation on a stable entity, not the creation of a new one.
 Because `attribute` is a regular concept, you can query it:
 
 ```yaml tonk=eval
-# Find every attribute that reads a set.
+# Find every attribute that holds a set.
 attribute:
   this: ?a
   id:   ?selector
-  pick: all
+  cardinality: "many"
 ```
 
 Note: the schema definition above is illustrative. In an
