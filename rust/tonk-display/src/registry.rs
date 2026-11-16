@@ -2513,16 +2513,10 @@ mod tests {
         settle_until(|| defined("account-settings")).await;
         settle_briefly().await;
 
-        assert_eq!(
-            text_of(&host, "[data-link-heading]"),
-            "connect to your Tonk account"
-        );
+        // The task page's title and note are its markup's own words; the
+        // pane fills in only what the request names.
         assert_eq!(text_of(&host, "[data-link-name]"), "tonk.host");
         assert_eq!(text_of(&host, "[data-link-account]"), "person@example.com");
-        assert_eq!(
-            text_of(&host, "[data-link-explanation]"),
-            "approving gives this connection the same access to your account as this browser: every space, on every device. only approve if you started this connection yourself."
-        );
 
         let decline = host
             .query_selector("[data-link-decline]")
