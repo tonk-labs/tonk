@@ -400,8 +400,25 @@ fn seed_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
 /// Read from the raw facts rather than declared on [`CreateSpace`] for
 /// the same reason the remote is: the command is matched name-only, so a
 /// declared field would make every create that omits it fail to decode.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const OPEN_ATTR: &str = "xyz.tonk.command.create-space/open";
+
+/// Whether the create asked, explicitly, to stay where it is: an `open`
+/// field that says no. A create that carries no `open` field still lands
+/// its creator in the new space, as every create did before the hub's
+/// inline row asked to stay.
+fn stays_from_facts(facts: &crate::reactor::EntityFacts) -> bool {
+    use dialog_corpus::Value;
+
+    facts
+        .iter()
+        .find(|artifact| artifact.the.to_string() == OPEN_ATTR)
+        .is_some_and(|artifact| match &artifact.is {
+            Value::Boolean(open) => !*open,
+            Value::String(text) => matches!(text.trim(), "false" | "0"),
+            Value::Entity(uri) => uri.to_string() == "case:false",
+            _ => false,
+        })
+}
 
 /// Whether the create should navigate the caller into the new space.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
@@ -586,6 +603,8 @@ pub(crate) struct CreateSpaceRequest {
     template: Option<String>,
     /// Source space whose main-branch content should be copied.
     copy_from: Option<String>,
+    /// The create asked to stay where it is rather than open the space.
+    stay: bool,
 }
 
 impl crate::reactor::Decode for CreateSpaceRequest {
@@ -625,6 +644,7 @@ impl crate::reactor::Decode for CreateSpaceRequest {
                     dialog_corpus::Value::Entity(value) => value.to_string(),
                     _ => String::new(),
                 }),
+            stay: stays_from_facts(facts),
         })
     }
 }
@@ -818,7 +838,9 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     //    doesn't wait on the network; the attach continues in the
     //    worker regardless.
     let href = format!("/space/{key}");
-    crate::router::navigate::notify_navigate(env.client(), &href);
+    if !request.stay {
+        crate::router::navigate::notify_navigate(env.client(), &href);
+    }
     report_space_creation(env.state(), &receipt, "created", &href).await;
     // Navigation must not wait for every Hub subscription to re-query.
     // The seed and initialized status are already committed at this point.
@@ -8779,6 +8801,33 @@ mod remote_from_facts_tests {
             assert!(
                 !super::open_from_facts(&artifacts(changes)),
                 "`open={text:?}` must not navigate"
+            );
+        }
+    }
+
+    /// The hub's inline row says `open=false`: the creator stays on the
+    /// hub. A create with no `open` field still opens the space.
+    #[test]
+    fn it_stays_only_when_the_create_says_not_to_open() {
+        let of: Entity = "did:key:zCreate".parse().expect("entity");
+        let mut changes = Changes::new();
+        name_fact(&mut changes, &of);
+        assert!(
+            !super::stays_from_facts(&artifacts(changes)),
+            "a create carrying no `open` field still opens the space"
+        );
+        for (text, stays) in [("false", true), ("0", true), ("true", false), ("", false)] {
+            let of: Entity = "did:key:zCreate".parse().expect("entity");
+            let mut changes = Changes::new();
+            name_fact(&mut changes, &of);
+            the!("xyz.tonk.command.create-space/open")
+                .of(of)
+                .is(text.to_string())
+                .assert(&mut changes);
+            assert_eq!(
+                super::stays_from_facts(&artifacts(changes)),
+                stays,
+                "`open={text:?}`"
             );
         }
     }

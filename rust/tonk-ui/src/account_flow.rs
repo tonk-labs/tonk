@@ -2626,12 +2626,7 @@ pub(crate) mod tests {
         let driver = driver_with_prf(&env).await?;
         goto(&driver, env.tonk_web.as_str()).await?;
         let before = space_keys(&driver).await?;
-        submit_hub_wizard_with(
-            &driver,
-            "Layout notes",
-            "A description that wraps beside the action",
-        )
-        .await?;
+        submit_hub_wizard_with(&driver, "Layout notes").await?;
         let key = await_new_space(&driver, &before).await?;
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
@@ -3447,30 +3442,17 @@ pub(crate) mod tests {
         driver.goto(env.tonk_web.as_str()).await?;
         let before = space_keys(&driver).await?;
         enter_hub(&driver).await?;
-        click(&driver, ".hub-line > space-create [data-space-create-open]").await?;
-        wait_for_displayed(
-            &driver,
-            ".hub-line > space-create [data-space-create-dialog]",
-        )
-        .await?;
-        element(&driver, ".hub-line > space-create input[name=name]")
+        click(&driver, "[data-spaces-sheet] [data-new-space]").await?;
+        let form = "space-create[data-inline] form[data-space-create-form]";
+        wait_for_displayed(&driver, &format!("{form} input[name=name]")).await?;
+        element(&driver, &format!("{form} input[name=name]"))
             .await?
             .send_keys("One card creation")
             .await?;
-        element(
-            &driver,
-            ".hub-line > space-create textarea[name=description]",
-        )
-        .await?
-        .send_keys("One submit, one space")
-        .await?;
-        click(
-            &driver,
-            ".hub-line > space-create [data-space-create-submit]",
-        )
-        .await?;
+        click(&driver, &format!("{form} [data-space-create-submit]")).await?;
+        // The hub stays: the receipt says what was made.
+        wait_for_text_containing(&driver, "[data-hub-receipt]", "made").await?;
         driver.enter_default_frame().await?;
-        await_url_containing(&driver, "/space/").await?;
         // Both handlers finish asynchronously; allow a second creation to surface.
         tokio::time::sleep(Duration::from_secs(3)).await;
         let after = space_keys(&driver).await?;
@@ -3875,12 +3857,7 @@ pub(crate) mod tests {
         );
 
         let before = space_keys(&driver).await?;
-        submit_hub_wizard_with(
-            &driver,
-            "Offline notes",
-            "Created locally before account registration",
-        )
-        .await?;
+        submit_hub_wizard_with(&driver, "Offline notes").await?;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let key = loop {
@@ -4064,7 +4041,7 @@ pub(crate) mod tests {
         let driver = driver_with_prf(&env).await?;
         driver.goto(env.tonk_web.as_str()).await?;
         let before = space_keys(&driver).await?;
-        submit_hub_wizard_with(&driver, "Before rename", "A retained description").await?;
+        submit_hub_wizard_with(&driver, "Before rename").await?;
         let key = await_new_space(&driver, &before).await?;
 
         goto(&driver, env.tonk_web.as_str()).await?;
@@ -6261,40 +6238,56 @@ pub(crate) mod tests {
     /// document at all — a reach-in returns `no guest frame` and says
     /// nothing about the app.
     async fn submit_hub_wizard(driver: &WebDriver) -> Result<()> {
-        submit_hub_wizard_with(driver, "Untitled", "").await
+        submit_hub_wizard_with(driver, "Untitled").await
     }
 
-    async fn submit_hub_wizard_with(
-        driver: &WebDriver,
-        name: &str,
-        description: &str,
-    ) -> Result<()> {
+    /// Make a space from the inline row under the spaces line, then open
+    /// it from its new row, the way a person goes on to it. The hub stays
+    /// put after `make space`, so the helper presses the row's link.
+    async fn submit_hub_wizard_with(driver: &WebDriver, name: &str) -> Result<()> {
         enter_hub(driver).await?;
-        click(driver, ".hub-line > space-create [data-space-create-open]").await?;
-        wait_for_displayed(
-            driver,
-            ".hub-line > space-create [data-space-create-dialog]",
-        )
-        .await?;
-        element(driver, ".hub-line > space-create input[name=name]")
+        let before = driver
+            .execute(
+                "return [...document.querySelectorAll('.hub-row[data-space-subject]')] \
+                   .map((row) => row.dataset.spaceSubject);",
+                Vec::new(),
+            )
+            .await?
+            .json()
+            .clone();
+        click(driver, "[data-spaces-sheet] [data-new-space]").await?;
+        let form = "space-create[data-inline] form[data-space-create-form]";
+        wait_for_displayed(driver, &format!("{form} input[name=name]")).await?;
+        element(driver, &format!("{form} input[name=name]"))
             .await?
             .send_keys(name)
             .await?;
-        if !description.is_empty() {
-            element(
-                driver,
-                ".hub-line > space-create textarea[name=description]",
-            )
-            .await?
-            .send_keys(description)
-            .await?;
-        }
-        // Through `click`: the dialog's `space/create` binding must be wired
-        // before the press, or the display resolves nothing and the space
-        // is never asked for.
+        // Through `click`: the row's submit must be wired before the press,
+        // or the space is never asked for.
+        click(driver, &format!("{form} [data-space-create-submit]")).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let key = loop {
+            enter_guest(driver).await?;
+            let found = driver
+                .execute(
+                    "const before = new Set(arguments[0] || []); \
+                     const row = [...document.querySelectorAll('.hub-row[data-space-subject]')] \
+                       .find((row) => !before.has(row.dataset.spaceSubject)); \
+                     return row ? row.dataset.spaceSubject : null;",
+                    vec![before.clone()],
+                )
+                .await?;
+            if let Some(key) = found.json().as_str() {
+                break key.to_owned();
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("no new hub row appeared after `make space`"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
         click(
             driver,
-            ".hub-line > space-create [data-space-create-submit]",
+            &format!(".hub-row[data-space-subject='{key}'] a.hub-open"),
         )
         .await?;
         // Back to the top document: everything after this — the space

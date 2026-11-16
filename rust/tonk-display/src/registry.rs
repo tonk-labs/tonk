@@ -1313,9 +1313,10 @@ mod tests {
         .call1(&JsValue::NULL, &host_bridge())
         .unwrap();
         let host = document().create_element("space-create").unwrap();
-        // The `new space` in the spaces sheet's line.
+        // The `new space` dialog in the phone bar; the sheet's line opens
+        // an inline row instead.
         let markup = PROFILE_LIBRARY
-            .split_once("<div class=\"hub-line\">")
+            .split_once("<nav class=\"mobile-nav\"")
             .unwrap()
             .1
             .split_once("<space-create>")

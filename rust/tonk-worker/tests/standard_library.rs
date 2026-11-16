@@ -862,7 +862,7 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
         "data-space-create-open",
         "description: \".currentTarget.elements.description.value\"",
         "the: xyz.tonk.command.create-space/description",
-        "form=\"create-space-header\"",
+        "form=\"create-space-mobile\"",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
@@ -2240,6 +2240,33 @@ fn it_lists_a_spaces_links_in_its_open_hub_row() {
         assert!(
             PROFILE_LIBRARY.contains(contract),
             "the hub row's links must carry `{contract}`",
+        );
+    }
+}
+
+/// `new space` opens a row under the spaces line: a name, `make space` and
+/// `not now`. An empty name and a name you already have are said under the
+/// field; the hub stays, and the new space's row opens with its default
+/// link made.
+#[dialog_common::test]
+fn it_makes_a_new_space_from_an_inline_row_under_the_line() {
+    for contract in [
+        "<space-create data-inline>",
+        "<form class=\"hub-new\" data-space-create-form novalidate hidden>",
+        "<label for=\"new-space-name\">name</label>",
+        "<input type=\"hidden\" name=\"open\" value=\"false\">",
+        "<button class=\"hub-btn\" type=\"button\" data-space-create-cancel>not now</button>",
+        "data-space-create-submit data-wait=\"making\">make space</button>",
+        "(inline ? 'Give the space a name.' : 'Enter a name for this space.')",
+        ": `You already have a space called ${name.value}.`;",
+        "if (inline) control.textContent = 'making';",
+        "self.closest('hub-discover')?.receipt?.(['made', parameters.name]);",
+        "await links.makeDefault();",
+        "self.querySelector('[data-link-copy]')?.focus();",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the inline new space row must carry `{contract}`",
         );
     }
 }
