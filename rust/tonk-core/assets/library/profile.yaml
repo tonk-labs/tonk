@@ -3047,9 +3047,11 @@ view!:
               </space-create>
             </div>
             <!-- The display says where the list is (`data-state`) and shows
-                 the matching slot: placeholder rows while it loads, the
-                 sentence and `try again` when the service worker cannot be
-                 reached. `hub-discover` says the same in the line. -->
+                 the matching slot: placeholder rows while it loads, a
+                 sentence when there are no spaces, so the sheet does not end
+                 at its line, and the sentence and `try again` when the
+                 service worker cannot be reached. `hub-discover` says the
+                 same in the line. -->
             <tonk-display model="space">
               <ul slot="loading" class="hub-wait" aria-hidden="true">
                 <li class="hub-wait-row"><div class="hub-skel"><i></i><i></i></div></li>
@@ -3058,6 +3060,7 @@ view!:
                 <li class="hub-wait-row"><div class="hub-skel"><i></i><i></i></div></li>
                 <li class="hub-wait-row"><div class="hub-skel"><i></i><i></i></div></li>
               </ul>
+              <div slot="empty" class="hub-empty"><p>You don’t have any spaces yet. A space keeps your data at a link you can send to people and agents.</p></div>
               <div slot="offline" class="hub-empty hub-failed"><p>Your spaces didn’t load. Check your connection and try again.</p><button class="hub-btn hub-btn--main" type="button" data-spaces-retry>try again</button></div>
             </tonk-display>
           </section>

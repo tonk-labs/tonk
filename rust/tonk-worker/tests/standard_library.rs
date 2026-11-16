@@ -834,16 +834,17 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
         !PROFILE_LIBRARY.contains(rejected),
         "the responsive Hub collection must reject `{rejected}`",
     );
-    // The empty stack carries NO words. An account with no spaces and an
-    // account whose spaces are still downloading are indistinguishable
-    // from the stack, so any sentence here is wrong in one of those two
-    // cases. The waiting is stated where it is known — the account cell
-    // holds a skeleton while the link runs.
-    assert_eq!(
-        PROFILE_LIBRARY.matches("no spaces yet").count(),
-        0,
-        "the empty Hub must not claim a roster fact it cannot tell from a pending download",
+    // An empty list says so inside the sheet, in the mock's words, so the
+    // sheet does not end at its line (Jack's call: a list still arriving
+    // after sign-in shows it for a moment). It is the display's `empty`
+    // slot, so it shows only once the list has answered.
+    assert!(
+        PROFILE_LIBRARY.contains(
+            "<div slot=\"empty\" class=\"hub-empty\"><p>You don’t have any spaces yet. A space keeps your data at a link you can send to people and agents.</p></div>"
+        ),
+        "the empty Hub must say it has no spaces, in the sheet",
     );
+    assert_eq!(PROFILE_LIBRARY.matches("no spaces yet").count(), 0);
     for rejected in ["signed out", "no spaces available"] {
         assert!(
             !PROFILE_LIBRARY.to_lowercase().contains(rejected),
