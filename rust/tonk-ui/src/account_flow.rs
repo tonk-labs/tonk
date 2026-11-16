@@ -6782,6 +6782,12 @@ pub(crate) mod tests {
         // document; the hub lives in the guest frame, so go back in.
         watch_guest_clipboard(&driver).await?;
         enter_guest(&driver).await?;
+        driver
+            .execute(
+                "window.__sawLinks = !!document.querySelector('space-links');",
+                Vec::new(),
+            )
+            .await?;
         click(&driver, &format!("{row} space-links [data-link-new]")).await?;
         wait_for_displayed(&driver, &format!("{row} .hub-link [data-link-ask='reset']")).await?;
         let first = guest_copied_text(&driver).await?;
@@ -6822,7 +6828,9 @@ pub(crate) mod tests {
                        reloaded: window.__tonkWrote === undefined, \
                        allLinks: document.querySelectorAll('space-links').length, \
                        rows: [...document.querySelectorAll('.hub-row')].map((each) => (each.dataset.spaceSubject ?? '').slice(-6) + (each.hasAttribute('data-open') ? '+open' : '')), \
-                       row: row ? row.outerHTML.slice(0, 2500) : null };",
+                       fold: row?.querySelector('.hub-fold')?.outerHTML.slice(0, 1500) ?? null, \
+                       oldAddress: document.querySelectorAll('[data-space-address]').length, \
+                       sawLinksOnce: window.__sawLinks === true };",
                     vec![
                         serde_json::json!(format!("{row} space-links")),
                         serde_json::json!(row),
