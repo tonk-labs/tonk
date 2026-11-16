@@ -2194,3 +2194,26 @@ fn it_shows_loading_rows_and_a_didnt_load_sheet_for_the_spaces_list() {
         "five placeholder rows",
     );
 }
+
+/// A rename or a removal in the hub leaves a receipt in the spaces line,
+/// in place of its name, and announces it. The hub follows the command to
+/// its outcome, since a removed space's row leaves before `removed`.
+#[dialog_common::test]
+fn it_gives_a_receipt_in_the_spaces_line_after_a_change() {
+    for contract in [
+        "<span class=\"hub-receipt\" tabindex=\"-1\" data-hub-receipt hidden></span>",
+        "<button class=\"hub-btn\" type=\"button\" data-hub-undo data-wait=\"undoing\" hidden>undo</button>",
+        "<div class=\"hub-sr\" role=\"status\" aria-live=\"polite\" data-hub-live></div>",
+        "document.createTextNode(' · by you')",
+        "sheet.querySelector('[data-spaces-line]')?.classList.add('hub-sr');",
+        "slot.textContent = 'Couldn’t undo that, so the change stays.';",
+        "self.closest('hub-discover')?.follow?.(id, 'repository-rename', 'renamed',",
+        "self.closest('hub-discover')?.follow?.(id, 'space-removal', 'removed',",
+        "[action === 'leave' ? 'left' : 'deleted', name]",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the spaces line must carry `{contract}`",
+        );
+    }
+}

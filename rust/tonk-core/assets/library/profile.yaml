@@ -2833,6 +2833,85 @@ element!: &hub-discover
         self.list();
         self.querySelector('[data-spaces-line]')?.focus();
       }
+    # A receipt in the spaces line, in place of its name: `words` alternate
+    # plain and bold (`['renamed', 'Old', 'to', 'New']`), and ` · by you`
+    # follows. A new receipt replaces the last. `undo`, when a change
+    # gives one, is an async function; no hub change gives one yet.
+    receipt: |
+      (self, words, undo) => {
+        const sheet = self.querySelector('[data-spaces-sheet]');
+        const slot = sheet?.querySelector('[data-hub-receipt]');
+        if (!slot) return;
+        const parts = words.map((word, i) => {
+          if (i % 2 === 0) return document.createTextNode(`${i ? ' ' : ''}${word}${i < words.length - 1 ? ' ' : ''}`);
+          const bold = document.createElement('b');
+          bold.textContent = word;
+          return bold;
+        });
+        slot.replaceChildren(...parts, document.createTextNode(' · by you'));
+        slot.hidden = false;
+        sheet.querySelector('[data-spaces-line]')?.classList.add('hub-sr');
+        const button = sheet.querySelector('[data-hub-undo]');
+        self._undo = typeof undo === 'function' ? { run: undo, words } : null;
+        if (button) {
+          button.hidden = !self._undo;
+          button.disabled = false;
+          button.textContent = 'undo';
+        }
+        const live = sheet.querySelector('[data-hub-live]');
+        if (live) live.textContent = slot.textContent;
+      }
+    # Undo the receipt's change. A failed undo says so in the line, and
+    # `try again` takes undo's place.
+    undo: |
+      async (self) => {
+        const pending = self._undo;
+        const sheet = self.querySelector('[data-spaces-sheet]');
+        const button = sheet?.querySelector('[data-hub-undo]');
+        if (!pending || !button) return;
+        button.disabled = true;
+        button.textContent = 'undoing';
+        try {
+          await pending.run();
+          self.receipt(['undid:', ...pending.words]);
+          sheet.querySelector('[data-hub-receipt]')?.focus();
+        } catch (_) {
+          const slot = sheet.querySelector('[data-hub-receipt]');
+          if (slot) slot.textContent = 'Couldn’t undo that, so the change stays.';
+          const live = sheet.querySelector('[data-hub-live]');
+          if (live) live.textContent = slot?.textContent ?? '';
+          button.disabled = false;
+          button.textContent = 'try again';
+        }
+      }
+    # Follow one hub command to its outcome and give its receipt on
+    # success. The hub follows it, not the row, since a removed space's
+    # row leaves before the worker says `removed`.
+    follow: |
+      async (self, id, outcome, success, words) => {
+        let reader;
+        const timer = setTimeout(() => reader?.cancel().catch(() => {}), 120000);
+        try {
+          reader = window.tonk.subscribe({
+            predicate: { with: {
+              status: { the: `xyz.tonk.${outcome}/status`, as: 'Text', cardinality: 'one' },
+            } },
+            terms: { this: id, status: { '?': { name: 'status' } } },
+          }).getReader();
+          while (self.isConnected) {
+            const { value, done } = await reader.read();
+            if (done) return;
+            const status = value.find(row => row.this === id)?.fields?.status;
+            if (status === success) { self.receipt(words); return; }
+            if (status === 'failed') return;
+          }
+        } catch (_) {
+          /* The row says what failed; a receipt only follows a change. */
+        } finally {
+          clearTimeout(timer);
+          await reader?.cancel().catch(() => {});
+        }
+      }
     watch-list: |
       (self) => {
         const display = self.querySelector('[data-spaces-sheet] > tonk-display');
@@ -2854,6 +2933,7 @@ element!: &hub-discover
         self.addEventListener('click', event => {
           if (event.target?.closest?.('[data-discover-retry]')) { self.load(); return; }
           if (event.target?.closest?.('[data-spaces-retry]')) { self.listRetry(); return; }
+          if (event.target?.closest?.('[data-hub-undo]')) { self.undo(); return; }
           const revoke = event.target?.closest?.('[data-agent-revoke]');
           if (revoke && self.contains(revoke)) { self.agentsRevoke(revoke); return; }
           const button = event.target?.closest?.('[data-collection]');
@@ -3174,10 +3254,14 @@ view!:
                host's context on their own, and the rows keep their hover
                and their focus across the move. -->
           <section class="hub-sheet" data-spaces-sheet aria-label="your spaces">
+            <div class="hub-sr" role="status" aria-live="polite" data-hub-live></div>
             <!-- Tonk's line: the sheet's name and count, and its action. It
                  stays at the top while the sheet scrolls. -->
             <div class="hub-line">
-              <div class="hub-line-l"><h2 class="hub-line-name" tabindex="-1" data-spaces-line>spaces <span class="hub-count" data-space-count></span></h2></div>
+              <!-- After a change, the receipt takes the name's place: what
+                   changed and by whom, then `undo` where the change can be
+                   undone (`hub-discover` receipt). -->
+              <div class="hub-line-l"><h2 class="hub-line-name" tabindex="-1" data-spaces-line>spaces <span class="hub-count" data-space-count></span></h2><span class="hub-receipt" tabindex="-1" data-hub-receipt hidden></span> <button class="hub-btn" type="button" data-hub-undo data-wait="undoing" hidden>undo</button></div>
               <space-create>
                 <button class="hub-btn hub-btn--main" type="button" data-new-space data-space-create-open>new space</button>
                 <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
@@ -5360,6 +5444,10 @@ element!: &space-actions
             terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
           }).getReader();
           self.__renameReader = reader;
+          // The row's name, as drawn: the input's default is the template.
+          const before = (self.closest('.hub-row')?.querySelector('.hub-name')?.textContent ?? '').trim();
+          self.closest('hub-discover')?.follow?.(id, 'repository-rename', 'renamed',
+            before ? ['renamed', before, 'to', name] : ['named a space', name]);
           await window.tonk.transact({ claims: [{ op: 'assert', application: {
             predicate: { kind: 'transient', concept: { with: {
               name: { the: 'xyz.tonk.command.rename-repository/name', as: 'Text' },
@@ -5519,6 +5607,9 @@ element!: &space-remove
             terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
           }).getReader();
           self.__reader = reader;
+          const name = (self.dataset.spaceName ?? '').trim() || 'a space';
+          self.closest('hub-discover')?.follow?.(id, 'space-removal', 'removed',
+            [action === 'leave' ? 'left' : 'deleted', name]);
           await window.tonk.transact({ claims: [{ op: 'assert', application: {
             predicate: { kind: 'transient', concept: { with: {
               subject: { the: 'xyz.tonk.command.remove-space/subject', as: 'Entity' },
