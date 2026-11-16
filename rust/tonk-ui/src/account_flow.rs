@@ -6880,10 +6880,14 @@ pub(crate) mod tests {
             return Err(error).context(format!("open row state: {state}"));
         }
 
+        // The clipboard hook and its reader leave WebDriver in the top
+        // document; the hub lives in the guest frame, so go back in.
         watch_guest_clipboard(&driver).await?;
+        enter_guest(&driver).await?;
         click(&driver, &format!("{row} space-links [data-link-new]")).await?;
         wait_for_displayed(&driver, &format!("{row} .hub-link [data-link-ask='reset']")).await?;
         let first = guest_copied_text(&driver).await?;
+        enter_guest(&driver).await?;
         assert!(
             first.contains(&format!("/space/{key}")) && first.contains('#'),
             "new link must hand the clipboard a ticket link into the space, got {first:?}",
@@ -6912,7 +6916,6 @@ pub(crate) mod tests {
         driver
             .execute(r##"window.__tonkWrote = "";"##, Vec::new())
             .await?;
-        driver.enter_default_frame().await?;
         click(&driver, &format!("{row} .hub-link [data-link-ask='reset']")).await?;
         click(&driver, &format!("{row} .hub-ask [data-link-do]")).await?;
         wait_for_text_containing(
