@@ -4635,59 +4635,50 @@ pub(crate) mod tests {
         click(&driver, "[data-account-trigger]").await?;
         await_url_path(&driver, "/settings").await?;
         enter_hub(&driver).await?;
-        wait_for_displayed(&driver, ".details-panel").await?;
-        wait_for_displayed(&driver, ".passkeys-panel").await?;
+        wait_for_displayed(&driver, "[data-account-sheet] [data-settings-name]").await?;
         wait_for_displayed(&driver, "[data-settings-passkey-created]").await?;
-        wait_for_displayed(&driver, ".signout-panel").await?;
+        wait_for_displayed(&driver, "[data-sign-out-open]").await?;
         #[cfg(feature = "connection-invites")]
         wait_for_displayed(&driver, "[data-agent-connections]").await?;
         let settings = driver
             .execute(
-                r#"const details = document.querySelector('.details-panel').getBoundingClientRect();
-                   const passkeys = document.querySelector('.passkeys-panel').getBoundingClientRect();
-                   const signout = document.querySelector('.signout-panel').getBoundingClientRect();
-                   const danger = document.querySelector('.danger-panel').getBoundingClientRect();
-                   const email = document.querySelector('[data-settings-email]').getBoundingClientRect();
-                   const save = document.querySelector('[data-profile-rename-submit]');
+                r#"const sheet = document.querySelector('[data-account-sheet]').getBoundingClientRect();
+                   const spaces = document.querySelector('[data-spaces-sheet]')?.getBoundingClientRect();
+                   const sections = [...document.querySelectorAll('[data-account-sheet] .hub-sec')]
+                     .filter((node) => node.getBoundingClientRect().height > 0)
+                     .map((node) => node.getBoundingClientRect());
                    return {
-                     saveAfterEmail: save.getBoundingClientRect().top >= email.bottom,
-                     saveOwnsName: !!save.form?.querySelector('[data-settings-name]'),
+                     line: document.querySelector('[data-account-line]')?.textContent,
+                     close: !!document.querySelector('[data-account-sheet] .hub-line [data-account-close]'),
+                     saveButton: !!document.querySelector('[data-profile-rename-submit]'),
+                     spacesBelow: !!spaces && spaces.height > 0 && spaces.top >= sheet.bottom,
+                     oneColumn: sections.every((box) => Math.abs(box.left - sections[0].left) <= 1),
+                     inOrder: sections.every((box, i) => i === 0 || box.top >= sections[i - 1].bottom - 1),
                      agentAccess: !!document.querySelector('[data-agent-connections]'),
                      agentAccessVisible: !document.querySelector('[data-agent-connections]')?.hidden,
                      pageBottom: document.querySelector('.hub-page').getBoundingClientRect().bottom,
                      contentBottom: document.querySelector('.hub-page > main').getBoundingClientRect().bottom,
-                     signoutLeft: signout.left,
-                     signoutTop: signout.top,
-                     signoutRight: signout.right,
-                     dangerLeft: danger.left,
-                     dangerTop: danger.top,
-                     detailsLeft: details.left,
-                     title: document.querySelector('.settings-title')?.textContent,
                      switchPanel: !!document.querySelector('.switch-panel'),
                      passkeyDate: document.querySelector('[data-settings-passkey-created]')?.textContent,
-                     detailsTop: details.top,
-                     detailsRight: details.right,
-                     passkeysTop: passkeys.top,
-                     passkeysLeft: passkeys.left,
                    };"#,
                 Vec::new(),
             )
             .await?;
         let settings = settings.json();
-        assert_eq!(settings["title"], "account settings", "{settings}");
-        assert_eq!(settings["switchPanel"], false, "{settings}");
-        assert_eq!(settings["saveAfterEmail"], true, "{settings}");
-        assert_eq!(settings["saveOwnsName"], true, "{settings}");
+        assert_eq!(settings["line"], "account settings", "{settings}");
+        assert_eq!(settings["close"], true, "{settings}");
         assert_eq!(
-            settings["signoutLeft"], settings["detailsLeft"],
-            "{settings}"
+            settings["saveButton"], false,
+            "the name saves on leave: {settings}"
         );
+        assert_eq!(
+            settings["spacesBelow"], true,
+            "the account sheet opens above your spaces: {settings}"
+        );
+        assert_eq!(settings["oneColumn"], true, "{settings}");
+        assert_eq!(settings["inOrder"], true, "{settings}");
+        assert_eq!(settings["switchPanel"], false, "{settings}");
         assert_eq!(settings["agentAccess"], true, "{settings}");
-        assert!(
-            settings["dangerLeft"].as_f64().unwrap() > settings["signoutRight"].as_f64().unwrap(),
-            "delete account should sit beside sign out: {settings}"
-        );
-        assert_eq!(settings["dangerTop"], settings["signoutTop"], "{settings}");
         assert_eq!(
             settings["agentAccessVisible"],
             cfg!(feature = "connection-invites"),
@@ -4703,18 +4694,6 @@ pub(crate) mod tests {
                 .as_str()
                 .is_some_and(|date| date.chars().any(char::is_alphabetic)),
             "passkey creation date should be readable rather than raw seconds: {settings}"
-        );
-        assert!(
-            (settings["detailsTop"].as_f64().unwrap_or_default()
-                - settings["passkeysTop"].as_f64().unwrap_or_default())
-            .abs()
-                <= 2.0,
-            "details and passkeys should share the first settings row: {settings}"
-        );
-        assert!(
-            settings["passkeysLeft"].as_f64().unwrap_or_default()
-                > settings["detailsRight"].as_f64().unwrap_or(f64::INFINITY),
-            "details and passkeys should be separate columns: {settings}"
         );
 
         #[cfg(feature = "connection-invites")]
@@ -7248,39 +7227,16 @@ pub(crate) mod tests {
         // where the deletion controls live.
         open_hub_settings(&driver, &env).await?;
         click(&driver, "[data-delete-account-open]").await?;
-        wait_for_text_containing(&driver, "[data-delete-scope]", "1 owned hosted space").await?;
+        wait_for_text_containing(&driver, "[data-delete-scope]", "the 1 space you own").await?;
 
-        // The explicit confirmation phrase is the gate: a mistyped one leaves the solid
-        // verb off, and nothing is asked of the worker.
-        let confirmation = element(&driver, "[data-delete-confirm]").await?;
-        confirmation.send_keys("delete").await?;
-        let verb = element(&driver, "[data-delete-account-submit]").await?;
-        assert!(
-            verb.attr("disabled").await?.is_some(),
-            "a partial confirmation must not arm the deletion"
-        );
+        // It asks first, in place: the question opens with focus on the
+        // safe answer, and keeping the account closes it again.
+        wait_for_displayed(&driver, "[data-delete-ask] [data-ask-keep]").await?;
+        click(&driver, "[data-delete-ask] [data-ask-keep]").await?;
+        wait_for_displayed(&driver, "[data-delete-account-open]").await?;
+        click(&driver, "[data-delete-account-open]").await?;
+        wait_for_displayed(&driver, "[data-delete-ask] [data-delete-account-submit]").await?;
 
-        // The real thing: the exact phrase arms the verb, and
-        // the passkey gesture the virtual authenticator answers on the
-        // consent card the worker's ask raises finishes it.
-        driver
-            .execute(
-                r#"const field = document.querySelector("[data-delete-confirm]");
-                   field.value = "";
-                   field.dispatchEvent(new Event("input", { bubbles: true }));"#,
-                Vec::new(),
-            )
-            .await
-            .ok();
-        confirmation.send_keys("delete account").await?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while verb.attr("disabled").await?.is_some() {
-            anyhow::ensure!(
-                tokio::time::Instant::now() < deadline,
-                "the exact confirmation phrase must arm the deletion"
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
         // The passkey is asked for on this click, with no card between.
         click(&driver, "[data-delete-account-submit]").await?;
 
@@ -7618,7 +7574,7 @@ pub(crate) mod tests {
         // there, where the stack is not shown; the spaces tab is the way
         // back to it, pushed in place.
         enter_hub(&driver).await?;
-        click(&driver, ".settings-back").await?;
+        click(&driver, "[data-account-close]").await?;
         wait_for_text_containing(&driver, ".hub-rows", "First Garden").await?;
         driver.enter_default_frame().await?;
         let listed = get_json(&driver, "/api/profile").await?;
@@ -7628,7 +7584,7 @@ pub(crate) mod tests {
         );
         enter_hub(&driver).await?;
         click(&driver, "[data-account-trigger]").await?;
-        wait_for_displayed(&driver, ".signout-panel").await?;
+        wait_for_displayed(&driver, "[data-sign-out-open]").await?;
         assert!(driver.find_all(By::Css(".switch-panel")).await?.is_empty());
 
         driver.quit().await?;
@@ -8371,16 +8327,22 @@ pub(crate) mod tests {
             (async () => {
                 await until(() => settings.querySelectorAll('[data-connection-id]').length === 3);
                 const initial = {
-                    spaces: [...settings.querySelectorAll('[data-connection-space]')].map(node => node.dataset.connectionSpace),
-                    names: [...settings.querySelectorAll('.connection-space__name')].map(node => node.textContent),
-                    sharedButtons: settings.querySelectorAll('[data-connection-id="' + shared.id + '"] button').length,
+                    rows: [...settings.querySelectorAll('[data-connection-id]')].map(node => node.dataset.connectionId[0]),
+                    names: [...settings.querySelectorAll('.connection-record .hub-item-name')].map(node => node.firstChild.textContent.trim()),
+                    metas: [...settings.querySelectorAll('.connection-record .hub-item-meta')].map(node => node.textContent),
+                    bots: settings.querySelectorAll('.connection-record .hub-bot').length,
+                    asksClosed: [...settings.querySelectorAll('[data-connection-ask-for]')].every(node => node.hidden),
                     disclosures: settings.querySelectorAll('[data-connection-id] details').length,
-                    labels: [...settings.querySelectorAll('.connection-installations li')].map(node => node.textContent),
                     injected: settings.querySelectorAll('[data-connections-list] img').length,
                     legacy: settings.querySelector('[data-connection-id="' + legacy.id + '"]').textContent,
                     inactiveRows: settings.querySelectorAll('[data-connection-id="' + expired.id + '"], [data-connection-id="' + revoked.id + '"]').length,
-                    retry: settings.querySelector('[data-connection-revoke="' + partial.id + '"]').textContent
+                    retry: settings.querySelector('[data-connection-ask="' + partial.id + '"]').textContent
                 };
+                // `remove` asks first, in place; the safe answer closes it.
+                settings.querySelector('[data-connection-ask="' + shared.id + '"]').click();
+                initial.askOpened = !settings.querySelector('[data-connection-ask-for="' + shared.id + '"]').hidden;
+                settings.querySelector('[data-connection-ask-for="' + shared.id + '"] [data-ask-keep]').click();
+                initial.askKept = settings.querySelector('[data-connection-ask-for="' + shared.id + '"]').hidden;
                 settings.api = () => Promise.resolve({...partial, status: 'revoked',
                     targets: partial.targets.map(target => ({...target, acknowledged: true, error: null}))});
                 settings.querySelector('[data-connection-revoke="' + partial.id + '"]').click();
@@ -8389,17 +8351,17 @@ pub(crate) mod tests {
                 settings.api = () => Promise.resolve({...legacy, status: 'revoked',
                     targets: legacy.targets.map(target => ({...target, acknowledged: true}))});
                 settings.querySelector('[data-connection-revoke="' + legacy.id + '"]').click();
-                await until(() => !settings.querySelector('[data-connection-space="did:key:second"]'));
-                initial.emptySpaceHidden = true;
+                await until(() => !settings.querySelector('[data-connection-id="' + legacy.id + '"]'));
+                initial.legacyRemoved = true;
                 settings.api = () => Promise.resolve([expired, revoked]);
                 settings.connectionsRefresh();
                 await until(() => settings.querySelector('[data-connections-status]').textContent === 'No active connections.');
-                initial.inactiveOnlySpaces = settings.querySelectorAll('[data-connection-space]').length;
+                initial.inactiveOnlyRows = settings.querySelectorAll('[data-connection-id]').length;
                 // New names come from the current projection, not the issue-time label.
                 settings.api = () => Promise.resolve([{...shared, spaceName: 'Renamed space'}, {...legacy, spaceName: null}]);
                 settings.connectionsRefresh();
                 await until(() => settings.querySelectorAll('[data-connection-id]').length === 2);
-                initial.renamed = [...settings.querySelectorAll('.connection-space__name')].map(node => node.textContent);
+                initial.renamed = [...settings.querySelectorAll('.connection-record .hub-item-meta')].map(node => node.textContent.split(' · ')[0]);
                 // A late response must not repaint after the next refresh.
                 let late;
                 settings.api = () => new Promise(resolve => { late = resolve; });
@@ -8420,21 +8382,28 @@ pub(crate) mod tests {
             })().catch(error => { settings.api = original; done({error: error.message}); });
         "#, vec![]).await?;
         let state = result.json();
-        assert_eq!(
-            state["spaces"],
-            serde_json::json!(["did:key:first", "did:key:second"]),
-            "{state}"
-        );
+        assert_eq!(state["rows"], serde_json::json!(["a", "b", "c"]), "{state}");
         assert_eq!(
             state["names"],
-            serde_json::json!(["Same display name", "Same display name"])
+            serde_json::json!([
+                "Codex on work laptop, <img src=x onerror=alert(1)>",
+                "Name unavailable",
+                "Name unavailable"
+            ]),
+            "{state}"
         );
-        assert_eq!(state["sharedButtons"], 1);
+        assert!(
+            state["metas"].as_array().unwrap().iter().all(|meta| meta
+                .as_str()
+                .unwrap()
+                .starts_with("Same display name · until ")),
+            "{state}"
+        );
+        assert_eq!(state["bots"], 3);
+        assert_eq!(state["asksClosed"], true);
+        assert_eq!(state["askOpened"], true);
+        assert_eq!(state["askKept"], true);
         assert_eq!(state["disclosures"], 0);
-        assert_eq!(
-            state["labels"],
-            serde_json::json!(["Codex on work laptop", "<img src=x onerror=alert(1)>"])
-        );
         assert_eq!(state["injected"], 0);
         assert!(
             state["legacy"]
@@ -8443,13 +8412,13 @@ pub(crate) mod tests {
                 .contains("Name unavailable")
         );
         assert_eq!(state["inactiveRows"], 0);
-        assert_eq!(state["emptySpaceHidden"], true);
-        assert_eq!(state["inactiveOnlySpaces"], 0);
-        assert_eq!(state["retry"], "retry removal");
+        assert_eq!(state["legacyRemoved"], true);
+        assert_eq!(state["inactiveOnlyRows"], 0);
+        assert_eq!(state["retry"], "try again");
         assert_eq!(state["removed"], true);
         assert_eq!(
             state["renamed"],
-            serde_json::json!(["Renamed space", "did:key:second"])
+            serde_json::json!(["Renamed space", "a space"])
         );
         assert_eq!(state["staleRows"], 0);
         assert_eq!(state["errorVisible"], true);
@@ -8524,7 +8493,7 @@ pub(crate) mod tests {
                     .send_keys(Key::Tab)
                     .await?;
                 let focused = browser.execute(r#"const node=document.activeElement;const style=getComputedStyle(node);
-                    return {settingsHidden:document.querySelector('[data-settings-view]')?.hidden, accountExpanded:document.querySelector('.account-trigger')?.getAttribute('aria-expanded'), keys:window.__connectionKeys, tag:node.tagName, class:node.className, refresh:node.matches('[data-connections-refresh]'), revoke:node.matches('[data-connection-revoke]'), visible:node.matches(':focus-visible'),
+                    return {settingsHidden:document.querySelector('[data-settings-view]')?.hidden, accountExpanded:document.querySelector('.account-trigger')?.getAttribute('aria-expanded'), keys:window.__connectionKeys, tag:node.tagName, class:node.className, refresh:node.matches('[data-connections-refresh]'), revoke:node.matches('[data-connection-ask]'), visible:node.matches(':focus-visible'),
                         ring:style.outlineStyle !== 'none' || style.boxShadow !== 'none',
                         height:node.getBoundingClientRect().height, animation:style.animationName,
                         clientWidth:document.documentElement.clientWidth, scrollWidth:document.documentElement.scrollWidth };"#, vec![]).await?;
@@ -8557,7 +8526,7 @@ pub(crate) mod tests {
                         <= state["clientWidth"].as_u64().unwrap(),
                     "management content overflows horizontally: {state}"
                 );
-                element(browser, &format!("[data-connection-revoke='{group_id}']"))
+                element(browser, &format!("[data-connection-ask='{group_id}']"))
                     .await?
                     .scroll_into_view()
                     .await?;

@@ -421,7 +421,7 @@ fn stays_from_facts(facts: &crate::reactor::EntityFacts) -> bool {
 }
 
 /// Whether the create should navigate the caller into the new space.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(test)]
 fn open_from_facts(facts: &crate::reactor::EntityFacts) -> bool {
     use dialog_corpus::Value;
 

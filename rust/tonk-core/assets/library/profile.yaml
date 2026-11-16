@@ -632,6 +632,13 @@ view!:
       .settings-back:active { background:var(--wash-2); }
       .hub-page:has(hub-bar[path="/account"]) :is(.settings-title,.settings-back) { display:none; }
       .hub-page:has(account-settings[data-pane="agent"]) :is(.settings-title,.settings-back) { display:none; }
+      /* The account sheet names itself in its line and closes from there. */
+      .hub-page:has(account-settings[data-pane="account"]) :is(.settings-title,.settings-back) { display:none; }
+      .hub-page main { display:flex; flex-direction:column; }
+      .hub-page main > [data-settings-view] { order:-1; }
+      .hub-page main > [data-settings-view]:has(account-settings[data-pane="account"]) { margin-bottom:16px; }
+      .hub-page account-settings [data-account-sheet] tonk-display { display:contents; }
+      .hub-page account-settings [data-account-sheet] [data-account-registered] { display:contents; }
       .hub-page account-settings { display:block; }
       .hub-page account-settings .s-body { min-width:0; min-height:0; max-height:none;
         overflow:visible; padding:0; background:transparent; border:0; color:var(--ink); }
@@ -908,7 +915,7 @@ view!:
       /* One page: the bar's path says whether the stack or the account
          section shows, and the section says whether its rows are for a
          browser with an account here or without one. */
-      .hub-page:has(hub-bar[path^="/settings"]) [data-spaces-view],
+      .hub-page:has(hub-bar[path^="/settings"]):not(:has(hub-bar[path="/settings"]):has(account-settings[data-pane="account"][data-linked="true"])) [data-spaces-view],
       .hub-page:has(hub-bar[path="/account"]):has(account-settings[data-linked="true"]):not(:has(account-settings[data-linking="true"])) [data-spaces-view] { display:none; }
       .hub-page:not(:has(hub-bar[path^="/settings"])):not(:has(hub-bar[path="/account"])) [data-settings-view] { display:none; }
       account-settings:not([data-linked="true"]) [data-when-linked] { display:none; }
@@ -2286,50 +2293,37 @@ view!:
     link-email: |
       <span data-link-account>{email}</span>
     email: |
-      <div class="settings-field">
-        <span>account email</span>
-        <b data-settings-email>{email}</b>
-      </div>
+      <div class="hub-kv"><span class="hub-kv-l">email</span><span class="hub-kv-text" data-settings-email>{email}</span></div>
     settings: |
       <div data-account-registered>
-        <section class="settings-panel details-panel">
-          <h2>Your details</h2>
+        <section class="hub-sec" aria-labelledby="sec-details">
+          <div class="hub-sec-h"><h3 id="sec-details">your details</h3></div>
           <tonk-display model="tonk:account/name" view="editable"></tonk-display>
+          <div class="hub-kv"><span class="hub-kv-l">email</span><span class="hub-kv-text" data-settings-email>{email}</span></div>
+          <p class="hub-note">Your name shows to people and agents in your spaces. It saves when you leave the field.</p>
         </section>
-        <section class="settings-panel passkeys-panel">
-          <h2>Passkeys</h2>
-          <div class="passkey-list"><tonk-display model="tonk:account/passkey"></tonk-display></div>
-          <p class="expl">
-            Your passkey replaces a password and may be saved to a device, browser
-            profile, or password manager.
-          </p>
-          <button class="cta panel-action" type="button" data-add-passkey data-account="tonk:add-passkey"
-            on:add-passkey=tonk:add-passkey>add a passkey <span aria-hidden="true">+</span></button>
+        <section class="hub-sec" aria-labelledby="sec-passkeys">
+          <div class="hub-sec-h"><h3 id="sec-passkeys">passkeys</h3><button class="hub-btn" type="button" data-add-passkey data-account="tonk:add-passkey"
+            on:add-passkey=tonk:add-passkey>add a passkey</button></div>
+          <div class="hub-items passkey-list"><tonk-display model="tonk:account/passkey"></tonk-display></div>
+          <p class="hub-note" data-passkeys-note>A passkey takes the place of a password. It can live on a device, in a browser profile or in a password manager.</p>
         </section>
-        <!-- The deletion dialog lives on the registration because the
-             command carries the verified address, stamped on the submit
-             control here. What it deletes is listed from `space/owned`;
-             the element counts those rows into the sentence and arms
-             the submit once the phrase is typed. -->
-        <tonk-dialog data-delete-account-dialog heading="confirm account deletion">
-          <div class="confirm-body">
-            <span data-delete-scope>loading what this deletes&hellip;</span>
-            <span data-delete-owned hidden><tonk-display model="tonk:space/owned" view="deletion"></tonk-display></span>
-            <span data-delete-question>are you sure you want to delete all data associated with this account?</span>
-            <span data-delete-consequence>this action is permanent. there is no option to recover your data.</span>
-            <span data-delete-passkey>your passkey will be asked for.</span>
-            <div class="armrow">
-              <label for="delete-confirmation">type <b data-delete-confirm-label>delete account</b> to confirm:</label>
-              <input class="armfield" id="delete-confirmation" data-delete-confirm type="text"
-                autocomplete="off" autocapitalize="off" spellcheck="false"
-                aria-label="deletion confirmation" />
-            </div>
-          </div>
-          <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-          <button class="m-go" slot="actions" type="button" data-delete-account-submit data-email={email}
-            on:delete-account=tonk:delete-account disabled><span data-delete-submit-label>delete account</span></button>
-        </tonk-dialog>
       </div>
+    # Deleting the account stands apart, under the sections: a sentence
+    # that counts what goes, and `delete account`, which asks first in
+    # place and steps aside while it asks. The answer is `delete with
+    # passkey`; the command carries the verified address stamped here.
+    deletion: |
+      <section class="hub-sec hub-apart" aria-label="delete account">
+        <p class="hub-note" data-delete-scope>Deletes your account and the spaces you own.</p>
+        <span data-delete-owned hidden><tonk-display model="tonk:space/owned" view="deletion"></tonk-display></span>
+        <button class="hub-btn" type="button" data-delete-account-open>delete account</button>
+        <div class="hub-ask" role="group" aria-label="Delete your account? This can’t be undone." data-delete-ask hidden>
+          <p>Delete your account? This can’t be undone.</p>
+          <div class="hub-ask-acts"><button class="hub-btn" type="button" data-ask-keep>keep account</button><button class="hub-btn hub-btn--ring" type="button" data-delete-account-submit data-email={email}
+            on:delete-account=tonk:delete-account><span data-delete-submit-label>delete with passkey</span></button></div>
+        </div>
+      </section>
 
 # The name, editable in place: a text input whose `change` (Enter or
 # blur) is the rename command. Its own view because it is its own
@@ -2349,26 +2343,18 @@ view!:
   this: tonk:account/name
   show:
     editable: |
-      <form class="details-form" data-profile-rename-form>
-        <label for="account-display-name">display name</label>
-        <input class="sname" id="account-display-name" name="name" type="text"
-          data-settings-name value={name} required maxlength="50" autocomplete="name"
-          aria-describedby="account-display-name-error">
-        <p id="account-display-name-error" class="form-error" data-profile-rename-error
-          role="alert" hidden></p>
-        <tonk-display model="tonk:account/registered" view="email"></tonk-display>
-        <button class="cta primary-action" type="submit" data-profile-rename-submit>save changes</button>
+      <form class="hub-kv" data-profile-rename-form novalidate>
+        <label class="hub-kv-l" for="account-display-name">name</label>
+        <div><input id="account-display-name" name="name" type="text" data-settings-name value={name}
+          maxlength="50" autocomplete="name" spellcheck="false" aria-describedby="account-display-name-error">
+        <p id="account-display-name-error" class="hub-err" data-profile-rename-error role="alert"></p></div>
       </form>
 
 view!:
   this: tonk:account/passkey
   show:
     directory: |
-      <div class="passkey-card" data-id={this}>
-        <svg class="passkey-mark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="9" r="4"></circle><path d="m11 12 8 8m-2-2 3-3m-6 0 3-3"></path></svg>
-        <span><b data-settings-passkey-device>{created-on}</b>
-          <span class="passkey-created">created <span data-settings-passkey-created>{created-at}</span></span></span>
-      </div>
+      <div class="hub-item" data-id={this}><span class="hub-item-name" data-settings-passkey-device>{created-on}</span><span class="hub-item-meta">added <span data-settings-passkey-created>{created-at}</span></span></div>
 
 # Deals the decorative collection frames from stable space identities. The
 # list pass only adjusts adjacent repeated heavy rules; it never reads or
@@ -3380,26 +3366,34 @@ view!:
             <h1 class="settings-title">account settings</h1>
             <account-settings>
               <div class="s-body">
+                <!-- The account sheet, above your spaces: Tonk's line with
+                     `close`, then your details, passkeys, connections and
+                     this device, each with its action on the heading line,
+                     and deleting the account apart, under them. What can't
+                     be undone asks first, in place, under its row. -->
                 <div class="pane" data-pane="account">
-                  <div class="account-panels">
+                  <section class="hub-sheet" data-account-sheet aria-label="account settings">
+                    <div class="hub-sr" role="status" aria-live="polite" data-account-live></div>
+                    <div class="hub-line">
+                      <div class="hub-line-l"><h2 class="hub-line-name" tabindex="-1" data-account-line>account settings</h2><span class="hub-receipt" tabindex="-1" data-account-receipt hidden></span></div>
+                      <a class="hub-btn" href="/" data-return-spaces data-account-close>close</a>
+                    </div>
                     <tonk-display model="tonk:account/registered" view="settings"></tonk-display>
-                    <section class="settings-panel agent-access-panel" data-agent-connections hidden aria-label="agent access">
-                      <div class="settings-heading"><h2>Agent access</h2><button class="connection-refresh" type="button" data-connections-refresh>refresh</button></div>
-                      <p class="expl">Completed connections created by this account.</p>
-                      <p class="expl" data-connections-status role="status" aria-live="polite"></p>
-                      <div data-connections-list></div>
+                    <section class="hub-sec" aria-labelledby="sec-conn" data-agent-connections hidden>
+                      <div class="hub-sec-h"><h3 id="sec-conn">connections</h3><button class="hub-btn" type="button" data-connections-refresh>refresh</button></div>
+                      <p class="hub-note" data-connections-status role="status" aria-live="polite"></p>
+                      <ul class="hub-items" data-connections-list></ul>
+                      <p class="hub-note">An agent app connects from its own settings. Removing one here takes its access away at once.</p>
                     </section>
-                    <section class="settings-panel signout-panel">
-                      <h2>Sign out</h2>
-                      <p>Disconnect this account. Its spaces stay on this device for when you sign back in.</p>
-                      <button class="cta panel-action" type="button" data-sign-out-open>sign out on this device <span aria-hidden="true">↗</span></button>
+                    <section class="hub-sec" aria-labelledby="sec-device">
+                      <div class="hub-sec-h"><h3 id="sec-device">this device</h3><button class="hub-btn" type="button" data-sign-out-open>sign out on this device</button></div>
+                      <div class="hub-ask" role="group" aria-label="Sign out on this device? Your spaces stay in your account." data-sign-out-ask hidden>
+                        <p>Sign out on this device? Your spaces stay in your account.</p>
+                        <div class="hub-ask-acts"><button class="hub-btn" type="button" data-ask-keep>stay signed in</button><button class="hub-btn hub-btn--ring" type="button" data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button></div>
+                      </div>
                     </section>
-                    <section class="settings-panel danger-panel">
-                      <h2>Delete account</h2>
-                      <p>Permanently delete all data associated with this account.</p>
-                      <button class="cta panel-action" type="button" data-delete-account-open>delete account (permanent)</button>
-                    </section>
-                  </div>
+                    <tonk-display model="tonk:account/registered" view="deletion"></tonk-display>
+                  </section>
                 </div>
                 <div class="pane" data-pane="link" hidden data-link-approval>
                   <h2 class="link-heading" data-link-heading>connect to your Tonk account</h2>
@@ -3503,13 +3497,6 @@ view!:
                 </tonk-display>
                 <div data-custody-seat aria-hidden="true"></div>
               </div>
-              <tonk-dialog data-sign-out-dialog heading="confirm sign out">
-                <div class="confirm-body">
-                  this disconnects the account from this browser. its spaces stay on this device, including spaces that have not been backed up or synced, but the hub lists them only while you are signed in. sign back into this account to see them again.
-                </div>
-                <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-                <button class="m-go" slot="actions" type="button" data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>
-              </tonk-dialog>
             </account-settings>
           </section>
         </main>
@@ -6323,33 +6310,16 @@ element!: &account-settings
           self.connectionsStatus('Connections could not be loaded. Refresh to try again.');
         });
       }
+    # Each agent connection: its name with the `bot` tag, the app, the
+    # space it reaches and until when. `remove` asks first, in place.
     connections-render: |
       (self, groups) => {
         const list = self.querySelector('[data-connections-list]');
         if (!list) return;
         list.textContent = '';
-        const spaces = new Map();
         for (const group of groups) {
           if (group.requestId || !group.confirmed || ['revoked', 'expired'].includes(group.status)) continue;
-          if (!spaces.has(group.subject)) spaces.set(group.subject, []);
-          spaces.get(group.subject).push(group);
-        }
-        for (const [subject, records] of spaces) {
-          const section = document.createElement('section');
-          section.className = 'connection-space';
-          section.dataset.connectionSpace = subject;
-          const header = document.createElement('div');
-          header.className = 'connection-space__heading';
-          const label = document.createElement('span');
-          label.className = 'connection-space__label';
-          label.textContent = 'space';
-          const heading = document.createElement('h3');
-          heading.className = 'connection-space__name';
-          heading.textContent = records.find(group => group.spaceName)?.spaceName || subject;
-          header.append(label, heading);
-          section.append(header);
-          for (const group of records) section.append(self.connectionRecord(group));
-          list.append(section);
+          list.append(self.connectionRecord(group));
         }
       }
     connection-record: |
@@ -6358,42 +6328,56 @@ element!: &account-settings
           const node = document.createElement(tag);
           if (className) node.className = className;
           if (text) node.textContent = text;
-          parent.append(node);
+          parent?.append(node);
           return node;
         };
-        const installations = group.installations ?? [];
-        const names = installations.map(installation => installation.name);
-        const count = group.targets.filter(target => target.acknowledged).length;
+        const apps = (group.installations ?? []).map((installation) => installation.name);
+        const count = group.targets.filter((target) => target.acknowledged).length;
         const all = group.targets.length > 0 && count === group.targets.length;
-        const expired = group.status === 'expired';
-        const retry = !all && (group.status === 'partial' || count > 0 || group.targets.some(target => target.error));
+        const retry = !all && (group.status === 'partial' || count > 0 || group.targets.some((target) => target.error));
         const date = new Date(group.expiresAt * 1000);
-        const validDate = Number.isFinite(date.getTime());
-        const expiry = validDate ? date.toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'}) : String(group.expiresAt);
-        const row = document.createElement('article');
-        row.className = 'connection-record';
+        const until = Number.isFinite(date.getTime()) ? date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : '';
+        // Named by the clients that connected through it; the label it
+        // was issued under can be stale, so it never names the row.
+        const name = apps.join(', ') || 'Name unavailable';
+        const space = group.spaceName || 'a space';
+        const row = el('li', 'hub-item connection-record');
         row.dataset.connectionId = group.id;
-        row.setAttribute('aria-label', names.join(', ') || group.label);
-        const overview = el('div', 'connection-overview', '', row);
-        const identity = el('div', 'connection-identity', '', overview);
-        if (!group.requestId && installations.length) {
-          const list = el('ul', 'connection-installations', '', identity);
-          for (const name of names) el('li', '', name, list);
-        } else {
-          el('b', 'connection-title', group.requestId ? group.label : 'Name unavailable', identity);
-        }
-        el('p', 'connection-meta', all ? 'Access removed' : expired ? `Expired ${expiry}` : `Read & edit · Expires ${expiry}`, identity);
-        const actions = el('div', 'connection-actions', '', overview);
-        const button = el('button', 'cta connection-remove', all ? 'access removed' : expired ? 'expired' : retry ? 'retry removal' : 'remove access', actions);
+        const title = el('span', 'hub-item-name', name, row);
+        title.append(' ');
+        el('span', 'hub-bot', 'bot', title);
+        el('span', 'hub-item-meta', [space, until && `until ${until}`].filter(Boolean).join(' · '), row);
+        const button = el('button', 'hub-btn', all ? 'removed' : retry ? 'try again' : 'remove', row);
         button.type = 'button';
-        button.dataset.connectionRevoke = group.id;
-        button.setAttribute('aria-label', `${group.requestId ? 'remove space access for' : 'remove access for everyone using'} ${names.join(', ') || group.label}`);
-        button.disabled = all || expired;
-        if (!group.requestId && !all && !expired) button.title = 'Removes access for everyone using this connection';
-        if (retry && !expired) {
-          el('p', 'connection-progress', `Removal incomplete · ${count} of ${group.targets.length} permissions confirmed`, row);
-        }
+        button.disabled = all;
+        button.dataset.connectionAsk = group.id;
+        button.setAttribute('aria-label', `remove ${name} bot from ${space}`);
+        const ask = el('div', 'hub-ask', '', row);
+        ask.hidden = true;
+        ask.setAttribute('role', 'group');
+        ask.dataset.connectionAskFor = group.id;
+        const sentence = `Remove ${name} bot? It loses its access to ${space} at once.`;
+        ask.setAttribute('aria-label', sentence);
+        el('p', '', sentence, ask);
+        const acts = el('div', 'hub-ask-acts', '', ask);
+        const keep = el('button', 'hub-btn', 'keep connection', acts);
+        keep.type = 'button';
+        keep.dataset.askKeep = '';
+        const go = el('button', 'hub-btn hub-btn--ring', 'remove connection', acts);
+        go.type = 'button';
+        go.dataset.connectionRevoke = group.id;
+        if (retry) el('p', 'hub-note', `Removal incomplete · ${count} of ${group.targets.length} permissions confirmed`, row);
         return row;
+      }
+    connection-ask: |
+      (self, node, open) => {
+        const id = node.dataset.connectionAsk ?? node.dataset.connectionAskFor;
+        const row = self.querySelector(`[data-connection-id="${id}"]`);
+        const ask = row?.querySelector('[data-connection-ask-for]');
+        if (!ask) return;
+        ask.hidden = !open;
+        if (open) ask.querySelector('[data-ask-keep]')?.focus();
+        else row.querySelector('[data-connection-ask]')?.focus();
       }
     connections-revoke: |
       (self, button) => {
@@ -6409,6 +6393,10 @@ element!: &account-settings
           if (!group || group.id !== id) { self.connectionsStatus('This connection changed. Refresh before trying again.'); return; }
           self.agentConnections = (self.agentConnections ?? []).map(saved => saved.id === id ? group : saved);
           self.connectionsRender(self.agentConnections);
+          if (group.targets.every((target) => target.acknowledged)) {
+            const apps = (group.installations ?? []).map((installation) => installation.name).join(', ');
+            self.receipt(['removed', apps || 'an agent', `bot from ${group.spaceName || 'a space'}`]);
+          }
           const count = group.targets.filter((target) => target.acknowledged).length;
           self.connectionsStatus(count === group.targets.length
             ? 'Removal confirmed. Enforcement may take time; downloaded data remains.'
@@ -7035,40 +7023,68 @@ element!: &account-settings
           anchor: { left: box.left, bottom: box.top - 7, width: box.width },
         }));
       }
+    # An ask, in place under its row: the sentence and the answers show,
+    # the button that asked steps aside where the mock says so, and focus
+    # goes to the safe answer. Answered, focus goes back to the button.
+    ask: |
+      (self, which, open) => {
+        const ask = self.querySelector(`[data-${which}-ask]`);
+        const opener = self.querySelector(`[data-${which}-open], [data-${which === 'delete' ? 'delete-account' : which}-open]`);
+        if (!ask) return;
+        ask.hidden = !open;
+        if (which === 'delete' && opener) opener.hidden = open;
+        if (open) {
+          self._asked = which;
+          ask.querySelector('[data-ask-keep]')?.focus();
+        } else {
+          if (self._asked === which) self._asked = null;
+          opener?.focus();
+        }
+      }
     open-delete: |
       (self) => {
-        const dialog = self.querySelector('[data-delete-account-dialog]');
-        if (!dialog) return;
-        const field = self.querySelector('[data-delete-confirm]');
-        if (field) field.value = '';
         self.scope();
         self.arm();
-        dialog.show?.();
-        field?.focus();
+        self.ask('delete', true);
       }
-    # The sentence the dialog opens on, counted off the owned-space rows
-    # the view renders.
+    # The sentence that counts what goes: the account, the spaces it owns
+    # (the owned-space rows the view renders) and its connections.
     scope: |
       (self) => {
-        const owned = [...self.querySelectorAll('[data-owned-space]')];
-        const names = owned.map((row) => (row.querySelector('[data-space-name]')?.textContent ?? '').trim() || 'unnamed space');
-        const count = owned.length;
-        const listed = names.length ? `: ${names.join(', ')}` : '';
-        self.text('[data-delete-scope]',
-          `${count} owned hosted space${count === 1 ? '' : 's'} will be deleted${listed}. Spaces you joined are left intact.`);
+        const name = (self.querySelector('[data-settings-name]')?.value ?? '').trim() || 'your account';
+        const spaces = self.querySelectorAll('[data-owned-space]').length;
+        const connections = (self.agentConnections ?? []).length;
+        const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+        const access = connections === 0 ? '' : connections === 1 ? ' and your connection’s access' : ` and your ${connections} connections’ access`;
+        self.text('[data-delete-scope]', `Deletes ${name}, the ${plural(spaces, 'space')} you own${access}.`);
       }
-    # The submit fires the command, so it stays disabled until the exact
-    # phrase is typed and the address is on it.
+    # The answer fires the command, so it waits for the address.
     arm: |
       (self) => {
-        const field = self.querySelector('[data-delete-confirm]');
         const submit = self.querySelector('[data-delete-account-submit]');
-        if (!field || !submit) return;
-        const expected = (self.querySelector('[data-delete-confirm-label]')?.textContent ?? '').trim();
-        const armed = !!expected && field.value.trim() === expected && !!submit.dataset.email;
+        if (!submit) return;
+        const armed = !!submit.dataset.email;
         if (armed === submit.hasAttribute('disabled')) {
           if (armed) submit.removeAttribute('disabled'); else submit.setAttribute('disabled', '');
         }
+      }
+    # A receipt in the account sheet's line, in place of its name.
+    receipt: |
+      (self, words) => {
+        const sheet = self.querySelector('[data-account-sheet]');
+        const slot = sheet?.querySelector('[data-account-receipt]');
+        if (!slot) return;
+        const parts = words.map((word, i) => {
+          if (i % 2 === 0) return document.createTextNode(`${i ? ' ' : ''}${word}${i < words.length - 1 ? ' ' : ''}`);
+          const bold = document.createElement('b');
+          bold.textContent = word;
+          return bold;
+        });
+        slot.replaceChildren(...parts, document.createTextNode(' · by you'));
+        slot.hidden = false;
+        sheet.querySelector('[data-account-line]')?.classList.add('hub-sr');
+        const live = sheet.querySelector('[data-account-live]');
+        if (live) live.textContent = slot.textContent;
       }
     profiles: |
       (self) => {
@@ -7091,7 +7107,17 @@ element!: &account-settings
             month: 'short', day: 'numeric', year: 'numeric'
           }).format(created);
         }
+        // Removing a passkey is not offered yet (BUG-323); the only
+        // passkey says so already, since it never can be.
+        const note = self.querySelector('[data-passkeys-note]');
+        const count = self.querySelectorAll('.passkey-list .hub-item').length;
+        const text = count === 1
+          ? 'This is your only passkey, so it can’t be removed. Add another first.'
+          : 'A passkey takes the place of a password. It can live on a device, in a browser profile or in a password manager.';
+        if (note && note.textContent !== text) note.textContent = text;
       }
+    # The name saves when you leave the field or press Enter. Empty, it
+    # keeps the name you had and says so.
     profile-name-submit: |
       (self, event) => {
         const form = event.target.closest?.('[data-profile-rename-form]');
@@ -7099,37 +7125,27 @@ element!: &account-settings
         event.preventDefault();
         event.stopImmediatePropagation();
         const input = form.elements?.name;
-        const submit = form.querySelector('[data-profile-rename-submit]');
         const error = form.querySelector('[data-profile-rename-error]');
-        if (form.getAttribute('aria-busy') === 'true') {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          return;
-        }
+        if (form.getAttribute('aria-busy') === 'true') return;
+        const was = (input?.dataset.was ?? input?.value ?? '').trim();
         const name = (input?.value ?? '').trim();
         if (!name) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
           if (input) {
+            input.value = was;
             input.setAttribute('aria-invalid', 'true');
-            input.focus();
           }
-          if (error) {
-            error.textContent = 'Enter a display name.';
-            error.hidden = false;
-          }
+          if (error) error.textContent = 'Your name can’t be empty.';
           return;
         }
         input.value = name;
         input.removeAttribute('aria-invalid');
-        if (error) { error.textContent = ''; error.hidden = true; }
-        if (name === input.defaultValue.trim()) return;
+        if (error) error.textContent = '';
+        if (name === was) return;
         form.setAttribute('aria-busy', 'true');
-        if (submit) submit.disabled = true;
-        self.profileNameSave(form, name);
+        self.profileNameSave(form, name, was);
       }
     profile-name-save: |
-      async (self, form, name) => {
+      async (self, form, name, was) => {
         let reader;
         const error = form.querySelector('[data-profile-rename-error]');
         try {
@@ -7155,25 +7171,21 @@ element!: &account-settings
             if (done) throw new Error('Rename status stream ended');
             const result = value.find(row => row.this === id)?.fields;
             if (result?.status === 'failed') {
-              if (error) { error.textContent = result.detail; error.hidden = false; }
+              if (error) error.textContent = result.detail;
               return;
             }
             if (result?.status === 'renamed') {
-              form.elements.name.defaultValue = name;
+              form.elements.name.dataset.was = name;
+              self.receipt(['changed your name to', name]);
               return;
             }
           }
         } catch (failure) {
-          if (error) {
-            error.textContent = "Couldn't confirm your display name was saved. Try again.";
-            error.hidden = false;
-          }
+          if (error) error.textContent = `Couldn’t save your name, so it’s still ${was || 'what it was'}. Check your connection and try again.`;
         } finally {
           if (reader) await reader.cancel().catch(() => {});
           if (self._nameReader === reader) self._nameReader = null;
           form.removeAttribute('aria-busy');
-          const submit = form.querySelector('[data-profile-rename-submit]');
-          if (submit) submit.disabled = false;
         }
       }
     # Word the ceremony row. Every write is guarded, because this runs
@@ -7334,14 +7346,18 @@ element!: &account-settings
           } else if (hit('[data-via-cancel]')) {
             window.tonk?.navigate?.('/');
           } else if (hit('[data-sign-out-open]')) {
-            self.querySelector('[data-sign-out-dialog]')?.show?.();
+            self.ask('sign-out', true);
           } else if (hit('[data-delete-account-open]')) {
             self.openDelete();
+          } else if (hit('[data-connection-ask]')) {
+            self.connectionAsk(hit('[data-connection-ask]'), true);
+          } else if (hit('[data-ask-keep]')) {
+            const ask = hit('[data-ask-keep]').closest('.hub-ask');
+            if (ask?.matches('[data-connection-ask-for]')) self.connectionAsk(ask, false);
+            else self.ask(ask?.matches('[data-delete-ask]') ? 'delete' : 'sign-out', false);
           } else if (hit('[data-sign-out-submit]')) {
-            self.querySelector('[data-sign-out-dialog]')?.close?.();
             self.status('Signing out…');
           } else if (hit('[data-delete-account-submit]')) {
-            self.querySelector('[data-delete-account-dialog]')?.close?.();
             self.status('Waiting for passkey…');
           } else if (hit('[data-add-passkey]')) {
             self.status('Waiting for passkey…');
@@ -7366,8 +7382,20 @@ element!: &account-settings
             self.agentAccess(event.target.closest('[role="radio"]'));
           }
         });
-        self.addEventListener('input', (event) => {
-          if (event.target.matches?.('[data-delete-confirm]')) self.arm();
+        // The name saves when you leave the field: its own form, sent.
+        self.addEventListener('focusin', (event) => {
+          if (event.target.matches?.('[data-settings-name]')) event.target.dataset.was ??= event.target.value.trim();
+        });
+        self.addEventListener('change', (event) => {
+          if (event.target.matches?.('[data-settings-name]')) event.target.form?.requestSubmit();
+        });
+        // Escape answers an open question with its safe answer.
+        self.addEventListener('keydown', (event) => {
+          if (event.key !== 'Escape') return;
+          const ask = event.target.closest?.('.hub-ask');
+          if (!ask || ask.hidden) return;
+          event.stopPropagation();
+          ask.querySelector('[data-ask-keep]')?.click();
         });
         // The rows this words and counts arrive after connect and change
         // while the panel is up; one observer covers all three.

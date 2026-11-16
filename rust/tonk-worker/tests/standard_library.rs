@@ -1098,27 +1098,30 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(PROFILE_LIBRARY.contains("on:add-passkey=tonk:add-passkey"));
     assert!(panel.contains("on:authorize-device=tonk:authorize-device"));
     assert!(!panel.contains("/api/"));
-    assert!(panel.contains("data-delete-account-open"));
-    assert!(panel.contains("data-sign-out-open"));
-    assert!(panel.contains("<h2>Sign out</h2>"));
-    assert!(panel.contains(
-        "Disconnect this account. Its spaces stay on this device for when you sign back in."
-    ));
-    assert!(panel.contains("sign out on this device"));
-    assert!(panel.contains("heading=\"confirm sign out\""));
-    assert!(panel.contains(
-        "this disconnects the account from this browser. its spaces stay on this device, including spaces that have not been backed up or synced, but the hub lists them only while you are signed in. sign back into this account to see them again."
-    ));
-    assert!(panel.contains("data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>"));
+    // The account is a sheet: Tonk's line with `close`, then its sections,
+    // each with its action on the heading line. What can't be undone asks
+    // first, in place.
+    for contract in [
+        "<section class=\"hub-sheet\" data-account-sheet aria-label=\"account settings\">",
+        "<h2 class=\"hub-line-name\" tabindex=\"-1\" data-account-line>account settings</h2>",
+        "<a class=\"hub-btn\" href=\"/\" data-return-spaces data-account-close>close</a>",
+        "<h3 id=\"sec-conn\">connections</h3>",
+        "<h3 id=\"sec-device\">this device</h3><button class=\"hub-btn\" type=\"button\" data-sign-out-open>sign out on this device</button>",
+        "<p>Sign out on this device? Your spaces stay in your account.</p>",
+        "<button class=\"hub-btn\" type=\"button\" data-ask-keep>stay signed in</button><button class=\"hub-btn hub-btn--ring\" type=\"button\" data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>",
+        "data-agent-connections hidden",
+        "data-connections-refresh",
+        r#"<tonk-display model="tonk:account/registered" view="deletion">"#,
+    ] {
+        assert!(
+            panel.contains(contract),
+            "the account sheet must carry `{contract}`"
+        );
+    }
+    assert!(!panel.contains("data-sign-out-dialog"));
     assert!(!panel.contains("remove this device"));
     assert!(!panel.contains("confirm device removal"));
-    assert!(!panel.contains("remove all data associated with this account from this device"));
     assert!(PROFILE_LIBRARY.contains("data-add-passkey"));
-    // Agent access joins the current panel layout; the API feature gate
-    // controls visibility. Account switching remains absent.
-    assert!(panel.contains("class=\"settings-panel agent-access-panel\""));
-    assert!(panel.contains("data-agent-connections hidden"));
-    assert!(panel.contains("data-connections-refresh"));
     assert!(!panel.contains("switch-panel"));
     assert!(!panel.contains("data-add-profile"));
     assert_eq!(panel.matches("href=\"/settings\"").count(), 0);
@@ -1133,54 +1136,51 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
         r#"<tonk-display model="state:ceremony" entity="state:ceremony" view="settings">"#
     ));
 
-    // The deletion dialog rides the registration view, because the
-    // command carries the verified address and that view has it.
-    let registered = PROFILE_LIBRARY
-        .split("    settings: |\n      <div data-account-registered>")
+    // Deleting stands apart, on the registration view, because the
+    // command carries the verified address and that view has it. It asks
+    // first in place; the answer is `delete with passkey`.
+    let deletion = PROFILE_LIBRARY
+        .split("    deletion: |\n      <section class=\"hub-sec hub-apart\"")
         .nth(1)
         .and_then(|rest| rest.split("\n\n").next())
-        .expect("the registration settings facet");
-    assert!(registered.contains("data-delete-account-submit data-email={email}"));
-    assert!(registered.contains("on:delete-account=tonk:delete-account disabled"));
+        .expect("the registration deletion facet");
+    assert!(deletion.contains("data-delete-account-submit data-email={email}"));
+    assert!(deletion.contains("on:delete-account=tonk:delete-account>"));
+    assert!(deletion.contains("<p>Delete your account? This can’t be undone.</p>"));
+    assert!(deletion.contains("data-ask-keep>keep account</button>"));
+    assert!(deletion.contains("<span data-delete-submit-label>delete with passkey</span>"));
     assert!(
-        registered.contains(r#"<tonk-display model="tonk:space/owned" view="deletion">"#),
-        "what the deletion deletes is listed from the owned-space facts",
+        deletion.contains(r#"<tonk-display model="tonk:space/owned" view="deletion">"#),
+        "what the deletion deletes is counted from the owned-space facts",
     );
-    // Editable settings fields use native text inputs and native carets.
+    assert!(!deletion.contains("data-delete-confirm"));
+    // The name saves when you leave the field: no save button.
     let name_form = PROFILE_LIBRARY
-        .split("<form class=\"details-form\" data-profile-rename-form")
+        .split("<form class=\"hub-kv\" data-profile-rename-form")
         .nth(1)
         .and_then(|rest| rest.split("</form>").next())
         .expect("the display-name form");
-    assert!(
-        !name_form.contains("<i class=\"cur\""),
-        "an unfocused display-name field must not draw an editing cursor",
-    );
     assert!(
         !name_form.contains("on:profile-rename-submit"),
         "the receipt-aware submit handler must own dispatch",
     );
     for contract in [
         "name=\"name\" type=\"text\"",
-        "required maxlength=\"50\" autocomplete=\"name\"",
-        "data-profile-rename-submit>save changes",
+        "maxlength=\"50\" autocomplete=\"name\"",
     ] {
         assert!(
             name_form.contains(contract),
-            "the explicit display-name form must preserve `{contract}`",
+            "the display-name form must preserve `{contract}`",
         );
     }
+    assert!(!name_form.contains("save changes"));
     assert!(
-        registered.contains("data-delete-confirm type=\"text\""),
-        "the deletion confirm is a native text input",
+        PROFILE_LIBRARY.contains("if (error) error.textContent = 'Your name can’t be empty.';")
     );
+    assert!(PROFILE_LIBRARY.contains("self.receipt(['changed your name to', name]);"));
     assert!(
-        registered.contains("data-delete-confirm-label>delete account</b>"),
-        "the deletion confirm must say exactly what to type",
-    );
-    assert!(
-        !registered.contains("<i class=\"cur\""),
-        "settings inputs must not draw terminal-style cursors",
+        PROFILE_LIBRARY
+            .contains("'This is your only passkey, so it can’t be removed. Add another first.'")
     );
 }
 
