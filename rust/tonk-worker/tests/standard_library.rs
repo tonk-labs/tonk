@@ -2188,7 +2188,7 @@ fn it_shows_loading_rows_and_a_didnt_load_sheet_for_the_spaces_list() {
     }
     assert_eq!(
         PROFILE_LIBRARY
-            .matches("<li class=\"hub-row\"><div class=\"hub-skel\">")
+            .matches("<li class=\"hub-wait-row\"><div class=\"hub-skel\">")
             .count(),
         5,
         "five placeholder rows",
