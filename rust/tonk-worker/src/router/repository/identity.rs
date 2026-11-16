@@ -89,9 +89,9 @@ pub(super) type Facts = HashMap<Entity, Vec<(Relation, Value)>>;
 /// cardinality stood for (`last` or `all`), its type and its listed values
 /// ([`attribute_uri_v1`]), which its `db.attribute/*` facts spell. A concept's
 /// hashed its fields' attributes and whether each is optional, and under picks
-/// a field's aggregate as the pick its attribute was read under
+/// a field's pick as the pick its attribute was read under
 /// ([`concept_identity_v1`]), which its `db.concept.with/*`,
-/// `db.concept.optional/*` and `db.concept.aggregate/*` facts spell. An
+/// `db.concept.optional/*` and `db.concept.pick/*` facts spell. An
 /// attribute a ranking pick read had an identity under picks dialog does not
 /// reproduce on its own; a concept over it moves all the same. A concept
 /// named by an entity of its own (`tonk:workspace/shell`) kept that entity and
@@ -112,7 +112,7 @@ pub(super) fn moves_in(facts: &Facts) -> Vec<(Entity, Entity)> {
         }
         let mut fields: BTreeMap<String, &Entity> = BTreeMap::new();
         let mut optional: HashSet<String> = HashSet::new();
-        let mut aggregates: HashMap<String, String> = HashMap::new();
+        let mut picks: HashMap<String, String> = HashMap::new();
         for (the, is) in claims {
             let the = the.to_string();
             if let Some(field) = the.strip_prefix("db.concept.with/")
@@ -123,10 +123,10 @@ pub(super) fn moves_in(facts: &Facts) -> Vec<(Entity, Entity)> {
                 && *is == Value::Boolean(true)
             {
                 optional.insert(field.to_owned());
-            } else if let Some(field) = the.strip_prefix("db.concept.aggregate/")
+            } else if let Some(field) = the.strip_prefix("db.concept.pick/")
                 && let Value::String(name) = is
             {
-                aggregates.insert(field.to_owned(), name.clone());
+                picks.insert(field.to_owned(), name.clone());
             }
         }
         if fields.is_empty() {
@@ -139,7 +139,7 @@ pub(super) fn moves_in(facts: &Facts) -> Vec<(Entity, Entity)> {
                 tonk_schema::concept::concept_field(
                     descriptor,
                     optional.contains(field),
-                    aggregates.get(field).map(String::as_str),
+                    picks.get(field).map(String::as_str),
                 )
                 .ok()
                 .map(|descriptor| (field.clone(), descriptor))

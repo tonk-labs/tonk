@@ -301,15 +301,12 @@ pub fn scalar_field_names(descriptor_json: &str) -> std::collections::BTreeSet<S
     out
 }
 
-/// Whether a field's spec reads one value per subject: a field that
-/// reads with a selective aggregator (`aggregate`), or one over an
-/// attribute that is not `cardinality: many` (nor the `pick: all` or
-/// `select: all` an earlier release wrote).
+/// Whether a field's spec reads one value per subject: a field that picks
+/// one claim (any `pick` but `all`, including the `last:` an earlier
+/// release spelled, or its `select`), or one with neither a pick nor
+/// `cardinality: many`.
 fn is_scalar_field(spec: &Value) -> bool {
     let text = |key: &str| spec.get(key).and_then(Value::as_str);
-    if text("aggregate").is_some() {
-        return true;
-    }
     match text("pick").or(text("select")) {
         Some(pick) => tonk_notation::Pick::from_wire(pick) != Some(tonk_notation::Pick::All),
         None => text("cardinality") != Some("many"),

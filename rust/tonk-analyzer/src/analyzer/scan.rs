@@ -4,8 +4,8 @@
 //! Three checks. An anchor declared under a built-in anchor's name, a
 //! type's (`&text`), shadows the built-in within the document, which is
 //! warned about. An attribute body written the way an earlier release
-//! spelled it (`pick:`, or a bare or quoted word where a keyword
-//! belongs) is read as it is, and warned
+//! spelled it (a bare or quoted word where a keyword belongs) is read as
+//! it is, and warned
 //! about so the document moves to the current spelling. And
 //! *single-occurrence variables*: a `?var`
 //! that appears exactly once in the document is almost always a
@@ -169,48 +169,21 @@ fn older_keyword(field: &Field) -> Option<(String, String)> {
 }
 
 /// Warn about the spellings an earlier release used in an attribute
-/// body: `pick:` in any spelling, and a bare or quoted word under
-/// `cardinality:`, `aggregate:` or `role:`. The analyzer reads them;
-/// this only says what to write instead.
+/// body: a bare or quoted word under `cardinality:`, `pick:` or `role:`.
+/// The analyzer reads them; this only says what to write instead.
 fn older_attribute_spellings(fields: &[Field], out: &mut Vec<AnalyzeDiagnostic>) {
     for field in fields {
-        match field.name.as_str() {
-            "pick" => {
-                let (value, word) = match &field.value {
-                    FieldValue::Uri(uri) => {
-                        let word = uri.strip_suffix(':').unwrap_or(uri);
-                        (format!(":{word}"), word.to_owned())
-                    }
-                    _ => match older_keyword(field) {
-                        Some(spelled) => spelled,
-                        None => continue,
-                    },
-                };
-                let advice = match tonk_notation::Pick::from_keyword(&word) {
-                    Some(pick) => pick.replacement().to_owned(),
-                    None => "an attribute is `cardinality: :one` (the default) or \
-                             `cardinality: :many`, and a concept field ranks its claims with \
-                             `aggregate:`"
-                        .to_owned(),
-                };
-                out.push(AnalyzeDiagnostic::warning(
-                    AnalyzeDiagnosticKind::DeprecatedPick { value, advice },
-                    field.value_range,
-                ));
-            }
-            "cardinality" | "aggregate" | "role" => {
-                if let Some((word, keyword)) = older_keyword(field) {
-                    out.push(AnalyzeDiagnostic::warning(
-                        AnalyzeDiagnosticKind::OlderKeywordSpelling {
-                            field: field.name.clone(),
-                            word,
-                            keyword,
-                        },
-                        field.value_range,
-                    ));
-                }
-            }
-            _ => {}
+        if matches!(field.name.as_str(), "cardinality" | "pick" | "role")
+            && let Some((word, keyword)) = older_keyword(field)
+        {
+            out.push(AnalyzeDiagnostic::warning(
+                AnalyzeDiagnosticKind::OlderKeywordSpelling {
+                    field: field.name.clone(),
+                    word,
+                    keyword,
+                },
+                field.value_range,
+            ));
         }
     }
 }
@@ -410,40 +383,16 @@ person!:
         assert_eq!(range.start.line, 2);
     }
 
-    /// `pick:` is read, in every spelling, and warned about with what to
-    /// write; the keyword spelling of a cardinality is not.
+    /// The keyword spellings of a pick and a cardinality are the current
+    /// ones, and nothing about them is warned.
     #[dialog_common::test]
-    fn it_warns_about_a_deprecated_pick_in_every_spelling() {
-        for (spelling, advice) in [
-            ("last", "cardinality one is the default"),
-            (":last", "cardinality one is the default"),
-            ("\"last\"", "cardinality one is the default"),
-            ("all", "write `cardinality: :many`"),
-            (":all", "write `cardinality: :many`"),
-            (":top", "`aggregate: :top`"),
-        ] {
+    fn it_warns_about_no_keyword_spelling_of_a_pick_or_a_cardinality() {
+        for line in ["pick: :all", "pick: :last", "cardinality: :many"] {
             let syntax = must_parse(&format!(
-                "attribute!: &tags\n  description: \"labels\"\n  the: x.y/tags\n  as: text\n  pick: {spelling}\n"
+                "attribute!: &tags\n  description: \"labels\"\n  the: x.y/tags\n  as: text\n  {line}\n"
             ));
-            let diagnostics = scan_variables(&syntax);
-            let found = diagnostics
-                .iter()
-                .find(|d| d.code() == "W_DEPRECATED_PICK")
-                .unwrap_or_else(|| panic!("pick: {spelling} is warned about"));
-            assert_eq!(found.severity, DiagnosticSeverity::Warning);
-            assert!(
-                found.message().contains(advice),
-                "pick: {spelling} says what to write: {}",
-                found.message()
-            );
+            assert!(scan_variables(&syntax).is_empty(), "{line} is current");
         }
-        let syntax = must_parse(
-            "attribute!: &tags\n  description: \"labels\"\n  the: x.y/tags\n  as: text\n  cardinality: :many\n",
-        );
-        assert!(
-            scan_variables(&syntax).is_empty(),
-            "the keyword spelling of a cardinality is the current one"
-        );
     }
 
     /// A bare or quoted word under `cardinality:` or `role:` is warned about

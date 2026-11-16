@@ -1,20 +1,18 @@
-//! The keywords an attribute's `cardinality:` and a concept field's
-//! `aggregate:` take, and the `pick:` an earlier release spelled.
+//! The keywords an attribute's `cardinality:` and `pick:` take.
 //!
 //! An attribute is a relation, a type and a cardinality: `cardinality:
-//! :one` (the default, so it is left out) holds one claim per entity,
-//! and a write succeeds it; `cardinality: :many` holds every claim, and
-//! a write adds one. A concept field over a cardinality-many attribute
-//! may read one of its claims with a selective aggregator,
-//! `aggregate: :top` (the value listed last in the attribute's `as:`,
-//! which lists its values least first), `:max`, `:min` or `:last` (the
-//! newest).
+//! :one` (the default) holds one claim per entity, and a write succeeds
+//! it; `cardinality: :many` holds every claim, and a write adds one.
 //!
-//! The release before spelled both with one `pick:`. It is still read,
-//! with a warning naming what to write: `pick: :last` is the default
-//! cardinality, `pick: :all` is `cardinality: :many`, and a ranking pick
-//! on a concept field is `cardinality: :many` read with the aggregator
-//! of its name.
+//! `pick:` says which claims a read returns: `:last` the newest, `:all`
+//! every one, and on a concept field over a cardinality-many attribute
+//! one claim ranked by `:top` (the value listed first in the attribute's
+//! `as:`, which lists its values best first), `:max` or `:min`. The
+//! cardinality follows from the pick unless it is written: `:last` is
+//! one, every other pick many. Written beside a pick, it has to be one
+//! the pick can read: `pick: :last` with `cardinality: :many` keeps every
+//! claim and reads the newest, and `cardinality: :one` beside any other
+//! pick is refused.
 
 /// How many claims an attribute holds per entity, as the notation
 /// spells it.
@@ -50,62 +48,19 @@ impl Cardinality {
     }
 }
 
-/// The selective aggregator a concept field reads its claims with, as
-/// the notation spells it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Aggregate {
-    /// The newest claim: `:last`.
-    Last,
-    /// The greatest value: `:max`.
-    Max,
-    /// The least value: `:min`.
-    Min,
-    /// The value listed last in the attribute's `as:`: `:top`.
-    Top,
-}
-
-impl Aggregate {
-    /// Every aggregator.
-    pub const ALL: [Aggregate; 4] = [
-        Aggregate::Last,
-        Aggregate::Max,
-        Aggregate::Min,
-        Aggregate::Top,
-    ];
-
-    /// The keyword the notation spells this aggregator by, without its
-    /// colon, which is also the name dialog's wire form writes.
-    pub fn keyword(self) -> &'static str {
-        match self {
-            Aggregate::Last => "last",
-            Aggregate::Max => "max",
-            Aggregate::Min => "min",
-            Aggregate::Top => "top",
-        }
-    }
-
-    /// The aggregator a keyword names.
-    pub fn from_keyword(name: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|aggregate| aggregate.keyword() == name)
-    }
-}
-
-/// A pick, as the release before cardinalities spelled it, and what it
-/// reads as now.
+/// A pick: which of a relation's claims a read returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Pick {
-    /// The newest claim: cardinality one.
+    /// The newest claim: cardinality one, unless written many.
     Last,
     /// Every claim: cardinality many.
     All,
-    /// The best ranked of the listed values: cardinality many, read
-    /// with `aggregate: :top`.
+    /// The claim holding the value listed first in the attribute's `as:`:
+    /// cardinality many, on a concept field.
     Top,
-    /// The greatest value: cardinality many, read with `aggregate: :max`.
+    /// The greatest value: cardinality many, on a concept field.
     Max,
-    /// The least value: cardinality many, read with `aggregate: :min`.
+    /// The least value: cardinality many, on a concept field.
     Min,
 }
 
@@ -113,29 +68,16 @@ impl Pick {
     /// Every pick.
     pub const ALL: [Pick; 5] = [Pick::Last, Pick::All, Pick::Top, Pick::Max, Pick::Min];
 
-    /// The entity the release before named this pick by, such as `all:`.
-    pub fn uri(self) -> &'static str {
-        match self {
-            Pick::Last => "last:",
-            Pick::All => "all:",
-            Pick::Top => "top:",
-            Pick::Max => "max:",
-            Pick::Min => "min:",
-        }
-    }
-
-    /// The pick's word, such as `all`, which dialog 0.2 also wrote.
+    /// The keyword the notation spells this pick by, without its colon,
+    /// which is also the name dialog's wire form writes.
     pub fn keyword(self) -> &'static str {
-        let uri = self.uri();
-        &uri[..uri.len() - 1]
-    }
-
-    /// The pick a stored or wire `pick` names: its entity (`all:`), or
-    /// the plain name dialog 0.2 wrote (`all`).
-    pub fn from_wire(name: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|pick| pick.uri() == name || pick.keyword() == name)
+        match self {
+            Pick::Last => "last",
+            Pick::All => "all",
+            Pick::Top => "top",
+            Pick::Max => "max",
+            Pick::Min => "min",
+        }
     }
 
     /// The pick a keyword names: `last`, `all`, `top`, `max` or `min`.
@@ -143,7 +85,14 @@ impl Pick {
         Self::ALL.into_iter().find(|pick| pick.keyword() == name)
     }
 
-    /// The cardinality the pick's attribute is written with now.
+    /// The pick a wire `pick` names: its name (`all`), or the entity
+    /// dialog 0.3 and 0.4 named it by (`all:`).
+    pub fn from_wire(name: &str) -> Option<Self> {
+        Self::from_keyword(name.strip_suffix(':').unwrap_or(name))
+    }
+
+    /// The cardinality the pick implies when none is written: `last` is
+    /// one, every other pick many.
     pub fn cardinality(self) -> Cardinality {
         match self {
             Pick::Last => Cardinality::One,
@@ -151,29 +100,10 @@ impl Pick {
         }
     }
 
-    /// The aggregator a field reading under the pick reads with now,
-    /// for a ranking pick.
-    pub fn aggregate(self) -> Option<Aggregate> {
-        match self {
-            Pick::Last | Pick::All => None,
-            Pick::Top => Some(Aggregate::Top),
-            Pick::Max => Some(Aggregate::Max),
-            Pick::Min => Some(Aggregate::Min),
-        }
-    }
-
-    /// What to write instead of `pick: :<this>`.
-    pub fn replacement(self) -> &'static str {
-        match self {
-            Pick::Last => "leave it out: cardinality one is the default",
-            Pick::All => "write `cardinality: :many`",
-            Pick::Top => {
-                "write `cardinality: :many` and `aggregate: :top` on the concept field, \
-                 listing `as:` least first"
-            }
-            Pick::Max => "write `cardinality: :many` and `aggregate: :max` on the concept field",
-            Pick::Min => "write `cardinality: :many` and `aggregate: :min` on the concept field",
-        }
+    /// Whether the pick ranks one claim among many, which only a concept
+    /// field can read: `top`, `max` or `min`.
+    pub fn ranks(self) -> bool {
+        matches!(self, Pick::Top | Pick::Max | Pick::Min)
     }
 }
 
@@ -200,21 +130,19 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_reads_a_pick_as_a_cardinality_and_an_aggregate() {
+    fn it_derives_a_cardinality_from_a_pick() {
         assert_eq!(Pick::Last.cardinality(), Cardinality::One);
         assert_eq!(Pick::All.cardinality(), Cardinality::Many);
-        assert_eq!(Pick::All.aggregate(), None);
         assert_eq!(Pick::Top.cardinality(), Cardinality::Many);
-        assert_eq!(Pick::Top.aggregate(), Some(Aggregate::Top));
+        assert!(Pick::Top.ranks());
+        assert!(!Pick::All.ranks());
     }
 
     #[dialog_common::test]
-    fn it_reads_cardinality_and_aggregate_keywords() {
+    fn it_reads_cardinality_keywords() {
         assert_eq!(Cardinality::from_keyword("many"), Some(Cardinality::Many));
         assert_eq!(Cardinality::from_keyword("Many"), Some(Cardinality::Many));
         assert_eq!(Cardinality::from_keyword("all"), None);
-        assert_eq!(Aggregate::from_keyword("top"), Some(Aggregate::Top));
-        assert_eq!(Aggregate::from_keyword("all"), None);
     }
 
     #[dialog_common::test]

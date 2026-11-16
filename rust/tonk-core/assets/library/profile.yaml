@@ -56,19 +56,18 @@ concept!: &space
         Derived by the rules below from this device's replica rather
         than stored, so it cannot drift from it. Every rule states a
         case positively into `space/presence`, which holds every case
-        derived; this field reads the one listed LAST (`aggregate:
-        :top`, the cases listed least first), so a replica that is
-        seeding reads as seeding although it is also a replica, and a
-        space nothing else speaks for reads as remote. The Hub card
-        reflects this via [data-presence].
+        derived; this field picks the first listed case any rule
+        derives (`pick: :top`), so a replica that is seeding reads as
+        seeding although it is also a replica, and a space nothing
+        else speaks for reads as remote. The Hub card reflects this
+        via [data-presence].
       the: xyz.tonk.space/presence
       as:
-        - case:remote
-        - case:replicated
-        - case:replicating
         - case:seeding
-      cardinality: :many
-      aggregate: :top
+        - case:replicating
+        - case:replicated
+        - case:remote
+      pick: :top
     name:
       description: >
         The directory mirror of the space's display name — written at
@@ -4320,37 +4319,36 @@ concept!: &account/onboarding
 #
 # Each rule below states one case from the fact that proves it into
 # `account/status-case`, which holds every case derived, and the status
-# field reads the case listed LAST (`aggregate: :top`; the cases are
-# listed least first), so the cases rank rather than exclude one another:
+# field picks the first listed case any rule derives (`pick: :top`), so
+# the cases rank rather than exclude one another:
 #
-#   case:onboarding  a locally custodied account
-#   case:retired     an onboarding account a real one replaced
-#   case:registered  enrolled
-#   case:active      activated
 #   case:suspended   the service withdrew
+#   case:active      activated
+#   case:registered  enrolled
+#   case:retired     an onboarding account a real one replaced
+#   case:onboarding  a locally custodied account
 #
 # The rules conclude into their own concept rather than into this one: a
-# field with an aggregator says how the relation is read, and the rules
-# add to the relation it reads.
+# field's pick says how the relation is read, and the rules add to the
+# relation it reads.
 concept!: &account/status
   this: tonk:account/status
   description: The account's status, derived from its registration facts.
   with:
     status:
       description: >
-        `case:onboarding`, `case:retired`, `case:registered`,
-        `case:active` or `case:suspended` — an entity label rather
+        `case:suspended`, `case:active`, `case:registered`,
+        `case:retired` or `case:onboarding` — an entity label rather
         than text, so a typo cannot silently read as a different
-        state. The last listed case any rule derives is the status.
+        state. The first listed case any rule derives is the status.
       the: xyz.tonk.account/status
       as:
-        - case:onboarding
-        - case:retired
-        - case:registered
-        - case:active
         - case:suspended
-      cardinality: :many
-      aggregate: :top
+        - case:active
+        - case:registered
+        - case:retired
+        - case:onboarding
+      pick: :top
 
 # Every case the rules below derive for an account, unranked: what
 # `account/status` ranks.
@@ -4364,11 +4362,11 @@ concept!: &account/status-case
         registration fact that proves it.
       the: xyz.tonk.account/status
       as:
-        - case:onboarding
-        - case:retired
-        - case:registered
-        - case:active
         - case:suspended
+        - case:active
+        - case:registered
+        - case:retired
+        - case:onboarding
       cardinality: :many
 
 view!:
@@ -4393,8 +4391,8 @@ view!:
 # profile determines the row.
 #
 # A deductive rule states its case positively and never negates: the
-# `presence` field of `space` lists its cases least first and reads the
-# one listed last, so `remote` is the rule every space with a session
+# `presence` field of `space` lists its cases best first and picks the
+# first listed, so `remote` is the rule every space with a session
 # satisfies, and any better-ranked case a replica supports wins over it.
 #
 # Seeding is genuinely per-replica: only the device that CREATED a space
@@ -4497,15 +4495,15 @@ concept!: &space/presence
   with:
     presence:
       description: >
-        `case:remote`, `case:replicated`, `case:replicating` or
-        `case:seeding`: every case a rule derives. The `presence`
-        field of `space` reads the one listed last.
+        `case:seeding`, `case:replicating`, `case:replicated` or
+        `case:remote`: every case a rule derives. The `presence`
+        field of `space` picks the first listed.
       the: xyz.tonk.space/presence
       as:
-        - case:remote
-        - case:replicated
-        - case:replicating
         - case:seeding
+        - case:replicating
+        - case:replicated
+        - case:remote
       cardinality: :many
 
 # Every space with a session is remote until a better-ranked case says

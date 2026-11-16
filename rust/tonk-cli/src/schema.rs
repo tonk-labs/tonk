@@ -573,11 +573,11 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
     out.push_str("  with:\n");
     for (field, attr_descriptor) in concept.descriptor.with().iter() {
         let uri = attr_descriptor.the().to_string();
-        // A field with an aggregate says so in its inline definition: a
+        // A field with a pick says so in its inline definition: a
         // bare reference names the attribute alone.
         match uri_to_name
             .get(&uri)
-            .filter(|_| attr_descriptor.aggregate().is_none())
+            .filter(|_| attr_descriptor.pick().is_none())
         {
             // Named — use the bare-symbol reference; the
             // analyzer resolves it through the published name
@@ -589,7 +589,7 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
             // re-submitted document carries enough information to
             // reconstruct the attribute. Uses `the:` URI plus the
             // type, or the values it lists, the cardinality, and the
-            // aggregate the field reads with.
+            // pick the field reads one claim with.
             None => {
                 let _ = writeln!(out, "    {field}:");
                 let _ = writeln!(out, "      the:         {uri}");
@@ -602,11 +602,21 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
                 } else if let Some(t) = attr_descriptor.content_type() {
                     let _ = writeln!(out, "      as:          {}", type_to_notation(&t));
                 }
-                if attr_descriptor.descriptor().cardinality() == dialog_query::Cardinality::Many {
-                    let _ = writeln!(out, "      cardinality: :many");
-                }
-                if let Some(aggregate) = attr_descriptor.aggregate() {
-                    let _ = writeln!(out, "      aggregate:   :{}", aggregate.name());
+                // A pick implies its cardinality: `last` one, every other
+                // pick many. Only a cardinality it does not imply is written.
+                let many =
+                    attr_descriptor.descriptor().cardinality() == dialog_query::Cardinality::Many;
+                match attr_descriptor.pick() {
+                    Some(pick) => {
+                        let _ = writeln!(out, "      pick:        :{}", pick.name());
+                        if many && pick == dialog_query::selective::Selective::Last {
+                            let _ = writeln!(out, "      cardinality: :many");
+                        }
+                    }
+                    None if many => {
+                        let _ = writeln!(out, "      cardinality: :many");
+                    }
+                    None => {}
                 }
                 let desc = attr_descriptor.description();
                 if !desc.is_empty() {

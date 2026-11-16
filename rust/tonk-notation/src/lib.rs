@@ -20,7 +20,7 @@ pub mod parse;
 pub mod syntax;
 pub mod types;
 
-pub use cardinality::{Aggregate, Cardinality, Pick, builtin};
+pub use cardinality::{Cardinality, Pick, builtin};
 pub use diagnostics::{NOTATION_LANGUAGE_ID, SERVER_INFO, ServerInfo, document_diagnostics};
 pub use include::{Load, expand};
 pub use parse::{INLINE_LOCATION, Parsed, is_reference_name, parse, parse_at, spell_uri};

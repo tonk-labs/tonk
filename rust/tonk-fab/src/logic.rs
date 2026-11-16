@@ -1817,8 +1817,8 @@ mod member_roster {
 /// `presence` is optional because a space no rule speaks for has none.
 ///
 /// `presence` reads the profile library's `space` field: the rules derive
-/// every case that holds, and the field reads the one listed last, the cases
-/// listed least first.
+/// every case that holds, and the field picks the one listed first, the
+/// cases listed best first.
 pub fn space_list_query_body() -> String {
     json!({
         "predicate": { "with": {
@@ -1826,9 +1826,8 @@ pub fn space_list_query_body() -> String {
             "name":    { "the": "xyz.tonk.space/name",    "as": "Text",   "cardinality": "one", "optional": true },
             "presence": {
                 "the": "xyz.tonk.space/presence",
-                "as": ["case:remote", "case:replicated", "case:replicating", "case:seeding"],
-                "cardinality": "many",
-                "aggregate": "top",
+                "as": ["case:seeding", "case:replicating", "case:replicated", "case:remote"],
+                "pick": "top",
                 "optional": true
             }
         } },

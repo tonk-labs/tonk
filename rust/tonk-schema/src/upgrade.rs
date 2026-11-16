@@ -7,19 +7,18 @@
 //! `db.attribute/cardinality`. The next (dialog 0.3 and 0.4) recorded the
 //! type as the entity dialog names it by (`db.attribute/as text:`) and
 //! which claims a read picks as the entity dialog named the pick by
-//! (`db.attribute/pick all:`), a listed `as:` best first. This release
-//! records the type as that entity and the cardinality as its name
-//! (`db.attribute/cardinality many`), a listed `as:` least first. dialog
+//! (`db.attribute/pick all:`). This release records the type as that
+//! entity and the cardinality as its name (`db.attribute/cardinality
+//! many`); a listed `as:` stays best first in both. dialog
 //! hashes each into the attribute's identity, so every attribute's
 //! identity changed with each release, and the identity of every concept
 //! over one.
 //!
 //! A pick that ranked (`top:`, `max:`, `min:`) is no attribute any more:
 //! its attribute is cardinality many, and each concept field reading it
-//! reads with the selective aggregator of the pick's name
-//! (`db.concept.aggregate/<field> top`), a `top`'s values listed in
-//! reverse, which is how dialog's `Branch::upgrade_rules` rewrites the
-//! rules over it.
+//! picks one claim by the pick's name (`db.concept.pick/<field> top`),
+//! a `top`'s values listed in the order they were, which is how dialog's
+//! `Branch::upgrade_rules` rewrites the rules over it.
 //!
 //! [`upgrade_definitions`] reads every attribute still recorded the
 //! earlier way, whoever wrote it: a library, a template, the space
@@ -166,11 +165,11 @@ where
         }
     }
     let mut attributes: HashMap<Entity, AttributeDescriptor> = HashMap::new();
-    // The aggregator each field over a ranked attribute reads it with now.
+    // The pick each field over a ranked attribute reads it with now.
     let mut ranked: HashMap<Entity, Selective> = HashMap::new();
     for entity in legacy {
         let claims = select(branch, env, Selector::new().of(entity.clone())).await?;
-        let Some((descriptor, aggregate)) = legacy_descriptor(&claims) else {
+        let Some((descriptor, ranked_by)) = legacy_descriptor(&claims) else {
             upgraded.undecodable.push(entity);
             continue;
         };
@@ -192,8 +191,8 @@ where
         } else {
             upgraded.moves.push((entity.clone(), now));
         }
-        if let Some(aggregate) = aggregate {
-            ranked.insert(entity.clone(), aggregate);
+        if let Some(pick) = ranked_by {
+            ranked.insert(entity.clone(), pick);
         }
         attributes.insert(entity, descriptor);
     }
@@ -211,7 +210,7 @@ where
         let claims = select(branch, env, Selector::new().of(entity.clone())).await?;
         let mut fields: BTreeMap<String, Entity> = BTreeMap::new();
         let mut optional: BTreeSet<String> = BTreeSet::new();
-        let mut aggregates: BTreeMap<String, String> = BTreeMap::new();
+        let mut picks: BTreeMap<String, String> = BTreeMap::new();
         let mut description = None;
         let mut transient = false;
         for claim in &claims {
@@ -224,10 +223,10 @@ where
                 && claim.is == Value::Boolean(true)
             {
                 optional.insert(field.to_owned());
-            } else if let Some(field) = the.strip_prefix("db.concept.aggregate/")
+            } else if let Some(field) = the.strip_prefix("db.concept.pick/")
                 && let Value::String(name) = &claim.is
             {
-                aggregates.insert(field.to_owned(), name.clone());
+                picks.insert(field.to_owned(), name.clone());
             } else if the == "db.meta/description"
                 && let Value::String(text) = &claim.is
             {
@@ -259,11 +258,11 @@ where
                     }
                 },
             };
-            let aggregate = ranked
+            let pick = ranked
                 .get(attribute)
-                .map(|aggregate| aggregate.name().to_owned())
-                .or_else(|| aggregates.get(field).cloned());
-            match concept_field(descriptor, optional.contains(field), aggregate.as_deref()) {
+                .map(|pick| pick.name().to_owned())
+                .or_else(|| picks.get(field).cloned());
+            match concept_field(descriptor, optional.contains(field), pick.as_deref()) {
                 Ok(descriptor) => with.push((field.clone(), descriptor)),
                 Err(_) => {
                     complete = false;
@@ -394,8 +393,8 @@ where
 }
 
 /// The descriptor an attribute recorded the earlier way spells, and the
-/// selective aggregator a field reading it reads with now when it was
-/// read under a ranking pick: from its `db.attribute/id`, the type
+/// pick a field reading it reads one claim with now when it was read
+/// under a ranking pick: from its `db.attribute/id`, the type
 /// (`type` text or `as` entity), the arity (`cardinality`, or the pick
 /// `select` or `pick` named), `among` and `db.meta/description` claims.
 fn legacy_descriptor(claims: &[Fact]) -> Option<(AttributeDescriptor, Option<Selective>)> {
@@ -436,14 +435,7 @@ fn legacy_descriptor(claims: &[Fact]) -> Option<(AttributeDescriptor, Option<Sel
         );
     }
     if let Some(among) = text("db.attribute/among") {
-        let mut listed: serde_json::Value = serde_json::from_str(&among).ok()?;
-        // A `top` listed its values best first; a listing now ranks
-        // them least first.
-        if pick == Some(tonk_notation::Pick::Top)
-            && let serde_json::Value::Array(values) = &mut listed
-        {
-            values.reverse();
-        }
+        let listed: serde_json::Value = serde_json::from_str(&among).ok()?;
         shape.insert("as".to_owned(), listed);
     }
     if let Some(description) = text("db.meta/description") {
@@ -453,10 +445,10 @@ fn legacy_descriptor(claims: &[Fact]) -> Option<(AttributeDescriptor, Option<Sel
         );
     }
     let descriptor = serde_json::from_value(serde_json::Value::Object(shape)).ok()?;
-    let aggregate = pick
-        .and_then(tonk_notation::Pick::aggregate)
-        .and_then(|aggregate| aggregate.keyword().parse().ok());
-    Some((descriptor, aggregate))
+    let ranked = pick
+        .filter(|pick| pick.ranks())
+        .and_then(|pick| pick.keyword().parse().ok());
+    Some((descriptor, ranked))
 }
 
 /// Whether a claim about an attribute entity is part of its definition,
@@ -697,8 +689,8 @@ mod tests {
     /// listed values best first under `top:`), a set of `tags` (`all:`)
     /// and a `name` (`last:`), each attribute under the identity that
     /// release gave it, moves to this release's: the ranked attribute is
-    /// cardinality many, listed least first, and the field reading it
-    /// reads with `top`; the set is cardinality many and the name one; the
+    /// cardinality many, its values listed best first as they were, and
+    /// the field reading it picks `top`; the set is cardinality many and the name one; the
     /// concept resolves under its current identity with a view following
     /// it, no pick is left, and a second run finds nothing.
     #[dialog_common::test]
@@ -714,9 +706,8 @@ mod tests {
             "with": {
                 "status": {
                     "the": "xyz.tonk.job/status",
-                    "as": ["case:active", "case:suspended"],
-                    "cardinality": "many",
-                    "aggregate": "top",
+                    "as": ["case:suspended", "case:active"],
+                    "pick": "top",
                     "description": "Where the job stands"
                 },
                 "tags": { "the": "xyz.tonk.job/tags", "as": "text:", "cardinality": "many", "description": "Tags" },
@@ -816,18 +807,18 @@ mod tests {
                 .expect("the field rebuilds")
         };
         let status = field("status");
-        assert_eq!(status.aggregate(), Some(Selective::Top));
+        assert_eq!(status.pick(), Some(Selective::Top));
         assert_eq!(status.cardinality(), Cardinality::Many);
         assert_eq!(
             status.descriptor().among(),
             &[
-                Value::Entity("case:active".parse()?),
-                Value::Entity("case:suspended".parse()?)
+                Value::Entity("case:suspended".parse()?),
+                Value::Entity("case:active".parse()?)
             ],
-            "the ranked values are listed least first"
+            "the ranked values keep their order, best first"
         );
         assert_eq!(field("tags").cardinality(), Cardinality::Many);
-        assert_eq!(field("tags").aggregate(), None);
+        assert_eq!(field("tags").pick(), None);
         assert_eq!(field("name").cardinality(), Cardinality::One);
         let views = select(
             &branch,

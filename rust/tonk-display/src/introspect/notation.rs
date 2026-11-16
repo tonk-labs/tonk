@@ -307,7 +307,7 @@ fn write_property(document: &mut Document, field: &str, key: &str, value: &serde
                     tonk_notation::FieldValue::Uri(_) => Span::new(Token::Entity, text.clone()),
                     _ => Span::new(Token::Entity, format!("{text:?}")),
                 }
-            } else if matches!(key, "cardinality" | "aggregate" | "pick" | "role") {
+            } else if matches!(key, "cardinality" | "pick" | "role") {
                 // A fixed word, not a reference: spelled as a keyword.
                 Span::new(Token::Number, format!(":{text}"))
             } else if key == "as" {

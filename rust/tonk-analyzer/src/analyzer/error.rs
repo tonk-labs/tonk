@@ -260,23 +260,8 @@ pub enum AnalyzeDiagnosticKind {
         /// value.
         known: String,
     },
-    /// An attribute body writes `pick:`, the spelling the release before
-    /// cardinalities used for both how many claims an attribute holds
-    /// and how a field ranks them. It is read (`:last` is the default
-    /// cardinality one, `:all` is `cardinality: :many`, and a ranking
-    /// pick on a concept field is `cardinality: :many` read with the
-    /// `aggregate:` of its name) so the templates and notebooks those
-    /// releases published still evaluate, and warned about so new
-    /// documents write the cardinality.
-    #[error("`pick: {value}` is deprecated — {advice}")]
-    DeprecatedPick {
-        /// The value as written (`all`, `:all`, `"all"`).
-        value: String,
-        /// What to write instead.
-        advice: String,
-    },
-    /// A keyword-valued field (`cardinality:`, `aggregate:`, `role:`,
-    /// `pick:`) writes the bare or
+    /// A keyword-valued field (`cardinality:`, `pick:`, `role:`) writes
+    /// the bare or
     /// quoted word earlier releases used instead of the keyword. It is
     /// read as the keyword, and warned about so the document moves to
     /// the spelling the guide teaches.
@@ -320,7 +305,6 @@ impl AnalyzeDiagnosticKind {
                 "E_SINGLE_OCCURRENCE_VARIABLE_ASSERTION_FIELD"
             }
             Self::ShadowsBuiltin { .. } => "W_SHADOWS_BUILTIN",
-            Self::DeprecatedPick { .. } => "W_DEPRECATED_PICK",
             Self::OlderKeywordSpelling { .. } => "W_OLDER_KEYWORD_SPELLING",
             Self::DeclaredTypeDivergence { .. } => "W_DECLARED_TYPE_DIVERGENCE",
             Self::UnknownEmbed { .. } => "W_UNKNOWN_EMBED",

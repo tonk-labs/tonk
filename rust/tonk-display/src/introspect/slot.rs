@@ -347,6 +347,7 @@ pub fn declared_fields(descriptor_json: &str) -> Vec<Field> {
                 name: name.clone(),
                 attribute: text("the"),
                 value_type: text("as"),
+                // Written, or what the pick implies.
                 cardinality: text("cardinality").or_else(|| {
                     text("pick").map(|pick| match tonk_notation::Pick::from_wire(&pick) {
                         Some(pick) => pick.cardinality().keyword().to_owned(),

@@ -49,11 +49,13 @@ pub(crate) struct DeclaredApplication {
 pub(crate) struct AttributeBody {
     pub descriptor: AttributeDescriptor,
     pub entity: Entity,
-    /// The selective aggregator a concept field defined inline with
-    /// this body reads the attribute with (`aggregate:`, or a ranking
-    /// `pick:` an earlier release spelled). How a field reads, not part
-    /// of the attribute: an `attribute!:` head refuses it.
-    pub aggregate: Option<tonk_notation::Aggregate>,
+    /// The pick a concept field defined inline with this body reads one
+    /// of the attribute's claims with: `:top`, `:max` or `:min`, or
+    /// `:last` over a cardinality-many attribute. `None` when the field
+    /// reads as the cardinality does (no pick, `:all`, or `:last` over
+    /// cardinality one). How a field reads, not part of the attribute:
+    /// an `attribute!:` head refuses it.
+    pub pick: Option<tonk_notation::Pick>,
     /// The intent role the attribute plays in its command (`role:`),
     /// kept out of the descriptor so it never changes the attribute's
     /// identity. Emitted as its own fact by [`role_application`].
@@ -81,17 +83,21 @@ pub(crate) fn parse_attribute_body(
     scope: &Scope,
 ) -> Result<AttributeBody, AnalyzeError> {
     let body = parse_attribute_fields(&assertion.fields, scope)?;
-    if let Some(aggregate) = body.aggregate {
-        return Err(AnalyzeErrorKind::InvalidAttributeBody {
-            reason: format!(
-                "`aggregate: :{}` is how a concept field reads its attribute, not part of \
-                 the attribute: declare the attribute `cardinality: :many` and read it \
-                 from the concept field with `aggregate: :{}`",
-                aggregate.keyword(),
-                aggregate.keyword()
-            ),
-        }
-        .into());
+    if let Some(pick) = body.pick {
+        let reason = if pick.ranks() {
+            format!(
+                "`pick: :{0}` ranks the claims a concept field reads, not the attribute: \
+                 declare the attribute (`cardinality: :many`, or no cardinality) and write \
+                 `pick: :{0}` on the concept field that reads it",
+                pick.keyword()
+            )
+        } else {
+            "`pick: :last` and `cardinality: :many` disagree on an attribute: on its own an \
+             attribute takes `pick: :last` for cardinality one and `pick: :all` for many; \
+             reading the newest of many claims is a concept field's `pick: :last`"
+                .to_owned()
+        };
+        return Err(AnalyzeErrorKind::InvalidAttributeBody { reason }.into());
     }
     Ok(body)
 }
@@ -102,7 +108,7 @@ pub(crate) fn parse_attribute_body(
 /// `with: { foo: { the: …, as: …, … } }` definitions nested
 /// inside a `concept!` body. Same shape: `the`, `as`,
 /// `cardinality`, and a *required* `description`; an inline field
-/// may also say how it reads the attribute with `aggregate:`.
+/// may also say how it reads the attribute with a ranking `pick:`.
 pub(crate) fn parse_attribute_fields(
     fields: &[tonk_notation::Field],
     scope: &Scope,
@@ -115,7 +121,6 @@ pub(crate) fn parse_attribute_fields(
     let mut role: Option<String> = None;
     let mut cardinality: Option<tonk_notation::Cardinality> = None;
     let mut pick: Option<tonk_notation::Pick> = None;
-    let mut aggregate: Option<tonk_notation::Aggregate> = None;
     for field in fields {
         // `this:` and `..:` are reserved meta-keys handled by the
         // outer assertion-binding flow; they don't contribute to
@@ -128,8 +133,7 @@ pub(crate) fn parse_attribute_fields(
         // - `as` names a type by its built-in anchor (`text`), or by
         //   the entity dialog names it by (`:text`, or the quoted
         //   `"text:"`). Lowers to that entity.
-        // - `cardinality`, `aggregate`, `role` and the older `pick`
-        //   take a keyword (`cardinality: :many`); the bare and quoted
+        // - `cardinality`, `pick` and `role` take a keyword (`cardinality: :many`); the bare and quoted
         //   words earlier releases wrote read as the keyword.
         // - `the` accepts a URI (`xyz.tonk/foo`) or a literal
         //   string holding the same shape.
@@ -139,7 +143,7 @@ pub(crate) fn parse_attribute_fields(
         match field.name.as_str() {
             // `as:` names a type, a keyed collection type, or lists the
             // values the attribute holds, least first: an enumerated
-            // type, ordered, which a field reading with `aggregate:
+            // type, ordered best first, which a field reading with `pick:
             // :top` ranks by.
             "as" if matches!(field.value, FieldValue::List(_)) => {
                 let FieldValue::List(items) = &field.value else {
@@ -222,31 +226,13 @@ pub(crate) fn parse_attribute_fields(
                     })?,
                 );
             }
-            // How a concept field reads one of a cardinality-many
-            // attribute's claims: dialog checks it against the attribute
-            // when the concept is built.
-            "aggregate" => {
-                let keyword = keyword_of(field, "top")?;
-                aggregate = Some(tonk_notation::Aggregate::from_keyword(&keyword).ok_or_else(
-                    || AnalyzeErrorKind::InvalidAttributeBody {
-                        reason: format!(
-                            "unknown aggregate {keyword:?} — expected one of: {}",
-                            tonk_notation::Aggregate::ALL
-                                .iter()
-                                .map(|aggregate| format!(":{}", aggregate.keyword()))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
-                    },
-                )?);
-            }
             // `the:` names one relation. The ranked list of relations
             // an earlier release read is gone.
             "the" if matches!(field.value, FieldValue::List(_)) => {
                 return Err(AnalyzeErrorKind::InvalidAttributeBody {
                     reason: "`the:` names one relation: a list of relations, ranked, is no \
                              longer read; a rule deriving one relation from each, read by a \
-                             field with `aggregate:`, replaces it"
+                             field with `pick: :top`, replaces it"
                         .into(),
                 }
                 .into());
@@ -255,28 +241,28 @@ pub(crate) fn parse_attribute_fields(
                 let value_str = stringify_simple_value(field)?;
                 shape.insert("the".into(), serde_json::Value::String(value_str));
             }
-            // The spelling an earlier release used for both how many
-            // claims an attribute holds and how a field ranks them. Read
-            // as the cardinality and aggregate it stands for, with a
-            // warning (`W_DEPRECATED_PICK`) naming what to write.
+            // Which claims a read returns: `:last` the newest, `:all`
+            // every one, and on a concept field `:top`, `:max` or `:min`
+            // one ranked claim. The cardinality follows from it unless
+            // written.
             "pick" => {
                 let keyword = keyword_of(field, "all")?;
                 pick = Some(tonk_notation::Pick::from_keyword(&keyword).ok_or_else(|| {
                     AnalyzeErrorKind::InvalidAttributeBody {
                         reason: format!(
-                            "unknown pick {keyword:?} — `pick:` is the older spelling of \
-                             `cardinality: :one` (the default) or `cardinality: :many`, and \
-                             of a concept field's `aggregate:`"
+                            "unknown pick {keyword:?} — expected one of: {}",
+                            tonk_notation::Pick::ALL
+                                .iter()
+                                .map(|pick| format!(":{}", pick.keyword()))
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         ),
                     }
                 })?);
             }
             "select" => {
                 return Err(AnalyzeErrorKind::InvalidAttributeBody {
-                    reason: "`select:` is no longer read: an attribute is `cardinality: :one` \
-                             (the default) or `cardinality: :many`, and a concept field ranks \
-                             its claims with `aggregate:`"
-                        .into(),
+                    reason: "`select:` is now spelled `pick:`".into(),
                 }
                 .into());
             }
@@ -312,26 +298,35 @@ pub(crate) fn parse_attribute_fields(
         }
         .into());
     }
-    if let Some(pick) = pick {
-        if cardinality.is_some() || aggregate.is_some() {
+    // The cardinality follows from the pick unless written, and a written
+    // one has to be one the pick can read.
+    let cardinality = match (pick, cardinality) {
+        (None, written) => written.unwrap_or(tonk_notation::Cardinality::One),
+        (Some(pick), None) => pick.cardinality(),
+        (Some(pick), Some(tonk_notation::Cardinality::One))
+            if pick != tonk_notation::Pick::Last =>
+        {
             return Err(AnalyzeErrorKind::InvalidAttributeBody {
-                reason: "`pick:` is the older spelling of `cardinality:` and `aggregate:`; \
-                         write only those"
-                    .into(),
+                reason: format!(
+                    "`pick: :{}` and `cardinality: :one` conflict: a cell of cardinality one \
+                     keeps one claim, so `:{}` has nothing to choose among; write \
+                     `cardinality: :many`, or leave it out",
+                    pick.keyword(),
+                    pick.keyword()
+                ),
             }
             .into());
         }
-        cardinality = Some(pick.cardinality());
-        aggregate = pick.aggregate();
-        // A `top` ranked its listed values best first, and a listing
-        // now ranks them least first.
-        if pick == tonk_notation::Pick::Top
-            && let Some(serde_json::Value::Array(listed)) = shape.get_mut("as")
-        {
-            listed.reverse();
-        }
-    }
-    if cardinality == Some(tonk_notation::Cardinality::Many) {
+        (Some(_), Some(written)) => written,
+    };
+    // What the field reads beyond its cardinality: a ranking pick, or the
+    // newest of many claims.
+    let pick = pick.filter(|pick| match pick {
+        tonk_notation::Pick::All => false,
+        tonk_notation::Pick::Last => cardinality == tonk_notation::Cardinality::Many,
+        _ => true,
+    });
+    if cardinality == tonk_notation::Cardinality::Many {
         shape.insert(
             "cardinality".into(),
             serde_json::Value::String(tonk_notation::Cardinality::Many.keyword().into()),
@@ -387,7 +382,7 @@ pub(crate) fn parse_attribute_fields(
     Ok(AttributeBody {
         descriptor,
         entity,
-        aggregate,
+        pick,
         role,
     })
 }
@@ -450,7 +445,7 @@ pub(crate) fn parse_concept_body(
     let mut description: Option<String> = None;
     let mut transient: bool = false;
     let mut action: Vec<String> = Vec::new();
-    // Each entry: (field name, definition, optional, aggregate).
+    // Each entry: (field name, definition, optional, pick).
     // `with:` fields are required; `maybe:` fields are optional.
     let mut fields: Vec<ConceptField> = Vec::new();
     let mut inline_attributes: Vec<AttributeBody> = Vec::new();
@@ -576,20 +571,20 @@ pub(crate) fn parse_concept_body(
     }
     let with_obj: serde_json::Map<String, serde_json::Value> = fields
         .iter()
-        .map(|(name, attr, optional, aggregate)| {
+        .map(|(name, attr, optional, pick)| {
             let mut value = serde_json::to_value(&attr.descriptor)
                 .expect("AttributeDescriptor is serializable");
-            // The optional flag and the aggregate are flattened into
+            // The optional flag and the pick are flattened into
             // each field object on the wire; a field without them omits
             // them entirely.
             if let Some(obj) = value.as_object_mut() {
                 if *optional {
                     obj.insert("optional".into(), serde_json::Value::Bool(true));
                 }
-                if let Some(aggregate) = aggregate {
+                if let Some(pick) = pick {
                     obj.insert(
-                        "aggregate".into(),
-                        serde_json::Value::String(aggregate.keyword().into()),
+                        "pick".into(),
+                        serde_json::Value::String(pick.keyword().into()),
                     );
                 }
             }
@@ -645,12 +640,12 @@ pub(crate) fn parse_concept_body(
 }
 
 /// One field of a `concept!` body: its name, the attribute it reads,
-/// whether it is optional, and the selective aggregator it reads with.
+/// whether it is optional, and the pick it reads one claim with.
 type ConceptField = (
     String,
     AttributeDefinition,
     bool,
-    Option<tonk_notation::Aggregate>,
+    Option<tonk_notation::Pick>,
 );
 
 /// Placeholder field for the stub descriptor a retraction-only body
@@ -717,7 +712,7 @@ fn parse_concept_field_block(
                 "`{block}:` must be a mapping of field name → \
                  attribute reference (bare symbol, `?var`, URI) or \
                  inline attribute definition (mapping with \
-                 `the`/`as`/`cardinality`/`aggregate`/`description`)"
+                 `the`/`as`/`cardinality`/`pick`/`description`)"
             ),
         }
         .into());
@@ -787,7 +782,7 @@ fn parse_concept_field_block(
                 entity: plan.entity.clone(),
                 descriptor: plan.descriptor.clone(),
             };
-            fields.push((sub.name.clone(), resolved, optional, plan.aggregate));
+            fields.push((sub.name.clone(), resolved, optional, plan.pick));
             inline_attributes.push(plan);
         } else {
             let resolved = resolve_concept_field(&sub.name, &sub.value, scope)?;
@@ -961,11 +956,11 @@ pub(crate) fn concept_application(
                 Term::Constant(Value::Boolean(true)),
             );
         }
-        // A field reading with a selective aggregator names it.
-        if let Some(aggregate) = attr.aggregate() {
+        // A field reading one claim with a pick names it.
+        if let Some(pick) = attr.pick() {
             terms.insert(
-                format!("aggregate.{field_name}"),
-                Term::Constant(Value::String(aggregate.name().to_owned())),
+                format!("pick.{field_name}"),
+                Term::Constant(Value::String(pick.name().to_owned())),
             );
         }
     }
@@ -1109,10 +1104,10 @@ fn concept_field_retraction(
             format!("with.{field_name}"),
             Term::<dialog_query::Any>::blank(),
         );
-        // The field's aggregator goes with it.
-        if attr.aggregate().is_some() {
+        // The field's pick goes with it.
+        if attr.pick().is_some() {
             terms.insert(
-                format!("aggregate.{field_name}"),
+                format!("pick.{field_name}"),
                 Term::<dialog_query::Any>::blank(),
             );
         }
@@ -1227,11 +1222,11 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
                 }),
             );
         }
-        if attr.aggregate().is_some() {
+        if attr.pick().is_some() {
             with.insert(
-                format!("aggregate.{name}"),
+                format!("pick.{name}"),
                 serde_json::json!({
-                    "the": format!("db.concept.aggregate/{name}"),
+                    "the": format!("db.concept.pick/{name}"),
                     "as": "Text",
                     "cardinality": "one",
                 }),

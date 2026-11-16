@@ -14,9 +14,9 @@
 //! whose `the` is `db.concept.with/{fieldName}` and whose value
 //! is the attribute entity URI. Optional fields additionally carry a
 //! boolean marker claim `db.concept.optional/{fieldName}`, and a field
-//! that reads its attribute with a selective aggregator carries its
-//! name as `db.concept.aggregate/{fieldName}` (`top`, `max`, `min` or
-//! `last`).
+//! that reads one of its attribute's claims with a pick carries its name
+//! as `db.concept.pick/{fieldName}` (`top`, `max`, `min`, or `last` over
+//! a cardinality-many attribute).
 //!
 //! The relation namespace (`db.concept.with`) matches the one
 //! used by the `carry` CLI so that field-name facts written by
@@ -55,8 +55,8 @@ const WITH_DOMAIN: &str = "db.concept.with";
 /// Domain prefix for the per-field optional marker.
 const OPTIONAL_DOMAIN: &str = "db.concept.optional";
 
-/// Domain prefix for the per-field selective aggregator.
-const AGGREGATE_DOMAIN: &str = "db.concept.aggregate";
+/// Domain prefix for the per-field pick.
+const PICK_DOMAIN: &str = "db.concept.pick";
 
 /// Build the claim relation that names a required field of a
 /// concept.
@@ -107,43 +107,42 @@ pub fn parse_optional(the: &CorpusRelation) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Build the relation that records the selective aggregator a concept
-/// field reads its attribute with: `db.concept.aggregate/{field_name}`,
-/// valued with the aggregator's name. A field without one carries no
-/// such claim, so its storage is as it was before aggregators.
-pub fn aggregate(field_name: &str) -> Result<CorpusRelation, dialog_corpus::DialogCorpusError> {
-    format!("{AGGREGATE_DOMAIN}/{field_name}").parse()
+/// Build the relation that records the pick a concept field reads one of
+/// its attribute's claims with: `db.concept.pick/{field_name}`, valued
+/// with the pick's name. A field without one carries no such claim, so
+/// its storage is as it was before field picks.
+pub fn pick(field_name: &str) -> Result<CorpusRelation, dialog_corpus::DialogCorpusError> {
+    format!("{PICK_DOMAIN}/{field_name}").parse()
 }
 
-/// Recover the field name from a relation in the
-/// `db.concept.aggregate` domain. Returns `None` if `the` is in any
-/// other domain.
-pub fn parse_aggregate(the: &CorpusRelation) -> Option<String> {
+/// Recover the field name from a relation in the `db.concept.pick`
+/// domain. Returns `None` if `the` is in any other domain.
+pub fn parse_pick(the: &CorpusRelation) -> Option<String> {
     let s = String::from(the);
-    s.strip_prefix(AGGREGATE_DOMAIN)
+    s.strip_prefix(PICK_DOMAIN)
         .and_then(|rest| rest.strip_prefix('/'))
         .map(str::to_owned)
 }
 
 /// Rebuild one concept field from its attribute and the markers its
-/// concept stores for it: optional, and the aggregator it reads with.
+/// concept stores for it: optional, and the pick it reads one claim with.
 pub fn concept_field(
     descriptor: AttributeDescriptor,
     optional: bool,
-    aggregate: Option<&str>,
+    pick: Option<&str>,
 ) -> Result<ConceptFieldDescriptor, String> {
     let field = if optional {
         ConceptFieldDescriptor::optional(descriptor)
     } else {
         ConceptFieldDescriptor::required(descriptor)
     };
-    match aggregate {
+    match pick {
         None => Ok(field),
         Some(name) => {
-            let aggregate: dialog_query::selective::Selective = name
+            let pick: dialog_query::selective::Selective = name
                 .parse()
-                .map_err(|_| format!("{name:?} names no selective aggregator"))?;
-            field.aggregating(aggregate).map_err(|e| e.to_string())
+                .map_err(|_| format!("{name:?} names no pick a field reads one claim with"))?;
+            field.picking(pick).map_err(|e| e.to_string())
         }
     }
 }
@@ -341,20 +340,18 @@ impl ConceptByEntity {
             })
             .collect();
 
-        // The aggregators carry text, read by a third, text-typed query.
-        let aggregate_claims: Vec<dialog_query::Claim> = source
+        // The picks carry text, read by a third, text-typed query.
+        let pick_claims: Vec<dialog_query::Claim> = source
             .select(text_claims_of(&self.entity))
             .perform(env)
             .try_vec()
             .await
-            .map_err(|e| {
-                ConceptLookupError::query(format!("concept-aggregate query failed: {e:?}"))
-            })?;
-        let aggregates: std::collections::BTreeMap<String, String> = aggregate_claims
+            .map_err(|e| ConceptLookupError::query(format!("concept-pick query failed: {e:?}")))?;
+        let picks: std::collections::BTreeMap<String, String> = pick_claims
             .into_iter()
             .filter_map(|claim| {
                 let the: CorpusRelation = claim.the.into();
-                let field = parse_aggregate(&the)?;
+                let field = parse_pick(&the)?;
                 match claim.is {
                     Value::String(name) => Some((field, name)),
                     _ => None,
@@ -383,7 +380,7 @@ impl ConceptByEntity {
             let field = concept_field(
                 facts.descriptor,
                 optional_fields.contains(&field_name),
-                aggregates.get(&field_name).map(String::as_str),
+                picks.get(&field_name).map(String::as_str),
             )
             .map_err(|e| ConceptLookupError::query(format!("field {field_name:?}: {e}")))?;
             fields.push((field_name, field));
@@ -1685,13 +1682,13 @@ fn emit_concept_facts<U: Update, F: Fn(&mut U, CorpusRelation, Entity, Value)>(
                 Value::Boolean(true),
             );
         }
-        // A field that reads with a selective aggregator names it.
-        if let Some(aggregate) = field.aggregate() {
+        // A field that reads one claim with a pick names it.
+        if let Some(pick) = field.pick() {
             op(
                 update,
-                meta_attr(AGGREGATE_DOMAIN, field_name),
+                meta_attr(PICK_DOMAIN, field_name),
                 entity.clone(),
-                Value::String(aggregate.name().to_owned()),
+                Value::String(pick.name().to_owned()),
             );
         }
     }

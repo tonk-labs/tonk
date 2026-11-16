@@ -104,7 +104,7 @@ concept!: &block/position
 # the end of the document and landed far below where it was typed.
 #
 # A separate concept rather than a field reading `block/position` with
-# `aggregate: :min`, because the position rules recurse through
+# `pick: :min`, because the position rules recurse through
 # `block/position`, and an aggregate inside that recursion is unstratified:
 # inserts derived nothing at all.
 concept!: &block/stray-entry

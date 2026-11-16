@@ -1179,58 +1179,73 @@ mod tests {
         fixture.analyze(syntax).await
     }
 
-    /// A concept field reads a cardinality-many attribute with a
-    /// selective aggregator (`aggregate:`), which the field carries and
-    /// the attribute does not. An unknown aggregate is refused by the
-    /// analyzer, one its attribute cannot be read with by dialog, and a
-    /// listed `the:`, the ranked chain an earlier release read, by name.
+    /// A concept field reads one claim of a many-valued attribute with a
+    /// ranking pick (`pick: :top`), which the field carries and the
+    /// attribute does not, its cardinality following from the pick. An
+    /// unknown pick is refused by the analyzer, one its attribute cannot
+    /// be read with by dialog, a pick conflicting with a written
+    /// cardinality by naming both, and a listed `the:` by name.
     #[dialog_common::test]
-    fn it_lowers_a_field_aggregate_over_its_listed_values() {
+    fn it_lowers_a_field_pick_over_its_listed_values() {
         let field = |body: &str| {
             format!(
                 "concept!: &job\n  description: \"a job\"\n  with:\n    status:\n      description: \"where it stands\"\n{body}"
             )
         };
-        let syntax = must_parse(&field(
-            "      the: x.y/status\n      as:\n        - case:active\n        - case:suspended\n      cardinality: :many\n      aggregate: :top\n",
-        ));
-        let analysis = flat(super::analyze_local(&syntax).expect("a ranked read lowers"));
-        let concept = analysis
-            .mutate
-            .statements
-            .iter()
-            .find_map(|statement| match statement {
-                Statement::Assert(Application::Concept { query, .. })
-                    if query.terms.get("aggregate.status").is_some() =>
-                {
-                    Some(query.terms.clone())
-                }
-                _ => None,
-            })
-            .expect("the concept records its field's aggregate");
+        let picked = |body: &str| {
+            let syntax = must_parse(&field(body));
+            let analysis = flat(super::analyze_local(&syntax).expect("a ranked read lowers"));
+            analysis
+                .mutate
+                .statements
+                .iter()
+                .find_map(|statement| match statement {
+                    Statement::Assert(Application::Concept { query, .. })
+                        if query.terms.get("pick.status").is_some() =>
+                    {
+                        Some(query.terms.clone())
+                    }
+                    _ => None,
+                })
+        };
+        let concept = picked(
+            "      the: x.y/status\n      as:\n        - case:suspended\n        - case:active\n      pick: :top\n",
+        )
+        .expect("the concept records its field's pick");
         assert!(matches!(
-            concept.get("aggregate.status"),
+            concept.get("pick.status"),
             Some(Term::Constant(Value::String(name))) if name == "top"
         ));
+        assert!(
+            picked("      the: x.y/status\n      as: text\n      pick: :last\n      cardinality: :many\n")
+                .is_some(),
+            "the newest of many claims is a pick the field records"
+        );
+        assert!(
+            picked("      the: x.y/status\n      as: text\n      pick: :all\n").is_none(),
+            "reading every claim is the cardinality, no pick of the field's"
+        );
 
         let refused = |body: &str| {
             let syntax = must_parse(&field(body));
             format!("{:?}", super::analyze_local(&syntax).err())
         };
         assert!(
-            refused("      the: x.y/status\n      as: entity\n      cardinality: :many\n      aggregate: :newest\n")
-                .contains("unknown aggregate"),
-            "an unknown aggregate is refused"
+            refused("      the: x.y/status\n      as: entity\n      pick: :newest\n")
+                .contains("unknown pick"),
+            "an unknown pick is refused"
         );
         assert!(
-            refused("      the: x.y/status\n      as: entity\n      cardinality: :many\n      aggregate: :top\n")
+            refused("      the: x.y/status\n      as: entity\n      pick: :top\n")
                 .contains("Some("),
             "a top read without listed values is refused by dialog"
         );
+        let conflict = refused(
+            "      the: x.y/status\n      as: integer\n      pick: :max\n      cardinality: :one\n",
+        );
         assert!(
-            refused("      the: x.y/status\n      as: integer\n      aggregate: :max\n")
-                .contains("Some("),
-            "a ranking read over cardinality one is refused by dialog"
+            conflict.contains("`pick: :max` and `cardinality: :one` conflict"),
+            "a ranking pick over a written cardinality one names both: {conflict}"
         );
         assert!(
             refused("      the:\n        - x.y/email\n        - x.y/phone\n      as: text\n")
@@ -1240,13 +1255,13 @@ mod tests {
     }
 
     /// `cardinality:` is a keyword: `:many` records `many`, and the bare
-    /// and quoted words earlier releases wrote read the same. The older
-    /// `pick:` reads as the cardinality it stands for; a ranking pick on
-    /// an `attribute!:` head, which has no field to aggregate, is refused
-    /// with what to write, and a cardinality quoted as an entity is no
-    /// cardinality's name.
+    /// and quoted words earlier releases wrote read the same. `pick:` on
+    /// an attribute spells its cardinality, `:all` many and `:last` one;
+    /// a ranking pick on an `attribute!:` head, which has no field to
+    /// rank for, is refused with where it goes, as are a pick and a
+    /// cardinality that disagree, and a cardinality quoted as an entity.
     #[dialog_common::test]
-    async fn it_reads_a_cardinality_keyword_and_the_older_pick() {
+    async fn it_reads_a_cardinality_or_a_pick_keyword() {
         let cardinality = |source: &str| -> Option<String> {
             let syntax = must_parse(source);
             let analysis = flat(super::analyze_local(&syntax).expect("lowers"));
@@ -1295,9 +1310,20 @@ mod tests {
         assert!(
             matches!(
                 &error.kind,
-                AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("aggregate: :max")
+                AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("concept field")
             ),
-            "a ranking pick on an attribute says to aggregate on the field: {error:?}"
+            "a ranking pick on an attribute says it goes on the field: {error:?}"
+        );
+        let error = refused(format!(
+            "{}  cardinality: :many\n",
+            declare("pick", ":last")
+        ));
+        assert!(
+            matches!(
+                &error.kind,
+                AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("disagree")
+            ),
+            "an attribute's pick and cardinality agree: {error:?}"
         );
         let error = refused(declare("cardinality", "\"many:\""));
         assert!(
@@ -2059,8 +2085,7 @@ attribute!: &rename/name
         );
     }
 
-    /// The older `pick:` keyword lowers to the cardinality it stands
-    /// for.
+    /// `pick:` on an attribute lowers to the cardinality it spells.
     #[dialog_common::test]
     async fn it_reads_a_pick_keyword_as_its_cardinality() {
         let syntax = must_parse(

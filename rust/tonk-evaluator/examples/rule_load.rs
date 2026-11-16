@@ -56,18 +56,17 @@ mod load {
         ranked_query(field, the, kind, None)
     }
 
-    /// [`query`] over a cardinality-many attribute, read with the
-    /// selective aggregator `aggregate` when there is one.
+    /// [`query`] reading one claim with `pick` when there is one, over
+    /// the cardinality-many attribute the pick implies.
     fn ranked_query(
         field: &str,
         the: &str,
         kind: serde_json::Value,
-        aggregate: Option<&str>,
+        pick: Option<&str>,
     ) -> ConceptQuery {
         let mut spec = json!({ "the": the, "as": kind });
-        if let Some(aggregate) = aggregate {
-            spec["cardinality"] = json!("many");
-            spec["aggregate"] = json!(aggregate);
+        if let Some(pick) = pick {
+            spec["pick"] = json!(pick);
         }
         let descriptor =
             serde_json::from_value(json!({ "with": { field: spec } })).expect("descriptor parses");
@@ -401,18 +400,18 @@ mod load {
             return Ok(());
         }
 
-        // The status and presence fields list their cases least first,
-        // as the library declares them, and read with `top`: the read
-        // elects the best case any rule derives.
+        // The status and presence fields list their cases best first,
+        // as the library declares them, and pick `top`: the read elects
+        // the best case any rule derives.
         let status = ranked_query(
             "status",
             "xyz.tonk.account/status",
             json!([
-                "case:onboarding",
-                "case:retired",
-                "case:registered",
+                "case:suspended",
                 "case:active",
-                "case:suspended"
+                "case:registered",
+                "case:retired",
+                "case:onboarding"
             ]),
             Some("top"),
         );
@@ -420,10 +419,10 @@ mod load {
             "presence",
             "xyz.tonk.space/presence",
             json!([
-                "case:remote",
-                "case:replicated",
+                "case:seeding",
                 "case:replicating",
-                "case:seeding"
+                "case:replicated",
+                "case:remote"
             ]),
             Some("top"),
         );

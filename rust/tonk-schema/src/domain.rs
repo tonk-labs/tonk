@@ -1881,9 +1881,9 @@ pub mod account {
     #[domain("xyz.tonk.account")]
     pub struct SuspendedAt(pub u64);
 
-    /// The derived status label: `case:onboarding`, `case:retired`,
-    /// `case:registered`, `case:active` or `case:suspended`, every case a
-    /// rule derives, of which `account/status` reads the one listed last.
+    /// The derived status label: `case:suspended`, `case:active`,
+    /// `case:registered`, `case:retired` or `case:onboarding`, every case a
+    /// rule derives, of which `account/status` picks the one listed first.
     /// Never written directly — the deductive rules in `profile.yaml`
     /// conclude it, one per case.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
