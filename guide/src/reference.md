@@ -42,8 +42,8 @@ A head ending in `!` writes; without `!` it queries.
 |---------------|------------------------------------------------|
 | `the`         | `domain/name` URI, the attribute's identity.   |
 | `as`          | `text`, `entity`, `natural`, `integer`, `float`, `boolean`. |
-| `cardinality` | `:one` (default) or `:many`.                    |
-| `aggregate`   | On a concept field over a cardinality-many attribute: `:top` (the value listed last in `as:`), `:max`, `:min` or `:last`. |
+| `pick`        | `:last` (default), `:all`, and on a concept field `:top` (the value listed first in `as:`), `:max` or `:min`. |
+| `cardinality` | `:one` or `:many`; follows from `pick` unless written (`:last` is one, every other pick many). |
 | `description` | Required.                                      |
 
 ## `<tonk-display>`

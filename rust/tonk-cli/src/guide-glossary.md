@@ -21,13 +21,12 @@ the same name gets a warning, and within that document the name means
 its declaration.
 
 A **cardinality** says how many of an entity's claims in the relation an
-attribute holds: `cardinality: :one` (the default) one, the newest, and
-`cardinality: :many` every one. A concept field over a cardinality-many
-attribute may read one of its claims with a selective **aggregate**:
-`aggregate: :top` the value listed last in `as:` (a list is ordered least
-first), `:max` and `:min` the greatest and least, `:last` the newest. The
-`pick:` earlier releases wrote is read, with a warning naming the
-cardinality and aggregate to write instead.
+attribute keeps: `:one` (the default) the newest, and `:many` every one. A
+**pick** says which claims a read returns: `:last` the newest, `:all` every
+one, and on a concept field over a many-valued attribute `:top` the value
+listed first in `as:` (a list ranks its values best first), `:max` and `:min`
+the greatest and least. The cardinality follows from the pick unless it is
+written: `:last` is one, every other pick many.
 
 An **assertion** adds a claim. Creating a new content-addressed instance is
 also called **minting**. Under cardinality one, a later assertion

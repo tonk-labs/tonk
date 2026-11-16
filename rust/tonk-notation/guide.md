@@ -174,55 +174,54 @@ attribute!: &task-tags
   description: "Tags on a task"
   the:         xyz.tonk.task/tags
   as:          text
-  cardinality: :many
+  pick:        :all
 ```
 
-`cardinality:` (`:one`, the default, or `:many`), a concept
-field's `aggregate:` (`:top`, `:max`, `:min`, `:last`) and a
-command field's `role:` (`:object`, `:goal`, …) take keywords. Each
-also reads the spellings earlier releases wrote, the bare word
-(`cardinality: many`) and the quoted word (`role: "object"`), as
-the same keyword, with a warning (`W_OLDER_KEYWORD_SPELLING`)
-naming the keyword to write.
+`pick:` (`:last`, `:all`, `:top`, `:max`, `:min`), `cardinality:`
+(`:one` or `:many`) and a command field's `role:` (`:object`,
+`:goal`, …) take keywords. Each also reads the spellings earlier
+releases wrote, the bare word (`pick: all`) and the quoted word
+(`role: "object"`), as the same keyword, with a warning
+(`W_OLDER_KEYWORD_SPELLING`) naming the keyword to write.
 
-`pick:`, the spelling the release before cardinalities used for both
-how many claims an attribute holds and how a field ranks them, is
-deprecated: it is read, in every spelling (`all`, `:all`, `"all"`),
-as what it stands for, with a warning (`W_DEPRECATED_PICK`) saying
-what to write. `pick: :last` is the default cardinality, so the
-field can go; `pick: :all` is `cardinality: :many`; and on a concept
-field `pick: :top`, `:max` or `:min` is `cardinality: :many` read
-with the `aggregate:` of the same name, a `top`'s listed values
-reversed, since that release listed them best first. An
-`attribute!:` refuses a ranking pick, since it has no field to
-aggregate. A template or notebook written for an earlier release
-still evaluates; a new document writes the cardinality.
+`pick:` says which claims a read returns: `:last` the newest (the
+default), `:all` every one, and on a concept field `:top` the value
+listed first in `as:`, `:max` the greatest and `:min` the least.
+`cardinality:` says how many claims a cell keeps, `:one` (a write
+succeeds the claim) or `:many` (a write adds one). It follows from
+the pick unless it is written: `:last` is one, every other pick
+many, so `pick: :all` above is `cardinality: :many`. Written beside
+a pick, it has to be one the pick can read: `pick: :last` with
+`cardinality: :many` keeps every claim and reads the newest, and
+`cardinality: :one` beside any other pick is refused, naming both.
 
-A listed `as:` is an enumerated type, ordered least first. It no
-longer ranks on its own, as it did when it implied `pick: :top`: a
-field that reads the best-ranked of the listed values says so.
+An attribute on its own takes `pick: :last` or `pick: :all`, or a
+`cardinality:` saying the same. A ranking pick (`:top`, `:max`,
+`:min`) reads one of many claims for a concept field, so an
+`attribute!:` refuses it and names the field it belongs on.
+
+A listed `as:` is an enumerated type, ordered best first, and a
+field that picks `:top` reads the first listed value its entity
+holds:
 
 ```yaml tonk=parse
 concept!: &job/status
   description: "Where a job stands"
   with:
     status:
-      description: "Every state a job reached; the field reads the greatest"
+      description: "Every state a job reached; the field reads the furthest"
       the:         xyz.tonk.job/status
       as:
-        - case:queued
-        - case:running
         - case:done
-      cardinality: :many
-      aggregate:   :top
+        - case:running
+        - case:queued
+      pick:        :top
 ```
 
 Writing `case:running` to a job that holds `case:queued` adds a
-claim beside it, and the field reads `case:running`: `top` is the
-value listed last among those the job holds. `:max` and `:min` read
-the greatest and least value by the type's own order, and `:last`
-the newest claim. A ranking aggregate needs a cardinality-many
-attribute, and `:top` one that lists its values.
+claim beside it, and the field reads `case:running`. A ranking
+pick needs a cardinality-many attribute, which it implies, and
+`:top` one that lists its values.
 
 ## Heads in detail
 
@@ -657,10 +656,10 @@ The body field shorthands users write (`the:`, `as:`,
 `cardinality:`, `description:`) map to these attributes through the
 concept's `with:` map. `as: text` names the built-in type anchor
 `text`, which stands for the type entity `text:`, and
-`cardinality: :many` records `many`; an attribute that leaves it
-out records `one`. A field's `aggregate:` is not part of the
-attribute: the concept records it beside the field
-(`db.concept.aggregate/<field>`).
+`cardinality: :many` (or `pick: :all`) records `many`; an attribute
+that says neither records `one`. A concept field's ranking pick is
+not part of the attribute: the concept records it beside the field
+(`db.concept.pick/<field>`).
 
 `description` is required on every attribute, but it does not
 participate in the attribute entity's content-derivation —
