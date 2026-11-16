@@ -800,7 +800,7 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
         "<a class=\"hub-me account-trigger\" href=\"/settings\" data-account-trigger>",
         "<section class=\"hub-sheet\" data-spaces-sheet aria-label=\"your spaces\">",
         "<div class=\"hub-line\">",
-        "<h2 class=\"hub-line-name\">spaces <span class=\"hub-count\" data-space-count></span></h2>",
+        "<h2 class=\"hub-line-name\" tabindex=\"-1\" data-spaces-line>spaces <span class=\"hub-count\" data-space-count></span></h2>",
         "<button class=\"hub-btn hub-btn--main\" type=\"button\" data-new-space data-space-create-open>new space</button>",
         "<hub-collection class=\"hub-rows\"",
         "<div class=\"hub-row space-card\"",
@@ -2164,4 +2164,33 @@ fn it_opens_a_hub_space_from_its_row_and_unfolds_details_with_a_chevron() {
             "the hub collection must keep `{contract}`",
         );
     }
+}
+
+/// While the spaces list loads, placeholder rows hold its place past
+/// 400ms and Tonk's line says `loading`; when the service worker cannot
+/// be reached before any row shows, the sheet says so with `try again`.
+#[dialog_common::test]
+fn it_shows_loading_rows_and_a_didnt_load_sheet_for_the_spaces_list() {
+    for contract in [
+        "<ul slot=\"loading\" class=\"hub-rows hub-wait\" aria-hidden=\"true\">",
+        "<div class=\"hub-skel\"><i></i><i></i></div>",
+        ".hub-wait { animation:hub-wait-in 400ms step-end; }",
+        "<div slot=\"offline\" class=\"hub-empty hub-failed\"><p>Your spaces didn’t load. Check your connection and try again.</p><button class=\"hub-btn hub-btn--main\" type=\"button\" data-spaces-retry>try again</button></div>",
+        "tonk-display:has(.space-card) > .hub-failed { display:none; }",
+        "count.textContent = list === 'loading' ? 'loading' : '';",
+        "button.disabled = list === 'loading';",
+        "if (event.target?.closest?.('[data-spaces-retry]')) { self.listRetry(); return; }",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the spaces sheet must carry `{contract}`",
+        );
+    }
+    assert_eq!(
+        PROFILE_LIBRARY
+            .matches("<li class=\"hub-row\"><div class=\"hub-skel\">")
+            .count(),
+        5,
+        "five placeholder rows",
+    );
 }

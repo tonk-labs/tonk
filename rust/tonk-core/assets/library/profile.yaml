@@ -537,6 +537,19 @@ view!:
       hub-discover[collection="spaces"] .discover-collection,
       hub-discover[collection="discover"] > .hub-sheet { display:none; }
       .collection-tabs button[hidden] { display:none; }
+      /* Your spaces, loading: five rows hold the place, shown only past
+         400ms so a quick list never flashes them. The widths vary the
+         way names do. */
+      .hub-wait { animation:hub-wait-in 400ms step-end; }
+      @keyframes hub-wait-in { from, to { visibility:hidden; } }
+      .hub-wait > li:nth-child(1) { --w:46%; }
+      .hub-wait > li:nth-child(2) { --w:62%; }
+      .hub-wait > li:nth-child(3) { --w:38%; }
+      .hub-wait > li:nth-child(4) { --w:54%; }
+      .hub-wait > li:nth-child(5) { --w:42%; }
+      /* The list didn't load: said only while no row shows, since a
+         dropped stream keeps the rows it already drew. */
+      tonk-display:has(.space-card) > .hub-failed { display:none; }
       .collection-square--round { border-radius:50%; }
       hub-discover:not([collection="contacts"]) .contacts-collection,
       hub-discover[collection="contacts"] > .hub-sheet,
@@ -2784,15 +2797,63 @@ element!: &hub-discover
           retry.hidden = false;
         } finally { self.__loading = false; }
       }
+    # Where the spaces list is, said in Tonk's line: `loading` in place of
+    # the count and `new space` waiting while it loads, no count when it
+    # did not load. Read off the display's `data-state`.
+    list: |
+      (self) => {
+        const sheet = self.querySelector('[data-spaces-sheet]');
+        const display = sheet?.querySelector(':scope > tonk-display');
+        if (!sheet || !display) return;
+        const state = display.getAttribute('data-state');
+        const list = !state || state === 'loading' ? 'loading'
+          : state === 'offline' && !display.querySelector('.space-card') ? 'failed' : 'ready';
+        if (sheet.dataset.list === list) return;
+        sheet.dataset.list = list;
+        if (list === 'loading') sheet.setAttribute('aria-busy', 'true'); else sheet.removeAttribute('aria-busy');
+        for (const button of sheet.querySelectorAll('.hub-line [data-new-space]')) button.disabled = list === 'loading';
+        // Ready, the rows count themselves (`hub-collection`); an empty
+        // list says no number, since it may still be arriving.
+        const collection = display.querySelector('hub-collection');
+        const count = sheet.querySelector('[data-space-count]');
+        if (list === 'ready' && collection?.count) collection.count();
+        else if (count) count.textContent = list === 'loading' ? 'loading' : '';
+      }
+    # `try again`: a fresh display subscribes from the start, with the
+    # same slots. Focus goes to the line, which now says it is loading.
+    list-retry: |
+      (self) => {
+        const display = self.querySelector('[data-spaces-sheet] > tonk-display');
+        if (!display) return;
+        const fresh = document.createElement('tonk-display');
+        fresh.setAttribute('model', 'space');
+        fresh.append(...display.querySelectorAll(':scope > [slot]'));
+        display.replaceWith(fresh);
+        self.watchList();
+        self.list();
+        self.querySelector('[data-spaces-line]')?.focus();
+      }
+    watch-list: |
+      (self) => {
+        const display = self.querySelector('[data-spaces-sheet] > tonk-display');
+        self._listObserver?.disconnect();
+        if (!display) return;
+        const observer = new MutationObserver(() => self.list());
+        observer.observe(display, { attributes: true, attributeFilter: ['data-state'], childList: true });
+        self._listObserver = observer;
+      }
     connected: |
       (self) => {
         self.agents();
+        self.watchList();
+        self.list();
         if (self.__wired) return;
         self.__wired = true;
         // An agent approved in another tab shows on coming back here.
         window.addEventListener('focus', () => { if (self.isConnected) self.agents(); });
         self.addEventListener('click', event => {
           if (event.target?.closest?.('[data-discover-retry]')) { self.load(); return; }
+          if (event.target?.closest?.('[data-spaces-retry]')) { self.listRetry(); return; }
           const revoke = event.target?.closest?.('[data-agent-revoke]');
           if (revoke && self.contains(revoke)) { self.agentsRevoke(revoke); return; }
           const button = event.target?.closest?.('[data-collection]');
@@ -3116,7 +3177,7 @@ view!:
             <!-- Tonk's line: the sheet's name and count, and its action. It
                  stays at the top while the sheet scrolls. -->
             <div class="hub-line">
-              <div class="hub-line-l"><h2 class="hub-line-name">spaces <span class="hub-count" data-space-count></span></h2></div>
+              <div class="hub-line-l"><h2 class="hub-line-name" tabindex="-1" data-spaces-line>spaces <span class="hub-count" data-space-count></span></h2></div>
               <space-create>
                 <button class="hub-btn hub-btn--main" type="button" data-new-space data-space-create-open>new space</button>
                 <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
@@ -3131,7 +3192,20 @@ view!:
                 </tonk-dialog>
               </space-create>
             </div>
-            <tonk-display model="space"></tonk-display>
+            <!-- The display says where the list is (`data-state`) and shows
+                 the matching slot: placeholder rows while it loads, the
+                 sentence and `try again` when the service worker cannot be
+                 reached. `hub-discover` says the same in the line. -->
+            <tonk-display model="space">
+              <ul slot="loading" class="hub-rows hub-wait" aria-hidden="true">
+                <li class="hub-row"><div class="hub-skel"><i></i><i></i></div></li>
+                <li class="hub-row"><div class="hub-skel"><i></i><i></i></div></li>
+                <li class="hub-row"><div class="hub-skel"><i></i><i></i></div></li>
+                <li class="hub-row"><div class="hub-skel"><i></i><i></i></div></li>
+                <li class="hub-row"><div class="hub-skel"><i></i><i></i></div></li>
+              </ul>
+              <div slot="offline" class="hub-empty hub-failed"><p>Your spaces didn’t load. Check your connection and try again.</p><button class="hub-btn hub-btn--main" type="button" data-spaces-retry>try again</button></div>
+            </tonk-display>
           </section>
           <section class="discover-collection" aria-label="Discover templates">
             <p class="space-create-help" data-discover-status role="status"></p>
