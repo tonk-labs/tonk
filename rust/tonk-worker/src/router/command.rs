@@ -6,9 +6,9 @@
 //! branch's dialog stack as that stack's providers
 //! ([`CommandProviders::provide`], once per branch, through
 //! [`BranchState::provide_once`]), and [`run_commands`] performs the
-//! effect a dispatch landed: dialog runs the provider claiming each
-//! command and writes its lifecycle rows, and the worker drains the
-//! polls the request scheduled after.
+//! effect a dispatch landed: dialog runs every provider whose concept
+//! each command's rows satisfy and writes its lifecycle rows, and the
+//! worker drains the polls the request scheduled after.
 //!
 //! A command is a claim of a transient concept. A transaction through
 //! the reactor writes it `.at(control_layer())`, so dialog takes it as
@@ -27,35 +27,30 @@
 //! and answers dialog with no rows of its own.
 //!
 //! The stack provider for a command is built per branch
-//! ([`Scope`]): its handler captures the state and the branch the stack
-//! is of, takes the tick the command landed in ([`Tick`]: the asking
-//! client, `control: tonk.session/client client:<id>`, which the
-//! committing route stamps beside the commands), decodes the command
-//! exactly as before ([`Decode`], [`Migrated`]) and runs
-//! `Provider::execute`. A command sent for a branch that has no stack
-//! yet (an absent repository, a branch nobody has made) goes through
-//! the profile's stack with its origin in the tick's rows
-//! ([`relay_commands`]).
-//!
-//! A tick's rows are the `control:` entity's, not any command's, and
-//! dialog hands a handler the command's rows alone, so [`run_commands`]
-//! reads the tick from the effect it is about to perform and leaves it
-//! for the handler under each command's entity
-//! ([`CommandProviders::record`]).
+//! ([`Scope`]): one provider per registration, answering every concept
+//! the command decodes from (a migrated command's current and legacy
+//! shapes, `Provider::also`). Its handler captures the state and the
+//! branch the stack is of, reads the tick the command landed in from
+//! the command itself ([`Tick`]: the asking client, `control:
+//! tonk.session/client client:<id>`, which the committing route stamps
+//! beside the commands and dialog hands each command as
+//! `Command::tick`), decodes the command exactly as before ([`Decode`],
+//! [`Migrated`]) and runs `Provider::execute`. A command sent for a
+//! branch that has no stack yet (an absent repository, a branch nobody
+//! has made) goes through the profile's stack with its origin in the
+//! tick's rows ([`relay_commands`]).
 //!
 //! [`TonkState`]: crate::worker::TonkState
 //! [`BranchState::provide_once`]: crate::reactor::BranchState::provide_once
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use dialog_capability::{Command, Provider};
 use dialog_common::{ConditionalSend, ConditionalSync};
 use dialog_corpus::{Changes, Entity, Fact, Value};
 use dialog_query::ConceptDescriptor;
-use dialog_query::attribute::The;
 use dialog_repository::{
-    CommitError, Effect, EffectReport, Failure, Provider as CommandProvider, Stack, control_layer,
+    CommitError, Effect, EffectReport, Failure, Provider as CommandProvider, Stack,
 };
 use tonk_common::log;
 
@@ -126,9 +121,8 @@ impl CommandOrigin {
 
 /// What the `control:` entity's rows say of one tick: who asked for its
 /// commands, and which branch they were sent for when it is not the
-/// stack's own. Read from the tick an effect performs
-/// ([`Tick::of_effect`]) and kept for each of its commands until the
-/// command's handler runs.
+/// stack's own. Read from the rows dialog hands each command of the
+/// tick ([`Tick::of_rows`] over `Command::tick`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Tick {
     /// The asking client, from `control: tonk.session/client client:<id>`.
@@ -142,15 +136,12 @@ pub struct Tick {
 }
 
 impl Tick {
-    /// The tick `effect` performs, from the rows of the `control:`
-    /// entity among what landed; `None` when the tick carries none.
-    pub fn of_effect(effect: &Effect) -> Option<Self> {
-        let control = control_layer();
-        let rows = effect
-            .commands()
-            .iter()
-            .find(|(entity, _)| *entity == control)
-            .map(|(_, rows)| rows.as_slice())?;
+    /// The tick whose `control:` entity's rows are `rows` (a command's
+    /// `tick()`); `None` when the tick carries none.
+    pub fn of_rows(rows: &[Fact]) -> Option<Self> {
+        if rows.is_empty() {
+            return None;
+        }
         let text = |the: dialog_corpus::Relation| {
             rows.iter().find_map(|row| match &row.is {
                 Value::String(text) if row.the == the => Some(text.clone()),
@@ -300,16 +291,7 @@ pub struct Scope {
     pub repo: String,
     /// The stack's branch.
     pub branch: String,
-    /// The tick each pending command landed in, by the command's entity:
-    /// what [`run_commands`] leaves for the handlers of the effect it
-    /// performs ([`CommandProviders::record`]).
-    ticks: Ticks,
 }
-
-/// The ticks of the commands whose effects are being performed, by
-/// command entity: one table for the worker, since a command's entity
-/// names it on every stack.
-type Ticks = Arc<Mutex<HashMap<Entity, Tick>>>;
 
 /// A command's decode, from the rows of its entity.
 #[cfg(not(target_arch = "wasm32"))]
@@ -346,12 +328,13 @@ type Decoding = Arc<dyn Fn(&dialog_repository::Command) -> Option<Run> + Send + 
 type Decoding = Arc<dyn Fn(&dialog_repository::Command) -> Option<Run>>;
 
 /// One command the worker provides: the concepts its rows decode from,
-/// the surface it runs on, and how a landed command decodes as it. A
-/// stack provider claims a landed command by the attributes of its
-/// concept's fields ([`dialog_repository::Provider::claims`]), one
-/// provider per concept, so a migrated command registers one for its
-/// current shape and one for its legacy shape, both decoding to the
-/// current one.
+/// the surface it runs on, and how a landed command decodes as it. Its
+/// stack provider claims a landed command whose rows satisfy one of
+/// its concepts, every required field having a row
+/// ([`dialog_repository::Provider::claims`]): one provider per
+/// registration, answering each of its concepts (`Provider::also`), so
+/// a migrated command's current and legacy shapes are one provider,
+/// both decoding to the current shape.
 pub struct Registration {
     surface: Surface,
     concepts: Vec<&'static ConceptDescriptor>,
@@ -369,32 +352,44 @@ impl Registration {
         &self.concepts
     }
 
-    /// Whether a stack provider of this registration claims the command
-    /// whose rows are `rows`: one of the rows has an attribute one of
-    /// the concepts' fields names (or, for a collection field, lies in
-    /// its domain). The rule is dialog's
-    /// ([`dialog_repository::Provider::claims`]); this is the same
-    /// test without a provider in hand.
+    /// Whether this registration's stack provider claims the command
+    /// whose rows are `rows`: whether they satisfy one of its concepts,
+    /// every required field of it having a row of its attribute and of
+    /// its value type. The rule is dialog's
+    /// ([`dialog_repository::Provider::claims`]), asked of a provider
+    /// over the same concepts.
     pub fn claims(&self, rows: &[Fact]) -> bool {
-        rows.iter().any(|row| {
-            self.concepts.iter().any(|concept| {
-                concept.with().iter().any(|(_, field)| match field.the() {
-                    The::Relation(_) => field.the().attribute().as_ref() == Some(&row.the),
-                    The::Collection { domain, .. } => row.the.domain() == domain.as_str(),
-                })
-            })
+        provider_over(&self.concepts, |_| async {
+            Ok::<Changes, Failure>(Changes::new())
         })
+        .is_some_and(|provider| provider.claims(rows))
     }
 
     /// Whether the command may run from `origin`.
     pub fn admits(&self, origin: &CommandOrigin) -> bool {
         self.surface.admits(origin)
     }
+}
 
-    /// Whether `command`'s rows decode as this registration's command.
-    pub fn decodes(&self, command: &dialog_repository::Command) -> bool {
-        (self.decode)(command).is_some()
-    }
+/// A stack provider answering the commands of every one of `concepts`
+/// with `handler`: dialog's one provider over the first, also answering
+/// the rest ([`dialog_repository::Provider::also`]). `None` for no
+/// concept.
+fn provider_over<F, Fut>(
+    concepts: &[&'static ConceptDescriptor],
+    handler: F,
+) -> Option<CommandProvider>
+where
+    F: Fn(dialog_repository::Command) -> Fut + ConditionalSend + ConditionalSync + 'static,
+    Fut: std::future::Future<Output = Result<Changes, Failure>> + ConditionalSend + 'static,
+{
+    let (first, rest) = concepts.split_first()?;
+    Some(
+        rest.iter()
+            .fold(CommandProvider::new(first, handler), |provider, concept| {
+                provider.also(concept)
+            }),
+    )
 }
 
 /// The refusal of a command `name` from `env`'s origin, whose surface
@@ -410,50 +405,32 @@ fn refusal(name: &Entity, env: &CommandEnv) -> Failure {
     ))
 }
 
-/// Run `command`, which the provider of `concept` claimed, as the first
-/// registration claiming it whose command its rows decode as.
+/// Run `command`, which the provider of the registration named `name`
+/// claimed: from the origin its tick names, refused when the surface
+/// does not admit it from there, else decoded as the registration's
+/// command through `decode` and run against the env of that origin.
 ///
-/// Dialog runs the first provider claiming a command, and a provider
-/// claims by any one attribute of its concept's fields, so the provider
-/// dialog picked is not always the command's: legacy shapes of different
-/// commands share attributes (the DOM timestamp of an invite, an
-/// enable-sync and a pause-sync, for one). The vocabulary therefore
-/// decides among its claimants by what the rows decode as, in
-/// registration order, as the worker's registry did before the commands
-/// were a stack's providers: an enable-sync is run as an enable-sync
-/// even though the invite, registered first, claims its timestamp.
+/// Dialog runs every provider whose concept the command's rows satisfy,
+/// in registration order, so a command whose rows satisfy two
+/// registrations' concepts runs both, as the worker's registry ran
+/// every command that decoded before the commands were a stack's
+/// providers.
 async fn dispatch(
-    registrations: Arc<Vec<Registration>>,
     scope: Scope,
-    concept: Entity,
+    surface: Surface,
+    name: Entity,
+    decode: Decoding,
     command: dialog_repository::Command,
 ) -> Result<Changes, Failure> {
-    let tick = scope
-        .ticks
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(command.entity());
-    let origin = CommandOrigin::of_tick(&scope, tick);
+    let origin = CommandOrigin::of_tick(&scope, Tick::of_rows(command.tick()));
     let env = CommandEnv::new(scope.state.clone(), origin);
-    let rows = command.rows();
-    for registration in registrations
-        .iter()
-        .filter(|registration| registration.claims(rows))
-    {
-        let Some(run) = (registration.decode)(&command) else {
-            continue;
-        };
-        if !registration.admits(env.origin()) {
-            let name = registration
-                .concepts
-                .first()
-                .map(|concept| concept.this())
-                .unwrap_or_else(|| concept.clone());
-            return Err(refusal(&name, &env));
-        }
-        return run(env).await;
+    if !surface.admits(env.origin()) {
+        return Err(refusal(&name, &env));
     }
-    Err(Failure::new(format!("the rows do not decode as {concept}")))
+    let Some(run) = decode(&command) else {
+        return Err(Failure::new(format!("the rows do not decode as {name}")));
+    };
+    run(env).await
 }
 
 /// The worker's command vocabulary: every command it provides, each with
@@ -462,7 +439,6 @@ async fn dispatch(
 #[derive(Default)]
 pub struct CommandProviders {
     registrations: Arc<Vec<Registration>>,
-    ticks: Ticks,
 }
 
 impl CommandProviders {
@@ -598,8 +574,8 @@ impl CommandProviders {
 
     /// Register every command's providers on `stack`, built for the
     /// branch at `repo` / `branch` over `state`: one stack provider per
-    /// concept, each running the command as [`dispatch`] decides. Done
-    /// once per branch, through
+    /// registration, answering each of its concepts and running the
+    /// command as [`dispatch`] does. Done once per branch, through
     /// [`BranchState::provide_once`](crate::reactor::BranchState::provide_once).
     pub fn provide(
         &self,
@@ -612,43 +588,31 @@ impl CommandProviders {
             state,
             repo,
             branch,
-            ticks: self.ticks.clone(),
         };
         for registration in self.registrations.iter() {
-            for concept in &registration.concepts {
-                let registrations = self.registrations.clone();
-                let scope = scope.clone();
-                let name = concept.this();
-                stack.provide(CommandProvider::new(
-                    concept,
-                    move |command: dialog_repository::Command| {
-                        dispatch(registrations.clone(), scope.clone(), name.clone(), command)
-                    },
-                ))?;
+            let Some(first) = registration.concepts.first() else {
+                continue;
+            };
+            let name = first.this();
+            let surface = registration.surface;
+            let decode = registration.decode.clone();
+            let scope = scope.clone();
+            if let Some(provider) = provider_over(
+                &registration.concepts,
+                move |command: dialog_repository::Command| {
+                    dispatch(
+                        scope.clone(),
+                        surface,
+                        name.clone(),
+                        decode.clone(),
+                        command,
+                    )
+                },
+            ) {
+                stack.provide(provider)?;
             }
         }
         Ok(())
-    }
-
-    /// Leave the tick `effect` performs for the handlers of its
-    /// commands, under each command's entity. Dialog hands a handler
-    /// the command's rows alone, and the tick's rows are the `control:`
-    /// entity's; a handler takes its command's entry as it runs, so
-    /// effects performed at the same time do not mix.
-    pub fn record(&self, effect: &Effect) {
-        let Some(tick) = Tick::of_effect(effect) else {
-            return;
-        };
-        let control = control_layer();
-        let mut ticks = self
-            .ticks
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for (entity, _) in effect.commands() {
-            if *entity != control {
-                ticks.insert(entity.clone(), tick.clone());
-            }
-        }
     }
 }
 
@@ -805,7 +769,7 @@ fn stack_of<'a>(
 /// `AppState` in hand. The vocabulary is registered on the branch's
 /// stack first if this is the branch's first effect
 /// ([`CommandProviders::provide`]). Dialog runs, for each command in
-/// order, the first provider claiming it, then one answer dispatch
+/// order, every provider whose concept its rows satisfy, then one answer dispatch
 /// through the stack that writes each command's lifecycle row
 /// (`dialog.command/answered`, `failed` or `unhandled`), and reports
 /// whether that dispatch landed commands of its own, whose effect
@@ -824,7 +788,7 @@ fn stack_of<'a>(
 pub async fn run_commands(state: &AppState, origin: CommandOrigin, effect: Option<Effect>) {
     let operator = {
         let tonk = state.read().await;
-        if let Some(effect) = effect.as_ref().filter(|effect| !effect.is_empty()) {
+        if effect.as_ref().is_some_and(|effect| !effect.is_empty()) {
             match stack_of(&tonk.reactor, &origin)
                 .acquire(&tonk.operator)
                 .await
@@ -845,7 +809,6 @@ pub async fn run_commands(state: &AppState, origin: CommandOrigin, effect: Optio
                     log!("commands: no branch at {origin:?} to provide on: {error}");
                 }
             }
-            tonk.commands.record(effect);
         }
         tonk.operator.clone()
     };
@@ -865,12 +828,7 @@ pub async fn run_commands(state: &AppState, origin: CommandOrigin, effect: Optio
                 if !report.remaining() {
                     break;
                 }
-                let next = report.effect();
-                {
-                    let tonk = state.read().await;
-                    tonk.commands.record(&next);
-                }
-                effect = Some(next);
+                effect = Some(report.effect());
             }
             Err(error) => {
                 log!("commands: the answer dispatch at {origin:?} failed: {error}");
@@ -901,10 +859,8 @@ pub async fn run_commands(state: &AppState, origin: CommandOrigin, effect: Optio
 
 /// Log what an effect did not do: a provider that failed, with its
 /// reason, and a command no provider claims. The latter is the one
-/// place a command that decodes as nothing can be seen: the command
-/// landed, so the page believes it asked. The `control:` entity's own
-/// rows (the tick's client) are reported as a command of that entity
-/// and left unhandled by every effect; that one is no news.
+/// place a command whose rows satisfy no concept can be seen: the
+/// command landed, so the page believes it asked.
 fn report_effect(origin: &CommandOrigin, report: &EffectReport) {
     let surface = if origin.repo.is_empty() {
         "the profile".to_owned()
@@ -914,11 +870,8 @@ fn report_effect(origin: &CommandOrigin, report: &EffectReport) {
     for (entity, reason) in report.failed() {
         log!("commands: {entity} on {surface}: {reason}");
     }
-    let control = control_layer();
     for entity in report.unhandled() {
-        if *entity != control {
-            log!("commands: no provider on {surface} claims {entity}");
-        }
+        log!("commands: no provider on {surface} claims {entity}");
     }
 }
 
@@ -1138,7 +1091,7 @@ pub(crate) mod tests {
     }
 
     /// The registrations whose providers claim the command `changes`
-    /// asserts, and admit it from `origin`: what dialog runs the first
+    /// asserts, and admit it from `origin`: what dialog runs every one
     /// of.
     fn claiming<'a>(
         providers: &'a CommandProviders,
@@ -1167,60 +1120,69 @@ pub(crate) mod tests {
         );
     }
 
-    /// Dialog runs the FIRST provider claiming a command, and a provider
-    /// claims by any one attribute of its concept's fields, so two
-    /// commands sharing an attribute are both handed each other's
-    /// commands; the vocabulary tells them apart by what the rows decode
-    /// as ([`dispatch`]). A current and a legacy shape of ONE command may
-    /// share attributes: one registration decodes either. The overlaps
-    /// across registrations are known, all among legacy shapes:
-    /// `dom.event/time-stamp` (`legacy::Invite`, `legacy::EnableSync`,
-    /// `legacy::PauseSync`),
-    /// `dom.event.current-target.elements.email/value`
-    /// (`legacy::CheckEmail`, `legacy::RegisterAccount`) and
-    /// `dom.event.current-target/value` (`legacy::ProfileRename`,
-    /// `legacy::RenameRepository`). A new one fails this test, so it is
-    /// added knowingly, with a test that each of its commands is run as
-    /// itself.
+    /// Dialog runs every provider whose concept a command's rows satisfy
+    /// (every required field present), so a command of one concept also
+    /// runs the provider of any other registration's concept whose
+    /// required fields are among its own: as the worker's registry ran
+    /// every command that decoded. Such a pair is known, among the legacy
+    /// shapes: a legacy `RegisterAccount` carries the email that is all
+    /// a legacy `CheckEmail` requires, so both run, as they did in the
+    /// registry. A new pair fails this test, so it is added knowingly,
+    /// with a test of what both commands do with it. A concept is
+    /// registered once: dialog keeps one provider per concept.
     #[dialog_common::test]
-    fn no_two_commands_share_a_claim_attribute() {
+    fn a_commands_rows_satisfy_no_other_commands_concept_unknowingly() {
+        use std::collections::{BTreeMap, BTreeSet};
         let providers = command_providers();
-        let mut claimants: std::collections::BTreeMap<String, std::collections::BTreeSet<usize>> =
-            Default::default();
-        let mut concepts: std::collections::BTreeSet<String> = Default::default();
+        let mut seen: BTreeSet<String> = Default::default();
+        // Each concept's required attributes, with its registration. A
+        // concept's entity is a hash, so a shape is named by what it
+        // requires.
+        let mut required: Vec<(usize, BTreeSet<String>)> = Vec::new();
         for (index, registration) in providers.registrations().iter().enumerate() {
             for concept in registration.concepts() {
                 let name = concept.this().to_string();
                 assert!(
-                    concepts.insert(name.clone()),
+                    seen.insert(name.clone()),
                     "{name} is registered twice; dialog keeps one provider per concept"
                 );
-                for (_, field) in concept.with().iter() {
-                    claimants
-                        .entry(field.the().to_string())
+                required.push((
+                    index,
+                    concept
+                        .with()
+                        .iter()
+                        .filter(|(_, field)| !field.is_optional())
+                        .map(|(_, field)| field.the().to_string())
+                        .collect(),
+                ));
+            }
+        }
+        // A command of `a` satisfies `b` when `b` requires nothing `a`
+        // does not: then `b`'s provider runs it too.
+        let mut also_runs: BTreeMap<Vec<String>, BTreeSet<Vec<String>>> = Default::default();
+        for (i, of_a) in &required {
+            for (j, of_b) in &required {
+                if i != j && of_b.is_subset(of_a) {
+                    also_runs
+                        .entry(of_a.iter().cloned().collect())
                         .or_default()
-                        .insert(index);
+                        .insert(of_b.iter().cloned().collect());
                 }
             }
         }
-        let shared: std::collections::BTreeMap<String, usize> = claimants
-            .into_iter()
-            .filter(|(_, registrations)| registrations.len() > 1)
-            .map(|(attribute, registrations)| (attribute, registrations.len()))
-            .collect();
+        let email = "dom.event.current-target.elements.email/value".to_owned();
         assert_eq!(
-            shared,
-            [
-                (
-                    "dom.event.current-target.elements.email/value".to_owned(),
-                    2
-                ),
-                ("dom.event.current-target/value".to_owned(), 2),
-                ("dom.event/time-stamp".to_owned(), 3),
-            ]
+            also_runs,
+            [(
+                vec![
+                    "dom.event.current-target.dataset/register-account".to_owned(),
+                    email.clone()
+                ],
+                [vec![email]].into_iter().collect()
+            )]
             .into_iter()
             .collect(),
-            "the legacy shapes' shared attributes are the only ones two commands claim"
+            "a legacy register-account (its email and marker) is the only command whose rows satisfy another command's concept (a legacy check-email: the email alone)"
         );
     }
 
@@ -1423,13 +1385,15 @@ pub(crate) mod tests {
             );
         }
 
-        /// Two commands that share an attribute are told apart by what
-        /// their rows decode as. Dialog runs the first provider claiming
-        /// a command, by any attribute of its concept, so `Echo`,
-        /// registered first, is handed a `Ping` too; the `Ping` still
-        /// reaches `Ping`'s provider, and an `Echo` reaches `Echo`'s.
+        /// Every provider whose concept a command's rows satisfy runs.
+        /// A `Ping` (its tag alone) satisfies `Ping` and not `Echo`,
+        /// which requires its mark too, so `Ping`'s provider alone runs
+        /// it though `Echo`, registered first, shares the tag; an `Echo`
+        /// (tag and mark) satisfies both, so both run, in registration
+        /// order, as the worker's registry ran every command that
+        /// decoded.
         #[dialog_common::test]
-        async fn it_runs_the_command_the_rows_decode_as_when_two_claim_them() {
+        async fn every_provider_whose_concept_the_rows_satisfy_runs() {
             let _turn = ping_turn().await;
             let _ = drain_ping_log();
             let state = native::test_state().await;
@@ -1448,7 +1412,7 @@ pub(crate) mod tests {
             assert_eq!(
                 drain_ping_tags(),
                 vec!["plain".to_string()],
-                "a ping is run as a ping, though the echo claims its tag"
+                "a ping satisfies Ping alone: Echo requires its mark"
             );
 
             let mut echo = ping_transient("did:key:zEcho", "loud");
@@ -1457,7 +1421,11 @@ pub(crate) mod tests {
                 .is("!".to_string())
                 .assert(&mut echo);
             invoke_commands(&state, CommandOrigin::default(), echo).await;
-            assert_eq!(drain_ping_tags(), vec!["echo:loud".to_string()]);
+            assert_eq!(
+                drain_ping_tags(),
+                vec!["echo:loud".to_string(), "loud".to_string()],
+                "an echo satisfies Echo and Ping: both run, in registration order"
+            );
         }
 
         /// A command a document asserts through the evaluate route is

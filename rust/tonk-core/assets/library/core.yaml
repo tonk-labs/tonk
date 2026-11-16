@@ -2781,19 +2781,19 @@ command!: &intent/suggest
   this: tonk:intent-suggest
   description: Ask what a line typed in the command palette could mean.
   with:
-    input:
-      description: What was typed; empty asks what can be done without saying more.
-      the: tonk.dialog.intent.suggest/input
-      as: text
     now:
       description: The caller's clock in milliseconds, for arguments that take the moment the command runs.
       the: tonk.dialog.intent.suggest/now
       as: float
+  maybe:
+    input:
+      description: What was typed; empty asks what can be done without saying more; absent when `expression` names the interpreted line, whose recorded input stands in.
+      the: tonk.dialog.intent.suggest/input
+      as: text
     max:
-      description: How many readings at most.
+      description: How many readings at most; a default when absent.
       the: tonk.dialog.intent.suggest/max
       as: natural
-  maybe:
     subject:
       description: The entity the page shows, what "this" means, and the default for an argument it can fill.
       the: tonk.dialog.intent.suggest/subject

@@ -588,20 +588,25 @@ impl Command for Interpret {
 /// reading and an `intent/answer` into the branch's `session:` layer, all
 /// naming this command, so the tab that asked reads its own answer.
 ///
-/// These are the fields every ask carries. The optional ones (`subject`,
-/// `site`, `expression`, `memory`; see the library's declaration) are
-/// read from the command's rows by the provider, since a derived concept
-/// has no optional field.
+/// The caller's clock is what every ask carries; the rest is optional,
+/// as the provider reads it: the input is absent when the ask names an
+/// interpreted expression, whose recorded input stands in, and the
+/// count defaults. The other optional fields (`subject`, `site`,
+/// `expression`, `memory`; see the library's declaration) are read from
+/// the command's rows by the provider. A stack provider claims an ask
+/// whose rows satisfy this concept's required fields, so a field every
+/// ask does not carry must not be required here.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct Suggest {
     /// The command entity (a fresh id per ask), which its answer names.
     pub this: Entity,
-    /// What was typed; empty asks for the menu.
-    pub input: crate::domain::command::current::intent_suggest::Input,
+    /// What was typed; empty asks for the menu; absent when the ask
+    /// names an interpreted expression.
+    pub input: Option<crate::domain::command::current::intent_suggest::Input>,
     /// The caller's clock in milliseconds.
     pub now: crate::domain::command::current::intent_suggest::Now,
-    /// How many readings at most.
-    pub max: crate::domain::command::current::intent_suggest::Max,
+    /// How many readings at most; the provider's default when absent.
+    pub max: Option<crate::domain::command::current::intent_suggest::Max>,
 }
 
 impl Command for Suggest {
