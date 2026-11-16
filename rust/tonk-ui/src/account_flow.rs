@@ -6846,7 +6846,26 @@ pub(crate) mod tests {
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         let row = format!(".space-card[data-space-subject='{key}']");
-        click(&driver, &format!("{row} .hub-toggle")).await?;
+        // The chevron answers once `hub-collection` has wired its press, which
+        // can land after the row first draws: press until the row opens.
+        let toggle = format!("{row} .hub-toggle");
+        wait_for_displayed(&driver, &toggle).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            click(&driver, &toggle).await?;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let expanded = element(&driver, &toggle)
+                .await?
+                .attr("aria-expanded")
+                .await?;
+            if expanded.as_deref() == Some("true") {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the row's chevron never opened it (aria-expanded={expanded:?})"
+            );
+        }
         wait_for_displayed(&driver, &format!("{row} space-links [data-link-new]")).await?;
 
         watch_guest_clipboard(&driver).await?;
