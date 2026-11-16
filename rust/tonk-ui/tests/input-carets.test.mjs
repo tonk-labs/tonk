@@ -52,12 +52,11 @@ test("authored text fields keep the browser's native insertion caret", () => {
   );
 });
 
-test("account deletion names its confirmation phrase beside a native input", () => {
-  assert.match(
-    settings,
-    /type <b data-delete-confirm-label>delete account<\/b> to confirm:/,
-  );
-  assert.match(settings, /<input class="armfield"[^>]+data-delete-confirm/);
+test("account deletion asks in place and answers with a passkey, not a typed phrase", () => {
+  assert.match(settings, /<p>Delete your account\? This can’t be undone\.<\/p>/);
+  assert.match(settings, /data-ask-keep>keep account<\/button>/);
+  assert.match(settings, /<span data-delete-submit-label>delete with passkey<\/span>/);
+  assert.doesNotMatch(settings, /data-delete-confirm/);
   assert.doesNotMatch(settings, /contenteditable/);
 });
 
