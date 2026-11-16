@@ -2700,6 +2700,7 @@ element!: &hub-discover
         const count = sheet.querySelector('[data-space-count]');
         if (list === 'ready' && collection?.count) collection.count();
         else if (count) count.textContent = list === 'loading' ? 'loading' : '';
+      }
     # `try again`: a fresh display subscribes from the start, with the
     # same slots. Focus goes to the line, which now says it is loading.
     list-retry: |
@@ -2713,6 +2714,7 @@ element!: &hub-discover
         self.watchList();
         self.list();
         self.querySelector('[data-spaces-line]')?.focus();
+      }
     watch-list: |
       (self) => {
         const display = self.querySelector('[data-spaces-sheet] > tonk-display');
@@ -2721,6 +2723,7 @@ element!: &hub-discover
         const observer = new MutationObserver(() => self.list());
         observer.observe(display, { attributes: true, attributeFilter: ['data-state'], childList: true });
         self._listObserver = observer;
+      }
     connected: |
       (self) => {
         self.agents();
