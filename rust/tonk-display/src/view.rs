@@ -364,7 +364,7 @@ mod tests {
         let empty = serde_wasm_bindgen::to_value(&Vec::<Conclusion>::new()).unwrap();
         call_draw(&host, &empty);
         assert!(
-            host.query_selector(".edge-wall--closed").unwrap().is_none(),
+            host.query_selector(".join-closed").unwrap().is_none(),
             "a pending join must not render the expired-link wall"
         );
 
@@ -375,16 +375,16 @@ mod tests {
                 &[("reason", "refused"), ("kind", "revoked")],
             ),
         );
-        assert!(host.query_selector(".edge-wall--closed").unwrap().is_some());
+        assert!(host.query_selector(".join-closed").unwrap().is_some());
         assert!(
-            host.text_content()
+            host.query_selector("tonk-message[heading=\"this share link expired\"]")
                 .unwrap()
-                .contains("this share link expired")
+                .is_some()
         );
 
         call_draw(&host, &empty);
         assert!(
-            host.query_selector(".edge-wall--closed").unwrap().is_none(),
+            host.query_selector(".join-closed").unwrap().is_none(),
             "clearing a failure for a new attempt must remove the wall"
         );
         host.remove();
