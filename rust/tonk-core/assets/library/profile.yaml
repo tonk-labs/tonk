@@ -540,7 +540,9 @@ view!:
       /* Your spaces, loading: five rows hold the place, shown only past
          400ms so a quick list never flashes them. The widths vary the
          way names do. */
-      .hub-wait { animation:hub-wait-in 400ms step-end; }
+      /* Not `.hub-rows`: that names the list of spaces, which tests and
+         readers look for; these rows only hold its place. */
+      .hub-wait { list-style:none; margin:0; padding:0; animation:hub-wait-in 400ms step-end; }
       @keyframes hub-wait-in { from, to { visibility:hidden; } }
       .hub-wait > li:nth-child(1) { --w:46%; }
       .hub-wait > li:nth-child(2) { --w:62%; }
@@ -3197,7 +3199,7 @@ view!:
                  sentence and `try again` when the service worker cannot be
                  reached. `hub-discover` says the same in the line. -->
             <tonk-display model="space">
-              <ul slot="loading" class="hub-rows hub-wait" aria-hidden="true">
+              <ul slot="loading" class="hub-wait" aria-hidden="true">
                 <li class="hub-row"><div class="hub-skel"><i></i><i></i></div></li>
                 <li class="hub-row"><div class="hub-skel"><i></i><i></i></div></li>
                 <li class="hub-row"><div class="hub-skel"><i></i><i></i></div></li>
