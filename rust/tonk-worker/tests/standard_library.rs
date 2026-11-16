@@ -2172,9 +2172,9 @@ fn it_opens_a_hub_space_from_its_row_and_unfolds_details_with_a_chevron() {
 #[dialog_common::test]
 fn it_shows_loading_rows_and_a_didnt_load_sheet_for_the_spaces_list() {
     for contract in [
-        "<ul slot=\"loading\" class=\"hub-rows hub-wait\" aria-hidden=\"true\">",
+        "<ul slot=\"loading\" class=\"hub-wait\" aria-hidden=\"true\">",
         "<div class=\"hub-skel\"><i></i><i></i></div>",
-        ".hub-wait { animation:hub-wait-in 400ms step-end; }",
+        ".hub-wait { list-style:none; margin:0; padding:0; animation:hub-wait-in 400ms step-end; }",
         "<div slot=\"offline\" class=\"hub-empty hub-failed\"><p>Your spaces didn’t load. Check your connection and try again.</p><button class=\"hub-btn hub-btn--main\" type=\"button\" data-spaces-retry>try again</button></div>",
         "tonk-display:has(.space-card) > .hub-failed { display:none; }",
         "count.textContent = list === 'loading' ? 'loading' : '';",
