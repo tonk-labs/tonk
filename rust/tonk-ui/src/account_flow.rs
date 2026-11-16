@@ -6838,7 +6838,26 @@ pub(crate) mod tests {
                 "the row's chevron never opened it (aria-expanded={expanded:?})"
             );
         }
-        wait_for_displayed(&driver, &format!("{row} space-links [data-link-new]")).await?;
+        if let Err(error) =
+            wait_for_displayed(&driver, &format!("{row} space-links [data-link-new]")).await
+        {
+            enter_guest(&driver).await?;
+            let state = driver
+                .execute(
+                    "const row = document.querySelector(arguments[0]); \
+                     const links = row?.querySelector('space-links'); \
+                     return { defined: !!customElements.get('space-links'), \
+                       upgraded: !!links && typeof links.render === 'function', \
+                       links: links ? links.outerHTML.slice(0, 1500) : null, \
+                       body: row?.querySelector('.hub-body')?.outerHTML.slice(0, 1500) ?? null, \
+                       open: row?.hasAttribute('data-open') };",
+                    vec![serde_json::json!(row)],
+                )
+                .await
+                .map(|value| value.json().to_string())
+                .unwrap_or_else(|inspect| format!("unable to inspect the row: {inspect}"));
+            return Err(error).context(format!("open row state: {state}"));
+        }
 
         watch_guest_clipboard(&driver).await?;
         click(&driver, &format!("{row} space-links [data-link-new]")).await?;
