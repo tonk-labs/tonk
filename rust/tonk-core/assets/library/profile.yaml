@@ -5553,6 +5553,8 @@ element!: &space-links
       (self, path, body) => {
         const origin = window.tonk?.context?.origin ?? window.location.origin;
         const init = body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
+        // A read that hangs must not hold the row: it fails, and says so.
+        init.signal = AbortSignal.timeout(30000);
         return window.fetch(`${origin}${path}`, init).then(async (response) => {
           const text = await response.text();
           if (!response.ok) {
@@ -5663,6 +5665,7 @@ element!: &space-links
         }).join('');
         const rows = self._rows ?? [];
         const note = self._failed ? 'This space’s links didn’t load. Close and open it to try again.'
+          : !self._rows ? ''
           : !rows.length ? 'No links yet. Make one to bring someone in.'
           : rows.some((row) => row.kind !== 'agent' && !made.has(row.target)) ? 'Only a link made in this tab can be copied. Reset the default passlink, or make a new link, to get one to copy.'
           : '';
@@ -5795,7 +5798,12 @@ element!: &space-links
         const row = self.closest('.hub-row');
         self._rowObserver?.disconnect();
         if (!row) return;
-        const opened = () => { if (row.hasAttribute('data-open') && !self._rows && !self._loading) self.load(); };
+        // The row's actions draw at once; the links fill in as they load.
+        const opened = () => {
+          if (!row.hasAttribute('data-open') || self._rows || self._loading) return;
+          if (!self.querySelector('[data-link-new]')) self.render();
+          self.load();
+        };
         self._rowObserver = new MutationObserver(opened);
         self._rowObserver.observe(row, { attributes: true, attributeFilter: ['data-open'] });
         opened();
