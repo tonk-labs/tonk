@@ -13,6 +13,7 @@ use wasm_bindgen_test::wasm_bindgen_test_configure;
 wasm_bindgen_test_configure!(run_in_browser);
 
 #[dialog_common::test]
+#[allow(deprecated)]
 async fn it_commits_a_root_subject_revision_without_storing_the_root_key() -> anyhow::Result<()> {
     let (operator, profile) = test_session_with_peer().await;
     let root = Ed25519Signer::generate().await?;

@@ -377,7 +377,7 @@ impl<'a> BranchReference<'a> {
 mod tests {
     use super::ProfileUpgrade;
     use dialog_capability::Principal as _;
-    use dialog_corpus::{Entity, Pick, Relation, Statement, Update, Value};
+    use dialog_corpus::{Cardinality, Entity, Relation, Statement, Update, Value};
     use dialog_effects::storage::{Directory, Location};
     use dialog_peer::{Peer, PeerError, StepFuture};
     use dialog_repository::{Branch, Repository};
@@ -395,7 +395,7 @@ mod tests {
 
     impl Statement for Raw {
         fn assert(self, update: &mut impl Update) {
-            update.associate(self.the, self.of, self.is, Pick::Last);
+            update.associate(self.the, self.of, self.is, Cardinality::One);
         }
 
         fn retract(self, update: &mut impl Update) {
@@ -425,6 +425,7 @@ mod tests {
     /// Leave in `directory` a profile as an earlier release wrote it: a
     /// library definition recorded that release's way, on a branch laid
     /// out before the number band.
+    #[allow(deprecated)]
     async fn write_earlier_profile(directory: &Directory) -> anyhow::Result<()> {
         let peer = open(directory, &ProfileUpgrade).await?;
         let attribute: dialog_query::AttributeDescriptor = serde_json::from_value(

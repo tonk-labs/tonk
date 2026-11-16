@@ -240,6 +240,7 @@ pub fn scoped_connection_entity(connection_id: &str) -> anyhow::Result<dialog_co
 /// Retain a setup acknowledgement as ordinary main-branch data.
 /// Use the stable attribute directly so an otherwise valid empty space does not
 /// need to install a UI model just to receive a confirmation.
+#[allow(deprecated)]
 pub async fn record_scoped_connection(site: &TonkSite, connection_id: &str) -> anyhow::Result<()> {
     use dialog_query::the;
     let entity = scoped_connection_entity(connection_id)?;

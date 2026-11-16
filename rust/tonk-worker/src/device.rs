@@ -605,6 +605,7 @@ impl Registry {
     /// handle updates the entry in place rather than leaving a second one
     /// behind. Nothing else is written: a row's label, address and link
     /// state belong to that profile's account branch.
+    #[allow(deprecated)]
     pub(crate) async fn upsert_roster(
         &self,
         storage: &Storage<DefaultSpace>,

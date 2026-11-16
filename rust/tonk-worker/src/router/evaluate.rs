@@ -416,7 +416,7 @@ pub(super) async fn stage_and_publish(
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    policy: dialog_corpus::Pick::All,
+                    cardinality: dialog_corpus::Cardinality::Many,
                 })
             }
             dialog_corpus::Instruction::Retract(artifact) => {
@@ -424,7 +424,7 @@ pub(super) async fn stage_and_publish(
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    policy: dialog_corpus::Pick::All,
+                    cardinality: dialog_corpus::Cardinality::Many,
                 })
             }
         };
@@ -713,7 +713,7 @@ async fn evaluate_on_branch_with<'a>(
         // install or a stale writer left. Each is retracted, so the cell
         // comes to the desired value alone, whatever a read elects today:
         // a write of a value the cell already holds writes nothing.
-        for claim in desired.iter().filter(|claim| claim.policy.elects()) {
+        for claim in desired.iter().filter(|claim| claim.cardinality.elects()) {
             use dialog_corpus::Selector;
             use futures_util::StreamExt as _;
 
@@ -736,7 +736,7 @@ async fn evaluate_on_branch_with<'a>(
                     the: found.the,
                     of: found.of,
                     is: found.is,
-                    policy: dialog_corpus::Pick::All,
+                    cardinality: dialog_corpus::Cardinality::Many,
                 };
                 if !kept.contains(&identity(&stale)) {
                     txn = txn.retract(stale);
@@ -892,7 +892,7 @@ async fn evaluate_on_branch_with<'a>(
                         the: "xyz.tonk.test/raced-head".parse().expect("test attribute"),
                         of: "test:evaluate-race".parse().expect("test entity"),
                         is: dialog_corpus::Value::String("advanced".to_owned()),
-                        policy: dialog_corpus::Pick::All,
+                        cardinality: dialog_corpus::Cardinality::Many,
                     })
                     .commit()
                     .perform(&tonk_state.operator)

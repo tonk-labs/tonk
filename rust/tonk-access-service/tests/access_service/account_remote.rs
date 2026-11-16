@@ -208,6 +208,7 @@ async fn it_never_classifies_remote_failures_as_absence() -> anyhow::Result<()> 
 }
 
 #[dialog_common::test]
+#[allow(deprecated)]
 async fn it_atomically_publishes_one_account_genesis_and_keeps_syncing() -> anyhow::Result<()> {
     let service = AccessServiceAddress::start(Default::default()).await?;
     let endpoint = service.address.access_service_url.clone();
@@ -365,6 +366,7 @@ async fn it_atomically_publishes_one_account_genesis_and_keeps_syncing() -> anyh
 /// write the trusted-base marker, so a regression here would mark a base the
 /// device cannot read.
 #[dialog_common::test]
+#[allow(deprecated)]
 async fn it_adopts_a_losing_candidate_onto_the_winners_content() -> anyhow::Result<()> {
     let service = AccessServiceAddress::start(Default::default()).await?;
     let endpoint = service.address.access_service_url.clone();
@@ -459,6 +461,7 @@ async fn it_adopts_a_losing_candidate_onto_the_winners_content() -> anyhow::Resu
 
 #[dialog_common::test]
 #[ignore = "requires TONK_ACCOUNT_REMOTE_URL and a staging-authorized account"]
+#[allow(deprecated)]
 async fn it_proves_account_genesis_against_the_configured_live_remote() -> anyhow::Result<()> {
     let endpoint = std::env::var("TONK_ACCOUNT_REMOTE_URL")?;
     let (operator, profile) = test_session_with_peer().await;

@@ -174,22 +174,27 @@ pub mod attribute {
     #[domain("db.attribute")]
     pub struct As(pub Entity);
 
-    /// Which of its relation's candidates an attribute entity reads —
-    /// `db.attribute/pick`: the entity dialog names the pick by
-    /// (`last:`, `all:`, `top:`, `max:` or `min:`).
+    /// How many claims an attribute entity holds per entity —
+    /// `db.attribute/cardinality`: `one`, which a write succeeds, or
+    /// `many`, which a write adds to.
+    ///
+    /// The release before cardinalities recorded a pick instead
+    /// (`db.attribute/pick last:`), and the one before that a
+    /// cardinality as text beside a `db.attribute/type`;
+    /// `tonk_schema::upgrade` moves both.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("db.attribute")]
-    pub struct Pick(pub Entity);
+    pub struct Cardinality(pub String);
 
-    /// The values a `top` attribute ranks among, best first —
-    /// `db.attribute/among`, a JSON list. Present only on a ranked
-    /// attribute.
+    /// The values an attribute's `as:` lists, least first —
+    /// `db.attribute/among`, a JSON list. Present only on an attribute
+    /// that lists them.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("db.attribute")]
     pub struct Among(pub String);
 }
 
-/// A typed view over an attribute entity: its `id`, `pick` and
+/// A typed view over an attribute entity: its `id`, `cardinality` and
 /// `description`, and its value type `as` when it has one. Matches
 /// every attribute on a branch regardless of whether the user gave it
 /// a published name.
@@ -211,8 +216,8 @@ pub struct AnonymousAttribute {
     pub id: attribute::Id,
     /// The value type, absent when the attribute admits any.
     pub r#as: Option<attribute::As>,
-    /// `last:`, `all:`, `top:`, `max:` or `min:`.
-    pub pick: attribute::Pick,
+    /// `one` or `many`.
+    pub cardinality: attribute::Cardinality,
     /// Human-readable description.
     pub description: Description,
 }

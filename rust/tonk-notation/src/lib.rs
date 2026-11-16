@@ -13,17 +13,17 @@
 //! See [`guide.md`](https://github.com/dialog-db/tonk-workers/tree/main/rust/tonk-notation/guide.md)
 //! for the user-facing notation reference.
 
+pub mod cardinality;
 pub mod diagnostics;
 pub mod include;
 pub mod parse;
-pub mod picks;
 pub mod syntax;
 pub mod types;
 
+pub use cardinality::{Aggregate, Cardinality, Pick, builtin};
 pub use diagnostics::{NOTATION_LANGUAGE_ID, SERVER_INFO, ServerInfo, document_diagnostics};
 pub use include::{Load, expand};
 pub use parse::{INLINE_LOCATION, Parsed, is_reference_name, parse, parse_at, spell_uri};
-pub use picks::{Pick, builtin};
 pub use syntax::{
     Anchor, Application, Effectful, Expression, Field, FieldValue, HeadName, Include, IncludeForm,
     Predicate, Premise, Scalar, Spanned, Syntax,

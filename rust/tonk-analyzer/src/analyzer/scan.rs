@@ -2,10 +2,10 @@
 //! resolver, branch state, or the rest of the analyzer.
 //!
 //! Three checks. An anchor declared under a built-in anchor's name, a
-//! type's (`&text`) or a pick's (`&all`), shadows the built-in within
-//! the document, which is warned about. An attribute body written the
-//! way an earlier release spelled it (`cardinality:`, or a bare or
-//! quoted word where a keyword belongs) is read as it is, and warned
+//! type's (`&text`), shadows the built-in within the document, which is
+//! warned about. An attribute body written the way an earlier release
+//! spelled it (`pick:`, or a bare or quoted word where a keyword
+//! belongs) is read as it is, and warned
 //! about so the document moves to the current spelling. And
 //! *single-occurrence variables*: a `?var`
 //! that appears exactly once in the document is almost always a
@@ -113,8 +113,8 @@ pub fn scan_variables(syntax: &Syntax) -> Vec<AnalyzeDiagnostic> {
         };
         out.push(diagnostic);
     }
-    // An anchor named like a built-in anchor, a type or a pick,
-    // shadows it within the document.
+    // An anchor named like a built-in anchor, a type, shadows it
+    // within the document.
     for expression in &syntax.expressions {
         if let Expression::Claim(claim) = expression
             && let Some(anchor) = &claim.anchor
@@ -169,13 +169,13 @@ fn older_keyword(field: &Field) -> Option<(String, String)> {
 }
 
 /// Warn about the spellings an earlier release used in an attribute
-/// body: `cardinality:` in any spelling, and a bare or quoted word
-/// under `pick:` or `role:`. The analyzer reads them; this only says
-/// what to write instead.
+/// body: `pick:` in any spelling, and a bare or quoted word under
+/// `cardinality:`, `aggregate:` or `role:`. The analyzer reads them;
+/// this only says what to write instead.
 fn older_attribute_spellings(fields: &[Field], out: &mut Vec<AnalyzeDiagnostic>) {
     for field in fields {
         match field.name.as_str() {
-            "cardinality" => {
+            "pick" => {
                 let (value, word) = match &field.value {
                     FieldValue::Uri(uri) => {
                         let word = uri.strip_suffix(':').unwrap_or(uri);
@@ -186,19 +186,19 @@ fn older_attribute_spellings(fields: &[Field], out: &mut Vec<AnalyzeDiagnostic>)
                         None => continue,
                     },
                 };
-                let advice = match word.as_str() {
-                    "many" | "Many" => "write `pick: :all`".to_owned(),
-                    "one" | "One" => {
-                        "write `pick: :last` (the default, so the field can also go)".to_owned()
-                    }
-                    _ => "a field's pick is `pick: :last` (the default) or `pick: :all`".to_owned(),
+                let advice = match tonk_notation::Pick::from_keyword(&word) {
+                    Some(pick) => pick.replacement().to_owned(),
+                    None => "an attribute is `cardinality: :one` (the default) or \
+                             `cardinality: :many`, and a concept field ranks its claims with \
+                             `aggregate:`"
+                        .to_owned(),
                 };
                 out.push(AnalyzeDiagnostic::warning(
-                    AnalyzeDiagnosticKind::DeprecatedCardinality { value, advice },
+                    AnalyzeDiagnosticKind::DeprecatedPick { value, advice },
                     field.value_range,
                 ));
             }
-            "pick" | "role" => {
+            "cardinality" | "aggregate" | "role" => {
                 if let Some((word, keyword)) = older_keyword(field) {
                     out.push(AnalyzeDiagnostic::warning(
                         AnalyzeDiagnosticKind::OlderKeywordSpelling {
@@ -410,42 +410,43 @@ person!:
         assert_eq!(range.start.line, 2);
     }
 
-    /// `cardinality:` is read, in every spelling, and warned about with
-    /// the pick to write; the keyword spelling of a pick is not.
+    /// `pick:` is read, in every spelling, and warned about with what to
+    /// write; the keyword spelling of a cardinality is not.
     #[dialog_common::test]
-    fn it_warns_about_a_deprecated_cardinality_in_every_spelling() {
+    fn it_warns_about_a_deprecated_pick_in_every_spelling() {
         for (spelling, advice) in [
-            ("one", "write `pick: :last`"),
-            (":one", "write `pick: :last`"),
-            ("\"one\"", "write `pick: :last`"),
-            ("many", "write `pick: :all`"),
-            (":many", "write `pick: :all`"),
+            ("last", "cardinality one is the default"),
+            (":last", "cardinality one is the default"),
+            ("\"last\"", "cardinality one is the default"),
+            ("all", "write `cardinality: :many`"),
+            (":all", "write `cardinality: :many`"),
+            (":top", "`aggregate: :top`"),
         ] {
             let syntax = must_parse(&format!(
-                "attribute!: &tags\n  description: \"labels\"\n  the: x.y/tags\n  as: text\n  cardinality: {spelling}\n"
+                "attribute!: &tags\n  description: \"labels\"\n  the: x.y/tags\n  as: text\n  pick: {spelling}\n"
             ));
             let diagnostics = scan_variables(&syntax);
             let found = diagnostics
                 .iter()
-                .find(|d| d.code() == "W_DEPRECATED_CARDINALITY")
-                .unwrap_or_else(|| panic!("cardinality: {spelling} is warned about"));
+                .find(|d| d.code() == "W_DEPRECATED_PICK")
+                .unwrap_or_else(|| panic!("pick: {spelling} is warned about"));
             assert_eq!(found.severity, DiagnosticSeverity::Warning);
             assert!(
                 found.message().contains(advice),
-                "cardinality: {spelling} says what to write: {}",
+                "pick: {spelling} says what to write: {}",
                 found.message()
             );
         }
         let syntax = must_parse(
-            "attribute!: &tags\n  description: \"labels\"\n  the: x.y/tags\n  as: text\n  pick: :all\n",
+            "attribute!: &tags\n  description: \"labels\"\n  the: x.y/tags\n  as: text\n  cardinality: :many\n",
         );
         assert!(
             scan_variables(&syntax).is_empty(),
-            "the keyword spelling of a pick is the current one"
+            "the keyword spelling of a cardinality is the current one"
         );
     }
 
-    /// A bare or quoted word under `pick:` or `role:` is warned about
+    /// A bare or quoted word under `cardinality:` or `role:` is warned about
     /// with the keyword, in an `attribute!` body and in a concept's
     /// inline field alike; a word in an ordinary fact's field is not a
     /// keyword and is left alone.
@@ -457,7 +458,7 @@ attribute!: &tags
   description: "labels"
   the: x.y/tags
   as: text
-  pick: all
+  cardinality: many
 
 concept!: &person
   description: "A person"
@@ -479,7 +480,7 @@ person!:
             .collect();
         let messages: Vec<String> = diagnostics.iter().map(|d| d.message()).collect();
         assert_eq!(messages.len(), 2, "{messages:?}");
-        assert!(messages[0].contains("`pick: :all`"), "{messages:?}");
+        assert!(messages[0].contains("`cardinality: :many`"), "{messages:?}");
         assert!(messages[1].contains("`role: :object`"), "{messages:?}");
         for diagnostic in &diagnostics {
             assert_eq!(diagnostic.severity, DiagnosticSeverity::Warning);

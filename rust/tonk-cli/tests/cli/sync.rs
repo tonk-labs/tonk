@@ -543,6 +543,7 @@ mod when_claiming_an_invite {
     /// space, which is reachable because one profile is shared across every
     /// site on a machine.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_leaves_an_existing_role_alone() -> Result<()> {
         let inviter = TestSite::new().await?;
         let url = invite::mint(&inviter.site, None, None).await?.url;

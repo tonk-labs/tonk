@@ -239,14 +239,14 @@ mod tests {
                     is: Value::String(format!("Item {index}")),
                     cause: None,
                 },
-                dialog_corpus::Pick::All,
+                dialog_corpus::Cardinality::Many,
             )
         });
         tree.apply(remote, &mut delta, stream::iter(instructions))
             .await?;
         let mut stored = 0;
         for node in delta.flush_nodes() {
-            remote.store(node.buffer().clone());
+            remote.store(node.buffer()?.clone());
             stored += 1;
         }
         Ok(stored)

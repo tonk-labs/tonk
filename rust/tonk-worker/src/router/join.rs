@@ -958,6 +958,7 @@ async fn prepare_parsed_join(
 /// A renewal is the same flow on the already-mounted replica: the pull
 /// is dialog's normal merge of the remote into the local head, which is
 /// exactly what every later sync tick does.
+#[allow(deprecated)]
 async fn perform_join(
     tonk: &TonkState,
     prepared: PreparedJoin,

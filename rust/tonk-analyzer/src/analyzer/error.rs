@@ -218,10 +218,10 @@ pub enum AnalyzeDiagnosticKind {
         /// The field where the variable appears.
         field: String,
     },
-    /// An anchor is declared under the name of a built-in anchor: a
-    /// type (`text`, `integer`, ...) or a pick (`last`, `all`, ...).
-    /// Within the document the name means the declaration, so `as:
-    /// text` or `pick: all` there no longer names the built-in.
+    /// An anchor is declared under the name of a built-in anchor, a
+    /// type (`text`, `integer`, ...). Within the document the name
+    /// means the declaration, so `as: text` there no longer names the
+    /// built-in.
     #[error(
         "`&{name}` shadows the built-in `{name}` in this document — \
          `{name}` here means this declaration, not the built-in; choose another \
@@ -260,19 +260,23 @@ pub enum AnalyzeDiagnosticKind {
         /// value.
         known: String,
     },
-    /// An attribute body writes `cardinality:`, the spelling earlier
-    /// releases used for what is now the attribute's pick. It is read
-    /// (`one` is `pick: :last`, the default; `many` is `pick: :all`) so
-    /// the templates and notebooks those releases published still
-    /// evaluate, and warned about so new documents write the pick.
-    #[error("`cardinality: {value}` is deprecated — {advice}")]
-    DeprecatedCardinality {
-        /// The value as written (`one`, `:one`, `"one"`).
+    /// An attribute body writes `pick:`, the spelling the release before
+    /// cardinalities used for both how many claims an attribute holds
+    /// and how a field ranks them. It is read (`:last` is the default
+    /// cardinality one, `:all` is `cardinality: :many`, and a ranking
+    /// pick on a concept field is `cardinality: :many` read with the
+    /// `aggregate:` of its name) so the templates and notebooks those
+    /// releases published still evaluate, and warned about so new
+    /// documents write the cardinality.
+    #[error("`pick: {value}` is deprecated — {advice}")]
+    DeprecatedPick {
+        /// The value as written (`all`, `:all`, `"all"`).
         value: String,
         /// What to write instead.
         advice: String,
     },
-    /// A keyword-valued field (`pick:`, `role:`) writes the bare or
+    /// A keyword-valued field (`cardinality:`, `aggregate:`, `role:`,
+    /// `pick:`) writes the bare or
     /// quoted word earlier releases used instead of the keyword. It is
     /// read as the keyword, and warned about so the document moves to
     /// the spelling the guide teaches.
@@ -316,7 +320,7 @@ impl AnalyzeDiagnosticKind {
                 "E_SINGLE_OCCURRENCE_VARIABLE_ASSERTION_FIELD"
             }
             Self::ShadowsBuiltin { .. } => "W_SHADOWS_BUILTIN",
-            Self::DeprecatedCardinality { .. } => "W_DEPRECATED_CARDINALITY",
+            Self::DeprecatedPick { .. } => "W_DEPRECATED_PICK",
             Self::OlderKeywordSpelling { .. } => "W_OLDER_KEYWORD_SPELLING",
             Self::DeclaredTypeDivergence { .. } => "W_DECLARED_TYPE_DIVERGENCE",
             Self::UnknownEmbed { .. } => "W_UNKNOWN_EMBED",

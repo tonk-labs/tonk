@@ -87,6 +87,7 @@ mod load {
     {
     }
 
+    #[allow(deprecated)]
     async fn commit<Env: HarnessEnv>(
         branch: &Branch,
         operator: &Env,
@@ -113,6 +114,7 @@ mod load {
         Ok(start.elapsed())
     }
 
+    #[allow(deprecated)]
     async fn seed_library<Env: HarnessEnv>(
         branch: &Branch,
         operator: &Env,

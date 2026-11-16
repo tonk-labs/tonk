@@ -166,6 +166,7 @@ impl Commit<'_> {
     /// rules whose body matches the transaction's overlay
     /// view), then transient facts are retracted in-place so
     /// they cancel at commit. Whatever's left lands durably.
+    #[allow(deprecated)]
     pub async fn perform<Env>(self, env: &Env) -> Result<Revision, ReactorError>
     where
         Env: LoadProvider + BranchOpenProvider + CommitProvider + SelectProvider,

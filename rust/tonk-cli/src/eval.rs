@@ -172,6 +172,7 @@ pub async fn run_against_site(
 /// commit: a later document sees what an earlier one declared, and a
 /// rejected document leaves nothing committed. The response covers all
 /// of them; `--home` applies after the last.
+#[allow(deprecated)]
 pub async fn run_documents(
     site: &TonkSite,
     sources: Vec<Source>,

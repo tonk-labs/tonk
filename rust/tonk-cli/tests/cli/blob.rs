@@ -196,6 +196,7 @@ mod when_assets_and_legacy_blobs_meet {
 
     /// Attach bytes and describe them the way blobs were before
     /// `tonk:asset`, as templates that write `tonk:blob` still do.
+    #[allow(deprecated)]
     async fn legacy_blob(test: &TestSite) -> Result<String> {
         let file = test.parent.join("legacy.png");
         tokio::fs::write(&file, b"legacy blob bytes").await?;

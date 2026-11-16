@@ -226,9 +226,9 @@ pub fn build_concept_decl(name: &str, description: Option<&str>, attrs: &[AttrSp
         );
         let _ = writeln!(out, "  the:         xyz.tonk.{name}/{field}");
         let _ = writeln!(out, "  as:          {type_name}");
-        // `many` reads every value; `one` is the default pick, `last`.
+        // `many` holds every value; `one` is the default.
         if cardinality == "many" {
-            let _ = writeln!(out, "  pick:        :all");
+            let _ = writeln!(out, "  cardinality: :many");
         }
         out.push('\n');
     }

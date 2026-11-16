@@ -26,7 +26,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use dialog_corpus::{
-    Entity, Fact, Pick, Relation as CorpusRelation, Selector, Statement, Update, Value,
+    Cardinality, Entity, Fact, Relation as CorpusRelation, Selector, Statement, Update, Value,
 };
 use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor};
 use dialog_repository::Branch;
@@ -59,12 +59,11 @@ impl DefinitionsUpgraded {
 }
 
 /// The relations an earlier release recorded an attribute with that this
-/// release does not: their presence marks an attribute to upgrade.
-const LEGACY_ATTRIBUTE: [&str; 3] = [
-    "db.attribute/type",
-    "db.attribute/cardinality",
-    "db.attribute/select",
-];
+/// release does not: their presence marks an attribute to upgrade. The
+/// release that recorded `db.attribute/type` also recorded its arity as
+/// `db.attribute/cardinality`, which this release records again, so the
+/// type marks it.
+const LEGACY_ATTRIBUTE: [&str; 2] = ["db.attribute/type", "db.attribute/select"];
 
 /// Whether `branch` still holds an attribute recorded the earlier way that
 /// [`upgrade_definitions`] would move: one index read per earlier relation
@@ -91,6 +90,7 @@ pub async fn has_legacy_definitions<Env: QueryEnv>(
 
 /// Upgrade every attribute and concept definition `branch` holds in the
 /// earlier shape, in one commit. See the [module documentation](self).
+#[allow(deprecated)]
 pub async fn upgrade_definitions<Env>(
     branch: &Branch,
     env: &Env,
@@ -273,7 +273,7 @@ where
                 the: claim.the.clone(),
                 of: claim.of.clone(),
                 is: follow(&claim.is),
-                pick: Pick::All,
+                cardinality: Cardinality::Many,
             }));
         }
         let about = select(branch, env, Selector::new().of(earlier.clone())).await?;
@@ -288,10 +288,10 @@ where
                 .push(claim);
         }
         for claims in by_relation.into_values() {
-            let pick = if claims.len() == 1 {
-                Pick::Last
+            let cardinality = if claims.len() == 1 {
+                Cardinality::One
             } else {
-                Pick::All
+                Cardinality::Many
             };
             for claim in claims {
                 writes.push(Write::retract(&claim));
@@ -299,7 +299,7 @@ where
                     the: claim.the.clone(),
                     of: now.clone(),
                     is: follow(&claim.is),
-                    pick: pick.clone(),
+                    cardinality,
                 }));
             }
         }
@@ -353,7 +353,16 @@ fn legacy_descriptor(claims: &[Fact]) -> Option<AttributeDescriptor> {
         );
     }
     if let Some(select) = text("db.attribute/select").filter(|s| !s.is_empty()) {
-        shape.insert("pick".to_owned(), serde_json::Value::String(select));
+        match select.as_str() {
+            "last" | "last:" => {}
+            "all" | "all:" => {
+                shape.insert(
+                    "cardinality".to_owned(),
+                    serde_json::Value::String("many".to_owned()),
+                );
+            }
+            _ => return None,
+        }
     }
     if let Some(among) = text("db.attribute/among") {
         shape.insert("as".to_owned(), serde_json::from_str(&among).ok()?);
@@ -425,7 +434,7 @@ impl Write {
             the: claim.the.clone(),
             of: claim.of.clone(),
             is: claim.is.clone(),
-            pick: Pick::All,
+            cardinality: Cardinality::Many,
         })
     }
 }
@@ -437,12 +446,12 @@ struct Raw {
     the: CorpusRelation,
     of: Entity,
     is: Value,
-    pick: Pick,
+    cardinality: Cardinality,
 }
 
 impl Statement for Raw {
     fn assert(self, update: &mut impl Update) {
-        update.associate(self.the, self.of, self.is, self.pick);
+        update.associate(self.the, self.of, self.is, self.cardinality);
     }
 
     fn retract(self, update: &mut impl Update) {
@@ -458,12 +467,12 @@ mod tests {
     use dialog_query::migration::{attribute_uri_v0, concept_identity_v0};
     use tonk_core::meta::{Name, name};
 
-    fn raw(the: &str, of: &Entity, is: Value, pick: Pick) -> anyhow::Result<Raw> {
+    fn raw(the: &str, of: &Entity, is: Value, cardinality: Cardinality) -> anyhow::Result<Raw> {
         Ok(Raw {
             the: the.parse()?,
             of: of.clone(),
             is,
-            pick,
+            cardinality,
         })
     }
 
@@ -475,6 +484,7 @@ mod tests {
     /// its current identity, the name and the view follow it, nothing is
     /// left on the earlier entities, and a second run finds nothing.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_moves_definitions_recorded_the_earlier_way() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -483,7 +493,7 @@ mod tests {
         let descriptor: ConceptDescriptor = serde_json::from_value(serde_json::json!({
             "with": {
                 "title": { "the": "xyz.tonk.note/title", "as": "text:", "description": "A title" },
-                "tags": { "the": "xyz.tonk.note/tags", "as": "text:", "pick": "all:" }
+                "tags": { "the": "xyz.tonk.note/tags", "as": "text:", "cardinality": "many" }
             }
         }))?;
         let earlier_concept = concept_identity_v0(&descriptor);
@@ -507,13 +517,13 @@ mod tests {
                     Value::String(attribute.description().into()),
                 ),
             ] {
-                transaction = transaction.assert(raw(the, &earlier, is, Pick::Last)?);
+                transaction = transaction.assert(raw(the, &earlier, is, Cardinality::One)?);
             }
             transaction = transaction.assert(raw(
                 &format!("db.concept.with/{field}"),
                 &earlier_concept,
                 Value::Entity(earlier),
-                Pick::All,
+                Cardinality::Many,
             )?);
         }
         transaction = transaction
@@ -521,13 +531,13 @@ mod tests {
                 "db.meta/concept",
                 &earlier_concept,
                 Value::Entity("db:concept".parse()?),
-                Pick::Last,
+                Cardinality::One,
             )?)
             .assert(raw(
                 "xyz.tonk.view/ui",
                 &earlier_concept,
                 Value::String("<p>{title}</p>".into()),
-                Pick::Last,
+                Cardinality::One,
             )?)
             .assert(Name {
                 this: "id:note".parse()?,

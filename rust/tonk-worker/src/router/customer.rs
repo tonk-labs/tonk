@@ -683,6 +683,7 @@ pub(crate) async fn record_space_provider(
 /// back to local-only. Called when deprovisioning succeeds and when the
 /// sync engine observes the gate refusing the subject with a denial
 /// retrying cannot clear. Best-effort, like the record.
+#[allow(deprecated)]
 pub(crate) async fn retract_space_provider(
     state: &crate::worker::TonkState,
     consumer: &dialog_varsig::Did,

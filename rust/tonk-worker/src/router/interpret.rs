@@ -31,7 +31,7 @@ fn claim(the: &str, of: &Entity, is: Value) -> Option<RawClaim> {
         the: the.parse().ok()?,
         of: of.clone(),
         is,
-        policy: dialog_corpus::Pick::Last,
+        cardinality: dialog_corpus::Cardinality::One,
     })
 }
 

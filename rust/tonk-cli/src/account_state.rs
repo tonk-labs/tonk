@@ -505,6 +505,7 @@ fn tracks(branch: &dialog_repository::Branch, remote: &ConnectedReplica, name: &
 /// Mount the selected account in its own local branch and remote record.
 /// The original account retains profile main; replacements cannot inherit
 /// its hydrated facts or repoint a handle retained by an earlier operation.
+#[allow(deprecated)]
 async fn mount(
     profile: &Peer<NativeSpace>,
     operator: &Peer<NativeSpace, Session>,
@@ -600,6 +601,7 @@ async fn mount(
     Ok((repository, branch, remote))
 }
 
+#[allow(deprecated)]
 async fn hydrate(
     branch: &dialog_repository::Branch,
     operator: &crate::account_authority::AccountBoundOperator,

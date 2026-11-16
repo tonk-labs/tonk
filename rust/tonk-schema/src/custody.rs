@@ -213,6 +213,7 @@ mod tests {
     /// The pair round-trips: a principal is found by its DID, and the
     /// message it names is found by the entity it points at.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_finds_a_principals_seed_through_the_message_it_names() -> Result<()> {
         let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
@@ -267,6 +268,7 @@ mod tests {
     /// Everything addressed to one recipient is enumerable without
     /// knowing which principals they belong to — the query rotation runs.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_lists_every_message_sealed_to_one_recipient() -> Result<()> {
         let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
@@ -306,6 +308,7 @@ mod tests {
     /// peer's custody, held for the account the peer acts for, and the
     /// rows go; a second pass finds nothing left to move.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_migrates_a_sealed_seed_into_the_peers_custody() -> Result<()> {
         use dialog_credentials::key::{ExtractableKey as _, KeyExport};
         use dialog_credentials::{Ed25519Signer, Extractable};
@@ -394,6 +397,7 @@ mod tests {
     /// and a second principal row — the recovery-custodian case. The
     /// principal entity carries no recipient, so nothing collides.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_seals_one_seed_to_two_recipients() -> Result<()> {
         let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;

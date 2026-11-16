@@ -330,18 +330,18 @@ impl Scope {
             return Some(concept.entity.clone());
         }
         // A built-in anchor names its entity: a type (`text` is
-        // `text:`) or a pick (`all` is `all:`). A document that
-        // declares an anchor of the same name shadows it above; a name
-        // published on the branch does not, so one document's choice
-        // never changes another's types or picks.
+        // `text:`). A document that declares an anchor of the same
+        // name shadows it above; a name published on the branch does
+        // not, so one document's choice never changes another's
+        // types.
         if let Some(uri) = self.builtin(name) {
             return uri.parse().ok();
         }
         self.named_entities.lock().get(name).cloned()
     }
 
-    /// The entity the built-in anchor `name` names, a type or a pick,
-    /// unless this document declares an anchor of its own under it.
+    /// The entity the built-in anchor `name` names, a type, unless this
+    /// document declares an anchor of its own under it.
     pub(crate) fn builtin(&self, name: &str) -> Option<&'static str> {
         tonk_notation::builtin(name).filter(|_| !self.shadowed_builtins.lock().contains(name))
     }

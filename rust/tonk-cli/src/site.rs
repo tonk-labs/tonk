@@ -601,6 +601,7 @@ pub async fn record_founder_membership(site: &TonkSite) -> Result<()> {
 /// through the reactor's cached `main` handle for the same reason the worker's
 /// does — a commit through a separate handle leaves the cached one pinned at
 /// its old head and wedges later sync.
+#[allow(deprecated)]
 pub async fn record_founder_membership_for(site: &TonkSite, member: Did) -> Result<()> {
     use tonk_schema::{MemberRole, Membership};
 
@@ -1467,6 +1468,7 @@ pub struct Transplanted {
 /// Everything minted for the origin subject dies with it — delegations,
 /// outstanding invites, provisioning. The caller re-wires sync and
 /// hands out fresh invites.
+#[allow(deprecated)]
 pub async fn transplant_at_with(
     root: &Path,
     name: &str,

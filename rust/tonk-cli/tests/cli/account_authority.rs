@@ -948,6 +948,7 @@ async fn it_moves_local_space_custody_at_sign_in() -> Result<()> {
 
 /// Replacing the login must not publish the previous account's local facts.
 #[dialog_common::test]
+#[allow(deprecated)]
 async fn replacement_does_not_hydrate_previous_account_facts(
     env: AccessServiceAddress,
 ) -> Result<()> {

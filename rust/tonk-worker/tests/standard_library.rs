@@ -1612,15 +1612,15 @@ fn the_element_method_query_matches_the_library() {
         "the library declares `method` as something other than a keyed \
          dictionary of text",
     );
-    // The predicate reads `method` under the default pick, `last`, which
-    // the library spells by declaring no pick at all (the older
-    // `cardinality: one` said the same). A `pick: :all` or a
-    // `cardinality: many` on the element would be a set the predicate
-    // does not mirror.
+    // The predicate reads `method` under the default cardinality, one,
+    // which the library spells by declaring none at all (the older
+    // `pick: :last` said the same). A `cardinality: :many` or a
+    // `pick: :all` on the element would be a set the predicate does not
+    // mirror.
     assert!(
         !declared.contains("pick:") && !declared.contains("cardinality:"),
-        "the library declares `element` with a pick the predicate does not \
-         mirror: {declared}",
+        "the library declares `element` with a cardinality the predicate does \
+         not mirror: {declared}",
     );
 
     let predicate = tonk_template::resolve::element_method_predicate();

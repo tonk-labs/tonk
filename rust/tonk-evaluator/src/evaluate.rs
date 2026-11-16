@@ -732,7 +732,7 @@ struct RawClaim {
 
 impl dialog_corpus::Statement for RawClaim {
     fn assert(self, update: &mut impl dialog_corpus::Update) {
-        update.associate(self.the, self.of, self.is, dialog_corpus::Pick::All);
+        update.associate(self.the, self.of, self.is, dialog_corpus::Cardinality::Many);
     }
     fn retract(self, update: &mut impl dialog_corpus::Update) {
         update.dissociate(self.the, self.of, self.is);
@@ -1427,6 +1427,7 @@ mod tests {
     /// published in an *earlier commit*, so resolution must go
     /// through the branch tables, not document-local scope.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_resolves_branch_attribute_references_in_maybe_blocks() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -1492,6 +1493,7 @@ attribute!: &foo/title
     /// is the only post-evaluate view of the commands a document
     /// carried.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_mirrors_dispatched_transients_for_command_dispatch() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -1583,6 +1585,7 @@ concept!: &note
     /// synthesize a cardinality-one descriptor, so each write
     /// replaced the prior value (last-write-wins).
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_accumulates_many_valued_attributes_through_domain_heads() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -1656,6 +1659,7 @@ concept!: &note
     /// key operand never leaks as a sibling field, and the value sits
     /// under its key — the form you would evaluate to get it.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_folds_collection_entries_in_match_json() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -1755,6 +1759,7 @@ concept!: &note
     /// one match row carries every requested entry, and an entity
     /// missing any requested key does not match at all.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_binds_several_dictionary_entries_at_once() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -1943,6 +1948,7 @@ concept!: &note
     /// wrote it (the store keys every number in one band), so `+41`
     /// comes back as the number 41, and both `+41` and bare `41` find it.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_reads_raw_domains_untyped() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -2059,6 +2065,7 @@ concept!: &note
     /// attribute as unsigned reads, so the raw write and the typed read
     /// agree without the domain head imposing anything.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_stores_a_domain_literal_as_the_number_it_names() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -2150,6 +2157,7 @@ concept!: &note
     /// as the natural 41 (the `+` says nothing), `-7` as an integer,
     /// `41.5` as a float.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_keeps_raw_domains_open_ended() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -2212,6 +2220,7 @@ concept!: &note
     /// domain, an assertion writes one entry under a literal key,
     /// and the facts land under `domain/key`.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_writes_collection_entries_under_their_keys() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -2306,6 +2315,7 @@ concept!: &note
     /// which is a deleted notebook block reappearing on the next
     /// render.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_retracts_a_collection_entry_by_key() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -2390,6 +2400,7 @@ concept!: &note
     /// `queue: "writer"` onto a new, otherwise empty ticket and
     /// retracted nothing.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_refuses_a_rest_retraction_without_this_and_writes_nothing() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -2485,6 +2496,7 @@ concept!: &note
     /// `DocumentAnalysis::synthesized`, not the query nodes — or it
     /// zeroes the join and the assert's `?var` goes unbound.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_binds_assert_var_from_query_for_distinct_target() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -2548,6 +2560,7 @@ name!:
     }
 
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_installs_and_fires_a_notation_rule() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -2688,6 +2701,7 @@ name!:
     /// trigger) and the body wouldn't classify head emissions
     /// correctly.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_declares_transient_concept_via_notation() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -2842,6 +2856,7 @@ rule!:
     /// actual: SignedInt }`. The counter's durable count must
     /// update to `1`.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_induces_unsigned_sum_from_transient_increment() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -2984,6 +2999,7 @@ counter!: &counter-demo
     /// read-back of `math/sum`'s own output. This test does both:
     /// it is the path the live `/evaluate` bug actually hit.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_chains_unsigned_sum_across_two_notation_increments() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -3119,6 +3135,7 @@ counter!: &counter-demo
     /// rule B then read that and derived `count = 2`. One
     /// `increment{by: 1}` made the counter jump by 2.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_converges_two_identical_rules_within_a_round() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -3238,6 +3255,7 @@ counter!: &counter-demo
     /// `analysis.effects` bucket and rule-only documents were
     /// silently dropped — the rule never reached the branch.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_lifts_an_effect_from_a_rule_only_document() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -3317,6 +3335,7 @@ concept!: &pong
     /// content-addressed, and facts pinned at any other entity would
     /// be inert to dialog's readers.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_rejects_a_pinned_rule_install() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -3387,6 +3406,7 @@ concept!: &pong
     /// entity must be gone (the canonical encoding makes the
     /// dissociate byte-exact) and the rule must stop firing.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_retracts_an_installed_rule_via_notation() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -3516,6 +3536,7 @@ concept!: &pong
     /// `pong` yields one conclusion while the rule is installed and zero
     /// after it is retracted.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_deduces_concepts_until_the_rule_is_retracted() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -3640,6 +3661,7 @@ concept!: &pong
     /// rule person <- person-entered, then a notation instance
     /// `person-entered!:`. Expect a durable `person` to appear.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_fires_a_rule_on_a_two_field_notation_transient() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -3773,6 +3795,7 @@ concept!: &person
     /// effects fixpoint so the installed rule fires and the
     /// durable head lands.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_fires_a_rule_on_a_notation_transient_instance() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -3876,6 +3899,7 @@ rule!:
     /// the just-applied transient and lands the durable head before
     /// commit. The transient should not persist; the head should.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_drives_fixpoint_from_one_document_with_rule_plus_transient() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -3980,6 +4004,7 @@ ping!:
     /// closes). The reassign rule is gated on `active: ?sheet`, so a
     /// background close must not match it.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_keeps_active_when_a_background_sheet_closes() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -4198,6 +4223,7 @@ workspace!:
     /// reassign rule *must* fire, because the closed sheet is the
     /// active one. Shares the same workspace model.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_moves_active_to_the_neighbour_when_the_active_sheet_closes() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -4347,6 +4373,7 @@ workspace!:
     /// Mirrors `core.yaml`: the create-sheet command + its two rules
     /// (mint the sheet, add it to the workspace) plus the close rules.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_keeps_active_after_creating_then_closing_a_background_sheet() -> anyhow::Result<()>
     {
         let (operator, profile) = test_session_with_peer().await;
@@ -4581,6 +4608,7 @@ workspace!:
     /// name, and auto-activates it. Mirrors the three create rules in
     /// the standard library.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_creates_a_self_describing_empty_sheet_and_activates_it() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -4808,6 +4836,7 @@ workspace!:
     /// committed branch as the [`Source`]. The chain yields the
     /// document's [`Analysis`] directly.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_analyzes_a_document_via_the_syntax_chain() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -4860,6 +4889,7 @@ workspace!:
     /// field carries none. Proves the notation → analyzer →
     /// storage round-trip for optionality.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_persists_optional_marker_for_maybe_field() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -4973,6 +5003,7 @@ workspace!:
     /// [`dialog_repro_optional_field_sorted_first_drops_rows`] and
     /// the ignored [`it_set_widens_body_derived_entities_with_bare_query`].
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_set_widens_optional_field_in_query() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -5087,6 +5118,7 @@ person!:
     /// the unbound scan. Fixed by the dialog-db query-engine rework
     /// on `feat/narrowing-diagnostics`; kept as a regression guard.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_set_widens_body_derived_entities_with_bare_query() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -5174,6 +5206,7 @@ person!:
     /// with the optional `bio` premise. Fixed by the dialog-db
     /// query-engine rework on `feat/narrowing-diagnostics`.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_set_widens_optional_field_sorted_before_required() -> anyhow::Result<()> {
         use dialog_query::concept::descriptor::ConceptConclusion;
         use dialog_query::concept::query::ConceptQuery;
@@ -5254,6 +5287,7 @@ person!:
     /// are covered in `tonk-analyzer`; this guards the wiring
     /// through `evaluate`.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_errors_evaluating_integer_into_text_field() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;

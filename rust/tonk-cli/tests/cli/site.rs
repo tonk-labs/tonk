@@ -429,6 +429,7 @@ mod when_minting_an_invite_for_a_named_space {
     use crate::common;
 
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_carries_the_display_name_on_the_link() -> Result<()> {
         let inviter = common::TestSite::new().await?;
         // Name the space the way `tonk space new` does.
@@ -896,6 +897,7 @@ mod when_syncing_with_an_upstream {
     /// Commit a single string-valued fact to `branch` via the
     /// dialog primitives. Used to seed an upstream we then pull
     /// from.
+    #[allow(deprecated)]
     async fn commit_fact(
         test: &common::TestSite,
         branch: &Branch,
@@ -912,9 +914,12 @@ mod when_syncing_with_an_upstream {
         branch
             .transaction()
             .integrate(
-                vec![Instruction::Assert(artifact, dialog_corpus::Pick::All)]
-                    .into_iter()
-                    .collect(),
+                vec![Instruction::Assert(
+                    artifact,
+                    dialog_corpus::Cardinality::Many,
+                )]
+                .into_iter()
+                .collect(),
             )
             .commit()
             .publish()

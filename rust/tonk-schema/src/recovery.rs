@@ -97,6 +97,7 @@ mod tests {
     /// A passkey is found by the custody DID it derives, and carries the
     /// credential id an assertion needs to select it.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_finds_a_passkey_by_the_custody_it_derives() -> Result<()> {
         let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
@@ -144,6 +145,7 @@ mod tests {
     /// with it per attribute, pairing one device's clock with another's
     /// label.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_keeps_one_row_per_passkey() -> Result<()> {
         let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
@@ -205,6 +207,7 @@ mod tests {
     /// found by querying messages rather than by a second copy of the
     /// account on every row.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_reaches_the_account_through_the_sealed_envelope() -> Result<()> {
         let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;

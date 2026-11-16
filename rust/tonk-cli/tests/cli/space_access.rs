@@ -19,6 +19,7 @@ fn fixture(tmp: &std::path::Path) -> Result<(SpaceStore, SiteConfig)> {
 
 /// Create a space and stamp `founder` as its founder on the content branch,
 /// the way a hosted space carries its own roster.
+#[allow(deprecated)]
 async fn founded_by(
     store: &SpaceStore,
     config: &SiteConfig,
@@ -214,6 +215,7 @@ mod when_the_service_refuses_a_sync {
     /// told to would send them somewhere they can never get to. A roster row
     /// of their own is what tells the two apart.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_points_a_member_at_revocation_not_at_the_owners_account() -> Result<()> {
         use tonk_schema::{MemberRole, Membership};
 

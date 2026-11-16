@@ -1198,6 +1198,7 @@ async fn publish_revocation(
 /// Retract a revoked device's link rows from the account space, so the
 /// row leaves every device's list the way the authority left the chain.
 /// Returns whether anything was retracted.
+#[allow(deprecated)]
 async fn retract_device_rows(
     branch: &dialog_repository::Branch,
     operator: &dialog_peer::Peer<NativeSpace, dialog_peer::Session>,
