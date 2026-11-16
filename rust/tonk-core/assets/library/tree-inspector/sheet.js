@@ -73,6 +73,7 @@
   flex: 0 1 auto;
 }
 .part--index, .part--min, .part--opaque, .part--pending, .part--prefix { color: var(--muted); }
+.part--index, .part--vtype { flex: none; }
 .part--entity { color: oklch(0.6 0.14 255); }
 .part--attribute { color: oklch(0.6 0.13 155); }
 .part--vtype { color: oklch(0.6 0.12 300); }

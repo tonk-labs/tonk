@@ -3878,8 +3878,14 @@ employee:
             .await
             .unwrap();
         let rows: serde_json::Value = serde_json::from_slice(&body).expect("rows");
-        let root = rows[0]["fields"]["tree"].as_str().expect("a root").to_owned();
-        assert!(root.starts_with("node:"), "the root is a node entity: {rows}");
+        let root = rows[0]["fields"]["tree"]
+            .as_str()
+            .expect("a root")
+            .to_owned();
+        assert!(
+            root.starts_with("node:"),
+            "the root is a node entity: {rows}"
+        );
         root
     }
 
@@ -3968,7 +3974,10 @@ employee:
             assert_eq!(status, StatusCode::OK, "tree/span OK: {spans}");
             let spans = spans.as_array().expect("spans");
             assert!(!spans.is_empty(), "an index has spans");
-            node = spans[0]["fields"]["node"].as_str().expect("a child").to_owned();
+            node = spans[0]["fields"]["node"]
+                .as_str()
+                .expect("a child")
+                .to_owned();
             assert!(node.starts_with("node:"), "a child is a node entity");
         }
 

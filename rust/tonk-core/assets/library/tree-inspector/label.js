@@ -11,7 +11,9 @@
   if (known) return known.parts;
   const entry = { parts: null };
   state.parts.set(id, entry);
-  self.step(formula, { of: bytes }, ['at', 'kind', 'text'])
+  // A formula is asked with every one of its terms, so `bytes` is named
+  // though only the text is shown.
+  self.step(formula, { of: bytes }, ['at', 'kind', 'text', 'bytes'])
     .then((rows) => {
       entry.parts = rows
         .map((row) => ({ at: Number(row.at ?? 0), kind: String(row.kind ?? ''), text: String(row.text ?? '') }))

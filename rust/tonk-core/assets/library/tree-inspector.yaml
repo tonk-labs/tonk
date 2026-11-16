@@ -44,7 +44,7 @@ element!: &tree-inspector
     detail: !include/text ./tree-inspector/detail.js
     act: !include/text ./tree-inspector/act.js
     keys: !include/text ./tree-inspector/keys.js
-    style: !include/text ./tree-inspector/style.js
+    sheet: !include/text ./tree-inspector/sheet.js
 
 # The console page: `/console/tree`.
 concept!: &tree-inspector/console

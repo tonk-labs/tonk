@@ -3,7 +3,7 @@
   if (!self.__tree) {
     const shadow = self.attachShadow({ mode: 'open' });
     const style = document.createElement('style');
-    style.textContent = self.style();
+    style.textContent = self.sheet();
     const shell = document.createElement('div');
     shell.className = 'shell';
     shadow.append(style, shell);
