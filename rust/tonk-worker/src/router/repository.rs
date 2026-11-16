@@ -15545,10 +15545,13 @@ route!:
                 .push((claim.the.clone(), claim.is.clone()));
         }
         let moves = identity::moves_in(&facts);
-        let earlier: HashMap<_, _> = moves
-            .iter()
-            .map(|(then, now)| (now.clone(), then.clone()))
-            .collect();
+        // An identity has one earlier identity per earlier release; the
+        // space is written under the first `moves` lists, which is the one
+        // a test finds for it.
+        let mut earlier: HashMap<dialog_corpus::Entity, dialog_corpus::Entity> = HashMap::new();
+        for (then, now) in &moves {
+            earlier.entry(now.clone()).or_insert_with(|| then.clone());
+        }
         let install = LibraryClaims {
             durable: under_earlier_identities(install.durable, &earlier),
             transient: install.transient,

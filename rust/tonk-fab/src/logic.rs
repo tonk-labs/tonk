@@ -2821,6 +2821,11 @@ mod wire_types {
 
         for body in &bodies {
             for found in body.split("\"as\":").skip(1) {
+                // A listed `as` names the values an enumerated type holds,
+                // not a type.
+                if found.trim_start().starts_with('[') {
+                    continue;
+                }
                 let variant = found
                     .trim_start()
                     .trim_start_matches('"')
