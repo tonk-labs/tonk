@@ -3653,7 +3653,7 @@ view!:
 # `<tonk-site>` defaults its absent `path` to `/`.
 #
 # The view keeps `<tonk-site path={rest}>` even when `rest` is absent because
-# `rest` is a scalar (`pick: :last`) field: `<tonk-display>` stamps the
+# `rest` is a scalar (cardinality one, the default) field: `<tonk-display>` stamps the
 # concept's scalar field names onto the `<tonk-view>` (`data-scalar-fields`), so
 # the planner renders them as plain substitutions rather than iteration axes that
 # would clone the host zero times — and drop it — when the value is empty.
@@ -6864,7 +6864,7 @@ concept!: &intent/action
     name:
       description: A word or phrase the command answers to.
       the: tonk.dialog.intent.action/name
-      pick: :all
+      cardinality: :many
       as: text
 
 concept!: &intent/choice

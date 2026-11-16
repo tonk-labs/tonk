@@ -52,7 +52,7 @@ concept!: &notebook
       # template then substitutes `{block}` once instead of iterating
       # the entries, so the order rows never render and every block
       # reads as unplaced.
-      pick: :all
+      cardinality: :many
       as: {[position]: entity}
 
 # The title alone, so a create or a rename writes one field rather than
@@ -98,13 +98,15 @@ concept!: &block/position
 # The placement rules keep one entry per block, but a sequence written before
 # they did can hold a block twice. The page shows such a block at its first
 # entry, so the position the rules derive from must be that one too. Read
-# under the default `last` pick, the derivation took the stray entry instead:
+# under the default cardinality one, the newest entry, the derivation took the
+# stray entry instead:
 # a paragraph typed after the first one was positioned against an entry near
 # the end of the document and landed far below where it was typed.
 #
-# A separate concept rather than a `min` pick on `block/position`, because
-# the position rules recurse through `block/position`, and an aggregate inside
-# that recursion is unstratified: inserts derived nothing at all.
+# A separate concept rather than a field reading `block/position` with
+# `aggregate: :min`, because the position rules recurse through
+# `block/position`, and an aggregate inside that recursion is unstratified:
+# inserts derived nothing at all.
 concept!: &block/stray-entry
   description: A position a block holds besides its first.
   with:
@@ -112,7 +114,7 @@ concept!: &block/stray-entry
       description: The later position.
       the: xyz.tonk.notebook.block/stray-at
       as: text
-      pick: :all
+      cardinality: :many
 
 rule!:
   description: A block's entry is stray when another of its entries sorts first.
