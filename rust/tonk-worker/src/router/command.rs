@@ -1428,6 +1428,118 @@ pub(crate) mod tests {
             );
         }
 
+        /// Perform `rows` as a command landed on the branch at `origin`,
+        /// the vocabulary registered on its stack first, and report what
+        /// the effect did.
+        async fn perform(state: &AppState, origin: &CommandOrigin, rows: Changes) -> EffectReport {
+            let operator = {
+                let tonk = state.read().await;
+                let session = stack_of(&tonk.reactor, origin)
+                    .acquire(&tonk.operator)
+                    .await
+                    .expect("the branch opens");
+                session
+                    .state
+                    .provide_once(|stack| {
+                        tonk.commands.provide(
+                            stack,
+                            state.clone(),
+                            origin.repo.clone(),
+                            origin.branch.clone(),
+                        )
+                    })
+                    .expect("the vocabulary registers");
+                tonk.operator.clone()
+            };
+            let effect = invoke_on(state, origin, rows)
+                .await
+                .expect("the command lands");
+            effect
+                .perform(&operator)
+                .await
+                .expect("the effect performs")
+        }
+
+        /// The one overlap the vocabulary keeps, deliberately. A legacy
+        /// `RegisterAccount` (the form's email and its marker) also
+        /// satisfies the legacy `CheckEmail` (the email alone), so both
+        /// providers run, as the worker's registry ran both: two answered
+        /// rows, and the lookup's `EmailStatus` row, the one the same
+        /// form produces on every keystroke. Nobody current posts the
+        /// legacy shapes (the register dialog posts the current ones,
+        /// whose attributes are disjoint, so a current `RegisterAccount`
+        /// satisfies its concept alone), and a shell from before the
+        /// migration cannot be given a marker, so the overlap stays
+        /// rather than leaving those shells' lookups unhandled.
+        #[dialog_common::test]
+        async fn a_legacy_register_account_runs_the_lookup_too() {
+            let state = native::test_state().await;
+            let origin = {
+                let mut tonk = state.write().await;
+                tonk.shared_mut().commands = command_providers();
+                CommandOrigin {
+                    repo: String::new(),
+                    branch: tonk.active_branch.clone(),
+                    client: None,
+                }
+            };
+            let address = "ada@example.com";
+            let entity = |uri: &str| uri.parse::<Entity>().expect("entity URI");
+
+            let legacy = entity("cmd:legacy-register");
+            let mut rows = Changes::new();
+            the!("dom.event.current-target.elements.email/value")
+                .of(legacy.clone())
+                .is(address.to_string())
+                .assert(&mut rows);
+            the!("dom.event.current-target.dataset/register-account")
+                .of(legacy.clone())
+                .is(entity("tonk:register-account"))
+                .assert(&mut rows);
+            let report = perform(&state, &origin, rows).await;
+            assert_eq!(
+                report.answered(),
+                &[legacy.clone(), legacy.clone()],
+                "the registration and the lookup both answer a legacy register-account"
+            );
+            assert!(report.failed().is_empty(), "{:?}", report.failed());
+            assert!(report.unhandled().is_empty(), "{:?}", report.unhandled());
+            let looked_up = {
+                let tonk = state.read().await;
+                let session = stack_of(&tonk.reactor, &origin)
+                    .acquire(&tonk.operator)
+                    .await
+                    .expect("the branch opens");
+                session
+                    .handle()
+                    .overlay()
+                    .export()
+                    .iter()
+                    .any(|(_, attribute, change)| {
+                        attribute.to_string() == "xyz.tonk.email-status/address"
+                            && matches!(
+                                change,
+                                dialog_corpus::Change::Assert(Value::String(text), _) if text == address
+                            )
+                    })
+            };
+            assert!(looked_up, "the lookup answered the address on the overlay");
+
+            let current = entity("cmd:register");
+            let mut rows = Changes::new();
+            the!("xyz.tonk.command.register-account/email")
+                .of(current.clone())
+                .is(address.to_string())
+                .assert(&mut rows);
+            let report = perform(&state, &origin, rows).await;
+            assert_eq!(
+                report.answered(),
+                &[current],
+                "a current register-account satisfies its own concept alone"
+            );
+            assert!(report.failed().is_empty(), "{:?}", report.failed());
+        }
+
         /// A command a document asserts through the evaluate route is
         /// answered by its provider, as one asserted through the transact
         /// route is: the document commits through the branch's stack, and
