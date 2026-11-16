@@ -992,11 +992,13 @@ view!:
               <button type="button" class="hub-toggle" aria-expanded="false" aria-controls="body-{subject}"
                 aria-label="links and details of {name}"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
             </div>
-            <!-- What unfolds: the space's address. The mock's line about
-                 the space ("you have admin") waits for a recorded role.
-                 Closed, it stays in the page, hidden and inert. -->
+            <!-- What unfolds: the space's address and its links
+                 (`space-links`). The mock's line about the space ("you have
+                 admin") waits for a recorded role. Closed, it stays in the
+                 page, hidden and inert. -->
             <div class="hub-fold"><div class="hub-fold-in"><div class="hub-body" id="body-{subject}" inert>
               <p class="hub-addr"><span class="hub-mono" data-space-address></span></p>
+              <space-links data-space={subject} data-name={name}></space-links>
             </div></div></div>
           </div>
         </hub-collection>
@@ -5534,6 +5536,312 @@ element!: &space-actions
 # provider this account registered as means the hosted copy goes too.
 # The click prepares the row's dialog for that verb and opens it; the
 # dialog's form submits the `space/remove` command the view bound.
+# A space's links, in its open hub row: what the worker records for the
+# space (`/invites`), who joined through each (the roster's
+# `xyz.tonk.membership/invitation`) and the agent grants on it
+# (`/api/account/connections`), read the way Tonk desktop reads them.
+# The first open link is the default: it resets in place (a new one,
+# then the old one revoked). Any other link is removed (revoked). A link
+# is a key the worker does not keep, so only a link made in this tab can
+# be copied; its address lives in memory, shared by every row.
+element!: &space-links
+  description: Lists, copies, resets and removes a space's links in its open hub row.
+  method:
+    api: |
+      (self, path, body) => {
+        const origin = window.tonk?.context?.origin ?? window.location.origin;
+        const init = body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
+        return window.fetch(`${origin}${path}`, init).then(async (response) => {
+          const text = await response.text();
+          if (!response.ok) {
+            let message = text;
+            try { message = JSON.parse(text)?.error?.message ?? text; } catch (_) {}
+            throw new Error(message || String(response.status));
+          }
+          return text ? JSON.parse(text) : null;
+        });
+      }
+    # The addresses made in this tab, by invite target.
+    made: |
+      (self) => (window.__tonkHubLinks ??= new Map())
+    esc: |
+      (self, text) => String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+    names: |
+      (self, list) => list.length <= 1 ? (list[0] ?? '')
+        : list.length === 2 ? `${list[0]} and ${list[1]}`
+        : list.length === 3 ? `${list[0]}, ${list[1]} and ${list[2]}`
+        : `${list[0]}, ${list[1]} and ${list.length - 2} others`
+    # Read everything the rows say, then draw them. A failed read says so;
+    # it never reads as a space with no links.
+    load: |
+      async (self) => {
+        const subject = self.dataset.space;
+        if (!subject || self._loading) return;
+        self._loading = true;
+        const base = `/api/repository/${encodeURIComponent(subject)}`;
+        const field = (the, as, optional) => ({ the, as, cardinality: 'one', ...(optional ? { optional: true } : {}) });
+        try {
+          const [invites, members, connections] = await Promise.all([
+            self.api(`${base}/invites`),
+            self.api(`${base}/branch/main/query`, {
+              predicate: { with: {
+                member: field('xyz.tonk.membership/member', 'Entity'),
+                name: field('xyz.tonk.membership/name', 'Text', true),
+                invitation: field('xyz.tonk.membership/invitation', 'Entity', true),
+              } },
+              terms: Object.fromEntries(['this', 'member', 'name', 'invitation'].map((name) => [name, { '?': { name } }])),
+            }).catch(() => null),
+            self.api('/api/account/connections').catch(() => []),
+          ]);
+          self._rows = self.rows(subject, invites ?? [], members, connections ?? []);
+          self._failed = false;
+        } catch (_) {
+          self._rows = [];
+          self._failed = true;
+        } finally {
+          self._loading = false;
+        }
+        self.render();
+      }
+    # Desktop's rules (`SpaceAccess.links`): an active open invite is a
+    # passlink, the first the default; a scoped one names its person; a
+    # live agent grant on this space is an agent link.
+    rows: |
+      (self, subject, invites, members, connections) => {
+        const roster = (members ?? []).map((row) => row.fields ?? {});
+        const usedBy = (invite) => !members || !invite.invitation ? null
+          : [...new Set(roster.filter((m) => m.invitation === invite.invitation)
+              .map((m) => (m.name ?? '').trim() || `member ${String(m.member).slice(-6)}`))];
+        const made = self.made();
+        const rows = [];
+        for (const invite of invites.filter((row) => row.status === 'active')) {
+          if (invite.kind === 'scoped') {
+            const named = roster.find((m) => m.member === invite.recipientRoot)?.name?.trim();
+            const used = usedBy(invite);
+            rows.push({ kind: 'scoped', target: invite.targetCid, who: named || (used?.length === 1 ? used[0] : 'one person'), used });
+          } else {
+            rows.push({ kind: 'open', target: invite.targetCid, used: usedBy(invite) });
+          }
+        }
+        const open = rows.filter((row) => row.kind === 'open');
+        const first = open.find((row) => made.has(row.target)) ?? open[0];
+        if (first) first.default = true;
+        rows.sort((a, b) => (b.default ? 1 : 0) - (a.default ? 1 : 0));
+        for (const agent of connections) {
+          if (agent.subject !== subject || !['active', 'partial'].includes(agent.status)) continue;
+          rows.push({ kind: 'agent', target: agent.id, who: agent.label || 'an agent',
+            until: agent.expiresAt, used: (agent.installations ?? []).map((i) => i.name) });
+        }
+        return rows;
+      }
+    render: |
+      (self) => {
+        const esc = (text) => self.esc(text);
+        const made = self.made();
+        const items = (self._rows ?? []).map((row) => {
+          const url = made.get(row.target);
+          const what = row.kind === 'agent' ? `agent link <span class="hub-bot">bot</span>`
+            : row.kind === 'scoped' ? `passlink for ${esc(row.who)}`
+            : `passlink${row.default ? ' <span class="hub-tag">default</span>' : ''}`;
+          const gives = row.kind === 'agent' ? `${esc(row.who)} can reach this space`
+            : row.kind === 'scoped' ? `only ${esc(row.who)} can join with it` : 'anyone with it can join';
+          const until = row.until ? `until ${new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(row.until * 1000))}` : '';
+          const used = row.used == null ? '' : row.used.length ? `${row.kind === 'agent' ? 'connected' : 'used by'} ${esc(self.names(row.used))}` : 'not used yet';
+          const name = row.kind === 'agent' ? 'the agent link' : row.default ? 'the default passlink' : 'this passlink';
+          const acts = (url ? `<button type="button" class="hub-btn hub-copy" data-link-copy="${esc(row.target)}"><span data-idle>copy<span class="hub-sr"> ${name}</span></span><span data-done aria-hidden="true">copied</span></button>` : '')
+            + (row.default
+              ? `<button type="button" class="hub-btn" data-link-ask="reset" data-target="${esc(row.target)}">reset<span class="hub-sr"> ${name}</span></button>`
+              : `<button type="button" class="hub-btn" data-link-ask="remove" data-target="${esc(row.target)}" data-kind="${row.kind}">remove<span class="hub-sr"> ${name}</span></button>`);
+          const asking = self._ask?.target === row.target ? self.askHtml(row) : '';
+          return `<li class="hub-link"><div>
+              <p class="hub-link-what">${what}</p>
+              ${url ? `<p class="hub-link-url">${esc(url.replace(/^https?:\/\//, '').slice(0, 24))}•••</p>` : ''}
+              <p class="hub-link-meta">${[gives, until, used].filter(Boolean).join(' · ')}</p></div>
+            <div class="hub-link-acts">${acts}</div>${asking}</li>`;
+        }).join('');
+        const rows = self._rows ?? [];
+        const note = self._failed ? 'This space’s links didn’t load. Close and open it to try again.'
+          : !rows.length ? 'No links yet. Make one to bring someone in.'
+          : rows.some((row) => row.kind !== 'agent' && !made.has(row.target)) ? 'Only a link made in this tab can be copied. Reset the default passlink, or make a new link, to get one to copy.'
+          : '';
+        self.innerHTML = `${items ? `<ul class="hub-links">${items}</ul>` : ''}`
+          + (note ? `<p class="hub-note">${note}</p>` : '')
+          + `<p class="hub-err" data-links-err role="alert">${esc(self._error ?? '')}</p>`
+          + `<button type="button" class="hub-btn hub-new-link" data-link-new data-wait="making">new link</button>`;
+        self._focus && self.querySelector(self._focus)?.focus();
+        self._focus = null;
+      }
+    ask-html: |
+      (self, row) => {
+        const name = self.esc(self.dataset.name || 'this space');
+        const [sentence, safe, yes, main] = self._ask.what === 'reset'
+          ? [`Reset the default passlink of ${name}? Anyone holding the old one can’t join with it any more. People already in the space stay in.`, 'keep the link', 'reset passlink', true]
+          : row.kind === 'agent'
+            ? [`Remove the agent link? ${self.esc(row.who)} loses its access to ${name} at once.`, 'keep the link', 'remove link', false]
+            : [`Remove this passlink? Anyone holding it can’t join ${name} with it any more. People already in the space stay in.`, 'keep the link', 'remove link', false];
+        return `<div class="hub-ask" role="group" aria-label="${sentence}"><p>${sentence}</p><div class="hub-ask-acts">`
+          + `<button type="button" class="hub-btn" data-link-keep>${safe}</button>`
+          + `<button type="button" class="hub-btn ${main ? 'hub-btn--main' : 'hub-btn--ring'}" data-link-do data-wait="${self._ask.what === 'reset' ? 'resetting' : 'removing'}">${self._busy ? (self._ask.what === 'reset' ? 'resetting' : 'removing') : yes}</button></div></div>`;
+      }
+    # Mint an open link and put it on the clipboard. The clipboard write
+    # opens on the press, while it still counts as one, and settles when
+    # the worker answers.
+    mint: |
+      async (self) => {
+        const subject = self.dataset.space;
+        const base = `/api/repository/${encodeURIComponent(subject)}`;
+        let settle;
+        const pending = new Promise((resolve, reject) => { settle = { resolve, reject }; });
+        let copied = false;
+        try {
+          const item = new ClipboardItem({ 'text/plain': pending.then((url) => new Blob([url], { type: 'text/plain' })) });
+          copied = navigator.clipboard.write([item]).then(() => true, () => false);
+        } catch (_) { copied = Promise.resolve(false); }
+        try {
+          const before = new Set(((await self.api(`${base}/invites`)) ?? []).map((row) => row.targetCid));
+          const minted = await self.api(`${base}/invite`, {});
+          const after = (await self.api(`${base}/invites`)) ?? [];
+          const fresh = after.map((row) => row.targetCid).filter((cid) => !before.has(cid));
+          if (fresh.length === 1) self.made().set(fresh[0], minted.url);
+          settle.resolve(minted.url);
+          return { url: minted.url, target: fresh.length === 1 ? fresh[0] : null, copied: await copied };
+        } catch (error) {
+          settle.reject(error);
+          throw error;
+        }
+      }
+    act: |
+      async (self, kind, run) => {
+        if (self._busy) return;
+        self._busy = true;
+        self._error = '';
+        try { await run(); }
+        catch (error) { self._error = error?.message ?? String(error); }
+        finally { self._busy = false; }
+      }
+    make: |
+      (self) => self.act('make', async () => {
+        try {
+          const made = await self.mint();
+          self._error = made.copied ? '' : 'The link was made, but couldn’t be copied. Copy it from its row.';
+          self.closest('hub-discover')?.receipt?.(['made a passlink for', self.dataset.name || 'this space']);
+        } catch (error) {
+          self._error = `Couldn’t make a link: ${error?.message ?? error}`;
+        }
+        self._focus = '[data-link-new]';
+        await self.load();
+      })
+    reset: |
+      (self, target) => self.act('reset', async () => {
+        const subject = self.dataset.space;
+        let made;
+        try { made = await self.mint(); }
+        catch (error) {
+          self._error = `Couldn’t reset the passlink, so the old one still works: ${error?.message ?? error}`;
+          self.render();
+          return;
+        }
+        try {
+          await self.api(`/api/repository/${encodeURIComponent(subject)}/invites/${encodeURIComponent(target)}/revoke`, {});
+          self.made().delete(target);
+          self._ask = null;
+          self._error = made.copied ? '' : 'The new link couldn’t be copied. Copy it from its row.';
+          self.closest('hub-discover')?.receipt?.(['reset the default passlink of', self.dataset.name || 'this space']);
+        } catch (error) {
+          self._ask = null;
+          self._error = `A new passlink was made, but the old one still works: ${error?.message ?? error}`;
+        }
+        self._focus = '[data-link-ask="reset"]';
+        await self.load();
+      })
+    remove: |
+      (self, target, kind) => self.act('remove', async () => {
+        const subject = self.dataset.space;
+        try {
+          if (kind === 'agent') {
+            const result = await self.api(`/api/account/connections/${encodeURIComponent(target)}/revoke`, {});
+            if (result?.status !== 'revoked') throw new Error('the removal is not confirmed yet');
+          } else {
+            await self.api(`/api/repository/${encodeURIComponent(subject)}/invites/${encodeURIComponent(target)}/revoke`, {});
+          }
+          self.made().delete(target);
+          self._ask = null;
+          self.closest('hub-discover')?.receipt?.([kind === 'agent' ? 'removed an agent link from' : 'removed a passlink from', self.dataset.name || 'this space']);
+          self._focus = '[data-link-new]';
+        } catch (error) {
+          self._error = `Couldn’t remove the link, so it still works: ${error?.message ?? error}`;
+          self._focus = '[data-link-do]';
+        }
+        await self.load();
+      })
+    copy: |
+      async (self, button) => {
+        const url = self.made().get(button.dataset.linkCopy);
+        if (!url) return;
+        try {
+          await navigator.clipboard.writeText(url);
+          button.setAttribute('data-copied', '');
+          setTimeout(() => button.removeAttribute('data-copied'), 1500);
+        } catch (_) {
+          self._error = `Couldn’t copy the link. It is ${url}`;
+          self.render();
+        }
+      }
+    # Load when the row opens; a closed row keeps what it read.
+    watch: |
+      (self) => {
+        const row = self.closest('.hub-row');
+        self._rowObserver?.disconnect();
+        if (!row) return;
+        const opened = () => { if (row.hasAttribute('data-open') && !self._rows && !self._loading) self.load(); };
+        self._rowObserver = new MutationObserver(opened);
+        self._rowObserver.observe(row, { attributes: true, attributeFilter: ['data-open'] });
+        opened();
+      }
+    connected: |
+      (self) => {
+        self.watch();
+        if (self.__wired) return;
+        self.__wired = true;
+        self.addEventListener('click', (event) => {
+          const target = event.target;
+          const copy = target?.closest?.('[data-link-copy]');
+          if (copy) { self.copy(copy); return; }
+          if (target?.closest?.('[data-link-new]')) { self.make(); return; }
+          const ask = target?.closest?.('[data-link-ask]');
+          if (ask) {
+            self._ask = { what: ask.dataset.linkAsk, target: ask.dataset.target, kind: ask.dataset.kind };
+            self._error = '';
+            self._focus = '[data-link-keep]';
+            self.render();
+            return;
+          }
+          if (target?.closest?.('[data-link-keep]')) {
+            const what = self._ask?.what;
+            self._ask = null;
+            self._focus = `[data-link-ask="${what}"]`;
+            self.render();
+            return;
+          }
+          if (target?.closest?.('[data-link-do]') && self._ask) {
+            const { what, target: cid, kind } = self._ask;
+            const run = what === 'reset' ? self.reset(cid) : self.remove(cid, kind);
+            self.render();
+            return run;
+          }
+        });
+        self.addEventListener('keydown', (event) => {
+          if (event.key !== 'Escape' || !self._ask) return;
+          event.stopPropagation();
+          const what = self._ask.what;
+          self._ask = null;
+          self._focus = `[data-link-ask="${what}"]`;
+          self.render();
+        });
+      }
+    disconnected: |
+      (self) => { self._rowObserver?.disconnect(); }
+
 element!: &space-remove
   description: Names delete or leave for a Hub row and opens its confirmation.
   method:

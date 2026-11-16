@@ -2217,3 +2217,29 @@ fn it_gives_a_receipt_in_the_spaces_line_after_a_change() {
         );
     }
 }
+
+/// An open hub row lists the space's links from what the worker records,
+/// with desktop's rules: the first open link is the default and resets in
+/// place; any other link is removed. No link records a role or an expiry,
+/// so the rows say neither.
+#[dialog_common::test]
+fn it_lists_a_spaces_links_in_its_open_hub_row() {
+    for contract in [
+        "element!: &space-links",
+        "<space-links data-space={subject} data-name={name}></space-links>",
+        "self.api(`${base}/invites`)",
+        "member: field('xyz.tonk.membership/member', 'Entity'),",
+        "self.api('/api/account/connections')",
+        "const first = open.find((row) => made.has(row.target)) ?? open[0];",
+        "/invites/${encodeURIComponent(target)}/revoke",
+        "/api/account/connections/${encodeURIComponent(target)}/revoke",
+        "'keep the link', 'reset passlink', true]",
+        "new ClipboardItem({ 'text/plain': pending.then(",
+        "'No links yet. Make one to bring someone in.'",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the hub row's links must carry `{contract}`",
+        );
+    }
+}

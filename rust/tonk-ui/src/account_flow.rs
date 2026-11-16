@@ -6830,6 +6830,76 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A space's open hub row lists its links the way desktop does: `new
+    /// link` makes an open link and hands it to the clipboard, the first
+    /// open link is the default and resets in place (a new one, then the old
+    /// one revoked), and any other link is removed. Each change leaves a
+    /// receipt in the spaces line.
+    #[dialog_common::test]
+    async fn it_makes_resets_and_removes_a_spaces_links_from_its_hub_row(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "linker@example.com").await?;
+        // A space with no remote refuses to mint; this test is about the list.
+        let key = create_space_awaiting_remote(&driver, "Linked Space", true).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        let row = format!(".space-card[data-space-subject='{key}']");
+        click(&driver, &format!("{row} .hub-toggle")).await?;
+        wait_for_displayed(&driver, &format!("{row} space-links [data-link-new]")).await?;
+
+        watch_guest_clipboard(&driver).await?;
+        click(&driver, &format!("{row} space-links [data-link-new]")).await?;
+        wait_for_displayed(&driver, &format!("{row} .hub-link [data-link-ask='reset']")).await?;
+        let first = guest_copied_text(&driver).await?;
+        assert!(
+            first.contains(&format!("/space/{key}")) && first.contains('#'),
+            "new link must hand the clipboard a ticket link into the space, got {first:?}",
+        );
+        wait_for_text_containing(&driver, "[data-hub-receipt]", "made a passlink for").await?;
+        wait_for_displayed(&driver, &format!("{row} .hub-link [data-link-copy]")).await?;
+
+        // A second open link is not the default: it is removed, not reset.
+        click(&driver, &format!("{row} space-links [data-link-new]")).await?;
+        wait_for_displayed(
+            &driver,
+            &format!("{row} .hub-link [data-link-ask='remove']"),
+        )
+        .await?;
+        click(
+            &driver,
+            &format!("{row} .hub-link [data-link-ask='remove']"),
+        )
+        .await?;
+        wait_for_displayed(&driver, &format!("{row} .hub-ask [data-link-keep]")).await?;
+        click(&driver, &format!("{row} .hub-ask [data-link-do]")).await?;
+        wait_for_text_containing(&driver, "[data-hub-receipt]", "removed a passlink from").await?;
+
+        // Resetting the default hands over a new link.
+        enter_guest(&driver).await?;
+        driver
+            .execute(r##"window.__tonkWrote = "";"##, Vec::new())
+            .await?;
+        driver.enter_default_frame().await?;
+        click(&driver, &format!("{row} .hub-link [data-link-ask='reset']")).await?;
+        click(&driver, &format!("{row} .hub-ask [data-link-do]")).await?;
+        wait_for_text_containing(
+            &driver,
+            "[data-hub-receipt]",
+            "reset the default passlink of",
+        )
+        .await?;
+        let second = guest_copied_text(&driver).await?;
+        assert!(
+            second.contains(&format!("/space/{key}")) && second != first,
+            "reset must hand over a new link, got {second:?} after {first:?}",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// The account customer row has no provider until activation. The FABB
     /// used to require that optional field in its query, so this exact state
     /// resolved as no account: the space offered the account gate and raised the
