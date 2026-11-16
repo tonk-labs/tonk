@@ -2652,7 +2652,7 @@ pub(crate) mod tests {
             .await?
             .click()
             .await?;
-        wait_for_text_containing(&driver, "[data-join-paste-error]", "not a link").await?;
+        wait_for_text_containing(&driver, "[data-join-paste-error]", "isn’t a link").await?;
 
         // A ticket link on a host that does not exist: the claim cannot
         // reach it, so the join fails where it was pasted.
