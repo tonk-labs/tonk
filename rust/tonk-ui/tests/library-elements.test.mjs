@@ -231,11 +231,12 @@ test('the seed page is a hub page, so its dialog wears the hub look', () => {
   assert.match(view, /class="hub-sheet"/);
 });
 
-test('the space menu steps out of sight under its delete dialog and closes with it', () => {
+test('the space menu steps out of sight under its delete dialog and comes back after it', () => {
   const connected = methodSource('space-remove', 'connected');
   assert.match(connected, /setAttribute\('data-behind', ''\)/);
   assert.match(connected, /'fabb-close'/);
-  assert.match(connected, /menu\.close\?\.\(\)/);
+  assert.match(connected, /removeAttribute\('data-behind'\)/);
+  assert.doesNotMatch(connected, /menu\.close\?\.\(\)/);
   assert.match(library, /\.space-menu\[data-behind\][^{]*\{[^}]*visibility:hidden/);
   assert.match(library, /\.space-menu\[data-behind\] tonk-dialog \{ visibility:visible; \}/);
 });
