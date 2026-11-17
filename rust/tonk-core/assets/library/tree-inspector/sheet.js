@@ -17,6 +17,10 @@
   --loud: color-mix(in oklab, currentColor 55%, transparent);
   --fill: color-mix(in oklab, currentColor 9%, transparent);
   display: block;
+  box-sizing: border-box;
+  min-height: 100dvh;
+  /* Clear the space chrome pinned over the page's top edge. */
+  padding: 88px 16px 48px;
   color: var(--text);
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   font-size: 13px;
@@ -26,7 +30,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
   min-height: 0;
-  height: min(80vh, 100%);
+  height: calc(100dvh - 136px);
   border-top: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule);
 }
@@ -121,7 +125,7 @@
 .chip--removed { color: var(--alarm); }
 .chip--spill { color: var(--circle); }
 
-.bar { display: flex; align-items: center; gap: 12px; padding: 0 0 8px; }
+.toolbar { display: flex; align-items: center; gap: 12px; padding: 0 0 8px; }
 .overview { padding: 12px; grid-column: 1 / -1; }
 .overview h2 { margin: 16px 0 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--circle); }
 .overview h2:first-child { margin-top: 0; }

@@ -3,7 +3,11 @@
 // its outline and the selected item's detail.
 (self) => {
   const state = self.__tree;
-  const model = self.read();
+  const model = state.model;
+  if (!model) {
+    state.shell.replaceChildren(Object.assign(document.createElement('p'), { className: state.error ? 'note note--error' : 'note', textContent: state.error ?? 'Reading…' }));
+    return;
+  }
   const base = (self.getAttribute('base') || '/console/tree').replace(/\/$/, '');
   const branchName = self.getAttribute('branch') || 'main';
   const wanted = self.getAttribute('selected') || '';
@@ -65,7 +69,7 @@
   const list = element('div', 'outline');
   list.setAttribute('role', 'tree');
   list.setAttribute('aria-label', 'Search tree');
-  const top = element('div', 'bar');
+  const top = element('div', 'toolbar');
   const back = element('a', 'link', '← explorations');
   back.href = base;
   top.append(back);

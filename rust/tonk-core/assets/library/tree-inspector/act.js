@@ -2,11 +2,21 @@
 // holds it), select a row, show more entries, or start an exploration.
 (self, event) => {
   const state = self.__tree;
-  const explore = event.target.closest?.('[data-explore]');
-  if (explore) {
-    // The link navigates; the exploration is started beside it.
-    state.asked.add(explore.dataset.explore);
-    self.send('tree-explore', { root: explore.dataset.explore });
+  const link = event.target.closest?.('a[href]');
+  if (link) {
+    // The page follows a link by the anchor a click came from, which a
+    // shadow root hides; follow it through one in the light DOM.
+    event.preventDefault();
+    if (link.dataset.explore) {
+      state.asked.add(link.dataset.explore);
+      self.send('tree-explore', { root: link.dataset.explore });
+    }
+    const relay = document.createElement('a');
+    relay.href = link.getAttribute('href');
+    relay.hidden = true;
+    self.append(relay);
+    relay.click();
+    relay.remove();
     return;
   }
   const row = event.target.closest?.('.row');

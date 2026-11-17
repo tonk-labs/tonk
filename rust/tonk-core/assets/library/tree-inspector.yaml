@@ -15,10 +15,11 @@
 
 # The methods in `tree-inspector/` are its custom-element class.
 #
-# Attributes: `selected`, the exploration shown (its root node), and
-# `base`, the console's path. It reads its rows from a `.ti-data` child
-# that the console view fills, and sends `tree-explore`, `tree-open` and
-# `tree-close` events, which the view binds to the commands below.
+# Attributes: `selected`, the exploration shown (its root node), `branch`,
+# the branch's name, and `base`, the console's path. It reads the concepts
+# below with concept queries, again whenever the session's explorations or
+# the branch's root change, and sends `tree-explore`, `tree-open` and
+# `tree-close` events, which the console view binds to the commands below.
 element!: &tree-inspector
   description: An outline of the search tree a branch stores its facts in, as explored this session; a node is read when it is opened.
   attribute:
@@ -31,6 +32,10 @@ element!: &tree-inspector
     attribute-changed: !include/text ./tree-inspector/attribute-changed.js
     schedule: !include/text ./tree-inspector/schedule.js
     send: !include/text ./tree-inspector/send.js
+    query: !include/text ./tree-inspector/query.js
+    concepts: !include/text ./tree-inspector/concepts.js
+    watch: !include/text ./tree-inspector/watch.js
+    refresh: !include/text ./tree-inspector/refresh.js
     read: !include/text ./tree-inspector/read.js
     render: !include/text ./tree-inspector/render.js
     overview: !include/text ./tree-inspector/overview.js
@@ -297,56 +302,6 @@ rule!:
       where: { of: ?parent, separator: ?bytes }
     - assert: dialog/separator-part
       where: { of: ?bytes, part: ?this, at: ?at, kind: ?kind, text: ?text, bytes: ?component }
-
-# The rows <tree-inspector> reads. Each is an empty element whose
-# attributes carry one row; the element never shows them.
-
-view!:
-  this: db/branch
-  show:
-    ti-row: |
-      <i class="ti-branch-row" html:data-branch={this} html:data-name={name} html:data-tree={tree}></i>
-
-view!:
-  this: tree-inspector/exploration
-  show:
-    ti-row: |
-      <i class="ti-exploration-row" html:data-root={this} html:data-started={started}></i>
-
-view!:
-  this: tree-inspector/opened
-  show:
-    ti-row: |
-      <i class="ti-opened-row" html:data-exploration={this} html:data-node={open}></i>
-
-view!:
-  this: tree-inspector/node
-  show:
-    ti-row: |
-      <i class="ti-node-row" html:data-node={this} html:data-kind={kind} html:data-size={size}
-        html:data-count={count} html:data-scale={scale} html:data-novelty={novelty}></i>
-
-view!:
-  this: tree-inspector/span
-  show:
-    ti-row: |
-      <i class="ti-span-row" html:data-span={this} html:data-parent={parent} html:data-at={at}
-        html:data-child={child} html:data-separator={separator} html:data-scale={scale}
-        html:data-novelty={novelty}></i>
-
-view!:
-  this: tree-inspector/entry
-  show:
-    ti-row: |
-      <i class="ti-entry-row" html:data-entry={this} html:data-segment={segment} html:data-at={at}
-        html:data-key={key} html:data-state={state} html:data-rank={rank}></i>
-
-view!:
-  this: tree-inspector/part
-  show:
-    ti-row: |
-      <i class="ti-part-row" html:data-part={this} html:data-at={at} html:data-kind={kind}
-        html:data-text={text}></i>
 
 event!: &on/tree-explore
   type: "tree-explore"
