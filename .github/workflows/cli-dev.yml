@@ -40,6 +40,8 @@ jobs:
         if: runner.os == 'Linux'
       - uses: cachix/install-nix-action@v31
         with:
+          extra_nix_config: |
+            fallback = true
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@v16
         with:

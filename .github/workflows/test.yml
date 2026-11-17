@@ -64,6 +64,8 @@ jobs:
       - uses: wimpysworld/nothing-but-nix@baf7355748bb5651f08b839669d6bb39051b2874 # main before 153c2fb, whose /nix/tmp TMPDIR breaks the Nix installer
       - uses: cachix/install-nix-action@v31
         with:
+          extra_nix_config: |
+            fallback = true
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@v16
         with:
@@ -101,6 +103,8 @@ jobs:
           root-safe-haven: 40960
       - uses: cachix/install-nix-action@v31
         with:
+          extra_nix_config: |
+            fallback = true
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@v16
         with:
@@ -142,6 +146,8 @@ jobs:
       - uses: wimpysworld/nothing-but-nix@baf7355748bb5651f08b839669d6bb39051b2874 # main before 153c2fb, whose /nix/tmp TMPDIR breaks the Nix installer
       - uses: cachix/install-nix-action@v31
         with:
+          extra_nix_config: |
+            fallback = true
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@v16
         with:
@@ -180,6 +186,8 @@ jobs:
       - uses: wimpysworld/nothing-but-nix@baf7355748bb5651f08b839669d6bb39051b2874 # main before 153c2fb, whose /nix/tmp TMPDIR breaks the Nix installer
       - uses: cachix/install-nix-action@v31
         with:
+          extra_nix_config: |
+            fallback = true
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@v16
         with:
@@ -222,6 +230,8 @@ jobs:
           root-safe-haven: 40960
       - uses: cachix/install-nix-action@v31
         with:
+          extra_nix_config: |
+            fallback = true
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@v16
         with:
@@ -303,6 +313,8 @@ jobs:
       - uses: wimpysworld/nothing-but-nix@baf7355748bb5651f08b839669d6bb39051b2874 # main before 153c2fb, whose /nix/tmp TMPDIR breaks the Nix installer
       - uses: cachix/install-nix-action@v31
         with:
+          extra_nix_config: |
+            fallback = true
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@v16
         with:
@@ -375,6 +387,8 @@ jobs:
       - uses: wimpysworld/nothing-but-nix@baf7355748bb5651f08b839669d6bb39051b2874 # main before 153c2fb, whose /nix/tmp TMPDIR breaks the Nix installer
       - uses: cachix/install-nix-action@v31
         with:
+          extra_nix_config: |
+            fallback = true
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@v16
         with:
@@ -431,6 +445,8 @@ jobs:
       - if: github.event_name != 'pull_request' || matrix.profile != 'release'
         uses: cachix/install-nix-action@v31
         with:
+          extra_nix_config: |
+            fallback = true
           nix_path: nixpkgs=channel:nixos-unstable
       - if: github.event_name != 'pull_request' || matrix.profile != 'release'
         uses: cachix/cachix-action@v16
@@ -524,6 +540,8 @@ jobs:
       - if: github.event_name != 'pull_request' || matrix.profile != 'release'
         uses: cachix/install-nix-action@v31
         with:
+          extra_nix_config: |
+            fallback = true
           nix_path: nixpkgs=channel:nixos-unstable
       - if: github.event_name != 'pull_request' || matrix.profile != 'release'
         uses: cachix/cachix-action@v16
