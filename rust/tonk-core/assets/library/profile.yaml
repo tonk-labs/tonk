@@ -842,6 +842,11 @@ view!:
       .tonk-hub tonk-dialog[appearance="hub"] .m-go { background:var(--tonk-main); color:var(--tonk-main-text); }
       .tonk-hub tonk-dialog[appearance="hub"] .m-go:is(:hover, :focus-visible) { outline:none; background:var(--tonk-main-hover); }
       .tonk-hub tonk-dialog[appearance="hub"] :is(.m-cancel, .m-go):active { scale:.96; }
+      /* Until the list has answered, the line says `spaces loading` and
+         offers no `new space`; a list that didn't load shows no count. */
+      [data-spaces-sheet]:not([data-list="ready"]) .hub-line [data-new-space] { display:none; }
+      [data-spaces-sheet]:not([data-list]) [data-space-count]::before { content:"loading"; }
+      [data-spaces-sheet][data-list="failed"] [data-space-count] { display:none; }
       /* an empty list is one quiet line in the sheet */
       .hub-empty:not(.hub-failed) p { color:var(--tonk-text-soft); }
 
@@ -2520,8 +2525,11 @@ element!: &hub-collection
     # since an agent's own space leaves the list (`hub-discover`).
     count: |
       (self) => {
-        const slot = self.closest('[data-spaces-sheet]')?.querySelector('[data-space-count]');
-        if (!slot) return;
+        const sheet = self.closest('[data-spaces-sheet]');
+        const slot = sheet?.querySelector('[data-space-count]');
+        // Only a list that answered has a count; loading says so, and a
+        // list that didn't load says no number (`hub-discover` list).
+        if (!slot || sheet.dataset.list !== 'ready') return;
         const rows = [...self.querySelectorAll('.hub-row[data-space-subject]')]
           .filter(row => getComputedStyle(row).display !== 'none');
         const count = String(rows.length);
