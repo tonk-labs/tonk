@@ -352,7 +352,7 @@ const CONCEPT = `concept!: &code-editor/language
       description: A word a block names the language by, lower-cased.
       the: xyz.tonk.code-editor.language/word
       as: text
-      pick: :all
+      cardinality: :many
     source:
       description: The pack, as JavaScript source.
       the: xyz.tonk.code-editor.language/source
@@ -367,7 +367,7 @@ concept!: &code-editor/language/word
       description: A word a block names the language by, lower-cased.
       the: xyz.tonk.code-editor.language/word
       as: text
-      pick: :all
+      cardinality: :many
 `;
 
 /** One language's record, its pack included from `include`: the record

@@ -309,6 +309,7 @@ mod when_the_upstream_moves_during_a_write {
     /// first push is refused as a non-fast-forward, so the push after the
     /// write pulls, merging both writers' facts, and pushes again.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_pulls_and_pushes_again() -> Result<()> {
         let test = TestSite::new().await?;
         wire_sibling_upstream(&test).await?;

@@ -11,7 +11,7 @@ use ::axum::{
 };
 use axum::extract::Query as AxumQuery;
 use base64::Engine;
-use dialog_corpus::{Entity, Pick, Relation, Selector, Statement, Update, Value};
+use dialog_corpus::{Cardinality, Entity, Relation, Selector, Statement, Update, Value};
 use dialog_repository::RepositoryExt as _;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -93,8 +93,8 @@ pub struct QueryResponse {
 /// route's captured params as `xyz.tonk.site/{name}` facts whose names aren't
 /// known until match time.
 ///
-/// `policy` is the policy the write carries: `all` appends (the claim
-/// endpoints' semantics); `last` succeeds the claim a `last` read returns, so
+/// `cardinality` is the cardinality the write carries: many adds a claim (the
+/// claim endpoints' semantics); one succeeds the cell's newest claim, so
 /// a prior value at the same `(entity, attribute)` is superseded across
 /// commits — required for the per-tab site params, which must reflect only the
 /// latest navigation rather than accumulate one value per visited route.
@@ -103,12 +103,12 @@ pub(crate) struct RawClaim {
     pub(crate) the: Relation,
     pub(crate) of: Entity,
     pub(crate) is: Value,
-    pub(crate) policy: Pick,
+    pub(crate) cardinality: Cardinality,
 }
 
 impl Statement for RawClaim {
     fn assert(self, update: &mut impl Update) {
-        update.associate(self.the, self.of, self.is, self.policy);
+        update.associate(self.the, self.of, self.is, self.cardinality);
     }
 
     fn retract(self, update: &mut impl Update) {
@@ -239,7 +239,7 @@ pub async fn assert_claim(
         the: attribute,
         of: entity,
         is: value,
-        policy: dialog_corpus::Pick::All,
+        cardinality: dialog_corpus::Cardinality::Many,
     };
 
     tonk_state
@@ -313,7 +313,7 @@ pub async fn retract_claim(
         the: attribute,
         of: entity,
         is: value,
-        policy: dialog_corpus::Pick::All,
+        cardinality: dialog_corpus::Cardinality::Many,
     };
 
     tonk_state

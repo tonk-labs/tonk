@@ -366,6 +366,7 @@ mod tests {
     /// match the installed effect — the rule-side parallel of
     /// `concept.rs`'s `it_returns_concept_with_source_from_concept_query`.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_enumerates_installed_rules_via_rule_query() -> anyhow::Result<()> {
         use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::{Any, Output as _, Parameters, Term};

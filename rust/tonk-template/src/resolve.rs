@@ -301,9 +301,10 @@ pub fn scalar_field_names(descriptor_json: &str) -> std::collections::BTreeSet<S
     out
 }
 
-/// Whether a field's spec reads one value per subject: not `pick:
-/// all`, and not `cardinality: many` (or the preview `select: all`)
-/// without a `pick` saying otherwise.
+/// Whether a field's spec reads one value per subject: a field that picks
+/// one claim (any `pick` but `all`, including the `last:` an earlier
+/// release spelled, or its `select`), or one with neither a pick nor
+/// `cardinality: many`.
 fn is_scalar_field(spec: &Value) -> bool {
     let text = |key: &str| spec.get(key).and_then(Value::as_str);
     match text("pick").or(text("select")) {

@@ -42,7 +42,8 @@ A head ending in `!` writes; without `!` it queries.
 |---------------|------------------------------------------------|
 | `the`         | `domain/name` URI, the attribute's identity.   |
 | `as`          | `text`, `entity`, `natural`, `integer`, `float`, `boolean`. |
-| `pick`        | `last` (default), `all`, `top`, `max` or `min`. |
+| `pick`        | `:last` (default), `:all`, and on a concept field `:top` (the value listed first in `as:`), `:max` or `:min`. |
+| `cardinality` | `:one` or `:many`; follows from `pick` unless written (`:last` is one, every other pick many). |
 | `description` | Required.                                      |
 
 ## `<tonk-display>`

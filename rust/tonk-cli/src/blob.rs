@@ -230,6 +230,7 @@ fn file_name(path: &Path) -> Option<String> {
 /// Commits but does not sync. Callers that want the pull-before /
 /// push-after every other write verb performs wrap this in
 /// [`crate::auto_sync::around_commit`], which is what the CLI does.
+#[allow(deprecated)]
 pub async fn add(
     site: &TonkSite,
     path: &Path,

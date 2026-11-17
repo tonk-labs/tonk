@@ -193,6 +193,7 @@ mod tests {
     /// A retained powerline described as a session lists with its
     /// audience — the session DID — read from the delegation itself.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_lists_a_session_by_the_powerline_it_describes() -> Result<()> {
         let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
@@ -237,6 +238,7 @@ mod tests {
     /// The mark is keyed by the space's own subject, so asserting it
     /// twice is one row.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_marks_a_space_by_its_subject() -> Result<()> {
         let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;

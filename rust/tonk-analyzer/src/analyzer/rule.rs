@@ -1257,6 +1257,7 @@ mod tests {
         /// Assert one concept on the branch with the right
         /// attribute facts + an `id:<name>` referent claim so the
         /// analyzer's name lookup recovers the descriptor.
+        #[allow(deprecated)]
         async fn declare(&self, name: &str, descriptor: ConceptDescriptor) {
             let mut txn = self.branch.transaction();
             for (_, attr) in descriptor.with().iter() {
@@ -1290,6 +1291,7 @@ mod tests {
         /// Analyze a deductive-rule install document, commit the
         /// resulting rule onto the branch, and return the entity its
         /// `db.rule/*` claims live under — so a later retract can name it.
+        #[allow(deprecated)]
         async fn install_deductive(&self, doc: &str) -> Entity {
             let syntax = parse(doc).syntax.expect("install parses");
             let analysis = self.analyze(&syntax).await.expect("install analyzes");

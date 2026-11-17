@@ -157,6 +157,20 @@ pub(super) async fn migrate_while_opening(
                     branch.repository.name()
                 );
             }
+            for (rule, why) in &upgraded.rules.unmapped {
+                let why: Vec<String> = why.iter().map(ToString::to_string).collect();
+                tonk_common::log!(
+                    "rule {rule} on '{}' reads {}, which this release cannot rewrite; it is left inert",
+                    branch.repository.name(),
+                    why.join("; ")
+                );
+            }
+            for (rule, reason) in &upgraded.invalid {
+                tonk_common::log!(
+                    "rule {rule} on '{}' is not read: {reason}",
+                    branch.repository.name()
+                );
+            }
             Ok(())
         }
         Ok(None) => Ok(()),
@@ -569,7 +583,7 @@ mod tests {
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[dialog_common::test]
     async fn the_first_read_of_a_branch_re_installs_rules_stored_the_earlier_way() {
-        use dialog_corpus::{Entity, Pick, Selector, Value};
+        use dialog_corpus::{Entity, Selector, Value};
         use dialog_query::rule::DeductiveRuleDescriptor;
         use dialog_query::rule::statement::source_attr;
         use dialog_query::{AttributeStatement, Cardinality};
@@ -599,7 +613,6 @@ mod tests {
                 is: Value::Bytes(rule.encode()),
                 cause: None,
                 cardinality: Some(Cardinality::Many),
-                pick: Some(Pick::All),
             })
             .commit()
             .perform(&tonk.operator)

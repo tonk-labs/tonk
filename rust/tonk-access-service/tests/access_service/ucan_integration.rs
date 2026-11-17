@@ -30,6 +30,7 @@ struct Name(String);
 /// Test that a profile can create a repo, push data through the UCAN access
 /// service, and then pull it back.
 #[dialog_common::test]
+#[allow(deprecated)]
 async fn it_pushes_and_pulls_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()> {
     let (operator, profile) = test_session_with_peer().await;
 
@@ -118,6 +119,7 @@ async fn it_pushes_and_pulls_via_ucan(env: AccessServiceAddress) -> anyhow::Resu
 /// the access service: Alice pushes, delegates to Bob, Bob pulls and pushes,
 /// Alice pulls Bob's changes.
 #[dialog_common::test]
+#[allow(deprecated)]
 async fn it_collaborates_via_ucan_delegation(env: AccessServiceAddress) -> anyhow::Result<()> {
     let (alice_op, alice_profile) = test_session_with_peer().await;
 
@@ -259,6 +261,7 @@ async fn it_collaborates_via_ucan_delegation(env: AccessServiceAddress) -> anyho
 /// repo subject — pulls the revision and lazily hydrates the bytes it never
 /// wrote, reading them back through the same `/ucan/` route.
 #[dialog_common::test]
+#[allow(deprecated)]
 async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()> {
     // --- Alice: create repo, delegate ownership, wire the UCAN remote. ---
     let (operator, profile) = test_session_with_peer().await;

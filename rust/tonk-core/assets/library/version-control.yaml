@@ -57,7 +57,7 @@ concept!: &version-control/parent
       description: A revision this one was built on.
       the: dialog.revision/parent
       as: entity
-      pick: :all
+      cardinality: :many
 
 concept!: &version-control/head
   this: tonk:version-control/head

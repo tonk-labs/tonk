@@ -227,6 +227,7 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
 
+    #[allow(deprecated)]
     async fn converge(a_first: bool) -> Result<String> {
         let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
@@ -338,6 +339,7 @@ mod tests {
     /// The three registration facts are independent: each resolves on its
     /// own, and an account carries whichever have happened.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_reads_registration_activation_and_suspension_apart() -> Result<()> {
         let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
@@ -469,6 +471,7 @@ mod tests {
     /// either writer, so an activated account could fall back to
     /// registered.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_does_not_race_enrollment_against_activation() -> Result<()> {
         let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;

@@ -49,6 +49,13 @@ pub(crate) struct DeclaredApplication {
 pub(crate) struct AttributeBody {
     pub descriptor: AttributeDescriptor,
     pub entity: Entity,
+    /// The pick a concept field defined inline with this body reads one
+    /// of the attribute's claims with: `:top`, `:max` or `:min`, or
+    /// `:last` over a cardinality-many attribute. `None` when the field
+    /// reads as the cardinality does (no pick, `:all`, or `:last` over
+    /// cardinality one). How a field reads, not part of the attribute:
+    /// an `attribute!:` head refuses it.
+    pub pick: Option<tonk_notation::Pick>,
     /// The intent role the attribute plays in its command (`role:`),
     /// kept out of the descriptor so it never changes the attribute's
     /// identity. Emitted as its own fact by [`role_application`].
@@ -75,7 +82,24 @@ pub(crate) fn parse_attribute_body(
     assertion: &SyntaxApplication,
     scope: &Scope,
 ) -> Result<AttributeBody, AnalyzeError> {
-    parse_attribute_fields(&assertion.fields, scope)
+    let body = parse_attribute_fields(&assertion.fields, scope)?;
+    if let Some(pick) = body.pick {
+        let reason = if pick.ranks() {
+            format!(
+                "`pick: :{0}` ranks the claims a concept field reads, not the attribute: \
+                 declare the attribute (`cardinality: :many`, or no cardinality) and write \
+                 `pick: :{0}` on the concept field that reads it",
+                pick.keyword()
+            )
+        } else {
+            "`pick: :last` and `cardinality: :many` disagree on an attribute: on its own an \
+             attribute takes `pick: :last` for cardinality one and `pick: :all` for many; \
+             reading the newest of many claims is a concept field's `pick: :last`"
+                .to_owned()
+        };
+        return Err(AnalyzeErrorKind::InvalidAttributeBody { reason }.into());
+    }
+    Ok(body)
 }
 
 /// Parse an attribute definition's fields into a descriptor.
@@ -83,7 +107,8 @@ pub(crate) fn parse_attribute_body(
 /// Used by `attribute!:` heads and by inline
 /// `with: { foo: { the: …, as: …, … } }` definitions nested
 /// inside a `concept!` body. Same shape: `the`, `as`,
-/// `cardinality`, and a *required* `description`.
+/// `cardinality`, and a *required* `description`; an inline field
+/// may also say how it reads the attribute with a ranking `pick:`.
 pub(crate) fn parse_attribute_fields(
     fields: &[tonk_notation::Field],
     scope: &Scope,
@@ -94,6 +119,8 @@ pub(crate) fn parse_attribute_fields(
     // then names a domain rather than one attribute.
     let mut keyed: Option<&'static str> = None;
     let mut role: Option<String> = None;
+    let mut cardinality: Option<tonk_notation::Cardinality> = None;
+    let mut pick: Option<tonk_notation::Pick> = None;
     for field in fields {
         // `this:` and `..:` are reserved meta-keys handled by the
         // outer assertion-binding flow; they don't contribute to
@@ -106,9 +133,8 @@ pub(crate) fn parse_attribute_fields(
         // - `as` names a type by its built-in anchor (`text`), or by
         //   the entity dialog names it by (`:text`, or the quoted
         //   `"text:"`). Lowers to that entity.
-        // - `cardinality`, `pick` and `role` take a keyword
-        //   (`pick: :all`); a bare symbol there is a reference and is
-        //   refused.
+        // - `cardinality`, `pick` and `role` take a keyword (`cardinality: :many`); the bare and quoted
+        //   words earlier releases wrote read as the keyword.
         // - `the` accepts a URI (`xyz.tonk/foo`) or a literal
         //   string holding the same shape.
         // - `description` requires a quoted string literal —
@@ -116,8 +142,9 @@ pub(crate) fn parse_attribute_fields(
         //   non-descriptions like `description: recipe`.
         match field.name.as_str() {
             // `as:` names a type, a keyed collection type, or lists the
-            // values the attribute ranks among, best first: a list is a
-            // ranked choice and reads as `top` without saying so.
+            // values the attribute holds, least first: an enumerated
+            // type, ordered best first, which a field reading with `pick:
+            // :top` ranks by.
             "as" if matches!(field.value, FieldValue::List(_)) => {
                 let FieldValue::List(items) = &field.value else {
                     unreachable!("guarded");
@@ -184,69 +211,54 @@ pub(crate) fn parse_attribute_fields(
                 let kind = attribute_type(value_field, scope)?;
                 shape.insert("as".into(), serde_json::Value::String(kind));
             }
-            // The older spelling of a pick: `one` is `pick: last`, the
-            // default, and `many` is `pick: all`. Accepted so existing
-            // documents lower; a `pick:` beside it wins.
+            // How many claims the attribute holds per entity: `:one`,
+            // the default, or `:many`.
             "cardinality" => {
-                let value_str = keyword_of(field, "many")?;
-                let normalized = normalize_cardinality_name(&value_str).ok_or_else(|| {
-                    AnalyzeErrorKind::InvalidAttributeBody {
-                        reason: format!(
-                            "unknown cardinality {value_str:?} — \
-                             expected `:one` or `:many`; prefer `pick: :last` or `pick: :all`"
-                        ),
-                    }
-                })?;
-                if normalized == "many" && !shape.contains_key("pick") {
-                    shape.insert(
-                        "pick".into(),
-                        serde_json::Value::String(tonk_notation::Pick::All.uri().into()),
-                    );
-                }
+                let keyword = keyword_of(field, "many")?;
+                cardinality = Some(
+                    tonk_notation::Cardinality::from_keyword(&keyword).ok_or_else(|| {
+                        AnalyzeErrorKind::InvalidAttributeBody {
+                            reason: format!(
+                                "unknown cardinality {keyword:?} — expected `:one` (the default) \
+                             or `:many`"
+                            ),
+                        }
+                    })?,
+                );
             }
-            // `the:` names the relation, or lists relations best first:
-            // a ranked choice by relation, read as `top`.
+            // `the:` names one relation. The ranked list of relations
+            // an earlier release read is gone.
             "the" if matches!(field.value, FieldValue::List(_)) => {
-                let FieldValue::List(items) = &field.value else {
-                    unreachable!("guarded");
-                };
-                let mut listed = Vec::with_capacity(items.len());
-                for item in items {
-                    let scalar = tonk_notation::Field {
-                        name: field.name.clone(),
-                        value: item.clone(),
-                        name_range: field.name_range,
-                        value_range: field.value_range,
-                    };
-                    listed.push(serde_json::Value::String(stringify_simple_value(&scalar)?));
+                return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                    reason: "`the:` names one relation: a list of relations, ranked, is no \
+                             longer read; a rule deriving one relation from each, read by a \
+                             field with `pick: :top`, replaces it"
+                        .into(),
                 }
-                shape.insert("the".into(), serde_json::Value::Array(listed));
+                .into());
             }
             "the" => {
                 let value_str = stringify_simple_value(field)?;
                 shape.insert("the".into(), serde_json::Value::String(value_str));
             }
-            // Which of its relation's candidates a field reads (dialog's
-            // `Pick`): `last` (the default), `all`, `top` (what a listed
-            // `as:` or `the:` implies), `max`, `min`. Every pick keeps
-            // members of the candidate set; folds (sums, counts) belong
-            // to `reduce` in queries. Dialog checks the pick against the
-            // attribute when the concept is built.
+            // Which claims a read returns: `:last` the newest, `:all`
+            // every one, and on a concept field `:top`, `:max` or `:min`
+            // one ranked claim. The cardinality follows from it unless
+            // written.
             "pick" => {
                 let keyword = keyword_of(field, "all")?;
-                let pick = tonk_notation::Pick::from_anchor(&keyword).ok_or_else(|| {
+                pick = Some(tonk_notation::Pick::from_keyword(&keyword).ok_or_else(|| {
                     AnalyzeErrorKind::InvalidAttributeBody {
                         reason: format!(
                             "unknown pick {keyword:?} — expected one of: {}",
                             tonk_notation::Pick::ALL
                                 .iter()
-                                .map(|pick| format!(":{}", pick.anchor()))
+                                .map(|pick| format!(":{}", pick.keyword()))
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         ),
                     }
-                })?;
-                shape.insert("pick".into(), serde_json::Value::String(pick.uri().into()));
+                })?);
             }
             "select" => {
                 return Err(AnalyzeErrorKind::InvalidAttributeBody {
@@ -285,6 +297,40 @@ pub(crate) fn parse_attribute_fields(
             reason: "missing required field `the`".into(),
         }
         .into());
+    }
+    // The cardinality follows from the pick unless written, and a written
+    // one has to be one the pick can read.
+    let cardinality = match (pick, cardinality) {
+        (None, written) => written.unwrap_or(tonk_notation::Cardinality::One),
+        (Some(pick), None) => pick.cardinality(),
+        (Some(pick), Some(tonk_notation::Cardinality::One))
+            if pick != tonk_notation::Pick::Last =>
+        {
+            return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                reason: format!(
+                    "`pick: :{}` and `cardinality: :one` conflict: a cell of cardinality one \
+                     keeps one claim, so `:{}` has nothing to choose among; write \
+                     `cardinality: :many`, or leave it out",
+                    pick.keyword(),
+                    pick.keyword()
+                ),
+            }
+            .into());
+        }
+        (Some(_), Some(written)) => written,
+    };
+    // What the field reads beyond its cardinality: a ranking pick, or the
+    // newest of many claims.
+    let pick = pick.filter(|pick| match pick {
+        tonk_notation::Pick::All => false,
+        tonk_notation::Pick::Last => cardinality == tonk_notation::Cardinality::Many,
+        _ => true,
+    });
+    if cardinality == tonk_notation::Cardinality::Many {
+        shape.insert(
+            "cardinality".into(),
+            serde_json::Value::String(tonk_notation::Cardinality::Many.keyword().into()),
+        );
     }
     if let Some(keyed) = keyed {
         let the = shape["the"].as_str().unwrap_or_default().to_owned();
@@ -336,6 +382,7 @@ pub(crate) fn parse_attribute_fields(
     Ok(AttributeBody {
         descriptor,
         entity,
+        pick,
         role,
     })
 }
@@ -398,9 +445,9 @@ pub(crate) fn parse_concept_body(
     let mut description: Option<String> = None;
     let mut transient: bool = false;
     let mut action: Vec<String> = Vec::new();
-    // Each entry: (field name, definition, optional). `with:` fields
-    // are required; `maybe:` fields are optional.
-    let mut fields: Vec<(String, AttributeDefinition, bool)> = Vec::new();
+    // Each entry: (field name, definition, optional, pick).
+    // `with:` fields are required; `maybe:` fields are optional.
+    let mut fields: Vec<ConceptField> = Vec::new();
     let mut inline_attributes: Vec<AttributeBody> = Vec::new();
     let mut retracted: Vec<RetractedField> = Vec::new();
     let mut rest_retraction: Option<RestRetraction> = None;
@@ -512,7 +559,7 @@ pub(crate) fn parse_concept_body(
     // *required* field — an empty `with:` or a body with only
     // `maybe:` fields would constrain nothing and match every entity.
     let is_retraction_only = !retracted.is_empty() || rest_retraction.is_some();
-    if !is_retraction_only && !fields.iter().any(|(_, _, optional)| !optional) {
+    if !is_retraction_only && !fields.iter().any(|(_, _, optional, _)| !optional) {
         return Err(AnalyzeErrorKind::InvalidConceptBody {
             reason: "`with:` is required and must declare at least one field".into(),
         }
@@ -524,13 +571,22 @@ pub(crate) fn parse_concept_body(
     }
     let with_obj: serde_json::Map<String, serde_json::Value> = fields
         .iter()
-        .map(|(name, attr, optional)| {
+        .map(|(name, attr, optional, pick)| {
             let mut value = serde_json::to_value(&attr.descriptor)
                 .expect("AttributeDescriptor is serializable");
-            // The optional flag is flattened into each field object
-            // on the wire; required fields omit it entirely.
-            if *optional && let Some(obj) = value.as_object_mut() {
-                obj.insert("optional".into(), serde_json::Value::Bool(true));
+            // The optional flag and the pick are flattened into
+            // each field object on the wire; a field without them omits
+            // them entirely.
+            if let Some(obj) = value.as_object_mut() {
+                if *optional {
+                    obj.insert("optional".into(), serde_json::Value::Bool(true));
+                }
+                if let Some(pick) = pick {
+                    obj.insert(
+                        "pick".into(),
+                        serde_json::Value::String(pick.keyword().into()),
+                    );
+                }
             }
             (name.clone(), value)
         })
@@ -582,6 +638,15 @@ pub(crate) fn parse_concept_body(
         action,
     })
 }
+
+/// One field of a `concept!` body: its name, the attribute it reads,
+/// whether it is optional, and the pick it reads one claim with.
+type ConceptField = (
+    String,
+    AttributeDefinition,
+    bool,
+    Option<tonk_notation::Pick>,
+);
 
 /// Placeholder field for the stub descriptor a retraction-only body
 /// carries — valid (a descriptor needs ≥1 field) but never emitted.
@@ -635,7 +700,7 @@ fn parse_concept_field_block(
     field: &SyntaxField,
     optional: bool,
     scope: &Scope,
-    fields: &mut Vec<(String, AttributeDefinition, bool)>,
+    fields: &mut Vec<ConceptField>,
     inline_attributes: &mut Vec<AttributeBody>,
     retracted: &mut Vec<RetractedField>,
     seen: &mut BTreeMap<String, lsp_types::Range>,
@@ -647,7 +712,7 @@ fn parse_concept_field_block(
                 "`{block}:` must be a mapping of field name → \
                  attribute reference (bare symbol, `?var`, URI) or \
                  inline attribute definition (mapping with \
-                 `the`/`as`/`cardinality`/`description`)"
+                 `the`/`as`/`cardinality`/`pick`/`description`)"
             ),
         }
         .into());
@@ -717,11 +782,11 @@ fn parse_concept_field_block(
                 entity: plan.entity.clone(),
                 descriptor: plan.descriptor.clone(),
             };
-            fields.push((sub.name.clone(), resolved, optional));
+            fields.push((sub.name.clone(), resolved, optional, plan.pick));
             inline_attributes.push(plan);
         } else {
             let resolved = resolve_concept_field(&sub.name, &sub.value, scope)?;
-            fields.push((sub.name.clone(), resolved, optional));
+            fields.push((sub.name.clone(), resolved, optional, None));
         }
     }
     Ok(())
@@ -828,12 +893,13 @@ pub(crate) fn attribute_application(
         "description".into(),
         Term::Constant(Value::String(descriptor.description().to_owned())),
     );
-    // The pick the attribute reads under, as the entity dialog names
-    // it (`all:`), and the values its `as:` lists as a JSON list, best
-    // first: a reader reconstructing the descriptor needs both.
-    if let Ok(pick) = descriptor.pick().uri().parse::<Entity>() {
-        terms.insert("pick".into(), Term::Constant(Value::Entity(pick)));
-    }
+    // The attribute's cardinality (`one` or `many`), and the values its
+    // `as:` lists as a JSON list, least first: a reader reconstructing
+    // the descriptor needs both.
+    terms.insert(
+        "cardinality".into(),
+        Term::Constant(Value::String(descriptor.cardinality().name().to_owned())),
+    );
     if !descriptor.among().is_empty()
         && let Ok(among) = serde_json::to_string(descriptor.among())
     {
@@ -888,6 +954,13 @@ pub(crate) fn concept_application(
             terms.insert(
                 format!("optional.{field_name}"),
                 Term::Constant(Value::Boolean(true)),
+            );
+        }
+        // A field reading one claim with a pick names it.
+        if let Some(pick) = attr.pick() {
+            terms.insert(
+                format!("pick.{field_name}"),
+                Term::Constant(Value::String(pick.name().to_owned())),
             );
         }
     }
@@ -1023,7 +1096,7 @@ fn concept_field_retraction(
 
     let mut terms = Parameters::new();
     terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
-    for (field_name, _attr) in sub_descriptor.with().iter() {
+    for (field_name, attr) in sub_descriptor.with().iter() {
         // Blank term → the evaluator dissociates whatever value the
         // branch holds for this field (no need to recompute the
         // attribute entity analyzer-side).
@@ -1031,6 +1104,13 @@ fn concept_field_retraction(
             format!("with.{field_name}"),
             Term::<dialog_query::Any>::blank(),
         );
+        // The field's pick goes with it.
+        if attr.pick().is_some() {
+            terms.insert(
+                format!("pick.{field_name}"),
+                Term::<dialog_query::Any>::blank(),
+            );
+        }
     }
     Some(Application::Concept {
         query: ConceptQuery {
@@ -1102,10 +1182,10 @@ fn attribute_schema() -> ConceptDescriptor {
         "with": {
             "id":          { "the": "db.attribute/id",          "as": "text:" },
             "as":          { "the": "db.attribute/as",          "as": "entity:" },
-            "pick":        { "the": "db.attribute/pick",        "as": "entity:" },
+            "cardinality": { "the": "db.attribute/cardinality", "as": "text:" },
             "description": { "the": "db.meta/description",      "as": "text:" },
             "name":        { "the": "db.meta/name",             "as": "text:" },
-            // The values an attribute's `as:` lists, a JSON list best
+            // The values an attribute's `as:` lists, a JSON list least
             // first. Written only by an attribute that lists them;
             // read back by `tonk_schema::concept::AttributeByEntity`.
             "among":       { "the": "db.attribute/among",       "as": "text:" },
@@ -1138,6 +1218,16 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
                 serde_json::json!({
                     "the": format!("db.concept.optional/{name}"),
                     "as": "Boolean",
+                    "cardinality": "one",
+                }),
+            );
+        }
+        if attr.pick().is_some() {
+            with.insert(
+                format!("pick.{name}"),
+                serde_json::json!({
+                    "the": format!("db.concept.pick/{name}"),
+                    "as": "Text",
                     "cardinality": "one",
                 }),
             );
@@ -1223,18 +1313,6 @@ fn attribute_type(field: &tonk_notation::Field, scope: &Scope) -> Result<String,
         }
         .into()
     })
-}
-
-/// Validate a user-facing cardinality name. Dialog's serde
-/// format uses lowercase (`one`, `many`); historically
-/// PascalCase was accepted too — preserve that for back-compat
-/// while normalizing to lowercase.
-fn normalize_cardinality_name(name: &str) -> Option<&'static str> {
-    match name {
-        "one" | "One" => Some("one"),
-        "many" | "Many" => Some("many"),
-        _ => None,
-    }
 }
 
 /// Coerce a "simple" declaration field into a string. Used for

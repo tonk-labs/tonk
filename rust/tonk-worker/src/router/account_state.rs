@@ -2835,6 +2835,7 @@ pub(crate) mod tests {
     /// stopping each pull the moment the head moves. The profile must
     /// open from storage afterwards.
     #[cfg(not(target_arch = "wasm32"))]
+    #[allow(deprecated)]
     async fn pull_the_account_and_stop_when_its_head_moves(download: bool) {
         use dialog_corpus::{Fact, Instruction, Value};
         use std::future::{Future as _, poll_fn};
@@ -2874,7 +2875,7 @@ pub(crate) mod tests {
                             is: Value::UnsignedInt(round),
                             cause: None,
                         },
-                        dialog_corpus::Pick::All,
+                        dialog_corpus::Cardinality::Many,
                     ))
                     .collect(),
                 )
@@ -2937,6 +2938,7 @@ pub(crate) mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_pulls_the_account_after_signing_out_and_back_in() {
         use dialog_corpus::{Fact, Instruction, Value};
         use dialog_varsig::Principal as _;
@@ -2957,7 +2959,7 @@ pub(crate) mod tests {
                         is: Value::UnsignedInt(n),
                         cause: None,
                     },
-                    dialog_corpus::Pick::All,
+                    dialog_corpus::Cardinality::Many,
                 )
             })
             .collect();
@@ -3405,6 +3407,7 @@ pub(crate) mod tests {
     /// the 403 -> 200 transition, and that is what writes `activated-at`.
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_records_the_activation_when_a_ready_account_syncs() {
         use tonk_schema::AccountActive;
 

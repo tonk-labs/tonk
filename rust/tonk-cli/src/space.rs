@@ -1100,6 +1100,7 @@ fn canonical_existing_site(site: &Path) -> Result<PathBuf, SpaceError> {
 /// store's canonical `spaces/<name>/` unless `site_override` names
 /// another directory; because [`crate::site::TonkSite::init_at_with`]
 /// is idempotent, an override pointing at existing site storage adopts it.
+#[allow(deprecated)]
 pub async fn create(
     store: &SpaceStore,
     name: &str,

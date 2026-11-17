@@ -219,6 +219,7 @@ mod tests {
     }
 
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_matches_a_direct_branch_query_when_performed_through_query_source()
     -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;

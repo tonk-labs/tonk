@@ -57,6 +57,7 @@ pub(crate) async fn hand_over_to_account(
 /// the rows once each key is held there. `space` runs for each space moved,
 /// before its rows go; an invite's membership is re-issued to the account
 /// with the chain proving it. Answers the principals that stayed, with why.
+#[allow(deprecated)]
 pub async fn migrate_onboarding<F, Fut>(
     profile: &Peer<NativeSpace>,
     operator: &Peer<NativeSpace, Session>,

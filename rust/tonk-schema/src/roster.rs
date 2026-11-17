@@ -138,6 +138,7 @@ mod tests {
     /// An entry is found by the profile it names, and carries the handle to
     /// open it with.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_finds_a_profile_entry_by_its_did() -> Result<()> {
         let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
@@ -170,6 +171,7 @@ mod tests {
     /// Two profiles are two entries, and a query with an open subject
     /// returns both — the switcher's own read.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_lists_every_profile_this_device_can_open() -> Result<()> {
         let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
@@ -204,6 +206,7 @@ mod tests {
     /// in place rather than adding a second one: the entity is the profile,
     /// so `name` is cardinality-one on it.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_keeps_one_entry_per_profile_when_the_handle_changes() -> Result<()> {
         let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;

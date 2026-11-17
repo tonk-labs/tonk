@@ -96,6 +96,7 @@ impl AsRef<Entity> for DirectoryAnchor {
 ///
 /// The worker's `record_space_mount` writes the same facts through its
 /// reactor-cached branch handle; keep the two shapes in lockstep.
+#[allow(deprecated)]
 pub async fn record<Env>(
     account: &Branch,
     subject: &Did,
@@ -599,6 +600,7 @@ mod tests {
     use super::*;
 
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn old_branch_facts_recover_the_mount_upstream() {
         use crate::domain::branch::{Name, Upstream};
         use crate::prelude::EntityExt as _;
@@ -711,6 +713,7 @@ mod tests {
     }
 
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn strict_mount_record_accepts_local_absence_and_optional_facts() {
         use dialog_peer::helpers;
         use dialog_varsig::did;

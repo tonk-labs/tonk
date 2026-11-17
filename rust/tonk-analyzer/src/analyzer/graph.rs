@@ -650,7 +650,7 @@ impl Graph {
         resolver: &R,
     ) -> Result<Resolved, AnalyzeError> {
         // An anchor the document declares under a built-in anchor's
-        // name, a type's or a pick's, shadows it within the document.
+        // name, a type's, shadows it within the document.
         for expression in &syntax.expressions {
             if let Expression::Claim(Effectful {
                 anchor: Some(anchor),

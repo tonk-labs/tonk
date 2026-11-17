@@ -3,7 +3,7 @@
 Everything on a branch is a **claim** (a **fact**): an entity, a relation, and
 a value. A **relation** is a named set of claims, such as `person/name`; each
 claim is one member. An **attribute** is a relation qualified by a value
-**type** and a **pick**: `person/name` read as `text` under `last`. A
+**type** and a **cardinality**: `person/name` holding one `text` per person. A
 **concept** is a named schema over attributes. An entity matching a concept is
 an **instance**, and the concept presents its attributes as typed **fields**:
 a field is a concept's slot holding an attribute. A **view** is an HTML
@@ -20,16 +20,17 @@ read. `number` holds every number. A document that declares an anchor of
 the same name gets a warning, and within that document the name means
 its declaration.
 
-A **pick** says which of an entity's claims in the relation a read returns:
-`last` (the default) the newest, `all` every one, `top` the best ranked of the
-values listed in `as:` (a list implies `top`), `max` and `min` the greatest
-and least. Like a type, each pick is a built-in anchor naming the entity
-dialog knows it by, `all:` for `all`, and a document anchor of the same name
-shadows it.
+A **cardinality** says how many of an entity's claims in the relation an
+attribute keeps: `:one` (the default) the newest, and `:many` every one. A
+**pick** says which claims a read returns: `:last` the newest, `:all` every
+one, and on a concept field over a many-valued attribute `:top` the value
+listed first in `as:` (a list ranks its values best first), `:max` and `:min`
+the greatest and least. The cardinality follows from the pick unless it is
+written: `:last` is one, every other pick many.
 
 An **assertion** adds a claim. Creating a new content-addressed instance is
-also called **minting**. Under any pick but `all`, a later assertion
-**supersedes** the claim a read returns; under `all` claims accumulate. A
+also called **minting**. Under cardinality one, a later assertion
+**supersedes** the claim a read returns; under many, claims accumulate. A
 **retraction** is itself a claim that invalidates an earlier claim, not an
 in-place deletion.
 
@@ -43,7 +44,7 @@ Two consequences matter early:
   no-op; changing any field creates a new entity unless the old one is bound
   with `this:`.
 - Bare lowercase tokens are symbols resolved through the name table or the
-  built-in anchors (types and picks), and one that names nothing is an error.
+  built-in anchors (types), and one that names nothing is an error.
   Quote every string literal: `name: "alice"`, not `name: alice`. The one
   exception is `the:`, which spells a relation by its own name
   (`the: person/name`); a relation is its name, not an entity a name refers

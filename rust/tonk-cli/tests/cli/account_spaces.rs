@@ -316,6 +316,7 @@ async fn pull_requires_a_directory_row_and_returns_an_adopted_site() -> Result<(
 }
 
 #[dialog_common::test]
+#[allow(deprecated)]
 async fn pull_from_a_live_access_service_syncs_the_canonical_unbound_site(
     env: AccessServiceAddress,
 ) -> Result<()> {
@@ -472,6 +473,7 @@ async fn pull_registers_a_derived_name_and_leaves_the_label_alone(
     Ok(())
 }
 
+#[allow(deprecated)]
 async fn name_repository(site: &TonkSite, name: &str) -> Result<()> {
     let subject = site.repository.did();
     site.branch()

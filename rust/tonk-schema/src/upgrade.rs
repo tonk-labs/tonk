@@ -1,14 +1,24 @@
 //! Moves the attribute and concept definitions an earlier release wrote
 //! to the facts and identities this release gives them.
 //!
-//! An earlier release recorded an attribute's value type as the string
-//! dialog serialized it as (`db.attribute/type "Text"`) and its arity as
-//! `db.attribute/cardinality`. This release records the type as the
-//! entity dialog names it by (`db.attribute/as text:`) and which claims a
-//! read picks as the entity dialog names the pick by
-//! (`db.attribute/pick all:`), and hashes both into the
-//! attribute's identity, so every typed attribute's identity changed, and
-//! the identity of every concept over one.
+//! Two earlier releases recorded attributes differently. The first
+//! recorded an attribute's value type as the string dialog serialized it
+//! as (`db.attribute/type "Text"`) and its arity as
+//! `db.attribute/cardinality`. The next (dialog 0.3 and 0.4) recorded the
+//! type as the entity dialog names it by (`db.attribute/as text:`) and
+//! which claims a read picks as the entity dialog named the pick by
+//! (`db.attribute/pick all:`). This release records the type as that
+//! entity and the cardinality as its name (`db.attribute/cardinality
+//! many`); a listed `as:` stays best first in both. dialog
+//! hashes each into the attribute's identity, so every attribute's
+//! identity changed with each release, and the identity of every concept
+//! over one.
+//!
+//! A pick that ranked (`top:`, `max:`, `min:`) is no attribute any more:
+//! its attribute is cardinality many, and each concept field reading it
+//! picks one claim by the pick's name (`db.concept.pick/<field> top`),
+//! a `top`'s values listed in the order they were, which is how dialog's
+//! `Branch::upgrade_rules` rewrites the rules over it.
 //!
 //! [`upgrade_definitions`] reads every attribute still recorded the
 //! earlier way, whoever wrote it: a library, a template, the space
@@ -26,14 +36,16 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use dialog_corpus::{
-    Entity, Fact, Pick, Relation as CorpusRelation, Selector, Statement, Update, Value,
+    Cardinality, Entity, Fact, Relation as CorpusRelation, Selector, Statement, Update, Value,
 };
+use dialog_query::selective::Selective;
 use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor};
 use dialog_repository::Branch;
 use futures_util::StreamExt as _;
 
 use crate::concept::{
     AnonymousConcept, AttributeByEntity, QueryEnv, TransientConcept, attribute_statements,
+    concept_field,
 };
 use crate::query_source::Source;
 
@@ -59,11 +71,14 @@ impl DefinitionsUpgraded {
 }
 
 /// The relations an earlier release recorded an attribute with that this
-/// release does not: their presence marks an attribute to upgrade.
+/// release does not: their presence marks an attribute to upgrade. The
+/// release that recorded `db.attribute/type` also recorded its arity as
+/// `db.attribute/cardinality`, which this release records again, so the
+/// type marks it.
 const LEGACY_ATTRIBUTE: [&str; 3] = [
     "db.attribute/type",
-    "db.attribute/cardinality",
     "db.attribute/select",
+    "db.attribute/pick",
 ];
 
 /// Whether `branch` still holds an attribute recorded the earlier way that
@@ -89,8 +104,43 @@ pub async fn has_legacy_definitions<Env: QueryEnv>(
     Ok(false)
 }
 
+/// Every stored rule body `branch` does not read, as dialog lists it under
+/// `dialog.rule/invalid`: the rule's entity and why, the reason starting
+/// with its kind (`older:`, a format `Branch::upgrade_rules` rewrites;
+/// `newer:`, one a newer release reads; `undecodable:` or `forged:`, no
+/// rule). None of them is evaluated.
+pub async fn invalid_rules<Env: QueryEnv>(
+    branch: &Branch,
+    env: &Env,
+) -> Result<Vec<(Entity, String)>, String> {
+    use dialog_query::Output as _;
+    let source = Source::from(branch);
+    let claims: Vec<dialog_query::Claim> = source
+        .select(dialog_query::AttributeQuery::from(
+            dialog_query::Term::<dialog_query::attribute::Relation>::from(dialog_query::the!(
+                "dialog.rule/invalid"
+            ))
+            .of(dialog_query::Term::<Entity>::var("rule"))
+            .is(dialog_query::Term::<String>::var("reason")),
+        ))
+        .perform(env)
+        .try_vec()
+        .await
+        .map_err(|e| format!("dialog.rule/invalid query failed: {e:?}"))?;
+    let mut invalid: Vec<(Entity, String)> = claims
+        .into_iter()
+        .filter_map(|claim| match claim.is {
+            Value::String(reason) => Some((claim.of, reason)),
+            _ => None,
+        })
+        .collect();
+    invalid.sort();
+    Ok(invalid)
+}
+
 /// Upgrade every attribute and concept definition `branch` holds in the
 /// earlier shape, in one commit. See the [module documentation](self).
+#[allow(deprecated)]
 pub async fn upgrade_definitions<Env>(
     branch: &Branch,
     env: &Env,
@@ -115,9 +165,11 @@ where
         }
     }
     let mut attributes: HashMap<Entity, AttributeDescriptor> = HashMap::new();
+    // The pick each field over a ranked attribute reads it with now.
+    let mut ranked: HashMap<Entity, Selective> = HashMap::new();
     for entity in legacy {
         let claims = select(branch, env, Selector::new().of(entity.clone())).await?;
-        let Some(descriptor) = legacy_descriptor(&claims) else {
+        let Some((descriptor, ranked_by)) = legacy_descriptor(&claims) else {
             upgraded.undecodable.push(entity);
             continue;
         };
@@ -139,6 +191,9 @@ where
         } else {
             upgraded.moves.push((entity.clone(), now));
         }
+        if let Some(pick) = ranked_by {
+            ranked.insert(entity.clone(), pick);
+        }
         attributes.insert(entity, descriptor);
     }
 
@@ -155,6 +210,7 @@ where
         let claims = select(branch, env, Selector::new().of(entity.clone())).await?;
         let mut fields: BTreeMap<String, Entity> = BTreeMap::new();
         let mut optional: BTreeSet<String> = BTreeSet::new();
+        let mut picks: BTreeMap<String, String> = BTreeMap::new();
         let mut description = None;
         let mut transient = false;
         for claim in &claims {
@@ -167,6 +223,10 @@ where
                 && claim.is == Value::Boolean(true)
             {
                 optional.insert(field.to_owned());
+            } else if let Some(field) = the.strip_prefix("db.concept.pick/")
+                && let Value::String(name) = &claim.is
+            {
+                picks.insert(field.to_owned(), name.clone());
             } else if the == "db.meta/description"
                 && let Value::String(text) = &claim.is
             {
@@ -198,14 +258,17 @@ where
                     }
                 },
             };
-            with.push((
-                field.clone(),
-                if optional.contains(field) {
-                    ConceptFieldDescriptor::optional(descriptor)
-                } else {
-                    ConceptFieldDescriptor::required(descriptor)
-                },
-            ));
+            let pick = ranked
+                .get(attribute)
+                .map(|pick| pick.name().to_owned())
+                .or_else(|| picks.get(field).cloned());
+            match concept_field(descriptor, optional.contains(field), pick.as_deref()) {
+                Ok(descriptor) => with.push((field.clone(), descriptor)),
+                Err(_) => {
+                    complete = false;
+                    break;
+                }
+            }
         }
         if !complete {
             continue;
@@ -273,7 +336,7 @@ where
                 the: claim.the.clone(),
                 of: claim.of.clone(),
                 is: follow(&claim.is),
-                pick: Pick::All,
+                cardinality: Cardinality::Many,
             }));
         }
         let about = select(branch, env, Selector::new().of(earlier.clone())).await?;
@@ -288,10 +351,10 @@ where
                 .push(claim);
         }
         for claims in by_relation.into_values() {
-            let pick = if claims.len() == 1 {
-                Pick::Last
+            let cardinality = if claims.len() == 1 {
+                Cardinality::One
             } else {
-                Pick::All
+                Cardinality::Many
             };
             for claim in claims {
                 writes.push(Write::retract(&claim));
@@ -299,7 +362,7 @@ where
                     the: claim.the.clone(),
                     of: now.clone(),
                     is: follow(&claim.is),
-                    pick: pick.clone(),
+                    cardinality,
                 }));
             }
         }
@@ -329,13 +392,21 @@ where
     Ok(upgraded)
 }
 
-/// The descriptor an attribute recorded the earlier way spells, from its
-/// `db.attribute/id`, `type`, `cardinality`, `select`, `among` and
-/// `db.meta/description` claims.
-fn legacy_descriptor(claims: &[Fact]) -> Option<AttributeDescriptor> {
+/// The descriptor an attribute recorded the earlier way spells, and the
+/// pick a field reading it reads one claim with now when it was read
+/// under a ranking pick: from its `db.attribute/id`, the type
+/// (`type` text or `as` entity), the arity (`cardinality`, or the pick
+/// `select` or `pick` named), `among` and `db.meta/description` claims.
+fn legacy_descriptor(claims: &[Fact]) -> Option<(AttributeDescriptor, Option<Selective>)> {
     let text = |name: &str| {
         claims.iter().find_map(|claim| match &claim.is {
             Value::String(text) if claim.the.as_str() == name => Some(text.clone()),
+            _ => None,
+        })
+    };
+    let entity = |name: &str| {
+        claims.iter().find_map(|claim| match &claim.is {
+            Value::Entity(entity) if claim.the.as_str() == name => Some(entity.to_string()),
             _ => None,
         })
     };
@@ -343,20 +414,29 @@ fn legacy_descriptor(claims: &[Fact]) -> Option<AttributeDescriptor> {
     let mut shape = serde_json::Map::new();
     let the: dialog_query::attribute::The = id.parse().ok()?;
     shape.insert("the".to_owned(), serde_json::to_value(the).ok()?);
-    if let Some(kind) = text("db.attribute/type").filter(|kind| !kind.is_empty()) {
+    if let Some(kind) = text("db.attribute/type")
+        .filter(|kind| !kind.is_empty())
+        .or_else(|| entity("db.attribute/as"))
+    {
         shape.insert("as".to_owned(), serde_json::Value::String(kind));
     }
-    if let Some(cardinality) = text("db.attribute/cardinality").filter(|c| !c.is_empty()) {
+    let pick = match entity("db.attribute/pick").or_else(|| text("db.attribute/select")) {
+        Some(name) if !name.is_empty() => Some(tonk_notation::Pick::from_wire(&name)?),
+        _ => None,
+    };
+    let cardinality = match pick {
+        Some(pick) => Some(pick.cardinality().keyword().to_owned()),
+        None => text("db.attribute/cardinality").filter(|c| !c.is_empty()),
+    };
+    if let Some(cardinality) = cardinality {
         shape.insert(
             "cardinality".to_owned(),
             serde_json::Value::String(cardinality),
         );
     }
-    if let Some(select) = text("db.attribute/select").filter(|s| !s.is_empty()) {
-        shape.insert("pick".to_owned(), serde_json::Value::String(select));
-    }
     if let Some(among) = text("db.attribute/among") {
-        shape.insert("as".to_owned(), serde_json::from_str(&among).ok()?);
+        let listed: serde_json::Value = serde_json::from_str(&among).ok()?;
+        shape.insert("as".to_owned(), listed);
     }
     if let Some(description) = text("db.meta/description") {
         shape.insert(
@@ -364,7 +444,11 @@ fn legacy_descriptor(claims: &[Fact]) -> Option<AttributeDescriptor> {
             serde_json::Value::String(description),
         );
     }
-    serde_json::from_value(serde_json::Value::Object(shape)).ok()
+    let descriptor = serde_json::from_value(serde_json::Value::Object(shape)).ok()?;
+    let ranked = pick
+        .filter(|pick| pick.ranks())
+        .and_then(|pick| pick.keyword().parse().ok());
+    Some((descriptor, ranked))
 }
 
 /// Whether a claim about an attribute entity is part of its definition,
@@ -425,7 +509,7 @@ impl Write {
             the: claim.the.clone(),
             of: claim.of.clone(),
             is: claim.is.clone(),
-            pick: Pick::All,
+            cardinality: Cardinality::Many,
         })
     }
 }
@@ -437,12 +521,12 @@ struct Raw {
     the: CorpusRelation,
     of: Entity,
     is: Value,
-    pick: Pick,
+    cardinality: Cardinality,
 }
 
 impl Statement for Raw {
     fn assert(self, update: &mut impl Update) {
-        update.associate(self.the, self.of, self.is, self.pick);
+        update.associate(self.the, self.of, self.is, self.cardinality);
     }
 
     fn retract(self, update: &mut impl Update) {
@@ -455,15 +539,17 @@ mod tests {
     use super::*;
     use crate::concept::{Concept, lookup_named_entity};
     use dialog_peer::helpers::{test_repo, test_session_with_peer};
-    use dialog_query::migration::{attribute_uri_v0, concept_identity_v0};
+    use dialog_query::migration::{
+        attribute_uri_v0, attribute_uri_v1, concept_identity_v0, concept_identity_v1,
+    };
     use tonk_core::meta::{Name, name};
 
-    fn raw(the: &str, of: &Entity, is: Value, pick: Pick) -> anyhow::Result<Raw> {
+    fn raw(the: &str, of: &Entity, is: Value, cardinality: Cardinality) -> anyhow::Result<Raw> {
         Ok(Raw {
             the: the.parse()?,
             of: of.clone(),
             is,
-            pick,
+            cardinality,
         })
     }
 
@@ -475,6 +561,7 @@ mod tests {
     /// its current identity, the name and the view follow it, nothing is
     /// left on the earlier entities, and a second run finds nothing.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_moves_definitions_recorded_the_earlier_way() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -483,7 +570,7 @@ mod tests {
         let descriptor: ConceptDescriptor = serde_json::from_value(serde_json::json!({
             "with": {
                 "title": { "the": "xyz.tonk.note/title", "as": "text:", "description": "A title" },
-                "tags": { "the": "xyz.tonk.note/tags", "as": "text:", "pick": "all:" }
+                "tags": { "the": "xyz.tonk.note/tags", "as": "text:", "cardinality": "many" }
             }
         }))?;
         let earlier_concept = concept_identity_v0(&descriptor);
@@ -507,13 +594,13 @@ mod tests {
                     Value::String(attribute.description().into()),
                 ),
             ] {
-                transaction = transaction.assert(raw(the, &earlier, is, Pick::Last)?);
+                transaction = transaction.assert(raw(the, &earlier, is, Cardinality::One)?);
             }
             transaction = transaction.assert(raw(
                 &format!("db.concept.with/{field}"),
                 &earlier_concept,
                 Value::Entity(earlier),
-                Pick::All,
+                Cardinality::Many,
             )?);
         }
         transaction = transaction
@@ -521,13 +608,13 @@ mod tests {
                 "db.meta/concept",
                 &earlier_concept,
                 Value::Entity("db:concept".parse()?),
-                Pick::Last,
+                Cardinality::One,
             )?)
             .assert(raw(
                 "xyz.tonk.view/ui",
                 &earlier_concept,
                 Value::String("<p>{title}</p>".into()),
-                Pick::Last,
+                Cardinality::One,
             )?)
             .assert(Name {
                 this: "id:note".parse()?,
@@ -591,6 +678,176 @@ mod tests {
             "nothing is left on the earlier concept"
         );
 
+        let again = upgrade_definitions(&branch, &operator)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(again.is_empty(), "a second run finds nothing: {again:?}");
+        Ok(())
+    }
+
+    /// What dialog 0.4 wrote for a concept over a ranked `status` (its
+    /// listed values best first under `top:`), a set of `tags` (`all:`)
+    /// and a `name` (`last:`), each attribute under the identity that
+    /// release gave it, moves to this release's: the ranked attribute is
+    /// cardinality many, its values listed best first as they were, and
+    /// the field reading it picks `top`; the set is cardinality many and the name one; the
+    /// concept resolves under its current identity with a view following
+    /// it, no pick is left, and a second run finds nothing.
+    #[dialog_common::test]
+    #[allow(deprecated)]
+    async fn it_moves_definitions_recorded_under_picks() -> anyhow::Result<()> {
+        let (operator, profile) = test_session_with_peer().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // The concept as this release declares it: what the upgrade must
+        // arrive at.
+        let descriptor: ConceptDescriptor = serde_json::from_value(serde_json::json!({
+            "with": {
+                "status": {
+                    "the": "xyz.tonk.job/status",
+                    "as": ["case:suspended", "case:active"],
+                    "pick": "top",
+                    "description": "Where the job stands"
+                },
+                "tags": { "the": "xyz.tonk.job/tags", "as": "text:", "cardinality": "many", "description": "Tags" },
+                "name": { "the": "xyz.tonk.job/name", "as": "text:", "description": "A name" }
+            }
+        }))?;
+        let earlier_concept = concept_identity_v1(&descriptor);
+        let mut transaction = branch.transaction();
+        for (field, slot) in descriptor.with().iter() {
+            let attribute = slot.descriptor();
+            // dialog names no 0.4 identity for a ranked attribute alone, and
+            // the upgrade reads each attribute by the entity it finds it
+            // under, so the ranked one stands under a made-up entity.
+            let earlier: Entity = if field == "status" {
+                "the:earlier-ranked-status".parse()?
+            } else {
+                attribute_uri_v1(attribute).parse()?
+            };
+            let (pick, among) = match field {
+                "status" => ("top:", Some(r#"["case:suspended","case:active"]"#)),
+                "tags" => ("all:", None),
+                _ => ("last:", None),
+            };
+            let mut facts = vec![
+                (
+                    "db.attribute/id",
+                    Value::String(attribute.the().to_string()),
+                ),
+                ("db.attribute/as", Value::Entity("entity:".parse()?)),
+                ("db.attribute/pick", Value::Entity(pick.parse()?)),
+                (
+                    "db.meta/description",
+                    Value::String(attribute.description().into()),
+                ),
+            ];
+            if field != "status" {
+                facts[1] = ("db.attribute/as", Value::Entity("text:".parse()?));
+            }
+            if let Some(among) = among {
+                facts.push(("db.attribute/among", Value::String(among.into())));
+            }
+            for (the, is) in facts {
+                transaction = transaction.assert(raw(the, &earlier, is, Cardinality::One)?);
+            }
+            transaction = transaction.assert(raw(
+                &format!("db.concept.with/{field}"),
+                &earlier_concept,
+                Value::Entity(earlier),
+                Cardinality::Many,
+            )?);
+        }
+        transaction = transaction
+            .assert(raw(
+                "db.meta/concept",
+                &earlier_concept,
+                Value::Entity("db:concept".parse()?),
+                Cardinality::One,
+            )?)
+            .assert(raw(
+                "xyz.tonk.view/ui",
+                &earlier_concept,
+                Value::String("<p>{name}</p>".into()),
+                Cardinality::One,
+            )?);
+        transaction.commit().publish().perform(&operator).await?;
+        assert!(
+            has_legacy_definitions(&branch, &operator)
+                .await
+                .map_err(anyhow::Error::msg)?
+        );
+
+        let upgraded = upgrade_definitions(&branch, &operator)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let now = descriptor.this();
+        assert!(
+            upgraded
+                .moves
+                .contains(&(earlier_concept.clone(), now.clone())),
+            "the concept moves to its current identity: {upgraded:?}"
+        );
+        assert_eq!(upgraded.moves.len(), 4, "{upgraded:?}");
+
+        let source = Source::from(&branch);
+        let resolved = Concept::by_entity(now.clone())
+            .resolve(&source, &operator)
+            .await?
+            .expect("the concept resolves under its current identity");
+        assert_eq!(resolved.descriptor.this(), now);
+        let field = |name: &str| {
+            resolved
+                .descriptor
+                .with()
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, field)| field.clone())
+                .expect("the field rebuilds")
+        };
+        let status = field("status");
+        assert_eq!(status.pick(), Some(Selective::Top));
+        assert_eq!(status.cardinality(), Cardinality::Many);
+        assert_eq!(
+            status.descriptor().among(),
+            &[
+                Value::Entity("case:suspended".parse()?),
+                Value::Entity("case:active".parse()?)
+            ],
+            "the ranked values keep their order, best first"
+        );
+        assert_eq!(field("tags").cardinality(), Cardinality::Many);
+        assert_eq!(field("tags").pick(), None);
+        assert_eq!(field("name").cardinality(), Cardinality::One);
+        let views = select(
+            &branch,
+            &operator,
+            Selector::new().the("xyz.tonk.view/ui".parse()?),
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+        assert_eq!(
+            views.iter().map(|view| view.of.clone()).collect::<Vec<_>>(),
+            vec![now.clone()],
+            "the view moves with the concept"
+        );
+        assert!(
+            select(
+                &branch,
+                &operator,
+                Selector::new().the("db.attribute/pick".parse()?)
+            )
+            .await
+            .map_err(anyhow::Error::msg)?
+            .is_empty(),
+            "no attribute is recorded under a pick any more"
+        );
+        assert!(
+            !has_legacy_definitions(&branch, &operator)
+                .await
+                .map_err(anyhow::Error::msg)?
+        );
         let again = upgrade_definitions(&branch, &operator)
             .await
             .map_err(anyhow::Error::msg)?;

@@ -55,17 +55,19 @@ concept!: &space
 
         Derived by the rules below from this device's replica rather
         than stored, so it cannot drift from it. Every rule states a
-        case positively; the field reads the first listed case any
-        rule derives, so a replica that is seeding reads as seeding
-        although it is also a replica, and a space nothing else
-        speaks for reads as remote. The Hub card reflects this via
-        [data-presence].
+        case positively into `space/presence`, which holds every case
+        derived; this field picks the first listed case any rule
+        derives (`pick: :top`), so a replica that is seeding reads as
+        seeding although it is also a replica, and a space nothing
+        else speaks for reads as remote. The Hub card reflects this
+        via [data-presence].
       the: xyz.tonk.space/presence
       as:
         - case:seeding
         - case:replicating
         - case:replicated
         - case:remote
+      pick: :top
     name:
       description: >
         The directory mirror of the space's display name — written at
@@ -3653,7 +3655,7 @@ view!:
 # `<tonk-site>` defaults its absent `path` to `/`.
 #
 # The view keeps `<tonk-site path={rest}>` even when `rest` is absent because
-# `rest` is a scalar (`pick: :last`) field: `<tonk-display>` stamps the
+# `rest` is a scalar (cardinality one, the default) field: `<tonk-display>` stamps the
 # concept's scalar field names onto the `<tonk-view>` (`data-scalar-fields`), so
 # the planner renders them as plain substitutions rather than iteration axes that
 # would clone the host zero times — and drop it — when the value is empty.
@@ -4315,15 +4317,20 @@ concept!: &account/onboarding
 # the facts it summarises; deriving it means the summary cannot drift from
 # what actually happened.
 #
-# Each rule below states one case from the fact that proves it, and the
-# field reads the first listed case any rule derives, so the cases rank
-# rather than exclude one another:
+# Each rule below states one case from the fact that proves it into
+# `account/status-case`, which holds every case derived, and the status
+# field picks the first listed case any rule derives (`pick: :top`), so
+# the cases rank rather than exclude one another:
 #
 #   case:suspended   the service withdrew
 #   case:active      activated
 #   case:registered  enrolled
 #   case:retired     an onboarding account a real one replaced
 #   case:onboarding  a locally custodied account
+#
+# The rules conclude into their own concept rather than into this one: a
+# field's pick says how the relation is read, and the rules add to the
+# relation it reads.
 concept!: &account/status
   this: tonk:account/status
   description: The account's status, derived from its registration facts.
@@ -4341,6 +4348,26 @@ concept!: &account/status
         - case:registered
         - case:retired
         - case:onboarding
+      pick: :top
+
+# Every case the rules below derive for an account, unranked: what
+# `account/status` ranks.
+concept!: &account/status-case
+  this: tonk:account/status-case
+  description: A case of an account's status, one row per case a rule derives.
+  with:
+    status:
+      description: >
+        One of the cases `account/status` lists, derived from the
+        registration fact that proves it.
+      the: xyz.tonk.account/status
+      as:
+        - case:suspended
+        - case:active
+        - case:registered
+        - case:retired
+        - case:onboarding
+      cardinality: :many
 
 view!:
   this: tonk:account/status
@@ -4364,9 +4391,9 @@ view!:
 # profile determines the row.
 #
 # A deductive rule states its case positively and never negates: the
-# `presence` field lists its cases best first, so `remote` is the
-# rule every space with a session satisfies, and any better-ranked case
-# a replica supports wins over it.
+# `presence` field of `space` lists its cases best first and picks the
+# first listed, so `remote` is the rule every space with a session
+# satisfies, and any better-ranked case a replica supports wins over it.
 #
 # Seeding is genuinely per-replica: only the device that CREATED a space
 # ever sees it mid-seed, since any other device holding it pulled content
@@ -4464,18 +4491,20 @@ rule!:
 
 concept!: &space/presence
   this: tonk:space/presence
-  description: Where a space stands on this device.
+  description: Where a space stands on this device, one row per case a rule derives.
   with:
     presence:
       description: >
         `case:seeding`, `case:replicating`, `case:replicated` or
-        `case:remote`: the first listed case any rule derives.
+        `case:remote`: every case a rule derives. The `presence`
+        field of `space` picks the first listed.
       the: xyz.tonk.space/presence
       as:
         - case:seeding
         - case:replicating
         - case:replicated
         - case:remote
+      cardinality: :many
 
 # Every space with a session is remote until a better-ranked case says
 # otherwise.
@@ -4567,10 +4596,10 @@ rule!:
         this: ?presence
         is: case:replicated
 
-# ACCOUNT STATUS — one positive rule per case; the field ranks them.
+# ACCOUNT STATUS — one positive rule per case; the status field ranks them.
 rule!:
   description: A locally custodied account is onboarding
-  assert: account/status
+  assert: account/status-case
   when:
     - assert: account/onboarding
       where: { this: ?this }
@@ -4582,7 +4611,7 @@ rule!:
 # binding it.
 rule!:
   description: An onboarding account a real one replaced is retired
-  assert: account/status
+  assert: account/status-case
   when:
     - assert: account/onboarding
       where: { this: ?this, retired-at: ?retired }
@@ -4592,7 +4621,7 @@ rule!:
         is: case:retired
 rule!:
   description: An enrolled account is registered
-  assert: account/status
+  assert: account/status-case
   when:
     - assert: account/registered
       where:
@@ -4603,7 +4632,7 @@ rule!:
         is: case:registered
 rule!:
   description: An activated account is active
-  assert: account/status
+  assert: account/status-case
   when:
     - assert: account/active
       where: { this: ?this }
@@ -4613,7 +4642,7 @@ rule!:
         is: case:active
 rule!:
   description: A suspended account is suspended
-  assert: account/status
+  assert: account/status-case
   when:
     - assert: account/suspended
       where: { this: ?this }
@@ -6864,7 +6893,7 @@ concept!: &intent/action
     name:
       description: A word or phrase the command answers to.
       the: tonk.dialog.intent.action/name
-      pick: :all
+      cardinality: :many
       as: text
 
 concept!: &intent/choice

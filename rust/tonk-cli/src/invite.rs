@@ -481,6 +481,7 @@ async fn issue_ticket(
 }
 
 /// Record a previously minted invitation after its recovery state is durable.
+#[allow(deprecated)]
 pub(crate) async fn record_invitation(
     site: &TonkSite,
     chain: &dialog_ucan_core::DelegationChain,
@@ -836,6 +837,7 @@ async fn retain_claim_authority(joined: &TonkSite, chain: dialog_ucan_core::Dele
 
 /// whoever it names — including a founder claiming an invite to their own
 /// space, whose profile is shared with every other site on this machine.
+#[allow(deprecated)]
 async fn record_claim_roster(
     joined: &TonkSite,
     member: &Did,

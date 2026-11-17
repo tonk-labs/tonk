@@ -181,6 +181,7 @@ pub(crate) async fn ensure(
     })
 }
 
+#[allow(deprecated)]
 async fn record_metadata(
     site: &TonkSite,
     name: &str,
@@ -265,6 +266,7 @@ pub async fn record_of(
 /// Set the local `main` branch's upstream to `<remote>/main`,
 /// writing the corresponding `TrackingBranch` and remote-side
 /// `Branch` concepts on the meta branch.
+#[allow(deprecated)]
 pub async fn set_upstream(
     site: &TonkSite,
     remote_name: &str,

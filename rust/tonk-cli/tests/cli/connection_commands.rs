@@ -278,6 +278,7 @@ fn connection_directory_resume_record_is_public_and_exact() -> Result<()> {
 }
 
 #[tokio::test]
+#[allow(deprecated)]
 async fn connection_command_imports_bearer_restarts_and_keeps_account_state() -> Result<()> {
     use tonk_schema::prelude::DidExt as _;
     let s3 =

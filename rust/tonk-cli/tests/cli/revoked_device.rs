@@ -192,6 +192,7 @@ async fn it_lists_devices_promptly_after_a_delegated_revocation(
 /// e2e: the pull moved the access head past the local archive, and the
 /// proof for hydrating it waited on its own fetch.
 #[dialog_common::test]
+#[allow(deprecated)]
 async fn it_lists_devices_promptly_after_another_device_pushed(
     env: AccessServiceAddress,
 ) -> Result<()> {

@@ -323,7 +323,7 @@ async fn enumerate_attributes(site: &TonkSite) -> Result<Vec<AttributeInfo>> {
   this:        ?a
   id:          ?the
   as:          ?type
-  pick:        ?pick
+  cardinality: ?cardinality
   description: ?desc
 "#;
     let response = run_query(site, QUERY).await?;
@@ -345,12 +345,7 @@ async fn enumerate_attributes(site: &TonkSite) -> Result<Vec<AttributeInfo>> {
                     .map(|kind| kind.anchor().to_owned())
                     .unwrap_or(wire)
             },
-            cardinality: {
-                let wire = take_string(&row.fields, "pick");
-                tonk_notation::Pick::from_wire(&wire)
-                    .map(|pick| pick.anchor().to_owned())
-                    .unwrap_or(wire)
-            },
+            cardinality: take_string(&row.fields, "cardinality"),
             description: take_string(&row.fields, "description"),
         });
     }
@@ -564,8 +559,8 @@ fn render_attribute(out: &mut String, attr: &AttributeInfo) {
     if !attr.type_name.is_empty() {
         let _ = writeln!(out, "  as:          {}", attr.type_name);
     }
-    if !attr.cardinality.is_empty() && attr.cardinality != "last" {
-        let _ = writeln!(out, "  pick:        :{}", attr.cardinality);
+    if !attr.cardinality.is_empty() && attr.cardinality != "one" {
+        let _ = writeln!(out, "  cardinality: :{}", attr.cardinality);
     }
     out.push('\n');
 }
@@ -578,7 +573,12 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
     out.push_str("  with:\n");
     for (field, attr_descriptor) in concept.descriptor.with().iter() {
         let uri = attr_descriptor.the().to_string();
-        match uri_to_name.get(&uri) {
+        // A field with a pick says so in its inline definition: a
+        // bare reference names the attribute alone.
+        match uri_to_name
+            .get(&uri)
+            .filter(|_| attr_descriptor.pick().is_none())
+        {
             // Named — use the bare-symbol reference; the
             // analyzer resolves it through the published name
             // table on the branch.
@@ -588,7 +588,8 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
             // Anonymous — emit the inline definition so the
             // re-submitted document carries enough information to
             // reconstruct the attribute. Uses `the:` URI plus the
-            // type, or the values it lists, and the pick.
+            // type, or the values it lists, the cardinality, and the
+            // pick the field reads one claim with.
             None => {
                 let _ = writeln!(out, "    {field}:");
                 let _ = writeln!(out, "      the:         {uri}");
@@ -601,10 +602,21 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
                 } else if let Some(t) = attr_descriptor.content_type() {
                     let _ = writeln!(out, "      as:          {}", type_to_notation(&t));
                 }
-                let pick = attr_descriptor.descriptor().pick();
-                let implied = if among.is_empty() { "last" } else { "top" };
-                if pick.name() != implied {
-                    let _ = writeln!(out, "      pick:        :{}", pick.name());
+                // A pick implies its cardinality: `last` one, every other
+                // pick many. Only a cardinality it does not imply is written.
+                let many =
+                    attr_descriptor.descriptor().cardinality() == dialog_query::Cardinality::Many;
+                match attr_descriptor.pick() {
+                    Some(pick) => {
+                        let _ = writeln!(out, "      pick:        :{}", pick.name());
+                        if many && pick == dialog_query::selective::Selective::Last {
+                            let _ = writeln!(out, "      cardinality: :many");
+                        }
+                    }
+                    None if many => {
+                        let _ = writeln!(out, "      cardinality: :many");
+                    }
+                    None => {}
                 }
                 let desc = attr_descriptor.description();
                 if !desc.is_empty() {

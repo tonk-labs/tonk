@@ -13,7 +13,10 @@
 //! as a separate fact: for each field of a concept, an EAV claim
 //! whose `the` is `db.concept.with/{fieldName}` and whose value
 //! is the attribute entity URI. Optional fields additionally carry a
-//! boolean marker claim `db.concept.optional/{fieldName}`.
+//! boolean marker claim `db.concept.optional/{fieldName}`, and a field
+//! that reads one of its attribute's claims with a pick carries its name
+//! as `db.concept.pick/{fieldName}` (`top`, `max`, `min`, or `last` over
+//! a cardinality-many attribute).
 //!
 //! The relation namespace (`db.concept.with`) matches the one
 //! used by the `carry` CLI so that field-name facts written by
@@ -51,6 +54,9 @@ const WITH_DOMAIN: &str = "db.concept.with";
 
 /// Domain prefix for the per-field optional marker.
 const OPTIONAL_DOMAIN: &str = "db.concept.optional";
+
+/// Domain prefix for the per-field pick.
+const PICK_DOMAIN: &str = "db.concept.pick";
 
 /// Build the claim relation that names a required field of a
 /// concept.
@@ -99,6 +105,46 @@ pub fn parse_optional(the: &CorpusRelation) -> Option<String> {
     s.strip_prefix(OPTIONAL_DOMAIN)
         .and_then(|rest| rest.strip_prefix('/'))
         .map(str::to_owned)
+}
+
+/// Build the relation that records the pick a concept field reads one of
+/// its attribute's claims with: `db.concept.pick/{field_name}`, valued
+/// with the pick's name. A field without one carries no such claim, so
+/// its storage is as it was before field picks.
+pub fn pick(field_name: &str) -> Result<CorpusRelation, dialog_corpus::DialogCorpusError> {
+    format!("{PICK_DOMAIN}/{field_name}").parse()
+}
+
+/// Recover the field name from a relation in the `db.concept.pick`
+/// domain. Returns `None` if `the` is in any other domain.
+pub fn parse_pick(the: &CorpusRelation) -> Option<String> {
+    let s = String::from(the);
+    s.strip_prefix(PICK_DOMAIN)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .map(str::to_owned)
+}
+
+/// Rebuild one concept field from its attribute and the markers its
+/// concept stores for it: optional, and the pick it reads one claim with.
+pub fn concept_field(
+    descriptor: AttributeDescriptor,
+    optional: bool,
+    pick: Option<&str>,
+) -> Result<ConceptFieldDescriptor, String> {
+    let field = if optional {
+        ConceptFieldDescriptor::optional(descriptor)
+    } else {
+        ConceptFieldDescriptor::required(descriptor)
+    };
+    match pick {
+        None => Ok(field),
+        Some(name) => {
+            let pick: dialog_query::selective::Selective = name
+                .parse()
+                .map_err(|_| format!("{name:?} names no pick a field reads one claim with"))?;
+            field.picking(pick).map_err(|e| e.to_string())
+        }
+    }
 }
 
 // -----------------------------------------------------------------
@@ -294,6 +340,25 @@ impl ConceptByEntity {
             })
             .collect();
 
+        // The picks carry text, read by a third, text-typed query.
+        let pick_claims: Vec<dialog_query::Claim> = source
+            .select(text_claims_of(&self.entity))
+            .perform(env)
+            .try_vec()
+            .await
+            .map_err(|e| ConceptLookupError::query(format!("concept-pick query failed: {e:?}")))?;
+        let picks: std::collections::BTreeMap<String, String> = pick_claims
+            .into_iter()
+            .filter_map(|claim| {
+                let the: CorpusRelation = claim.the.into();
+                let field = parse_pick(&the)?;
+                match claim.is {
+                    Value::String(name) => Some((field, name)),
+                    _ => None,
+                }
+            })
+            .collect();
+
         let mut fields: Vec<(String, ConceptFieldDescriptor)> = Vec::new();
         for claim in raw_claims {
             let the: CorpusRelation = claim.the.into();
@@ -312,11 +377,12 @@ impl ConceptByEntity {
                     entity: attribute_entity.to_string(),
                 });
             };
-            let field = if optional_fields.contains(&field_name) {
-                ConceptFieldDescriptor::optional(facts.descriptor)
-            } else {
-                ConceptFieldDescriptor::required(facts.descriptor)
-            };
+            let field = concept_field(
+                facts.descriptor,
+                optional_fields.contains(&field_name),
+                picks.get(&field_name).map(String::as_str),
+            )
+            .map_err(|e| ConceptLookupError::query(format!("field {field_name:?}: {e}")))?;
             fields.push((field_name, field));
         }
 
@@ -374,7 +440,7 @@ impl AttributeByEntity {
                 this: Term::from(self.entity.clone()),
                 id: Term::var("id"),
                 r#as: Term::var("as"),
-                pick: Term::var("pick"),
+                cardinality: Term::var("cardinality"),
                 description: Term::var("description"),
             })
             .perform(env)
@@ -475,7 +541,7 @@ impl AttributeById {
                 this: Term::var("attribute"),
                 id: Term::from(Id(self.id)),
                 r#as: Term::var("as"),
-                pick: Term::var("pick"),
+                cardinality: Term::var("cardinality"),
                 description: Term::var("description"),
             })
             .perform(env)
@@ -532,8 +598,8 @@ impl AttributeByName {
 
 /// The facts an attribute entity carries for `descriptor`, under its
 /// identity: `db.attribute/id`, `db.attribute/as` when it has a type,
-/// `db.attribute/pick`, `db.attribute/among` when its `as:` lists
-/// values, and `db.meta/description`. What an `attribute!:`
+/// `db.attribute/cardinality`, `db.attribute/among` when its `as:`
+/// lists values, and `db.meta/description`. What an `attribute!:`
 /// declaration writes, and what [`AttributeByEntity`] reads back.
 pub fn attribute_statements(
     descriptor: &AttributeDescriptor,
@@ -548,8 +614,7 @@ pub fn attribute_statements(
         of: entity.clone(),
         is: value,
         cause: None,
-        cardinality: None,
-        pick: Some(dialog_query::Pick::Last),
+        cardinality: Some(dialog_query::Cardinality::One),
     };
     let mut statements = vec![claim(
         the!("db.attribute/id"),
@@ -562,12 +627,10 @@ pub fn attribute_statements(
             .map_err(|e| format!("type is no entity: {e}"))?;
         statements.push(claim(the!("db.attribute/as"), Value::Entity(kind)));
     }
-    let pick: Entity = descriptor
-        .pick()
-        .uri()
-        .parse()
-        .map_err(|e| format!("pick is no entity: {e}"))?;
-    statements.push(claim(the!("db.attribute/pick"), Value::Entity(pick)));
+    statements.push(claim(
+        the!("db.attribute/cardinality"),
+        Value::String(descriptor.cardinality().name().to_owned()),
+    ));
     if !descriptor.among().is_empty() {
         let among = serde_json::to_string(descriptor.among()).map_err(|e| e.to_string())?;
         statements.push(claim(the!("db.attribute/among"), Value::String(among)));
@@ -607,8 +670,8 @@ fn build_attribute_descriptor(
         );
     }
     shape.insert(
-        "pick".to_owned(),
-        serde_json::Value::String(facts.pick.0.to_string()),
+        "cardinality".to_owned(),
+        serde_json::Value::String(facts.cardinality.0.clone()),
     );
     if !facts.description.0.is_empty() {
         shape.insert(
@@ -685,7 +748,9 @@ impl Statement for AnonymousConcept {
             &self.this,
             &self.descriptor,
             update,
-            |update, the, of, is| Update::associate(update, the, of, is, dialog_corpus::Pick::All),
+            |update, the, of, is| {
+                Update::associate(update, the, of, is, dialog_corpus::Cardinality::Many)
+            },
         );
     }
     fn retract(self, update: &mut impl Update) {
@@ -788,7 +853,9 @@ impl Statement for TransientConcept {
             &self.this,
             &self.descriptor,
             update,
-            |update, the, of, is| Update::associate(update, the, of, is, dialog_corpus::Pick::All),
+            |update, the, of, is| {
+                Update::associate(update, the, of, is, dialog_corpus::Cardinality::Many)
+            },
         );
         dialog_repository::Transient(self.this).assert(update);
     }
@@ -1421,7 +1488,7 @@ where
             this: Term::from(attribute_entity.clone()),
             id: Term::var("id"),
             r#as: Term::var("as"),
-            pick: Term::var("pick"),
+            cardinality: Term::var("cardinality"),
             description: Term::var("description"),
         }
         .perform(env)
@@ -1613,6 +1680,15 @@ fn emit_concept_facts<U: Update, F: Fn(&mut U, CorpusRelation, Entity, Value)>(
                 meta_attr(OPTIONAL_DOMAIN, field_name),
                 entity.clone(),
                 Value::Boolean(true),
+            );
+        }
+        // A field that reads one claim with a pick names it.
+        if let Some(pick) = field.pick() {
+            op(
+                update,
+                meta_attr(PICK_DOMAIN, field_name),
+                entity.clone(),
+                Value::String(pick.name().to_owned()),
             );
         }
     }
@@ -1998,6 +2074,7 @@ mod tests {
     /// desugar against `id:<n>`. A separate test will cover the
     /// inverted lookup once the resolver is rewired.)
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_returns_concept_with_source_from_concept_query() -> anyhow::Result<()> {
         use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::{Any, Output as _, Parameters, Term};
@@ -2037,11 +2114,9 @@ mod tests {
                         .expect("a type entity")),
             )
             .assert(
-                dialog_query::the!("db.attribute/pick")
+                dialog_query::the!("db.attribute/cardinality")
                     .of(attr_entity.clone())
-                    .is("last:"
-                        .parse::<dialog_corpus::Entity>()
-                        .expect("a pick entity")),
+                    .is("one".to_owned()),
             )
             .assert(
                 dialog_query::the!("db.meta/description")
@@ -2105,6 +2180,7 @@ mod tests {
     /// the per-field `is_optional()` flag (required field stays
     /// required, optional field stays optional).
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_reconstructs_optional_flag_from_branch() -> anyhow::Result<()> {
         use dialog_peer::helpers::{test_repo, test_session_with_peer};
 
@@ -2162,11 +2238,12 @@ mod tests {
         Ok(())
     }
 
-    /// An attribute's facts rebuild its descriptor as declared: a
-    /// ranked `as:` list reads as `top` among those values, a set
-    /// reads as `all`, and a plain attribute as `last`.
+    /// An attribute's facts rebuild its descriptor as declared: an
+    /// `as:` list rebuilds as the values it lists, in their order, a set
+    /// as cardinality many, and a plain attribute as cardinality one.
     #[dialog_common::test]
-    async fn it_rebuilds_an_attributes_pick_from_the_branch() -> anyhow::Result<()> {
+    #[allow(deprecated)]
+    async fn it_rebuilds_an_attributes_cardinality_from_the_branch() -> anyhow::Result<()> {
         use dialog_peer::helpers::{test_repo, test_session_with_peer};
 
         let (operator, profile) = test_session_with_peer().await;
@@ -2177,7 +2254,7 @@ mod tests {
             r#"{
                 "with": {
                     "status": { "the": "xyz.tonk.job/status", "as": ["case:suspended", "case:active"] },
-                    "tags": { "the": "xyz.tonk.job/tags", "as": "text:", "pick": "all:" },
+                    "tags": { "the": "xyz.tonk.job/tags", "as": "text:", "cardinality": "many" },
                     "name": { "the": "xyz.tonk.job/name", "as": "text:" }
                 }
             }"#,
@@ -2215,14 +2292,14 @@ mod tests {
                 .clone()
         };
         let status = field("status");
-        assert_eq!(status.pick().name(), "top");
+        assert_eq!(status.cardinality(), dialog_query::Cardinality::One);
         assert_eq!(
             status.among(),
             &[
                 Value::Entity("case:suspended".parse()?),
                 Value::Entity("case:active".parse()?)
             ],
-            "the ranked values rebuild as the entities they name, best first"
+            "the listed values rebuild as the entities they name, in their order"
         );
         let declared = descriptor
             .with()
@@ -2235,9 +2312,9 @@ mod tests {
             declared.to_uri(),
             "the rebuilt descriptor keeps the declared identity"
         );
-        assert_eq!(field("tags").pick().name(), "all");
+        assert_eq!(field("tags").cardinality(), dialog_query::Cardinality::Many);
         let name = field("name");
-        assert_eq!(name.pick().name(), "last");
+        assert_eq!(name.cardinality(), dialog_query::Cardinality::One);
         assert!(name.among().is_empty());
         Ok(())
     }
@@ -2247,6 +2324,7 @@ mod tests {
     /// `Boolean(true)`. A second row over a durable concept on the
     /// same branch must carry `Boolean(false)`.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_returns_transient_marker_on_transient_concept_rows() -> anyhow::Result<()> {
         use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::{Any, Output as _, Parameters, Term};
@@ -2303,11 +2381,9 @@ mod tests {
                         .expect("a type entity")),
             )
             .assert(
-                dialog_query::the!("db.attribute/pick")
+                dialog_query::the!("db.attribute/cardinality")
                     .of(t_attr_entity.clone())
-                    .is("last:"
-                        .parse::<dialog_corpus::Entity>()
-                        .expect("a pick entity")),
+                    .is("one".to_owned()),
             )
             .assert(
                 dialog_query::the!("db.meta/description")
@@ -2328,11 +2404,9 @@ mod tests {
                         .expect("a type entity")),
             )
             .assert(
-                dialog_query::the!("db.attribute/pick")
+                dialog_query::the!("db.attribute/cardinality")
                     .of(d_attr_entity.clone())
-                    .is("last:"
-                        .parse::<dialog_corpus::Entity>()
-                        .expect("a pick entity")),
+                    .is("one".to_owned()),
             )
             .assert(
                 dialog_query::the!("db.meta/description")
@@ -2398,6 +2472,7 @@ mod tests {
     /// only transient concepts: a transient concept appears, the
     /// durable concept on the same branch does not.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_queries_command_returns_only_transient_concepts() -> anyhow::Result<()> {
         use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::{Any, Output as _, Parameters, Term};
@@ -2447,11 +2522,9 @@ mod tests {
                         .expect("a type entity")),
             )
             .assert(
-                dialog_query::the!("db.attribute/pick")
+                dialog_query::the!("db.attribute/cardinality")
                     .of(c_attr_entity.clone())
-                    .is("last:"
-                        .parse::<dialog_corpus::Entity>()
-                        .expect("a pick entity")),
+                    .is("one".to_owned()),
             )
             .assert(
                 dialog_query::the!("db.meta/description")
@@ -2471,11 +2544,9 @@ mod tests {
                         .expect("a type entity")),
             )
             .assert(
-                dialog_query::the!("db.attribute/pick")
+                dialog_query::the!("db.attribute/cardinality")
                     .of(d_attr_entity.clone())
-                    .is("last:"
-                        .parse::<dialog_corpus::Entity>()
-                        .expect("a pick entity")),
+                    .is("one".to_owned()),
             )
             .assert(
                 dialog_query::the!("db.meta/description")
@@ -2527,6 +2598,7 @@ mod tests {
     /// claim through a branch and confirm the lookup recovers
     /// the target.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_resolves_published_name_to_target_entity() -> anyhow::Result<()> {
         use dialog_peer::helpers::{test_repo, test_session_with_peer};
 
@@ -2587,6 +2659,7 @@ mod tests {
     /// transaction (additive across transactions), and the bug
     /// is in `dialog` itself.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_supersedes_cardinality_one_across_transactions() -> anyhow::Result<()> {
         use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::Output as _;
@@ -2674,6 +2747,7 @@ mod tests {
     /// most one value for this `(of, the)` pair" — when called
     /// twice in the same batch, the second call should win.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_supersedes_cardinality_one_within_transaction() -> anyhow::Result<()> {
         use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::Output as _;
@@ -2748,6 +2822,7 @@ mod tests {
     /// same cardinality-one filter dialog applies to the forward
     /// direction, so v1 disappears.
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_resolves_only_latest_name_target_via_name_concept() -> anyhow::Result<()> {
         use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::Output as _;

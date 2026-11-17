@@ -32,6 +32,7 @@ fn free_port() -> anyhow::Result<u16> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[allow(deprecated)]
 async fn a_push_and_pull_behind_a_link_cross_only_the_link() -> anyhow::Result<()> {
     let port = free_port()?;
     let service = access_service(AccessServiceSettings {

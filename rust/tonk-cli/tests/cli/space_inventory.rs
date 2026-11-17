@@ -20,6 +20,7 @@ struct Row<'a> {
 
 /// Register a space and give it the roster `rows` describes. An empty
 /// `rows` leaves it local-only: no roster at all.
+#[allow(deprecated)]
 async fn add_space(
     store: &SpaceStore,
     config: &SiteConfig,
@@ -154,6 +155,7 @@ async fn it_reads_owner_and_role_from_each_space_s_own_roster() -> Result<()> {
 /// space still names its owner, the rows that are sound keep their roles,
 /// and what was wrong says so in the diagnostics.
 #[dialog_common::test]
+#[allow(deprecated)]
 async fn it_reports_a_malformed_row_without_losing_the_rest_of_the_roster() -> Result<()> {
     let tmp = tempfile::tempdir()?;
     let (store, config) = fixture(tmp.path())?;
@@ -283,6 +285,7 @@ async fn it_lists_another_accounts_space_without_marking_it_out_of_reach() -> Re
 
 /// Signed out, the roster row this device's own profile holds is still ours.
 #[dialog_common::test]
+#[allow(deprecated)]
 async fn it_claims_the_device_row_when_no_account_is_signed_in() -> Result<()> {
     let tmp = tempfile::tempdir()?;
     let (store, config) = fixture(tmp.path())?;

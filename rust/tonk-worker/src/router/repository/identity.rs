@@ -1,9 +1,10 @@
 //! Keys what a space wrote itself by the identities its library now carries.
 //!
-//! dialog names an attribute by a hash of its relation, type and pick, and
-//! an unnamed concept by a hash of its attributes. The release before picks
-//! hashed less, so every attribute's identity changed, and every
-//! unnamed concept's with it. An upgrade reverts what the last install wrote
+//! dialog names an attribute by a hash of its relation, type, cardinality
+//! and listed values, and an unnamed concept by a hash of its fields. Each of
+//! the two releases before this one hashed otherwise (the one before picks
+//! hashed less, the one with picks hashed the pick), so every attribute's
+//! identity changed with each, and every unnamed concept's with it. An upgrade reverts what the last install wrote
 //! and installs the library again, which moves the library's own definitions
 //! to their new identities. What the space wrote itself stays as it was: a
 //! route whose concept is a library concept, a name pointing at one, a
@@ -11,14 +12,16 @@
 //! wrote for a library concept. Each of those then names an entity nothing
 //! defines, and the page that reads it reports the model missing.
 //!
-//! [`moves`] pairs each identity the installed library had under the earlier
-//! release with the one it has now, and [`rekey`] lists the writes that make
+//! [`moves`] pairs each identity the installed library had under either
+//! earlier release with the one it has now, and [`rekey`] lists the writes that make
 //! the space's facts follow.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use dialog_corpus::{Entity, Fact, Pick, Relation, Selector, Value};
-use dialog_query::migration::{attribute_uri_v0, concept_identity_v0};
+use dialog_corpus::{Cardinality, Entity, Fact, Relation, Selector, Value};
+use dialog_query::migration::{
+    attribute_uri_v0, attribute_uri_v1, concept_identity_v0, concept_identity_v1,
+};
 use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor};
 use futures_util::StreamExt as _;
 
@@ -36,8 +39,8 @@ pub(super) struct Rekey {
 }
 
 /// Each attribute and unnamed concept `entities` holds on `batch`, paired
-/// with the identity the release before picks gave it, where the
-/// two differ. See [`moves_in`].
+/// with each identity an earlier release gave it, where the two differ. See
+/// [`moves_in`].
 pub(super) async fn moves(
     tonk: &TonkState,
     batch: &dialog_repository::TransactionBatch,
@@ -77,22 +80,29 @@ pub(super) async fn moves(
 /// Facts about entities, each as its `(attribute, value)` pairs.
 pub(super) type Facts = HashMap<Entity, Vec<(Relation, Value)>>;
 
-/// Each attribute and unnamed concept `facts` define, paired with the
-/// identity the release before picks gave it, where the two
-/// differ: `(identity then, identity now)`.
+/// Each attribute and unnamed concept `facts` define, paired with each
+/// identity an earlier release gave it, where the two differ: `(identity
+/// then, identity now)`.
 ///
-/// An attribute's earlier identity hashed its relation, cardinality and type,
-/// which its `db.attribute/*` facts spell: the cardinality is its pick's
-/// arity. A concept's hashed its fields'
-/// attributes and whether each is optional, which its `db.concept.with/*` and
-/// `db.concept.optional/*` facts spell. A concept named by an entity of its
-/// own (`tonk:workspace/shell`) kept that entity and has no move.
+/// An attribute's identity before picks hashed its relation, cardinality and
+/// type, and its identity under picks hashed its relation, the pick its
+/// cardinality stood for (`last` or `all`), its type and its listed values
+/// ([`attribute_uri_v1`]), which its `db.attribute/*` facts spell. A concept's
+/// hashed its fields' attributes and whether each is optional, and under picks
+/// a field's pick as the pick its attribute was read under
+/// ([`concept_identity_v1`]), which its `db.concept.with/*`,
+/// `db.concept.optional/*` and `db.concept.pick/*` facts spell. An
+/// attribute a ranking pick read had an identity under picks dialog does not
+/// reproduce on its own; a concept over it moves all the same. A concept
+/// named by an entity of its own (`tonk:workspace/shell`) kept that entity and
+/// has no move.
 pub(super) fn moves_in(facts: &Facts) -> Vec<(Entity, Entity)> {
     let mut attributes: HashMap<&Entity, AttributeDescriptor> = HashMap::new();
     let mut moves = Vec::new();
     for (entity, claims) in facts {
         if let Some(descriptor) = attribute_descriptor(claims) {
             push_move(&mut moves, attribute_uri_v0(&descriptor), entity);
+            push_move(&mut moves, attribute_uri_v1(&descriptor), entity);
             attributes.insert(entity, descriptor);
         }
     }
@@ -102,6 +112,7 @@ pub(super) fn moves_in(facts: &Facts) -> Vec<(Entity, Entity)> {
         }
         let mut fields: BTreeMap<String, &Entity> = BTreeMap::new();
         let mut optional: HashSet<String> = HashSet::new();
+        let mut picks: HashMap<String, String> = HashMap::new();
         for (the, is) in claims {
             let the = the.to_string();
             if let Some(field) = the.strip_prefix("db.concept.with/")
@@ -112,6 +123,10 @@ pub(super) fn moves_in(facts: &Facts) -> Vec<(Entity, Entity)> {
                 && *is == Value::Boolean(true)
             {
                 optional.insert(field.to_owned());
+            } else if let Some(field) = the.strip_prefix("db.concept.pick/")
+                && let Value::String(name) = is
+            {
+                picks.insert(field.to_owned(), name.clone());
             }
         }
         if fields.is_empty() {
@@ -121,14 +136,13 @@ pub(super) fn moves_in(facts: &Facts) -> Vec<(Entity, Entity)> {
             .iter()
             .map(|(field, attribute)| {
                 let descriptor = attributes.get(attribute)?.clone();
-                Some((
-                    field.clone(),
-                    if optional.contains(field) {
-                        ConceptFieldDescriptor::optional(descriptor)
-                    } else {
-                        ConceptFieldDescriptor::required(descriptor)
-                    },
-                ))
+                tonk_schema::concept::concept_field(
+                    descriptor,
+                    optional.contains(field),
+                    picks.get(field).map(String::as_str),
+                )
+                .ok()
+                .map(|descriptor| (field.clone(), descriptor))
             })
             .collect();
         let Some(Ok(descriptor)) = descriptors.map(ConceptDescriptor::try_from) else {
@@ -137,6 +151,11 @@ pub(super) fn moves_in(facts: &Facts) -> Vec<(Entity, Entity)> {
         push_move(
             &mut moves,
             concept_identity_v0(&descriptor).to_string(),
+            entity,
+        );
+        push_move(
+            &mut moves,
+            concept_identity_v1(&descriptor).to_string(),
             entity,
         );
     }
@@ -183,8 +202,13 @@ pub(super) async fn rekey(
                 // Moved with the entity it is about, below.
                 continue;
             }
-            retract.push(raw(&claim.the, &claim.of, &claim.is, Pick::All));
-            assert.push(raw(&claim.the, &claim.of, &follow(&claim.is), Pick::All));
+            retract.push(raw(&claim.the, &claim.of, &claim.is, Cardinality::Many));
+            assert.push(raw(
+                &claim.the,
+                &claim.of,
+                &follow(&claim.is),
+                Cardinality::Many,
+            ));
         }
 
         let about = select(tonk, batch, Selector::new().of(earlier.clone())).await?;
@@ -199,14 +223,14 @@ pub(super) async fn rekey(
                 .push(claim);
         }
         for claims in by_relation.into_values() {
-            let policy = if claims.len() == 1 {
-                Pick::Last
+            let cardinality = if claims.len() == 1 {
+                Cardinality::One
             } else {
-                Pick::All
+                Cardinality::Many
             };
             for claim in claims {
-                retract.push(raw(&claim.the, &claim.of, &claim.is, Pick::All));
-                assert.push(raw(&claim.the, now, &follow(&claim.is), policy.clone()));
+                retract.push(raw(&claim.the, &claim.of, &claim.is, Cardinality::Many));
+                assert.push(raw(&claim.the, now, &follow(&claim.is), cardinality));
             }
         }
     }
@@ -228,8 +252,8 @@ fn is_definition(the: &Relation) -> bool {
 }
 
 /// The descriptor an attribute's `db.attribute/*` facts spell, enough to
-/// compute its earlier identity: relation, type and pick, whose arity is
-/// the cardinality the earlier identity hashed.
+/// compute its earlier identities: relation, type, cardinality and listed
+/// values.
 fn attribute_descriptor(claims: &[(Relation, Value)]) -> Option<AttributeDescriptor> {
     let fact = |name: &str| {
         claims
@@ -244,11 +268,16 @@ fn attribute_descriptor(claims: &[(Relation, Value)]) -> Option<AttributeDescrip
     if let Some(Value::Entity(kind)) = fact("db.attribute/as") {
         shape.insert("as".to_owned(), serde_json::Value::String(kind.to_string()));
     }
-    if let Some(Value::Entity(pick)) = fact("db.attribute/pick") {
+    if let Some(Value::String(cardinality)) = fact("db.attribute/cardinality") {
         shape.insert(
-            "pick".to_owned(),
-            serde_json::Value::String(pick.to_string()),
+            "cardinality".to_owned(),
+            serde_json::Value::String(cardinality.clone()),
         );
+    }
+    if let Some(Value::String(among)) = fact("db.attribute/among")
+        && let Ok(listed) = serde_json::from_str::<serde_json::Value>(among)
+    {
+        shape.insert("as".to_owned(), listed);
     }
     serde_json::from_value(serde_json::Value::Object(shape)).ok()
 }
@@ -261,12 +290,12 @@ fn push_move(moves: &mut Vec<(Entity, Entity)>, earlier: String, now: &Entity) {
     }
 }
 
-fn raw(the: &Relation, of: &Entity, is: &Value, policy: Pick) -> RawClaim {
+fn raw(the: &Relation, of: &Entity, is: &Value, cardinality: Cardinality) -> RawClaim {
     RawClaim {
         the: the.clone(),
         of: of.clone(),
         is: is.clone(),
-        policy,
+        cardinality,
     }
 }
 

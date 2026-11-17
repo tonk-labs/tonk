@@ -119,6 +119,7 @@ impl AccountFixture {
         Self::build(remote, false).await
     }
 
+    #[allow(deprecated)]
     async fn build(remote: &str, hydrated: bool) -> Result<Self> {
         let test = TestSite::new().await?;
         let profile = test.site.profile.clone();

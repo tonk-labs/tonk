@@ -410,6 +410,7 @@ mod tests {
     /// Assert a concept's backing attribute facts plus the concept
     /// itself onto a branch. Mirrors the inline emission used by
     /// `concept.rs`'s own round-trip test.
+    #[allow(deprecated)]
     async fn seed_concept<Env>(
         branch: &dialog_repository::Branch,
         operator: &Env,
@@ -480,6 +481,7 @@ mod tests {
     }
 
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_resolves_a_concept_by_name() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -571,6 +573,7 @@ mod tests {
     }
 
     #[dialog_common::test]
+    #[allow(deprecated)]
     async fn it_lists_every_published_name() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;

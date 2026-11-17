@@ -1562,7 +1562,7 @@ concept!: &db/session:
           Active branch(es) in this session. Can be multiple when overlays are used.
       the: dialog.session/branch
       as: entity
-      pick: :all
+      cardinality: :many
 
 concept!: &db/branch:
   this: concept:branch
@@ -2699,7 +2699,7 @@ concept!: &intent/action
     name:
       description: A word or phrase the command answers to.
       the: tonk.dialog.intent.action/name
-      pick: :all
+      cardinality: :many
       as: text
 
 # The command palette's interpretation of what was typed, as session facts.

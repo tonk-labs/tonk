@@ -947,6 +947,7 @@ mod tests {
         /// references, the concept marker claim, and an
         /// `id:<name>` referent so name resolution finds the
         /// concept entity.
+        #[allow(deprecated)]
         async fn assert_concept_named(&self, name: &str, descriptor: &ConceptDescriptor) {
             let mut txn = self.branch.transaction();
             for (_, attr) in descriptor.with().iter() {
@@ -1006,6 +1007,7 @@ mod tests {
         /// can reference it via `this: <entity>` in the notation —
         /// the form a `concept!:` field retraction targets. Each
         /// field is `(field, the, "Text")`; `optional` widens none.
+        #[allow(deprecated)]
         async fn assert_concept_at(&self, entity: &Entity, fields: &[(&str, &str)]) {
             let mut with = serde_json::Map::new();
             for (field, the) in fields {
@@ -1050,6 +1052,7 @@ mod tests {
         /// Publish a `db.name/referent` claim binding `name`
         /// to `entity`. Used by tests that need a name to resolve
         /// to a specific entity (not a concept the test asserted).
+        #[allow(deprecated)]
         async fn publish_name(&self, name: &str, entity: Entity) {
             let id_entity: Entity = format!("id:{name}").parse().expect("id:<name> parses");
             self.branch
@@ -1176,81 +1179,90 @@ mod tests {
         fixture.analyze(syntax).await
     }
 
-    /// An attribute declares how a field reads it: a listed `as:` or
-    /// `the:` is a ranked choice, and `pick:` names any other of
-    /// dialog's picks. An unknown pick is refused by the analyzer, and a
-    /// pick its attribute cannot read under by dialog.
+    /// A concept field reads one claim of a many-valued attribute with a
+    /// ranking pick (`pick: :top`), which the field carries and the
+    /// attribute does not, its cardinality following from the pick. An
+    /// unknown pick is refused by the analyzer, one its attribute cannot
+    /// be read with by dialog, a pick conflicting with a written
+    /// cardinality by naming both, and a listed `the:` by name.
     #[dialog_common::test]
-    fn it_lowers_a_select_policy_with_its_listed_values() {
-        let syntax = must_parse(
-            "\
-concept!: &job
-  description: \"a job\"
-  with:
-    status:
-      description: \"where it stands\"
-      the: x.y/status
-      as:
-        - case:suspended
-        - case:active
-    handle:
-      description: \"the email, else the phone\"
-      the:
-        - x.y/email
-        - x.y/phone
-      as: text
-",
-        );
-        let result = super::analyze_local(&syntax);
-        assert!(result.is_ok(), "ranked reads lower: {:?}", result.err());
-
-        let syntax = must_parse(
-            "\
-concept!: &job
-  description: \"a job\"
-  with:
-    status:
-      description: \"where it stands\"
-      the: x.y/status
-      as: entity
-      pick: :newest
-",
-        );
-        let result = super::analyze_local(&syntax);
+    fn it_lowers_a_field_pick_over_its_listed_values() {
+        let field = |body: &str| {
+            format!(
+                "concept!: &job\n  description: \"a job\"\n  with:\n    status:\n      description: \"where it stands\"\n{body}"
+            )
+        };
+        let picked = |body: &str| {
+            let syntax = must_parse(&field(body));
+            let analysis = flat(super::analyze_local(&syntax).expect("a ranked read lowers"));
+            analysis
+                .mutate
+                .statements
+                .iter()
+                .find_map(|statement| match statement {
+                    Statement::Assert(Application::Concept { query, .. })
+                        if query.terms.get("pick.status").is_some() =>
+                    {
+                        Some(query.terms.clone())
+                    }
+                    _ => None,
+                })
+        };
+        let concept = picked(
+            "      the: x.y/status\n      as:\n        - case:suspended\n        - case:active\n      pick: :top\n",
+        )
+        .expect("the concept records its field's pick");
+        assert!(matches!(
+            concept.get("pick.status"),
+            Some(Term::Constant(Value::String(name))) if name == "top"
+        ));
         assert!(
-            result
-                .as_ref()
-                .err()
-                .is_some_and(|error| format!("{error:?}").contains("unknown pick")),
-            "an unknown policy is refused: {result:?}"
+            picked("      the: x.y/status\n      as: text\n      pick: :last\n      cardinality: :many\n")
+                .is_some(),
+            "the newest of many claims is a pick the field records"
+        );
+        assert!(
+            picked("      the: x.y/status\n      as: text\n      pick: :all\n").is_none(),
+            "reading every claim is the cardinality, no pick of the field's"
         );
 
-        let syntax = must_parse(
-            "\
-concept!: &job
-  description: \"a job\"
-  with:
-    status:
-      description: \"where it stands\"
-      the: x.y/status
-      as: entity
-      pick: :top
-",
-        );
-        let result = super::analyze_local(&syntax);
+        let refused = |body: &str| {
+            let syntax = must_parse(&field(body));
+            format!("{:?}", super::analyze_local(&syntax).err())
+        };
         assert!(
-            result.is_err(),
-            "a top read without listed values is refused by dialog: {result:?}"
+            refused("      the: x.y/status\n      as: entity\n      pick: :newest\n")
+                .contains("unknown pick"),
+            "an unknown pick is refused"
+        );
+        assert!(
+            refused("      the: x.y/status\n      as: entity\n      pick: :top\n")
+                .contains("Some("),
+            "a top read without listed values is refused by dialog"
+        );
+        let conflict = refused(
+            "      the: x.y/status\n      as: integer\n      pick: :max\n      cardinality: :one\n",
+        );
+        assert!(
+            conflict.contains("`pick: :max` and `cardinality: :one` conflict"),
+            "a ranking pick over a written cardinality one names both: {conflict}"
+        );
+        assert!(
+            refused("      the:\n        - x.y/email\n        - x.y/phone\n      as: text\n")
+                .contains("names one relation"),
+            "a listed `the:` is refused by name"
         );
     }
 
-    /// A pick is a keyword: `pick: :all` names the entity `all:`, which
-    /// is what the attribute records. The bare word and the quoted word,
-    /// which earlier releases wrote, name the same entity; a pick quoted
-    /// as its entity (`"all:"`) is no pick's name and is refused.
+    /// `cardinality:` is a keyword: `:many` records `many`, and the bare
+    /// and quoted words earlier releases wrote read the same. `pick:` on
+    /// an attribute spells its cardinality, `:all` many and `:last` one;
+    /// a ranking pick on an `attribute!:` head, which has no field to
+    /// rank for, is refused with where it goes, as are a pick and a
+    /// cardinality that disagree, and a cardinality quoted as an entity.
     #[dialog_common::test]
-    async fn it_resolves_picks_as_built_in_anchors() {
-        let entity = |source: &str| -> Option<String> {
+    async fn it_reads_a_cardinality_or_a_pick_keyword() {
+        let cardinality = |source: &str| -> Option<String> {
             let syntax = must_parse(source);
             let analysis = flat(super::analyze_local(&syntax).expect("lowers"));
             let Statement::Assert(Application::Concept { query, .. }) =
@@ -1258,28 +1270,68 @@ concept!: &job
             else {
                 panic!("expected Assert(Concept)");
             };
-            match query.terms.get("pick") {
-                Some(Term::Constant(Value::Entity(entity))) => Some(entity.to_string()),
+            match query.terms.get("cardinality") {
+                Some(Term::Constant(Value::String(name))) => Some(name.clone()),
                 _ => None,
             }
         };
-        let declare = |pick: &str| {
+        let declare = |key: &str, value: &str| {
             format!(
-                "attribute!: &tags\n  the: x.y/tags\n  description: \"labels\"\n  as: text\n  pick: {pick}\n"
+                "attribute!: &tags\n  the: x.y/tags\n  description: \"labels\"\n  as: text\n  {key}: {value}\n"
             )
         };
-        assert_eq!(entity(&declare(":all")).as_deref(), Some("all:"));
-        assert_eq!(entity(&declare(":max")).as_deref(), Some("max:"));
-        assert_eq!(entity(&declare("all")).as_deref(), Some("all:"));
-        assert_eq!(entity(&declare("\"all\"")).as_deref(), Some("all:"));
-        let syntax = must_parse(&declare("\"all:\""));
-        let error = super::analyze_local(&syntax).expect_err("refused");
+        assert_eq!(
+            cardinality(&declare("cardinality", ":many")).as_deref(),
+            Some("many")
+        );
+        assert_eq!(
+            cardinality(&declare("cardinality", "many")).as_deref(),
+            Some("many")
+        );
+        assert_eq!(
+            cardinality(&declare("cardinality", "\"many\"")).as_deref(),
+            Some("many")
+        );
+        assert_eq!(
+            cardinality(&declare("cardinality", ":one")).as_deref(),
+            Some("one")
+        );
+        assert_eq!(
+            cardinality(&declare("pick", ":all")).as_deref(),
+            Some("many")
+        );
+        assert_eq!(
+            cardinality(&declare("pick", ":last")).as_deref(),
+            Some("one")
+        );
+        let refused =
+            |source: String| super::analyze_local(&must_parse(&source)).expect_err("refused");
+        let error = refused(declare("pick", ":max"));
         assert!(
             matches!(
                 &error.kind,
-                AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("unknown pick \"all:\"")
+                AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("concept field")
             ),
-            "a pick quoted as its entity is refused: {error:?}"
+            "a ranking pick on an attribute says it goes on the field: {error:?}"
+        );
+        let error = refused(format!(
+            "{}  cardinality: :many\n",
+            declare("pick", ":last")
+        ));
+        assert!(
+            matches!(
+                &error.kind,
+                AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("disagree")
+            ),
+            "an attribute's pick and cardinality agree: {error:?}"
+        );
+        let error = refused(declare("cardinality", "\"many:\""));
+        assert!(
+            matches!(
+                &error.kind,
+                AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("unknown cardinality \"many:\"")
+            ),
+            "a cardinality quoted as an entity is refused: {error:?}"
         );
     }
 
@@ -1575,26 +1627,24 @@ attribute!: &person-name
         };
     }
 
-    /// A declaration records the policy its attribute is read under
-    /// beside the arity: `select` spells it, and a ranked `as:` list
-    /// is carried as `among`, a JSON list best first. A reader
-    /// rebuilding the descriptor from the branch needs both, since
-    /// `cardinality` keeps only the arity.
+    /// A declaration records its attribute's cardinality, and a listed
+    /// `as:` as `among`, a JSON list least first. A reader rebuilding the
+    /// descriptor from the branch needs both.
     #[dialog_common::test]
-    async fn it_records_the_policy_and_the_ranked_values_of_an_attribute() {
+    async fn it_records_the_cardinality_and_the_listed_values_of_an_attribute() {
         let syntax = must_parse(
             r#"
 attribute!: &status
   the: x.y/status
   description: "where it stands"
   as:
-    - case:suspended
     - case:active
+    - case:suspended
 attribute!: &tags
   the: x.y/tags
   description: "labels"
   as: text
-  pick: :all
+  cardinality: :many
 attribute!: &name
   the: x.y/name
   description: "a name"
@@ -1619,19 +1669,19 @@ attribute!: &name
             _ => None,
         };
         let status = terms_of(0);
-        assert_eq!(entity(&status, "pick").as_deref(), Some("top:"));
+        assert_eq!(text(&status, "cardinality").as_deref(), Some("one"));
         assert_eq!(entity(&status, "as").as_deref(), Some("entity:"));
         assert_eq!(
             text(&status, "among").as_deref(),
-            Some(r#"["case:suspended","case:active"]"#),
-            "the ranked values ride as a JSON list, best first"
+            Some(r#"["case:active","case:suspended"]"#),
+            "the listed values ride as a JSON list, least first"
         );
         let tags = terms_of(1);
-        assert_eq!(entity(&tags, "pick").as_deref(), Some("all:"));
+        assert_eq!(text(&tags, "cardinality").as_deref(), Some("many"));
         assert_eq!(entity(&tags, "as").as_deref(), Some("text:"));
-        assert!(text(&tags, "among").is_none(), "a set ranks nothing");
+        assert!(text(&tags, "among").is_none(), "a set lists nothing");
         let name = terms_of(2);
-        assert_eq!(entity(&name, "pick").as_deref(), Some("last:"));
+        assert_eq!(text(&name, "cardinality").as_deref(), Some("one"));
         assert!(text(&name, "among").is_none());
     }
 
@@ -2035,10 +2085,9 @@ attribute!: &rename/name
         );
     }
 
-    /// The keyword spelling of a pick lowers to the same pick the
-    /// earlier bare spelling did.
+    /// `pick:` on an attribute lowers to the cardinality it spells.
     #[dialog_common::test]
-    async fn it_reads_a_pick_keyword() {
+    async fn it_reads_a_pick_keyword_as_its_cardinality() {
         let syntax = must_parse(
             r#"
 attribute!: &task/tags
@@ -2054,8 +2103,8 @@ attribute!: &task/tags
             panic!("expected the attribute");
         };
         assert!(matches!(
-            query.terms.get("pick"),
-            Some(Term::Constant(Value::Entity(pick))) if pick.to_string() == "all:"
+            query.terms.get("cardinality"),
+            Some(Term::Constant(Value::String(name))) if name == "many"
         ));
     }
 
@@ -3159,12 +3208,12 @@ attribute:
         let Application::Concept { query, .. } = &q.queries[0] else {
             panic!("expected Concept application");
         };
-        // The anonymous-attribute fields — id/as/pick/description —
+        // The anonymous-attribute fields — id/as/cardinality/description —
         // must all be present in the
         // unified term map. `name` is intentionally not in the
         // built-in `attribute:` view (only anchor-form attrs
         // carry a `db.meta/name` claim).
-        for field in ["id", "as", "pick", "description"] {
+        for field in ["id", "as", "cardinality", "description"] {
             assert!(query.terms.contains(field), "missing {field}");
         }
     }
@@ -3203,7 +3252,7 @@ branch:
         let Application::Concept { query, .. } = &q.queries[0] else {
             panic!("expected Concept application");
         };
-        for field in ["id", "as", "pick", "description"] {
+        for field in ["id", "as", "cardinality", "description"] {
             assert!(query.terms.contains(field), "missing {field}");
         }
     }

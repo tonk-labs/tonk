@@ -141,6 +141,7 @@ async fn an_explicit_approval_page_is_a_validated_user_override() -> anyhow::Res
 }
 
 #[dialog_common::test]
+#[allow(deprecated)]
 async fn retry_matches_only_the_exact_invitation_and_skips_broken_entries() -> anyhow::Result<()> {
     let inviter = common::TestSite::new().await?;
     let first = tonk_cli::invite::mint(&inviter.site, None, None).await?;
@@ -290,6 +291,7 @@ async fn failed_pull_does_not_record_a_connection() -> anyhow::Result<()> {
 }
 
 #[dialog_common::test]
+#[allow(deprecated)]
 async fn connection_uses_the_space_name_and_avoids_local_collisions() -> anyhow::Result<()> {
     use tonk_schema::prelude::DidExt as _;
     let test = common::TestSite::new().await?;
@@ -499,6 +501,7 @@ async fn resume_metadata_requires_the_exact_local_claim_and_account_authority() 
 }
 
 #[dialog_common::test]
+#[allow(deprecated)]
 async fn explicit_library_evaluation_refreshes_a_frozen_blank_canvas() -> anyhow::Result<()> {
     let test = common::TestSite::new().await?;
     test.eval_inline("view!:\n  this: tonk:blank\n  show:\n    ui: '<p>Frozen old canvas</p>'\n")
