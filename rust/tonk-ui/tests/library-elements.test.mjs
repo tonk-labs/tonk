@@ -216,3 +216,26 @@ test('a waiting button takes no second press at once and says so only past 400ms
   assert.equal(attrs.has('aria-busy'), false);
   assert.equal(button.innerHTML, 'remove link');
 });
+
+test("every hub dialog's heading is lower case, as the hub's sheets are", () => {
+  const headings = [...library.matchAll(/<tonk-dialog appearance="hub"[^>]*\bheading="([^"]+)"/g)].map((match) => match[1]);
+  assert.ok(headings.length > 0, 'the library has hub dialogs');
+  assert.deepEqual(headings.filter((heading) => heading !== heading.toLowerCase()), []);
+});
+
+test('the seed page is a hub page, so its dialog wears the hub look', () => {
+  const view = library.split('this: tonk:seed/route\n  show:')[1].split('\nroute!:')[0];
+  assert.match(view, /class="hub-page tonk-hub seed-page"/);
+  assert.match(view, /with:src="look@space"/);
+  assert.match(view, /with:src="hub@space"/);
+  assert.match(view, /class="hub-sheet"/);
+});
+
+test('the space menu steps out of sight under its delete dialog and closes with it', () => {
+  const connected = methodSource('space-remove', 'connected');
+  assert.match(connected, /setAttribute\('data-behind', ''\)/);
+  assert.match(connected, /'fabb-close'/);
+  assert.match(connected, /menu\.close\?\.\(\)/);
+  assert.match(library, /\.space-menu\[data-behind\][^{]*\{[^}]*visibility:hidden/);
+  assert.match(library, /\.space-menu\[data-behind\] tonk-dialog \{ visibility:visible; \}/);
+});
