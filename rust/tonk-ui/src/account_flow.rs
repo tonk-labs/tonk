@@ -6783,42 +6783,6 @@ pub(crate) mod tests {
         )
         .await?;
         wait_for_displayed(&driver, &format!("{row} .hub-ask [data-link-keep]")).await?;
-        // Record which DOM call, if any, takes `space-links` out of the
-        // document while the removal runs, and any error the page throws.
-        driver
-            .execute(
-                r#"
-                window.__linksGone = [];
-                window.__pageErrors = [];
-                window.addEventListener('error', (e) => window.__pageErrors.push(String(e.message)));
-                window.addEventListener('unhandledrejection', (e) => window.__pageErrors.push(String(e.reason?.stack ?? e.reason)));
-                const count = () => document.querySelectorAll('space-links').length;
-                const wrap = (proto, name) => {
-                  const orig = proto[name];
-                  proto[name] = function (...args) {
-                    const before = count();
-                    const out = orig.apply(this, args);
-                    if (count() < before) window.__linksGone.push({ via: name, on: this.nodeName + '.' + (this.className ?? ''), stack: new Error().stack.slice(0, 1500) });
-                    return out;
-                  };
-                };
-                for (const name of ['removeChild', 'replaceChild', 'insertBefore', 'appendChild']) wrap(Node.prototype, name);
-                for (const name of ['remove', 'replaceWith', 'replaceChildren', 'before', 'after', 'append', 'prepend']) wrap(Element.prototype, name);
-                const setter = (proto, name) => {
-                  const desc = Object.getOwnPropertyDescriptor(proto, name);
-                  Object.defineProperty(proto, name, { ...desc, set(value) {
-                    const before = count();
-                    desc.set.call(this, value);
-                    if (count() < before) window.__linksGone.push({ via: name, on: this.nodeName + '.' + (this.className ?? ''), stack: new Error().stack.slice(0, 1500) });
-                  } });
-                };
-                setter(Element.prototype, 'innerHTML');
-                setter(Element.prototype, 'outerHTML');
-                setter(Node.prototype, 'textContent');
-                "#,
-                Vec::new(),
-            )
-            .await?;
         click(&driver, &format!("{row} .hub-ask [data-link-do]")).await?;
         // Each poll re-enters the guest: if the hub reloads under the
         // removal, the frame WebDriver held is gone. A reload also drops the
@@ -6837,9 +6801,7 @@ pub(crate) mod tests {
                        rows: [...document.querySelectorAll('.hub-row')].map((each) => (each.dataset.spaceSubject ?? '').slice(-6) + (each.hasAttribute('data-open') ? '+open' : '')), \
                        fold: row?.querySelector('.hub-fold')?.outerHTML.slice(0, 1500) ?? null, \
                        oldAddress: document.querySelectorAll('[data-space-address]').length, \
-                       sawLinksOnce: window.__sawLinks === true, \
-                       gone: window.__linksGone ?? null, \
-                       pageErrors: window.__pageErrors ?? null };",
+                       sawLinksOnce: window.__sawLinks === true };",
                     vec![
                         serde_json::json!(format!("{row} space-links")),
                         serde_json::json!(row),
