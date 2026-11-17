@@ -1536,6 +1536,78 @@ async fn it_names_the_ask_in_its_answer_not_the_subject() {
     );
 }
 
+/// The two shapes an ask takes are both claimed: one naming an
+/// interpreted expression and no `input` (the recorded line stands in),
+/// and one with an `input` and no `max` (the provider's default count).
+/// A stack provider claims an ask whose rows satisfy its concept's
+/// required fields, so `input` and `max` are optional in the concept;
+/// were either required, the ask lacking it would satisfy no concept,
+/// no provider would run, and the page would wait for an answer that
+/// never comes. An answer is the proof the provider ran: an unclaimed
+/// command is answered by nothing.
+#[dialog_common::test]
+async fn it_claims_an_ask_without_input_and_one_without_max() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let subject = created["subject"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+    let site = "site:3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f";
+    let expression = "intent:0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
+    interpreted(&app, &space, expression, "exp", site, 1.0).await;
+
+    // The expression and no input.
+    let by_expression = fresh_ask();
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        ask_claim(
+            &by_expression,
+            &json!({ "expression": expression, "subject": subject, "now": 2.0, "max": 5 }),
+        ),
+    )
+    .await;
+    let count = answered(&app, &space, &by_expression)
+        .await
+        .expect("an ask naming an expression and no input is claimed and answered");
+    assert!(count > 0, "the expression's recorded line is read: {count}");
+
+    // An input and no max.
+    let by_line = fresh_ask();
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        ask_claim(
+            &by_line,
+            &json!({ "input": "exp", "subject": subject, "now": 3.0, "site": site }),
+        ),
+    )
+    .await;
+    let count = answered(&app, &space, &by_line)
+        .await
+        .expect("an ask with an input and no max is claimed and answered");
+    assert!(count > 0, "the default count admits a reading: {count}");
+}
+
 /// An asker (here a tab's site) holds one answer: the next ask replaces
 /// the readings of the one before, so a reading that lost a field between
 /// asks does not keep the old value.

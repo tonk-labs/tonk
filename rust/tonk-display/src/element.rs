@@ -3051,7 +3051,7 @@ fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool
 ///
 /// Forward the display host's OWN routing context (`with`) onto the view
 /// it just mounted — so a view whose content resolves its own context
-/// (`<tonk-tree>`, `<tonk-inspector>`, a nested `<ui-sync-status>`) sees
+/// (`<tonk-inspector>`, a nested `<ui-sync-status>`) sees
 /// the display's context without inferring it from DOM ancestors. This is
 /// the ONE propagation boundary: context flows across a `<tonk-display>`,
 /// never through an arbitrary element. A view element that carries its own
@@ -3205,7 +3205,7 @@ fn forward_with(host: &Element, view_el: &Element) {
 
 /// Every element whose routing context a display forwards: the routing
 /// consumers, and a nested display, which forwards it on in turn.
-const ROUTING_CONSUMERS: &str = "[data-tonk-with], tonk-display, tonk-tree, tonk-inspector, \
+const ROUTING_CONSUMERS: &str = "[data-tonk-with], tonk-display, tonk-inspector, \
                                  tonk-notebook, ui-sync-status";
 
 /// Stamp `context` as `with` on each of `consumers` that lacks one, then
@@ -5102,7 +5102,7 @@ mod tests {
         let view = document.create_element("tonk-view").unwrap();
         view.set_inner_html(concat!(
             "<ui-sync-status></ui-sync-status>",
-            "<tonk-tree></tonk-tree>",
+            "<tonk-inspector></tonk-inspector>",
             r#"<tonk-inspector with="main@did:key:zOther"></tonk-inspector>"#,
             "<span>plain</span>",
         ));
@@ -5120,7 +5120,7 @@ mod tests {
             "a routing consumer without its own with inherits the display's",
         );
         assert_eq!(
-            view.query_selector("tonk-tree")
+            view.query_selector("tonk-inspector")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")
@@ -5153,7 +5153,7 @@ mod tests {
     /// `querySelectorAll` on the view never sees them. The forward pass
     /// must stamp the content, and the content of any `<template>` nested
     /// inside it (a view's own row template), or every routing consumer
-    /// inside a view loses its context: `<tonk-tree>`, `<tonk-inspector>`,
+    /// inside a view loses its context: `<tonk-inspector>`,
     /// `<tonk-notebook>`, `<ui-sync-status>` and the nested display that
     /// is how context cascades.
     #[cfg(target_arch = "wasm32")]
@@ -5168,7 +5168,7 @@ mod tests {
             "<ui-sync-status></ui-sync-status>",
             "<tonk-inspector></tonk-inspector>",
             "<tonk-display></tonk-display>",
-            "<template><tonk-tree></tonk-tree></template>",
+            "<template><tonk-inspector></tonk-inspector></template>",
         ));
         view.append_child(&template).unwrap();
         host.append_child(&view).unwrap();
@@ -5199,7 +5199,7 @@ mod tests {
             .unwrap()
             .content();
         assert_eq!(
-            row.query_selector("tonk-tree")
+            row.query_selector("tonk-inspector")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")
@@ -5226,7 +5226,7 @@ mod tests {
             &mut inner,
             concat!(
                 "<tonk-inspector></tonk-inspector>",
-                r#"<tonk-tree with="main@did:key:zOther"></tonk-tree>"#,
+                r#"<tonk-inspector with="main@did:key:zOther"></tonk-inspector>"#,
             ),
             "tonk:test",
             "ui",
@@ -5253,7 +5253,7 @@ mod tests {
         );
         assert_eq!(
             content
-                .query_selector("tonk-tree")
+                .query_selector("tonk-inspector")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")

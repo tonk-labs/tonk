@@ -3465,7 +3465,7 @@ view!:
 # The /inspector and /diagnose routes: the same query-inspector and
 # search-tree views a space exposes, but pinned to the PROFILE branch so
 # you can explore the profile DB (the hub's replicas, the member name,
-# sync state) directly. `<tonk-inspector>` and `<tonk-tree>` resolve their
+# sync state) directly. `<tonk-inspector>` and `<tree-inspector>` resolve their
 # repository from their own `with` — here the profile endpoint — so they
 # query `/api/repository/profile:tonk/branch/main/query` rather than a named space.
 #
@@ -3561,8 +3561,33 @@ view!:
           <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
         </tonk-fab>
         <tab-title text="Tonk"></tab-title>
-        <tonk-tree with="{branch}@{repo}"></tonk-tree>
+        <main style="padding: 1.5rem; max-width: 80rem; margin: 0 auto;">
+          <tree-inspector with="{branch}@{repo}"></tree-inspector>
+        </main>
       </div>
+
+# <tree-inspector>, the same element a space installs as the
+# `tree-inspector` component (tree-inspector.yaml), defined here too: the
+# profile is not a space and installs no components.
+element!: &tree-inspector
+  description: An outline of the search tree a branch stores its facts in; a node is read when it is opened.
+  method:
+    connected: !include/text ./tree-inspector/connected.js
+    disconnected: !include/text ./tree-inspector/disconnected.js
+    schedule: !include/text ./tree-inspector/schedule.js
+    query: !include/text ./tree-inspector/query.js
+    step: !include/text ./tree-inspector/step.js
+    bytes: !include/text ./tree-inspector/bytes.js
+    roots: !include/text ./tree-inspector/roots.js
+    watch: !include/text ./tree-inspector/watch.js
+    open: !include/text ./tree-inspector/open.js
+    label: !include/text ./tree-inspector/label.js
+    value: !include/text ./tree-inspector/value.js
+    render: !include/text ./tree-inspector/render.js
+    detail: !include/text ./tree-inspector/detail.js
+    act: !include/text ./tree-inspector/act.js
+    keys: !include/text ./tree-inspector/keys.js
+    sheet: !include/text ./tree-inspector/sheet.js
 
 # The /seed route: `/seed/<url>` offers to create a space from the
 # definitions at <url> — `/seed/https://tonk.network/library/notebook.yaml`.

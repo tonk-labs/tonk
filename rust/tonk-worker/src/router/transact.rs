@@ -690,13 +690,14 @@ mod control_layer {
         }
     }
 
-    /// The rows of `attribute` among what an effect holds, each as
-    /// `<entity> <value>`.
+    /// The rows of `attribute` among what an effect holds, its tick's
+    /// rows included, each as `<entity> <value>`.
     fn rows(effect: &dialog_repository::Effect, attribute: &str) -> Vec<String> {
         effect
             .commands()
             .iter()
             .flat_map(|(_, rows)| rows.iter())
+            .chain(effect.tick().iter())
             .filter(|row| row.the.to_string() == attribute)
             .map(|row| match &row.is {
                 Value::String(text) => text.clone(),

@@ -2042,7 +2042,7 @@ concept!: &directory/route
       as: text
 
 # The directory display carries its own `with` so its view's content
-# (`<tonk-tree>`, `<tonk-inspector>`) resolves the route's target space —
+# (`<tonk-inspector>`) resolves the route's target space —
 # `<tonk-display>` forwards this context onto the view it mounts, so no
 # routing wrapper element is needed.
 view!:
@@ -2144,35 +2144,6 @@ seed/route!:
 seed/route!:
   path: "/{*model}"
   concept: tonk:directory/route
-
-# ============================================================
-# Tree inspector — `<tonk-tree>` over the branch's search-tree
-# index. Visit `/space/{repo}/dialog:diagnose` to explore the
-# dialog-search-tree state under the DB: index/segment nodes,
-# their keys (color-coded components, shared prefixes dimmed),
-# byte sizes, and entries. The view renders `<tonk-tree>`, which
-# resolves its repository from the `with` routing
-# ancestor and drives itself from the worker's `tree/*` query
-# formulas — no entity needed (it inspects the whole branch).
-# ============================================================
-concept!: &diagnose
-  this: dialog:diagnose
-  description: Marker model for the search-tree inspector view.
-  with:
-    name:
-      description: A label for the inspector (unused; satisfies the concept shape).
-      the: db.diagnose/name
-      as: text
-
-# A directory-kind view (not a plain `view!`): a `/space/{repo}/dialog:diagnose`
-# URL carries no entity, so `<tonk-display>` resolves a `view/directory`
-# for the model. The inspector needs no entity — it renders the whole
-# branch's tree — so the directory view is the right kind.
-view!:
-  this: dialog:diagnose
-  show:
-    directory: |
-      <tonk-tree></tonk-tree>
 
 # ============================================================
 # BLOB
@@ -2781,19 +2752,19 @@ command!: &intent/suggest
   this: tonk:intent-suggest
   description: Ask what a line typed in the command palette could mean.
   with:
-    input:
-      description: What was typed; empty asks what can be done without saying more.
-      the: tonk.dialog.intent.suggest/input
-      as: text
     now:
       description: The caller's clock in milliseconds, for arguments that take the moment the command runs.
       the: tonk.dialog.intent.suggest/now
       as: float
+  maybe:
+    input:
+      description: What was typed; empty asks what can be done without saying more; absent when `expression` names the interpreted line, whose recorded input stands in.
+      the: tonk.dialog.intent.suggest/input
+      as: text
     max:
-      description: How many readings at most.
+      description: How many readings at most; a default when absent.
       the: tonk.dialog.intent.suggest/max
       as: natural
-  maybe:
     subject:
       description: The entity the page shows, what "this" means, and the default for an argument it can fill.
       the: tonk.dialog.intent.suggest/subject
