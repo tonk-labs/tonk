@@ -2882,6 +2882,10 @@ element!: &space-create
           if (error) error.textContent = '';
           form.elements.name.removeAttribute('aria-invalid');
           form.hidden = false;
+          // It comes in, as a question does.
+          form.classList.remove('hub-enter');
+          void form.offsetWidth;
+          form.classList.add('hub-enter');
           const touch = window.matchMedia?.('(pointer: coarse)')?.matches;
           requestAnimationFrame(() => (touch ? form.querySelector('[data-space-create-cancel]') : form.elements.name)?.focus());
           return;
@@ -2905,7 +2909,11 @@ element!: &space-create
         const form = self.querySelector('form[data-space-create-form]');
         if (!form || self.hasAttribute('busy')) return;
         form.hidden = true;
-        self.querySelector('[data-new-space]')?.focus();
+        // `new space` shows again once the row is hidden; focus it then,
+        // never leaving focus on the page.
+        const opener = self.querySelector('[data-new-space]');
+        opener?.focus();
+        if (opener && document.activeElement !== opener) requestAnimationFrame(() => opener.focus());
       }
     validate: |
       (self, event) => {
@@ -2940,9 +2948,14 @@ element!: &space-create
         }
         if (error) error.textContent = '';
         self.setAttribute('busy', '');
-        for (const control of self.querySelectorAll('[data-space-create-submit]')) {
-          control.disabled = true;
-          if (inline) control.textContent = 'making';
+        if (inline) {
+          // `make space` keeps focus and takes no second press; it says
+          // `making` only past 400ms.
+          const hub = self.closest('hub-discover');
+          self.__waits = [...self.querySelectorAll('[data-space-create-submit]')]
+            .map((control) => hub?.waiting?.(control, 'making') ?? (() => {}));
+        } else {
+          for (const control of self.querySelectorAll('[data-space-create-submit]')) control.disabled = true;
         }
         self.create(form);
       }
@@ -3000,7 +3013,10 @@ element!: &space-create
             if (done) throw new Error('Creation status stream ended');
             const result = value.find(row => row.this === id)?.fields;
             if (result?.status === 'failed') {
-              if (error) error.textContent = result.detail;
+              // In the hub's words; what was typed stays.
+              if (error) error.textContent = self.hasAttribute('data-inline')
+                ? `Couldn’t make ${parameters.name}. Check your connection and try again.`
+                : result.detail;
               return;
             }
             if (result?.status === 'created') {
@@ -3018,15 +3034,16 @@ element!: &space-create
             }
           }
         } catch (failure) {
-          if (error) error.textContent = "Couldn't confirm creation. Check your spaces before trying again.";
+          if (error) error.textContent = self.hasAttribute('data-inline')
+            ? `Couldn’t make ${parameters.name}. Check your connection and try again.`
+            : "Couldn't confirm creation. Check your spaces before trying again.";
         } finally {
           if (reader) await reader.cancel().catch(() => {});
           if (self.__reader === reader) self.__reader = null;
           self.removeAttribute('busy');
-          for (const control of self.querySelectorAll('[data-space-create-submit]')) {
-            control.disabled = false;
-            if (self.hasAttribute('data-inline')) control.textContent = 'make space';
-          }
+          for (const done of self.__waits ?? []) done();
+          self.__waits = null;
+          for (const control of self.querySelectorAll('[data-space-create-submit]')) control.disabled = false;
         }
       }
     # After an inline create: wait for the new row, open it, and make its
@@ -3065,6 +3082,13 @@ element!: &space-create
           } else if (event.target?.closest?.('[data-space-create-cancel]')) {
             self.fold();
           }
+        });
+        // An error clears as the name is typed.
+        self.addEventListener('input', event => {
+          if (!event.target?.matches?.('input[name="name"]')) return;
+          const error = self.querySelector('[data-space-create-error]');
+          if (error?.textContent) error.textContent = '';
+          event.target.removeAttribute('aria-invalid');
         });
         // Escape closes the new space row, as `not now` does.
         self.addEventListener('keydown', event => {

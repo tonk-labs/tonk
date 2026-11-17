@@ -2257,7 +2257,10 @@ fn it_makes_a_new_space_from_an_inline_row_under_the_line() {
         "data-space-create-submit data-wait=\"making\">make space</button>",
         "(inline ? 'Give the space a name.' : 'Enter a name for this space.')",
         ": `You already have a space called ${name.value}.`;",
-        "if (inline) control.textContent = 'making';",
+        // `make space` keeps focus and says `making` only past 400ms.
+        ".map((control) => hub?.waiting?.(control, 'making') ?? (() => {}));",
+        // An error clears as the name is typed.
+        "if (error?.textContent) error.textContent = '';",
         "self.closest('hub-discover')?.receipt?.(['made', parameters.name]);",
         "await links.makeDefault();",
         "self.querySelector('[data-link-copy]')?.focus();",
