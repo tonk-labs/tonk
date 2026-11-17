@@ -728,10 +728,11 @@ pub(crate) async fn retract_space_provider(
     for row in recorded {
         if let Err(error) = branch
             .handle()
-            .transaction()
-            .retract(row)
-            .commit()
-            .publish()
+            .transact(|transaction| {
+                std::future::ready(Ok::<_, dialog_repository::CommitError>(
+                    transaction.retract(row.clone()),
+                ))
+            })
             .perform(&state.operator)
             .await
         {
