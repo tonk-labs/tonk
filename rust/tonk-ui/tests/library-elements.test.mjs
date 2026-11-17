@@ -23,3 +23,42 @@ test('every element method in the profile library compiles', () => {
   assert.ok(methods > 0, 'the elements have methods');
   assert.deepEqual(broken, []);
 });
+
+// The source of one element's method, as the guest compiles it.
+const methodSource = (element, method) => {
+  const section = library.split(`element!: &${element}\n`)[1].split(/\n(?=[a-z][a-z/-]*!:)/)[0];
+  const match = section.match(new RegExp(`\\n    ${method}: \\|\\n((?:      .*\\n|[ \\t]*\\n)+)`));
+  assert.ok(match, `${element} has a ${method} method`);
+  return match[1];
+};
+
+test("the hub menu's copy link copies the space's address at once, waiting on nothing", async () => {
+  const written = [];
+  const window = {
+    tonk: { context: { origin: 'https://tonk.example' } },
+    location: { origin: 'null' },
+    fetch: () => { throw new Error('copy link must not fetch'); },
+  };
+  const navigator = { clipboard: { writeText: async (text) => { written.push(text); } } };
+  const timers = [];
+  const copyLink = Function('window', 'navigator', 'setTimeout', 'clearTimeout',
+    `return (${methodSource('space-actions', 'copy-link')})`)(
+    window, navigator, (run, ms) => { timers.push(ms); return 1; }, () => {});
+  const attrs = new Map();
+  const button = {
+    dataset: { space: 'did:key:z6Mkspace' },
+    setAttribute: (name, value) => attrs.set(name, value),
+    removeAttribute: (name) => attrs.delete(name),
+  };
+  const self = { close: () => {} };
+  const result = await copyLink(self, button);
+  assert.deepEqual(written, ['https://tonk.example/space/did:key:z6Mkspace']);
+  assert.deepEqual(result, { url: 'https://tonk.example/space/did:key:z6Mkspace', copied: true });
+  assert.equal(attrs.get('data-copy'), 'copied');
+  assert.deepEqual(timers, [900]);
+
+  navigator.clipboard.writeText = async () => { throw new Error('denied'); };
+  const refused = await copyLink(self, button);
+  assert.equal(refused.copied, false);
+  assert.equal(attrs.get('data-copy'), 'failed');
+});

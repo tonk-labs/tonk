@@ -702,8 +702,8 @@ view!:
         border-radius:var(--tonk-radius-sheet); background:var(--tonk-sheet);
         color:var(--tonk-text); box-shadow:var(--tonk-shadow); }
       .space-menu[open="false"] { display:none; }
-      .space-menu tonk-share, .space-menu space-remove { display:contents; }
-      .space-menu > button, .space-menu > tonk-share > button, .space-menu .verb-remove {
+      .space-menu space-remove { display:contents; }
+      .space-menu > button, .space-menu > [data-space-copy-link], .space-menu .verb-remove {
         display:flex; width:100%; min-height:var(--tonk-height-control); align-items:center;
         justify-content:flex-start; padding:0 10px; border:0;
         border-radius:var(--tonk-radius-control); background:transparent; color:inherit;
@@ -714,27 +714,25 @@ view!:
       .space-menu .verb-remove::before { content:""; position:absolute; left:6px; right:6px;
         top:-5px; border-top:1px solid var(--tonk-rule-soft); }
       @media (hover:hover) and (pointer:fine) {
-        .space-menu > button:hover, .space-menu > tonk-share > button:hover,
+        .space-menu > button:hover, .space-menu > [data-space-copy-link]:hover,
         .space-menu .verb-remove:hover { background:var(--tonk-wash); }
       }
-      .space-menu > button:active, .space-menu > tonk-share > button:active,
+      .space-menu > button:active, .space-menu > [data-space-copy-link]:active,
       .space-menu .verb-remove:active,
-      .space-menu > button:focus-visible, .space-menu > tonk-share > button:focus-visible,
+      .space-menu > button:focus-visible, .space-menu > [data-space-copy-link]:focus-visible,
       .space-menu .verb-remove:focus-visible { outline:none; background:var(--tonk-wash-strong); }
       @media (pointer:coarse) {
-        .space-menu > button, .space-menu > tonk-share > button, .space-menu .verb-remove { min-height:44px; }
+        .space-menu > button, .space-menu > [data-space-copy-link], .space-menu .verb-remove { min-height:44px; }
       }
       @media (forced-colors:active) {
         .space-menu { border:1px solid CanvasText; }
         .space-menu :focus-visible { outline:2px solid Highlight; }
       }
-      .space-menu [data-share-copy-label] { display:none; }
-      .space-menu tonk-share:not([data-share-state]) [data-share-copy-label="idle"],
-      .space-menu tonk-share[data-share-state="idle"] [data-share-copy-label="idle"],
-      .space-menu tonk-share[data-share-state="copying"] [data-share-copy-label="copying"],
-      .space-menu tonk-share[data-share-state="copied"] [data-share-copy-label="copied"],
-      .space-menu tonk-share[data-share-state="blocked"] [data-share-copy-label="failed"],
-      .space-menu tonk-share[data-share-state="failed"] [data-share-copy-label="failed"] { display:inline; }
+      /* `copy link` answers in place: `copied`, or `couldn't copy`. */
+      .space-menu [data-copy-label] { display:none; }
+      .space-menu [data-space-copy-link]:not([data-copy]) [data-copy-label="idle"],
+      .space-menu [data-space-copy-link][data-copy="copied"] [data-copy-label="copied"],
+      .space-menu [data-space-copy-link][data-copy="failed"] [data-copy-label="failed"] { display:inline; }
       /* creation is the action in Tonk's line */
       space-create { display:block; }
       [data-space-duplicate]:not([busy]) [data-duplicating-label],
@@ -911,7 +909,10 @@ view!:
                     aria-expanded="false" aria-controls="space-menu-{subject}">more</button>
                 </span>
                 <hub-menu id="space-menu-{subject}" class="space-menu" role="menu">
-                  <tonk-share space={subject}><button type="button" role="menuitem"><span data-share-copy-label="idle">copy link</span><span data-share-copy-label="copying">copying…</span><span data-share-copy-label="copied">copied</span><span data-share-copy-label="failed">couldn't copy</span></button></tonk-share>
+                  <!-- `copy link` copies the space's own address, at once: the row
+                       is its link. Bringing someone in is a passlink, made
+                       in the open row's links, never minted from here. -->
+                  <button type="button" role="menuitem" data-space-copy-link data-space={subject}><span data-copy-label="idle">copy link</span><span data-copy-label="copied">copied</span><span data-copy-label="failed">couldn't copy</span></button>
                   <button type="button" role="menuitem" data-space-rename-open>rename</button>
                   <button type="button" role="menuitem" data-space-duplicate-open>duplicate</button>
                   <space-remove data-space-subject={subject} data-space-name={name}
@@ -5028,6 +5029,22 @@ element!: &space-actions
   method:
     close: |
       (self, restoreFocus) => self.querySelector('hub-menu')?.close?.(restoreFocus)
+    # Copy the space's address at once and say so in the item; nothing is
+    # minted, so nothing is waited for. The menu closes after the answer.
+    copy-link: |
+      async (self, button) => {
+        const origin = window.tonk?.context?.origin ?? window.location.origin;
+        const url = `${origin}/space/${button.dataset.space}`;
+        let copied = false;
+        try { await navigator.clipboard.writeText(url); copied = true; } catch (_) {}
+        button.setAttribute('data-copy', copied ? 'copied' : 'failed');
+        clearTimeout(self.__copied);
+        self.__copied = setTimeout(() => {
+          button.removeAttribute('data-copy');
+          self.close(true);
+        }, copied ? 900 : 1800);
+        return { url, copied };
+      }
     validate: |
       (self, event) => {
         const form = event.target;
@@ -5121,6 +5138,8 @@ element!: &space-actions
             else menu?.open?.();
             return;
           }
+          const copy = event.target?.closest?.('[data-space-copy-link]');
+          if (copy) { self.copyLink(copy); return; }
           if (event.target?.closest?.('[data-space-duplicate-open]')) {
             self.close(false);
             self.querySelector('[data-space-duplicate]')?.open?.();
