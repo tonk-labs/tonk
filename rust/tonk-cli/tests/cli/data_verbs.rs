@@ -17,7 +17,7 @@ use crate::common::{
 /// stops matching the row the instant *any* field is missing.
 async fn select_claims(test: &TestSite, the: &str) -> Result<Vec<dialog_query::Claim>> {
     use anyhow::anyhow;
-    use dialog_artifacts::Relation;
+    use dialog_corpus::Relation;
     use dialog_query::{AttributeQuery, Output as _, Term, attribute};
 
     let attr: Relation = the
@@ -30,7 +30,7 @@ async fn select_claims(test: &TestSite, the: &str) -> Result<Vec<dialog_query::C
         .query()
         .select(AttributeQuery::new(
             Term::from(the_term),
-            Term::<dialog_artifacts::Entity>::var("of"),
+            Term::<dialog_corpus::Entity>::var("of"),
             Term::<dialog_query::Any>::var("is"),
             Term::<attribute::Cause>::blank(),
             None,
@@ -924,6 +924,7 @@ mod when_reporting_assert_verification {
         )?;
         assert_eq!(created["schemaVersion"], "tonk.assert.v1");
         assert_eq!(created["committed"], true);
+        assert_eq!(created["changed"], true);
         assert_eq!(created["verification"]["status"], "verified");
         assert_eq!(created["sync"]["push"], "no-upstream");
         let entity = created["entity"].as_str().expect("canonical entity");
@@ -981,6 +982,46 @@ mod when_reporting_assert_verification {
             updated["verification"]["rows"]
         );
         assert_eq!(repeated["verification"]["status"], "verified");
+        assert_eq!(updated["changed"], true);
+        assert_eq!(repeated["changed"], false, "{repeated}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_says_an_identical_assert_changed_nothing() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        let args = |json: bool| {
+            let mut args: Vec<String> = vec![
+                "--title".into(),
+                "Same task".into(),
+                "--done".into(),
+                "false".into(),
+            ];
+            if json {
+                args.push("--json".into());
+            }
+            args
+        };
+        let first = tonk_cli::data_ops::assert_op(&test.site, "task", None, &args(false)).await?;
+        assert!(first.starts_with("asserted task"), "{first}");
+        assert!(!first.contains("unchanged"), "{first}");
+
+        let second = tonk_cli::data_ops::assert_op(&test.site, "task", None, &args(false)).await?;
+        assert!(
+            second.starts_with("unchanged: an identical task already exists"),
+            "{second}"
+        );
+        assert!(!second.contains("claims:"), "{second}");
+
+        let again: serde_json::Value = serde_json::from_str(
+            &tonk_cli::data_ops::assert_op(&test.site, "task", None, &args(true)).await?,
+        )?;
+        assert_eq!(again["committed"], true);
+        assert_eq!(again["changed"], false, "{again}");
+        assert_eq!(again["revisionBefore"], again["revisionAfter"]);
+        assert_eq!(again["verification"]["status"], "verified");
         Ok(())
     }
 }

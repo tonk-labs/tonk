@@ -94,7 +94,7 @@ pub use agent_link::AgentLinkWorker;
 #[cfg(feature = "volatile-storage")]
 pub use hosted::{
     HostedPeer, NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, join as agent_join, mcp,
-    view, writer_seed,
+    telemetry, view, writer_seed,
 };
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 mod local_peer;
@@ -102,6 +102,7 @@ mod local_peer;
 pub use local_peer::{LocalPeer, try_lock as try_lock_peer};
 pub(crate) mod public_access;
 mod publication;
+mod space_invite;
 pub use join::{JoinRequest, JoinResponse};
 mod local_space_link;
 
@@ -117,6 +118,9 @@ mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
 mod members;
+
+/// Making a branch a space does not have yet, as a command.
+mod branch;
 
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
@@ -202,11 +206,16 @@ mod interpret;
 mod navigate;
 mod site_request;
 mod site_select;
+/// `intent/suggest`, answered by a provider on the branch's stack.
+mod suggest;
 
 mod diagnostics;
 
 mod command;
-pub use command::{CommandEnv, CommandOrigin, CommandProviders, command_providers, dispatch};
+pub use command::{
+    CommandEnv, CommandOrigin, CommandProviders, Scope, Surface, command_providers, relay_commands,
+    run_commands,
+};
 
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod intent;
@@ -4547,9 +4556,8 @@ employee:
     }
 
     /// Re-polling a subscription whose result didn't change must
-    /// not push another SSE event. The poll path hashes the new
-    /// payload and compares against `last_hash`; equal hashes
-    /// short-circuit.
+    /// not push another SSE event: the stack's poll finds the result set
+    /// unchanged and delivers nothing.
     #[dialog_common::test]
     async fn it_skips_broadcast_when_repoll_is_unchanged() {
         use std::sync::Arc;
@@ -4578,7 +4586,7 @@ employee:
                 .acquire(&guard.operator)
                 .await
                 .expect("acquire");
-            session.state.poll(&guard.operator).await;
+            session.poll(&guard.operator).await;
         }
 
         // Race the next frame against a short sleep. We expect
@@ -4591,14 +4599,14 @@ employee:
         }
     }
 
-    /// When a subscriber's receiver closes (the SSE body is
-    /// dropped), the next change-driven re-poll must evict that
-    /// subscriber. With no subscribers left, the subscription
-    /// itself is removed from the branch's map. Pruning is
-    /// piggy-backed on the send attempt — there is no separate
-    /// reaper — so this test drives a commit to trigger the send.
+    /// A subscription is released when its last client lets go: the
+    /// stack holds a subscription only while a reader of it does, and the
+    /// reader is the SSE body's, so closing the stream drops it at once,
+    /// with no change and no poll needed to notice. (Before the stack
+    /// held the subscriptions, a closed stream was pruned on the next
+    /// change-driven poll's failed send.)
     #[dialog_common::test]
-    async fn it_prunes_dropped_subscriber_on_change() {
+    async fn it_releases_a_subscription_when_its_last_client_drops() {
         use std::sync::Arc;
 
         let tonk = test_state().await;
@@ -4610,14 +4618,6 @@ employee:
         let repo = key.as_str();
         seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
 
-        // Subscribe and read the first frame so the subscriber is
-        // registered with `Status::Established`.
-        {
-            let mut body = open_subscription(&app, repo, "main").await;
-            let _snapshot = read_sse_frame(&mut body).await;
-            // body drops here, closing the receiver.
-        }
-
         let session = {
             let guard = app_state.read().await;
             guard
@@ -4628,21 +4628,31 @@ employee:
                 .await
                 .expect("acquire")
         };
+        let held = session.state.subscriptions_held();
+
+        // Two clients of one query share one subscription.
+        let mut first = open_subscription(&app, repo, "main").await;
+        let _snapshot = read_sse_frame(&mut first).await;
+        let mut second = open_subscription(&app, repo, "main").await;
+        let _snapshot = read_sse_frame(&mut second).await;
         assert_eq!(
-            session.state.subscriptions().lock().len(),
-            1,
-            "subscription registered before prune"
+            session.state.subscriptions_held(),
+            held + 1,
+            "two clients of one query read one subscription"
         );
 
-        // Commit a change so the next poll has new bytes to
-        // broadcast. The send to the dead channel fails,
-        // `retain_mut` drops the subscriber, and with the list
-        // empty the subscription itself is removed.
-        seed_named_attribute(&app, repo, "person-age", "xyz.tonk.person/age").await;
+        drop(first);
+        assert_eq!(
+            session.state.subscriptions_held(),
+            held + 1,
+            "the subscription stays while a client still reads it"
+        );
 
-        assert!(
-            session.state.subscriptions().lock().is_empty(),
-            "dropped subscriber's subscription must be pruned after a change-driven poll"
+        drop(second);
+        assert_eq!(
+            session.state.subscriptions_held(),
+            held,
+            "the subscription goes with its last client"
         );
     }
 
@@ -4693,31 +4703,39 @@ employee:
         // in the order the branch delivered them. Deeper levels register
         // first (as nested displays can after a reconnect), four per level.
         let (sender, mut receiver) = unbounded_channel();
-        // A query shared across levels is polled at its outermost, even
+        // The connections stay open for the test: each holds its reader.
+        let mut connections = Vec::new();
+        // A query shared across levels is delivered at its outermost, even
         // though its deepest subscriber created it (first of all).
-        session
-            .state
-            .adopt_subscriber(query("shared"), None, 9, sender.clone());
+        connections.push(
+            session
+                .state
+                .connect(query("shared"), None, 9, sender.clone()),
+        );
         let mut expected = Vec::new();
         for level in (0..4u32).rev() {
             for index in 0..4 {
                 let term = format!("l{level}n{index}");
-                session
-                    .state
-                    .adopt_subscriber(query(&term), None, level, sender.clone());
+                connections.push(
+                    session
+                        .state
+                        .connect(query(&term), None, level, sender.clone()),
+                );
                 expected.push((level, term));
             }
         }
-        session
-            .state
-            .adopt_subscriber(query("shared"), None, 0, sender.clone());
+        connections.push(
+            session
+                .state
+                .connect(query("shared"), None, 0, sender.clone()),
+        );
         expected.sort_by_key(|(level, _)| *level);
         let mut expected: Vec<String> = expected.into_iter().map(|(_, term)| term).collect();
         expected.insert(0, "shared".into());
         expected.insert(0, "shared".into());
         let terms = expected.clone();
 
-        session.state.poll(&guard.operator).await;
+        session.poll(&guard.operator).await;
 
         let mut delivered = Vec::new();
         while let Ok(bytes) = receiver.try_recv() {
@@ -4773,14 +4791,7 @@ employee:
             .acquire(&guard.operator)
             .await
             .expect("acquire");
-        let levels: Vec<u32> = session
-            .state
-            .subscriptions()
-            .lock()
-            .values()
-            .flat_map(|subscription| subscription.subscribers.iter().map(|s| s.level))
-            .collect();
-        assert_eq!(levels, vec![3]);
+        assert_eq!(session.state.connection_levels(), vec![3]);
     }
 
     /// A subscription to a branch laid out the way an earlier release wrote

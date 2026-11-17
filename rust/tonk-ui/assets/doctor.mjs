@@ -57,8 +57,6 @@ export const probes = [
     ["Worker health", "/api/health", projectWorkerHealth],
     ["Account", "/api/account", value => pick(value,
         ["status", "rootDid", "deviceDid", "provider", "accountState"])],
-    ["Account details", "/api/account/summary", value => pick(value,
-        ["email", "displayName", "passkey"])],
     ["Local root", "/api/identity/root", value => pick(value,
         ["status", "rootDid", "deviceDid", "delegationCid", "passkey"])],
     ["Profile, operator & spaces", "/api/profile", value => ({

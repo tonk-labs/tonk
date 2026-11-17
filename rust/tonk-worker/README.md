@@ -131,6 +131,7 @@ Successful sync responses are 2xx with disposition `completed`, `offline`, or
 | HTTP | code |
 | ---: | --- |
 | 403 | `CREDENTIAL_REVOKED` |
+| 403 | `ACCESS_DENIED` (no chain this peer holds reaches the space) |
 | 409 | `SYNC_CONFLICT` |
 | 503 | `SYNC_UNAVAILABLE` |
 | 502 | `UPSTREAM_ERROR` |

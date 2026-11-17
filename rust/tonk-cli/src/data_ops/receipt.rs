@@ -156,6 +156,10 @@ pub(super) async fn render(
         .revision_after
         .as_ref()
         .map(|revision| revision.tree.to_string());
+    // Asserting what the branch already holds is idempotent: the commit
+    // lands on the same tree. `claims` counts what was requested, so say
+    // separately whether anything actually changed.
+    let changed = outcome.committed && (before.is_none() || before != after);
     let push = sync.receipt();
     sync.warn_write();
     if json {
@@ -164,6 +168,7 @@ pub(super) async fn render(
             "concept": concept,
             "entity": canonical,
             "committed": outcome.committed,
+            "changed": changed,
             "dryRun": write.dry_run,
             "claims": outcome.response.commits.claims,
             "revisionBefore": before,
@@ -174,7 +179,17 @@ pub(super) async fn render(
         .map(|text| format!("{text}\n"))
         .map_err(|error| DataOpError::Io(error.to_string()));
     }
-    let mut out = if let Some(target) = entity {
+    let mut out = if outcome.committed && !changed {
+        let what = match entity {
+            Some(target) => format!("{target} already has these values"),
+            None => format!("an identical {concept} already exists"),
+        };
+        format!(
+            "unchanged: {what}; nothing new was written\nentity: {}\nrevision: {} (unchanged)\n",
+            canonical.unwrap_or("unknown"),
+            after.as_deref().unwrap_or("none")
+        )
+    } else if let Some(target) = entity {
         format!(
             "{}\nclaims: {}\nrevision: {} -> {}\n",
             write.summarize(format_args!("updated {target}")),

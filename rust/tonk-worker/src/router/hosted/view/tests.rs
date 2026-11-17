@@ -768,7 +768,8 @@ concept!: &view-note
             !status.is_success(),
             "a read-only view's push lands: {body}"
         );
-        assert_eq!(body["error"]["code"], "UPSTREAM_ERROR", "{body}");
+        // No put chain reaches the space: refused as such.
+        assert_eq!(body["error"]["code"], "ACCESS_DENIED", "{body}");
         view.close().await;
         served.0.close().await;
         fixture.service.stop().await.unwrap();

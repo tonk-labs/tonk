@@ -7,12 +7,13 @@
 use super::BranchReference;
 use super::env::{BranchOpenProvider, LoadProvider, PushProvider};
 use super::error::ReactorError;
-use dialog_artifacts::Index;
 use dialog_capability::Provider;
 use dialog_common::Blake3Hash as NodeHash;
 use dialog_common::ConditionalSync;
-use dialog_repository::{NetworkedIndex, PushError, Revision, Upstream};
-use dialog_search_tree::{DialogSearchTreeError, LoadBlock, TreeDifference};
+use dialog_corpus::Index;
+use dialog_effects::archive::prelude::CatalogScope;
+use dialog_repository::{PushError, Revision, Upstream};
+use dialog_search_tree::{DialogSearchTreeError, TreeDifference};
 
 // Dialog reports a tree node it cannot load only by this message; see the
 // follow-up to give it an error variant of its own.
@@ -27,8 +28,9 @@ fn is_missing_local_tree_node(error: &PushError) -> bool {
 }
 
 /// Materialize the search-tree nodes push's novelty diff will visit —
-/// the divergent paths between `base` and `current` — through `store`,
-/// which loads a node locally or fetches and caches it from the remote.
+/// the divergent paths between `base` and `current` in `catalog` — by
+/// reading them through `store`, whose load answers a node locally or
+/// hydrates it from the remote and caches it.
 ///
 /// The differential prunes identical subtrees by hash without reading
 /// them, so this walk touches (and therefore fetches) only the changed
@@ -37,15 +39,18 @@ fn is_missing_local_tree_node(error: &PushError) -> bool {
 /// re-replicated the entire space one authorized round trip per block to
 /// satisfy a diff that needed a handful of nodes.
 async fn hydrate_divergence<S>(
+    catalog: &CatalogScope,
     base: &NodeHash,
     current: &NodeHash,
     store: &S,
 ) -> Result<(), DialogSearchTreeError>
 where
-    S: Provider<LoadBlock> + ConditionalSync,
+    S: Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + ConditionalSync,
 {
-    let base_tree = Index::from_hash(base.clone());
-    let current_tree = Index::from_hash(current.clone());
+    let base_tree = Index::at(catalog.clone(), base.clone());
+    let current_tree = Index::at(catalog.clone(), current.clone());
     // The compute itself performs every read: each node it expands passes
     // through the caching store, so by the time it returns, the local
     // store holds the divergent paths and the retry's local-only diff
@@ -117,35 +122,33 @@ impl<'a> Push<'a> {
             Err(error) => return Err(error.into()),
         };
 
-        let Some((remote, base)) =
-            cached
-                .handle()
-                .pushes()
-                .iter()
-                .find_map(|upstream| match upstream {
-                    // A branch never synced with its upstream has no
-                    // divergence to hydrate: the retry would fail the same.
-                    Upstream::Remote {
-                        remote,
-                        tree: Some(tree),
-                        ..
-                    } => Some((remote.clone(), tree.clone())),
-                    _ => None,
-                })
+        let Some(base) = cached
+            .handle()
+            .pushes()
+            .iter()
+            .find_map(|upstream| match upstream {
+                // A branch never synced with its upstream has no
+                // divergence to hydrate: the retry would fail the same.
+                Upstream::Remote {
+                    tree: Some(tree), ..
+                } => Some(tree.clone()),
+                _ => None,
+            })
         else {
             return Err(error.into());
         };
         let Some(revision) = cached.handle().revision() else {
             return Err(error.into());
         };
-        let store = NetworkedIndex::new(env, cached.handle().archive().index(), Some(remote));
         // The diff can traverse either side, so both sides hydrate through
-        // the networked index; only tree nodes are cached — referenced blob
-        // payloads are still transferred by push's normal shipment phase.
+        // the env from the remote the open branch tracks; only tree nodes
+        // are cached — referenced blob payloads are still transferred by
+        // push's normal shipment phase.
         hydrate_divergence(
+            &cached.handle().archive().index(),
             &NodeHash::from(*base.hash()),
             &NodeHash::from(*revision.tree.hash()),
-            &store,
+            env,
         )
         .await
         .map_err(PushError::from)?;
@@ -160,36 +163,48 @@ impl<'a> Push<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use dialog_artifacts::tree::ArtifactTreeExt as _;
-    use dialog_artifacts::{ArchiveDelta, Artifact, Instruction, Value};
-    use dialog_common::Buffer;
-    use dialog_search_tree::MemoryBlocks;
+    use dialog_capability::Capability;
+    use dialog_common::{Buffer, Held, Holds};
+    use dialog_corpus::tree::CorpusExt as _;
+    use dialog_corpus::{ArchiveDelta, Fact, Instruction, Value};
+    use dialog_effects::archive::ArchiveError;
+    use dialog_effects::archive::prelude::GetExt as _;
+    use dialog_effects::archive::{Get, Load};
+    use dialog_search_tree::helpers::Blocks;
     use futures_util::stream;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// A small stand-in for `NetworkedIndex`: local reads first, then remote,
-    /// caching a remote hit locally on the way back — and counting every
-    /// remote hit, so a test can bound how much the repair replicated.
+    /// A small stand-in for a hydrating env: a load reads locally first,
+    /// then remote, caching a remote hit locally on the way back — and
+    /// counting every remote hit, so a test can bound how much the repair
+    /// replicated. A `Get` is the local archive's own word, and it holds
+    /// nothing, so every node read is a load.
     #[derive(Clone)]
     struct CachingStore {
-        local: MemoryBlocks,
-        remote: MemoryBlocks,
+        local: Blocks,
+        remote: Blocks,
         remote_reads: Arc<AtomicUsize>,
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-    impl Provider<LoadBlock> for CachingStore {
-        async fn execute(
-            &self,
-            LoadBlock { hash }: LoadBlock,
-        ) -> Result<Option<Buffer>, DialogSearchTreeError> {
-            if let Some(block) = self.local.get(&hash) {
+    impl Holds for CachingStore {
+        fn held(&self, _key: &str) -> Option<Held> {
+            None
+        }
+
+        fn hold(&self, _key: String, _handle: Held) {}
+    }
+
+    #[dialog_capability::provider]
+    impl Provider<Load> for CachingStore {
+        async fn execute(&self, load: Load) -> Result<Option<Buffer>, ArchiveError> {
+            if let Some(block) = self.local.get(&load.digest) {
                 return Ok(Some(block));
             }
-            let Some(block) = self.remote.get(&hash) else {
+            if load.local {
+                return Ok(None);
+            }
+            let Some(block) = self.remote.get(&load.digest) else {
                 return Ok(None);
             };
             self.remote_reads.fetch_add(1, Ordering::Relaxed);
@@ -198,31 +213,40 @@ mod tests {
         }
     }
 
+    #[dialog_capability::provider]
+    impl Provider<Get> for CachingStore {
+        async fn execute(&self, get: Capability<Get>) -> Result<Option<Vec<u8>>, ArchiveError> {
+            Ok(self.local.get(get.digest()).map(Buffer::into_vec))
+        }
+    }
+
+    dialog_search_tree::reads_nodes_through_blocks!(CachingStore);
+
     /// Seed `count` items starting at `offset` into `tree`, storing the
     /// flushed nodes in `remote`, and return how many blocks were stored.
     async fn seed(
         tree: &mut Index,
-        remote: &MemoryBlocks,
+        remote: &Blocks,
         offset: usize,
         count: usize,
     ) -> anyhow::Result<usize> {
         let mut delta = ArchiveDelta::zero();
         let instructions = (offset..offset + count).map(|index| {
             Instruction::Assert(
-                Artifact {
+                Fact {
                     the: "item/title".parse().unwrap(),
                     of: format!("item:{index}").parse().unwrap(),
                     is: Value::String(format!("Item {index}")),
                     cause: None,
                 },
-                dialog_artifacts::Pick::All,
+                dialog_corpus::Pick::All,
             )
         });
         tree.apply(remote, &mut delta, stream::iter(instructions))
             .await?;
         let mut stored = 0;
-        for block in delta.flush_blocks() {
-            remote.store(block);
+        for node in delta.flush_nodes() {
+            remote.store(node.buffer()?.clone());
             stored += 1;
         }
         Ok(stored)
@@ -233,8 +257,9 @@ mod tests {
     /// tree, which is what the previous full-scan repair replicated.
     #[dialog_common::test]
     async fn it_hydrates_only_the_divergent_paths_before_push() -> anyhow::Result<()> {
-        let remote = MemoryBlocks::new();
-        let mut tree = Index::empty();
+        let remote = Blocks::new();
+        let catalog = remote.catalog().clone();
+        let mut tree = Index::empty_in(catalog.clone());
 
         // A wide base the two heads share, then a single-item divergence:
         // the shape of a lazily adopted branch pushing one commit.
@@ -244,8 +269,9 @@ mod tests {
         let current_root = tree.root().clone();
 
         let remote_reads = Arc::new(AtomicUsize::new(0));
-        let local = MemoryBlocks::new();
+        let local = Blocks::in_catalog(catalog.clone());
         hydrate_divergence(
+            &catalog,
             &base_root,
             &current_root,
             &CachingStore {
@@ -256,8 +282,8 @@ mod tests {
         )
         .await?;
 
-        let base = Index::from_hash(base_root);
-        let current = Index::from_hash(current_root);
+        let base = Index::at(catalog.clone(), base_root);
+        let current = Index::at(catalog, current_root);
         if let Err(error) = TreeDifference::compute(&base, &current, &local, &local).await {
             panic!("push's local-only tree differential must succeed after hydration: {error:?}");
         }

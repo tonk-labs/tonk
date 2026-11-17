@@ -34,6 +34,16 @@ pub enum ReactorError {
     /// Materializing a pulled revision locally failed.
     #[error("download failed: {0}")]
     Download(#[from] dialog_repository::DownloadError),
+    /// A pull prepared a head whose root block this replica neither holds
+    /// nor can fetch, so the head was left where it was.
+    #[error(
+        "pull of {branch:?} left the head in place: its new root {root} could not be read: {reason}"
+    )]
+    UnreadableHead {
+        branch: String,
+        root: String,
+        reason: String,
+    },
     /// A push to upstream failed.
     #[error("push failed: {0}")]
     Push(#[from] PushError),

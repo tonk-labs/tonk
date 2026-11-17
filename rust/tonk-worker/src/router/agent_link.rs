@@ -193,6 +193,7 @@ fn sync_error_code(body: &[u8]) -> Option<&'static str> {
     let value: Value = serde_json::from_slice(body).ok()?;
     match value.get("error")?.get("code")?.as_str()? {
         "CREDENTIAL_REVOKED" => Some("CREDENTIAL_REVOKED"),
+        "ACCESS_DENIED" => Some("ACCESS_DENIED"),
         "NOT_PROVISIONED" => Some("NOT_PROVISIONED"),
         "SYNC_CONFLICT" => Some("SYNC_CONFLICT"),
         "SYNC_UNAVAILABLE" => Some("SYNC_UNAVAILABLE"),
@@ -798,6 +799,7 @@ mod tests {
     async fn pull_diagnostics_preserve_only_status_and_allowlisted_code() {
         for code in [
             "CREDENTIAL_REVOKED",
+            "ACCESS_DENIED",
             "NOT_PROVISIONED",
             "SYNC_CONFLICT",
             "SYNC_UNAVAILABLE",

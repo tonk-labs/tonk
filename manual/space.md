@@ -154,13 +154,14 @@ space.
 
 ## Kernel
 
-> **Not implemented yet**, except for `xyz.tonk.kernel/route`, which the router
-> already reads.
+> **Not implemented as written.** No `xyz.tonk.kernel/*` attribute exists.
+> What shipped instead: on every mount, `upgrade_seed`
+> (`rust/tonk-worker/src/router/repository.rs`) brings a space's seed up to
+> the one the worker ships, and records what it installed so the next upgrade
+> can revert it.
 
 The kernel is the library of concepts, views, rules and routes a space is
-seeded with — `core.yaml` and the files it pulls in. A space keeps whatever
-kernel it was created with, which is why a redesign shipped in a new bundle
-does not reach spaces created before it.
+seeded with — `core.yaml` and the files it pulls in.
 
 ### Where it lives
 
@@ -269,8 +270,9 @@ A route is matched by specificity first — static beats param beats catch-all.
 Ties beneath that are settled by origin: a route the space authored beats one
 the kernel seeded, so a space can define its own `/` and have it win.
 
-The router tells them apart by `xyz.tonk.kernel/route`. A route named there
-came from the kernel; one that is not was authored in the space. Within a
+The seed writes its routes only where the space has not written its own (see
+`install_seed` in `rust/tonk-worker/src/router/repository.rs`), so a route
+the space authored is not overwritten. Within a
 group the order is by entity URI, so every device builds the same table.
 
 ## Join

@@ -16,8 +16,8 @@
 //! property of how the command is asserted (the
 //! `dialog.concept/transient` marker), not of the type.
 
-use dialog_artifacts::Entity;
 use dialog_capability::Command;
+use dialog_corpus::Entity;
 use dialog_query::Concept;
 
 pub mod legacy;
@@ -560,7 +560,7 @@ bar_command!(
 /// input, the site, and the site's selection) and one `intent` per command
 /// the input could mean, in the session overlay of the branch it came from.
 /// Rules derive values for those commands' fields onto the intents, and
-/// `intent/suggest` reads them back as readings.
+/// [`Suggest`] reads them back as readings.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct Interpret {
     /// The command entity (a fresh id per keystroke).
@@ -576,6 +576,67 @@ pub struct Interpret {
 }
 
 impl Command for Interpret {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `intent/suggest`: what a line typed in the command palette could mean.
+/// Asked by the page through the transact path, and answered by a
+/// provider the worker registers on the branch's stack
+/// ([`Stack::provide`](dialog_repository::Stack::provide)), which reads
+/// the branch's palette vocabulary and writes one `intent/reading` per
+/// reading and an `intent/answer` into the branch's `session:` layer, all
+/// naming this command, so the tab that asked reads its own answer.
+///
+/// The caller's clock is what every ask carries; the rest is optional,
+/// as the provider reads it: the input is absent when the ask names an
+/// interpreted expression, whose recorded input stands in, and the
+/// count defaults. The other optional fields (`subject`, `site`,
+/// `expression`, `memory`; see the library's declaration) are read from
+/// the command's rows by the provider. A stack provider claims an ask
+/// whose rows satisfy this concept's required fields, so a field every
+/// ask does not carry must not be required here.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct Suggest {
+    /// The command entity (a fresh id per ask), which its answer names.
+    pub this: Entity,
+    /// What was typed; empty asks for the menu; absent when the ask
+    /// names an interpreted expression.
+    pub input: Option<crate::domain::command::current::intent_suggest::Input>,
+    /// The caller's clock in milliseconds.
+    pub now: crate::domain::command::current::intent_suggest::Now,
+    /// How many readings at most; the provider's default when absent.
+    pub max: Option<crate::domain::command::current::intent_suggest::Max>,
+}
+
+impl Command for Suggest {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `space/create-branch`: give a space a branch it does not have yet.
+///
+/// Fired from the panel the space chrome shows when a page asks for a
+/// branch the space lacks (`/space/{branch}@{did}`). The worker's handler
+/// starts the branch from the same-named branch on the space's remote when
+/// there is one, else from `base` (`main` as it is now, or the standard
+/// library alone), and has it track that remote branch when the space has a
+/// remote. Only the profile branch may fire it.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CreateBranch {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The space to make the branch in.
+    pub space: crate::domain::command::current::create_branch::Space,
+    /// The new branch's name.
+    pub name: crate::domain::command::current::create_branch::Name,
+    /// What the branch starts from, when the remote has no such branch.
+    pub base: crate::domain::command::current::create_branch::Base,
+    /// The tab's site that asked.
+    pub site: crate::domain::command::current::create_branch::Site,
+}
+
+impl Command for CreateBranch {
     type Input = Self;
     type Output = ();
 }
@@ -863,6 +924,57 @@ pub struct UnpublishSpace {
 }
 
 impl Command for UnpublishSpace {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Let one of this account's agents read and write a space.
+///
+/// Delegates the space to the agent space's DID and keeps the chains in
+/// the agent space, with a directory entry naming the space, which is
+/// where the hosted agent lists what it can reach. Nothing is handed to
+/// anyone: the agent finds the space the next time it lists its spaces.
+///
+/// Routeless like `space/publish`: the command names its `space`.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct InviteAgent {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The agent space's subject DID.
+    pub agent: crate::domain::command::invite_agent::Agent,
+    /// The space to let it into.
+    pub space: crate::domain::command::invite_agent::Space,
+    /// When it was asked.
+    pub time: crate::domain::command::invite_agent::Time,
+}
+
+impl Command for InviteAgent {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Let the account registered under an email address read and write a
+/// space.
+///
+/// Resolves the address to the account's DID at the access service, the
+/// way signing in does, delegates the space to that DID as a scoped
+/// invite, and leaves the chain in the space as that account's ticket.
+/// Opening the space's address on any device of that account claims it.
+///
+/// Routeless like `space/publish`: the command names its `space`.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct InviteByEmail {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The address the account is registered under.
+    pub email: crate::domain::command::invite_email::Email,
+    /// The space to let it into.
+    pub space: crate::domain::command::invite_email::Space,
+    /// When it was asked.
+    pub time: crate::domain::command::invite_email::Time,
+}
+
+impl Command for InviteByEmail {
     type Input = Self;
     type Output = ();
 }

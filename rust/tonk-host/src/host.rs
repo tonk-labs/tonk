@@ -19,18 +19,22 @@ use web_sys::{Element, MutationObserver, MutationObserverInit, MutationRecord, w
 use crate::navigate::{self, NavigateListener};
 use crate::ops::{self, InstalledListener};
 use crate::registry::Registry;
+use crate::stream::Streams;
 
 /// Internal state shared across listener closures.
 pub(crate) struct HostState {
     /// Subscription registry. Owns abort handles; entries are
     /// keyed by consumer element identity.
     pub registry: Registry,
+    /// Upstream streams, shared by entries with the same subscription.
+    pub streams: Streams,
 }
 
 impl HostState {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             registry: Registry::new(),
+            streams: Streams::default(),
         }
     }
 }

@@ -89,7 +89,7 @@ impl Recovery {
     pub fn restore_hint(&self) -> Option<String> {
         match self {
             Recovery::Account { subject } => Some(format!(
-                "restore it later with `tonk account space pull {subject}`"
+                "{subject} stays in your Tonk account; to use it here again, import a tool invitation for it with `tonk join <URL>`"
             )),
             Recovery::Remote { .. } | Recovery::LocalOnly | Recovery::Unknown { .. } => None,
         }

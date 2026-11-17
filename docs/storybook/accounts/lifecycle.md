@@ -1,5 +1,10 @@
 # The account lifecycle
 
+> **Out of date:** the `tonk account` commands (`login`, `logout`, `status`,
+> `sync`, `devices`, `space`) and `tonk link` were removed from the CLI
+> (#982, #1025). Journeys below that use them describe the old flow. For the
+> current CLI, run `tonk help -g`.
+
 ## Summary
 
 The account lifecycle lets a person create passkey-controlled account
