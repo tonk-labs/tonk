@@ -112,6 +112,26 @@ pub async fn handle_message(
     let envelope_type = envelope.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match envelope_type {
         "hello" => handle_hello(state, client, ports).await,
+        // The top page's passkey prompt or card was cancelled: say so on
+        // the ceremony row the account sheet follows, which would otherwise
+        // wait for a passkey forever. Only the ceremonies that report there.
+        "custody-cancelled" => {
+            let ceremony = envelope.get("ceremony").and_then(|v| v.as_str());
+            if let Some(
+                ceremony @ (tonk_schema::ceremony::ADD_PASSKEY
+                | tonk_schema::ceremony::DELETE_ACCOUNT),
+            ) = ceremony
+            {
+                let tonk = state.read().await;
+                super::ceremony::report(
+                    &tonk,
+                    ceremony,
+                    tonk_schema::ceremony_state::FAILED,
+                    "cancelled",
+                )
+                .await;
+            }
+        }
         other => {
             log!(
                 "bridge: SW global received unexpected envelope type '{other}' from {client:?} \

@@ -8226,7 +8226,7 @@ pub(crate) mod tests {
         sign_up(&browser, &env, "settings-agent-filter@example.com").await?;
         goto(&browser, env.tonk_web.join("settings")?.as_str()).await?;
         enter_hub(&browser).await?;
-        wait_for_displayed(&browser, "[data-connections-refresh]").await?;
+        wait_for_displayed(&browser, "[data-add-passkey]").await?;
         let result = browser.execute_async(r#"
             const done = arguments[arguments.length - 1];
             const settings = document.querySelector('account-settings');
@@ -8242,7 +8242,7 @@ pub(crate) mod tests {
                 }
             };
             (async () => {
-                await until(() => settings.querySelector('[data-connections-status]').textContent !== 'Loading connections…');
+                await until(() => !settings.querySelector('[data-agent-connections]').hidden);
                 const hidden = settings.querySelectorAll('[data-connection-id]').length;
                 settings.api = () => Promise.resolve([...pending, {
                     id: 'a'.repeat(64), subject: 'did:key:fixture', label: 'confirmed fixture',
@@ -8270,7 +8270,7 @@ pub(crate) mod tests {
         sign_up(&browser, &env, "settings-named-agents@example.com").await?;
         goto(&browser, env.tonk_web.join("settings")?.as_str()).await?;
         enter_hub(&browser).await?;
-        wait_for_displayed(&browser, "[data-connections-refresh]").await?;
+        wait_for_displayed(&browser, "[data-add-passkey]").await?;
         let result = browser.execute_async(r#"
             const done = arguments[arguments.length - 1];
             const settings = document.querySelector('account-settings');
@@ -8332,7 +8332,7 @@ pub(crate) mod tests {
                 initial.legacyRemoved = true;
                 settings.api = () => Promise.resolve([expired, revoked]);
                 settings.connectionsRefresh();
-                await until(() => settings.querySelector('[data-connections-status]').textContent === 'No active connections.');
+                await until(() => settings.querySelector('[data-connections-note]').textContent.startsWith('No agent apps are connected.'));
                 initial.inactiveOnlyRows = settings.querySelectorAll('[data-connection-id]').length;
                 // New names come from the current projection, not the issue-time label.
                 settings.api = () => Promise.resolve([{...shared, spaceName: 'Renamed space'}, {...legacy, spaceName: null}]);
@@ -8345,7 +8345,7 @@ pub(crate) mod tests {
                 settings.connectionsRefresh();
                 settings.api = () => Promise.reject(new Error('offline'));
                 settings.connectionsRefresh();
-                await until(() => settings.querySelector('[data-connections-status]').textContent.includes('could not be loaded'));
+                await until(() => settings.querySelector('[data-connections-status]').textContent.includes('didn’t load'));
                 late(fixtures);
                 await new Promise(resolve => requestAnimationFrame(resolve));
                 initial.error = settings.querySelector('[data-connections-status]').textContent;
@@ -8399,12 +8399,7 @@ pub(crate) mod tests {
         );
         assert_eq!(state["staleRows"], 0);
         assert_eq!(state["errorVisible"], true);
-        assert!(
-            state["error"]
-                .as_str()
-                .unwrap()
-                .contains("could not be loaded")
-        );
+        assert!(state["error"].as_str().unwrap().contains("didn’t load"));
         capture_connection_management(&browser, &"a".repeat(64), "named-access").await?;
         browser.quit().await?;
         Ok(())
@@ -8456,7 +8451,7 @@ pub(crate) mod tests {
                     outer.json()
                 );
                 enter_hub(browser).await?;
-                let before = browser.execute(r#"const node=document.querySelector('[data-connections-refresh]');node.focus();
+                let before = browser.execute(r#"const node=document.querySelector('[data-add-passkey]');node.focus();
                     window.__connectionKeys=[];
                     document.addEventListener('keydown',event=>{const key={target:event.target.tagName,cls:event.target.className,key:event.key};window.__connectionKeys.push(key);setTimeout(()=>key.prevented=event.defaultPrevented,0);},{once:true});
                     return {focused:document.activeElement === node, documentFocus:document.hasFocus(),
@@ -8465,12 +8460,12 @@ pub(crate) mod tests {
                         activeClass:document.activeElement.className,
                         revokes:[...document.querySelectorAll('[data-connection-revoke]')].map(item=>({disabled:item.disabled,tabIndex:item.tabIndex,rect:item.getBoundingClientRect().toJSON(),hiddenAncestor:!!item.closest('[hidden]')}))};"#, vec![]).await?;
                 browser
-                    .find(By::Css("[data-connections-refresh]"))
+                    .find(By::Css("[data-add-passkey]"))
                     .await?
                     .send_keys(Key::Tab)
                     .await?;
                 let focused = browser.execute(r#"const node=document.activeElement;const style=getComputedStyle(node);
-                    return {settingsHidden:document.querySelector('[data-settings-view]')?.hidden, accountExpanded:document.querySelector('.account-trigger')?.getAttribute('aria-expanded'), keys:window.__connectionKeys, tag:node.tagName, class:node.className, refresh:node.matches('[data-connections-refresh]'), revoke:node.matches('[data-connection-ask]'), visible:node.matches(':focus-visible'),
+                    return {settingsHidden:document.querySelector('[data-settings-view]')?.hidden, accountExpanded:document.querySelector('.account-trigger')?.getAttribute('aria-expanded'), keys:window.__connectionKeys, tag:node.tagName, class:node.className, refresh:node.matches('[data-add-passkey]'), revoke:node.matches('[data-connection-ask]'), visible:node.matches(':focus-visible'),
                         ring:style.outlineStyle !== 'none' || style.boxShadow !== 'none',
                         height:node.getBoundingClientRect().height, animation:style.animationName,
                         clientWidth:document.documentElement.clientWidth, scrollWidth:document.documentElement.scrollWidth };"#, vec![]).await?;
