@@ -804,6 +804,10 @@ view!:
         cursor:pointer; white-space:nowrap; }
       /* brightness on near-black reads as nothing — wash it instead */
       .m-go:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
+      /* The hub waits for its stylesheets (`hub-discover` styled); should
+         that never say so, it shows anyway after 2s. */
+      .hub-page[data-styling] { animation:hub-styled 0s linear 2s forwards; }
+      @keyframes hub-styled { to { visibility:visible; } }
       /* Inside the hub, its dialogs wear the hub's look: sentence type,
          its fields and its buttons (a quiet text button, a rounded main). */
       .tonk-hub tonk-dialog[appearance="hub"] :is(.space-create-form, .remove-form) {
@@ -852,6 +856,11 @@ view!:
         background:transparent; color:var(--tonk-text); }
       space-links .hub-links { margin:0; padding:0; }
       space-links .hub-link:first-child { border-top:0; padding-top:0; }
+      /* Until the list has answered, the line says `spaces loading` and
+         offers no `new space`; a list that didn't load shows no count. */
+      [data-spaces-sheet]:not([data-list="ready"]) .hub-line [data-new-space] { display:none; }
+      [data-spaces-sheet]:not([data-list]) [data-space-count]::before { content:"loading"; }
+      [data-spaces-sheet][data-list="failed"] [data-space-count] { display:none; }
       /* an empty list is one quiet line in the sheet */
       .hub-empty:not(.hub-failed) p { color:var(--tonk-text-soft); }
 
@@ -2532,8 +2541,11 @@ element!: &hub-collection
     # since an agent's own space leaves the list (`hub-discover`).
     count: |
       (self) => {
-        const slot = self.closest('[data-spaces-sheet]')?.querySelector('[data-space-count]');
-        if (!slot) return;
+        const sheet = self.closest('[data-spaces-sheet]');
+        const slot = sheet?.querySelector('[data-space-count]');
+        // Only a list that answered has a count; loading says so, and a
+        // list that didn't load says no number (`hub-discover` list).
+        if (!slot || sheet.dataset.list !== 'ready') return;
         const rows = [...self.querySelectorAll('.hub-row[data-space-subject]')]
           .filter(row => getComputedStyle(row).display !== 'none');
         const count = String(rows.length);
@@ -2910,8 +2922,28 @@ element!: &hub-discover
         observer.observe(display, { attributes: true, attributeFilter: ['data-state'], childList: true });
         self._listObserver = observer;
       }
+    # Show the page once its stylesheets have loaded.
+    styled: |
+      (self) => {
+        const page = self.closest('.hub-page[data-styling]');
+        if (!page) return;
+        const links = [...page.querySelectorAll(':scope > link[rel="stylesheet"]')];
+        const reveal = () => {
+          if (links.some((link) => !link.sheet && !link.__failed)) return;
+          page.style.visibility = '';
+          page.removeAttribute('data-styling');
+        };
+        for (const link of links) {
+          if (link.sheet || link.__watched) continue;
+          link.__watched = true;
+          link.addEventListener('load', reveal);
+          link.addEventListener('error', () => { link.__failed = true; reveal(); });
+        }
+        reveal();
+      }
     connected: |
       (self) => {
+        self.styled();
         self.agents();
         self.watchList();
         self.list();
@@ -3179,7 +3211,10 @@ view!:
   this: tonk:hub
   show:
     ui: |
-      <div class="hub-page tonk-hub">
+      <!-- Hidden until its stylesheets have loaded (`hub-discover`
+           reveals it), so a slow load never flashes the page unstyled.
+           `ui` reveals it anyway after 2s, should that never come. -->
+      <div class="hub-page tonk-hub" style="visibility:hidden" data-styling>
         <!-- The bar, latent: no space here, so it shows only for the
              command line (Cmd/Ctrl+K) and what a command opens. -->
         <tonk-fab with="{profile-branch}@profile:tonk" latent>

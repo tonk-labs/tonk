@@ -736,7 +736,9 @@ fn it_keeps_the_hub_on_the_shared_theme_tokens() {
     for contract in [
         "look: !include/text ./gooey/tonk-look.css",
         "hub: !include/text ./gooey/in-browser/hub.css",
-        "<div class=\"hub-page tonk-hub\">",
+        // Hidden until its stylesheets load, so it never flashes unstyled.
+        "<div class=\"hub-page tonk-hub\" style=\"visibility:hidden\" data-styling>",
+        ".hub-page[data-styling] { animation:hub-styled 0s linear 2s forwards; }",
         "<link rel=\"stylesheet\" with:src=\"look@space\">",
         "<link rel=\"stylesheet\" with:src=\"hub@space\">",
     ] {
