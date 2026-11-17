@@ -245,3 +245,22 @@ test("the mobile nav's button rules stop at its own controls, not its dialog's",
   assert.doesNotMatch(library, /\.mobile-nav button\b/);
   assert.match(library, /\.mobile-nav > a, \.mobile-nav \.mobile-create \{ display:flex; width:100%;/);
 });
+
+test('rename and duplicate hold the menu under their dialog and give focus back to their item', () => {
+  const listeners = {};
+  const dialog = { shadowRoot: null, addEventListener: (type, run) => { listeners[type] = run; }, removeEventListener: (type) => { delete listeners[type]; } };
+  const attrs = new Map([['open', 'true']]);
+  const menu = { setAttribute: (k, v) => attrs.set(k, v), removeAttribute: (k) => attrs.delete(k), getAttribute: (k) => attrs.get(k) ?? null };
+  let focused = null;
+  const item = { focus: () => { focused = item; } };
+  const document = { activeElement: null, body: {} };
+  const holdMenu = Function('document', `return (${methodSource('space-actions', 'hold-menu')})`)(document);
+  holdMenu({ querySelector: () => menu, close: () => { throw new Error('the menu must stay open'); } }, dialog, item);
+  assert.equal(attrs.has('data-behind'), true);
+  listeners['fabb-close']();
+  assert.equal(attrs.has('data-behind'), false);
+  assert.equal(focused, item);
+  const connected = methodSource('space-actions', 'connected');
+  assert.match(connected, /self\.holdMenu\(self\.querySelector\('\[data-space-rename-dialog\]'\), rename\)/);
+  assert.match(connected, /self\.holdMenu\(self\.querySelector\('\[data-space-duplicate\] \[data-space-create-dialog\]'\), duplicate\)/);
+});

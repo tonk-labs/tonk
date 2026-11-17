@@ -5596,6 +5596,27 @@ element!: &space-actions
           if (submit) submit.disabled = false;
         }
       }
+    # A dialog opened from the menu: the menu stays open under it, unseen,
+    # and shows again when it closes, with focus back on the item that
+    # opened it (as `space-remove` does for delete).
+    hold-menu: |
+      (self, dialog, item) => {
+        const menu = self.querySelector('hub-menu');
+        if (!dialog || !menu) { self.close(false); return; }
+        menu.setAttribute('data-behind', '');
+        const native = dialog.shadowRoot?.querySelector('dialog');
+        const done = () => {
+          dialog.removeEventListener('fabb-close', done);
+          native?.removeEventListener('close', done);
+          menu.removeAttribute('data-behind');
+          const active = document.activeElement;
+          if (menu.getAttribute('open') === 'true' && (!active || active === document.body)) {
+            item?.focus({ preventScroll: true });
+          }
+        };
+        dialog.addEventListener('fabb-close', done);
+        native?.addEventListener('close', done);
+      }
     connected: |
       (self) => {
         if (self.__wired) return;
@@ -5611,13 +5632,15 @@ element!: &space-actions
           }
           const copy = event.target?.closest?.('[data-space-copy-link]');
           if (copy) { self.copyLink(copy); return; }
-          if (event.target?.closest?.('[data-space-duplicate-open]')) {
-            self.close(false);
+          const duplicate = event.target?.closest?.('[data-space-duplicate-open]');
+          if (duplicate) {
             self.querySelector('[data-space-duplicate]')?.open?.();
+            self.holdMenu(self.querySelector('[data-space-duplicate] [data-space-create-dialog]'), duplicate);
             return;
           }
-          if (event.target?.closest?.('[data-space-rename-open]')) {
-            self.close(false);
+          const rename = event.target?.closest?.('[data-space-rename-open]');
+          if (rename) {
+            self.holdMenu(self.querySelector('[data-space-rename-dialog]'), rename);
             self.removeAttribute('busy');
             const submit = self.querySelector('[data-space-rename-submit]');
             if (submit) submit.disabled = false;
