@@ -244,8 +244,8 @@ async fn handle_query(
     };
     let query: dialog_query::ConceptQuery = match wire.into_concept_query() {
         Ok(q) => q,
-        // A named query (`tree/*`, `intent/suggest`) is answered by the
-        // reactor, as the HTTP `/query` route answers it.
+        // A named query (`tree/*`) is answered by the reactor, as the
+        // HTTP `/query` route answers it.
         Err(wire) => {
             let result = {
                 let tonk = state.read().await;
@@ -310,8 +310,13 @@ async fn handle_query(
         };
         let terms = query.terms.clone();
         use dialog_query::Output as _;
+        // Through the branch's stack, as the reactor's one-shot query
+        // reads: every layer, among them `session:`, where a provider's
+        // answer to a command lands.
         match session
-            .handle()
+            .state
+            .stack()
+            .query()
             .select(tonk_schema::concept::QueryPlan::from(query))
             .perform(&tonk.operator)
             .try_vec()
@@ -388,20 +393,21 @@ async fn handle_evaluate(
 
     let result = {
         let tonk = state.read().await;
-        crate::router::evaluate::evaluate_body_with_transients(
+        crate::router::evaluate::evaluate_body_with_commands(
             &tonk,
             &binding.repo,
             &binding.branch,
+            Some(client.clone()),
             body,
             transact,
         )
         .await
     };
     match result {
-        Ok((response, transients)) => {
+        Ok((response, commands)) => {
             // Post-commit parity with the HTTP `/evaluate` route: a commit
             // that moved the tree marks the repo dirty for the next sync
-            // push, and the document's transient commands dispatch with
+            // push, and the document's commands run with
             // this guest as the originating client.
             if response.revision_before.as_ref().map(|r| &r.tree)
                 != response.revision_after.as_ref().map(|r| &r.tree)
@@ -421,13 +427,13 @@ async fn handle_evaluate(
                 }),
             )
             .await;
-            if let Some(transients) = transients {
+            if let Some(effect) = commands {
                 let origin = crate::router::CommandOrigin {
                     repo: binding.repo,
                     branch: binding.branch,
                     client: Some(client.clone()),
                 };
-                crate::router::dispatch(&state, origin, transients).await;
+                crate::router::run_commands(&state, origin, Some(effect)).await;
             }
         }
         Err(e) => {
@@ -539,7 +545,8 @@ async fn handle_subscribe(
         }
     };
 
-    let mut receiver = subscriber.receiver;
+    // The pump owns the subscriber: its end drops the dialog reader.
+    let mut receiver = subscriber;
     let pump_state = state.clone();
     let pump_client = client.clone();
     let pump_id = id.clone();

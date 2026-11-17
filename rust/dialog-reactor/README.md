@@ -1,8 +1,10 @@
 # dialog-reactor
 
-A reactive layer over [dialog](https://github.com/dialog-db/dialog-db) branches.
-It caches repository and branch handles, runs queries (one-shot and live), commits
-transactions, and fans changed query results out to subscribers
+Tonk's layer over [dialog](https://github.com/dialog-db/dialog-db) branches.
+It caches repository and branch handles with the dialog stack opened over each,
+runs queries (one-shot and live), commits transactions through the stack, and
+streams a stack subscription's results to each connected client as tonk's wire
+frames.
 
 The [`Reactor`] sits between an application and the raw dialog repository/branch
 API. Effects are described as chains and executed with `.perform(&env)`, matching
@@ -22,8 +24,9 @@ let rows = reactor
     .perform(&operator)
     .await?;
 
-// Mutate; every subscription on the branch re-evaluates and
-// broadcasts changed results automatically:
+// Mutate through the branch's stack, which schedules a poll of its
+// subscriptions; `reactor.run_scheduled_polls(&operator)` settles it
+// and sends each client what changed:
 reactor
     .repository("main")
     .branch("main")
@@ -40,24 +43,24 @@ reactor
   reuse the cached handle, so the load+open cost is paid once per lifetime. The
   cached branch carries a warm content-addressed node cache, which pays off across
   repeated traversals (directory rows, nested renders).
-- **Query effects.** [`QueryEffect`] (`branch.query(q)`) reads once and returns
-  projected [`Conclusion`]s. [`Subscribe`] (`branch.subscribe(q)`) opens or
-  attaches to a standing subscription whose first message is the current snapshot
-  and whose subsequent messages are change broadcasts, deduplicated by hash.
-- **Transactions.** `branch.transaction().assert(…)/.retract(…).commit()` applies
-  atomically and re-polls every subscription on the branch so changed results fan
-  out without callers remembering to.
+- **Query effects.** [`QueryEffect`] (`branch.query(q)`) reads once through the
+  stack and returns projected [`Conclusion`]s. [`Subscribe`] (`branch.subscribe(q)`)
+  gives a client a reader of the stack's subscription to the query (dialog's
+  `Stack::subscribe`: one evaluation per query, shared by its readers, held while a
+  reader holds it). The reactor turns what the stack delivers into the client's
+  frames, a snapshot first and deltas after, outermost display first; dropping the
+  client's `Subscriber` releases its reader.
+- **Transactions.** `branch.transaction().assert(…)/.retract(…).commit()` commits
+  as one invocation through the stack, whose report's effect runs the stack's
+  providers over the commands it landed.
 - **Pull / push / export / import** chains over the same branch surface.
-- **Commands.** The transient-concept command machinery
-  ([`CommandRegistry`], [`CommandHandler`], [`TypedCommand`]) runs registered
-  commands after a commit. It is generic over the `Env` the commands execute
-  against (`CommandRegistry<Env>`), so each consumer instantiates it with its own
-  application environment; a command is registrable only when `Env: Provider<C>`,
-  making capability a compile-time gate.
+- **Commands.** `Decode`, `Migrated` and the `control:` tick rows the worker's
+  stack providers decode a landed command with.
 
 ## Design
 
-See [`reactor-spec.md`](./reactor-spec.md) for the full rationale: the chain
-model, the subscription/broadcast lifecycle, and the caching invariants.
+See [`reactor-spec.md`](./reactor-spec.md) for the original rationale: the chain
+model and the caching invariants. Its subscription registry, query hash and poll
+scheduling are dialog's stack subscriptions now.
 
 > This crate eventually should move into the dialog-db repository hence it `dialog-` prefix.

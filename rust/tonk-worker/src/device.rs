@@ -614,10 +614,11 @@ impl Registry {
     ) -> Result<(), TonkWorkerError> {
         let branch = self.roster_branch(storage, operator).await?;
         branch
-            .transaction()
-            .assert(DeviceProfile::new(profile, storage_name))
-            .commit()
-            .publish()
+            .transact(|transaction| {
+                std::future::ready(Ok::<_, dialog_repository::CommitError>(
+                    transaction.assert(DeviceProfile::new(profile, storage_name)),
+                ))
+            })
             .perform(operator)
             .await
             .map(|_| ())
@@ -650,10 +651,11 @@ impl Registry {
             })?;
         for entry in entries {
             branch
-                .transaction()
-                .retract(entry)
-                .commit()
-                .publish()
+                .transact(|transaction| {
+                    std::future::ready(Ok::<_, dialog_repository::CommitError>(
+                        transaction.retract(entry.clone()),
+                    ))
+                })
                 .perform(operator)
                 .await
                 .map_err(|error| {

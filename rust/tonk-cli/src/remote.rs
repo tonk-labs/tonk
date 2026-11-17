@@ -195,19 +195,18 @@ async fn record_metadata(
     let replica = local_replica(site);
     let remote_concept = replica.remote(name, subject, address);
 
-    let mut transaction = meta
-        .transaction()
-        .assert(replica)
-        .assert(remote_concept.clone());
-    if let Some(revocation_url) = revocation_url {
-        transaction = transaction.assert(RemoteExecution::new(&remote_concept, revocation_url));
-    }
-    transaction
-        .commit()
-        .publish()
-        .perform(&site.operator)
-        .await
-        .map_err(|e| RemoteError::Io(format!("failed to write meta records: {e}")))?;
+    meta.transact(|transaction| {
+        let mut transaction = transaction
+            .assert(replica.clone())
+            .assert(remote_concept.clone());
+        if let Some(revocation_url) = revocation_url {
+            transaction = transaction.assert(RemoteExecution::new(&remote_concept, revocation_url));
+        }
+        std::future::ready(Ok::<_, dialog_repository::CommitError>(transaction))
+    })
+    .perform(&site.operator)
+    .await
+    .map_err(|e| RemoteError::Io(format!("failed to write meta records: {e}")))?;
     Ok(())
 }
 
@@ -331,14 +330,14 @@ pub async fn set_upstream(
     let tracked = remote_concept.branch(site::BRANCH_NAME);
     let tracking = replica.branch(site::BRANCH_NAME).set_upstream(&tracked);
 
-    meta.transaction()
-        .assert(tracked)
-        .assert(tracking)
-        .commit()
-        .publish()
-        .perform(&site.operator)
-        .await
-        .map_err(|e| RemoteError::Io(format!("failed to write tracking-branch records: {e}")))?;
+    meta.transact(|transaction| {
+        std::future::ready(Ok::<_, dialog_repository::CommitError>(
+            transaction.assert(tracked.clone()).assert(tracking.clone()),
+        ))
+    })
+    .perform(&site.operator)
+    .await
+    .map_err(|e| RemoteError::Io(format!("failed to write tracking-branch records: {e}")))?;
 
     Ok(UpstreamOutcome {
         local_branch: site::BRANCH_NAME.to_owned(),
